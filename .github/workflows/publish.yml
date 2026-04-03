@@ -57,9 +57,6 @@ jobs:
           node-version: '22.x'
           cache: 'npm'
 
-      - name: Upgrade npm for Trusted Publisher
-        run: npm install -g npm@latest
-
       - name: Install dependencies
         run: npm ci
 
