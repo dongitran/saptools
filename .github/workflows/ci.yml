@@ -56,7 +56,7 @@ jobs:
           node-version: '22.x'
 
       - name: Upgrade npm for Trusted Publisher
-        run: npm install -g npm@latest
+        run: sudo npm install -g npm@latest
 
       - name: Install dependencies
         run: npm install
@@ -79,7 +79,7 @@ jobs:
           node-version: '22.x'
 
       - name: Upgrade npm for Trusted Publisher
-        run: npm install -g npm@latest
+        run: sudo npm install -g npm@latest
 
       - name: Install dependencies
         run: npm install
