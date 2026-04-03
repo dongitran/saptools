@@ -55,6 +55,12 @@ describe("parseVcapServices", () => {
     expect(() => parseVcapServices(bad)).toThrow('Missing or invalid HANA credential field: "port"');
   });
 
+  it("throws when hana binding is a primitive (number)", () => {
+    const bad = JSON.stringify({ hana: [123] });
+
+    expect(() => parseVcapServices(bad)).toThrow("HANA binding must be an object");
+  });
+
   it("returns empty object when hana is not an array", () => {
     const result = parseVcapServices(JSON.stringify({ hana: "not-array" }));
 

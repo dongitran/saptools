@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import process from "node:process";
 
 // Mock CF module so no real CF CLI calls happen
 vi.mock("../cf.js", () => ({
@@ -116,5 +117,33 @@ describe("syncAll", () => {
 
   it("accepts verbose option without throwing", async () => {
     await expect(syncAll(EMAIL, PASSWORD, { verbose: true })).resolves.toBeUndefined();
+  });
+
+  it("prints verbose failure message when region fails and verbose is set", async () => {
+    vi.mocked(cf.cfApi).mockRejectedValueOnce(new Error("region down"));
+    const stdoutSpy = vi.spyOn(process.stdout, "write");
+
+    await syncAll(EMAIL, PASSWORD, { verbose: true });
+
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("[sync] Failed region:"));
+    stdoutSpy.mockRestore();
+  });
+
+  it("prints sync complete message in verbose non-interactive mode", async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, "write");
+
+    await syncAll(EMAIL, PASSWORD, { verbose: true });
+
+    expect(stdoutSpy).toHaveBeenCalledWith("[sync] Sync complete.\n");
+    stdoutSpy.mockRestore();
+  });
+
+  it("prints completion message in interactive mode", async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, "write");
+
+    await syncAll(EMAIL, PASSWORD, { interactive: true });
+
+    expect(stdoutSpy).toHaveBeenCalledWith("✔ All regions synced completely.\n");
+    stdoutSpy.mockRestore();
   });
 });
