@@ -68,4 +68,16 @@ describe("writeCredentials", () => {
   it("uses OUTPUT_FILENAME as default when no path given", () => {
     expect(OUTPUT_FILENAME).toBe("hana-credentials.json");
   });
+
+  it("falls back to OUTPUT_FILENAME when outputPath is not provided", async () => {
+    const defaultPath = resolve(OUTPUT_FILENAME);
+
+    try {
+      const returned = await writeCredentials([MOCK_ENTRY]);
+
+      expect(returned).toBe(defaultPath);
+    } finally {
+      await unlink(defaultPath).catch(() => undefined);
+    }
+  });
 });

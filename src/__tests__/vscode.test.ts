@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { toSqlToolsConnection, updateVscodeConnections } from "../vscode.js";
 import type { AppHanaEntry } from "../types.js";
 import { mkdir, writeFile, rm, readFile } from "node:fs/promises";
@@ -222,5 +222,18 @@ describe("updateVscodeConnections", () => {
     // Malformed file should be replaced entirely — connections still written
     expect(settings["sqltools.connections"]).toBeDefined();
     expect(settings["sqltools.useNodeRuntime"]).toBe(true);
+  });
+
+  it("uses process.cwd() when no workspaceRoot is given", async () => {
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
+
+    try {
+      const result = await updateVscodeConnections([SAMPLE_ENTRY]);
+
+      expect(result).toContain(".vscode");
+      expect(result).toContain("settings.json");
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 });

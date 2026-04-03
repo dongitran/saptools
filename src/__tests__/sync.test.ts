@@ -91,6 +91,20 @@ describe("syncRegion", () => {
 
     await expect(syncRegion("ap11", EMAIL, PASSWORD)).resolves.toBeUndefined();
   });
+
+  it("throws when entire region auth fails", async () => {
+    vi.mocked(cf.cfApi).mockRejectedValueOnce(new Error("unreachable"));
+
+    await expect(syncRegion("ap11", EMAIL, PASSWORD)).rejects.toThrow("Failed to sync region ap11");
+  });
+
+  it("exercises spinner.fail path when cfApi fails in interactive mode", async () => {
+    vi.mocked(cf.cfApi).mockRejectedValueOnce(new Error("unreachable"));
+
+    await expect(
+      syncRegion("ap11", EMAIL, PASSWORD, { interactive: true })
+    ).rejects.toThrow("Failed to sync region ap11");
+  });
 });
 
 describe("syncAll", () => {
