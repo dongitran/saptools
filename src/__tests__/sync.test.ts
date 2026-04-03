@@ -157,7 +157,7 @@ describe("syncAll", () => {
 
     await syncAll(EMAIL, PASSWORD, { interactive: true });
 
-    expect(stdoutSpy).toHaveBeenCalledWith("✔ All regions synced completely.\n");
+    expect(stdoutSpy).toHaveBeenCalledWith("\n✔ All regions synced completely.\n");
     stdoutSpy.mockRestore();
   });
 });
