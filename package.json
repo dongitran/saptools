@@ -1,6 +1,6 @@
 {
   "name": "saptools",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Extract SAP HANA credentials from Cloud Foundry environments for SQL tools",
   "type": "module",
   "publishConfig": {
