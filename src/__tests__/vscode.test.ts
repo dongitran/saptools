@@ -209,4 +209,18 @@ describe("updateVscodeConnections", () => {
     // 4-space indent means lines start with "    " for top-level keys
     expect(raw).toMatch(/^\{\n {4}"/m);
   });
+
+  it("handles malformed settings.json gracefully (replaces with new)", async () => {
+    await mkdir(vscodeDir, { recursive: true });
+    await writeFile(settingsPath, "{ this is not valid json !!!", "utf-8");
+
+    await updateVscodeConnections([SAMPLE_ENTRY], tmpDir);
+
+    const raw = await readFile(settingsPath, "utf-8");
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+
+    // Malformed file should be replaced entirely — connections still written
+    expect(settings["sqltools.connections"]).toBeDefined();
+    expect(settings["sqltools.useNodeRuntime"]).toBe(true);
+  });
 });

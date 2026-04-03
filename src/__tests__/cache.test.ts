@@ -202,3 +202,43 @@ describe("setCachedApps / getCachedApps", () => {
     expect(result).toEqual([]);
   });
 });
+
+// ── Stale TTL and missing data tests ──────────────────────────────
+
+describe("cache TTL and missing data edge cases", () => {
+  it("getCachedSpaces returns null for non-existent org", async () => {
+    await setCachedOrgs("ap11", ["org-a"]);
+
+    const result = await getCachedSpaces("ap11", "org-does-not-exist");
+
+    expect(result).toBeNull();
+  });
+
+  it("getCachedApps returns null for non-existent space within existing org", async () => {
+    await setCachedOrgs("ap11", ["org-a"]);
+    await setCachedSpaces("ap11", "org-a", ["dev"]);
+
+    const result = await getCachedApps("ap11", "org-a", "space-does-not-exist");
+
+    expect(result).toBeNull();
+  });
+
+  it("getCachedOrgs returns null when cache exists but TTL expired", async () => {
+    // Write cache with stale timestamp
+    await writeCache({
+      version: 1,
+      regions: {
+        ap11: {
+          orgsUpdatedAt: new Date(Date.now() - 2 * CACHE_TTL_MS).toISOString(),
+          orgs: {
+            "stale-org": { spacesUpdatedAt: "", spaces: {} }
+          },
+        },
+      },
+    });
+
+    const result = await getCachedOrgs("ap11");
+
+    expect(result).toBeNull();
+  });
+});
