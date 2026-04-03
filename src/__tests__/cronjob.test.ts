@@ -64,6 +64,18 @@ describe("cronjob management", () => {
       expect(execFile).toHaveBeenCalledWith("launchctl", ["load", expect.any(String)], expect.any(Function));
     });
 
+    it("should inject email and password into generated plist", async () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      setupExecMock(execFile);
+
+      await cronjobEnable();
+
+      const plistContent = vi.mocked(writeFile).mock.calls[0]?.[1] as string;
+      expect(plistContent).toContain("<key>SAP_EMAIL</key><string>test@example.com</string>");
+      expect(plistContent).toContain("<key>SAP_PASSWORD</key><string>safe-password</string>");
+      expect(plistContent).toContain("<integer>900</integer>");
+    });
+
     it("should disable background sync via launchd", async () => {
       vi.mocked(existsSync).mockReturnValue(true);
       setupExecMock(execFile);
@@ -106,6 +118,32 @@ describe("cronjob management", () => {
         expect.stringContaining("SAP_EMAIL='test@example.com' SAP_PASSWORD='safe-password'")
       );
       expect(writeMock).toHaveBeenCalledWith(expect.stringContaining("# saptools-sync"));
+    });
+
+    it("should enable and merge with existing non-saptools crontab entries", async () => {
+      // Mock existing crontab with both saptools and non-saptools entries
+      const existingCrontab = "0 0 * * * daily-backup\n*/15 * * * * old-saptools # saptools-sync\n";
+      setupExecMock(exec, { stdout: existingCrontab, stderr: "" });
+
+      const writeMock = vi.fn().mockReturnValue(true);
+      const endMock = vi.fn().mockImplementation(() => undefined);
+      const mStdin = { write: writeMock, end: endMock } as unknown as Writable;
+      const mChild = {
+        stdin: mStdin,
+        on: vi.fn().mockImplementation((event: string, cb: (code: number) => void) => {
+          if (event === "close") cb(0);
+        })
+      } as unknown as ChildProcess;
+      vi.mocked(spawn).mockReturnValue(mChild);
+
+      await cronjobEnable();
+
+      // Verify: old saptools entry removed, daily-backup preserved, new saptools entry added
+      const written = writeMock.mock.calls[0]?.[0] as string;
+      expect(written).toContain("daily-backup");
+      expect(written).not.toContain("old-saptools");
+      expect(written).toContain("# saptools-sync");
+      expect(written).toContain("SAP_EMAIL");
     });
 
     it("should disable background sync by filtering existing crontab", async () => {
@@ -368,6 +406,16 @@ describe("cronjob management", () => {
 
       expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: saptools cronjob"));
       expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it("should route 'disable' subcommand to cronjobDisable", async () => {
+      vi.mocked(platform).mockReturnValue("darwin");
+      vi.mocked(existsSync).mockReturnValue(false);
+      const consoleSpy = vi.spyOn(process.stdout, "write");
+
+      await runCronjob("disable");
+
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Cronjob disabled"));
     });
   });
 
