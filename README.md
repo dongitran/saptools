@@ -95,10 +95,10 @@ Write  →  .vscode/settings.json (sqltools.connections)
 
 ---
 
-## 🔄 Background Sync (macOS)
+## 🔄 Background Sync
 
 ```bash
-# Enable auto-sync every 15 minutes via launchd
+# Enable auto-sync every 15 minutes (launchd on macOS, crontab on Linux/WSL)
 saptools cronjob enable
 
 # Check sync logs
