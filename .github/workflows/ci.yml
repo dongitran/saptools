@@ -106,13 +106,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 24 (ships with npm 11.x — required for trusted publisher)
         uses: actions/setup-node@v4
         with:
-          node-version: '22.x'
-
-      - name: Upgrade npm for Trusted Publisher
-        run: npm install -g npm@latest
+          node-version: '24.x'
 
       - name: Install dependencies
         run: npm install
