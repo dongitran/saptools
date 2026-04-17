@@ -46,7 +46,7 @@ export async function main(argv: readonly string[]): Promise<void> {
           : undefined;
 
         const isInteractive =
-          opts.interactive !== false && process.stdout.isTTY === true && process.env["CI"] !== "true";
+          opts.interactive !== false && process.stdout.isTTY && process.env["CI"] !== "true";
 
         const result = await runSync({
           email,
@@ -67,8 +67,10 @@ export async function main(argv: readonly string[]): Promise<void> {
   await program.parseAsync([...argv]);
 }
 
-main(process.argv).catch((err: unknown) => {
+try {
+  await main(process.argv);
+} catch (err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   process.stderr.write(`Error: ${msg}\n`);
   process.exit(1);
-});
+}

@@ -7,7 +7,7 @@ describe("regions", () => {
   it("exports one entry per REGION_KEY", () => {
     expect(Object.keys(REGIONS).length).toBe(REGION_KEYS.length);
     for (const key of REGION_KEYS) {
-      expect(REGIONS[key]?.key).toBe(key);
+      expect(REGIONS[key].key).toBe(key);
     }
   });
 

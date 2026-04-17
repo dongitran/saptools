@@ -72,7 +72,7 @@ async function detectValidRegions(
 
   for (const region of getAllRegions()) {
     // Keep the sync test bounded by sampling a small real subset of regions the user can actually use.
-    // eslint-disable-next-line no-await-in-loop
+     
     const status = await probeRegion(region.apiEndpoint, email, password);
     if (status !== "accessible-with-orgs") {
       continue;

@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+
+set -e
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+root_patterns='^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json|tsconfig\.base\.json|eslint\.config\.js|\.husky/|\.github/workflows/)'
+should_run_root_checks=0
+ran_checks=0
+
+if echo "$staged_files" | grep -Eq "$root_patterns"; then
+  should_run_root_checks=1
+fi
+
+run_package_checks() {
+  package_name="$1"
+  package_path="$2"
+
+  if ! git ls-files --error-unmatch "$package_path/package.json" >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "pre-commit: lint/typecheck/test for $package_name"
+  pnpm --filter "$package_name" lint
+  pnpm --filter "$package_name" typecheck
+  pnpm --filter "$package_name" test:unit
+  ran_checks=1
+}
+
+if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/cf-sync/'; then
+  run_package_checks '@saptools/cf-sync' 'packages/cf-sync'
+fi
+
+if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/bruno/'; then
+  run_package_checks '@saptools/bruno' 'packages/bruno'
+fi
+
+if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/cf-xsuaa/'; then
+  run_package_checks '@saptools/cf-xsuaa' 'packages/cf-xsuaa'
+fi
+
+if [ "$ran_checks" -eq 0 ]; then
+  echo "pre-commit: no tracked package changes detected, skipping package checks"
+fi

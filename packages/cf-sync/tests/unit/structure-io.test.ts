@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import type * as NodeOs from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,7 +13,7 @@ beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), "saptools-test-"));
   vi.resetModules();
   vi.doMock("node:os", async () => {
-    const actual = await vi.importActual<typeof import("node:os")>("node:os");
+    const actual = await vi.importActual<typeof NodeOs>("node:os");
     return { ...actual, homedir: () => tempHome };
   });
 });

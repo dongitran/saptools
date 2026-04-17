@@ -18,7 +18,7 @@ async function cf(args: readonly string[]): Promise<string> {
   } catch (err) {
     const e = err as CfExecError;
     const msg = `cf ${args.join(" ")} failed: ${e.stderr ?? e.message}`;
-    throw new Error(msg);
+    throw new Error(msg, { cause: err });
   }
 }
 

@@ -62,7 +62,7 @@ async function collectOrg(org: string, ctx: LogCtx, regionKey: string): Promise<
     const spaceNames = await cfSpaces();
     const spaces: SpaceNode[] = [];
     for (const name of spaceNames) {
-      // eslint-disable-next-line no-await-in-loop
+       
       spaces.push(await collectSpace(name, ctx, regionKey, org));
     }
     return { name: org, spaces };
@@ -88,9 +88,21 @@ async function collectRegion(region: Region, email: string, password: string, ct
     };
   }
 
-  let orgNames: readonly string[] = [];
   try {
-    orgNames = await cfOrgs();
+    const orgNames = await cfOrgs();
+    log(ctx, `${region.key}: ${orgNames.length.toString()} org(s)`);
+    const orgs: OrgNode[] = [];
+    for (const orgName of orgNames) {
+      orgs.push(await collectOrg(orgName, ctx, region.key));
+    }
+
+    return {
+      key: region.key,
+      label: region.label,
+      apiEndpoint: region.apiEndpoint,
+      accessible: true,
+      orgs,
+    };
   } catch {
     return {
       key: region.key,
@@ -100,21 +112,6 @@ async function collectRegion(region: Region, email: string, password: string, ct
       orgs: [],
     };
   }
-
-  log(ctx, `${region.key}: ${orgNames.length.toString()} org(s)`);
-  const orgs: OrgNode[] = [];
-  for (const orgName of orgNames) {
-    // eslint-disable-next-line no-await-in-loop
-    orgs.push(await collectOrg(orgName, ctx, region.key));
-  }
-
-  return {
-    key: region.key,
-    label: region.label,
-    apiEndpoint: region.apiEndpoint,
-    accessible: true,
-    orgs,
-  };
 }
 
 export async function runSync(opts: SyncOptions): Promise<SyncResult> {
@@ -132,7 +129,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
 
   const regionNodes: RegionNode[] = [];
   for (const region of regions) {
-    // eslint-disable-next-line no-await-in-loop
+     
     const node = await collectRegion(region, opts.email, opts.password, ctx);
     regionNodes.push(node);
   }

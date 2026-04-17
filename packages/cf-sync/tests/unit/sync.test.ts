@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import type * as NodeOs from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,7 +11,7 @@ beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), "saptools-sync-test-"));
   vi.resetModules();
   vi.doMock("node:os", async () => {
-    const actual = await vi.importActual<typeof import("node:os")>("node:os");
+    const actual = await vi.importActual<typeof NodeOs>("node:os");
     return { ...actual, homedir: () => tempHome };
   });
 });
@@ -24,11 +25,11 @@ afterEach(async () => {
 describe("runSync", () => {
   it("walks region → org → space → app for each region", async () => {
     vi.doMock("../../src/cf.js", () => ({
-      cfApi: vi.fn().mockResolvedValue(undefined),
-      cfAuth: vi.fn().mockResolvedValue(undefined),
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["org-a"]),
-      cfTargetOrg: vi.fn().mockResolvedValue(undefined),
-      cfTargetSpace: vi.fn().mockResolvedValue(undefined),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn().mockResolvedValue(["dev"]),
       cfApps: vi.fn().mockResolvedValue(["app1", "app2"]),
     }));
@@ -50,7 +51,7 @@ describe("runSync", () => {
 
   it("marks region as inaccessible when auth fails", async () => {
     vi.doMock("../../src/cf.js", () => ({
-      cfApi: vi.fn().mockResolvedValue(undefined),
+      cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockRejectedValue(new Error("403")),
       cfOrgs: vi.fn(),
       cfTargetOrg: vi.fn(),
@@ -76,14 +77,14 @@ describe("runSync", () => {
     const cfTargetOrg = vi
       .fn()
       .mockImplementationOnce(() => Promise.reject(new Error("no-access")))
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(void 0);
 
     vi.doMock("../../src/cf.js", () => ({
-      cfApi: vi.fn().mockResolvedValue(undefined),
-      cfAuth: vi.fn().mockResolvedValue(undefined),
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["bad-org", "good-org"]),
       cfTargetOrg,
-      cfTargetSpace: vi.fn().mockResolvedValue(undefined),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn().mockResolvedValue(["dev"]),
       cfApps: vi.fn().mockResolvedValue(["app1"]),
     }));
@@ -105,13 +106,13 @@ describe("runSync", () => {
     const cfTargetSpace = vi
       .fn()
       .mockImplementationOnce(() => Promise.reject(new Error("no-space")))
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(void 0);
 
     vi.doMock("../../src/cf.js", () => ({
-      cfApi: vi.fn().mockResolvedValue(undefined),
-      cfAuth: vi.fn().mockResolvedValue(undefined),
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["org-a"]),
-      cfTargetOrg: vi.fn().mockResolvedValue(undefined),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
       cfTargetSpace,
       cfSpaces: vi.fn().mockResolvedValue(["bad-space", "good-space"]),
       cfApps: vi.fn().mockResolvedValue(["app"]),
@@ -132,8 +133,8 @@ describe("runSync", () => {
 
   it("writes structure to configured path", async () => {
     vi.doMock("../../src/cf.js", () => ({
-      cfApi: vi.fn().mockResolvedValue(undefined),
-      cfAuth: vi.fn().mockResolvedValue(undefined),
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue([]),
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
