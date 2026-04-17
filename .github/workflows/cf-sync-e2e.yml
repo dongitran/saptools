@@ -1,0 +1,85 @@
+name: cf-sync e2e
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cf-sync-e2e.yml"
+      - "packages/cf-sync/package.json"
+      - "packages/cf-sync/src/**"
+      - "packages/cf-sync/tests/**"
+      - "packages/cf-sync/playwright.config.ts"
+      - "packages/cf-sync/tsconfig.json"
+      - "packages/cf-sync/tsup.config.ts"
+      - "packages/cf-sync/vitest.config.ts"
+      - "pnpm-lock.yaml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cf-sync-e2e.yml"
+      - "packages/cf-sync/package.json"
+      - "packages/cf-sync/src/**"
+      - "packages/cf-sync/tests/**"
+      - "packages/cf-sync/playwright.config.ts"
+      - "packages/cf-sync/tsconfig.json"
+      - "packages/cf-sync/tsup.config.ts"
+      - "packages/cf-sync/vitest.config.ts"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cf-sync-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Run cf-sync E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    env:
+      SAP_EMAIL: ${{ secrets.SAP_EMAIL }}
+      SAP_PASSWORD: ${{ secrets.SAP_PASSWORD }}
+      CF_SYNC_E2E_ONLY: ${{ vars.CF_SYNC_E2E_ONLY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "$SAP_EMAIL" ] || [ -z "$SAP_PASSWORD" ]; then
+            echo "::error::Missing SAP_EMAIL or SAP_PASSWORD repository secret."
+            exit 1
+          fi
+
+      - name: Install Cloud Foundry CLI v8
+        run: |
+          wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo gpg --dearmor -o /usr/share/keyrings/cli.cloudfoundry.org.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cli.cloudfoundry.org.gpg] https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+          sudo apt-get update
+          sudo apt-get install -y cf8-cli
+          cf version
+
+      - name: Build cf-sync
+        run: pnpm --filter @saptools/cf-sync build
+
+      - name: Run cf-sync E2E
+        run: pnpm --filter @saptools/cf-sync test:e2e
