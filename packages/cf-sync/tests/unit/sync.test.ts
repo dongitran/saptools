@@ -18,6 +18,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.doUnmock("../../src/cf.js");
+  vi.doUnmock("node:fs/promises");
   vi.doUnmock("node:os");
   await rm(tempHome, { recursive: true, force: true });
 });
@@ -468,6 +469,111 @@ describe("runSync", () => {
       structure: {
         regions: [{ key: "ap10" }],
       },
+      accessibleRegions: ["ap10"],
+    });
+  });
+
+  it("falls back to a cached region when on-demand hydration throws unexpectedly", async () => {
+    vi.doMock("node:fs/promises", async () => {
+      const actual = await vi.importActual("node:fs/promises");
+      return {
+        ...actual,
+        mkdtemp: vi.fn().mockRejectedValue(new Error("no temp dir")),
+      };
+    });
+
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn(),
+      cfAuth: vi.fn(),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn(),
+      cfSpaces: vi.fn(),
+      cfApps: vi.fn(),
+    }));
+
+    const { writeStructure } = await import("../../src/structure.js");
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "eu10",
+          label: "stable",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [],
+        },
+      ],
+    });
+
+    const { getRegionView } = await import("../../src/sync.js");
+    await expect(
+      getRegionView({
+        regionKey: "eu10",
+        email: "e",
+        password: "p",
+      }),
+    ).resolves.toMatchObject({
+      source: "stable",
+      region: {
+        key: "eu10",
+      },
+    });
+  });
+
+  it("waits for a lock-held sync even when interactive output is enabled", async () => {
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn(),
+      cfAuth: vi.fn(),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn(),
+      cfSpaces: vi.fn(),
+      cfApps: vi.fn(),
+    }));
+
+    const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "interactive-lock",
+          status: "completed",
+          startedAt: "2026-04-18T00:00:00.000Z",
+          updatedAt: "2026-04-18T00:00:02.000Z",
+          finishedAt: "2026-04-18T00:00:02.000Z",
+          requestedRegionKeys: ["ap10"],
+          completedRegionKeys: ["ap10"],
+          structure: {
+            syncedAt: "2026-04-18T00:00:02.000Z",
+            regions: [
+              {
+                key: "ap10",
+                label: "ap10",
+                apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+                accessible: true,
+                orgs: [],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(cfSyncLockPath(), "locked\n", "utf8");
+
+    const { runSync } = await import("../../src/sync.js");
+    await expect(
+      runSync({
+        email: "e",
+        password: "p",
+        interactive: true,
+        onlyRegions: ["ap10"],
+      }),
+    ).resolves.toMatchObject({
       accessibleRegions: ["ap10"],
     });
   });

@@ -29,6 +29,12 @@ describe("structure file I/O", () => {
     expect(await readStructure()).toBeUndefined();
   });
 
+  it("returns undefined when no package-managed snapshots exist", async () => {
+    const { readStructureView, readRegionView } = await import("../../src/structure.js");
+    await expect(readStructureView()).resolves.toBeUndefined();
+    await expect(readRegionView("ap10")).resolves.toBeUndefined();
+  });
+
   it("writes and reads back a structure", async () => {
     const { readStructure, writeStructure } = await import("../../src/structure.js");
     const fixture: CfStructure = {
@@ -210,6 +216,53 @@ describe("structure file I/O", () => {
         status: "running",
         startedAt: "2026-04-18T00:00:00.000Z",
         updatedAt: "2026-04-18T00:00:03.000Z",
+        requestedRegionKeys: ["ap10", "eu10"],
+        completedRegionKeys: ["ap10"],
+        pendingRegionKeys: ["eu10"],
+      },
+    });
+  });
+
+  it("includes finished metadata for failed runtime state views", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const { readStructureView } = await import("../../src/structure.js");
+
+    const runtimeFixture: RuntimeSyncState = {
+      syncId: "sync-failed",
+      status: "failed",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:05.000Z",
+      finishedAt: "2026-04-18T00:00:05.000Z",
+      error: "sync blew up",
+      requestedRegionKeys: ["ap10", "eu10"],
+      completedRegionKeys: ["ap10"],
+      structure: {
+        syncedAt: "2026-04-18T00:00:05.000Z",
+        regions: [
+          {
+            key: "ap10",
+            label: "runtime",
+            apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+            accessible: true,
+            orgs: [],
+          },
+        ],
+      },
+    };
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeFixture, null, 2)}\n`, "utf8");
+
+    await expect(readStructureView()).resolves.toEqual({
+      source: "runtime",
+      structure: runtimeFixture.structure,
+      metadata: {
+        syncId: "sync-failed",
+        status: "failed",
+        startedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:05.000Z",
+        finishedAt: "2026-04-18T00:00:05.000Z",
+        error: "sync blew up",
         requestedRegionKeys: ["ap10", "eu10"],
         completedRegionKeys: ["ap10"],
         pendingRegionKeys: ["eu10"],
