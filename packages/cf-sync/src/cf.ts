@@ -11,9 +11,25 @@ export interface CfExecError extends Error {
   readonly code?: number | string;
 }
 
-async function cf(args: readonly string[]): Promise<string> {
+export interface CfExecContext {
+  readonly command?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+function resolveCfCommand(context?: CfExecContext): string {
+  return context?.command ?? process.env["CF_SYNC_CF_BIN"] ?? "cf";
+}
+
+function resolveCfEnv(context?: CfExecContext): NodeJS.ProcessEnv {
+  return context?.env ? { ...process.env, ...context.env } : process.env;
+}
+
+async function cf(args: readonly string[], context?: CfExecContext): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("cf", [...args], { maxBuffer: MAX_BUFFER });
+    const { stdout } = await execFileAsync(resolveCfCommand(context), [...args], {
+      env: resolveCfEnv(context),
+      maxBuffer: MAX_BUFFER,
+    });
     return stdout;
   } catch (err) {
     const e = err as CfExecError;
@@ -22,43 +38,47 @@ async function cf(args: readonly string[]): Promise<string> {
   }
 }
 
-export async function cfApi(apiEndpoint: string): Promise<void> {
-  await cf(["api", apiEndpoint]);
+export async function cfApi(apiEndpoint: string, context?: CfExecContext): Promise<void> {
+  await cf(["api", apiEndpoint], context);
 }
 
-export async function cfAuth(email: string, password: string): Promise<void> {
-  await cf(["auth", email, password]);
+export async function cfAuth(email: string, password: string, context?: CfExecContext): Promise<void> {
+  await cf(["auth", email, password], context);
 }
 
-export async function cfOrgs(): Promise<readonly string[]> {
-  const stdout = await cf(["orgs"]);
+export async function cfOrgs(context?: CfExecContext): Promise<readonly string[]> {
+  const stdout = await cf(["orgs"], context);
   return parseNameTable(stdout);
 }
 
-export async function cfTargetOrg(org: string): Promise<void> {
-  await cf(["target", "-o", org]);
+export async function cfTargetOrg(org: string, context?: CfExecContext): Promise<void> {
+  await cf(["target", "-o", org], context);
 }
 
-export async function cfTargetSpace(org: string, space: string): Promise<void> {
-  await cf(["target", "-o", org, "-s", space]);
+export async function cfTargetSpace(
+  org: string,
+  space: string,
+  context?: CfExecContext,
+): Promise<void> {
+  await cf(["target", "-o", org, "-s", space], context);
 }
 
-export async function cfSpaces(): Promise<readonly string[]> {
-  const stdout = await cf(["spaces"]);
+export async function cfSpaces(context?: CfExecContext): Promise<readonly string[]> {
+  const stdout = await cf(["spaces"], context);
   return parseNameTable(stdout);
 }
 
-export async function cfApps(): Promise<readonly string[]> {
-  const stdout = await cf(["apps"]);
+export async function cfApps(context?: CfExecContext): Promise<readonly string[]> {
+  const stdout = await cf(["apps"], context);
   return parseAppNames(stdout);
 }
 
-export async function cfEnv(appName: string): Promise<string> {
-  return await cf(["env", appName]);
+export async function cfEnv(appName: string, context?: CfExecContext): Promise<string> {
+  return await cf(["env", appName], context);
 }
 
-export async function cfCurl(path: string): Promise<string> {
-  return await cf(["curl", path]);
+export async function cfCurl(path: string, context?: CfExecContext): Promise<string> {
+  return await cf(["curl", path], context);
 }
 
 export function parseNameTable(stdout: string): readonly string[] {

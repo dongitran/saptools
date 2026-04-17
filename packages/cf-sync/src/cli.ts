@@ -3,7 +3,8 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { cfStructurePath } from "./paths.js";
-import { runSync } from "./sync.js";
+import { readStructureView } from "./structure.js";
+import { getRegionView, runSync } from "./sync.js";
 import { REGION_KEYS } from "./types.js";
 
 function requireEnv(name: string): string {
@@ -63,6 +64,35 @@ export async function main(argv: readonly string[]): Promise<void> {
         );
       },
     );
+
+  program
+    .command("read")
+    .description("Print the current package-managed structure view as JSON")
+    .action(async (): Promise<void> => {
+      const view = await readStructureView();
+      process.stdout.write(`${JSON.stringify(view ?? null, null, 2)}\n`);
+    });
+
+  program
+    .command("region")
+    .description("Print one region as JSON, refreshing on demand when possible")
+    .argument("<key>", "Region key")
+    .option("--no-refresh", "Do not fetch the region if it is not already cached")
+    .action(async (key: string, opts: { refresh?: boolean }): Promise<void> => {
+      if (!(REGION_KEYS as readonly string[]).includes(key)) {
+        throw new Error(`Unknown region key: ${key}`);
+      }
+
+      const regionOptions = {
+        regionKey: key as (typeof REGION_KEYS)[number],
+        refreshIfMissing: opts.refresh !== false,
+        ...(process.env["SAP_EMAIL"] ? { email: process.env["SAP_EMAIL"] } : {}),
+        ...(process.env["SAP_PASSWORD"] ? { password: process.env["SAP_PASSWORD"] } : {}),
+      };
+
+      const view = await getRegionView(regionOptions);
+      process.stdout.write(`${JSON.stringify(view ?? null, null, 2)}\n`);
+    });
 
   await program.parseAsync([...argv]);
 }

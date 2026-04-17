@@ -9,7 +9,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](https://github.com/dongitran/saptools)
 
-`@saptools/cf-sync` authenticates against SAP BTP Cloud Foundry, walks **region → org → space → app**, and writes the result to `~/.saptools/cf-structure.json`.
+`@saptools/cf-sync` authenticates against SAP BTP Cloud Foundry, walks **region → org → space → app**, and exposes the result through both package APIs and package-managed snapshots.
 
 Built for automation, local tooling, and other `@saptools/*` packages that need a reliable view of your CF topology.
 
@@ -24,17 +24,20 @@ Cloud Foundry structure is easy to inspect manually, but painful to reuse in scr
 - 🧭 discover which CF regions are accessible with your account
 - 🏢 enumerate orgs, spaces, and deployed apps
 - 💾 persist the result as a stable JSON file for later use
-- 🔌 feed other tools in the `saptools` monorepo without re-querying CF every time
+- 🔌 let other tools call the package for reads instead of parsing JSON files themselves
+- ⚡ serve targeted region reads even while a long sync is still running
 
 ---
 
 ## 🚀 Highlights
 
 - 🌍 **Cross-region sync** with a curated SAP BTP CF region catalog
-- 🧱 **Structured output** written to `~/.saptools/cf-structure.json`
+- 🧱 **Stable snapshot** written to `~/.saptools/cf-structure.json`
+- 🪄 **Package-managed runtime state** for partial reads during an active sync
 - 🛠️ **CLI and library API** in one package
 - 🔎 **Focused sync** with `--only` when you want a smaller region subset
 - 🧯 **Resilient traversal** that records inaccessible regions instead of crashing the whole run
+- 🚦 **Concurrent-safe reads** with isolated `CF_HOME` sessions for background syncs and on-demand region fetches
 - 🤖 **Automation-friendly** for CI jobs, local scripts, and dependent packages
 
 ---
@@ -93,6 +96,18 @@ Limit the run to specific regions:
 cf-sync sync --only ap10,ap11
 ```
 
+Read the best available package-managed structure view:
+
+```bash
+cf-sync read
+```
+
+Read one region, fetching it immediately if it is not already cached and credentials are available:
+
+```bash
+cf-sync region eu10
+```
+
 Typical success output:
 
 ```text
@@ -105,11 +120,15 @@ Typical success output:
 
 ## 🧾 Output
 
-The package writes JSON to:
+The package keeps two package-managed snapshots:
 
 ```text
 ~/.saptools/cf-structure.json
+~/.saptools/cf-sync-state.json
 ```
+
+- `cf-structure.json` is the last successful full sync
+- `cf-sync-state.json` is the active runtime state used internally for partial reads and sync metadata
 
 Shape:
 
@@ -138,7 +157,7 @@ Shape:
 }
 ```
 
-This makes the file easy to consume from scripts, local dashboards, or follow-up SAP tooling.
+Services should prefer the package APIs and CLI read commands instead of parsing these files directly.
 
 ---
 
@@ -162,6 +181,26 @@ cf-sync sync --no-interactive
 cf-sync sync --only eu10,eu20,us10
 ```
 
+### `cf-sync read`
+
+Print the current package-managed structure view as JSON.
+
+When a sync is running, this returns the runtime view with metadata such as completed and pending regions. When no runtime state exists, it falls back to the stable snapshot.
+
+### `cf-sync region <key>`
+
+Print a single region as JSON.
+
+Behavior:
+
+- returns the region immediately from runtime state when already available
+- falls back to the stable snapshot when no refresh is possible
+- fetches the region immediately when it is missing and credentials are available
+
+Options:
+
+- `--no-refresh` read only from cached package-managed state
+
 ---
 
 ## 🧠 Programmatic Usage
@@ -169,7 +208,13 @@ cf-sync sync --only eu10,eu20,us10
 Use the package directly from Node.js:
 
 ```ts
-import { runSync, readStructure, findRegion } from "@saptools/cf-sync";
+import {
+  findRegion,
+  getRegionView,
+  readStructure,
+  readStructureView,
+  runSync,
+} from "@saptools/cf-sync";
 
 const result = await runSync({
   email: process.env["SAP_EMAIL"] ?? "",
@@ -185,12 +230,26 @@ if (structure) {
   const ap10 = findRegion(structure, "ap10");
   console.log(ap10?.orgs.length ?? 0);
 }
+
+const view = await readStructureView();
+console.log(view?.metadata?.status);
+
+const eu10 = await getRegionView({
+  regionKey: "eu10",
+  email: process.env["SAP_EMAIL"],
+  password: process.env["SAP_PASSWORD"],
+});
+console.log(eu10?.source);
 ```
 
 Exports include:
 
 - `runSync`
 - `readStructure`
+- `readStructureView`
+- `readRegionView`
+- `getRegionView`
+- `readRuntimeState`
 - `writeStructure`
 - `findRegion`
 - `findOrg`
@@ -207,6 +266,8 @@ The sync is intentionally tolerant:
 - if a region cannot be authenticated, it is marked `accessible: false`
 - if an org or space cannot be targeted, that branch is skipped and the run continues
 - if the output directory does not exist, it is created automatically
+- if another full sync is already running in the same package state directory, the next caller reuses that in-flight result instead of starting a duplicate global scan
+- if a specific region is requested while the full sync is still busy elsewhere, the package can hydrate that region immediately without sharing the same mutable `cf` CLI session
 
 That gives you a useful partial snapshot instead of an all-or-nothing failure for routine CF access issues.
 

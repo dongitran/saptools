@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-sync",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Sync SAP BTP Cloud Foundry structure (region/org/space/app) to a local JSON file",
   "type": "module",
   "publishConfig": {
@@ -27,7 +27,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
     "test:unit": "vitest run --coverage",
     "test:e2e": "playwright test"
   },

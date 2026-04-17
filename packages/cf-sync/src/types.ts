@@ -76,3 +76,41 @@ export interface CfStructure {
   readonly syncedAt: string;
   readonly regions: readonly RegionNode[];
 }
+
+export type SyncStatus = "running" | "completed" | "failed";
+
+export interface SyncMetadata {
+  readonly syncId: string;
+  readonly status: SyncStatus;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly requestedRegionKeys: readonly RegionKey[];
+  readonly completedRegionKeys: readonly RegionKey[];
+  readonly pendingRegionKeys: readonly RegionKey[];
+  readonly finishedAt?: string;
+  readonly error?: string;
+}
+
+export interface RuntimeSyncState {
+  readonly syncId: string;
+  readonly status: SyncStatus;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly requestedRegionKeys: readonly RegionKey[];
+  readonly completedRegionKeys: readonly RegionKey[];
+  readonly finishedAt?: string;
+  readonly error?: string;
+  readonly structure: CfStructure;
+}
+
+export interface StructureView {
+  readonly source: "runtime" | "stable";
+  readonly structure: CfStructure;
+  readonly metadata: SyncMetadata | undefined;
+}
+
+export interface RegionView {
+  readonly source: "runtime" | "stable" | "fresh";
+  readonly region: RegionNode;
+  readonly metadata: SyncMetadata | undefined;
+}
