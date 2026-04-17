@@ -1,0 +1,67 @@
+{
+  "name": "saptools",
+  "version": "0.4.3",
+  "description": "Extract SAP HANA credentials from Cloud Foundry environments for SQL tools",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "saptools": "dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js dist/runner.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "spell": "cspell \"src/**/*.ts\"",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "e2e": "vitest run --config vitest.e2e.config.ts",
+    "check": "npm run typecheck && npm run lint && npm run spell && npm run test"
+  },
+  "keywords": [
+    "sap",
+    "hana",
+    "cloud-foundry",
+    "btp",
+    "cli",
+    "credentials",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git"
+  },
+  "homepage": "https://github.com/dongitran/saptools#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.5.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "@vitest/coverage-v8": "^4.1.2",
+    "cspell": "^9.7.0",
+    "eslint": "^10.1.0",
+    "jiti": "^2.6.1",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.2"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.3.2",
+    "ora": "^9.3.0"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.env
+
+# Output files containing real HANA credentials — never commit
+hana-credentials.json
+
+# VSCode settings may contain injected HANA passwords from saptools
+.vscode/settings.json
+
