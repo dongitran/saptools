@@ -26,7 +26,7 @@
 - ⚡ **Local cache** — orgs and apps are cached locally; subsequent runs are near-instant even with 30+ apps
 - 🔄 **Background sync** — run a `launchd` daemon to keep cache fresh every 15 minutes
 - 🎯 **SQLTools-ready** — auto-updates `.vscode/settings.json` with `sqltools.connections`
-- 🌏 **Multi-region** — supports Singapore (AP11) and Brazil São Paulo (BR10) out of the box
+- 🌏 **Multi-region** — supports common SAP BTP CF regions across AWS/Azure/GCP/SAP infrastructure (including CA20)
 - 🖥️ **Spinner UX** — real-time `ora` progress for every step, no silent waiting
 
 ---
