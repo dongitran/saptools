@@ -25,6 +25,7 @@ vi.mock("../cache.js", () => ({
 import { syncRegion, syncAll } from "../sync.js";
 import * as cf from "../cf.js";
 import * as cache from "../cache.js";
+import { getAllRegions } from "../regions.js";
 
 const EMAIL = "test@example.com";
 const PASSWORD = "secret";
@@ -112,21 +113,24 @@ describe("syncAll", () => {
     vi.clearAllMocks();
   });
 
-  it("syncs both ap11 and br10 regions", async () => {
+  it("syncs all configured regions", async () => {
     await syncAll(EMAIL, PASSWORD);
 
+    const expectedEndpoints = getAllRegions().map((region) => region.apiEndpoint);
     const apiCalls = vi.mocked(cf.cfApi).mock.calls.map((c) => c[0]);
 
-    expect(apiCalls).toContain("https://api.cf.ap11.hana.ondemand.com");
-    expect(apiCalls).toContain("https://api.cf.br10.hana.ondemand.com");
+    expect(apiCalls).toHaveLength(expectedEndpoints.length);
+    for (const endpoint of expectedEndpoints) {
+      expect(apiCalls).toContain(endpoint);
+    }
   });
 
   it("continues when one region fails entirely", async () => {
     vi.mocked(cf.cfApi).mockRejectedValueOnce(new Error("region down"));
 
     await expect(syncAll(EMAIL, PASSWORD)).resolves.toBeUndefined();
-    // Second region should still be attempted
-    expect(cf.cfApi).toHaveBeenCalledTimes(2);
+    // Remaining regions should still be attempted
+    expect(cf.cfApi).toHaveBeenCalledTimes(getAllRegions().length);
   });
 
   it("accepts verbose option without throwing", async () => {

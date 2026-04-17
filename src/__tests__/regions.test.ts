@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { REGION_KEYS } from "../types.js";
 import { getRegion, getAllRegions } from "../regions.js";
 
 describe("getRegion", () => {
@@ -17,15 +18,25 @@ describe("getRegion", () => {
     expect(region.apiEndpoint).toBe("https://api.cf.br10.hana.ondemand.com");
     expect(region.label).toContain("Brazil");
   });
+
+  it("returns ca20 region with correct API endpoint", () => {
+    const region = getRegion("ca20");
+
+    expect(region.key).toBe("ca20");
+    expect(region.apiEndpoint).toBe("https://api.cf.ca20.hana.ondemand.com");
+    expect(region.label).toContain("Canada");
+  });
 });
 
 describe("getAllRegions", () => {
   it("returns all supported regions", () => {
     const regions = getAllRegions();
+    const keys = regions.map((r) => r.key);
 
-    expect(regions).toHaveLength(2);
-    expect(regions.map((r) => r.key)).toContain("ap11");
-    expect(regions.map((r) => r.key)).toContain("br10");
+    expect(regions).toHaveLength(REGION_KEYS.length);
+    for (const key of REGION_KEYS) {
+      expect(keys).toContain(key);
+    }
   });
 
   it("every region has a non-empty label and endpoint", () => {
