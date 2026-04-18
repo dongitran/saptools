@@ -76,6 +76,25 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@25.6.0)(yaml@2.8.3)
 
+  packages/cf-debugger:
+    dependencies:
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.59.1
+      '@vitest/coverage-v8':
+        specifier: ^3.0.0
+        version: 3.2.4(vitest@3.2.4(@types/node@25.6.0)(yaml@2.8.3))
+      tsup:
+        specifier: ^8.3.0
+        version: 8.5.1(postcss@8.5.10)(typescript@5.9.3)(yaml@2.8.3)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.6.0)(yaml@2.8.3)
+
   packages/cf-sync:
     dependencies:
       commander:

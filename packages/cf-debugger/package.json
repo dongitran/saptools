@@ -1,0 +1,65 @@
+{
+  "name": "@saptools/cf-debugger",
+  "version": "0.1.1",
+  "description": "Open an SSH debug tunnel to a SAP BTP Cloud Foundry app's Node.js inspector — from any terminal, no IDE required.",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "cf-debugger": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test"
+  },
+  "keywords": [
+    "sap",
+    "cloud-foundry",
+    "btp",
+    "debug",
+    "debugger",
+    "ssh-tunnel",
+    "node-inspector",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-debugger"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-debugger#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
