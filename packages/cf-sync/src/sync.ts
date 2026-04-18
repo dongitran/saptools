@@ -250,6 +250,10 @@ async function collectRegionWithIsolatedSession(
 async function readSettledSyncResult(): Promise<SyncResult> {
   const settledState = await waitForRuntimeStateToSettle();
   if (settledState) {
+    if (settledState.status === "failed") {
+      const reason = settledState.error ? `: ${settledState.error}` : "";
+      throw new Error(`The active CF sync failed${reason}`);
+    }
     return buildResult(settledState.structure);
   }
 

@@ -473,6 +473,53 @@ describe("runSync", () => {
     });
   });
 
+  it("fails when a lock-held sync has already settled into a failed runtime state", async () => {
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn(),
+      cfAuth: vi.fn(),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn(),
+      cfSpaces: vi.fn(),
+      cfApps: vi.fn(),
+    }));
+
+    const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "external-failed-sync",
+          status: "failed",
+          startedAt: "2026-04-18T00:00:00.000Z",
+          updatedAt: "2026-04-18T00:00:02.000Z",
+          finishedAt: "2026-04-18T00:00:02.000Z",
+          error: "sync blew up",
+          requestedRegionKeys: ["ap10"],
+          completedRegionKeys: [],
+          structure: {
+            syncedAt: "2026-04-18T00:00:02.000Z",
+            regions: [],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(cfSyncLockPath(), "locked\n", "utf8");
+
+    const { runSync } = await import("../../src/sync.js");
+    await expect(
+      runSync({
+        email: "e",
+        password: "p",
+        onlyRegions: ["ap10"],
+      }),
+    ).rejects.toThrow("The active CF sync failed: sync blew up");
+  });
+
   it("falls back to a cached region when on-demand hydration throws unexpectedly", async () => {
     vi.doMock("node:fs/promises", async () => {
       const actual = await vi.importActual("node:fs/promises");
