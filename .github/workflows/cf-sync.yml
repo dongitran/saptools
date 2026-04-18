@@ -14,6 +14,7 @@ on:
     paths:
       - ".github/workflows/cf-sync.yml"
       - "packages/cf-sync/package.json"
+      - "packages/cf-sync/README.md"
       - "packages/cf-sync/src/**"
       - "packages/cf-sync/tests/**"
       - "packages/cf-sync/playwright.config.ts"
@@ -26,6 +27,7 @@ on:
     paths:
       - ".github/workflows/cf-sync.yml"
       - "packages/cf-sync/package.json"
+      - "packages/cf-sync/README.md"
       - "packages/cf-sync/src/**"
       - "packages/cf-sync/tests/**"
       - "packages/cf-sync/playwright.config.ts"
