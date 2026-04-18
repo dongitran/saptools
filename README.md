@@ -17,15 +17,14 @@ Utilities in this repository are designed to make SAP BTP Cloud Foundry workflow
 
 ## ✨ What This Repo Contains
 
-This repository is now organized as a monorepo under [`packages/`](./packages).
+This repository is organized as a monorepo under [`packages/`](./packages).
 
-Current tracked package:
+| Package | Purpose | npm |
+| --- | --- | --- |
+| [`@saptools/cf-sync`](./packages/cf-sync) | Sync **region → org → space → app** from SAP BTP CF into `~/.saptools/cf-structure.json` | [![npm](https://img.shields.io/npm/v/@saptools/cf-sync.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-sync) |
+| [`@saptools/cf-xsuaa`](./packages/cf-xsuaa) | Fetch XSUAA credentials and cached OAuth2 tokens for any CF app | [![npm](https://img.shields.io/npm/v/@saptools/cf-xsuaa.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-xsuaa) |
 
-- [`@saptools/cf-sync`](./packages/cf-sync) syncs **region → org → space → app** from SAP BTP Cloud Foundry into `~/.saptools/cf-structure.json`
-
-Archived code snapshot:
-
-- [`_backup/`](./_backup) keeps the previous single-package implementation for reference during the migration
+Archived code snapshot: [`_backup/`](./_backup) keeps the previous single-package implementation for reference during the migration.
 
 ---
 
@@ -33,16 +32,24 @@ Archived code snapshot:
 
 ### ☁️ `@saptools/cf-sync`
 
-`@saptools/cf-sync` is the first package being moved into the monorepo. It provides:
+Reads the CF topology once, so every downstream tool can skip the `cf target` dance.
 
 - 🌍 SAP BTP CF region discovery
 - 🏢 org / space / app traversal
 - 💾 structured JSON output for local tooling
 - 🛠️ both a CLI and a reusable TypeScript API
 
-Package docs live here:
+Docs → [`packages/cf-sync/README.md`](./packages/cf-sync/README.md)
 
-- [`packages/cf-sync/README.md`](./packages/cf-sync/README.md)
+### 🔐 `@saptools/cf-xsuaa`
+
+Builds on `cf-sync` to turn an app reference into a usable bearer token.
+
+- 🔑 zero-config OAuth2 `client_credentials` from the app's XSUAA binding
+- 💾 disk-cached tokens with a 45 s expiry buffer
+- 🧩 CLI (`cf-xsuaa get-token-cached ...`) and ergonomic Node API
+
+Docs → [`packages/cf-xsuaa/README.md`](./packages/cf-xsuaa/README.md)
 
 ---
 
@@ -78,7 +85,8 @@ pnpm --filter @saptools/cf-sync test:unit
 ```text
 .
 ├── packages/
-│   └── cf-sync/
+│   ├── cf-sync/
+│   └── cf-xsuaa/
 ├── _backup/
 ├── package.json
 ├── pnpm-workspace.yaml
