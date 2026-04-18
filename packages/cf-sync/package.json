@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-sync",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Sync SAP BTP Cloud Foundry structure (region/org/space/app) to a local JSON file",
   "type": "module",
   "publishConfig": {
