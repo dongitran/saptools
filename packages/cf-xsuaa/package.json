@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-xsuaa",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps",
   "type": "module",
   "publishConfig": {
@@ -41,6 +41,15 @@
   ],
   "author": "Dong Tran",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-xsuaa"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-xsuaa#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
   "dependencies": {
     "@saptools/cf-sync": "workspace:*",
     "commander": "^13.0.0"

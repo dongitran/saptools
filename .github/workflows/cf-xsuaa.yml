@@ -63,14 +63,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace deps and cf-xsuaa
+        run: pnpm --filter @saptools/cf-xsuaa... build
+
       - name: Lint
         run: pnpm --filter @saptools/cf-xsuaa lint
 
       - name: Typecheck
         run: pnpm --filter @saptools/cf-xsuaa typecheck
-
-      - name: Build
-        run: pnpm --filter @saptools/cf-xsuaa build
 
       - name: Run unit tests
         run: pnpm --filter @saptools/cf-xsuaa test:unit
