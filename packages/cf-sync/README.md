@@ -57,11 +57,24 @@ Options:
 
 Print the best available package-managed structure as JSON.
 
+Use this when you want the current best-known full snapshot right away, without caring whether it comes from an active sync or the last completed one.
+
 - returns runtime state while a sync is running
 - falls back to the last stable snapshot when no runtime state exists
 
 ```bash
 cf-sync read
+```
+
+### `cf-sync regions`
+
+Print the best available region list as JSON.
+
+- returns the default SAP CF catalog while a sync is still running
+- returns only synced regions with orgs after a successful sync is available
+
+```bash
+cf-sync regions
 ```
 
 ### `cf-sync region <key>`
@@ -101,6 +114,7 @@ Services should prefer the CLI read commands or exported APIs instead of opening
 import {
   findRegion,
   getRegionView,
+  readRegionsView,
   readStructure,
   readStructureView,
   runSync,
@@ -122,6 +136,9 @@ console.log(ap10?.orgs.length ?? 0);
 const view = await readStructureView();
 console.log(view?.metadata?.status);
 
+const regions = await readRegionsView();
+console.log(regions.regions.map((region) => region.key));
+
 const eu10 = await getRegionView({
   regionKey: "eu10",
   email: process.env["SAP_EMAIL"],
@@ -135,6 +152,7 @@ Useful exports include:
 - `runSync`
 - `readStructure`
 - `readStructureView`
+- `readRegionsView`
 - `readRegionView`
 - `getRegionView`
 - `findRegion`

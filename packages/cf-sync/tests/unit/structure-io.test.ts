@@ -30,7 +30,14 @@ describe("structure file I/O", () => {
   });
 
   it("returns undefined when no package-managed snapshots exist", async () => {
-    const { readStructureView, readRegionView } = await import("../../src/structure.js");
+    const { readRegionsView, readStructureView, readRegionView } = await import("../../src/structure.js");
+    const { getAllRegions } = await import("../../src/regions.js");
+
+    await expect(readRegionsView()).resolves.toEqual({
+      source: "catalog",
+      regions: getAllRegions(),
+      metadata: undefined,
+    });
     await expect(readStructureView()).resolves.toBeUndefined();
     await expect(readRegionView("ap10")).resolves.toBeUndefined();
   });
@@ -144,6 +151,191 @@ describe("structure file I/O", () => {
         requestedRegionKeys: ["ap10", "eu10"],
         completedRegionKeys: ["ap10"],
         pendingRegionKeys: ["eu10"],
+      },
+    });
+  });
+
+  it("returns the catalog while sync is running even if a stable snapshot already exists", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const { getAllRegions } = await import("../../src/regions.js");
+    const { writeStructure, readRegionsView } = await import("../../src/structure.js");
+
+    await writeStructure({
+      syncedAt: "2026-04-17T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-ap10", spaces: [] }],
+        },
+      ],
+    });
+
+    const runtimeFixture: RuntimeSyncState = {
+      syncId: "sync-running",
+      status: "running",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:04.000Z",
+      requestedRegionKeys: ["ap10", "eu10"],
+      completedRegionKeys: ["ap10"],
+      structure: {
+        syncedAt: "2026-04-18T00:00:04.000Z",
+        regions: [
+          {
+            key: "ap10",
+            label: "runtime",
+            apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+            accessible: true,
+            orgs: [{ name: "org-ap10", spaces: [] }],
+          },
+        ],
+      },
+    };
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeFixture, null, 2)}\n`, "utf8");
+
+    await expect(readRegionsView()).resolves.toEqual({
+      source: "catalog",
+      regions: getAllRegions(),
+      metadata: {
+        syncId: "sync-running",
+        status: "running",
+        startedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:04.000Z",
+        requestedRegionKeys: ["ap10", "eu10"],
+        completedRegionKeys: ["ap10"],
+        pendingRegionKeys: ["eu10"],
+      },
+    });
+  });
+
+  it("returns only stable regions that contain orgs after sync has completed", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const { readRegionsView, writeStructure } = await import("../../src/structure.js");
+
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:10.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "with-orgs",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-ap10", spaces: [] }],
+        },
+        {
+          key: "ap11",
+          label: "empty",
+          apiEndpoint: "https://api.cf.ap11.hana.ondemand.com",
+          accessible: true,
+          orgs: [],
+        },
+        {
+          key: "eu10",
+          label: "inaccessible",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: false,
+          orgs: [],
+        },
+      ],
+    });
+
+    const runtimeFixture: RuntimeSyncState = {
+      syncId: "sync-completed",
+      status: "completed",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:10.000Z",
+      finishedAt: "2026-04-18T00:00:10.000Z",
+      requestedRegionKeys: ["ap10", "ap11", "eu10"],
+      completedRegionKeys: ["ap10", "ap11", "eu10"],
+      structure: {
+        syncedAt: "2026-04-18T00:00:10.000Z",
+        regions: [],
+      },
+    };
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeFixture, null, 2)}\n`, "utf8");
+
+    await expect(readRegionsView()).resolves.toEqual({
+      source: "stable",
+      regions: [
+        {
+          key: "ap10",
+          label: "with-orgs",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        },
+      ],
+      metadata: {
+        syncId: "sync-completed",
+        status: "completed",
+        startedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:10.000Z",
+        finishedAt: "2026-04-18T00:00:10.000Z",
+        requestedRegionKeys: ["ap10", "ap11", "eu10"],
+        completedRegionKeys: ["ap10", "ap11", "eu10"],
+        pendingRegionKeys: [],
+      },
+    });
+  });
+
+  it("returns completed runtime regions with orgs even before the stable snapshot is readable", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const { readRegionsView } = await import("../../src/structure.js");
+
+    const runtimeFixture: RuntimeSyncState = {
+      syncId: "sync-completed-runtime-only",
+      status: "completed",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:10.000Z",
+      finishedAt: "2026-04-18T00:00:10.000Z",
+      requestedRegionKeys: ["ap10", "ap11"],
+      completedRegionKeys: ["ap10", "ap11"],
+      structure: {
+        syncedAt: "2026-04-18T00:00:10.000Z",
+        regions: [
+          {
+            key: "ap10",
+            label: "runtime-with-orgs",
+            apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+            accessible: true,
+            orgs: [{ name: "org-ap10", spaces: [] }],
+          },
+          {
+            key: "ap11",
+            label: "runtime-empty",
+            apiEndpoint: "https://api.cf.ap11.hana.ondemand.com",
+            accessible: true,
+            orgs: [],
+          },
+        ],
+      },
+    };
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeFixture, null, 2)}\n`, "utf8");
+
+    await expect(readRegionsView()).resolves.toEqual({
+      source: "stable",
+      regions: [
+        {
+          key: "ap10",
+          label: "runtime-with-orgs",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        },
+      ],
+      metadata: {
+        syncId: "sync-completed-runtime-only",
+        status: "completed",
+        startedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:10.000Z",
+        finishedAt: "2026-04-18T00:00:10.000Z",
+        requestedRegionKeys: ["ap10", "ap11"],
+        completedRegionKeys: ["ap10", "ap11"],
+        pendingRegionKeys: [],
       },
     });
   });
@@ -266,6 +458,119 @@ describe("structure file I/O", () => {
         requestedRegionKeys: ["ap10", "eu10"],
         completedRegionKeys: ["ap10"],
         pendingRegionKeys: ["eu10"],
+      },
+    });
+  });
+
+  it("falls back to the last stable with-org region list when runtime metadata is failed", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const { readRegionsView, writeStructure } = await import("../../src/structure.js");
+
+    await writeStructure({
+      syncedAt: "2026-04-17T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-ap10", spaces: [] }],
+        },
+        {
+          key: "ap11",
+          label: "stable-empty",
+          apiEndpoint: "https://api.cf.ap11.hana.ondemand.com",
+          accessible: true,
+          orgs: [],
+        },
+      ],
+    });
+
+    const runtimeFixture: RuntimeSyncState = {
+      syncId: "sync-failed-regions",
+      status: "failed",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:05.000Z",
+      finishedAt: "2026-04-18T00:00:05.000Z",
+      error: "sync blew up",
+      requestedRegionKeys: ["ap10", "ap11"],
+      completedRegionKeys: ["ap10"],
+      structure: {
+        syncedAt: "2026-04-18T00:00:05.000Z",
+        regions: [
+          {
+            key: "ap10",
+            label: "runtime",
+            apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+            accessible: true,
+            orgs: [{ name: "org-ap10", spaces: [] }],
+          },
+        ],
+      },
+    };
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeFixture, null, 2)}\n`, "utf8");
+
+    await expect(readRegionsView()).resolves.toEqual({
+      source: "stable",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        },
+      ],
+      metadata: {
+        syncId: "sync-failed-regions",
+        status: "failed",
+        startedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:05.000Z",
+        finishedAt: "2026-04-18T00:00:05.000Z",
+        error: "sync blew up",
+        requestedRegionKeys: ["ap10", "ap11"],
+        completedRegionKeys: ["ap10"],
+        pendingRegionKeys: ["ap11"],
+      },
+    });
+  });
+
+  it("returns the catalog when only failed runtime metadata exists", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const { getAllRegions } = await import("../../src/regions.js");
+    const { readRegionsView } = await import("../../src/structure.js");
+
+    const runtimeFixture: RuntimeSyncState = {
+      syncId: "sync-failed-only",
+      status: "failed",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:05.000Z",
+      finishedAt: "2026-04-18T00:00:05.000Z",
+      error: "sync blew up",
+      requestedRegionKeys: ["ap10"],
+      completedRegionKeys: [],
+      structure: {
+        syncedAt: "2026-04-18T00:00:05.000Z",
+        regions: [],
+      },
+    };
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeFixture, null, 2)}\n`, "utf8");
+
+    await expect(readRegionsView()).resolves.toEqual({
+      source: "catalog",
+      regions: getAllRegions(),
+      metadata: {
+        syncId: "sync-failed-only",
+        status: "failed",
+        startedAt: "2026-04-18T00:00:00.000Z",
+        updatedAt: "2026-04-18T00:00:05.000Z",
+        finishedAt: "2026-04-18T00:00:05.000Z",
+        error: "sync blew up",
+        requestedRegionKeys: ["ap10"],
+        completedRegionKeys: [],
+        pendingRegionKeys: ["ap10"],
       },
     });
   });

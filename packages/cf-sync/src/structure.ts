@@ -9,12 +9,15 @@ import {
   cfStructurePath,
   cfSyncLockPath,
 } from "./paths.js";
+import { getAllRegions } from "./regions.js";
 import type {
   CfStructure,
   OrgNode,
+  Region,
   RegionKey,
   RegionNode,
   RegionView,
+  RegionsView,
   RuntimeSyncState,
   SpaceNode,
   StructureView,
@@ -160,6 +163,30 @@ function regionViewFromState(
   };
 }
 
+function toRegionDefinition(region: Pick<RegionNode, "key" | "label" | "apiEndpoint">): Region {
+  return {
+    key: region.key,
+    label: region.label,
+    apiEndpoint: region.apiEndpoint,
+  };
+}
+
+function getStableRegionsWithOrgs(structure: CfStructure): readonly Region[] {
+  return structure.regions.filter((region) => region.orgs.length > 0).map(toRegionDefinition);
+}
+
+function buildRegionsView(
+  source: "catalog" | "stable",
+  regions: readonly Region[],
+  runtimeState: RuntimeSyncState | undefined,
+): RegionsView {
+  return {
+    source,
+    regions,
+    metadata: runtimeState ? toSyncMetadata(runtimeState) : undefined,
+  };
+}
+
 export async function readStructure(): Promise<CfStructure | undefined> {
   return await readJsonFile<CfStructure>(cfStructurePath());
 }
@@ -285,6 +312,23 @@ export async function readStructureView(): Promise<StructureView | undefined> {
     structure,
     metadata: undefined,
   };
+}
+
+export async function readRegionsView(): Promise<RegionsView> {
+  const runtimeState = await readRuntimeState();
+  if (runtimeState?.status === "running") {
+    return buildRegionsView("catalog", getAllRegions(), runtimeState);
+  }
+
+  const stableStructure = await readStructure();
+  const accountStructure =
+    stableStructure ?? (runtimeState?.status === "completed" ? runtimeState.structure : undefined);
+
+  if (accountStructure) {
+    return buildRegionsView("stable", getStableRegionsWithOrgs(accountStructure), runtimeState);
+  }
+
+  return buildRegionsView("catalog", getAllRegions(), runtimeState);
 }
 
 export async function readRegionView(key: RegionKey): Promise<RegionView | undefined> {

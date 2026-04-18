@@ -3,7 +3,7 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { cfStructurePath } from "./paths.js";
-import { readStructureView } from "./structure.js";
+import { readRegionsView, readStructureView } from "./structure.js";
 import { getRegionView, runSync } from "./sync.js";
 import { REGION_KEYS } from "./types.js";
 
@@ -64,6 +64,14 @@ export async function main(argv: readonly string[]): Promise<void> {
         );
       },
     );
+
+  program
+    .command("regions")
+    .description("Print the best available package-managed region list as JSON")
+    .action(async (): Promise<void> => {
+      const view = await readRegionsView();
+      process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+    });
 
   program
     .command("read")

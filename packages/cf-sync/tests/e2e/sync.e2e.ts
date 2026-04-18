@@ -44,6 +44,20 @@ interface StructureView {
   };
 }
 
+interface RegionsView {
+  readonly source: "catalog" | "stable";
+  readonly regions: readonly {
+    readonly key: RegionKey;
+    readonly label: string;
+    readonly apiEndpoint: string;
+  }[];
+  readonly metadata?: {
+    readonly status: "running" | "completed" | "failed";
+    readonly completedRegionKeys: readonly RegionKey[];
+    readonly pendingRegionKeys: readonly RegionKey[];
+  };
+}
+
 interface RegionView {
   readonly source: "runtime" | "stable" | "fresh";
   readonly region: {
@@ -374,6 +388,12 @@ test("cf-sync can hydrate the last real region during a long live sync", async (
     const middleRegions = raceRegions.slice(1, -1);
     expect(middleRegions.length, "Live race E2E must leave at least one middle region pending").toBeGreaterThan(0);
 
+    const catalogBefore = await runJsonCommandWithEnv<RegionsView>(liveCase.env, ["regions"]);
+    expect(catalogBefore).toEqual({
+      source: "catalog",
+      regions: getAllRegions(),
+    });
+
     syncProcess = spawn("node", [CLI_PATH, "sync", "--verbose", "--only", raceRegions.join(",")], {
       env: liveCase.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -390,6 +410,15 @@ test("cf-sync can hydrate the last real region during a long live sync", async (
     expect(viewBefore?.source).toBe("runtime");
     expect(viewBefore?.metadata?.status).toBe("running");
     expect(viewBefore?.metadata?.completedRegionKeys).not.toContain(lastRegion);
+
+    const regionsWhileRunning = await runJsonCommandWithEnv<RegionsView>(liveCase.env, ["regions"]);
+    expect(regionsWhileRunning).not.toBeNull();
+    expect(regionsWhileRunning?.source).toBe("catalog");
+    expect(regionsWhileRunning?.metadata?.status).toBe("running");
+    expect(regionsWhileRunning?.metadata?.completedRegionKeys).not.toContain(lastRegion);
+    expect(regionsWhileRunning?.regions.map((region) => region.key)).toEqual(
+      getAllRegions().map((region) => region.key),
+    );
 
     const regionView = await runJsonCommandWithEnv<RegionView>(liveCase.env, ["region", lastRegion]);
     expect(regionView).not.toBeNull();
@@ -418,6 +447,15 @@ test("cf-sync can hydrate the last real region during a long live sync", async (
     const structure = await readJson<CfStructure>(liveCase.structurePath);
     expect(structure.regions.map((region) => region.key)).toEqual(raceRegions);
     expect(structure.regions.find((region) => region.key === lastRegion)?.accessible).toBe(true);
+
+    const stableRegions = structure.regions
+      .filter((region) => region.orgs.length > 0)
+      .map((region) => region.key);
+    const regionsAfterSync = await runJsonCommandWithEnv<RegionsView>(liveCase.env, ["regions"]);
+    expect(regionsAfterSync).not.toBeNull();
+    expect(regionsAfterSync?.source).toBe("stable");
+    expect(regionsAfterSync?.metadata?.status).toBe("completed");
+    expect(regionsAfterSync?.regions.map((region) => region.key)).toEqual(stableRegions);
   } finally {
     if (syncProcess) {
       await stopChild(syncProcess);

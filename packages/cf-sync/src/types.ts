@@ -114,3 +114,11 @@ export interface RegionView {
   readonly region: RegionNode;
   readonly metadata: SyncMetadata | undefined;
 }
+
+export type RegionsViewSource = "catalog" | "stable";
+
+export interface RegionsView {
+  readonly source: RegionsViewSource;
+  readonly regions: readonly Region[];
+  readonly metadata: SyncMetadata | undefined;
+}
