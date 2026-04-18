@@ -114,6 +114,12 @@ async function discoverTarget(): Promise<TestTarget> {
   }
   const envTarget = parseTargetEnv();
   if (envTarget) {
+    if (!(await appHasXsuaa(envTarget))) {
+      throw new Error(
+        `E2E_TARGET ${process.env["E2E_TARGET"] ?? ""} is not reachable via fetch-secret ` +
+          `or does not have an xsuaa binding.`,
+      );
+    }
     discovered = envTarget;
     return envTarget;
   }

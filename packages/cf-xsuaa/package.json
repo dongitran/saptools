@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-xsuaa",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps",
   "type": "module",
   "publishConfig": {

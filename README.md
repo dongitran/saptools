@@ -43,9 +43,10 @@ Docs → [`packages/cf-sync/README.md`](./packages/cf-sync/README.md)
 
 ### 🔐 `@saptools/cf-xsuaa`
 
-Builds on `cf-sync` to turn an app reference into a usable bearer token.
+Turns explicit CF app coordinates into a usable bearer token.
 
 - 🔑 zero-config OAuth2 `client_credentials` from the app's XSUAA binding
+- 🌍 region-key based CF API resolution via `@saptools/cf-sync`
 - 💾 disk-cached tokens with a 45 s expiry buffer
 - 🧩 CLI (`cf-xsuaa get-token-cached ...`) and ergonomic Node API
 
@@ -105,4 +106,3 @@ pnpm --filter @saptools/cf-sync test:unit
 ## 🤝 Author
 
 Maintained by [dongtran](https://github.com/dongitran).
-

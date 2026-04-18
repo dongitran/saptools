@@ -23,7 +23,7 @@ Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps
 - 🔑 **Zero-config OAuth2** — fetches `client_credentials` tokens straight from the XSUAA binding of any CF app
 - 💾 **Smart caching** — reuses tokens until they expire, with a 45-second safety buffer so you never ship a stale JWT
 - 🧩 **CLI & API** — drop into shell scripts, Node pipelines, or your favorite test runner
-- 🔗 **CF-aware** — resolves API endpoints from `@saptools/cf-sync` snapshots, no manual URLs
+- 🔗 **CF-aware** — resolves CF API endpoints from region keys via `@saptools/cf-sync`, no manual URLs
 - 🔒 **Type-safe** — shipped with full TypeScript definitions
 - 🪶 **Tiny** — one dependency (`commander`) and zero runtime magic
 
@@ -42,7 +42,7 @@ npm install @saptools/cf-xsuaa
 ```
 
 > [!NOTE]
-> Requires **Node.js ≥ 20**, the **`cf` CLI** on `PATH`, and an existing `~/.saptools/cf-structure.json` produced by [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync).
+> Requires **Node.js ≥ 20** and the **`cf` CLI** on `PATH`. For the first secret fetch, set `SAP_EMAIL` and `SAP_PASSWORD`.
 
 ---
 
