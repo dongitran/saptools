@@ -16,11 +16,11 @@ import {
   findRegion,
   initializeRuntimeState,
   mergeRuntimeRegion,
+  persistRegion,
   readRegionView,
   readRuntimeState,
   readStructure,
   releaseSyncLock,
-  toSyncMetadata,
   tryAcquireSyncLock,
   waitForRuntimeStateToSettle,
   writeStructure,
@@ -344,21 +344,12 @@ export async function getRegionView(options: GetRegionOptions): Promise<RegionVi
       options.password,
       { spinner: undefined, verbose: false, interactive: false },
     );
-
-    const runtimeState = await readRuntimeState();
-    if (runtimeState?.status === "running") {
-      await mergeRuntimeRegion(runtimeState.syncId, runtimeState.requestedRegionKeys, freshRegion);
-      return {
-        source: "fresh",
-        region: freshRegion,
-        metadata: toSyncMetadata((await readRuntimeState()) ?? runtimeState),
-      };
-    }
+    const metadata = await persistRegion(freshRegion);
 
     return {
       source: "fresh",
       region: freshRegion,
-      metadata: runtimeState ? toSyncMetadata(runtimeState) : undefined,
+      metadata,
     };
   } catch {
     return cachedView;

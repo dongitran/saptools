@@ -160,6 +160,108 @@ test.describe("Runtime reads", () => {
     expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth"]);
   });
 
+  test("fresh region fetch persists reusable package-managed data when no sync is running", async () => {
+    const paths = await prepareCase(ROOT_NAME, "fresh-region-persistence", createScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const freshRegion = await runJsonCommand(env, ["region", "eu10"]);
+    expect(freshRegion).toMatchObject({
+      source: "fresh",
+      region: {
+        key: "eu10",
+        accessible: true,
+      },
+    });
+
+    const structureView = await runJsonCommand(env, ["read"]);
+    expect(structureView).toMatchObject({
+      source: "stable",
+      structure: {
+        regions: [{ key: "eu10", accessible: true }],
+      },
+    });
+
+    const cachedRegion = await runJsonCommand(env, ["region", "eu10", "--no-refresh"]);
+    expect(cachedRegion).toMatchObject({
+      source: "stable",
+      region: {
+        key: "eu10",
+        accessible: true,
+      },
+    });
+
+    const regionsView = await runJsonCommand(env, ["regions"]);
+    expect(regionsView).toMatchObject({
+      source: "stable",
+      regions: [{ key: "eu10" }],
+    });
+
+    expect(existsSync(paths.structurePath)).toBe(true);
+
+    const fakeLog = await readJsonLines(paths.logPath);
+    const eu10OrgsCalls = fakeLog.filter(
+      (entry) =>
+        entry.command === "orgs" &&
+        entry.apiEndpoint === "https://api.cf.eu10.hana.ondemand.com",
+    );
+    expect(eu10OrgsCalls).toHaveLength(1);
+  });
+
+  test("fresh region fetch updates the package-managed view after a completed sync", async () => {
+    const paths = await prepareCase(ROOT_NAME, "post-sync-region-persistence", createScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const syncResult = await waitForExit(syncProcess);
+    expect(syncResult.code).toBe(0);
+    expect(syncResult.stderr).toBe("");
+
+    const freshRegion = await runJsonCommand(env, ["region", "eu10"]);
+    expect(freshRegion).toMatchObject({
+      source: "fresh",
+      region: {
+        key: "eu10",
+        accessible: true,
+      },
+      metadata: {
+        status: "completed",
+      },
+    });
+
+    const structureView = await runJsonCommand(env, ["read"]);
+    expect(structureView).toMatchObject({
+      source: "runtime",
+      metadata: {
+        status: "completed",
+      },
+    });
+    expect(
+      (structureView?.["structure"] as { readonly regions: readonly { readonly key: string }[] }).regions.map(
+        (region) => region.key,
+      ),
+    ).toEqual(["ap10", "ap11", "eu10"]);
+
+    const cachedRegion = await runJsonCommand(env, ["region", "eu10", "--no-refresh"]);
+    expect(cachedRegion).toMatchObject({
+      source: "runtime",
+      region: {
+        key: "eu10",
+        accessible: true,
+      },
+      metadata: {
+        status: "completed",
+      },
+    });
+
+    const stableStructure = await readJson<{ readonly regions: readonly { readonly key: string }[] }>(
+      paths.structurePath,
+    );
+    expect(stableStructure.regions.map((region) => region.key)).toEqual(["ap10", "ap11", "eu10"]);
+  });
+
   test("service can inspect partial structure while sync is still running", async () => {
     const paths = await prepareCase(ROOT_NAME, "partial-structure", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);

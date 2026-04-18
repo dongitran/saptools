@@ -131,6 +131,42 @@ function upsertRegion(
   };
 }
 
+function stableRegionOrder(structure: CfStructure | undefined): readonly RegionKey[] {
+  const existingKeys = structure?.regions.map((region) => region.key) ?? [];
+  const catalogKeys = getAllRegions().map((region) => region.key);
+  return [...new Set([...existingKeys, ...catalogKeys])];
+}
+
+function mergeRegionIntoRuntimeState(
+  current: RuntimeSyncState,
+  region: RegionNode,
+  requestedRegionKeys: readonly RegionKey[],
+  updatedAt: string,
+): RuntimeSyncState {
+  return {
+    ...current,
+    updatedAt,
+    completedRegionKeys: orderRegionKeys([...current.completedRegionKeys, region.key], requestedRegionKeys),
+    structure: upsertRegion(current.structure, region, requestedRegionKeys, updatedAt),
+  };
+}
+
+function mergeRegionIntoStableStructure(
+  current: CfStructure | undefined,
+  region: RegionNode,
+  updatedAt: string,
+): CfStructure {
+  return upsertRegion(
+    current ?? {
+      syncedAt: updatedAt,
+      regions: [],
+    },
+    region,
+    stableRegionOrder(current),
+    updatedAt,
+  );
+}
+
 export function toSyncMetadata(state: RuntimeSyncState): SyncMetadata {
   const completedRegionKeys = orderRegionKeys(state.completedRegionKeys, state.requestedRegionKeys);
   const completedSet = new Set(completedRegionKeys);
@@ -236,18 +272,37 @@ export async function mergeRuntimeRegion(
     }
 
     const updatedAt = new Date().toISOString();
-    const completedRegionKeys = orderRegionKeys(
-      [...current.completedRegionKeys, region.key],
-      requestedRegionKeys,
-    );
-    const next: RuntimeSyncState = {
-      ...current,
-      updatedAt,
-      completedRegionKeys,
-      structure: upsertRegion(current.structure, region, requestedRegionKeys, updatedAt),
-    };
+    const next = mergeRegionIntoRuntimeState(current, region, requestedRegionKeys, updatedAt);
     await writeJsonFileAtomic(cfRuntimeStatePath(), next);
     return next;
+  });
+}
+
+export async function persistRegion(region: RegionNode): Promise<SyncMetadata | undefined> {
+  return await withStateLock(async () => {
+    const updatedAt = new Date().toISOString();
+    const runtimeState = await readRuntimeState();
+
+    if (runtimeState) {
+      const nextRuntime = mergeRegionIntoRuntimeState(
+        runtimeState,
+        region,
+        runtimeState.requestedRegionKeys,
+        updatedAt,
+      );
+      await writeJsonFileAtomic(cfRuntimeStatePath(), nextRuntime);
+
+      if (runtimeState.status !== "running") {
+        const nextStable = mergeRegionIntoStableStructure(await readStructure(), region, updatedAt);
+        await writeJsonFileAtomic(cfStructurePath(), nextStable);
+      }
+
+      return toSyncMetadata(nextRuntime);
+    }
+
+    const nextStable = mergeRegionIntoStableStructure(await readStructure(), region, updatedAt);
+    await writeJsonFileAtomic(cfStructurePath(), nextStable);
+    return;
   });
 }
 
