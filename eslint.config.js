@@ -142,6 +142,8 @@ export default tseslint.config(
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/explicit-function-return-type": "off",
+      "@typescript-eslint/require-await": "off",
+      "unicorn/no-useless-undefined": "off",
     },
   },
 );
