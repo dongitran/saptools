@@ -29,7 +29,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
     "test:unit": "vitest run --coverage",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:fake": "playwright test tests/e2e/runtime.e2e.ts tests/e2e/regions.e2e.ts tests/e2e/failures.e2e.ts",
+    "test:e2e:live": "playwright test tests/e2e/sync.e2e.ts"
   },
   "keywords": [
     "sap",

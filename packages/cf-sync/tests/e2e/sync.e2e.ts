@@ -80,12 +80,13 @@ interface LiveCasePaths {
 
 let liveProbeCachePromise: Promise<readonly LiveRegionProbe[]> | undefined;
 
-function requireEnv(name: "SAP_EMAIL" | "SAP_PASSWORD"): string {
-  const value = process.env[name];
-  if (value === undefined || value === "") {
-    throw new Error(`${name} must be set`);
+function readLiveCreds(): { readonly email: string; readonly password: string } | undefined {
+  const email = process.env["SAP_EMAIL"];
+  const password = process.env["SAP_PASSWORD"];
+  if (!email || !password) {
+    return undefined;
   }
-  return value;
+  return { email, password };
 }
 
 function createLiveEnv(homeDir?: string): NodeJS.ProcessEnv {
@@ -329,8 +330,12 @@ async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
 }
 
 test("cf-sync sync writes ~/.saptools/cf-structure.json", async () => {
-  const email = requireEnv("SAP_EMAIL");
-  const password = requireEnv("SAP_PASSWORD");
+  const creds = readLiveCreds();
+  test.skip(!creds, "SAP_EMAIL / SAP_PASSWORD not set — live sync test skipped");
+  if (!creds) {
+    return;
+  }
+  const { email, password } = creds;
   expect(existsSync(CLI_PATH), `CLI must be built at ${CLI_PATH}`).toBe(true);
   const liveCase = await createLiveCasePaths();
 
@@ -367,8 +372,12 @@ test("cf-sync sync writes ~/.saptools/cf-structure.json", async () => {
 test("cf-sync can hydrate the last real region during a long live sync", async () => {
   test.setTimeout(15 * 60 * 1000);
 
-  const email = requireEnv("SAP_EMAIL");
-  const password = requireEnv("SAP_PASSWORD");
+  const creds = readLiveCreds();
+  test.skip(!creds, "SAP_EMAIL / SAP_PASSWORD not set — live race test skipped");
+  if (!creds) {
+    return;
+  }
+  const { email, password } = creds;
   expect(existsSync(CLI_PATH), `CLI must be built at ${CLI_PATH}`).toBe(true);
   const liveCase = await createLiveCasePaths();
   let syncProcess: ReturnType<typeof spawn> | undefined;

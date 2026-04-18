@@ -28,10 +28,12 @@ import {
 import type {
   AppNode,
   CfStructure,
+  OrgNode,
   Region,
   RegionKey,
   RegionNode,
   RegionView,
+  SpaceNode,
   SyncMetadata,
 } from "./types.js";
 
@@ -63,6 +65,10 @@ interface LogCtx {
 }
 
 let activeSyncPromise: Promise<SyncResult> | undefined;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 function log(ctx: LogCtx, message: string): void {
   if (ctx.interactive && ctx.spinner) {
@@ -154,15 +160,16 @@ async function collectSpace(
   spaceName: string,
   ctx: LogCtx,
   cfContext: CfExecContext,
-): Promise<{ readonly name: string; readonly apps: readonly AppNode[] }> {
+): Promise<SpaceNode> {
   try {
     await cfTargetSpace(orgName, spaceName, cfContext);
-    const apps = (await cfApps(cfContext)).map((name) => ({ name }));
+    const apps = (await cfApps(cfContext)).map((name): AppNode => ({ name }));
     log(ctx, `${regionKey} • ${orgName}/${spaceName}: ${apps.length.toString()} apps`);
     return { name: spaceName, apps };
-  } catch {
-    log(ctx, `${regionKey} • ${orgName}/${spaceName}: skipped (error)`);
-    return { name: spaceName, apps: [] };
+  } catch (error) {
+    const message = errorMessage(error);
+    log(ctx, `${regionKey} • ${orgName}/${spaceName}: skipped (${message})`);
+    return { name: spaceName, apps: [], error: message };
   }
 }
 
@@ -171,20 +178,21 @@ async function collectOrg(
   orgName: string,
   ctx: LogCtx,
   cfContext: CfExecContext,
-): Promise<{ readonly name: string; readonly spaces: readonly { readonly name: string; readonly apps: readonly AppNode[] }[] }> {
+): Promise<OrgNode> {
   try {
     await cfTargetOrg(orgName, cfContext);
     const spaces = await cfSpaces(cfContext);
-    const collectedSpaces = [];
+    const collectedSpaces: SpaceNode[] = [];
 
     for (const spaceName of spaces) {
       collectedSpaces.push(await collectSpace(regionKey, orgName, spaceName, ctx, cfContext));
     }
 
     return { name: orgName, spaces: collectedSpaces };
-  } catch {
-    log(ctx, `${regionKey} • ${orgName}: skipped (error)`);
-    return { name: orgName, spaces: [] };
+  } catch (error) {
+    const message = errorMessage(error);
+    log(ctx, `${regionKey} • ${orgName}: skipped (${message})`);
+    return { name: orgName, spaces: [], error: message };
   }
 }
 
@@ -200,21 +208,23 @@ async function collectRegion(
   try {
     await cfApi(region.apiEndpoint, cfContext);
     await cfAuth(email, password, cfContext);
-  } catch {
-    log(ctx, `${region.key}: no access`);
+  } catch (error) {
+    const message = errorMessage(error);
+    log(ctx, `${region.key}: no access (${message})`);
     return {
       key: region.key,
       label: region.label,
       apiEndpoint: region.apiEndpoint,
       accessible: false,
       orgs: [],
+      error: message,
     };
   }
 
   try {
     const orgNames = await cfOrgs(cfContext);
     log(ctx, `${region.key}: ${orgNames.length.toString()} org(s)`);
-    const orgs = [];
+    const orgs: OrgNode[] = [];
 
     for (const orgName of orgNames) {
       orgs.push(await collectOrg(region.key, orgName, ctx, cfContext));
@@ -227,13 +237,16 @@ async function collectRegion(
       accessible: true,
       orgs,
     };
-  } catch {
+  } catch (error) {
+    const message = errorMessage(error);
+    log(ctx, `${region.key}: orgs lookup failed (${message})`);
     return {
       key: region.key,
       label: region.label,
       apiEndpoint: region.apiEndpoint,
       accessible: true,
       orgs: [],
+      error: message,
     };
   }
 }

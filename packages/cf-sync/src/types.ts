@@ -57,11 +57,13 @@ export interface AppNode {
 export interface SpaceNode {
   readonly name: string;
   readonly apps: readonly AppNode[];
+  readonly error?: string;
 }
 
 export interface OrgNode {
   readonly name: string;
   readonly spaces: readonly SpaceNode[];
+  readonly error?: string;
 }
 
 export interface RegionNode {
@@ -70,6 +72,7 @@ export interface RegionNode {
   readonly apiEndpoint: string;
   readonly accessible: boolean;
   readonly orgs: readonly OrgNode[];
+  readonly error?: string;
 }
 
 export interface CfStructure {

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { hostname as getHostname } from "node:os";
 import { dirname } from "node:path";
+import process from "node:process";
 
 import {
   cfRuntimeStatePath,
@@ -342,17 +344,117 @@ export async function readRegionView(key: RegionKey): Promise<RegionView | undef
   return regionViewFromState(runtimeState, structure ? findRegion(structure, key) : undefined, "stable");
 }
 
-export async function tryAcquireSyncLock(syncId: string): Promise<FileHandle | undefined> {
+interface SyncLockContent {
+  readonly syncId: string;
+  readonly pid: number;
+  readonly hostname: string;
+  readonly startedAt: string;
+}
+
+async function readSyncLockContent(): Promise<SyncLockContent | undefined> {
   try {
-    const handle = await acquireFileLock(cfSyncLockPath(), 1);
-    await handle.writeFile(`${JSON.stringify({ syncId, startedAt: new Date().toISOString() })}\n`, "utf8");
+    const raw = await readFile(cfSyncLockPath(), "utf8");
+    const parsed = JSON.parse(raw.trim()) as Partial<SyncLockContent>;
+    if (
+      typeof parsed.syncId !== "string" ||
+      typeof parsed.pid !== "number" ||
+      typeof parsed.hostname !== "string" ||
+      typeof parsed.startedAt !== "string"
+    ) {
+      return undefined;
+    }
+    return {
+      syncId: parsed.syncId,
+      pid: parsed.pid,
+      hostname: parsed.hostname,
+      startedAt: parsed.startedAt,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function isSyncLockStale(lock: SyncLockContent): boolean {
+  if (lock.hostname !== getHostname()) {
+    return false;
+  }
+  return !isPidAlive(lock.pid);
+}
+
+async function markStaleRuntimeAsFailed(staleSyncId: string): Promise<void> {
+  await withStateLock(async () => {
+    const current = await readRuntimeState();
+    if (current?.syncId !== staleSyncId || current.status !== "running") {
+      return;
+    }
+    const finishedAt = new Date().toISOString();
+    const next: RuntimeSyncState = {
+      ...current,
+      status: "failed",
+      updatedAt: finishedAt,
+      finishedAt,
+      error: "sync process exited without finishing",
+    };
+    await writeJsonFileAtomic(cfRuntimeStatePath(), next);
+  });
+}
+
+async function writeLockHandle(handle: FileHandle, content: SyncLockContent): Promise<void> {
+  await handle.writeFile(`${JSON.stringify(content)}\n`, "utf8");
+}
+
+async function openSyncLockExclusive(content: SyncLockContent): Promise<FileHandle | undefined> {
+  await mkdir(dirname(cfSyncLockPath()), { recursive: true });
+  try {
+    const handle = await open(cfSyncLockPath(), "wx");
+    await writeLockHandle(handle, content);
     return handle;
   } catch (err) {
-    if ((err as Error).message.includes("Timed out acquiring file lock")) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       return undefined;
     }
     throw err;
   }
+}
+
+export async function tryAcquireSyncLock(syncId: string): Promise<FileHandle | undefined> {
+  const content: SyncLockContent = {
+    syncId,
+    pid: process.pid,
+    hostname: getHostname(),
+    startedAt: new Date().toISOString(),
+  };
+
+  const first = await openSyncLockExclusive(content);
+  if (first) {
+    return first;
+  }
+
+  const existing = await readSyncLockContent();
+  if (!existing || !isSyncLockStale(existing)) {
+    return undefined;
+  }
+
+  await unlink(cfSyncLockPath()).catch((err: unknown) => {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  });
+  await markStaleRuntimeAsFailed(existing.syncId);
+
+  return await openSyncLockExclusive(content);
 }
 
 export async function releaseSyncLock(handle: FileHandle): Promise<void> {

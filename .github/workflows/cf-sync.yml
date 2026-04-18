@@ -75,7 +75,10 @@ jobs:
       - name: Run unit tests
         run: pnpm --filter @saptools/cf-sync test:unit
 
-      # E2E is intentionally excluded here because it uses live SAP CF credentials.
+      - name: Run fake-backed e2e tests
+        run: pnpm --filter @saptools/cf-sync test:e2e:fake
+
+      # The live-sync suite (test:e2e:live) is intentionally excluded — it requires real SAP CF credentials.
       - name: Verify publish tarball
         run: npm pack --dry-run
         working-directory: packages/cf-sync

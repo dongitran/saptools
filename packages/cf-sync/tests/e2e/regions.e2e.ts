@@ -1,46 +1,25 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import { expect, test } from "@playwright/test";
 
-import {
-  CF_RUNTIME_STATE_FILENAME,
-  CF_STRUCTURE_FILENAME,
-  SAPTOOLS_DIR_NAME,
-} from "../../src/paths.js";
 import { getAllRegions } from "../../src/regions.js";
 import type { CfStructure, RuntimeSyncState } from "../../src/types.js";
 
-const execFileAsync = promisify(execFile);
+import {
+  CLI_PATH,
+  FAKE_CF_BIN,
+  type Scenario,
+  createEnv,
+  prepareCase,
+  runJsonCommand,
+  waitForExit,
+  waitForRuntimeState,
+  writeJson,
+} from "./helpers.js";
 
-const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
-const FAKE_CF_BIN = join(PACKAGE_DIR, "tests", "e2e", "fixtures", "fake-cf.mjs");
-const E2E_ROOT = join(tmpdir(), "cf-sync-regions-e2e");
+const ROOT_NAME = "cf-sync-regions-e2e";
 const CATALOG_REGIONS = getAllRegions();
-
-interface ScenarioRegion {
-  readonly key: string;
-  readonly apiEndpoint: string;
-  readonly accessible?: boolean;
-  readonly orgsDelayMs?: number;
-  readonly orgs: readonly {
-    readonly name: string;
-    readonly spaces: readonly {
-      readonly name: string;
-      readonly apps: readonly string[];
-    }[];
-  }[];
-}
-
-interface Scenario {
-  readonly regions: readonly ScenarioRegion[];
-}
 
 interface RegionsViewPayload {
   readonly source: "catalog" | "stable";
@@ -53,51 +32,6 @@ interface RegionsViewPayload {
     readonly status: "running" | "completed" | "failed";
     readonly completedRegionKeys?: readonly string[];
     readonly pendingRegionKeys?: readonly string[];
-  };
-}
-
-function buildCasePaths(caseName: string): {
-  readonly caseRoot: string;
-  readonly homeDir: string;
-  readonly scenarioPath: string;
-  readonly logPath: string;
-  readonly runtimeStatePath: string;
-  readonly structurePath: string;
-} {
-  const caseRoot = join(E2E_ROOT, caseName);
-  const homeDir = join(caseRoot, "home");
-  const saptoolsDir = join(homeDir, SAPTOOLS_DIR_NAME);
-  return {
-    caseRoot,
-    homeDir,
-    scenarioPath: join(caseRoot, "scenario.json"),
-    logPath: join(caseRoot, "fake-cf-log.jsonl"),
-    runtimeStatePath: join(saptoolsDir, CF_RUNTIME_STATE_FILENAME),
-    structurePath: join(saptoolsDir, CF_STRUCTURE_FILENAME),
-  };
-}
-
-async function prepareCase(caseName: string, scenario: unknown): Promise<ReturnType<typeof buildCasePaths>> {
-  const paths = buildCasePaths(caseName);
-  await rm(paths.caseRoot, { recursive: true, force: true });
-  await mkdir(paths.homeDir, { recursive: true });
-  await writeFile(paths.scenarioPath, `${JSON.stringify(scenario, null, 2)}\n`, "utf8");
-  return paths;
-}
-
-function createEnv(homeDir: string, scenarioPath: string, logPath: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env["FORCE_COLOR"];
-  delete env["NO_COLOR"];
-
-  return {
-    ...env,
-    HOME: homeDir,
-    SAP_EMAIL: "e2e@example.com",
-    SAP_PASSWORD: "test-password",
-    CF_SYNC_CF_BIN: FAKE_CF_BIN,
-    CF_SYNC_FAKE_SCENARIO: scenarioPath,
-    CF_SYNC_FAKE_LOG_PATH: logPath,
   };
 }
 
@@ -148,68 +82,6 @@ function createMixedRegionsScenario(): Scenario {
   };
 }
 
-async function readJson<T>(path: string): Promise<T> {
-  const raw = await readFile(path, "utf8");
-  return JSON.parse(raw) as T;
-}
-
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-async function runJsonCommand(env: NodeJS.ProcessEnv, args: readonly string[]): Promise<RegionsViewPayload> {
-  const { stdout } = await execFileAsync("node", [CLI_PATH, ...args], {
-    env,
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: 15_000,
-  });
-
-  return JSON.parse(stdout) as RegionsViewPayload;
-}
-
-async function waitForRuntimeState(
-  runtimeStatePath: string,
-  predicate: (state: RuntimeSyncState) => boolean,
-): Promise<RuntimeSyncState> {
-  const deadline = Date.now() + 10_000;
-
-  for (;;) {
-    if (existsSync(runtimeStatePath)) {
-      const state = await readJson<RuntimeSyncState>(runtimeStatePath);
-      if (predicate(state)) {
-        return state;
-      }
-    }
-
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for runtime state at ${runtimeStatePath}`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
-async function waitForExit(
-  child: ReturnType<typeof spawn>,
-): Promise<{ readonly code: number | null; readonly stdout: string; readonly stderr: string }> {
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
-  child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
-
-  const code = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", resolve);
-  });
-
-  return {
-    code,
-    stdout: Buffer.concat(stdout).toString("utf8"),
-    stderr: Buffer.concat(stderr).toString("utf8"),
-  };
-}
-
 function regionKeys(view: RegionsViewPayload): readonly string[] {
   return view.regions.map((region) => region.key);
 }
@@ -221,10 +93,10 @@ test.describe("Regions command", () => {
   });
 
   test("returns the full SAP catalog on fresh install", async () => {
-    const paths = await prepareCase("regions-fresh-install", createRunningScenario());
+    const paths = await prepareCase(ROOT_NAME, "regions-fresh-install", createRunningScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
-    const view = await runJsonCommand(env, ["regions"]);
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
 
     expect(view).toEqual({
       source: "catalog",
@@ -236,7 +108,7 @@ test.describe("Regions command", () => {
   });
 
   test("returns the full SAP catalog while sync is still running", async () => {
-    const paths = await prepareCase("regions-running-catalog", createRunningScenario());
+    const paths = await prepareCase(ROOT_NAME, "regions-running-catalog", createRunningScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11,eu10"], {
@@ -244,12 +116,12 @@ test.describe("Regions command", () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    await waitForRuntimeState(
+    await waitForRuntimeState<RuntimeSyncState>(
       paths.runtimeStatePath,
       (state) => state.completedRegionKeys.includes("ap10") && !state.completedRegionKeys.includes("ap11"),
     );
 
-    const view = await runJsonCommand(env, ["regions"]);
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
     expect(view).toMatchObject({
       source: "catalog",
       metadata: {
@@ -266,7 +138,7 @@ test.describe("Regions command", () => {
   });
 
   test("returns only stable regions that contain orgs after sync completes", async () => {
-    const paths = await prepareCase("regions-after-sync", createMixedRegionsScenario());
+    const paths = await prepareCase(ROOT_NAME, "regions-after-sync", createMixedRegionsScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11,eu10"], {
@@ -278,7 +150,7 @@ test.describe("Regions command", () => {
     expect(syncResult.code).toBe(0);
     expect(syncResult.stderr).toBe("");
 
-    const view = await runJsonCommand(env, ["regions"]);
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
     expect(view).toMatchObject({
       source: "stable",
       metadata: {
@@ -291,7 +163,7 @@ test.describe("Regions command", () => {
   });
 
   test("returns the catalog during a running sync even when an older stable snapshot exists", async () => {
-    const paths = await prepareCase("regions-running-over-stable", createRunningScenario());
+    const paths = await prepareCase(ROOT_NAME, "regions-running-over-stable", createRunningScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const oldStableStructure: CfStructure = {
@@ -313,12 +185,12 @@ test.describe("Regions command", () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    await waitForRuntimeState(
+    await waitForRuntimeState<RuntimeSyncState>(
       paths.runtimeStatePath,
       (state) => state.completedRegionKeys.includes("ap10") && !state.completedRegionKeys.includes("ap11"),
     );
 
-    const view = await runJsonCommand(env, ["regions"]);
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
     expect(view).toMatchObject({
       source: "catalog",
       metadata: {
@@ -335,7 +207,7 @@ test.describe("Regions command", () => {
   });
 
   test("falls back to the stable with-org list when runtime metadata is failed", async () => {
-    const paths = await prepareCase("regions-failed-runtime", createMixedRegionsScenario());
+    const paths = await prepareCase(ROOT_NAME, "regions-failed-runtime", createMixedRegionsScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     await writeJson(paths.structurePath, {
@@ -373,7 +245,7 @@ test.describe("Regions command", () => {
       },
     } satisfies RuntimeSyncState);
 
-    const view = await runJsonCommand(env, ["regions"]);
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
     expect(view).toMatchObject({
       source: "stable",
       metadata: {

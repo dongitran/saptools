@@ -130,7 +130,7 @@ async function main() {
 
   if (command === "auth") {
     if (region.accessible === false) {
-      fail("Authentication failed");
+      fail(region.authError ?? "Authentication failed");
     }
     process.stdout.write("OK\n");
     return;
@@ -138,6 +138,9 @@ async function main() {
 
   if (command === "orgs") {
     await sleep(region.orgsDelayMs ?? 0);
+    if (region.orgsError) {
+      fail(region.orgsError);
+    }
     process.stdout.write(`name\n${(region.orgs ?? []).map((org) => org.name).join("\n")}\n`);
     return;
   }
@@ -180,6 +183,9 @@ async function main() {
   if (command === "spaces") {
     const org = getCurrentOrg(region, state);
     await sleep(org.spacesDelayMs ?? 0);
+    if (org.spacesError) {
+      fail(org.spacesError);
+    }
     process.stdout.write(`name\n${(org.spaces ?? []).map((space) => space.name).join("\n")}\n`);
     return;
   }
@@ -188,6 +194,9 @@ async function main() {
     const org = getCurrentOrg(region, state);
     const space = getCurrentSpace(org, state);
     await sleep(space.appsDelayMs ?? 0);
+    if (space.appsError) {
+      fail(space.appsError);
+    }
     const lines = (space.apps ?? []).map((app) => `${app}  started`).join("\n");
     process.stdout.write(`name  requested state\n${lines}\n`);
     return;

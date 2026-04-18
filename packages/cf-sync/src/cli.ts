@@ -16,6 +16,30 @@ function requireEnv(name: string): string {
   return v;
 }
 
+function parseOnlyRegions(raw: string): readonly (typeof REGION_KEYS)[number][] {
+  const requested = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  if (requested.length === 0) {
+    process.stderr.write("Error: --only must list at least one region key\n");
+    process.exit(1);
+  }
+
+  const allowed = new Set<string>(REGION_KEYS);
+  const invalid = requested.filter((key) => !allowed.has(key));
+  if (invalid.length > 0) {
+    process.stderr.write(
+      `Error: unknown region key(s): ${invalid.join(", ")}\n` +
+        `       allowed: ${REGION_KEYS.join(", ")}\n`,
+    );
+    process.exit(1);
+  }
+
+  return requested as (typeof REGION_KEYS)[number][];
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
 
@@ -37,14 +61,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         const email = requireEnv("SAP_EMAIL");
         const password = requireEnv("SAP_PASSWORD");
 
-        const onlyRegions = opts.only
-          ? opts.only
-              .split(",")
-              .map((s) => s.trim())
-              .filter((s): s is (typeof REGION_KEYS)[number] =>
-                (REGION_KEYS as readonly string[]).includes(s),
-              )
-          : undefined;
+        const onlyRegions = opts.only ? parseOnlyRegions(opts.only) : undefined;
 
         const isInteractive =
           opts.interactive !== false && process.stdout.isTTY && process.env["CI"] !== "true";

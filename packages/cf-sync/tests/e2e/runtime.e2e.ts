@@ -1,100 +1,27 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import { expect, test } from "@playwright/test";
 
 import {
-  CF_RUNTIME_STATE_FILENAME,
-  CF_STRUCTURE_FILENAME,
-  CF_SYNC_LOCK_FILENAME,
-  SAPTOOLS_DIR_NAME,
-} from "../../src/paths.js";
+  CLI_PATH,
+  FAKE_CF_BIN,
+  type FakeLogEntry,
+  type Scenario,
+  createEnv,
+  prepareCase,
+  readJson,
+  readJsonLines,
+  runJsonCommand,
+  waitForExit,
+  waitForLogEntries,
+  waitForRuntimeState,
+  writeJson,
+} from "./helpers.js";
 
-const execFileAsync = promisify(execFile);
-
-const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
-const FAKE_CF_BIN = join(PACKAGE_DIR, "tests", "e2e", "fixtures", "fake-cf.mjs");
-const E2E_ROOT = join(tmpdir(), "cf-sync-e2e");
-
-interface ScenarioRegion {
-  readonly key: string;
-  readonly apiEndpoint: string;
-  readonly accessible?: boolean;
-  readonly orgsDelayMs?: number;
-  readonly orgs: readonly {
-    readonly name: string;
-    readonly spaces: readonly {
-      readonly name: string;
-      readonly apps: readonly string[];
-    }[];
-  }[];
-}
-
-interface Scenario {
-  readonly regions: readonly ScenarioRegion[];
-}
-
-interface FakeLogEntry {
-  readonly at: string;
-  readonly command: string;
-  readonly args?: readonly string[];
-  readonly apiEndpoint?: string | null;
-  readonly org?: string | null;
-  readonly space?: string | null;
-}
-
-function buildCasePaths(caseName: string): {
-  readonly caseRoot: string;
-  readonly homeDir: string;
-  readonly scenarioPath: string;
-  readonly logPath: string;
-  readonly runtimeStatePath: string;
-  readonly structurePath: string;
-  readonly syncLockPath: string;
-} {
-  const caseRoot = join(E2E_ROOT, caseName);
-  const homeDir = join(caseRoot, "home");
-  const saptoolsDir = join(homeDir, SAPTOOLS_DIR_NAME);
-  return {
-    caseRoot,
-    homeDir,
-    scenarioPath: join(caseRoot, "scenario.json"),
-    logPath: join(caseRoot, "fake-cf-log.jsonl"),
-    runtimeStatePath: join(saptoolsDir, CF_RUNTIME_STATE_FILENAME),
-    structurePath: join(saptoolsDir, CF_STRUCTURE_FILENAME),
-    syncLockPath: join(saptoolsDir, CF_SYNC_LOCK_FILENAME),
-  };
-}
-
-async function prepareCase(caseName: string, scenario: unknown): Promise<ReturnType<typeof buildCasePaths>> {
-  const paths = buildCasePaths(caseName);
-  await rm(paths.caseRoot, { recursive: true, force: true });
-  await mkdir(paths.homeDir, { recursive: true });
-  await writeFile(paths.scenarioPath, `${JSON.stringify(scenario, null, 2)}\n`, "utf8");
-  return paths;
-}
-
-function createEnv(homeDir: string, scenarioPath: string, logPath: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env["FORCE_COLOR"];
-  delete env["NO_COLOR"];
-
-  return {
-    ...env,
-    HOME: homeDir,
-    SAP_EMAIL: "e2e@example.com",
-    SAP_PASSWORD: "test-password",
-    CF_SYNC_CF_BIN: FAKE_CF_BIN,
-    CF_SYNC_FAKE_SCENARIO: scenarioPath,
-    CF_SYNC_FAKE_LOG_PATH: logPath,
-  };
-}
+const ROOT_NAME = "cf-sync-e2e";
 
 function createScenario(): Scenario {
   return {
@@ -192,106 +119,10 @@ function createInaccessibleScenario(): Scenario {
   };
 }
 
-async function readJson<T>(path: string): Promise<T> {
-  const raw = await readFile(path, "utf8");
-  return JSON.parse(raw) as T;
-}
-
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-async function readJsonLines(path: string): Promise<readonly FakeLogEntry[]> {
-  const raw = await readFile(path, "utf8");
-  return raw
-    .trim()
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as FakeLogEntry);
-}
-
-async function waitForRuntimeState(
-  runtimeStatePath: string,
-  predicate: (value: Record<string, unknown>) => boolean,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + 10_000;
-
-  for (;;) {
-    if (existsSync(runtimeStatePath)) {
-      const value = await readJson<Record<string, unknown>>(runtimeStatePath);
-      if (predicate(value)) {
-        return value;
-      }
-    }
-
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for runtime state at ${runtimeStatePath}`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
-async function waitForLogEntries(
-  logPath: string,
-  predicate: (value: readonly FakeLogEntry[]) => boolean,
-): Promise<readonly FakeLogEntry[]> {
-  const deadline = Date.now() + 10_000;
-
-  for (;;) {
-    if (existsSync(logPath)) {
-      const value = await readJsonLines(logPath);
-      if (predicate(value)) {
-        return value;
-      }
-    }
-
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for fake CF log at ${logPath}`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 function countEndpointCalls(entries: readonly FakeLogEntry[], apiEndpoint: string): number {
   return entries.filter(
     (entry) => entry.apiEndpoint === apiEndpoint || (entry.command === "api" && entry.args?.includes(apiEndpoint)),
   ).length;
-}
-
-async function runJsonCommand(
-  env: NodeJS.ProcessEnv,
-  args: readonly string[],
-): Promise<Record<string, unknown> | null> {
-  const { stdout } = await execFileAsync("node", [CLI_PATH, ...args], {
-    env,
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: 15_000,
-  });
-
-  return JSON.parse(stdout) as Record<string, unknown> | null;
-}
-
-async function waitForExit(
-  child: ReturnType<typeof spawn>,
-): Promise<{ readonly code: number | null; readonly stdout: string; readonly stderr: string }> {
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
-  child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
-
-  const code = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", resolve);
-  });
-
-  return {
-    code,
-    stdout: Buffer.concat(stdout).toString("utf8"),
-    stderr: Buffer.concat(stderr).toString("utf8"),
-  };
 }
 
 test.describe("Runtime reads", () => {
@@ -301,7 +132,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("fresh install read commands return null before any package-managed snapshot exists", async () => {
-    const paths = await prepareCase("fresh-install-reads", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "fresh-install-reads", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     await expect(runJsonCommand(env, ["read"])).resolves.toBeNull();
@@ -313,7 +144,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("region command returns an inaccessible fresh region when authentication fails", async () => {
-    const paths = await prepareCase("inaccessible-region", createInaccessibleScenario());
+    const paths = await prepareCase(ROOT_NAME, "inaccessible-region", createInaccessibleScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const regionView = await runJsonCommand(env, ["region", "ap10"]);
@@ -330,7 +161,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("service can inspect partial structure while sync is still running", async () => {
-    const paths = await prepareCase("partial-structure", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "partial-structure", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11,eu10"], {
@@ -371,7 +202,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("service reads a completed runtime region without re-fetching it", async () => {
-    const paths = await prepareCase("runtime-cache-hit", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "runtime-cache-hit", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11,eu10"], {
@@ -410,7 +241,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("region --no-refresh remains cache-only while sync is still running", async () => {
-    const paths = await prepareCase("cache-only-region-read", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "cache-only-region-read", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11,eu10"], {
@@ -439,7 +270,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("service can hydrate a late region before the full sync reaches it", async () => {
-    const paths = await prepareCase("late-region-hydration", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "late-region-hydration", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11,eu10"], {
@@ -486,7 +317,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("service can hydrate the last region in a longer sync list right after sync starts", async () => {
-    const paths = await prepareCase("late-last-region-hydration", createLongScenario());
+    const paths = await prepareCase(ROOT_NAME, "late-last-region-hydration", createLongScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
     const requestedRegions = ["ap10", "ap11", "eu10", "us10", "jp10", "us20"] as const;
 
@@ -549,7 +380,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("package deduplicates concurrent full sync commands", async () => {
-    const paths = await prepareCase("concurrent-sync", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "concurrent-sync", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const firstSync = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11"], {
@@ -580,7 +411,7 @@ test.describe("Runtime reads", () => {
   });
 
   test("sync command fails when the active runtime state has already settled as failed", async () => {
-    const paths = await prepareCase("failed-runtime-waiter", createScenario());
+    const paths = await prepareCase(ROOT_NAME, "failed-runtime-waiter", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     await writeJson(paths.runtimeStatePath, {
@@ -597,6 +428,7 @@ test.describe("Runtime reads", () => {
         regions: [],
       },
     });
+    await mkdir(dirname(paths.syncLockPath), { recursive: true });
     await writeFile(paths.syncLockPath, "locked\n", "utf8");
 
     const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10"], {
