@@ -47,7 +47,7 @@ Turns explicit CF app coordinates into a usable bearer token.
 
 - 🔑 zero-config OAuth2 `client_credentials` from the app's XSUAA binding
 - 🌍 region-key based CF API resolution via `@saptools/cf-sync`
-- 💾 disk-cached tokens with a 45 s expiry buffer
+- 💾 disk-cached tokens with automatic expiry handling
 - 🧩 CLI (`cf-xsuaa get-token-cached ...`) and ergonomic Node API
 
 Docs → [`packages/cf-xsuaa/README.md`](./packages/cf-xsuaa/README.md)

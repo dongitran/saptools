@@ -21,7 +21,7 @@ Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps
 ## ✨ Features
 
 - 🔑 **Zero-config OAuth2** — fetches `client_credentials` tokens straight from the XSUAA binding of any CF app
-- 💾 **Smart caching** — reuses tokens until they expire, with a 45-second safety buffer so you never ship a stale JWT
+- 💾 **Smart caching** — reuses tokens until they expire so you do not hand out stale JWTs
 - 🧩 **CLI & API** — drop into shell scripts, Node pipelines, or your favorite test runner
 - 🔗 **CF-aware** — resolves CF API endpoints from region keys via `@saptools/cf-sync`, no manual URLs
 - 🔒 **Type-safe** — shipped with full TypeScript definitions
@@ -99,7 +99,7 @@ curl -H "Authorization: Bearer $TOKEN" https://my-srv.cfapps.ap10.hana.ondemand.
 ```
 
 > [!TIP]
-> Tokens are treated as expired 45 seconds before their `exp` claim, so callers never hand out a nearly-expired JWT.
+> Cached tokens are refreshed before they become stale, so callers do not receive a JWT that is about to expire.
 
 ---
 
