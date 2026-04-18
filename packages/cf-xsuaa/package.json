@@ -1,0 +1,54 @@
+{
+  "name": "@saptools/cf-xsuaa",
+  "version": "0.1.1",
+  "description": "Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "cf-xsuaa": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test"
+  },
+  "keywords": [
+    "sap",
+    "xsuaa",
+    "oauth2",
+    "cloud-foundry",
+    "btp",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "dependencies": {
+    "@saptools/cf-sync": "workspace:*",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
