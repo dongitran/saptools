@@ -259,6 +259,44 @@ export async function updateSessionStatus(
   });
 }
 
+export async function updateSessionPid(
+  sessionId: string,
+  pid: number,
+): Promise<ActiveSession | undefined> {
+  return await withFileLock(stateLockPath(), async (): Promise<ActiveSession | undefined> => {
+    const raw = await readStateRaw();
+    let updated: ActiveSession | undefined;
+    const nextSessions = raw.sessions.map((session): ActiveSession => {
+      if (session.sessionId !== sessionId) {
+        return session;
+      }
+      const next: ActiveSession = {
+        sessionId: session.sessionId,
+        pid,
+        hostname: session.hostname,
+        region: session.region,
+        org: session.org,
+        space: session.space,
+        app: session.app,
+        apiEndpoint: session.apiEndpoint,
+        localPort: session.localPort,
+        remotePort: session.remotePort,
+        cfHomeDir: session.cfHomeDir,
+        startedAt: session.startedAt,
+        status: session.status,
+        ...(session.message === undefined ? {} : { message: session.message }),
+      };
+      updated = next;
+      return next;
+    });
+
+    if (updated !== undefined) {
+      await writeState({ version: "1", sessions: nextSessions });
+    }
+    return updated;
+  });
+}
+
 export async function removeSession(sessionId: string): Promise<ActiveSession | undefined> {
   return await withFileLock(stateLockPath(), async (): Promise<ActiveSession | undefined> => {
     const raw = await readStateRaw();

@@ -4,6 +4,51 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+async function findListeningPidsWithNetstat(port: number): Promise<readonly number[]> {
+  try {
+    const { stdout } = await execFileAsync("netstat", ["-ano"]);
+    const pids = new Set<number>();
+    for (const line of stdout.split("\n")) {
+      if (!line.includes(`:${port.toString()}`) || !line.includes("LISTENING")) {
+        continue;
+      }
+      const parts = line.trim().split(/\s+/);
+      const last = parts[parts.length - 1];
+      if (last === undefined) {
+        continue;
+      }
+      const pid = Number.parseInt(last, 10);
+      if (!Number.isNaN(pid)) {
+        pids.add(pid);
+      }
+    }
+    return [...pids];
+  } catch {
+    return [];
+  }
+}
+
+async function findListeningPidsWithLsof(port: number): Promise<readonly number[]> {
+  try {
+    const { stdout } = await execFileAsync("lsof", ["-nP", "-t", "-i", `tcp:${port.toString()}`, "-sTCP:LISTEN"]);
+    return stdout
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => Number.parseInt(line, 10))
+      .filter((pid) => !Number.isNaN(pid));
+  } catch {
+    return [];
+  }
+}
+
+async function findListeningPids(port: number): Promise<readonly number[]> {
+  if (process.platform === "win32") {
+    return await findListeningPidsWithNetstat(port);
+  }
+  return await findListeningPidsWithLsof(port);
+}
+
 export async function isPortFree(port: number): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     const server = createServer();
@@ -53,24 +98,16 @@ export async function probeTunnelReady(port: number, timeoutMs: number): Promise
   return false;
 }
 
+export async function findListeningProcessId(port: number): Promise<number | undefined> {
+  const pids = await findListeningPids(port);
+  return pids[0];
+}
+
 export async function killProcessOnPort(port: number): Promise<void> {
   const portStr = port.toString();
   if (process.platform === "win32") {
     try {
-      const { stdout } = await execFileAsync("netstat", ["-ano"]);
-      const pids = new Set<number>();
-      for (const line of stdout.split("\n")) {
-        if (line.includes(`:${portStr}`) && line.includes("LISTENING")) {
-          const parts = line.trim().split(/\s+/);
-          const last = parts[parts.length - 1];
-          if (last !== undefined) {
-            const pid = Number.parseInt(last, 10);
-            if (!Number.isNaN(pid)) {
-              pids.add(pid);
-            }
-          }
-        }
-      }
+      const pids = await findListeningPidsWithNetstat(port);
       for (const pid of pids) {
         try {
           // cspell:ignore taskkill
@@ -87,18 +124,16 @@ export async function killProcessOnPort(port: number): Promise<void> {
 
   try {
     const { stdout } = await execFileAsync("lsof", ["-t", "-i", `tcp:${portStr}`]);
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter((l) => l.length > 0);
-    for (const pidStr of lines) {
-      const pid = Number.parseInt(pidStr, 10);
-      if (!Number.isNaN(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // already dead
-        }
+    const lines = stdout.trim().split("\n").filter((line) => line.length > 0);
+    for (const line of lines) {
+      const pid = Number.parseInt(line, 10);
+      if (Number.isNaN(pid)) {
+        continue;
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already dead
       }
     }
   } catch {

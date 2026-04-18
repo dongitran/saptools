@@ -11,6 +11,7 @@ import {
   registerNewSession,
   removeSession,
   sessionKeyString,
+  updateSessionPid,
   updateSessionStatus,
 } from "../../src/state.js";
 
@@ -115,6 +116,21 @@ describe("state management", () => {
     await updateSessionStatus(result.session.sessionId, "ready");
     const sessions = await readActiveSessions();
     expect(sessions[0]?.status).toBe("ready");
+  });
+
+  it("updateSessionPid writes the new pid to disk", async () => {
+    const result = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-srv",
+      apiEndpoint: "https://example.com",
+      portProbe: async () => true,
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+    await updateSessionPid(result.session.sessionId, process.pid);
+    const sessions = await readActiveSessions();
+    expect(sessions[0]?.pid).toBe(process.pid);
   });
 
   it("removeSession deletes the entry", async () => {

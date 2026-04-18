@@ -21,6 +21,29 @@ interface ScoredTarget extends DebugTarget {
   readonly runningInstances: number;
 }
 
+function scoreTargets(
+  regionKey: string,
+  apiEndpoint: string,
+  org: string,
+  space: string,
+  count: number,
+  appsOutput: string,
+): readonly ScoredTarget[] {
+  const running = parseApps(appsOutput)
+    .filter((app) => app.state === "started" && app.runningInstances > 0)
+    .slice(0, count);
+
+  return running.map((app) => ({
+    regionKey,
+    apiEndpoint,
+    org,
+    space,
+    app: app.name,
+    appState: app.state,
+    runningInstances: app.runningInstances,
+  }));
+}
+
 function candidateRegions(): readonly string[] {
   const override = process.env["CF_DEBUGGER_E2E_REGIONS"];
   if (override !== undefined && override.trim().length > 0) {
@@ -47,149 +70,97 @@ async function loginTo(
   }
 }
 
+async function discoverTargetsInRegion(
+  regionKey: string,
+  apiEndpoint: string,
+  email: string,
+  password: string,
+  count: number,
+): Promise<readonly ScoredTarget[]> {
+  return await withIsolatedCfHome(async ({ env }) => {
+    const authenticated = await loginTo(apiEndpoint, email, password, env);
+    if (!authenticated) {
+      return [];
+    }
+    let orgs: readonly string[];
+    try {
+      const { stdout } = await cfExec(["orgs"], env);
+      orgs = parseOrgs(stdout);
+    } catch {
+      return [];
+    }
+
+    for (const org of orgs) {
+      let spaces: readonly string[];
+      try {
+        await cfExec(["target", "-o", org], env);
+        const { stdout } = await cfExec(["spaces"], env);
+        spaces = parseSpaces(stdout);
+      } catch {
+        continue;
+      }
+
+      for (const space of spaces) {
+        try {
+          await cfExec(["target", "-o", org, "-s", space], env);
+          const { stdout } = await cfExec(["apps"], env);
+          const targets = scoreTargets(regionKey, apiEndpoint, org, space, count, stdout);
+          if (targets.length >= count) {
+            return targets;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return [];
+  });
+}
+
+export async function discoverDebugTargets(
+  email: string,
+  password: string,
+  count: number,
+): Promise<readonly DebugTarget[]> {
+  const regions = candidateRegions();
+
+  for (const regionKey of regions) {
+    const apiEndpoint = resolveApiEndpoint(regionKey);
+    const targets = await discoverTargetsInRegion(regionKey, apiEndpoint, email, password, count);
+    if (targets.length >= count) {
+      return targets.map((target) => ({
+        regionKey: target.regionKey,
+        apiEndpoint: target.apiEndpoint,
+        org: target.org,
+        space: target.space,
+        app: target.app,
+      }));
+    }
+  }
+
+  return [];
+}
+
 export async function discoverDebugTarget(
   email: string,
   password: string,
 ): Promise<DebugTarget | undefined> {
-  const regions = candidateRegions();
-  const discovered: ScoredTarget[] = [];
-
-  for (const regionKey of regions) {
-    const apiEndpoint = resolveApiEndpoint(regionKey);
-    const target = await withIsolatedCfHome(async ({ env }) => {
-      const authenticated = await loginTo(apiEndpoint, email, password, env);
-      if (!authenticated) {
-        return undefined;
-      }
-      let orgs: readonly string[];
-      try {
-        const { stdout } = await cfExec(["orgs"], env);
-        orgs = parseOrgs(stdout);
-      } catch {
-        return undefined;
-      }
-      if (orgs.length === 0) {
-        return undefined;
-      }
-
-      for (const org of orgs) {
-        let spaces: readonly string[];
-        try {
-          await cfExec(["target", "-o", org], env);
-          const { stdout } = await cfExec(["spaces"], env);
-          spaces = parseSpaces(stdout);
-        } catch {
-          continue;
-        }
-        for (const space of spaces) {
-          try {
-            await cfExec(["target", "-o", org, "-s", space], env);
-            const { stdout } = await cfExec(["apps"], env);
-            const apps = parseApps(stdout);
-            const running = apps.filter(
-              (a) => a.state === "started" && a.runningInstances > 0,
-            );
-            if (running.length === 0) {
-              continue;
-            }
-            const pick = running[0];
-            if (pick === undefined) {
-              continue;
-            }
-            return {
-              regionKey,
-              apiEndpoint,
-              org,
-              space,
-              app: pick.name,
-              appState: pick.state,
-              runningInstances: pick.runningInstances,
-            } satisfies ScoredTarget;
-          } catch {
-            continue;
-          }
-        }
-      }
-      return undefined;
-    });
-
-    if (target !== undefined) {
-      discovered.push(target);
-      break;
-    }
-  }
-
-  const first = discovered[0];
-  if (first === undefined) {
-    return undefined;
-  }
-  return {
-    regionKey: first.regionKey,
-    apiEndpoint: first.apiEndpoint,
-    org: first.org,
-    space: first.space,
-    app: first.app,
-  };
+  const targets = await discoverDebugTargets(email, password, 1);
+  const first = targets[0];
+  return first;
 }
 
 export async function discoverTwoDebugTargets(
   email: string,
   password: string,
 ): Promise<readonly DebugTarget[]> {
-  const regions = candidateRegions();
+  return await discoverDebugTargets(email, password, 2);
+}
 
-  for (const regionKey of regions) {
-    const apiEndpoint = resolveApiEndpoint(regionKey);
-    const targets = await withIsolatedCfHome(async ({ env }) => {
-      const authenticated = await loginTo(apiEndpoint, email, password, env);
-      if (!authenticated) {
-        return [];
-      }
-      let orgs: readonly string[];
-      try {
-        const { stdout } = await cfExec(["orgs"], env);
-        orgs = parseOrgs(stdout);
-      } catch {
-        return [];
-      }
-      for (const org of orgs) {
-        let spaces: readonly string[];
-        try {
-          await cfExec(["target", "-o", org], env);
-          const { stdout } = await cfExec(["spaces"], env);
-          spaces = parseSpaces(stdout);
-        } catch {
-          continue;
-        }
-        for (const space of spaces) {
-          try {
-            await cfExec(["target", "-o", org, "-s", space], env);
-            const { stdout } = await cfExec(["apps"], env);
-            const apps = parseApps(stdout);
-            const running = apps
-              .filter((a) => a.state === "started" && a.runningInstances > 0)
-              .slice(0, 2);
-            if (running.length >= 2) {
-              return running.map((row) => ({
-                regionKey,
-                apiEndpoint,
-                org,
-                space,
-                app: row.name,
-              } satisfies DebugTarget));
-            }
-          } catch {
-            continue;
-          }
-        }
-      }
-      return [];
-    });
-
-    if (targets.length >= 2) {
-      return targets;
-    }
-  }
-
-  return [];
+export async function discoverThreeDebugTargets(
+  email: string,
+  password: string,
+): Promise<readonly DebugTarget[]> {
+  return await discoverDebugTargets(email, password, 3);
 }

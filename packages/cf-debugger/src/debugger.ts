@@ -15,14 +15,16 @@ import {
   spawnSshTunnel,
 } from "./cf.js";
 import { sessionCfHomeDir } from "./paths.js";
-import { isPortFree, killProcessOnPort, probeTunnelReady } from "./port.js";
+import { findListeningProcessId, isPortFree, killProcessOnPort, probeTunnelReady } from "./port.js";
 import { resolveApiEndpoint } from "./regions.js";
 import {
+  isPidAlive,
   matchesKey,
   readAndPruneActiveSessions,
   registerNewSession,
   removeSession,
   sessionKeyString,
+  updateSessionPid,
   updateSessionStatus,
 } from "./state.js";
 import type {
@@ -39,6 +41,46 @@ const POST_USR1_DELAY_MS = 300;
 const PORT_CLEANUP_DELAY_MS = 600;
 const CHILD_SIGTERM_GRACE_MS = 2_000;
 const PORT_RECLAIM_DELAY_MS = 250;
+const PID_TERMINATION_POLL_MS = 100;
+
+function signalPidOrGroup(pid: number, signal: NodeJS.Signals): void {
+  const isWindows = process.platform === "win32";
+  if (!isWindows) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // fall through to direct pid signal
+    }
+  }
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // already gone
+  }
+}
+
+async function terminatePidOrGroup(
+  pid: number,
+  timeoutMs: number = CHILD_SIGTERM_GRACE_MS,
+): Promise<void> {
+  if (!isPidAlive(pid)) {
+    return;
+  }
+
+  signalPidOrGroup(pid, "SIGTERM");
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!isPidAlive(pid)) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, PID_TERMINATION_POLL_MS);
+    });
+  }
+
+  signalPidOrGroup(pid, "SIGKILL");
+}
 
 async function killProcessGroupOrProc(
   child: ChildProcess,
@@ -50,35 +92,7 @@ async function killProcessGroupOrProc(
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  const isWindows = process.platform === "win32";
-  const send = (sig: NodeJS.Signals): void => {
-    try {
-      if (!isWindows && child.pid !== undefined) {
-        process.kill(-child.pid, sig);
-      } else {
-        child.kill(sig);
-      }
-    } catch {
-      // already gone
-    }
-  };
-  send("SIGTERM");
-  const closed = await new Promise<boolean>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolve(true);
-      return;
-    }
-    const t = setTimeout(() => {
-      resolve(false);
-    }, timeoutMs);
-    child.once("close", () => {
-      clearTimeout(t);
-      resolve(true);
-    });
-  });
-  if (!closed) {
-    send("SIGKILL");
-  }
+  await terminatePidOrGroup(child.pid, timeoutMs);
 }
 
 async function pruneAndCleanupOrphans(): Promise<readonly ActiveSession[]> {
@@ -275,6 +289,9 @@ export async function startDebugger(options: StartDebuggerOptions): Promise<Debu
     }
 
     child = spawnSshTunnel(options.app, session.localPort, session.remotePort, context);
+    if (child.pid !== undefined) {
+      await updateSessionPid(session.sessionId, child.pid);
+    }
 
     child.on("close", (code) => {
       tunnelClosed = true;
@@ -295,9 +312,15 @@ export async function startDebugger(options: StartDebuggerOptions): Promise<Debu
       );
     }
 
+    const listeningPid = await findListeningProcessId(session.localPort);
+    const activePid = listeningPid ?? child.pid ?? session.pid;
+    if (activePid !== session.pid) {
+      await updateSessionPid(session.sessionId, activePid);
+    }
+
     emit("ready");
     const readySession = await updateSessionStatus(session.sessionId, "ready");
-    const activeSession: ActiveSession = readySession ?? { ...session, status: "ready" };
+    const activeSession: ActiveSession = readySession ?? { ...session, pid: activePid, status: "ready" };
 
     let disposePromise: Promise<void> | undefined;
     const handle: DebuggerHandle = {
@@ -343,7 +366,7 @@ export async function stopDebugger(options: StopOptions): Promise<ActiveSession 
   }
   if (target.pid !== process.pid) {
     try {
-      process.kill(target.pid, "SIGTERM");
+      await terminatePidOrGroup(target.pid);
     } catch {
       // process already gone — cleanup below
     }
@@ -357,7 +380,7 @@ export async function stopDebugger(options: StopOptions): Promise<ActiveSession 
   } catch {
     // best-effort
   }
-  return removed;
+  return removed ?? target;
 }
 
 export async function stopAllDebuggers(): Promise<number> {
