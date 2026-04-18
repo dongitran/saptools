@@ -1,90 +1,186 @@
-# `@saptools/cf-xsuaa`
+<div align="center">
 
-Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps.
+# 🔐 `@saptools/cf-xsuaa`
 
-The package reads an app's `VCAP_SERVICES` via `cf env`, extracts the XSUAA binding, caches the client credentials to disk, and exchanges them for OAuth2 `client_credentials` tokens. Subsequent calls reuse cached tokens until they expire, so interactive tools and CI pipelines avoid unnecessary round-trips to the UAA.
+**Stop copy-pasting XSUAA tokens from the BTP cockpit.**
 
-Repository: https://github.com/dongitran/saptools/tree/main/packages/cf-xsuaa
+Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps — straight from your terminal, with intelligent caching built in.
 
-## Install
+[![npm version](https://img.shields.io/npm/v/@saptools/cf-xsuaa.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/cf-xsuaa)
+[![license](https://img.shields.io/npm/l/@saptools/cf-xsuaa.svg?style=flat&color=blue)](./LICENSE)
+[![node](https://img.shields.io/node/v/@saptools/cf-xsuaa.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
+[![install size](https://packagephobia.com/badge?p=@saptools/cf-xsuaa)](https://packagephobia.com/result?p=@saptools/cf-xsuaa)
+[![types](https://img.shields.io/npm/types/@saptools/cf-xsuaa.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-Use it as a CLI:
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+
+</div>
+
+---
+
+## ✨ Features
+
+- 🔑 **Zero-config OAuth2** — fetches `client_credentials` tokens straight from the XSUAA binding of any CF app
+- 💾 **Smart caching** — reuses tokens until they expire, with a 45-second safety buffer so you never ship a stale JWT
+- 🧩 **CLI & API** — drop into shell scripts, Node pipelines, or your favorite test runner
+- 🔗 **CF-aware** — resolves API endpoints from `@saptools/cf-sync` snapshots, no manual URLs
+- 🔒 **Type-safe** — shipped with full TypeScript definitions
+- 🪶 **Tiny** — one dependency (`commander`) and zero runtime magic
+
+---
+
+## 📦 Install
 
 ```bash
+# Global CLI
 npm install -g @saptools/cf-xsuaa
-```
 
-Or as a dependency:
-
-```bash
+# Or as a dependency
 npm install @saptools/cf-xsuaa
+# pnpm add @saptools/cf-xsuaa
+# yarn add @saptools/cf-xsuaa
 ```
 
-## Requirements
+> [!NOTE]
+> Requires **Node.js ≥ 20**, the **`cf` CLI** on `PATH`, and an existing `~/.saptools/cf-structure.json` produced by [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync).
 
-- `Node.js >= 20`
-- `cf` CLI installed and available on `PATH`
-- `SAP_EMAIL`
-- `SAP_PASSWORD`
-- An existing `~/.saptools/cf-structure.json` produced by [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync) so the package can resolve the region's API endpoint
+---
 
-Example:
+## 🚀 Quick Start
 
 ```bash
-export SAP_EMAIL="your.name@company.com"
-export SAP_PASSWORD="your-password"
+# 1. Tell cf-xsuaa who you are (only needed for the first secret fetch)
+export SAP_EMAIL="you@company.com"
+export SAP_PASSWORD="your-sap-password"
+
+# 2. Grab a token (auto-fetches the XSUAA binding on first call, caches it forever)
+cf-xsuaa get-token-cached \
+  --region ap10 --org my-org --space dev --app my-srv
 ```
 
-Credentials are only consulted when `cf-xsuaa` needs to refresh the VCAP-bound client secret. Once a secret is cached, token refreshes go straight to the UAA and do not require `SAP_EMAIL` / `SAP_PASSWORD`.
+That's it. Copy the printed JWT into `curl`, `Postman`, `bruno`, or wherever you need it. Next call reuses the cached token until it expires.
 
-## CLI
+---
+
+## 🧰 CLI
 
 Every command identifies an app with the same four flags:
 
-- `-r, --region <key>`: CF region key (e.g. `ap10`, `eu10`)
-- `-o, --org <name>`: CF org name
-- `-s, --space <name>`: CF space name
-- `-a, --app <name>`: CF app name
+| Flag | Description | Example |
+| --- | --- | --- |
+| `-r, --region <key>` | CF region key | `ap10`, `eu10`, `us10` |
+| `-o, --org <name>` | CF org name | `my-org` |
+| `-s, --space <name>` | CF space name | `dev` |
+| `-a, --app <name>` | CF app name | `my-srv` |
 
-### `cf-xsuaa fetch-secret`
+### 🔎 `cf-xsuaa fetch-secret`
 
-Fetch the XSUAA client credentials from the app's `VCAP_SERVICES` and save them to disk.
-
-Use this once per app, or whenever the binding rotates.
+Pull the XSUAA client credentials out of the app's `VCAP_SERVICES` and cache them to disk. Run this once per app, or whenever the binding rotates.
 
 ```bash
 cf-xsuaa fetch-secret --region ap10 --org my-org --space dev --app my-srv
 ```
 
-### `cf-xsuaa get-token`
+### 🎟️ `cf-xsuaa get-token`
 
-Fetch a fresh OAuth2 `client_credentials` access token. Prints the JWT to stdout.
-
-If no secret is cached yet, the command will auto-run `fetch-secret` first.
+Fetch a **fresh** OAuth2 `client_credentials` token and print the JWT to stdout. Auto-runs `fetch-secret` first if the binding isn't cached yet.
 
 ```bash
 cf-xsuaa get-token --region ap10 --org my-org --space dev --app my-srv
 ```
 
-### `cf-xsuaa get-token-cached`
+### ⚡ `cf-xsuaa get-token-cached`
 
-Return the cached token if it is still valid, otherwise fetch a new one. Best choice for interactive use and pipelines that call the UAA repeatedly.
+Return the cached token if it's still valid, otherwise fetch a new one. **This is what you want 99% of the time.**
 
 ```bash
-cf-xsuaa get-token-cached --region ap10 --org my-org --space dev --app my-srv
+TOKEN=$(cf-xsuaa get-token-cached --region ap10 --org my-org --space dev --app my-srv)
+curl -H "Authorization: Bearer $TOKEN" https://my-srv.cfapps.ap10.hana.ondemand.com/api/health
 ```
 
-The expiry buffer is 45 seconds — tokens are considered expired 45 seconds before their `exp` claim so the caller never uses a nearly-expired token.
+> [!TIP]
+> Tokens are treated as expired 45 seconds before their `exp` claim, so callers never hand out a nearly-expired JWT.
 
-## Output Files
+---
 
-The package manages one file under `~/.saptools/`:
+## 🧑‍💻 Programmatic Usage
+
+```ts
+import {
+  fetchSecret,
+  getToken,
+  getTokenCached,
+  readStore,
+  xsuaaDataPath,
+} from "@saptools/cf-xsuaa";
+
+const ref = {
+  region: "ap10",
+  org: "my-org",
+  space: "dev",
+  app: "my-srv",
+} as const;
+
+// One-time: cache the client credentials
+await fetchSecret(ref);
+
+// Every call: reuse a cached token when possible
+const token = await getTokenCached(ref);
+
+// Or: force a fresh token
+const freshToken = await getToken(ref);
+
+// Introspect the cache
+const store = await readStore();
+console.log(`${store.entries.length} apps cached in ${xsuaaDataPath()}`);
+```
+
+### 🧪 Dependency injection (great for tests)
+
+```ts
+await getToken(ref, {
+  fetchCredentials: async () => ({
+    clientId: "cid",
+    clientSecret: "csec",
+    url: "https://uaa.example.com",
+  }),
+  fetchToken: async () => "fake-jwt",
+  now: new Date("2026-04-18T00:00:00Z"),
+});
+```
+
+<details>
+<summary><b>📚 Full export list</b></summary>
+
+| Export | Description |
+| --- | --- |
+| `fetchSecret(ref)` | Cache a freshly-fetched XSUAA binding |
+| `getToken(ref)` | Force a new OAuth2 token |
+| `getTokenCached(ref)` | Reuse cache, fall through on expiry |
+| `readStore()` / `writeStore(store)` | Read / write the on-disk store |
+| `findEntry(store, ref)` | Look up a single entry |
+| `upsertSecret(store, ref, creds)` | Merge credentials into a store |
+| `upsertToken(store, ref, token)` | Merge a token into a store |
+| `fetchClientCredentialsToken(creds)` | Low-level UAA call |
+| `parseXsuaaFromVcap(stdout)` | Parse `cf env` output |
+| `decodeJwtPayload(jwt)` | Decode the JWT payload without verification |
+| `computeExpiryIso(jwt)` / `isExpired(iso)` | Expiry math |
+| `xsuaaDataPath()` / `saptoolsDir()` | Resolve on-disk paths |
+
+</details>
+
+---
+
+## 📁 Output File
+
+All state lives in a single JSON file under your home directory:
 
 ```text
 ~/.saptools/xsuaa-data.json
 ```
 
-Shape:
+<details>
+<summary><b>🔬 Shape of <code>xsuaa-data.json</code></b></summary>
 
 ```jsonc
 {
@@ -111,72 +207,46 @@ Shape:
 }
 ```
 
-Services should prefer the CLI commands or exported APIs over parsing this file directly.
+</details>
 
-## Programmatic Usage
+> [!IMPORTANT]
+> Prefer the CLI or exported APIs over parsing this file directly — the on-disk format is an implementation detail.
 
-```ts
-import {
-  fetchSecret,
-  getToken,
-  getTokenCached,
-  readStore,
-  xsuaaDataPath,
-} from "@saptools/cf-xsuaa";
+---
 
-const ref = {
-  region: "ap10",
-  org: "my-org",
-  space: "dev",
-  app: "my-srv",
-};
+## ❓ FAQ
 
-// One-time: cache the client credentials
-await fetchSecret(ref);
+<details>
+<summary><b>Do I need <code>SAP_EMAIL</code> / <code>SAP_PASSWORD</code> on every call?</b></summary>
 
-// Every call: re-use a cached token when possible
-const token = await getTokenCached(ref);
+No. Those are only read when `cf-xsuaa` has to refresh the VCAP-bound **client secret**. Once the secret is cached, token refreshes go straight to the UAA with `client_credentials` — no SAP user credentials required.
 
-// Or: force a fresh token
-const freshToken = await getToken(ref);
+</details>
 
-const store = await readStore();
-console.log(store.entries.length, "apps cached in", xsuaaDataPath());
-```
+<details>
+<summary><b>How is this different from <code>cf oauth-token</code>?</b></summary>
 
-Every command accepts options for dependency injection, useful for tests:
+`cf oauth-token` returns **your personal UAA token**. `cf-xsuaa` returns the **app's own service token** (issued to the XSUAA `clientId` in `VCAP_SERVICES`), which is what you actually need when calling the app's protected endpoints.
 
-```ts
-await getToken(ref, {
-  fetchCredentials: async () => ({
-    clientId: "cid",
-    clientSecret: "csec",
-    url: "https://uaa.example.com",
-  }),
-  fetchToken: async () => "fake-jwt",
-  now: new Date("2026-04-18T00:00:00Z"),
-});
-```
+</details>
 
-Useful exports include:
+<details>
+<summary><b>Is the cached token safe to commit?</b></summary>
 
-- `fetchSecret`
-- `getToken`
-- `getTokenCached`
-- `readStore`
-- `writeStore`
-- `findEntry`
-- `upsertSecret`
-- `upsertToken`
-- `fetchClientCredentialsToken`
-- `parseXsuaaFromVcap`
-- `decodeJwtPayload`
-- `computeExpiryIso`
-- `isExpired`
-- `xsuaaDataPath`
-- `saptoolsDir`
+**No.** `~/.saptools/xsuaa-data.json` contains `clientSecret` and live JWTs. It lives under your home directory and should never be checked into git.
 
-## Development
+</details>
+
+<details>
+<summary><b>How do I invalidate a cached secret?</b></summary>
+
+Run `cf-xsuaa fetch-secret` again with the same `--region/--org/--space/--app` flags and the entry will be overwritten.
+
+</details>
+
+---
+
+## 🛠️ Development
 
 From the monorepo root:
 
@@ -188,12 +258,25 @@ pnpm --filter @saptools/cf-xsuaa test:unit
 pnpm --filter @saptools/cf-xsuaa test:e2e
 ```
 
-The e2e suite auto-discovers a real CF app with an `xsuaa` service binding by scoring candidates from `~/.saptools/cf-structure.json`. To pin a specific target, set:
+The e2e suite **auto-discovers** a real CF app with an `xsuaa` service binding by scoring candidates from `~/.saptools/cf-structure.json`. To pin a specific target:
 
 ```bash
 export E2E_TARGET="ap10/my-org/my-space/my-srv"
 ```
 
-## License
+---
 
-MIT
+## 🌐 Related
+
+- 📦 [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync) — sync the CF `region → org → space → app` tree to disk
+- 🗂️ [saptools monorepo](https://github.com/dongitran/saptools) — the full toolbox
+
+---
+
+<div align="center">
+
+Made with ❤️ for SAP BTP developers who refuse to click through the cockpit one more time.
+
+**License** · [MIT](./LICENSE)
+
+</div>
