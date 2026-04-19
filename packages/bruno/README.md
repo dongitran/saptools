@@ -46,7 +46,7 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 - 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
-- 🧪 **Fully tested** — 81 unit tests + 7 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🧪 **Fully tested** — 83 unit tests + 7 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
 - 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
 
 ---
@@ -129,6 +129,7 @@ After `setup-app`, your workspace looks like this:
 
 ```text
 .
+├── bruno.json
 └── region__ap10/
     └── org__my-org/
         └── space__dev/
@@ -171,6 +172,7 @@ saptools-bruno --collection ./collections setup-app
 
 **What you get**
 
+- A root-level `bruno.json` if the collection directory does not already have one
 - Folder tree: `region__<key>/org__<org>/space__<space>/<app>/environments/`
 - One `.bru` env file per selection, each seeded with `__cf_region`, `__cf_org`, `__cf_space`, `__cf_app`, `environment`, and an empty `baseUrl`
 - Existing env files are preserved; only missing `__cf_*` vars are patched back in
@@ -304,6 +306,7 @@ All state lives under your home directory or your collection root:
 ~/.saptools/bruno-context.json              # pinned region/org/space/app + updatedAt
 
 <root>/
+├── bruno.json
 └── region__<key>/
     └── org__<org>/
         └── space__<space>/

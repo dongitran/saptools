@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type {
   CfStructure,
@@ -77,9 +77,39 @@ describe("setupApp", () => {
     expect(result.created).toBe(true);
     expect(result.ref.region).toBe("ap10");
     expect(result.environments).toHaveLength(1);
+    const collectionConfig = JSON.parse(await readFile(join(root, "bruno.json"), "utf8")) as {
+      readonly name: string;
+      readonly type: string;
+    };
+    expect(collectionConfig).toMatchObject({
+      name: basename(root),
+      type: "collection",
+    });
     const raw = await readFile(result.environments[0] ?? "", "utf8");
     expect(raw).toContain("__cf_region: ap10");
     expect(raw).toContain("__cf_org: demo");
+  });
+
+  it("creates a sensible collection name for hidden roots like .bruno", async () => {
+    const hiddenRoot = join(root, ".bruno");
+    const result = await setupApp({
+      root: hiddenRoot,
+      deps: makeDeps(),
+      prompts: {
+        selectRegion: async () => "ap10",
+        selectOrg: async () => "demo",
+        selectSpace: async () => "dev",
+        selectApp: async () => "api",
+        confirmCreate: async () => true,
+        selectEnvironments: async () => ["local"],
+      },
+    });
+    expect(result.created).toBe(true);
+
+    const collectionConfig = JSON.parse(await readFile(join(hiddenRoot, "bruno.json"), "utf8")) as {
+      readonly name: string;
+    };
+    expect(collectionConfig.name).toBe("bruno");
   });
 
   it("honors user abort", async () => {
@@ -158,6 +188,33 @@ describe("setupApp", () => {
     });
     expect(secondRun.created).toBe(true);
     expect(offered).toEqual(["prod"]);
+  });
+
+  it("preserves an existing bruno.json at the collection root", async () => {
+    await writeFile(
+      join(root, "bruno.json"),
+      `${JSON.stringify({ version: "1", name: "custom-name", type: "collection" }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = await setupApp({
+      root,
+      deps: makeDeps(),
+      prompts: {
+        selectRegion: async () => "ap10",
+        selectOrg: async () => "demo",
+        selectSpace: async () => "dev",
+        selectApp: async () => "api",
+        confirmCreate: async () => true,
+        selectEnvironments: async () => ["local"],
+      },
+    });
+
+    expect(result.created).toBe(true);
+    const collectionConfig = JSON.parse(await readFile(join(root, "bruno.json"), "utf8")) as {
+      readonly name: string;
+    };
+    expect(collectionConfig.name).toBe("custom-name");
   });
 
   it("accepts custom environment names alongside common selections", async () => {

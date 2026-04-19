@@ -1,5 +1,5 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type { OrgNode, RegionKey, RegionNode, SpaceNode } from "@saptools/cf-sync";
 
@@ -43,6 +43,7 @@ export interface SetupAppResult {
 }
 
 export const COMMON_ENVIRONMENTS = ["local", "dev", "staging", "prod"] as const;
+const BRUNO_COLLECTION_CONFIG_FILENAME = "bruno.json";
 
 export const ENV_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 
@@ -67,6 +68,35 @@ function emptyEnvContent(envName: string, ref: CfAppRef): string {
     "",
   ];
   return lines.join("\n");
+}
+
+function normalizeCollectionName(root: string): string {
+  const candidate = basename(root).replace(/^\.+/, "").trim();
+  return candidate.length > 0 ? candidate : "bruno-collection";
+}
+
+function defaultBrunoConfig(root: string): string {
+  return `${JSON.stringify(
+    {
+      version: "1",
+      name: normalizeCollectionName(root),
+      type: "collection",
+      ignore: ["node_modules", ".git"],
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+async function ensureCollectionConfig(root: string): Promise<void> {
+  const filePath = join(root, BRUNO_COLLECTION_CONFIG_FILENAME);
+  try {
+    await writeFile(filePath, defaultBrunoConfig(root), { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw err;
+    }
+  }
 }
 
 async function ensureEnvFile(appPath: string, envName: string, ref: CfAppRef): Promise<string> {
@@ -159,6 +189,8 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
     return { ref, appPath, environments: [], created: false };
   }
 
+  await mkdir(options.root, { recursive: true });
+  await ensureCollectionConfig(options.root);
   await mkdir(appPath, { recursive: true });
 
   const existingEnvs = await listExistingEnvs(appPath);
