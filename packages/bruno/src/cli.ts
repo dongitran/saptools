@@ -3,6 +3,7 @@ import process from "node:process";
 import { confirm, select } from "@inquirer/prompts";
 import { Command, Option } from "commander";
 
+import { promptForAppSelection } from "./app-search-prompt.js";
 import { readContext } from "./context.js";
 import { promptForEnvironments } from "./environment-prompt.js";
 import { runBruno } from "./run.js";
@@ -48,7 +49,7 @@ export async function main(argv: readonly string[]): Promise<void> {
           selectRegion: async (choices) => await select({ message: "Select region", choices: [...choices] }),
           selectOrg: async (choices) => await select({ message: "Select org", choices: [...choices] }),
           selectSpace: async (choices) => await select({ message: "Select space", choices: [...choices] }),
-          selectApp: async (choices) => await select({ message: "Select app", choices: [...choices] }),
+          selectApp: async (choices) => await promptForAppSelection(choices),
           confirmCreate: async (path) => await confirm({ message: `Create ${path}?`, default: true }),
           selectEnvironments: async (opts) => await promptForEnvironments(opts),
         },

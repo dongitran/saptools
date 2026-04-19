@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { test, expect } from "@playwright/test";
+import type { RegionNode } from "@saptools/cf-sync";
+
+import { promptForAppSelection } from "../../src/app-search-prompt.js";
+import type { CfInfoDeps } from "../../src/cf-info.js";
+import { setupApp } from "../../src/setup-app.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -275,3 +280,82 @@ test("run fails clearly when a pre-cached token does not exist (would reach out 
 });
 
 void execFileAsync;
+
+test("setup-app can narrow a large app list through the searchable app prompt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "saptools-bruno-setup-root-"));
+  const apps = Array.from({ length: 50 }, (_, index) => ({ name: `service-${index.toString().padStart(2, "0")}` }));
+  apps.push({ name: "config-main" }, { name: "config-system" }, { name: "config-admin" });
+
+  const region: RegionNode = {
+    key: "ap10",
+    label: "Singapore",
+    apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+    accessible: true,
+    orgs: [
+      {
+        name: "demo-org",
+        spaces: [
+          {
+            name: "app",
+            apps,
+          },
+        ],
+      },
+    ],
+  };
+
+  const deps: CfInfoDeps = {
+    readStructureView: async () => ({
+      source: "stable",
+      structure: {
+        syncedAt: "2026-04-19T00:00:00Z",
+        regions: [region],
+      },
+      metadata: undefined,
+    }),
+    readRegionsView: async () => ({
+      source: "stable",
+      regions: [{ key: "ap10", label: "Singapore", apiEndpoint: region.apiEndpoint }],
+      metadata: undefined,
+    }),
+    readRegionView: async () => ({
+      source: "stable",
+      region,
+      metadata: undefined,
+    }),
+    getRegionView: async () => ({
+      source: "stable",
+      region,
+      metadata: undefined,
+    }),
+  };
+
+  try {
+    const result = await setupApp({
+      root,
+      deps,
+      prompts: {
+        selectRegion: async () => "ap10",
+        selectOrg: async () => "demo-org",
+        selectSpace: async () => "app",
+        selectApp: async (choices) => await promptForAppSelection(choices, {
+          searchPrompt: async (config) => {
+            const filtered = await config.source("config-ad", { signal: new AbortController().signal });
+            expect(filtered).toEqual([{ value: "config-admin", name: "config-admin" }]);
+            return "config-admin";
+          },
+        }),
+        confirmCreate: async () => true,
+        selectEnvironments: async () => ["local", "uit"],
+      },
+    });
+
+    expect(result.created).toBe(true);
+    expect(result.ref.app).toBe("config-admin");
+    expect(result.appPath).toContain("config-admin");
+    expect(result.environments).toHaveLength(2);
+    await expect(readFile(join(root, "bruno.json"), "utf8")).resolves.toContain('"type": "collection"');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

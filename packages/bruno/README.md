@@ -40,13 +40,13 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 
 ## ✨ Features
 
-- 🏗️ **Interactive `setup-app`** — pick a region → org → space → app from your cached CF landscape, then **choose exactly the environments you want** (or type a custom name like `qa-eu`). Every env file is seeded with `__cf_*` metadata so the runner knows where to fetch a token.
+- 🏗️ **Interactive `setup-app`** — pick a region → org → space, then **search apps as you type** before choosing exactly the environments you want (or typing a custom name like `qa-eu`). Every env file is seeded with `__cf_*` metadata so the runner knows where to fetch a token.
 - 🧭 **Shorthand paths** — `region/org/space/app[/folder/file.bru]` expands to the right filesystem path. No more `cd`-ing through nested folders.
 - 🔐 **Automatic XSUAA tokens** — every `run` fetches (or reuses) a cached token via [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa) and injects it as `accessToken` for `bru`.
 - 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
-- 🧪 **Fully tested** — 83 unit tests + 7 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🧪 **Fully tested** — 88 unit tests + 8 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
 - 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
 
 ---
@@ -160,7 +160,7 @@ Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable �
 
 ### 🏗️ `saptools-bruno setup-app`
 
-Interactively scaffold a Bruno app folder inside the current Bruno collection directory. Walks you through **region → org → space → app**, then lets you **pick which environments to create** and add custom names without leaving the environment picker.
+Interactively scaffold a Bruno app folder inside the current Bruno collection directory. Walks you through **region → org → space → app**, with the **app step using a searchable picker** for large spaces, then lets you **pick which environments to create** and add custom names without leaving the environment picker.
 
 ```bash
 saptools-bruno setup-app
