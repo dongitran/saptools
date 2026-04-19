@@ -54,11 +54,11 @@ importers:
         specifier: ^8.3.2
         version: 8.4.1(@types/node@25.6.0)
       '@saptools/cf-sync':
-        specifier: workspace:*
-        version: link:../cf-sync
+        specifier: 0.3.3
+        version: 0.3.3
       '@saptools/cf-xsuaa':
-        specifier: workspace:*
-        version: link:../cf-xsuaa
+        specifier: 0.1.4
+        version: 0.1.4
       '@usebruno/cli':
         specifier: ^3.2.2
         version: 3.2.2
@@ -1303,6 +1303,16 @@ packages:
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
+
+  '@saptools/cf-sync@0.3.3':
+    resolution: {integrity: sha512-FSn3Wy+R40oKCMhuyaYee9OyEbFIoT0J1E5TOm7cTf6FagsOXf62jh9apwsps15NIVWTAhraxICTW98wkhdFHw==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
+  '@saptools/cf-xsuaa@0.1.4':
+    resolution: {integrity: sha512-EIUQ1T9mhhVSS/XdeD7Zo/DLnkWhZh54lAiQUlg73afyeXq7Re9RJhZBBXxhu1tEYZ1oVW21pGY75g/dAerAjA==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
 
   '@smithy/config-resolver@4.4.16':
     resolution: {integrity: sha512-GFlGPNLZKrGfqWpqVb31z7hvYCA9ZscfX1buYnvvMGcRYsQQnhH+4uN6mWWflcD5jB4OXP/LBrdpukEdjl41tg==}
@@ -5502,6 +5512,16 @@ snapshots:
 
   '@rtsao/scc@1.1.0': {}
 
+  '@saptools/cf-sync@0.3.3':
+    dependencies:
+      commander: 13.1.0
+      ora: 9.3.0
+
+  '@saptools/cf-xsuaa@0.1.4':
+    dependencies:
+      '@saptools/cf-sync': 0.3.3
+      commander: 13.1.0
+
   '@smithy/config-resolver@4.4.16':
     dependencies:
       '@smithy/node-config-provider': 4.3.14
@@ -5983,7 +6003,7 @@ snapshots:
       '@usebruno/js': 0.46.1(debug@4.4.3)
       '@usebruno/lang': 0.35.0
       '@usebruno/requests': 0.16.2
-      aws4-axios: 3.4.0(axios@1.13.6)
+      aws4-axios: 3.4.0(axios@1.13.6(debug@4.4.3))
       axios: 1.13.6(debug@4.4.3)
       axios-ntlm: 1.4.6(debug@4.4.3)
       chai: 4.5.0
@@ -6280,7 +6300,7 @@ snapshots:
     dependencies:
       possible-typed-array-names: 1.1.0
 
-  aws4-axios@3.4.0(axios@1.13.6):
+  aws4-axios@3.4.0(axios@1.13.6(debug@4.4.3)):
     dependencies:
       '@aws-sdk/client-sts': 3.1032.0
       aws4: 1.13.2
