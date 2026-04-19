@@ -47,7 +47,12 @@
     "serialises",
     "SIGUSR",
     "HXYZ",
-    "HXYZABCD"
+    "HXYZABCD",
+    "sqltools",
+    "SQLTOOLS",
+    "summarise",
+    "unparseable",
+    "openssl"
   ],
   "ignorePaths": [
     "node_modules/**",

@@ -1,14 +1,14 @@
 {
-  "name": "@saptools/cf-xsuaa",
-  "version": "0.1.5",
-  "description": "Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps",
+  "name": "@saptools/sqltools",
+  "version": "0.1.1",
+  "description": "Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections",
   "type": "module",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "bin": {
-    "cf-xsuaa": "dist/cli.js"
+    "sqltools-export": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,16 +27,22 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
     "test:unit": "vitest run --coverage",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:fake": "playwright test tests/e2e/export.e2e.ts",
+    "test:e2e:live": "playwright test tests/e2e/live.e2e.ts"
   },
   "keywords": [
     "sap",
-    "xsuaa",
-    "oauth2",
+    "hana",
+    "s4hana",
+    "sqltools",
+    "vscode",
+    "vcap",
     "cloud-foundry",
     "btp",
+    "cli",
     "saptools"
   ],
   "author": "Dong Tran",
@@ -44,9 +50,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dongitran/saptools.git",
-    "directory": "packages/cf-xsuaa"
+    "directory": "packages/sqltools"
   },
-  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-xsuaa#readme",
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/sqltools#readme",
   "bugs": {
     "url": "https://github.com/dongitran/saptools/issues"
   },

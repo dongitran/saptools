@@ -54,11 +54,11 @@ importers:
         specifier: ^8.3.2
         version: 8.4.1(@types/node@25.6.0)
       '@saptools/cf-sync':
-        specifier: 0.3.3
-        version: 0.3.3
+        specifier: ^0.3.5
+        version: link:../cf-sync
       '@saptools/cf-xsuaa':
-        specifier: 0.1.4
-        version: 0.1.4
+        specifier: ^0.1.5
+        version: link:../cf-xsuaa
       '@usebruno/cli':
         specifier: ^3.2.2
         version: 3.2.2
@@ -123,7 +123,29 @@ importers:
   packages/cf-xsuaa:
     dependencies:
       '@saptools/cf-sync':
-        specifier: workspace:*
+        specifier: ^0.3.5
+        version: link:../cf-sync
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.59.1
+      '@vitest/coverage-v8':
+        specifier: ^3.0.0
+        version: 3.2.4(vitest@3.2.4(@types/node@25.6.0)(yaml@2.8.3))
+      tsup:
+        specifier: ^8.3.0
+        version: 8.5.1(postcss@8.5.10)(typescript@5.9.3)(yaml@2.8.3)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.6.0)(yaml@2.8.3)
+
+  packages/sqltools:
+    dependencies:
+      '@saptools/cf-sync':
+        specifier: ^0.3.5
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0
@@ -1303,16 +1325,6 @@ packages:
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
-
-  '@saptools/cf-sync@0.3.3':
-    resolution: {integrity: sha512-FSn3Wy+R40oKCMhuyaYee9OyEbFIoT0J1E5TOm7cTf6FagsOXf62jh9apwsps15NIVWTAhraxICTW98wkhdFHw==}
-    engines: {node: '>=20.0.0'}
-    hasBin: true
-
-  '@saptools/cf-xsuaa@0.1.4':
-    resolution: {integrity: sha512-EIUQ1T9mhhVSS/XdeD7Zo/DLnkWhZh54lAiQUlg73afyeXq7Re9RJhZBBXxhu1tEYZ1oVW21pGY75g/dAerAjA==}
-    engines: {node: '>=20.0.0'}
-    hasBin: true
 
   '@smithy/config-resolver@4.4.16':
     resolution: {integrity: sha512-GFlGPNLZKrGfqWpqVb31z7hvYCA9ZscfX1buYnvvMGcRYsQQnhH+4uN6mWWflcD5jB4OXP/LBrdpukEdjl41tg==}
@@ -5511,16 +5523,6 @@ snapshots:
     optional: true
 
   '@rtsao/scc@1.1.0': {}
-
-  '@saptools/cf-sync@0.3.3':
-    dependencies:
-      commander: 13.1.0
-      ora: 9.3.0
-
-  '@saptools/cf-xsuaa@0.1.4':
-    dependencies:
-      '@saptools/cf-sync': 0.3.3
-      commander: 13.1.0
 
   '@smithy/config-resolver@4.4.16':
     dependencies:

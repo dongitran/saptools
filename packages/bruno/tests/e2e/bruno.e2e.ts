@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -283,6 +284,107 @@ test("run fails clearly when a pre-cached token does not exist (would reach out 
 });
 
 void execFileAsync;
+
+test("use --no-verify accepts a known region without consulting the CF structure", async () => {
+  const ctx = await makeFixture();
+  await rm(join(ctx.home, ".saptools", "cf-structure.json"));
+  try {
+    const result = await runCli(["use", "--no-verify", "ap10/whatever/any/app"], ctx);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/Default context set/);
+
+    const contextRaw = await readFile(join(ctx.home, ".saptools", "bruno-context.json"), "utf8");
+    const context = JSON.parse(contextRaw) as {
+      readonly region: string;
+      readonly org: string;
+      readonly space: string;
+      readonly app: string;
+    };
+    expect(context).toMatchObject({ region: "ap10", org: "whatever", space: "any", app: "app" });
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("run with a specific .bru file shorthand passes the request path to bru", async () => {
+  const ctx = await makeFixture();
+  const requestsDir = join(ctx.appDir, "requests");
+  await mkdir(requestsDir, { recursive: true });
+  const requestFile = join(requestsDir, "hello.bru");
+  await writeFile(
+    requestFile,
+    ["meta {", "  name: hello", "  type: http", "  seq: 1", "}", "", "get {", "  url: {{baseUrl}}/hello", "}", ""].join("\n"),
+    "utf8",
+  );
+
+  try {
+    const result = await runCli(
+      ["run", "ap10/demo-org/dev-space/my-app/requests/hello.bru", "--env", "dev"],
+      ctx,
+    );
+    expect(result.code).toBe(0);
+    const log = await readFile(ctx.bruLog, "utf8");
+    const firstLine = log.split("\n").find((l) => l.length > 0);
+    expect(firstLine).toBeDefined();
+    const invocation = JSON.parse(firstLine ?? "{}") as {
+      readonly argv: readonly string[];
+      readonly cwd: string;
+      readonly saptoolsAccessToken: string | null;
+    };
+    expect(realpathSync(invocation.cwd)).toBe(realpathSync(ctx.appDir));
+    expect(invocation.argv[0]).toBe("run");
+    expect(invocation.argv[1]).toBe(join("requests", "hello.bru"));
+    expect(invocation.saptoolsAccessToken).toBe("fake-access-token-xyz");
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("run falls back to the bundled @usebruno/cli when bru is not on PATH", async () => {
+  const ctx = await makeFixture();
+  await rm(ctx.bruDir, { recursive: true, force: true });
+  const emptyPathDir = await mkdtemp(join(tmpdir(), "saptools-bruno-empty-path-"));
+  try {
+    const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number }>(
+      (resolvePromise) => {
+        execFile(
+          process.execPath,
+          [CLI_PATH, "run", "ap10/demo-org/dev-space/my-app", "--env", "dev"],
+          {
+            cwd: ctx.root,
+            env: {
+              HOME: ctx.home,
+              PATH: emptyPathDir,
+              FAKE_BRU_LOG: ctx.bruLog,
+              NODE_PATH: process.env["NODE_PATH"] ?? "",
+            },
+          },
+          (err, out, errOut) => {
+            let c = 0;
+            if (err) {
+              const maybeCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
+              c = typeof maybeCode === "number" ? maybeCode : 1;
+            }
+            resolvePromise({ stdout: out, stderr: errOut, code: c });
+          },
+        );
+      },
+    );
+    // We don't assert bruno actually succeeds end-to-end — only that the CLI
+    // resolved the bundled bru (no "Unable to find Bruno CLI" error) and spawned it.
+    expect(stderr).not.toMatch(/Unable to find Bruno CLI/);
+    void stdout;
+    void code;
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(emptyPathDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
 
 test("setup-app can narrow a large app list through the searchable app prompt", async () => {
   const root = await mkdtemp(join(tmpdir(), "saptools-bruno-setup-root-"));
