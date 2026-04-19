@@ -25,6 +25,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-xsuaa`](./packages/cf-xsuaa) | Fetch XSUAA credentials and cached OAuth2 tokens for any CF app | [![npm](https://img.shields.io/npm/v/@saptools/cf-xsuaa.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-xsuaa) |
 | [`@saptools/cf-debugger`](./packages/cf-debugger) | Open an SSH debug tunnel to any CF Node.js app from your terminal | [![npm](https://img.shields.io/npm/v/@saptools/cf-debugger.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-debugger) |
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
+| [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
 
 Archived code snapshot: [`_backup/`](./_backup) keeps the previous single-package implementation for reference during the migration.
 
@@ -75,6 +76,17 @@ Runs [Bruno](https://www.usebruno.com) collections against XSUAA-protected CF se
 
 Docs → [`packages/bruno/README.md`](./packages/bruno/README.md)
 
+### 🗄️ `@saptools/sqltools`
+
+Exports SAP HANA service bindings from VCAP_SERVICES into VS Code SQLTools connections — from a file, stdin, or a live CF app.
+
+- 📦 parse VCAP_SERVICES JSON and extract HANA credentials
+- 🔌 write `.vscode/settings.json` with `sqltools.connections` ready to use
+- ☁️ `from-app` pulls VCAP directly from a running CF app via `@saptools/cf-sync`
+- 🔁 merge mode preserves existing unrelated connections
+
+Docs → [`packages/sqltools/README.md`](./packages/sqltools/README.md)
+
 ---
 
 ## 🧱 Monorepo Tooling
@@ -112,7 +124,8 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-sync/
 │   ├── cf-xsuaa/
 │   ├── cf-debugger/
-│   └── bruno/
+│   ├── bruno/
+│   └── sqltools/
 ├── _backup/
 ├── package.json
 ├── pnpm-workspace.yaml
