@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildRunPlan, runBruno } from "../../src/run.js";
+import { buildRunPlan, resolveBruRuntime, runBruno } from "../../src/run.js";
 
 describe("run", () => {
   let root: string;
@@ -69,6 +69,48 @@ describe("run", () => {
     expect(spawnBru).toHaveBeenCalledOnce();
     expect(result.code).toBe(0);
     expect(result.bruArgs).toEqual(["run", "--env", "local", "--env-var", "accessToken=t0k3n"]);
+  });
+
+  it("prefers bru found on PATH", async () => {
+    const runtime = await resolveBruRuntime(
+      { PATH: "/tmp/fake-bin" },
+      {
+        findOnPath: async () => "/tmp/fake-bin/bru",
+      },
+    );
+    expect(runtime).toEqual({
+      command: "/tmp/fake-bin/bru",
+      argsPrefix: [],
+    });
+  });
+
+  it("falls back to bundled @usebruno/cli when PATH does not contain bru", async () => {
+    const runtime = await resolveBruRuntime(
+      { PATH: "" },
+      {
+        findOnPath: async () => undefined,
+        resolvePackageJsonPath: () => "/opt/bruno/node_modules/@usebruno/cli/package.json",
+        readTextFile: async () => JSON.stringify({ bin: { bru: "bin/bru.js" } }),
+      },
+    );
+    expect(runtime).toEqual({
+      command: process.execPath,
+      argsPrefix: ["/opt/bruno/node_modules/@usebruno/cli/bin/bru.js"],
+    });
+  });
+
+  it("throws a helpful error when no bru runtime can be resolved", async () => {
+    await expect(
+      resolveBruRuntime(
+        { PATH: "" },
+        {
+          findOnPath: async () => undefined,
+          resolvePackageJsonPath: () => {
+            throw new Error("missing");
+          },
+        },
+      ),
+    ).rejects.toThrow(/Unable to find Bruno CLI/);
   });
 
   it("throws when target cannot be resolved", async () => {

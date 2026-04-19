@@ -1,6 +1,6 @@
 {
   "name": "@saptools/bruno",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Smart runner for Bruno — CF-aware env metadata, automatic token injection, and shorthand paths",
   "type": "module",
   "publishConfig": {
@@ -53,6 +53,7 @@
     "@inquirer/prompts": "^8.3.2",
     "@saptools/cf-sync": "workspace:*",
     "@saptools/cf-xsuaa": "workspace:*",
+    "@usebruno/cli": "^3.2.2",
     "commander": "^13.0.0"
   },
   "devDependencies": {

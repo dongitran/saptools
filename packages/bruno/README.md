@@ -43,6 +43,7 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 - 🏗️ **Interactive `setup-app`** — pick a region → org → space → app from your cached CF landscape, then **choose exactly the environments you want** (or type a custom name like `qa-eu`). Every env file is seeded with `__cf_*` metadata so the runner knows where to fetch a token.
 - 🧭 **Shorthand paths** — `region/org/space/app[/folder/file.bru]` expands to the right filesystem path. No more `cd`-ing through nested folders.
 - 🔐 **Automatic XSUAA tokens** — every `run` fetches (or reuses) a cached token via [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa) and injects it as `accessToken` for `bru`.
+- 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
 - 🧪 **Fully tested** — 74 unit tests + 4 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
@@ -104,7 +105,7 @@ npm install @saptools/bruno
 ```
 
 > [!NOTE]
-> Requires **Node.js ≥ 20**, the official **[`bru` CLI](https://www.npmjs.com/package/@usebruno/cli)** on `PATH`, and a cached CF landscape from [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync).
+> Requires **Node.js ≥ 20** and a cached CF landscape from [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync). `@saptools/bruno` now bundles [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli) automatically, but still prefers an existing `bru` on `PATH` if you already have one installed.
 
 ---
 

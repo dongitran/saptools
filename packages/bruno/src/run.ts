@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AppRef } from "@saptools/cf-xsuaa";
 import { getTokenCached as getTokenCachedApi } from "@saptools/cf-xsuaa";
 
 import { readCfMetaFromFile } from "./cf-meta.js";
-import { parseShorthandPath, scanCollection } from "./folder-scan.js";
 import type { ShorthandRef } from "./folder-scan.js";
+import { parseShorthandPath, scanCollection } from "./folder-scan.js";
 import {
   ENVIRONMENTS_DIR,
   orgFolderName,
@@ -55,13 +56,114 @@ export interface RunResult extends RunPlan {
   readonly stderr: string;
 }
 
-function defaultSpawnBru(
+const require = createRequire(import.meta.url);
+
+export interface BruRuntime {
+  readonly command: string;
+  readonly argsPrefix: readonly string[];
+}
+
+export interface ResolveBruRuntimeDeps {
+  readonly findOnPath?: (command: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>;
+  readonly readTextFile?: (path: string) => Promise<string>;
+  readonly resolvePackageJsonPath?: () => string;
+}
+
+function pathEntries(env: NodeJS.ProcessEnv): readonly string[] {
+  const value = env["PATH"] ?? process.env["PATH"] ?? "";
+  return value.split(delimiter).filter((entry) => entry.length > 0);
+}
+
+function pathCandidates(command: string, env: NodeJS.ProcessEnv): readonly string[] {
+  if (process.platform !== "win32" || command.includes(".")) {
+    return [command];
+  }
+  const pathExt =
+    env["PATHEXT"]?.split(";").filter((entry) => entry.length > 0) ?? [".COM", ".EXE", ".BAT", ".CMD"];
+  return [command, ...pathExt.map((ext) => `${command}${ext}`)];
+}
+
+async function findCommandOnPath(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const candidates = pathCandidates(command, env);
+  for (const entry of pathEntries(env)) {
+    for (const candidate of candidates) {
+      const fullPath = join(entry, candidate);
+      if (await exists(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function bruBinRelativePath(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const bin = value["bin"];
+  if (typeof bin === "string") {
+    return bin;
+  }
+  if (!isRecord(bin)) {
+    return undefined;
+  }
+  const bru = bin["bru"];
+  return typeof bru === "string" ? bru : undefined;
+}
+
+function defaultResolvePackageJsonPath(): string {
+  return require.resolve("@usebruno/cli/package.json");
+}
+
+async function defaultReadTextFile(path: string): Promise<string> {
+  return await readFile(path, "utf8");
+}
+
+async function resolveBundledBruBinPath(
+  deps: ResolveBruRuntimeDeps,
+): Promise<string | undefined> {
+  try {
+    const packageJsonPath = (deps.resolvePackageJsonPath ?? defaultResolvePackageJsonPath)();
+    const raw = await (deps.readTextFile ?? defaultReadTextFile)(packageJsonPath);
+    const binPath = bruBinRelativePath(JSON.parse(raw) as unknown);
+    if (!binPath) {
+      return undefined;
+    }
+    return resolve(dirname(packageJsonPath), binPath);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveBruRuntime(
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ResolveBruRuntimeDeps = {},
+): Promise<BruRuntime> {
+  const onPath = await (deps.findOnPath ?? findCommandOnPath)("bru", env);
+  if (onPath) {
+    return { command: onPath, argsPrefix: [] };
+  }
+  const bundledBin = await resolveBundledBruBinPath(deps);
+  if (bundledBin) {
+    return { command: process.execPath, argsPrefix: [bundledBin] };
+  }
+  throw new Error(
+    "Unable to find Bruno CLI. Install @usebruno/cli or ensure `bru` is available on PATH.",
+  );
+}
+
+async function defaultSpawnBru(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
 ): Promise<RunSpawnResult> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn("bru", [...args], { cwd, env, stdio: "pipe" });
+  const runtime = await resolveBruRuntime(env);
+  return await new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(runtime.command, [...runtime.argsPrefix, ...args], { cwd, env, stdio: "pipe" });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
