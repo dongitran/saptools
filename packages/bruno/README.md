@@ -10,7 +10,6 @@ Scaffold a CF-aware collection. Resolve requests by `region/org/space/app` short
 [![downloads](https://img.shields.io/npm/dm/@saptools/bruno.svg?style=flat&color=success&logo=npm)](https://www.npmjs.com/package/@saptools/bruno)
 [![license](https://img.shields.io/npm/l/@saptools/bruno.svg?style=flat&color=blue)](./LICENSE)
 [![node](https://img.shields.io/node/v/@saptools/bruno.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
-[![install size](https://packagephobia.com/badge?p=@saptools/bruno)](https://packagephobia.com/result?p=@saptools/bruno)
 [![types](https://img.shields.io/npm/types/@saptools/bruno.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![build](https://img.shields.io/github/actions/workflow/status/dongitran/saptools/bruno.yml?style=flat&logo=github&label=CI)](https://github.com/dongitran/saptools/actions/workflows/bruno.yml)
 
