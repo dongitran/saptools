@@ -130,4 +130,19 @@ describe("cf CLI wrappers", () => {
     const { cfApi } = await import("../../src/cf.js");
     await expect(cfApi("https://x")).rejects.toThrow(/cf api/);
   });
+
+  it("redacts credentials from cfAuth failures", async () => {
+    mockImpl = () => {
+      const err = new Error("boom") as Error & { stderr?: string };
+      err.stderr = 'FAILED\n{"error":"invalid_grant","error_description":"User authentication failed."}';
+      return { error: err };
+    };
+    const { cfAuth } = await import("../../src/cf.js");
+
+    await expect(cfAuth("user@example.com", "super-secret-password")).rejects.toThrow(/cf auth failed/);
+    await expect(cfAuth("user@example.com", "super-secret-password")).rejects.not.toThrow(/user@example.com/);
+    await expect(cfAuth("user@example.com", "super-secret-password")).rejects.not.toThrow(
+      /super-secret-password/,
+    );
+  });
 });

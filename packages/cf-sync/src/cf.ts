@@ -24,6 +24,35 @@ function resolveCfEnv(context?: CfExecContext): NodeJS.ProcessEnv {
   return context?.env ? { ...process.env, ...context.env } : process.env;
 }
 
+function describeCfCommand(args: readonly string[]): string {
+  const [command] = args;
+  if (command === undefined) {
+    return "cf";
+  }
+
+  if (command === "auth") {
+    return "cf auth";
+  }
+
+  return `cf ${args.join(" ")}`;
+}
+
+function redactSensitiveValue(detail: string, value: string): string {
+  if (value.length === 0) {
+    return detail;
+  }
+
+  return detail.split(value).join("[REDACTED]");
+}
+
+function sanitizeCfErrorDetail(detail: string, args: readonly string[]): string {
+  if (args[0] !== "auth") {
+    return detail;
+  }
+
+  return args.slice(1).reduce((current, value) => redactSensitiveValue(current, value), detail);
+}
+
 async function cf(args: readonly string[], context?: CfExecContext): Promise<string> {
   try {
     const { stdout } = await execFileAsync(resolveCfCommand(context), [...args], {
@@ -33,7 +62,9 @@ async function cf(args: readonly string[], context?: CfExecContext): Promise<str
     return stdout;
   } catch (err) {
     const e = err as CfExecError;
-    const msg = `cf ${args.join(" ")} failed: ${e.stderr ?? e.message}`;
+    const command = describeCfCommand(args);
+    const detail = sanitizeCfErrorDetail(e.stderr ?? e.message, args);
+    const msg = `${command} failed: ${detail}`;
     throw new Error(msg, { cause: err });
   }
 }
