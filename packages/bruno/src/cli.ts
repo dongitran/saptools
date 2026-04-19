@@ -1,16 +1,22 @@
 import process from "node:process";
 
 import { checkbox, confirm, input, select } from "@inquirer/prompts";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 import { readContext } from "./context.js";
 import { runBruno } from "./run.js";
 import { setupApp } from "./setup-app.js";
 import { useContext } from "./use.js";
 
-function resolveRoot(explicit: string | undefined): string {
-  if (explicit) {
-    return explicit;
+function resolveCollectionDir(explicitCollection: string | undefined, explicitRoot: string | undefined): string {
+  if (explicitCollection) {
+    return explicitCollection;
+  }
+  if (explicitRoot) {
+    return explicitRoot;
+  }
+  if (process.env["SAPTOOLS_BRUNO_COLLECTION"]) {
+    return process.env["SAPTOOLS_BRUNO_COLLECTION"];
   }
   if (process.env["SAPTOOLS_BRUNO_ROOT"]) {
     return process.env["SAPTOOLS_BRUNO_ROOT"];
@@ -24,15 +30,19 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .name("saptools-bruno")
     .description("Smart runner for Bruno with CF-aware env metadata and automatic token injection")
-    .option("--root <dir>", "Root directory of the bruno collection (default: cwd)");
+    .addOption(new Option("--collection <dir>", "Bruno collection directory (default: SAPTOOLS_BRUNO_COLLECTION or cwd)"))
+    .addOption(new Option("--root <dir>", "Legacy alias for --collection").hideHelp());
 
   program
     .command("setup-app")
     .description("Interactively scaffold a bruno app folder and seed __cf_* variables")
     .action(async (): Promise<void> => {
-      const root = resolveRoot(program.opts<{ root?: string }>().root);
+      const collectionDir = resolveCollectionDir(
+        program.opts<{ collection?: string; root?: string }>().collection,
+        program.opts<{ collection?: string; root?: string }>().root,
+      );
       const result = await setupApp({
-        root,
+        root: collectionDir,
         prompts: {
           selectRegion: async (choices) => await select({ message: "Select region", choices: [...choices] }),
           selectOrg: async (choices) => await select({ message: "Select org", choices: [...choices] }),
@@ -96,7 +106,10 @@ export async function main(argv: readonly string[]): Promise<void> {
         target: string | undefined,
         opts: { env?: string },
       ): Promise<void> => {
-        const root = resolveRoot(program.opts<{ root?: string }>().root);
+        const collectionDir = resolveCollectionDir(
+          program.opts<{ collection?: string; root?: string }>().collection,
+          program.opts<{ collection?: string; root?: string }>().root,
+        );
         let effectiveTarget = target;
 
         if (!effectiveTarget) {
@@ -110,7 +123,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         }
 
         const result = await runBruno({
-          root,
+          root: collectionDir,
           target: effectiveTarget,
           ...(opts.env ? { environment: opts.env } : {}),
           log: (msg) => {

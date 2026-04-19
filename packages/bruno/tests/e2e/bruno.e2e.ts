@@ -22,6 +22,12 @@ interface CtxPaths {
   readonly envFile: string;
 }
 
+interface RunCliOptions {
+  readonly cwd?: string;
+  readonly collectionEnv?: string;
+  readonly legacyRootEnv?: string;
+}
+
 async function makeFixture(): Promise<CtxPaths> {
   const home = await mkdtemp(join(tmpdir(), "saptools-bruno-e2e-"));
   const saptoolsDir = join(home, ".saptools");
@@ -112,19 +118,21 @@ function runCli(
   args: readonly string[],
   ctx: CtxPaths,
   extraEnv: NodeJS.ProcessEnv = {},
+  options: RunCliOptions = {},
 ): Promise<{ readonly stdout: string; readonly stderr: string; readonly code: number }> {
   return new Promise((resolvePromise) => {
     execFile(
       process.execPath,
       [CLI_PATH, ...args],
       {
-        cwd: ctx.root,
+        cwd: options.cwd ?? ctx.root,
         env: {
           ...process.env,
           HOME: ctx.home,
           PATH: `${ctx.bruDir}:${process.env["PATH"] ?? ""}`,
           FAKE_BRU_LOG: ctx.bruLog,
-          SAPTOOLS_BRUNO_ROOT: ctx.root,
+          ...(options.collectionEnv ? { SAPTOOLS_BRUNO_COLLECTION: options.collectionEnv } : {}),
+          ...(options.legacyRootEnv ? { SAPTOOLS_BRUNO_ROOT: options.legacyRootEnv } : {}),
           ...extraEnv,
         },
       },
@@ -175,6 +183,56 @@ test("run with shorthand path resolves to fixture env", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx);
+    expect(result.code).toBe(0);
+    const log = await readFile(ctx.bruLog, "utf8");
+    expect(log.length).toBeGreaterThan(0);
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("run accepts --collection outside the collection cwd", async () => {
+  const ctx = await makeFixture();
+  try {
+    const result = await runCli(["--collection", ctx.root, "run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
+      cwd: ctx.home,
+    });
+    expect(result.code).toBe(0);
+    const log = await readFile(ctx.bruLog, "utf8");
+    expect(log.length).toBeGreaterThan(0);
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("run accepts SAPTOOLS_BRUNO_COLLECTION outside the collection cwd", async () => {
+  const ctx = await makeFixture();
+  try {
+    const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
+      cwd: ctx.home,
+      collectionEnv: ctx.root,
+    });
+    expect(result.code).toBe(0);
+    const log = await readFile(ctx.bruLog, "utf8");
+    expect(log.length).toBeGreaterThan(0);
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("run still accepts legacy SAPTOOLS_BRUNO_ROOT outside the collection cwd", async () => {
+  const ctx = await makeFixture();
+  try {
+    const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
+      cwd: ctx.home,
+      legacyRootEnv: ctx.root,
+    });
     expect(result.code).toBe(0);
     const log = await readFile(ctx.bruLog, "utf8");
     expect(log.length).toBeGreaterThan(0);

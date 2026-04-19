@@ -46,7 +46,7 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 - 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
-- 🧪 **Fully tested** — 74 unit tests + 4 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🧪 **Fully tested** — 77 unit tests + 7 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
 - 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
 
 ---
@@ -159,12 +159,15 @@ Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable �
 
 ### 🏗️ `saptools-bruno setup-app`
 
-Interactively scaffold a Bruno app folder inside the current root. Walks you through **region → org → space → app**, then lets you **pick which environments to create** and optionally **enter a custom env name**.
+Interactively scaffold a Bruno app folder inside the current Bruno collection directory. Walks you through **region → org → space → app**, then lets you **pick which environments to create** and optionally **enter a custom env name**.
 
 ```bash
 saptools-bruno setup-app
-saptools-bruno --root ./collections setup-app
+saptools-bruno --collection ./collections setup-app
 ```
+
+> [!TIP]
+> `--collection` only applies to the current command. If you omit it, `saptools-bruno` falls back to `$SAPTOOLS_BRUNO_COLLECTION`, then to your current working directory.
 
 **What you get**
 
@@ -196,7 +199,7 @@ saptools-bruno run ./region__ap10/org__my-org/space__dev/my-srv --env dev
 | Flag | Description |
 | --- | --- |
 | `-e, --env <name>` | Environment name (default: current context or first discovered env) |
-| `--root <dir>` | Root of the Bruno collection (default: `$SAPTOOLS_BRUNO_ROOT` or cwd) |
+| `--collection <dir>` | Bruno collection directory (default: `$SAPTOOLS_BRUNO_COLLECTION` or cwd) |
 
 Under the hood this spawns `bru run <target> --env <name> --env-var accessToken=<token>`.
 
@@ -339,7 +342,7 @@ The `__cf_*` vars drive XSUAA lookup. `run` adds `accessToken` on the fly via `b
 
 | Variable | Purpose |
 | --- | --- |
-| `SAPTOOLS_BRUNO_ROOT` | Default root for the Bruno collection when `--root` isn't passed |
+| `SAPTOOLS_BRUNO_COLLECTION` | Default Bruno collection directory when `--collection` isn't passed |
 | `SAPTOOLS_ACCESS_TOKEN` | Exported to the spawned `bru` process (alongside `--env-var accessToken=…`) |
 | `SAP_EMAIL` / `SAP_PASSWORD` | Consumed by `@saptools/cf-xsuaa` when the token cache is cold |
 
