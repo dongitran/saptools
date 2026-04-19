@@ -40,6 +40,15 @@
   ],
   "author": "Dong Tran",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/bruno"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/bruno#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
   "dependencies": {
     "@inquirer/prompts": "^8.3.2",
     "@saptools/cf-sync": "workspace:*",
