@@ -57,7 +57,7 @@ importers:
         specifier: ^0.3.5
         version: link:../cf-sync
       '@saptools/cf-xsuaa':
-        specifier: ^0.1.5
+        specifier: ^0.1.6
         version: link:../cf-xsuaa
       '@usebruno/cli':
         specifier: ^3.2.2
