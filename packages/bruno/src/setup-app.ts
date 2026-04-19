@@ -26,7 +26,6 @@ export interface SetupAppPrompts {
   readonly selectApp: (choices: readonly { value: string; name: string }[]) => Promise<string>;
   readonly confirmCreate: (path: string) => Promise<boolean>;
   readonly selectEnvironments: (opts: EnvironmentSelection) => Promise<readonly string[]>;
-  readonly inputCustomEnvName: () => Promise<string | null>;
 }
 
 export interface SetupAppOptions {
@@ -45,9 +44,9 @@ export interface SetupAppResult {
 
 export const COMMON_ENVIRONMENTS = ["local", "dev", "staging", "prod"] as const;
 
-const ENV_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+export const ENV_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 
-function assertValidEnvName(name: string): void {
+export function assertValidEnvName(name: string): void {
   if (!ENV_NAME_PATTERN.test(name)) {
     throw new Error(
       `Invalid environment name '${name}': only letters, digits, dot, underscore, and dash are allowed.`,
@@ -165,9 +164,8 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
   const existingEnvs = await listExistingEnvs(appPath);
   const common = [...COMMON_ENVIRONMENTS];
   const selected = await options.prompts.selectEnvironments({ common, existing: existingEnvs });
-  const custom = await options.prompts.inputCustomEnvName();
   const merged: string[] = [];
-  for (const name of [...selected, ...(custom ? [custom] : [])]) {
+  for (const name of selected) {
     const trimmed = name.trim();
     if (trimmed.length === 0 || merged.includes(trimmed)) {
       continue;

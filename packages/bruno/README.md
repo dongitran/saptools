@@ -46,7 +46,7 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 - 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
-- 🧪 **Fully tested** — 77 unit tests + 7 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🧪 **Fully tested** — 81 unit tests + 7 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
 - 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
 
 ---
@@ -159,7 +159,7 @@ Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable �
 
 ### 🏗️ `saptools-bruno setup-app`
 
-Interactively scaffold a Bruno app folder inside the current Bruno collection directory. Walks you through **region → org → space → app**, then lets you **pick which environments to create** and optionally **enter a custom env name**.
+Interactively scaffold a Bruno app folder inside the current Bruno collection directory. Walks you through **region → org → space → app**, then lets you **pick which environments to create** and add custom names without leaving the environment picker.
 
 ```bash
 saptools-bruno setup-app
@@ -176,7 +176,7 @@ saptools-bruno --collection ./collections setup-app
 - Existing env files are preserved; only missing `__cf_*` vars are patched back in
 
 > [!TIP]
-> The env prompt shows the common names (`local`, `dev`, `staging`, `prod`) plus any envs already on disk. Pre-existing envs are **pre-checked**; common ones are **not** — so you only create what you actually need. The custom-name field accepts `[A-Za-z0-9._-]+` for values like `qa-eu` or `uat.us`.
+> The env prompt shows the common names (`local`, `dev`, `staging`, `prod`) plus any envs already on disk. Pre-existing envs are **pre-checked**; common ones are **not** — so you only create what you actually need. The menu also includes **Add custom environment**, and once you enter a value like `qa-eu` or `uat.us`, it appears back in the same checklist already selected so you can review the full set before finishing.
 
 ### ▶️ `saptools-bruno run`
 
@@ -241,8 +241,7 @@ const result = await setupApp({
     selectSpace:  async (choices) => choices[0]!.value,
     selectApp:    async (choices) => choices[0]!.value,
     confirmCreate: async () => true,
-    selectEnvironments: async ({ common }) => [...common],
-    inputCustomEnvName: async () => null,
+    selectEnvironments: async ({ common }) => [...common, "qa-eu"],
   },
 });
 console.log(`Created ${result.environments.length} env files at ${result.appPath}`);
@@ -388,7 +387,7 @@ Only when you add a new app folder. `setup-app` on an existing app is idempotent
 <details>
 <summary><b>How do I add an env that isn't <code>local</code> / <code>dev</code> / <code>staging</code> / <code>prod</code>?</b></summary>
 
-After the checkbox prompt you'll see a **Custom environment name** field. Type any `[A-Za-z0-9._-]+` name (for example `qa-eu` or `uat.us`) and it gets scaffolded alongside the common ones.
+Choose **Add custom environment** inside the checkbox list. After you type any `[A-Za-z0-9._-]+` name (for example `qa-eu` or `uat.us`), the prompt returns to the same checklist with that new environment already selected.
 
 </details>
 

@@ -72,7 +72,6 @@ describe("setupApp", () => {
         selectApp: async () => "api",
         confirmCreate: async () => true,
         selectEnvironments: async ({ common }) => [common[0] ?? "local"],
-        inputCustomEnvName: async () => null,
       },
     });
     expect(result.created).toBe(true);
@@ -94,7 +93,6 @@ describe("setupApp", () => {
         selectApp: async () => "api",
         confirmCreate: async () => false,
         selectEnvironments: async () => ["local"],
-        inputCustomEnvName: async () => null,
       },
     });
     expect(result.created).toBe(false);
@@ -119,7 +117,6 @@ describe("setupApp", () => {
           captured.push({ common: opts.common, existing: opts.existing });
           return ["dev"];
         },
-        inputCustomEnvName: async () => null,
       },
     });
     expect(result.created).toBe(true);
@@ -139,7 +136,6 @@ describe("setupApp", () => {
         selectApp: async () => "api",
         confirmCreate: async () => true,
         selectEnvironments: async () => ["prod"],
-        inputCustomEnvName: async () => null,
       },
     });
     expect(firstRun.created).toBe(true);
@@ -158,14 +154,13 @@ describe("setupApp", () => {
           offered = existing;
           return existing.length > 0 ? [existing[0] ?? "prod"] : ["prod"];
         },
-        inputCustomEnvName: async () => null,
       },
     });
     expect(secondRun.created).toBe(true);
     expect(offered).toEqual(["prod"]);
   });
 
-  it("adds a custom environment name alongside common selections", async () => {
+  it("accepts custom environment names alongside common selections", async () => {
     const result = await setupApp({
       root,
       deps: makeDeps(),
@@ -175,8 +170,7 @@ describe("setupApp", () => {
         selectSpace: async () => "dev",
         selectApp: async () => "api",
         confirmCreate: async () => true,
-        selectEnvironments: async () => ["dev"],
-        inputCustomEnvName: async () => "qa-eu",
+        selectEnvironments: async () => ["dev", "qa-eu"],
       },
     });
     expect(result.created).toBe(true);
@@ -185,7 +179,7 @@ describe("setupApp", () => {
     expect(result.environments.some((p) => p.endsWith("qa-eu.bru"))).toBe(true);
   });
 
-  it("accepts custom env name when no common names selected", async () => {
+  it("accepts a custom env name when no common names are selected", async () => {
     const result = await setupApp({
       root,
       deps: makeDeps(),
@@ -195,8 +189,7 @@ describe("setupApp", () => {
         selectSpace: async () => "dev",
         selectApp: async () => "api",
         confirmCreate: async () => true,
-        selectEnvironments: async () => [],
-        inputCustomEnvName: async () => "sandbox",
+        selectEnvironments: async () => ["sandbox"],
       },
     });
     expect(result.created).toBe(true);
@@ -204,7 +197,7 @@ describe("setupApp", () => {
     expect(result.environments[0]).toContain("sandbox.bru");
   });
 
-  it("throws when nothing selected and no custom name given", async () => {
+  it("throws when the prompt returns no environments", async () => {
     await expect(
       setupApp({
         root,
@@ -216,13 +209,12 @@ describe("setupApp", () => {
           selectApp: async () => "api",
           confirmCreate: async () => true,
           selectEnvironments: async () => [],
-          inputCustomEnvName: async () => null,
         },
       }),
     ).rejects.toThrow(/At least one environment/);
   });
 
-  it("dedupes custom name that duplicates a common selection", async () => {
+  it("dedupes duplicate names returned by the prompt", async () => {
     const result = await setupApp({
       root,
       deps: makeDeps(),
@@ -232,15 +224,14 @@ describe("setupApp", () => {
         selectSpace: async () => "dev",
         selectApp: async () => "api",
         confirmCreate: async () => true,
-        selectEnvironments: async () => ["dev"],
-        inputCustomEnvName: async () => "dev",
+        selectEnvironments: async () => ["dev", "dev"],
       },
     });
     expect(result.created).toBe(true);
     expect(result.environments).toHaveLength(1);
   });
 
-  it("rejects an unsafe custom env name", async () => {
+  it("rejects an unsafe env name from the prompt", async () => {
     await expect(
       setupApp({
         root,
@@ -251,8 +242,7 @@ describe("setupApp", () => {
           selectSpace: async () => "dev",
           selectApp: async () => "api",
           confirmCreate: async () => true,
-          selectEnvironments: async () => [],
-          inputCustomEnvName: async () => "../escape",
+          selectEnvironments: async () => ["../escape"],
         },
       }),
     ).rejects.toThrow(/Invalid environment name/);
@@ -270,7 +260,6 @@ describe("setupApp", () => {
           selectApp: async () => "api",
           confirmCreate: async () => true,
           selectEnvironments: async () => ["local"],
-          inputCustomEnvName: async () => null,
         },
       }),
     ).rejects.toThrow(/No CF regions/);

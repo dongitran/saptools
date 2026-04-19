@@ -1,9 +1,10 @@
 import process from "node:process";
 
-import { checkbox, confirm, input, select } from "@inquirer/prompts";
+import { confirm, select } from "@inquirer/prompts";
 import { Command, Option } from "commander";
 
 import { readContext } from "./context.js";
+import { promptForEnvironments } from "./environment-prompt.js";
 import { runBruno } from "./run.js";
 import { setupApp } from "./setup-app.js";
 import { useContext } from "./use.js";
@@ -49,41 +50,7 @@ export async function main(argv: readonly string[]): Promise<void> {
           selectSpace: async (choices) => await select({ message: "Select space", choices: [...choices] }),
           selectApp: async (choices) => await select({ message: "Select app", choices: [...choices] }),
           confirmCreate: async (path) => await confirm({ message: `Create ${path}?`, default: true }),
-          selectEnvironments: async ({ common, existing }) => {
-            const seen = new Set<string>();
-            const all = [...common, ...existing].filter((name) => {
-              if (seen.has(name)) {
-                return false;
-              }
-              seen.add(name);
-              return true;
-            });
-            return await checkbox({
-              message: "Environments to create (space to toggle, enter to confirm)",
-              choices: all.map((name) => ({
-                name,
-                value: name,
-                checked: existing.includes(name),
-              })),
-            });
-          },
-          inputCustomEnvName: async () => {
-            const raw = await input({
-              message: "Custom environment name (leave empty to skip)",
-              default: "",
-              validate: (v) => {
-                const t = v.trim();
-                if (t.length === 0) {
-                  return true;
-                }
-                return /^[A-Za-z0-9._-]+$/.test(t)
-                  ? true
-                  : "Only letters, digits, dot, underscore, and dash are allowed.";
-              },
-            });
-            const trimmed = raw.trim();
-            return trimmed.length > 0 ? trimmed : null;
-          },
+          selectEnvironments: async (opts) => await promptForEnvironments(opts),
         },
         log: (msg) => {
           process.stdout.write(`${msg}\n`);
