@@ -64,7 +64,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Lint
-        run: pnpm --filter @saptools/bruno lint
+        run: pnpm exec turbo run lint --filter=@saptools/bruno
 
       - name: Typecheck
         run: pnpm exec turbo run typecheck --filter=@saptools/bruno
