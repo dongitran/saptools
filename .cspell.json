@@ -40,7 +40,14 @@
     "tsconfig",
     "oxc",
     "vbox",
-    "eslintrc"
+    "eslintrc",
+    "creds",
+    "cfhome",
+    "pids",
+    "serialises",
+    "SIGUSR",
+    "HXYZ",
+    "HXYZABCD"
   ],
   "ignorePaths": [
     "node_modules/**",
