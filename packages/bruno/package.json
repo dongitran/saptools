@@ -1,0 +1,55 @@
+{
+  "name": "@saptools/bruno",
+  "version": "0.2.0",
+  "description": "Smart runner for Bruno — CF-aware env metadata, automatic token injection, and shorthand paths",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "saptools-bruno": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-bru.mjs",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test"
+  },
+  "keywords": [
+    "sap",
+    "bruno",
+    "cf",
+    "cloud-foundry",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^8.3.2",
+    "@saptools/cf-sync": "workspace:*",
+    "@saptools/cf-xsuaa": "workspace:*",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,133 @@
+name: bruno
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish @saptools/bruno to npm
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/bruno.yml"
+      - "packages/bruno/package.json"
+      - "packages/bruno/README.md"
+      - "packages/bruno/src/**"
+      - "packages/bruno/tests/**"
+      - "packages/bruno/playwright.config.ts"
+      - "packages/bruno/tsconfig.json"
+      - "packages/bruno/tsup.config.ts"
+      - "packages/bruno/vitest.config.ts"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/bruno.yml"
+      - "packages/bruno/package.json"
+      - "packages/bruno/README.md"
+      - "packages/bruno/src/**"
+      - "packages/bruno/tests/**"
+      - "packages/bruno/playwright.config.ts"
+      - "packages/bruno/tsconfig.json"
+      - "packages/bruno/tsup.config.ts"
+      - "packages/bruno/vitest.config.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bruno-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build and verify bruno
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @saptools/bruno lint
+
+      - name: Typecheck
+        run: pnpm exec turbo run typecheck --filter=@saptools/bruno
+
+      - name: Build
+        run: pnpm exec turbo run build --filter=@saptools/bruno
+
+      - name: Run unit tests
+        run: pnpm --filter @saptools/bruno test:unit
+
+      - name: Run e2e tests (offline, stubbed bru)
+        run: pnpm --filter @saptools/bruno test:e2e
+
+      - name: Verify publish tarball
+        run: npm pack --dry-run
+        working-directory: packages/bruno
+
+  publish:
+    name: Publish bruno to npm
+    runs-on: ubuntu-latest
+    needs: ci
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm exec turbo run build --filter=@saptools/bruno
+
+      - name: Check whether version is already published
+        id: publish_check
+        working-directory: packages/bruno
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${package_version} is already published. Skipping npm publish."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.publish_check.outputs.should_publish == 'true'
+        run: npm publish --provenance --access public
+        working-directory: packages/bruno
