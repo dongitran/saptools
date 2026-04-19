@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { AppRef } from "@saptools/cf-xsuaa";
 import { getTokenCached as getTokenCachedApi } from "@saptools/cf-xsuaa";
 
+import { upsertVars } from "./bru-writer.js";
 import { readCfMetaFromFile } from "./cf-meta.js";
 import type { ShorthandRef } from "./folder-scan.js";
 import { parseShorthandPath, scanCollection } from "./folder-scan.js";
@@ -272,6 +273,14 @@ function findAppDirFromFile(filePath: string, root: string): string {
   return join(root, regionDir, orgDir, spaceDir, appDir);
 }
 
+async function persistAccessToken(envFile: string, token: string): Promise<void> {
+  const raw = await readFile(envFile, "utf8");
+  const { content, changed } = upsertVars(raw, new Map([["accessToken", token]]));
+  if (changed) {
+    await writeFile(envFile, content, "utf8");
+  }
+}
+
 export async function buildRunPlan(options: RunOptions): Promise<RunPlan> {
   const { filePath } = await resolveTarget(options.root, options.target);
   const stats = await stat(filePath);
@@ -298,6 +307,7 @@ export async function buildRunPlan(options: RunOptions): Promise<RunPlan> {
 
   const getToken = options.getTokenCached ?? getTokenCachedApi;
   const token = await getToken(meta);
+  await persistAccessToken(envFile, token);
 
   const bruArgs: string[] = ["run"];
   if (requestFile) {

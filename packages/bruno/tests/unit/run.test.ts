@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { parseBruEnvFile } from "../../src/bru-parser.js";
 import { buildRunPlan, resolveBruRuntime, runBruno } from "../../src/run.js";
 
 describe("run", () => {
@@ -69,6 +70,39 @@ describe("run", () => {
     expect(spawnBru).toHaveBeenCalledOnce();
     expect(result.code).toBe(0);
     expect(result.bruArgs).toEqual(["run", "--env", "local", "--env-var", "accessToken=t0k3n"]);
+  });
+
+  it("persists the fetched access token into the selected env file", async () => {
+    const envFile = join(root, "region__ap10", "org__o", "space__dev", "app1", "environments", "local.bru");
+
+    await buildRunPlan({
+      root,
+      target: "ap10/o/dev/app1",
+      getTokenCached: async () => "persist-me",
+    });
+
+    const raw = await readFile(envFile, "utf8");
+    const parsed = parseBruEnvFile(raw);
+    expect(parsed.vars.entries.get("accessToken")).toBe("persist-me");
+  });
+
+  it("updates the stored access token when a later run receives a newer token", async () => {
+    const envFile = join(root, "region__ap10", "org__o", "space__dev", "app1", "environments", "local.bru");
+
+    await buildRunPlan({
+      root,
+      target: "ap10/o/dev/app1",
+      getTokenCached: async () => "old-token",
+    });
+    await buildRunPlan({
+      root,
+      target: "ap10/o/dev/app1",
+      getTokenCached: async () => "new-token",
+    });
+
+    const raw = await readFile(envFile, "utf8");
+    const parsed = parseBruEnvFile(raw);
+    expect(parsed.vars.entries.get("accessToken")).toBe("new-token");
   });
 
   it("prefers bru found on PATH", async () => {

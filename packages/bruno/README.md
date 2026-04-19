@@ -4,7 +4,7 @@
 
 ### A smart runner for [Bruno](https://www.usebruno.com) collections on **SAP BTP Cloud Foundry.**
 
-Scaffold a CF-aware collection. Resolve requests by `region/org/space/app` shorthand. Let every `bru run` start with a fresh XSUAA token already injected — no more pasting `Authorization` headers into env files, no more manual token refresh dances.
+Scaffold a CF-aware collection. Resolve requests by `region/org/space/app` shorthand. Let every `bru run` start with a fresh XSUAA token already injected and written back to the selected env file — no more pasting `Authorization` headers into env files, no more manual token refresh dances.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/bruno)
 [![downloads](https://img.shields.io/npm/dm/@saptools/bruno.svg?style=flat&color=success&logo=npm)](https://www.npmjs.com/package/@saptools/bruno)
@@ -42,11 +42,11 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 
 - 🏗️ **Interactive `setup-app`** — pick a region → org → space, then **search apps as you type** before choosing exactly the environments you want (or typing a custom name like `qa-eu`). Every env file is seeded with `__cf_*` metadata so the runner knows where to fetch a token.
 - 🧭 **Shorthand paths** — `region/org/space/app[/folder/file.bru]` expands to the right filesystem path. No more `cd`-ing through nested folders.
-- 🔐 **Automatic XSUAA tokens** — every `run` fetches (or reuses) a cached token via [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa) and injects it as `accessToken` for `bru`.
+- 🔐 **Automatic XSUAA tokens** — every `run` fetches (or reuses) a cached token via [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa), writes it into the selected env file as `accessToken`, and still injects it for `bru` at execution time.
 - 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
-- 🧪 **Fully tested** — 88 unit tests + 8 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🧪 **Fully tested** — 90 unit tests + 8 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
 - 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
 
 ---
@@ -84,7 +84,7 @@ saptools-bruno use ap10/demo-prod/api/orders-srv
 saptools-bruno run --env dev
 ```
 
-*That's it. Token is cached, refreshed on expiry, and injected automatically.*
+*That's it. Token is cached, refreshed on expiry, written back to the env file, and injected automatically.*
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ saptools-bruno setup-app
 # 3. Pin a default CF context so future runs need zero args
 saptools-bruno use ap10/my-org/dev/my-srv
 
-# 4. Run — XSUAA token is fetched and injected automatically
+# 4. Run — XSUAA token is fetched, written to the env file, and injected automatically
 saptools-bruno run --env dev
 ```
 
@@ -152,7 +152,7 @@ vars {
 }
 ```
 
-Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable — the runner populates it for you at spawn time.
+Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable — the runner refreshes it into the selected env file before spawning Bruno.
 
 ---
 
@@ -182,7 +182,7 @@ saptools-bruno --collection ./collections setup-app
 
 ### ▶️ `saptools-bruno run`
 
-Run a Bruno request or folder, auto-injecting a fresh XSUAA token as `accessToken`.
+Run a Bruno request or folder, refreshing `accessToken` in the chosen env file and auto-injecting the same token for the current execution.
 
 ```bash
 # Use the default context
@@ -203,7 +203,10 @@ saptools-bruno run ./region__ap10/org__my-org/space__dev/my-srv --env dev
 | `-e, --env <name>` | Environment name (default: current context or first discovered env) |
 | `--collection <dir>` | Bruno collection directory (default: `$SAPTOOLS_BRUNO_COLLECTION` or cwd) |
 
-Under the hood this spawns `bru run <target> --env <name> --env-var accessToken=<token>`.
+Under the hood this:
+- fetches or reuses a token via `@saptools/cf-xsuaa`
+- writes `accessToken: <token>` into the selected `.bru` env file
+- spawns `bru run <target> --env <name> --env-var accessToken=<token>`
 
 ### 🎯 `saptools-bruno use`
 

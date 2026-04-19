@@ -177,6 +177,9 @@ test("use → run: writes context, invokes bru with token", async () => {
     expect(invocation.argv).toContain("dev");
     const envVarArg = invocation.argv[invocation.argv.indexOf("--env-var") + 1];
     expect(envVarArg).toBe("accessToken=fake-access-token-xyz");
+
+    const envRaw = await readFile(ctx.envFile, "utf8");
+    expect(envRaw).toContain("accessToken: fake-access-token-xyz");
   } finally {
     await rm(ctx.home, { recursive: true, force: true });
     await rm(ctx.bruDir, { recursive: true, force: true });
