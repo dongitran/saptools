@@ -11,3 +11,4 @@ test-regions.json
 playwright-report/
 test-results/
 implementation_plan.md
+.bruno/

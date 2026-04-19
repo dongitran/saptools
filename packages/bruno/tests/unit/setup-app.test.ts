@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -77,12 +77,12 @@ describe("setupApp", () => {
     expect(result.created).toBe(true);
     expect(result.ref.region).toBe("ap10");
     expect(result.environments).toHaveLength(1);
-    const collectionConfig = JSON.parse(await readFile(join(root, "bruno.json"), "utf8")) as {
+    const collectionConfig = JSON.parse(await readFile(join(result.appPath, "bruno.json"), "utf8")) as {
       readonly name: string;
       readonly type: string;
     };
     expect(collectionConfig).toMatchObject({
-      name: basename(root),
+      name: basename(result.appPath),
       type: "collection",
     });
     const raw = await readFile(result.environments[0] ?? "", "utf8");
@@ -90,7 +90,7 @@ describe("setupApp", () => {
     expect(raw).toContain("__cf_org: demo");
   });
 
-  it("creates a sensible collection name for hidden roots like .bruno", async () => {
+  it("creates the collection config inside the app folder, not the outer root", async () => {
     const hiddenRoot = join(root, ".bruno");
     const result = await setupApp({
       root: hiddenRoot,
@@ -106,10 +106,11 @@ describe("setupApp", () => {
     });
     expect(result.created).toBe(true);
 
-    const collectionConfig = JSON.parse(await readFile(join(hiddenRoot, "bruno.json"), "utf8")) as {
+    await expect(readFile(join(hiddenRoot, "bruno.json"), "utf8")).rejects.toBeDefined();
+    const collectionConfig = JSON.parse(await readFile(join(result.appPath, "bruno.json"), "utf8")) as {
       readonly name: string;
     };
-    expect(collectionConfig.name).toBe("bruno");
+    expect(collectionConfig.name).toBe("api");
   });
 
   it("honors user abort", async () => {
@@ -190,9 +191,11 @@ describe("setupApp", () => {
     expect(offered).toEqual(["prod"]);
   });
 
-  it("preserves an existing bruno.json at the collection root", async () => {
+  it("preserves an existing bruno.json in the app folder", async () => {
+    const appPath = join(root, "region__ap10", "org__demo", "space__dev", "api");
+    await mkdir(appPath, { recursive: true });
     await writeFile(
-      join(root, "bruno.json"),
+      join(appPath, "bruno.json"),
       `${JSON.stringify({ version: "1", name: "custom-name", type: "collection" }, null, 2)}\n`,
       "utf8",
     );
@@ -211,7 +214,7 @@ describe("setupApp", () => {
     });
 
     expect(result.created).toBe(true);
-    const collectionConfig = JSON.parse(await readFile(join(root, "bruno.json"), "utf8")) as {
+    const collectionConfig = JSON.parse(await readFile(join(result.appPath, "bruno.json"), "utf8")) as {
       readonly name: string;
     };
     expect(collectionConfig.name).toBe("custom-name");

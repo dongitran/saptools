@@ -354,7 +354,8 @@ test("setup-app can narrow a large app list through the searchable app prompt", 
     expect(result.ref.app).toBe("config-admin");
     expect(result.appPath).toContain("config-admin");
     expect(result.environments).toHaveLength(2);
-    await expect(readFile(join(root, "bruno.json"), "utf8")).resolves.toContain('"type": "collection"');
+    await expect(readFile(join(result.appPath, "bruno.json"), "utf8")).resolves.toContain('"type": "collection"');
+    await expect(readFile(join(root, "bruno.json"), "utf8")).rejects.toBeDefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

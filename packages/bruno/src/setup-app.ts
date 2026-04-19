@@ -189,9 +189,8 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
     return { ref, appPath, environments: [], created: false };
   }
 
-  await mkdir(options.root, { recursive: true });
-  await ensureCollectionConfig(options.root);
   await mkdir(appPath, { recursive: true });
+  await ensureCollectionConfig(appPath);
 
   const existingEnvs = await listExistingEnvs(appPath);
   const common = [...COMMON_ENVIRONMENTS];

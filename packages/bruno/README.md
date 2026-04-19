@@ -129,11 +129,11 @@ After `setup-app`, your workspace looks like this:
 
 ```text
 .
-├── bruno.json
 └── region__ap10/
     └── org__my-org/
         └── space__dev/
             └── my-srv/
+                ├── bruno.json
                 └── environments/
                     ├── dev.bru
                     └── prod.bru
@@ -172,7 +172,7 @@ saptools-bruno --collection ./collections setup-app
 
 **What you get**
 
-- A root-level `bruno.json` if the collection directory does not already have one
+- An app-level `bruno.json` inside `region__<key>/org__<org>/space__<space>/<app>/`
 - Folder tree: `region__<key>/org__<org>/space__<space>/<app>/environments/`
 - One `.bru` env file per selection, each seeded with `__cf_region`, `__cf_org`, `__cf_space`, `__cf_app`, `environment`, and an empty `baseUrl`
 - Existing env files are preserved; only missing `__cf_*` vars are patched back in
