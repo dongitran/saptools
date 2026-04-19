@@ -2,30 +2,93 @@
 
 # 🎯 `@saptools/bruno`
 
-**A smart runner for [Bruno](https://www.usebruno.com) collections on SAP BTP Cloud Foundry.**
+### A smart runner for [Bruno](https://www.usebruno.com) collections on **SAP BTP Cloud Foundry.**
 
-Scaffold a CF-aware collection, resolve requests by `region/org/space/app` shorthand, and let every `bru run` start with a fresh XSUAA token already injected — no more pasting `Authorization` headers into env files.
+Scaffold a CF-aware collection. Resolve requests by `region/org/space/app` shorthand. Let every `bru run` start with a fresh XSUAA token already injected — no more pasting `Authorization` headers into env files, no more manual token refresh dances.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/bruno)
+[![downloads](https://img.shields.io/npm/dm/@saptools/bruno.svg?style=flat&color=success&logo=npm)](https://www.npmjs.com/package/@saptools/bruno)
 [![license](https://img.shields.io/npm/l/@saptools/bruno.svg?style=flat&color=blue)](./LICENSE)
 [![node](https://img.shields.io/node/v/@saptools/bruno.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 [![install size](https://packagephobia.com/badge?p=@saptools/bruno)](https://packagephobia.com/result?p=@saptools/bruno)
 [![types](https://img.shields.io/npm/types/@saptools/bruno.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![build](https://img.shields.io/github/actions/workflow/status/dongitran/saptools/bruno.yml?style=flat&logo=github&label=CI)](https://github.com/dongitran/saptools/actions/workflows/bruno.yml)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[**Install**](#-install) · [**Quick Start**](#-quick-start) · [**CLI**](#-cli) · [**API**](#-programmatic-usage) · [**FAQ**](#-faq) · [**Roadmap**](#-roadmap)
 
 </div>
 
 ---
 
+## ⚡ At a glance
+
+```console
+$ saptools-bruno use ap10/demo-prod/api/orders-srv
+✔ Default context set to ap10/demo-prod/api/orders-srv
+
+$ saptools-bruno run --env dev
+▶ bru run --env dev --env-var accessToken=eyJhbGciOi…  (cwd=…/orders-srv)
+Running Folder Recursively
+✓ GET /orders              204 OK   54ms
+✓ POST /orders             201 Created 120ms
+✓ GET /orders/:id          200 OK   48ms
+All assertions passed ✓
+```
+
+You just ran Bruno against a production-grade XSUAA-protected service **without ever touching a token**. That's the entire pitch.
+
+---
+
 ## ✨ Features
 
-- 🏗️ **Interactive `setup-app`** — pick a region, org, space, and app from your cached CF landscape; get a ready-to-run Bruno folder with `__cf_*` metadata seeded into every env file
-- 🧭 **Shorthand paths** — run by `region/org/space/app` (or `.../folder/file.bru`) instead of deep relative paths
-- 🔐 **Automatic XSUAA tokens** — every `run` fetches (or reuses the cached) token via [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa) and passes it to `bru` as `--env-var accessToken=…`
-- 🗂️ **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments
-- 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent with full TypeScript definitions
-- 🪶 **Small + boring** — three deps (`commander`, `@inquirer/prompts`, `@saptools/*`), no background daemons, no magic
+- 🏗️ **Interactive `setup-app`** — pick a region → org → space → app from your cached CF landscape, then **choose exactly the environments you want** (or type a custom name like `qa-eu`). Every env file is seeded with `__cf_*` metadata so the runner knows where to fetch a token.
+- 🧭 **Shorthand paths** — `region/org/space/app[/folder/file.bru]` expands to the right filesystem path. No more `cd`-ing through nested folders.
+- 🔐 **Automatic XSUAA tokens** — every `run` fetches (or reuses) a cached token via [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa) and injects it as `accessToken` for `bru`.
+- 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
+- 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
+- 🧪 **Fully tested** — 74 unit tests + 4 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
+
+---
+
+## 😩 Before → 😎 After
+
+<table>
+<tr>
+<th width="50%">Without <code>@saptools/bruno</code></th>
+<th width="50%">With <code>@saptools/bruno</code></th>
+</tr>
+<tr>
+<td valign="top">
+
+```bash
+# 1. Find the service creds on Cockpit
+# 2. cf target -o demo-prod -s api
+# 3. cf create-service-key orders-srv bruno-key
+# 4. cf service-key orders-srv bruno-key
+# 5. Copy clientid / clientsecret / url
+# 6. curl -X POST $URL/oauth/token \
+#    -u $CLIENT_ID:$CLIENT_SECRET \
+#    -d grant_type=client_credentials
+# 7. Copy access_token
+# 8. Paste into environments/dev.bru
+# 9. bru run --env dev
+# 10. Token expires → goto 6
+```
+
+</td>
+<td valign="top">
+
+```bash
+saptools-bruno use ap10/demo-prod/api/orders-srv
+saptools-bruno run --env dev
+```
+
+*That's it. Token is cached, refreshed on expiry, and injected automatically.*
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -35,7 +98,7 @@ Scaffold a CF-aware collection, resolve requests by `region/org/space/app` short
 # Global CLI
 npm install -g @saptools/bruno
 
-# Or as a dependency
+# Or as a project dependency
 npm install @saptools/bruno
 # pnpm add @saptools/bruno
 # yarn add @saptools/bruno
@@ -62,7 +125,7 @@ saptools-bruno use ap10/my-org/dev/my-srv
 saptools-bruno run --env dev
 ```
 
-After `setup-app` your workspace looks like this:
+After `setup-app`, your workspace looks like this:
 
 ```text
 .
@@ -75,18 +138,20 @@ After `setup-app` your workspace looks like this:
                     └── prod.bru
 ```
 
-Every env file starts with the CF coordinates needed for token lookup:
+Each env file starts with the CF coordinates needed for token lookup:
 
 ```text
 vars {
   __cf_region: ap10
-  __cf_org: my-org
-  __cf_space: dev
-  __cf_app: my-srv
+  __cf_org:    my-org
+  __cf_space:  dev
+  __cf_app:    my-srv
   environment: dev
   baseUrl:
 }
 ```
+
+Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable — the runner populates it for you at spawn time.
 
 ---
 
@@ -101,14 +166,14 @@ saptools-bruno setup-app
 saptools-bruno --root ./collections setup-app
 ```
 
-What you get:
+**What you get**
 
 - Folder tree: `region__<key>/org__<org>/space__<space>/<app>/environments/`
 - One `.bru` env file per selection, each seeded with `__cf_region`, `__cf_org`, `__cf_space`, `__cf_app`, `environment`, and an empty `baseUrl`
 - Existing env files are preserved; only missing `__cf_*` vars are patched back in
 
 > [!TIP]
-> The env prompt shows the common names (`local`, `dev`, `staging`, `prod`) plus any envs already on disk. Pre-existing envs are pre-checked; common ones are not — just check what you need. The custom-name field accepts `[A-Za-z0-9._-]+` for names like `qa-eu` or `uat.us`.
+> The env prompt shows the common names (`local`, `dev`, `staging`, `prod`) plus any envs already on disk. Pre-existing envs are **pre-checked**; common ones are **not** — so you only create what you actually need. The custom-name field accepts `[A-Za-z0-9._-]+` for values like `qa-eu` or `uat.us`.
 
 ### ▶️ `saptools-bruno run`
 
@@ -121,10 +186,10 @@ saptools-bruno run --env dev
 # Explicit shorthand
 saptools-bruno run ap10/my-org/dev/my-srv --env dev
 
-# Drill into a subfolder or file
+# Drill into a subfolder or a single file
 saptools-bruno run ap10/my-org/dev/my-srv/users/get-all.bru --env dev
 
-# Or pass a real path (absolute or relative)
+# Or pass a real filesystem path (absolute or relative)
 saptools-bruno run ./region__ap10/org__my-org/space__dev/my-srv --env dev
 ```
 
@@ -133,7 +198,7 @@ saptools-bruno run ./region__ap10/org__my-org/space__dev/my-srv --env dev
 | `-e, --env <name>` | Environment name (default: current context or first discovered env) |
 | `--root <dir>` | Root of the Bruno collection (default: `$SAPTOOLS_BRUNO_ROOT` or cwd) |
 
-Under the hood this spawns `bru run <target> --env <name> --env-var accessToken=<token>` — your `.bru` requests reference `{{accessToken}}` like any normal Bruno variable.
+Under the hood this spawns `bru run <target> --env <name> --env-var accessToken=<token>`.
 
 ### 🎯 `saptools-bruno use`
 
@@ -164,14 +229,14 @@ import {
   useContext,
 } from "@saptools/bruno";
 
-// 1. Scaffold an app folder (BYO prompts)
+// 1. Scaffold an app folder (BYO prompts — perfect for headless/CI)
 const result = await setupApp({
   root: "./collections",
   prompts: {
     selectRegion: async (choices) => choices[0]!.value,
-    selectOrg: async (choices) => choices[0]!.value,
-    selectSpace: async (choices) => choices[0]!.value,
-    selectApp: async (choices) => choices[0]!.value,
+    selectOrg:    async (choices) => choices[0]!.value,
+    selectSpace:  async (choices) => choices[0]!.value,
+    selectApp:    async (choices) => choices[0]!.value,
     confirmCreate: async () => true,
     selectEnvironments: async ({ common }) => [...common],
     inputCustomEnvName: async () => null,
@@ -190,13 +255,14 @@ const run = await runBruno({
 });
 process.exit(run.code);
 
-// 4. Need the plan without actually spawning `bru`? (CI dry-runs, IDE integrations)
+// 4. Need the plan without spawning `bru`? (CI dry-runs, IDE integrations)
 const plan = await buildRunPlan({
   root: "./collections",
   target: "ap10/my-org/dev/my-srv",
   environment: "dev",
 });
-console.log(plan.bruArgs); // ["run", "--env", "dev", "--env-var", "accessToken=..."]
+console.log(plan.bruArgs);
+// → ["run", "--env", "dev", "--env-var", "accessToken=..."]
 
 // 5. Walk a whole collection to build a UI tree
 const tree = await scanCollection("./collections");
@@ -213,7 +279,7 @@ console.log(ctx?.app);
 | Export | Description |
 | --- | --- |
 | `setupApp(options)` | Interactive app-folder scaffolder with pluggable prompts |
-| `COMMON_ENVIRONMENTS` | The default environment-name suggestions (`local`, `dev`, `staging`, `prod`) |
+| `COMMON_ENVIRONMENTS` | Default environment-name suggestions (`local`, `dev`, `staging`, `prod`) |
 | `runBruno(options)` | Build a plan and spawn `bru run` with token injected |
 | `buildRunPlan(options)` | Build the plan (args, cwd, env file, token) without spawning |
 | `useContext({ shorthand, verify })` | Pin a default region/org/space/app context |
@@ -252,9 +318,9 @@ All state lives under your home directory or your collection root:
 ```text
 vars {
   __cf_region: ap10
-  __cf_org: my-org
-  __cf_space: dev
-  __cf_app: my-srv
+  __cf_org:    my-org
+  __cf_space:  dev
+  __cf_app:    my-srv
   environment: dev
   baseUrl:
 }
@@ -265,7 +331,7 @@ The `__cf_*` vars drive XSUAA lookup. `run` adds `accessToken` on the fly via `b
 </details>
 
 > [!IMPORTANT]
-> Prefer the CLI or the exported APIs over hand-editing these files — the on-disk format is parsed/rewritten by `setup-app` and re-setup will patch missing `__cf_*` vars back in.
+> Prefer the CLI or the exported APIs over hand-editing these files — the on-disk format is parsed and rewritten by `setup-app`, and re-setup will patch missing `__cf_*` vars back in.
 
 ---
 
@@ -276,6 +342,27 @@ The `__cf_*` vars drive XSUAA lookup. `run` adds `accessToken` on the fly via `b
 | `SAPTOOLS_BRUNO_ROOT` | Default root for the Bruno collection when `--root` isn't passed |
 | `SAPTOOLS_ACCESS_TOKEN` | Exported to the spawned `bru` process (alongside `--env-var accessToken=…`) |
 | `SAP_EMAIL` / `SAP_PASSWORD` | Consumed by `@saptools/cf-xsuaa` when the token cache is cold |
+
+---
+
+## 🧭 How it compares
+
+| Approach | XSUAA handling | Shorthand paths | CF-aware scaffolding | Cache/refresh | Works in CI |
+| --- | :-: | :-: | :-: | :-: | :-: |
+| Hand-edit `environments/*.bru` | ❌ manual | ❌ | ❌ | ❌ | ❌ |
+| Bruno GUI OAuth2 | ✅ | ❌ | ❌ | partial | ❌ (GUI) |
+| `bru run` alone | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **`saptools-bruno`** | ✅ **automatic** | ✅ | ✅ | ✅ | ✅ |
+
+---
+
+## 🧪 Quality
+
+- **74** unit tests via Vitest (strict TS · ESLint · 80%+ branch coverage on core flows)
+- **4** end-to-end tests via Playwright's test runner — stubbed `bru` binary, fixture CF snapshot, **zero network**
+- Type-checked under `strict + exactOptionalPropertyTypes + noUncheckedIndexedAccess` — the strictest realistic TS profile
+- CI on every push (lint · typecheck · build · unit · e2e · `npm pack --dry-run`)
+- npm publishes with **provenance** via GitHub OIDC trusted publishing
 
 ---
 
@@ -305,7 +392,7 @@ After the checkbox prompt you'll see a **Custom environment name** field. Type a
 <details>
 <summary><b>Where does the token come from?</b></summary>
 
-`@saptools/cf-xsuaa`. `runBruno` calls `getTokenCached({ region, org, space, app })` and reuses the local cache until it expires. You can inject your own fetcher via the `getTokenCached` option when using the API.
+[`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa). `runBruno` calls `getTokenCached({ region, org, space, app })` and reuses the local cache until it expires. You can inject your own fetcher via the `getTokenCached` option when using the API.
 
 </details>
 
@@ -315,6 +402,27 @@ After the checkbox prompt you'll see a **Custom environment name** field. Type a
 `run` accepts both shorthand (`region/org/space/app/...`) and real filesystem paths. However, `__cf_region/__cf_org/__cf_space/__cf_app` must be present in the env file — those are what drive the XSUAA lookup. Run `setup-app` once to bootstrap them.
 
 </details>
+
+<details>
+<summary><b>How do I use this in CI?</b></summary>
+
+Use the programmatic API with your own prompt stubs (every field just returns the value you want), or drive the CLI after injecting `SAP_EMAIL` / `SAP_PASSWORD` so the token cache can be populated on first run. The e2e suite of this repo is itself a CI-safe example.
+
+</details>
+
+---
+
+## 🗺️ Roadmap
+
+- [x] `setup-app` with selectable environments and custom-name input
+- [x] Shorthand path resolution (`region/org/space/app[/file]`)
+- [x] Default CF context via `use`
+- [x] Offline e2e via stubbed `bru`
+- [ ] `saptools-bruno doctor` — diagnose missing `__cf_*` vars, stale tokens, missing `bru`
+- [ ] `saptools-bruno migrate` — move collections from a flat layout into the CF-aware layout
+- [ ] First-class `--reporter json` support for piping test results into dashboards
+
+Have an idea? [Open an issue](https://github.com/dongitran/saptools/issues/new) — the roadmap is driven by real use.
 
 ---
 
@@ -330,7 +438,7 @@ pnpm --filter @saptools/bruno test:unit
 pnpm --filter @saptools/bruno test:e2e
 ```
 
-The e2e suite uses a stub `bru` binary and fixture CF snapshots, so it runs fully offline.
+The e2e suite uses a stub `bru` binary and fixture CF snapshots, so it runs fully offline. Contributions, bug reports, and feature requests are all welcome — see the [issues tab](https://github.com/dongitran/saptools/issues).
 
 ---
 
@@ -338,13 +446,24 @@ The e2e suite uses a stub `bru` binary and fixture CF snapshots, so it runs full
 
 - ☁️ [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync) — sync every region / org / space / app into a single cached JSON file
 - 🔐 [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa) — XSUAA credentials and cached OAuth2 tokens for any CF app
+- 🐛 [`@saptools/cf-debugger`](https://www.npmjs.com/package/@saptools/cf-debugger) — open an SSH debug tunnel to any CF Node.js app from your terminal
 - 🗂️ [saptools monorepo](https://github.com/dongitran/saptools) — the full toolbox
+
+---
+
+## 🤝 Contributors
+
+<a href="https://github.com/dongitran/saptools/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dongitran/saptools" alt="Contributors" />
+</a>
 
 ---
 
 <div align="center">
 
-Made with ❤️ for SAP BTP developers who'd rather script their API tests than click them.
+**Made with ❤️ for SAP BTP developers who'd rather script their API tests than click them.**
+
+If this saved you an afternoon, consider ⭐ starring the [repo](https://github.com/dongitran/saptools) — it's the main thing that tells me to keep shipping.
 
 **License** · [MIT](./LICENSE)
 

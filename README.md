@@ -23,6 +23,8 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | --- | --- | --- |
 | [`@saptools/cf-sync`](./packages/cf-sync) | Sync **region → org → space → app** from SAP BTP CF into `~/.saptools/cf-structure.json` | [![npm](https://img.shields.io/npm/v/@saptools/cf-sync.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-sync) |
 | [`@saptools/cf-xsuaa`](./packages/cf-xsuaa) | Fetch XSUAA credentials and cached OAuth2 tokens for any CF app | [![npm](https://img.shields.io/npm/v/@saptools/cf-xsuaa.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-xsuaa) |
+| [`@saptools/cf-debugger`](./packages/cf-debugger) | Open an SSH debug tunnel to any CF Node.js app from your terminal | [![npm](https://img.shields.io/npm/v/@saptools/cf-debugger.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-debugger) |
+| [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
 
 Archived code snapshot: [`_backup/`](./_backup) keeps the previous single-package implementation for reference during the migration.
 
@@ -51,6 +53,27 @@ Turns explicit CF app coordinates into a usable bearer token.
 - 🧩 CLI (`cf-xsuaa get-token-cached ...`) and ergonomic Node API
 
 Docs → [`packages/cf-xsuaa/README.md`](./packages/cf-xsuaa/README.md)
+
+### 🐛 `@saptools/cf-debugger`
+
+Open an SSH debug tunnel to any Cloud Foundry Node.js app from your terminal — no IDE required.
+
+- 🚇 `cf ssh`-based tunnel to the app's Node inspector
+- 🔁 session lifecycle handling (start, wait, cleanup)
+- 🧰 CLI-first, usable from any shell or editor
+
+Docs → [`packages/cf-debugger/README.md`](./packages/cf-debugger/README.md)
+
+### 🎯 `@saptools/bruno`
+
+Runs [Bruno](https://www.usebruno.com) collections against XSUAA-protected CF services with zero token juggling.
+
+- 🏗️ interactive `setup-app` scaffolds a CF-aware folder tree with seeded `__cf_*` metadata
+- 🧭 shorthand `region/org/space/app` path resolution
+- 🔐 automatic XSUAA token injection via `@saptools/cf-xsuaa`
+- 🎯 pin a default CF context with `use`, then run with zero args
+
+Docs → [`packages/bruno/README.md`](./packages/bruno/README.md)
 
 ---
 
@@ -87,7 +110,9 @@ pnpm --filter @saptools/cf-sync test:unit
 .
 ├── packages/
 │   ├── cf-sync/
-│   └── cf-xsuaa/
+│   ├── cf-xsuaa/
+│   ├── cf-debugger/
+│   └── bruno/
 ├── _backup/
 ├── package.json
 ├── pnpm-workspace.yaml
