@@ -11,6 +11,7 @@ import type { CfExecContext } from "./cf.js";
 import { cfApi, cfApps, cfAuth, cfOrgs, cfSpaces, cfTargetOrg, cfTargetSpace } from "./cf.js";
 import { getAllRegions } from "./regions.js";
 import {
+  appendSyncHistory,
   completeRuntimeState,
   failRuntimeState,
   findRegion,
@@ -34,6 +35,7 @@ import type {
   RegionNode,
   RegionView,
   SpaceNode,
+  SyncHistoryEntry,
   SyncMetadata,
 } from "./types.js";
 
@@ -62,6 +64,7 @@ interface LogCtx {
   readonly spinner: Ora | undefined;
   readonly verbose: boolean;
   readonly interactive: boolean;
+  readonly syncId?: string;
 }
 
 let activeSyncPromise: Promise<SyncResult> | undefined;
@@ -79,6 +82,24 @@ function log(ctx: LogCtx, message: string): void {
   if (ctx.verbose) {
     process.stdout.write(`[cf-sync] ${message}\n`);
   }
+}
+
+type SyncHistoryDetails = Omit<SyncHistoryEntry, "at" | "pid" | "hostname" | "syncId" | "event">;
+
+async function recordHistory(
+  ctx: LogCtx,
+  event: string,
+  details: SyncHistoryDetails = {},
+): Promise<void> {
+  if (!ctx.syncId) {
+    return;
+  }
+
+  await appendSyncHistory({
+    syncId: ctx.syncId,
+    event,
+    ...details,
+  });
 }
 
 function buildResult(structure: CfStructure): SyncResult {
@@ -117,12 +138,13 @@ function shouldRefreshRegion(
   return regionView.source === "stable" && isRunningMetadata(regionView.metadata);
 }
 
-function createLogContext(options: SyncOptions): LogCtx {
+function createLogContext(options: SyncOptions, syncId?: string): LogCtx {
   const spinner = options.interactive ? ora("Starting CF sync...").start() : undefined;
   return {
     spinner,
     verbose: options.verbose === true,
     interactive: options.interactive === true,
+    ...(syncId ? { syncId } : {}),
   };
 }
 
@@ -161,14 +183,28 @@ async function collectSpace(
   ctx: LogCtx,
   cfContext: CfExecContext,
 ): Promise<SpaceNode> {
+  await recordHistory(ctx, "space_started", { regionKey: regionKey as RegionKey, orgName, spaceName });
+
   try {
     await cfTargetSpace(orgName, spaceName, cfContext);
     const apps = (await cfApps(cfContext)).map((name): AppNode => ({ name }));
     log(ctx, `${regionKey} • ${orgName}/${spaceName}: ${apps.length.toString()} apps`);
+    await recordHistory(ctx, "space_apps_loaded", {
+      regionKey: regionKey as RegionKey,
+      orgName,
+      spaceName,
+      appCount: apps.length,
+    });
     return { name: spaceName, apps };
   } catch (error) {
     const message = errorMessage(error);
     log(ctx, `${regionKey} • ${orgName}/${spaceName}: skipped (${message})`);
+    await recordHistory(ctx, "space_failed", {
+      regionKey: regionKey as RegionKey,
+      orgName,
+      spaceName,
+      error: message,
+    });
     return { name: spaceName, apps: [], error: message };
   }
 }
@@ -179,6 +215,8 @@ async function collectOrg(
   ctx: LogCtx,
   cfContext: CfExecContext,
 ): Promise<OrgNode> {
+  await recordHistory(ctx, "org_started", { regionKey: regionKey as RegionKey, orgName });
+
   try {
     await cfTargetOrg(orgName, cfContext);
     const spaces = await cfSpaces(cfContext);
@@ -192,6 +230,11 @@ async function collectOrg(
   } catch (error) {
     const message = errorMessage(error);
     log(ctx, `${regionKey} • ${orgName}: skipped (${message})`);
+    await recordHistory(ctx, "org_failed", {
+      regionKey: regionKey as RegionKey,
+      orgName,
+      error: message,
+    });
     return { name: orgName, spaces: [], error: message };
   }
 }
@@ -203,6 +246,7 @@ async function collectRegion(
   ctx: LogCtx,
   cfContext: CfExecContext,
 ): Promise<RegionNode> {
+  await recordHistory(ctx, "region_auth_started", { regionKey: region.key });
   log(ctx, `Authenticating ${region.key}...`);
 
   try {
@@ -211,6 +255,10 @@ async function collectRegion(
   } catch (error) {
     const message = errorMessage(error);
     log(ctx, `${region.key}: no access (${message})`);
+    await recordHistory(ctx, "region_access_denied", {
+      regionKey: region.key,
+      error: message,
+    });
     return {
       key: region.key,
       label: region.label,
@@ -224,6 +272,10 @@ async function collectRegion(
   try {
     const orgNames = await cfOrgs(cfContext);
     log(ctx, `${region.key}: ${orgNames.length.toString()} org(s)`);
+    await recordHistory(ctx, "region_orgs_loaded", {
+      regionKey: region.key,
+      orgCount: orgNames.length,
+    });
     const orgs: OrgNode[] = [];
 
     for (const orgName of orgNames) {
@@ -240,6 +292,10 @@ async function collectRegion(
   } catch (error) {
     const message = errorMessage(error);
     log(ctx, `${region.key}: orgs lookup failed (${message})`);
+    await recordHistory(ctx, "region_failed", {
+      regionKey: region.key,
+      error: message,
+    });
     return {
       key: region.key,
       label: region.label,
@@ -288,6 +344,10 @@ async function runOwnedSync(
     syncId,
     regions.map((region) => region.key),
   );
+  await recordHistory(ctx, "runtime_initialized", {
+    requestedRegionKeys: regions.map((region) => region.key),
+    status: "running",
+  });
 
   try {
     for (const region of regions) {
@@ -297,19 +357,32 @@ async function runOwnedSync(
 
       if (existingRegion) {
         log(ctx, `${region.key}: already available in runtime state`);
+        await recordHistory(ctx, "region_skipped_existing", {
+          regionKey: region.key,
+        });
         continue;
       }
 
+      await recordHistory(ctx, "region_started", { regionKey: region.key });
       const node = await collectRegionWithIsolatedSession(region, options.email, options.password, ctx);
       await mergeRuntimeRegion(
         syncId,
         regions.map((candidate) => candidate.key),
         node,
       );
+      await recordHistory(ctx, "runtime_region_merged", {
+        regionKey: region.key,
+        status: "running",
+      });
     }
 
     const completedState = await completeRuntimeState(syncId);
     await writeStructure(completedState.structure);
+    await recordHistory(ctx, "sync_completed", {
+      status: "completed",
+      completedRegionKeys: completedState.completedRegionKeys,
+      requestedRegionKeys: completedState.requestedRegionKeys,
+    });
 
     if (ctx.spinner) {
       ctx.spinner.succeed(
@@ -321,13 +394,18 @@ async function runOwnedSync(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await failRuntimeState(syncId, message);
+    await recordHistory(ctx, "sync_failed", {
+      status: "failed",
+      error: message,
+    });
     throw error;
   }
 }
 
-async function releaseOwnedLock(lockHandle: FileHandle | undefined): Promise<void> {
+async function releaseOwnedLock(lockHandle: FileHandle | undefined, ctx: LogCtx): Promise<void> {
   if (lockHandle) {
     await releaseSyncLock(lockHandle);
+    await recordHistory(ctx, "sync_lock_released");
   }
 }
 
@@ -358,24 +436,32 @@ export async function getRegionView(options: GetRegionOptions): Promise<RegionVi
 
 async function runSyncInternal(options: SyncOptions): Promise<SyncResult> {
   const regions = getRequestedRegions(options);
-  const ctx = createLogContext(options);
   const syncId = randomUUID();
+  const ctx = createLogContext(options, syncId);
   let lockHandle: FileHandle | undefined;
 
   try {
+    await recordHistory(ctx, "sync_requested", {
+      requestedRegionKeys: regions.map((region) => region.key),
+    });
     lockHandle = await tryAcquireSyncLock(syncId);
     if (!lockHandle) {
       log(ctx, "Another sync is already running, waiting for it to finish...");
+      await recordHistory(ctx, "sync_waiting_for_active_lock", {
+        requestedRegionKeys: regions.map((region) => region.key),
+      });
       const waitedResult = await readSettledSyncResult();
+      await recordHistory(ctx, "sync_reused_active_result");
       if (ctx.spinner) {
         ctx.spinner.succeed("Reused the active CF sync result");
       }
       return waitedResult;
     }
 
+    await recordHistory(ctx, "sync_lock_acquired");
     return await runOwnedSync(syncId, regions, options, ctx);
   } finally {
-    await releaseOwnedLock(lockHandle);
+    await releaseOwnedLock(lockHandle, ctx);
   }
 }
 

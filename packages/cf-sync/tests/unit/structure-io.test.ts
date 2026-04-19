@@ -24,6 +24,47 @@ afterEach(async () => {
 });
 
 describe("structure file I/O", () => {
+  it("returns an empty sync history when the file does not exist", async () => {
+    const { readSyncHistory } = await import("../../src/structure.js");
+    await expect(readSyncHistory()).resolves.toEqual([]);
+  });
+
+  it("appends sync history entries with process metadata", async () => {
+    const { appendSyncHistory, readSyncHistory } = await import("../../src/structure.js");
+
+    await appendSyncHistory({
+      syncId: "sync-history",
+      event: "sync_requested",
+      requestedRegionKeys: ["ap10"],
+    });
+    await appendSyncHistory({
+      syncId: "sync-history",
+      event: "sync_completed",
+      status: "completed",
+      completedRegionKeys: ["ap10"],
+    });
+
+    await expect(readSyncHistory()).resolves.toEqual([
+      expect.objectContaining({
+        syncId: "sync-history",
+        event: "sync_requested",
+        requestedRegionKeys: ["ap10"],
+        pid: expect.any(Number),
+        hostname: expect.any(String),
+        at: expect.any(String),
+      }),
+      expect.objectContaining({
+        syncId: "sync-history",
+        event: "sync_completed",
+        status: "completed",
+        completedRegionKeys: ["ap10"],
+        pid: expect.any(Number),
+        hostname: expect.any(String),
+        at: expect.any(String),
+      }),
+    ]);
+  });
+
   it("returns undefined when file does not exist", async () => {
     const { readStructure } = await import("../../src/structure.js");
     expect(await readStructure()).toBeUndefined();

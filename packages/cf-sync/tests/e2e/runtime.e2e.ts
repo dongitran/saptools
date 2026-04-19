@@ -14,6 +14,7 @@ import {
   prepareCase,
   readJson,
   readJsonLines,
+  readSyncHistory,
   runJsonCommand,
   waitForExit,
   waitForLogEntries,
@@ -205,6 +206,50 @@ test.describe("Runtime reads", () => {
         entry.apiEndpoint === "https://api.cf.eu10.hana.ondemand.com",
     );
     expect(eu10OrgsCalls).toHaveLength(1);
+  });
+
+  test("sync command writes history milestones that can be used to trace progress", async () => {
+    const paths = await prepareCase(ROOT_NAME, "sync-history", createScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const syncResult = await waitForExit(syncProcess);
+    expect(syncResult.code).toBe(0);
+    expect(syncResult.stderr).toBe("");
+
+    const history = await readSyncHistory(paths.historyPath);
+    const events = history.map((entry) => entry.event);
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "sync_requested",
+        "sync_lock_acquired",
+        "runtime_initialized",
+        "region_started",
+        "region_auth_started",
+        "org_started",
+        "space_started",
+        "space_apps_loaded",
+        "runtime_region_merged",
+        "sync_completed",
+        "sync_lock_released",
+      ]),
+    );
+
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "space_apps_loaded",
+          regionKey: "ap10",
+          orgName: "org-ap10",
+          spaceName: "dev",
+          appCount: 1,
+        }),
+      ]),
+    );
   });
 
   test("fresh region fetch updates the package-managed view after a completed sync", async () => {

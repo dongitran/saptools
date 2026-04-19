@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type * as NodeOs from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,6 +39,16 @@ function createDeferred(): {
 
 function getCfHome(env: NodeJS.ProcessEnv | undefined): string | undefined {
   return env?.["CF_HOME"];
+}
+
+async function readHistoryEvents(): Promise<readonly Record<string, unknown>[]> {
+  const { cfSyncHistoryPath } = await import("../../src/paths.js");
+  const raw = await readFile(cfSyncHistoryPath(), "utf8");
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe("runSync", () => {
@@ -196,6 +206,68 @@ describe("runSync", () => {
       requestedRegionKeys: ["ap10"],
       completedRegionKeys: ["ap10"],
     });
+  });
+
+  it("writes traceable sync history milestones for a successful sync", async () => {
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn().mockResolvedValue(["org-a"]),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn().mockResolvedValue(["dev"]),
+      cfApps: vi.fn().mockResolvedValue(["app-1"]),
+    }));
+
+    const { runSync } = await import("../../src/sync.js");
+    await runSync({
+      email: "e",
+      password: "p",
+      onlyRegions: ["ap10"],
+    });
+
+    const history = await readHistoryEvents();
+    const events = history.map((entry) => entry["event"]);
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "sync_requested",
+        "sync_lock_acquired",
+        "runtime_initialized",
+        "region_started",
+        "region_auth_started",
+        "org_started",
+        "space_started",
+        "space_apps_loaded",
+        "runtime_region_merged",
+        "sync_completed",
+        "sync_lock_released",
+      ]),
+    );
+
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "region_started",
+          regionKey: "ap10",
+        }),
+        expect.objectContaining({
+          event: "org_started",
+          regionKey: "ap10",
+          orgName: "org-a",
+        }),
+        expect.objectContaining({
+          event: "space_apps_loaded",
+          regionKey: "ap10",
+          orgName: "org-a",
+          spaceName: "dev",
+          appCount: 1,
+        }),
+      ]),
+    );
+
+    expect(events.indexOf("sync_requested")).toBeLessThan(events.indexOf("sync_completed"));
+    expect(events.indexOf("region_started")).toBeLessThan(events.indexOf("runtime_region_merged"));
   });
 
   it("uses an isolated CF_HOME for a sync session", async () => {
@@ -471,6 +543,86 @@ describe("runSync", () => {
       },
       accessibleRegions: ["ap10"],
     });
+  });
+
+  it("recovers from a legacy running lock file and completes a new sync", async () => {
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn().mockResolvedValue([]),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn(),
+      cfSpaces: vi.fn(),
+      cfApps: vi.fn(),
+    }));
+
+    const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "legacy-running-sync",
+          status: "running",
+          startedAt: "2026-04-18T00:00:00.000Z",
+          updatedAt: "2026-04-18T00:00:01.000Z",
+          requestedRegionKeys: ["ap10", "ap11"],
+          completedRegionKeys: ["ap10"],
+          structure: {
+            syncedAt: "2026-04-18T00:00:01.000Z",
+            regions: [
+              {
+                key: "ap10",
+                label: "ap10",
+                apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+                accessible: true,
+                orgs: [],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      cfSyncLockPath(),
+      `${JSON.stringify({
+        syncId: "legacy-running-sync",
+        startedAt: "2026-04-18T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+
+    const { runSync } = await import("../../src/sync.js");
+    await expect(
+      runSync({
+        email: "e",
+        password: "p",
+        onlyRegions: ["ap10"],
+      }),
+    ).resolves.toMatchObject({
+      accessibleRegions: ["ap10"],
+    });
+
+    const { readRuntimeState } = await import("../../src/structure.js");
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      status: "completed",
+      requestedRegionKeys: ["ap10"],
+      completedRegionKeys: ["ap10"],
+    });
+
+    const history = await readHistoryEvents();
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "sync_lock_recovered",
+          lockSyncId: "legacy-running-sync",
+          reason: "legacy-format-stale-runtime",
+        }),
+      ]),
+    );
   });
 
   it("fails when a lock-held sync has already settled into a failed runtime state", async () => {

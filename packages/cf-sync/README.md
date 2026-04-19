@@ -187,7 +187,10 @@ All state lives under your home directory:
 ```text
 ~/.saptools/cf-structure.json     # last successful full sync (stable)
 ~/.saptools/cf-sync-state.json    # active runtime state, partial reads, sync metadata
+~/.saptools/cf-sync-history.jsonl # append-only timeline of sync milestones for debugging
 ```
+
+`cf-sync-history.jsonl` is newline-delimited JSON. Each entry records a timestamped milestone such as lock acquisition, region traversal, runtime merges, recoveries, and final completion/failure so you can reconstruct where a sync got stuck.
 
 <details>
 <summary><b>🔬 Shape of <code>cf-structure.json</code></b></summary>

@@ -106,6 +106,26 @@ export interface RuntimeSyncState {
   readonly structure: CfStructure;
 }
 
+export interface SyncHistoryEntry {
+  readonly at: string;
+  readonly syncId: string;
+  readonly pid: number;
+  readonly hostname: string;
+  readonly event: string;
+  readonly status?: SyncStatus;
+  readonly requestedRegionKeys?: readonly RegionKey[];
+  readonly completedRegionKeys?: readonly RegionKey[];
+  readonly regionKey?: RegionKey;
+  readonly orgName?: string;
+  readonly spaceName?: string;
+  readonly appCount?: number;
+  readonly orgCount?: number;
+  readonly message?: string;
+  readonly reason?: string;
+  readonly lockSyncId?: string;
+  readonly error?: string;
+}
+
 export interface StructureView {
   readonly source: "runtime" | "stable";
   readonly structure: CfStructure;

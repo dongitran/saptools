@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { hostname as getHostname } from "node:os";
 import { dirname } from "node:path";
 import process from "node:process";
 
 import {
+  cfSyncHistoryPath,
   cfRuntimeStatePath,
   cfStateLockPath,
   cfStructurePath,
@@ -23,6 +24,7 @@ import type {
   RuntimeSyncState,
   SpaceNode,
   StructureView,
+  SyncHistoryEntry,
   SyncMetadata,
 } from "./types.js";
 
@@ -51,6 +53,14 @@ async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> 
   await mkdir(dirname(path), { recursive: true });
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(tempPath, path);
+}
+
+function parseJsonLines(raw: string): readonly unknown[] {
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as unknown);
 }
 
 async function acquireFileLock(path: string, timeoutMs: number): Promise<FileHandle> {
@@ -237,6 +247,37 @@ export async function readRuntimeState(): Promise<RuntimeSyncState | undefined> 
   return await readJsonFile<RuntimeSyncState>(cfRuntimeStatePath());
 }
 
+export async function readSyncHistory(): Promise<readonly SyncHistoryEntry[]> {
+  try {
+    const raw = await readFile(cfSyncHistoryPath(), "utf8");
+    return parseJsonLines(raw) as readonly SyncHistoryEntry[];
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw err;
+  }
+}
+
+type SyncHistoryWriteInput = Omit<SyncHistoryEntry, "at" | "pid" | "hostname"> &
+  Partial<Pick<SyncHistoryEntry, "at" | "pid" | "hostname">>;
+
+export async function appendSyncHistory(input: SyncHistoryWriteInput): Promise<SyncHistoryEntry> {
+  const entry: SyncHistoryEntry = {
+    at: input.at ?? new Date().toISOString(),
+    pid: input.pid ?? process.pid,
+    hostname: input.hostname ?? getHostname(),
+    ...input,
+  };
+
+  await withStateLock(async () => {
+    await mkdir(dirname(cfSyncHistoryPath()), { recursive: true });
+    await appendFile(cfSyncHistoryPath(), `${JSON.stringify(entry)}\n`, "utf8");
+  });
+
+  return entry;
+}
+
 export async function initializeRuntimeState(
   syncId: string,
   requestedRegionKeys: readonly RegionKey[],
@@ -406,26 +447,62 @@ interface SyncLockContent {
   readonly startedAt: string;
 }
 
-async function readSyncLockContent(): Promise<SyncLockContent | undefined> {
+interface LegacySyncLockContent {
+  readonly syncId: string;
+  readonly startedAt: string;
+}
+
+type ParsedSyncLock =
+  | { readonly kind: "missing" }
+  | { readonly kind: "valid"; readonly content: SyncLockContent }
+  | { readonly kind: "legacy"; readonly content: LegacySyncLockContent }
+  | { readonly kind: "invalid" };
+
+function parseSyncLockContent(raw: string): ParsedSyncLock {
   try {
-    const raw = await readFile(cfSyncLockPath(), "utf8");
     const parsed = JSON.parse(raw.trim()) as Partial<SyncLockContent>;
     if (
-      typeof parsed.syncId !== "string" ||
-      typeof parsed.pid !== "number" ||
-      typeof parsed.hostname !== "string" ||
-      typeof parsed.startedAt !== "string"
+      typeof parsed.syncId === "string" &&
+      typeof parsed.pid === "number" &&
+      typeof parsed.hostname === "string" &&
+      typeof parsed.startedAt === "string"
     ) {
-      return undefined;
+      return {
+        kind: "valid",
+        content: {
+          syncId: parsed.syncId,
+          pid: parsed.pid,
+          hostname: parsed.hostname,
+          startedAt: parsed.startedAt,
+        },
+      };
     }
-    return {
-      syncId: parsed.syncId,
-      pid: parsed.pid,
-      hostname: parsed.hostname,
-      startedAt: parsed.startedAt,
-    };
+
+    if (typeof parsed.syncId === "string" && typeof parsed.startedAt === "string") {
+      return {
+        kind: "legacy",
+        content: {
+          syncId: parsed.syncId,
+          startedAt: parsed.startedAt,
+        },
+      };
+    }
+
+    return { kind: "invalid" };
   } catch {
-    return undefined;
+    return { kind: "invalid" };
+  }
+}
+
+async function readSyncLockContent(): Promise<ParsedSyncLock> {
+  try {
+    const raw = await readFile(cfSyncLockPath(), "utf8");
+    return parseSyncLockContent(raw);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { kind: "missing" };
+    }
+    throw err;
   }
 }
 
@@ -446,6 +523,24 @@ function isSyncLockStale(lock: SyncLockContent): boolean {
     return false;
   }
   return !isPidAlive(lock.pid);
+}
+
+function parseIsoTimestamp(value: string): number | undefined {
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : timestamp;
+}
+
+function isRuntimeStateFresh(state: RuntimeSyncState | undefined): boolean {
+  if (state?.status !== "running") {
+    return false;
+  }
+
+  const updatedAt = parseIsoTimestamp(state.updatedAt);
+  if (updatedAt === undefined) {
+    return false;
+  }
+
+  return Date.now() - updatedAt <= FULL_SYNC_WAIT_TIMEOUT_MS;
 }
 
 async function markStaleRuntimeAsFailed(staleSyncId: string): Promise<void> {
@@ -484,6 +579,27 @@ async function openSyncLockExclusive(content: SyncLockContent): Promise<FileHand
   }
 }
 
+async function removeSyncLockFile(): Promise<void> {
+  await unlink(cfSyncLockPath()).catch((err: unknown) => {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  });
+}
+
+async function recordRecoveredLock(
+  syncId: string,
+  reason: string,
+  lockSyncId: string | undefined,
+): Promise<void> {
+  await appendSyncHistory({
+    syncId,
+    event: "sync_lock_recovered",
+    reason,
+    ...(lockSyncId ? { lockSyncId } : {}),
+  });
+}
+
 export async function tryAcquireSyncLock(syncId: string): Promise<FileHandle | undefined> {
   const content: SyncLockContent = {
     syncId,
@@ -498,18 +614,46 @@ export async function tryAcquireSyncLock(syncId: string): Promise<FileHandle | u
   }
 
   const existing = await readSyncLockContent();
-  if (!existing || !isSyncLockStale(existing)) {
-    return undefined;
+  if (existing.kind === "valid") {
+    if (!isSyncLockStale(existing.content)) {
+      return undefined;
+    }
+    await removeSyncLockFile();
+    await markStaleRuntimeAsFailed(existing.content.syncId);
+    await recordRecoveredLock(syncId, "dead-pid", existing.content.syncId);
+    return await openSyncLockExclusive(content);
   }
 
-  await unlink(cfSyncLockPath()).catch((err: unknown) => {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-  });
-  await markStaleRuntimeAsFailed(existing.syncId);
+  if (existing.kind === "legacy") {
+    const runtimeState = await readRuntimeState();
+    const runtimeMatchesLock = runtimeState?.syncId === existing.content.syncId;
+    const canRecover =
+      !runtimeState || (runtimeState.status === "running" && (!runtimeMatchesLock || !isRuntimeStateFresh(runtimeState)));
 
-  return await openSyncLockExclusive(content);
+    if (!canRecover) {
+      return undefined;
+    }
+    await removeSyncLockFile();
+    await markStaleRuntimeAsFailed(existing.content.syncId);
+    await recordRecoveredLock(syncId, "legacy-format-stale-runtime", existing.content.syncId);
+    return await openSyncLockExclusive(content);
+  }
+
+  if (existing.kind === "invalid") {
+    const runtimeState = await readRuntimeState();
+    const canRecover = !runtimeState || (runtimeState.status === "running" && !isRuntimeStateFresh(runtimeState));
+    if (!canRecover) {
+      return undefined;
+    }
+    await removeSyncLockFile();
+    if (runtimeState?.status === "running") {
+      await markStaleRuntimeAsFailed(runtimeState.syncId);
+    }
+    await recordRecoveredLock(syncId, "invalid-format-stale-runtime", runtimeState?.syncId);
+    return await openSyncLockExclusive(content);
+  }
+
+  return undefined;
 }
 
 export async function releaseSyncLock(handle: FileHandle): Promise<void> {

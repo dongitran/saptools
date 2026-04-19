@@ -16,6 +16,7 @@ import {
   createEnv,
   prepareCase,
   readJson,
+  readSyncHistory,
   waitForExit,
   writeJson,
 } from "./helpers.js";
@@ -185,6 +186,64 @@ test.describe("Failure & recovery paths", () => {
     const runtime = await readJson<RuntimeSyncState>(paths.runtimeStatePath);
     expect(runtime.status).toBe("completed");
     expect(runtime.syncId).not.toBe("crashed-sync");
+  });
+
+  test("sync recovers from a legacy lock file when the running state is stale", async () => {
+    const scenario: Scenario = {
+      regions: [
+        {
+          key: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          orgs: [{ name: "org-ap10", spaces: [{ name: "dev", apps: ["app-ap10"] }] }],
+        },
+      ],
+    };
+    const paths = await prepareCase(ROOT_NAME, "legacy-lock-recovery", scenario);
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    await mkdir(dirname(paths.syncLockPath), { recursive: true });
+    await writeFile(
+      paths.syncLockPath,
+      `${JSON.stringify({
+        syncId: "legacy-sync",
+        startedAt: "2026-04-18T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    await writeJson(paths.runtimeStatePath, {
+      syncId: "legacy-sync",
+      status: "running",
+      startedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:00.000Z",
+      requestedRegionKeys: ["ap10"],
+      completedRegionKeys: [],
+      structure: {
+        syncedAt: "2026-04-18T00:00:00.000Z",
+        regions: [],
+      },
+    } satisfies RuntimeSyncState);
+
+    const child = spawn("node", [CLI_PATH, "sync", "--only", "ap10"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const result = await waitForExit(child);
+    expect(result.code, `stderr was: ${result.stderr}`).toBe(0);
+
+    const runtime = await readJson<RuntimeSyncState>(paths.runtimeStatePath);
+    expect(runtime.status).toBe("completed");
+    expect(runtime.syncId).not.toBe("legacy-sync");
+
+    const history = await readSyncHistory(paths.historyPath);
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "sync_lock_recovered",
+          lockSyncId: "legacy-sync",
+          reason: "legacy-format-stale-runtime",
+        }),
+      ]),
+    );
   });
 
   test("sync --only rejects unknown region keys with a non-zero exit", async () => {
