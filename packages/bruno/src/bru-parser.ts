@@ -10,7 +10,7 @@ interface BlockRange {
   readonly close: "}" | "]";
 }
 
-const HEADER_REGEX = /(^|\n)\s*([a-zA-Z][a-zA-Z0-9:_-]*)\s*([{[])/g;
+const HEADER_REGEX = /(^|\n)[^\S\n]*([a-zA-Z][a-zA-Z0-9:_-]*)[^\S\n]*([{[])/g;
 
 function findMatchingClose(raw: string, open: "{" | "[", openIdx: number): number {
   const close = open === "{" ? "}" : "]";
