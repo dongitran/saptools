@@ -1,0 +1,66 @@
+{
+  "name": "@saptools/sharepoint-check",
+  "version": "0.1.1",
+  "description": "Diagnose Microsoft SharePoint access via Microsoft Graph: verify app-only auth, list drives, walk folder trees, validate layout, and dry-run write permissions",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "saptools-sharepoint-check": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-graph.mjs",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:fake": "playwright test tests/e2e/sharepoint-check.e2e.ts",
+    "test:e2e:live": "playwright test tests/e2e/live.e2e.ts"
+  },
+  "keywords": [
+    "sap",
+    "sharepoint",
+    "microsoft-graph",
+    "office365",
+    "msal",
+    "cli",
+    "diagnostics",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/sharepoint-check"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/sharepoint-check#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
