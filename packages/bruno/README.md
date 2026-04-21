@@ -46,8 +46,8 @@ You just ran Bruno against a production-grade XSUAA-protected service **without 
 - 📦 **Bundled Bruno CLI fallback** — if `bru` is already on your `PATH`, `saptools-bruno` uses it. If not, it falls back to the bundled [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli).
 - 🎯 **Default context** — `saptools-bruno use <shorthand>` pins a target so subsequent `run` calls need zero arguments. Feels like `cf target` for Bruno.
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent. Full TypeScript definitions shipped. Bring your own prompts for headless/CI use.
-- 🧪 **Fully tested** — 90 unit tests + 8 offline e2e tests (stub `bru` binary + fixture CF snapshot). No network required in CI.
-- 🪶 **Small + boring** — three runtime deps, no background daemons, no plugin system, no magic.
+- 🧪 **Fully tested** — unit tests plus offline e2e coverage (stub `bru` binary + fixture CF snapshot). No network required in CI.
+- 🪶 **Small + boring** — a small runtime surface, no background daemons, no plugin system, no magic.
 
 ---
 
@@ -95,8 +95,8 @@ saptools-bruno run --env dev
 ## 📦 Install
 
 ```bash
-# Global CLI
-npm install -g @saptools/bruno
+# Global CLIs
+npm install -g @saptools/cf-sync @saptools/bruno
 
 # Or as a project dependency
 npm install @saptools/bruno
@@ -107,7 +107,7 @@ npm install @saptools/bruno
 > [!NOTE]
 > Requires **Node.js ≥ 20** and a cached CF landscape from [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync). `@saptools/bruno` now bundles [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli) automatically, but still prefers an existing `bru` on `PATH` if you already have one installed.
 >
-> `npm` does install `@saptools/cf-sync` as a dependency of `@saptools/bruno`, but when you install `@saptools/bruno` globally the transitive `cf-sync` bin is not linked into your global `PATH`. Use `saptools-bruno sync` as the default entry point.
+> `npm` does install `@saptools/cf-sync` as a dependency of `@saptools/bruno`, but a global install of `@saptools/bruno` does **not** expose the transitive `cf-sync` binary on your `PATH`. For global CLI usage, install `@saptools/cf-sync` explicitly. For project-local usage, invoke the local bin through your package manager, for example `npx --no-install cf-sync sync` or `pnpm exec cf-sync sync`.
 
 ---
 
@@ -115,7 +115,7 @@ npm install @saptools/bruno
 
 ```bash
 # 1. Sync your CF landscape once
-saptools-bruno sync
+cf-sync sync
 
 # 2. Scaffold an app folder with seeded __cf_* metadata
 saptools-bruno setup-app
@@ -160,24 +160,6 @@ Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable �
 
 ## 🧰 CLI
 
-### ☁️ `saptools-bruno sync`
-
-Cache the Cloud Foundry landscape that `setup-app` and `use` verify against.
-
-```bash
-saptools-bruno sync
-saptools-bruno sync --only ap10,eu10
-saptools-bruno sync --verbose
-```
-
-| Flag | Description |
-| --- | --- |
-| `--only <keys>` | Comma-separated list of region keys to sync (default: all) |
-| `--verbose` | Print progress lines to stdout |
-| `--no-interactive` | Disable the spinner (useful in CI) |
-
-Requires `SAP_EMAIL` and `SAP_PASSWORD` in the environment, just like the standalone `@saptools/cf-sync` package.
-
 ### 🏗️ `saptools-bruno setup-app`
 
 Interactively scaffold a Bruno app folder inside the current Bruno collection directory. Walks you through **region → org → space → app**, with the **app step using a searchable picker** for large spaces, then lets you **pick which environments to create** and add custom names without leaving the environment picker.
@@ -189,6 +171,9 @@ saptools-bruno --collection ./collections setup-app
 
 > [!TIP]
 > `--collection` only applies to the current command. If you omit it, `saptools-bruno` falls back to `$SAPTOOLS_BRUNO_COLLECTION`, then to your current working directory.
+
+> [!IMPORTANT]
+> `setup-app` reads the cached CF landscape prepared by `cf-sync`. If the cache is missing or stale, run `cf-sync sync` first.
 
 **What you get**
 

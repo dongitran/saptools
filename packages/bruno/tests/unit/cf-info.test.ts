@@ -75,6 +75,7 @@ describe("getStructureSnapshot", () => {
     expect(snap.source).toBe("empty");
     expect(snap.structure).toBeUndefined();
     expect(snap.stale).toBe(true);
+    expect(snap.message).toContain("cf-sync sync");
   });
 
   it("marks runtime with status=running as stale", async () => {

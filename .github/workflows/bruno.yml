@@ -79,7 +79,30 @@ jobs:
         run: pnpm --filter @saptools/bruno test:e2e
 
       - name: Verify publish tarball
-        run: npm pack --dry-run
+        run: |
+          set -euo pipefail
+          tarball="$(npm pack --json | node -e "const fs = require('node:fs'); const data = JSON.parse(fs.readFileSync(0, 'utf8')); console.log(data[0].filename);")"
+          tarball_path="$PWD/$tarball"
+          tmpdir="$(mktemp -d)"
+          err_file="$tmpdir/sync.err"
+          trap 'rm -rf "$tmpdir" "$tarball_path"' EXIT
+
+          cd "$tmpdir"
+          npm init -y >/dev/null 2>&1
+          npm install --silent "$tarball_path"
+
+          npx --no-install saptools-bruno --help >/dev/null
+
+          if npx --no-install saptools-bruno sync >/dev/null 2>"$err_file"; then
+            echo "::error::saptools-bruno sync should not exist in the packaged CLI"
+            exit 1
+          fi
+
+          if ! grep -Fq "unknown command 'sync'" "$err_file"; then
+            echo "::error::Expected packaged CLI to reject sync"
+            cat "$err_file"
+            exit 1
+          fi
         working-directory: packages/bruno
 
   publish:

@@ -1,6 +1,6 @@
 {
   "name": "@saptools/bruno",
-  "version": "0.2.13",
+  "version": "0.3.0",
   "description": "Smart runner for Bruno — CF-aware env metadata, automatic token injection, and shorthand paths",
   "type": "module",
   "publishConfig": {
@@ -26,7 +26,6 @@
   },
   "scripts": {
     "build": "tsup",
-    "postinstall": "node --input-type=module -e \"import('./dist/postinstall.js').then((m) => { if (m.shouldPrintInstallHint()) m.printInstallHint(); }).catch(() => {})\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-bru.mjs",
     "test:unit": "vitest run --coverage",

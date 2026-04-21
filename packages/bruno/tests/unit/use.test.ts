@@ -89,6 +89,6 @@ describe("useContext", () => {
   it("rejects when ref not found in structure", async () => {
     await expect(
       useContext({ shorthand: "ap10/ghost/s/a", deps: makeDeps() }),
-    ).rejects.toThrow(/Could not verify/);
+    ).rejects.toThrow(/cf-sync sync/);
   });
 });

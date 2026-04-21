@@ -322,6 +322,6 @@ describe("setupApp", () => {
           selectEnvironments: async () => ["local"],
         },
       }),
-    ).rejects.toThrow(/No CF regions/);
+    ).rejects.toThrow(/cf-sync sync/);
   });
 });
