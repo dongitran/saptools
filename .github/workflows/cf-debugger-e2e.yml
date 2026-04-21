@@ -14,7 +14,6 @@ on:
       - "packages/cf-debugger/tsconfig.json"
       - "packages/cf-debugger/tsup.config.ts"
       - "packages/cf-debugger/vitest.config.ts"
-      - "pnpm-lock.yaml"
   pull_request:
     branches:
       - main
@@ -27,7 +26,6 @@ on:
       - "packages/cf-debugger/tsconfig.json"
       - "packages/cf-debugger/tsup.config.ts"
       - "packages/cf-debugger/vitest.config.ts"
-      - "pnpm-lock.yaml"
 
 permissions:
   contents: read

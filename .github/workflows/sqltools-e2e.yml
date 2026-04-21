@@ -14,7 +14,6 @@ on:
       - "packages/sqltools/tsconfig.json"
       - "packages/sqltools/tsup.config.ts"
       - "packages/sqltools/vitest.config.ts"
-      - "pnpm-lock.yaml"
   pull_request:
     branches:
       - main
@@ -27,7 +26,6 @@ on:
       - "packages/sqltools/tsconfig.json"
       - "packages/sqltools/tsup.config.ts"
       - "packages/sqltools/vitest.config.ts"
-      - "pnpm-lock.yaml"
 
 permissions:
   contents: read
