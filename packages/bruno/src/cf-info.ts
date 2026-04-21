@@ -55,7 +55,7 @@ export async function getStructureSnapshot(
       source: "empty",
       structure: undefined,
       stale: true,
-      message: "No CF structure cached. Run `cf-sync sync` first.",
+      message: "No CF structure cached. Run `saptools-bruno sync` first.",
     };
   }
 

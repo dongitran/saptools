@@ -106,14 +106,16 @@ npm install @saptools/bruno
 
 > [!NOTE]
 > Requires **Node.js ≥ 20** and a cached CF landscape from [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync). `@saptools/bruno` now bundles [`@usebruno/cli`](https://www.npmjs.com/package/@usebruno/cli) automatically, but still prefers an existing `bru` on `PATH` if you already have one installed.
+>
+> `npm` does install `@saptools/cf-sync` as a dependency of `@saptools/bruno`, but when you install `@saptools/bruno` globally the transitive `cf-sync` bin is not linked into your global `PATH`. Use `saptools-bruno sync` as the default entry point.
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Sync your CF landscape once (from @saptools/cf-sync)
-cf-sync sync
+# 1. Sync your CF landscape once
+saptools-bruno sync
 
 # 2. Scaffold an app folder with seeded __cf_* metadata
 saptools-bruno setup-app
@@ -157,6 +159,24 @@ Your `.bru` requests reference `{{accessToken}}` like any other Bruno variable �
 ---
 
 ## 🧰 CLI
+
+### ☁️ `saptools-bruno sync`
+
+Cache the Cloud Foundry landscape that `setup-app` and `use` verify against.
+
+```bash
+saptools-bruno sync
+saptools-bruno sync --only ap10,eu10
+saptools-bruno sync --verbose
+```
+
+| Flag | Description |
+| --- | --- |
+| `--only <keys>` | Comma-separated list of region keys to sync (default: all) |
+| `--verbose` | Print progress lines to stdout |
+| `--no-interactive` | Disable the spinner (useful in CI) |
+
+Requires `SAP_EMAIL` and `SAP_PASSWORD` in the environment, just like the standalone `@saptools/cf-sync` package.
 
 ### 🏗️ `saptools-bruno setup-app`
 

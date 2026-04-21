@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
 const FAKE_BRU = join(PACKAGE_DIR, "tests", "e2e", "fixtures", "fake-bru.mjs");
+const FAKE_CF = resolve(PACKAGE_DIR, "..", "cf-sync", "tests", "e2e", "fixtures", "fake-cf.mjs");
 
 interface CtxPaths {
   readonly home: string;
@@ -26,6 +27,13 @@ interface CtxPaths {
   readonly root: string;
   readonly appDir: string;
   readonly envFile: string;
+}
+
+interface SyncCtx {
+  readonly home: string;
+  readonly cfDir: string;
+  readonly scenarioPath: string;
+  readonly logPath: string;
 }
 
 interface RunCliOptions {
@@ -120,6 +128,39 @@ async function makeFixture(): Promise<CtxPaths> {
   return { home, bruDir, bruLog, root, appDir, envFile };
 }
 
+async function makeSyncFixture(): Promise<SyncCtx> {
+  const home = await mkdtemp(join(tmpdir(), "saptools-bruno-sync-home-"));
+  const cfDir = await mkdtemp(join(tmpdir(), "saptools-bruno-cf-bin-"));
+  const scenarioPath = join(home, "fake-cf-scenario.json");
+  const logPath = join(home, "fake-cf.log");
+
+  await writeFile(
+    scenarioPath,
+    `${JSON.stringify(
+      {
+        regions: [
+          {
+            key: "ap10",
+            apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+            orgs: [
+              {
+                name: "demo-org",
+                spaces: [{ name: "dev-space", apps: ["my-app"] }],
+              },
+            ],
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  await symlink(FAKE_CF, join(cfDir, "cf"));
+
+  return { home, cfDir, scenarioPath, logPath };
+}
+
 function runCli(
   args: readonly string[],
   ctx: CtxPaths,
@@ -199,6 +240,56 @@ test("run with shorthand path resolves to fixture env", async () => {
     await rm(ctx.home, { recursive: true, force: true });
     await rm(ctx.bruDir, { recursive: true, force: true });
     await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("sync uses the bundled cf-sync dependency to cache the CF landscape", async () => {
+  const ctx = await makeSyncFixture();
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [CLI_PATH, "sync", "--only", "ap10", "--no-interactive"],
+      {
+        cwd: ctx.home,
+        env: {
+          ...process.env,
+          HOME: ctx.home,
+          CF_HOME: join(ctx.home, ".cf"),
+          PATH: `${ctx.cfDir}:${process.env["PATH"] ?? ""}`,
+          CF_SYNC_FAKE_SCENARIO: ctx.scenarioPath,
+          CF_SYNC_FAKE_LOG_PATH: ctx.logPath,
+          SAP_EMAIL: "user@example.com",
+          SAP_PASSWORD: "secret",
+        },
+      },
+    );
+
+    expect(stderr).not.toMatch(/Error:/);
+    expect(stdout).toContain("Structure written to");
+
+    const structureRaw = await readFile(join(ctx.home, ".saptools", "cf-structure.json"), "utf8");
+    const structure = JSON.parse(structureRaw) as {
+      readonly regions: readonly {
+        readonly key: string;
+        readonly accessible: boolean;
+        readonly orgs: readonly { readonly name: string }[];
+      }[];
+    };
+    expect(structure.regions).toEqual([
+      expect.objectContaining({
+        key: "ap10",
+        accessible: true,
+        orgs: [expect.objectContaining({ name: "demo-org" })],
+      }),
+    ]);
+
+    const fakeLog = await readFile(ctx.logPath, "utf8");
+    expect(fakeLog).toContain('"command":"api"');
+    expect(fakeLog).toContain('"command":"auth"');
+    expect(fakeLog).toContain('"command":"apps"');
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.cfDir, { recursive: true, force: true });
   }
 });
 
@@ -282,8 +373,6 @@ test("run fails clearly when a pre-cached token does not exist (would reach out 
     await rm(ctx.root, { recursive: true, force: true });
   }
 });
-
-void execFileAsync;
 
 test("use --no-verify accepts a known region without consulting the CF structure", async () => {
   const ctx = await makeFixture();

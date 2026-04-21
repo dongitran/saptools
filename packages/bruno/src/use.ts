@@ -42,7 +42,7 @@ export async function useContext(options: UseOptions): Promise<BrunoContext> {
     const resolved = await resolveRef({ ...parsed, region: parsed.region }, options.deps);
     if (!resolved) {
       throw new Error(
-        `Could not verify ${options.shorthand} against the cached CF structure. Run \`cf-sync sync\` first.`,
+        `Could not verify ${options.shorthand} against the cached CF structure. Run \`saptools-bruno sync\` first.`,
       );
     }
   }

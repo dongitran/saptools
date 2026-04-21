@@ -140,14 +140,16 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
   const regions = await listRegionsWithContent(deps);
   if (regions.length === 0) {
     throw new Error(
-      "No CF regions with orgs are cached. Run `cf-sync sync` first, or pass SAP_EMAIL/SAP_PASSWORD to refresh.",
+      "No CF regions with orgs are cached. Run `saptools-bruno sync` first, or pass SAP_EMAIL/SAP_PASSWORD to refresh.",
     );
   }
 
   const regionKey = await options.prompts.selectRegion(pickRegion(regions));
   const regionView = await deps.readRegionView(regionKey);
   if (!regionView) {
-    throw new Error(`Region ${regionKey} is not cached. Run \`cf-sync sync\` or \`cf-sync region ${regionKey}\`.`);
+    throw new Error(
+      `Region ${regionKey} is not cached. Run \`saptools-bruno sync\` first, or use \`cf-sync region ${regionKey}\` if you have the standalone tool installed.`,
+    );
   }
   const region = regionView.region;
 

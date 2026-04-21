@@ -8,6 +8,7 @@ import { readContext } from "./context.js";
 import { promptForEnvironments } from "./environment-prompt.js";
 import { runBruno } from "./run.js";
 import { setupApp } from "./setup-app.js";
+import { runSyncCommand } from "./sync-command.js";
 import { useContext } from "./use.js";
 
 function resolveCollectionDir(explicitCollection: string | undefined, explicitRoot: string | undefined): string {
@@ -62,6 +63,16 @@ export async function main(argv: readonly string[]): Promise<void> {
         return;
       }
       process.stdout.write(`✔ App folder ready at ${result.appPath}\n`);
+    });
+
+  program
+    .command("sync")
+    .description("Cache the Cloud Foundry landscape required by setup-app and use")
+    .option("--verbose", "Print progress lines to stdout", false)
+    .option("--no-interactive", "Disable spinner (auto-detected in CI)")
+    .option("--only <keys>", "Comma-separated list of region keys to sync (default: all)")
+    .action(async (opts: { verbose?: boolean; interactive?: boolean; only?: string }): Promise<void> => {
+      await runSyncCommand(opts);
     });
 
   program

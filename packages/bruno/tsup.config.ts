@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     cli: "src/cli.ts",
+    postinstall: "src/postinstall.ts",
   },
   format: ["esm"],
   target: "node20",
