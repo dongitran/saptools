@@ -1,7 +1,18 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 
+import {
+  readDbAppView,
+  readDbSnapshotView,
+} from "./db-store.js";
+import {
+  resolveDbSyncTargetsFromCurrentTopology,
+  runDbSync,
+} from "./db-sync.js";
 import { cfStructurePath } from "./paths.js";
 import { readRegionsView, readStructureView } from "./structure.js";
 import { getRegionView, runSync } from "./sync.js";
@@ -42,6 +53,7 @@ function parseOnlyRegions(raw: string): readonly (typeof REGION_KEYS)[number][] 
 
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
+  const cliEntryPath = fileURLToPath(import.meta.url);
 
   program
     .name("cf-sync")
@@ -117,6 +129,68 @@ export async function main(argv: readonly string[]): Promise<void> {
 
       const view = await getRegionView(regionOptions);
       process.stdout.write(`${JSON.stringify(view ?? null, null, 2)}\n`);
+    });
+
+  program
+    .command("db-sync")
+    .description("Start a background HANA DB binding sync for all cached apps or one app")
+    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
+    .action(async (selector?: string): Promise<void> => {
+      requireEnv("SAP_EMAIL");
+      requireEnv("SAP_PASSWORD");
+      await resolveDbSyncTargetsFromCurrentTopology(selector);
+
+      const syncId = randomUUID();
+      const child = spawn(
+        process.execPath,
+        [
+          cliEntryPath,
+          "db-sync-worker",
+          "--sync-id",
+          syncId,
+          ...(selector ? [selector] : []),
+        ],
+        {
+          detached: true,
+          stdio: "ignore",
+          env: process.env,
+        },
+      );
+      child.unref();
+
+      process.stdout.write(
+        `Background DB sync requested.\n` +
+          `  Sync id: ${syncId}\n` +
+          `  Target: ${selector ?? "all cached apps"}\n` +
+          `  Use \`cf-sync db-read${selector ? ` ${selector}` : ""}\` to inspect results.\n`,
+      );
+    });
+
+  program
+    .command("db-read")
+    .description("Print the best available HANA DB snapshot or one app binding view as JSON")
+    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
+    .action(async (selector?: string): Promise<void> => {
+      const view = selector ? await readDbAppView(selector) : await readDbSnapshotView();
+      process.stdout.write(`${JSON.stringify(view ?? null, null, 2)}\n`);
+    });
+
+  program
+    .command("db-sync-worker")
+    .description("Internal worker command for detached DB sync execution")
+    .argument("[selector]")
+    .requiredOption("--sync-id <id>")
+    .action(async (selector: string | undefined, opts: { syncId: string }): Promise<void> => {
+      const email = requireEnv("SAP_EMAIL");
+      const password = requireEnv("SAP_PASSWORD");
+      const targets = await resolveDbSyncTargetsFromCurrentTopology(selector);
+      await runDbSync({
+        email,
+        password,
+        targets,
+        syncId: opts.syncId,
+        verbose: false,
+      });
     });
 
   await program.parseAsync([...argv]);

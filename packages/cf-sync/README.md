@@ -2,9 +2,9 @@
 
 # ☁️ `@saptools/cf-sync`
 
-**Map your entire SAP BTP Cloud Foundry landscape into a single JSON file — once.**
+**Map your SAP BTP Cloud Foundry topology and HANA app bindings into package-managed JSON files.**
 
-Walk every region, org, space, and app you have access to, write a stable snapshot to disk, and expose it to the rest of your toolchain via CLI or Node.js API — no more juggling `cf target`.
+Walk every region, org, space, and app you have access to, cache the topology, then optionally collect app-level HANA credentials in a background sync — no more juggling `cf target` or hand-running `cf env`.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/cf-sync.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/cf-sync)
 [![license](https://img.shields.io/npm/l/@saptools/cf-sync.svg?style=flat&color=blue)](./LICENSE)
@@ -22,10 +22,11 @@ Walk every region, org, space, and app you have access to, write a stable snapsh
 
 - 🌍 **Full-landscape sync** — logs into CF once, walks **region → org → space → app** across every region you can reach
 - ⚡ **Partial + streaming reads** — `read` / `regions` / `region` commands return whatever is already known, even while a long sync is in progress
+- 🗄️ **Background DB binding sync** — `db-sync` can collect `VCAP_SERVICES.hana` credentials for every cached app or one app selector in the background
 - 🧠 **Smart fallbacks** — runtime state first, last stable snapshot next, on-demand fetch as a last resort
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent with full TypeScript definitions
 - 📦 **Drop-in for other saptools** — the output file is the shared source of truth for packages like [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa)
-- 🪶 **Small + boring** — two deps (`commander`, `ora`), no background daemons, no magic
+- 🪶 **Small + boring** — two deps (`commander`, `ora`), one-shot background workers only when requested, no resident daemon
 
 ---
 
@@ -56,11 +57,15 @@ export SAP_PASSWORD="your-sap-password"
 # 2. Sync every accessible region in parallel
 cf-sync sync --verbose
 
-# 3. Read the snapshot back from anywhere — CLI, script, or Node process
+# 3. Read the topology snapshot back from anywhere — CLI, script, or Node process
 cf-sync read | jq '.regions[] | {key, accessible}'
+
+# 4. Optionally collect HANA DB bindings for every cached app in the background
+cf-sync db-sync
+cf-sync db-read | jq '.metadata'
 ```
 
-After the first sync, `~/.saptools/cf-structure.json` is ready for the rest of your tooling.
+After the first topology sync, `~/.saptools/cf-structure.json` is ready for the rest of your tooling. If you run `db-sync`, the HANA binding snapshot is stored separately.
 
 ---
 
@@ -121,12 +126,46 @@ cf-sync region eu10 --no-refresh
 > [!TIP]
 > `cf-sync region <key>` is the fastest way to answer *"what's in just this region right now?"* without walking everything.
 
+### 🗄️ `cf-sync db-sync [selector]`
+
+Start a detached background worker that collects `VCAP_SERVICES.hana` credentials.
+
+- with no selector: sync every app in the cached topology snapshot
+- with `<app>`: sync one uniquely named app from the cached topology snapshot
+- with `region/org/space/app`: sync one explicit app even if no topology snapshot exists yet
+
+```bash
+cf-sync db-sync
+cf-sync db-sync orders-srv
+cf-sync db-sync ap10/my-org/dev/orders-srv
+```
+
+> [!IMPORTANT]
+> `cf-sync db-sync` persists HANA credentials to local disk under `~/.saptools/`. Treat that file like a secret.
+
+### 📚 `cf-sync db-read [selector]`
+
+Read the best available HANA binding snapshot as JSON.
+
+- `cf-sync db-read` returns the full runtime/stable DB snapshot view
+- `cf-sync db-read <selector>` returns one app binding view
+
+```bash
+cf-sync db-read
+cf-sync db-read orders-srv
+cf-sync db-read ap10/my-org/dev/orders-srv
+```
+
 ---
 
 ## 🧑‍💻 Programmatic Usage
 
 ```ts
 import {
+  readDbAppView,
+  readDbSnapshotView,
+  resolveDbSyncTargetsFromCurrentTopology,
+  runDbSync,
   findRegion,
   getRegionView,
   readRegionsView,
@@ -158,6 +197,19 @@ const eu10 = await getRegionView({                // one region, auto-fetch if m
   password: process.env["SAP_PASSWORD"],
 });
 console.log(eu10?.source); // "runtime" | "stable" | "live"
+
+// Resolve DB targets from cached topology or an explicit selector
+const dbTargets = await resolveDbSyncTargetsFromCurrentTopology("orders-srv");
+const dbResult = await runDbSync({
+  email: process.env["SAP_EMAIL"] ?? "",
+  password: process.env["SAP_PASSWORD"] ?? "",
+  targets: dbTargets,
+});
+console.log(dbResult.snapshot.entries.length);
+
+const dbView = await readDbSnapshotView();
+const ordersDb = await readDbAppView("orders-srv");
+console.log(dbView?.metadata?.status, ordersDb?.entry.bindings.length);
 ```
 
 <details>
@@ -171,6 +223,12 @@ console.log(eu10?.source); // "runtime" | "stable" | "live"
 | `readRegionsView()` | Region list only, with fallbacks |
 | `readRegionView(key)` | One region from cached data |
 | `getRegionView({ regionKey, ... })` | One region, fetching on demand if missing |
+| `resolveDbSyncTargetsFromCurrentTopology(selector?)` | Resolve all apps, one app name, or one explicit app selector for DB sync |
+| `runDbSync({ email, password, targets, ... })` | Collect HANA DB bindings for the given app targets |
+| `readDbSnapshot()` | Last stable DB binding snapshot, or `undefined` |
+| `readDbRuntimeState()` | Current DB sync runtime state, or `undefined` |
+| `readDbSnapshotView()` | Best-available DB snapshot view with runtime metadata |
+| `readDbAppView(selector)` | One DB snapshot entry by app name or explicit selector |
 | `findRegion(structure, key)` | Look up a region by key |
 | `findOrg(region, name)` | Look up an org within a region |
 | `findSpace(org, name)` | Look up a space within an org |
@@ -188,9 +246,14 @@ All state lives under your home directory:
 ~/.saptools/cf-structure.json     # last successful full sync (stable)
 ~/.saptools/cf-sync-state.json    # active runtime state, partial reads, sync metadata
 ~/.saptools/cf-sync-history.jsonl # append-only timeline of sync milestones for debugging
+~/.saptools/cf-db-bindings.json   # last successful HANA binding snapshot (contains credentials)
+~/.saptools/cf-db-sync-state.json # active DB binding runtime state
+~/.saptools/cf-db-sync-history.jsonl # append-only DB sync milestones
 ```
 
 `cf-sync-history.jsonl` is newline-delimited JSON. Each entry records a timestamped milestone such as lock acquisition, region traversal, runtime merges, recoveries, and final completion/failure so you can reconstruct where a sync got stuck.
+
+`cf-db-bindings.json` is also newline-free JSON, but unlike the topology files it contains HANA credentials. Do not commit it, attach it to tickets, or paste it into logs.
 
 <details>
 <summary><b>🔬 Shape of <code>cf-structure.json</code></b></summary>
@@ -232,7 +295,7 @@ All state lives under your home directory:
 <details>
 <summary><b>Do I have to re-enter my SAP credentials for every read?</b></summary>
 
-No. `SAP_EMAIL` / `SAP_PASSWORD` are only used during `sync` (and by `cf-sync region <key>` when the region is missing locally). Pure read commands work offline.
+No. `SAP_EMAIL` / `SAP_PASSWORD` are only used during `sync`, `db-sync`, and `cf-sync region <key>` when the region is missing locally. Pure read commands work offline.
 
 </details>
 
@@ -246,7 +309,9 @@ As often as your CF topology changes in a way you care about — usually daily o
 <details>
 <summary><b>Is the output file safe to commit?</b></summary>
 
-It doesn't contain secrets, but it **does** list every org, space, and app you can reach — so it leaks your landscape's structure. Keep it out of public repos.
+`cf-structure.json` does not contain secrets, but it **does** list every org, space, and app you can reach — so it leaks your landscape's structure. Keep it out of public repos.
+
+`cf-db-bindings.json` is more sensitive: it contains HANA credentials by design. Treat it like a secret and never commit it.
 
 </details>
 

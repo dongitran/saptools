@@ -1,7 +1,7 @@
 {
   "name": "@saptools/cf-sync",
-  "version": "0.3.5",
-  "description": "Sync SAP BTP Cloud Foundry structure (region/org/space/app) to a local JSON file",
+  "version": "0.4.0",
+  "description": "Sync SAP BTP Cloud Foundry topology and HANA DB bindings to local package-managed JSON files",
   "type": "module",
   "publishConfig": {
     "access": "public",
@@ -30,7 +30,7 @@
     "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
     "test:unit": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:fake": "playwright test tests/e2e/runtime.e2e.ts tests/e2e/regions.e2e.ts tests/e2e/failures.e2e.ts",
+    "test:e2e:fake": "playwright test tests/e2e/db-sync.e2e.ts tests/e2e/runtime.e2e.ts tests/e2e/regions.e2e.ts tests/e2e/failures.e2e.ts",
     "test:e2e:live": "playwright test tests/e2e/sync.e2e.ts"
   },
   "keywords": [

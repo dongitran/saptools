@@ -98,6 +98,24 @@ function getCurrentSpace(org, state) {
   return space;
 }
 
+function toScenarioApp(value) {
+  if (typeof value === "string") {
+    return { name: value };
+  }
+  if (value && typeof value === "object" && typeof value.name === "string") {
+    return value;
+  }
+  fail("Invalid scenario app entry");
+}
+
+function getCurrentApp(space, appName) {
+  const app = (space.apps ?? []).map(toScenarioApp).find((candidate) => candidate.name === appName);
+  if (!app) {
+    fail(`Unknown app: ${appName}`);
+  }
+  return app;
+}
+
 async function main() {
   const scenario = await readJson(getScenarioPath(), { regions: [] });
   const statePath = getStatePath();
@@ -197,8 +215,27 @@ async function main() {
     if (space.appsError) {
       fail(space.appsError);
     }
-    const lines = (space.apps ?? []).map((app) => `${app}  started`).join("\n");
+    const lines = (space.apps ?? [])
+      .map((app) => `${toScenarioApp(app).name}  started`)
+      .join("\n");
     process.stdout.write(`name  requested state\n${lines}\n`);
+    return;
+  }
+
+  if (command === "env") {
+    const appName = args[1];
+    if (!appName) {
+      fail("Missing app name");
+    }
+
+    const org = getCurrentOrg(region, state);
+    const space = getCurrentSpace(org, state);
+    const app = getCurrentApp(space, appName);
+    await sleep(app.envDelayMs ?? 0);
+    if (app.envError) {
+      fail(app.envError);
+    }
+    process.stdout.write(`${app.envOutput ?? "VCAP_SERVICES: {}\nVCAP_APPLICATION: {}"}\n`);
     return;
   }
 

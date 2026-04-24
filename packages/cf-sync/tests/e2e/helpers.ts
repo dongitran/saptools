@@ -7,13 +7,17 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  CF_DB_RUNTIME_STATE_FILENAME,
+  CF_DB_SNAPSHOT_FILENAME,
+  CF_DB_SYNC_HISTORY_FILENAME,
+  CF_DB_SYNC_LOCK_FILENAME,
   CF_SYNC_HISTORY_FILENAME,
   CF_RUNTIME_STATE_FILENAME,
   CF_STRUCTURE_FILENAME,
   CF_SYNC_LOCK_FILENAME,
   SAPTOOLS_DIR_NAME,
 } from "../../src/paths.js";
-import type { SyncHistoryEntry } from "../../src/types.js";
+import type { DbSyncHistoryEntry, SyncHistoryEntry } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -36,9 +40,16 @@ export interface ScenarioRegion {
       readonly name: string;
       readonly appsDelayMs?: number;
       readonly appsError?: string;
-      readonly apps: readonly string[];
+      readonly apps: readonly (string | ScenarioApp)[];
     }[];
   }[];
+}
+
+export interface ScenarioApp {
+  readonly name: string;
+  readonly envDelayMs?: number;
+  readonly envError?: string;
+  readonly envOutput?: string;
 }
 
 export interface Scenario {
@@ -63,6 +74,10 @@ export interface CasePaths {
   readonly runtimeStatePath: string;
   readonly structurePath: string;
   readonly syncLockPath: string;
+  readonly dbHistoryPath: string;
+  readonly dbRuntimeStatePath: string;
+  readonly dbSnapshotPath: string;
+  readonly dbSyncLockPath: string;
 }
 
 export function buildCasePaths(rootName: string, caseName: string): CasePaths {
@@ -78,6 +93,10 @@ export function buildCasePaths(rootName: string, caseName: string): CasePaths {
     runtimeStatePath: join(saptoolsDir, CF_RUNTIME_STATE_FILENAME),
     structurePath: join(saptoolsDir, CF_STRUCTURE_FILENAME),
     syncLockPath: join(saptoolsDir, CF_SYNC_LOCK_FILENAME),
+    dbHistoryPath: join(saptoolsDir, CF_DB_SYNC_HISTORY_FILENAME),
+    dbRuntimeStatePath: join(saptoolsDir, CF_DB_RUNTIME_STATE_FILENAME),
+    dbSnapshotPath: join(saptoolsDir, CF_DB_SNAPSHOT_FILENAME),
+    dbSyncLockPath: join(saptoolsDir, CF_DB_SYNC_LOCK_FILENAME),
   };
 }
 
@@ -141,6 +160,15 @@ export async function readSyncHistory(path: string): Promise<readonly SyncHistor
     .map((line) => JSON.parse(line) as SyncHistoryEntry);
 }
 
+export async function readDbSyncHistory(path: string): Promise<readonly DbSyncHistoryEntry[]> {
+  const raw = await readFile(path, "utf8");
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as DbSyncHistoryEntry);
+}
+
 export async function waitForRuntimeState<T = Record<string, unknown>>(
   runtimeStatePath: string,
   predicate: (value: T) => boolean,
@@ -162,6 +190,14 @@ export async function waitForRuntimeState<T = Record<string, unknown>>(
 
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+export async function waitForDbRuntimeState<T = Record<string, unknown>>(
+  runtimeStatePath: string,
+  predicate: (value: T) => boolean,
+  timeoutMs = 10_000,
+): Promise<T> {
+  return await waitForRuntimeState<T>(runtimeStatePath, predicate, timeoutMs);
 }
 
 export async function waitForLogEntries(

@@ -145,3 +145,121 @@ export interface RegionsView {
   readonly regions: readonly Region[];
   readonly metadata: SyncMetadata | undefined;
 }
+
+export interface HanaBindingCredentials {
+  readonly host: string;
+  readonly port: string;
+  readonly user: string;
+  readonly password: string;
+  readonly schema: string;
+  readonly hdiUser: string;
+  readonly hdiPassword: string;
+  readonly url: string;
+  readonly databaseId: string;
+  readonly certificate: string;
+}
+
+export interface AppDbBinding {
+  readonly kind: "hana";
+  readonly credentials: HanaBindingCredentials;
+  readonly name?: string;
+  readonly label?: string;
+  readonly plan?: string;
+}
+
+export interface AppDbSnapshot {
+  readonly selector: string;
+  readonly regionKey: RegionKey;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly appName: string;
+  readonly syncedAt: string;
+  readonly bindings: readonly AppDbBinding[];
+  readonly error?: string;
+}
+
+export interface CfDbSnapshot {
+  readonly version: 1;
+  readonly syncedAt: string;
+  readonly entries: readonly AppDbSnapshot[];
+}
+
+export interface RuntimeDbSyncState {
+  readonly syncId: string;
+  readonly status: SyncStatus;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly requestedTargets: readonly string[];
+  readonly completedTargets: readonly string[];
+  readonly finishedAt?: string;
+  readonly error?: string;
+  readonly snapshot: CfDbSnapshot;
+}
+
+export interface DbSyncMetadata {
+  readonly syncId: string;
+  readonly status: SyncStatus;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly requestedTargets: readonly string[];
+  readonly completedTargets: readonly string[];
+  readonly pendingTargets: readonly string[];
+  readonly finishedAt?: string;
+  readonly error?: string;
+}
+
+export interface DbSnapshotView {
+  readonly source: "runtime" | "stable";
+  readonly snapshot: CfDbSnapshot;
+  readonly metadata: DbSyncMetadata | undefined;
+}
+
+export interface DbAppView {
+  readonly source: "runtime" | "stable";
+  readonly entry: AppDbSnapshot;
+  readonly metadata: DbSyncMetadata | undefined;
+}
+
+export interface DbSyncHistoryEntry {
+  readonly at: string;
+  readonly syncId: string;
+  readonly pid: number;
+  readonly hostname: string;
+  readonly event: string;
+  readonly status?: SyncStatus;
+  readonly selector?: string;
+  readonly regionKey?: RegionKey;
+  readonly orgName?: string;
+  readonly spaceName?: string;
+  readonly appName?: string;
+  readonly requestedTargets?: readonly string[];
+  readonly completedTargets?: readonly string[];
+  readonly lockSyncId?: string;
+  readonly reason?: string;
+  readonly error?: string;
+}
+
+export interface DbSyncTarget {
+  readonly selector: string;
+  readonly regionKey: RegionKey;
+  readonly apiEndpoint: string;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly appName: string;
+}
+
+export interface NamedDbTargetSelector {
+  readonly type: "name";
+  readonly appName: string;
+}
+
+export interface ExplicitDbTargetSelector {
+  readonly type: "explicit";
+  readonly selector: string;
+  readonly regionKey: RegionKey;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly appName: string;
+}
+
+export type DbTargetSelector = NamedDbTargetSelector | ExplicitDbTargetSelector;
