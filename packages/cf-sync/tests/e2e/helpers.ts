@@ -47,6 +47,9 @@ export interface ScenarioRegion {
 
 export interface ScenarioApp {
   readonly name: string;
+  readonly requestedState?: string;
+  readonly processes?: string;
+  readonly routes?: readonly string[] | string;
   readonly envDelayMs?: number;
   readonly envError?: string;
   readonly envOutput?: string;

@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import type { AppNode } from "./types.js";
+
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 16 * 1024 * 1024;
@@ -104,6 +106,11 @@ export async function cfApps(context?: CfExecContext): Promise<readonly string[]
   return parseAppNames(stdout);
 }
 
+export async function cfAppDetails(context?: CfExecContext): Promise<readonly AppNode[]> {
+  const stdout = await cf(["apps"], context);
+  return parseAppDetails(stdout);
+}
+
 export async function cfEnv(appName: string, context?: CfExecContext): Promise<string> {
   return await cf(["env", appName], context);
 }
@@ -127,7 +134,66 @@ export function parseNameTable(stdout: string): readonly string[] {
 }
 
 export function parseAppNames(stdout: string): readonly string[] {
-  const apps: string[] = [];
+  return parseAppDetails(stdout).map((app) => app.name);
+}
+
+function parseInstanceCounts(value: string | undefined): {
+  readonly runningInstances: number;
+  readonly totalInstances: number;
+} | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const regex = /(?:^|\b)(\d+)\/(\d+)/g;
+  let runningInstances = 0;
+  let totalInstances = 0;
+  let matched = false;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(value)) !== null) {
+    matched = true;
+    runningInstances += Number.parseInt(match[1] ?? "0", 10);
+    totalInstances += Number.parseInt(match[2] ?? "0", 10);
+  }
+
+  return matched ? { runningInstances, totalInstances } : undefined;
+}
+
+function parseRoutes(value: string | undefined): readonly string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const routes = value
+    .split(",")
+    .map((route) => route.trim())
+    .filter((route) => route.length > 0);
+
+  return routes;
+}
+
+function buildAppDetail(parts: readonly string[]): AppNode | undefined {
+  const name = parts[0]?.trim();
+  if (!name) {
+    return undefined;
+  }
+
+  const requestedState = parts[1]?.trim();
+  const instanceCounts = parseInstanceCounts(parts[2]?.trim());
+  const routes = requestedState ? parseRoutes(parts.slice(3).join(" ").trim()) : undefined;
+  const app: AppNode = { name };
+
+  return {
+    ...app,
+    ...(requestedState ? { requestedState } : {}),
+    ...(instanceCounts ?? {}),
+    ...(routes ? { routes } : {}),
+  };
+}
+
+export function parseAppDetails(stdout: string): readonly AppNode[] {
+  const apps: AppNode[] = [];
   let pastHeader = false;
 
   for (const line of stdout.split("\n")) {
@@ -144,10 +210,9 @@ export function parseAppNames(stdout: string): readonly string[] {
       continue;
     }
 
-    const appName = trimmed.split(/\s+/)[0];
-
-    if (appName !== undefined && appName.length > 0) {
-      apps.push(appName);
+    const app = buildAppDetail(trimmed.split(/\s{2,}/));
+    if (app !== undefined) {
+      apps.push(app);
     }
   }
 

@@ -60,7 +60,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn().mockResolvedValue(void 0),
       cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn().mockResolvedValue(["dev"]),
-      cfApps: vi.fn().mockResolvedValue(["app1", "app2"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "app1" }, { name: "app2" }]),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -86,7 +86,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -115,7 +115,7 @@ describe("runSync", () => {
       cfTargetOrg,
       cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn().mockResolvedValue(["dev"]),
-      cfApps: vi.fn().mockResolvedValue(["app1"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "app1" }]),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -144,7 +144,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn().mockResolvedValue(void 0),
       cfTargetSpace,
       cfSpaces: vi.fn().mockResolvedValue(["bad-space", "good-space"]),
-      cfApps: vi.fn().mockResolvedValue(["app"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "app" }]),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -168,7 +168,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     await (await import("../../src/sync.js")).runSync({
@@ -190,7 +190,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -216,7 +216,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn().mockResolvedValue(void 0),
       cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn().mockResolvedValue(["dev"]),
-      cfApps: vi.fn().mockResolvedValue(["app-1"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "app-1" }]),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -281,7 +281,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -302,7 +302,7 @@ describe("runSync", () => {
     const cfTargetOrg = vi.fn().mockResolvedValue(void 0);
     const cfTargetSpace = vi.fn().mockResolvedValue(void 0);
     const cfSpaces = vi.fn().mockResolvedValue(["dev"]);
-    const cfApps = vi.fn().mockResolvedValue(["app-eu10"]);
+    const cfAppDetails = vi.fn().mockResolvedValue([{ name: "app-eu10" }]);
 
     vi.doMock("../../src/cf.js", () => ({
       cfApi,
@@ -311,7 +311,7 @@ describe("runSync", () => {
       cfTargetOrg,
       cfTargetSpace,
       cfSpaces,
-      cfApps,
+      cfAppDetails,
     }));
 
     const { cfRuntimeStatePath } = await import("../../src/paths.js");
@@ -382,7 +382,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { writeStructure } = await import("../../src/structure.js");
@@ -416,7 +416,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { getRegionView } = await import("../../src/sync.js");
@@ -453,7 +453,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { runSync } = await import("../../src/sync.js");
@@ -494,7 +494,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
@@ -553,7 +553,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
@@ -633,7 +633,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
@@ -688,7 +688,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { writeStructure } = await import("../../src/structure.js");
@@ -728,7 +728,7 @@ describe("runSync", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn(),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn(),
+      cfAppDetails: vi.fn(),
     }));
 
     const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
@@ -781,7 +781,22 @@ describe("runSync", () => {
 describe("syncSpace", () => {
   it("syncs one space and persists it into the stable structure", async () => {
     const cfTargetSpace = vi.fn().mockResolvedValue(void 0);
-    const cfApps = vi.fn().mockResolvedValue(["sample-service-a", "sample-service-b"]);
+    const cfAppDetails = vi.fn().mockResolvedValue([
+      {
+        name: "sample-service-a",
+        requestedState: "started",
+        runningInstances: 1,
+        totalInstances: 1,
+        routes: ["sample-service-a.cfapps.example.com"],
+      },
+      {
+        name: "sample-service-b",
+        requestedState: "stopped",
+        runningInstances: 0,
+        totalInstances: 1,
+        routes: ["sample-service-b.cfapps.example.com"],
+      },
+    ]);
 
     vi.doMock("../../src/cf.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
@@ -790,7 +805,7 @@ describe("syncSpace", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace,
       cfSpaces: vi.fn(),
-      cfApps,
+      cfAppDetails,
     }));
 
     const { syncSpace } = await import("../../src/sync.js");
@@ -816,7 +831,22 @@ describe("syncSpace", () => {
               spaces: [
                 {
                   name: "dev",
-                  apps: [{ name: "sample-service-a" }, { name: "sample-service-b" }],
+                  apps: [
+                    {
+                      name: "sample-service-a",
+                      requestedState: "started",
+                      runningInstances: 1,
+                      totalInstances: 1,
+                      routes: ["sample-service-a.cfapps.example.com"],
+                    },
+                    {
+                      name: "sample-service-b",
+                      requestedState: "stopped",
+                      runningInstances: 0,
+                      totalInstances: 1,
+                      routes: ["sample-service-b.cfapps.example.com"],
+                    },
+                  ],
                 },
               ],
             },
@@ -834,7 +864,7 @@ describe("syncSpace", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn().mockResolvedValue(["new-dev-app"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "new-dev-app" }]),
     }));
 
     const { writeStructure, readStructure } = await import("../../src/structure.js");
@@ -892,7 +922,7 @@ describe("syncSpace", () => {
       cfTargetOrg: vi.fn(),
       cfTargetSpace: vi.fn().mockResolvedValue(void 0),
       cfSpaces: vi.fn(),
-      cfApps: vi.fn().mockResolvedValue(["partial-dev-app"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "partial-dev-app" }]),
     }));
 
     const { cfRuntimeStatePath } = await import("../../src/paths.js");
@@ -964,7 +994,7 @@ describe("syncSpace", () => {
         return Promise.resolve();
       }),
       cfSpaces: vi.fn().mockResolvedValue(["dev", "qa"]),
-      cfApps: vi.fn().mockImplementation(() => Promise.resolve([`app-${targetedSpace}`])),
+      cfAppDetails: vi.fn().mockImplementation(() => Promise.resolve([{ name: `app-${targetedSpace}` }])),
     }));
 
     const { runSync, syncSpace } = await import("../../src/sync.js");

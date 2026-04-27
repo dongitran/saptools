@@ -34,7 +34,19 @@ function createScenario(): Scenario {
         orgs: [
           {
             name: "org-ap10",
-            spaces: [{ name: "dev", apps: ["app-ap10"] }],
+            spaces: [
+              {
+                name: "dev",
+                apps: [
+                  {
+                    name: "app-ap10",
+                    requestedState: "started",
+                    processes: "web:1/1",
+                    routes: ["app-ap10.cfapps.example.com"],
+                  },
+                ],
+              },
+            ],
           },
         ],
       },
@@ -378,6 +390,13 @@ test.describe("Runtime reads", () => {
       ["dev", ["app-ap10"]],
       ["qa", ["keep-qa-app"]],
     ]);
+    expect(spaces[0]?.apps[0]).toMatchObject({
+      name: "app-ap10",
+      requestedState: "started",
+      runningInstances: 1,
+      totalInstances: 1,
+      routes: ["app-ap10.cfapps.example.com"],
+    });
 
     const fakeLog = await readJsonLines(paths.logPath);
     expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth", "target", "apps"]);

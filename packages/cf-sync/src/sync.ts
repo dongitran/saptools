@@ -8,7 +8,7 @@ import type { Ora } from "ora";
 import ora from "ora";
 
 import type { CfExecContext } from "./cf.js";
-import { cfApi, cfApps, cfAuth, cfOrgs, cfSpaces, cfTargetOrg, cfTargetSpace } from "./cf.js";
+import { cfApi, cfAppDetails, cfAuth, cfOrgs, cfSpaces, cfTargetOrg, cfTargetSpace } from "./cf.js";
 import { getAllRegions } from "./regions.js";
 import { persistSpace } from "./space-sync-store.js";
 import {
@@ -28,7 +28,6 @@ import {
   writeStructure,
 } from "./structure.js";
 import type {
-  AppNode,
   CfStructure,
   OrgNode,
   Region,
@@ -204,7 +203,7 @@ async function collectSpace(
 
   try {
     await cfTargetSpace(orgName, spaceName, cfContext);
-    const apps = (await cfApps(cfContext)).map((name): AppNode => ({ name }));
+    const apps = await cfAppDetails(cfContext);
     log(ctx, `${regionKey} • ${orgName}/${spaceName}: ${apps.length.toString()} apps`);
     await recordHistory(ctx, "space_apps_loaded", {
       regionKey: regionKey as RegionKey,

@@ -109,6 +109,34 @@ describe("cf CLI wrappers", () => {
     expect(await cfApps()).toEqual(["app1", "app2"]);
   });
 
+  it("cfAppDetails parses app runtime metadata from header row", async () => {
+    mockImpl = () => ({
+      stdout: [
+        "name  requested state  processes  routes",
+        "sample-api  started  web:1/1  sample-api.cfapps.example.com",
+        "sample-job  started  web:0/1  ",
+      ].join("\n"),
+      stderr: "",
+    });
+    const { cfAppDetails } = await import("../../src/cf.js");
+    expect(await cfAppDetails()).toEqual([
+      {
+        name: "sample-api",
+        requestedState: "started",
+        runningInstances: 1,
+        totalInstances: 1,
+        routes: ["sample-api.cfapps.example.com"],
+      },
+      {
+        name: "sample-job",
+        requestedState: "started",
+        runningInstances: 0,
+        totalInstances: 1,
+        routes: [],
+      },
+    ]);
+  });
+
   it("cfEnv returns raw stdout", async () => {
     mockImpl = () => ({ stdout: "VCAP_SERVICES: {}", stderr: "" });
     const { cfEnv } = await import("../../src/cf.js");

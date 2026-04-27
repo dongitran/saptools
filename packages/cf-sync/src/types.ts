@@ -52,6 +52,10 @@ export interface Region {
 
 export interface AppNode {
   readonly name: string;
+  readonly requestedState?: string;
+  readonly runningInstances?: number;
+  readonly totalInstances?: number;
+  readonly routes?: readonly string[];
 }
 
 export interface SpaceNode {

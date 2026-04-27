@@ -216,9 +216,15 @@ async function main() {
       fail(space.appsError);
     }
     const lines = (space.apps ?? [])
-      .map((app) => `${toScenarioApp(app).name}  started`)
+      .map((app) => {
+        const scenarioApp = toScenarioApp(app);
+        const requestedState = scenarioApp.requestedState ?? "started";
+        const processes = scenarioApp.processes ?? "web:1/1";
+        const routes = Array.isArray(scenarioApp.routes) ? scenarioApp.routes.join(",") : (scenarioApp.routes ?? "");
+        return `${scenarioApp.name}  ${requestedState}  ${processes}  ${routes}`;
+      })
       .join("\n");
-    process.stdout.write(`name  requested state\n${lines}\n`);
+    process.stdout.write(`name  requested state  processes  routes\n${lines}\n`);
     return;
   }
 

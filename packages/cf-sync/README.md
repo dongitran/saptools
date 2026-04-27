@@ -21,6 +21,7 @@ Walk every region, org, space, and app you have access to, cache the topology, t
 ## ✨ Features
 
 - 🌍 **Full-landscape sync** — logs into CF once, walks **region → org → space → app** across every region you can reach
+- 🟢 **App runtime metadata** — snapshots include requested state, instance counts, and routes from `cf apps`
 - ⚡ **Partial + streaming reads** — `read` / `regions` / `region` commands return whatever is already known, even while a long sync is in progress
 - 🗄️ **Background DB binding sync** — `db-sync` can collect `VCAP_SERVICES.hana` credentials for every cached app or one app selector in the background
 - 🧠 **Smart fallbacks** — runtime state first, last stable snapshot next, on-demand fetch as a last resort
@@ -128,7 +129,7 @@ cf-sync region eu10 --no-refresh
 
 ### 🔁 `cf-sync space <region> <org> <space>`
 
-Refresh exactly one Cloud Foundry space and merge the latest app names back into the shared topology snapshot.
+Refresh exactly one Cloud Foundry space and merge the latest app metadata back into the shared topology snapshot.
 
 - Updates only the requested `region/org/space`
 - Preserves sibling orgs and spaces already present in the snapshot
@@ -222,6 +223,7 @@ const refreshedSpace = await syncSpace({
   password: process.env["SAP_PASSWORD"] ?? "",
 });
 console.log(refreshedSpace.space.apps.map((app) => app.name));
+console.log(refreshedSpace.space.apps[0]?.requestedState);
 
 // Resolve DB targets from cached topology or an explicit selector
 const dbTargets = await resolveDbSyncTargetsFromCurrentTopology("orders-srv");
@@ -258,6 +260,7 @@ console.log(dbView?.metadata?.status, ordersDb?.entry.bindings.length);
 | `findRegion(structure, key)` | Look up a region by key |
 | `findOrg(region, name)` | Look up an org within a region |
 | `findSpace(org, name)` | Look up a space within an org |
+| `cfAppDetails(context?)` | Run `cf apps` and parse app state, instance counts, and routes |
 | `findApp(space, name)` | Look up an app within a space |
 
 </details>
