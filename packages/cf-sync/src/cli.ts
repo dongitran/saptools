@@ -15,7 +15,7 @@ import {
 } from "./db-sync.js";
 import { cfStructurePath } from "./paths.js";
 import { readRegionsView, readStructureView } from "./structure.js";
-import { getRegionView, runSync } from "./sync.js";
+import { getRegionView, runSync, syncSpace } from "./sync.js";
 import { REGION_KEYS } from "./types.js";
 
 function requireEnv(name: string): string {
@@ -129,6 +129,29 @@ export async function main(argv: readonly string[]): Promise<void> {
 
       const view = await getRegionView(regionOptions);
       process.stdout.write(`${JSON.stringify(view ?? null, null, 2)}\n`);
+    });
+
+  program
+    .command("space")
+    .description("Refresh one region/org/space and print the refreshed space view as JSON")
+    .argument("<region>", "Region key")
+    .argument("<org>", "Cloud Foundry org name")
+    .argument("<space>", "Cloud Foundry space name")
+    .option("--verbose", "Print progress lines to stdout", false)
+    .action(async (key: string, orgName: string, spaceName: string, opts: { verbose?: boolean }): Promise<void> => {
+      if (!(REGION_KEYS as readonly string[]).includes(key)) {
+        throw new Error(`Unknown region key: ${key}`);
+      }
+
+      const view = await syncSpace({
+        regionKey: key as (typeof REGION_KEYS)[number],
+        orgName,
+        spaceName,
+        email: requireEnv("SAP_EMAIL"),
+        password: requireEnv("SAP_PASSWORD"),
+        verbose: opts.verbose ?? false,
+      });
+      process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
     });
 
   program

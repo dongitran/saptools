@@ -126,6 +126,20 @@ cf-sync region eu10 --no-refresh
 > [!TIP]
 > `cf-sync region <key>` is the fastest way to answer *"what's in just this region right now?"* without walking everything.
 
+### 🔁 `cf-sync space <region> <org> <space>`
+
+Refresh exactly one Cloud Foundry space and merge the latest app names back into the shared topology snapshot.
+
+- Updates only the requested `region/org/space`
+- Preserves sibling orgs and spaces already present in the snapshot
+- Uses an isolated `CF_HOME`, so it does not clobber your interactive CF CLI target
+- Can run while a full `cf-sync sync` is active; the merge is serialized through the same runtime-state lock
+
+```bash
+cf-sync space ap10 my-org dev
+cf-sync space eu10 my-org app --verbose
+```
+
 ### 🗄️ `cf-sync db-sync [selector]`
 
 Start a detached background worker that collects `VCAP_SERVICES.hana` credentials.
@@ -172,6 +186,7 @@ import {
   readStructure,
   readStructureView,
   runSync,
+  syncSpace,
 } from "@saptools/cf-sync";
 
 // Run a sync from Node (great for scheduled jobs)
@@ -196,7 +211,17 @@ const eu10 = await getRegionView({                // one region, auto-fetch if m
   email: process.env["SAP_EMAIL"],
   password: process.env["SAP_PASSWORD"],
 });
-console.log(eu10?.source); // "runtime" | "stable" | "live"
+console.log(eu10?.source); // "runtime" | "stable" | "fresh"
+
+// Targeted space refresh
+const refreshedSpace = await syncSpace({
+  regionKey: "ap10",
+  orgName: "my-org",
+  spaceName: "dev",
+  email: process.env["SAP_EMAIL"] ?? "",
+  password: process.env["SAP_PASSWORD"] ?? "",
+});
+console.log(refreshedSpace.space.apps.map((app) => app.name));
 
 // Resolve DB targets from cached topology or an explicit selector
 const dbTargets = await resolveDbSyncTargetsFromCurrentTopology("orders-srv");
@@ -218,6 +243,7 @@ console.log(dbView?.metadata?.status, ordersDb?.entry.bindings.length);
 | Export | Description |
 | --- | --- |
 | `runSync(options)` | Drive a full/partial sync |
+| `syncSpace({ regionKey, orgName, spaceName, ... })` | Refresh one CF space and merge it into runtime/stable topology |
 | `readStructure()` | Last stable snapshot, or `undefined` |
 | `readStructureView()` | Best-available full view with metadata |
 | `readRegionsView()` | Region list only, with fallbacks |

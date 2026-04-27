@@ -6,8 +6,8 @@ export * from "./cf.js";
 export * from "./db-parser.js";
 export * from "./db-targets.js";
 export * from "./db-store.js";
-export { getRegionView, runSync } from "./sync.js";
-export type { GetRegionOptions, SyncOptions, SyncResult } from "./sync.js";
+export { getRegionView, runSync, syncSpace } from "./sync.js";
+export type { GetRegionOptions, SyncOptions, SyncResult, SyncSpaceOptions, SyncSpaceResult } from "./sync.js";
 export {
   resolveDbSyncTargetsFromCurrentTopology,
   runDbSync,

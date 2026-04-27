@@ -107,6 +107,33 @@ function createLongScenario(): Scenario {
   };
 }
 
+function createSpaceRaceScenario(): Scenario {
+  return {
+    regions: [
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgsDelayMs: 1800,
+        orgs: [{ name: "org-ap10", spaces: [{ name: "dev", apps: ["app-ap10"] }] }],
+      },
+      {
+        key: "ap11",
+        apiEndpoint: "https://api.cf.ap11.hana.ondemand.com",
+        orgsDelayMs: 0,
+        orgs: [
+          {
+            name: "org-ap11",
+            spaces: [
+              { name: "dev", apps: ["app-ap11-dev"] },
+              { name: "qa", apps: ["app-ap11-qa"] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createInaccessibleScenario(): Scenario {
   return {
     regions: [
@@ -307,6 +334,55 @@ test.describe("Runtime reads", () => {
     expect(stableStructure.regions.map((region) => region.key)).toEqual(["ap10", "ap11", "eu10"]);
   });
 
+  test("space command refreshes one selected space and preserves sibling spaces", async () => {
+    const paths = await prepareCase(ROOT_NAME, "space-refresh-preserves-siblings", createScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    await writeJson(paths.structurePath, {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [
+            {
+              name: "org-ap10",
+              spaces: [
+                { name: "dev", apps: [{ name: "old-dev-app" }] },
+                { name: "qa", apps: [{ name: "keep-qa-app" }] },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const spaceView = await runJsonCommand(env, ["space", "ap10", "org-ap10", "dev"]);
+    expect(spaceView).toMatchObject({
+      region: { key: "ap10" },
+      org: { name: "org-ap10" },
+      space: { name: "dev", apps: [{ name: "app-ap10" }] },
+    });
+
+    const stableStructure = await readJson<{
+      readonly regions: readonly {
+        readonly orgs: readonly {
+          readonly spaces: readonly { readonly name: string; readonly apps: readonly { readonly name: string }[] }[];
+        }[];
+      }[];
+    }>(paths.structurePath);
+    const spaces = stableStructure.regions[0]?.orgs[0]?.spaces ?? [];
+    expect(spaces.map((space) => [space.name, space.apps.map((app) => app.name)])).toEqual([
+      ["dev", ["app-ap10"]],
+      ["qa", ["keep-qa-app"]],
+    ]);
+
+    const fakeLog = await readJsonLines(paths.logPath);
+    expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth", "target", "apps"]);
+  });
+
   test("service can inspect partial structure while sync is still running", async () => {
     const paths = await prepareCase(ROOT_NAME, "partial-structure", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
@@ -461,6 +537,53 @@ test.describe("Runtime reads", () => {
         entry.apiEndpoint === "https://api.cf.eu10.hana.ondemand.com",
     );
     expect(eu10OrgsCalls).toHaveLength(1);
+  });
+
+  test("space command does not make a running full sync skip that region", async () => {
+    const paths = await prepareCase(ROOT_NAME, "space-refresh-during-full-sync", createSpaceRaceScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "ap10,ap11"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    await waitForRuntimeState(paths.runtimeStatePath, (value) => value["status"] === "running");
+
+    const spaceView = await runJsonCommand(env, ["space", "ap11", "org-ap11", "dev"]);
+    expect(spaceView).toMatchObject({
+      region: { key: "ap11" },
+      space: { name: "dev", apps: [{ name: "app-ap11-dev" }] },
+      metadata: {
+        status: "running",
+        completedRegionKeys: [],
+      },
+    });
+
+    const syncResult = await waitForExit(syncProcess);
+    expect(syncResult.code).toBe(0);
+    expect(syncResult.stderr).toBe("");
+
+    const stableStructure = await readJson<{
+      readonly regions: readonly {
+        readonly key: string;
+        readonly orgs: readonly {
+          readonly spaces: readonly { readonly name: string; readonly apps: readonly { readonly name: string }[] }[];
+        }[];
+      }[];
+    }>(paths.structurePath);
+    const ap11 = stableStructure.regions.find((region) => region.key === "ap11");
+    const spaces = ap11?.orgs[0]?.spaces ?? [];
+    expect(spaces.map((space) => [space.name, space.apps.map((app) => app.name)])).toEqual([
+      ["dev", ["app-ap11-dev"]],
+      ["qa", ["app-ap11-qa"]],
+    ]);
+
+    const fakeLog = await readJsonLines(paths.logPath);
+    const ap11OrgCalls = fakeLog.filter(
+      (entry) => entry.command === "orgs" && entry.apiEndpoint === "https://api.cf.ap11.hana.ondemand.com",
+    );
+    expect(ap11OrgCalls).toHaveLength(1);
   });
 
   test("service can hydrate the last region in a longer sync list right after sync starts", async () => {

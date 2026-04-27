@@ -777,3 +777,232 @@ describe("runSync", () => {
     });
   });
 });
+
+describe("syncSpace", () => {
+  it("syncs one space and persists it into the stable structure", async () => {
+    const cfTargetSpace = vi.fn().mockResolvedValue(void 0);
+    const cfApps = vi.fn().mockResolvedValue(["sample-service-a", "sample-service-b"]);
+
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace,
+      cfSpaces: vi.fn(),
+      cfApps,
+    }));
+
+    const { syncSpace } = await import("../../src/sync.js");
+    const result = await syncSpace({
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+      email: "e",
+      password: "p",
+    });
+
+    expect(result.space.apps.map((app) => app.name)).toEqual(["sample-service-a", "sample-service-b"]);
+    expect(cfTargetSpace).toHaveBeenCalledWith("demo-org", "dev", expect.any(Object));
+
+    const { readStructure } = await import("../../src/structure.js");
+    await expect(readStructure()).resolves.toMatchObject({
+      regions: [
+        {
+          key: "ap10",
+          orgs: [
+            {
+              name: "demo-org",
+              spaces: [
+                {
+                  name: "dev",
+                  apps: [{ name: "sample-service-a" }, { name: "sample-service-b" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("updates only the requested space while preserving sibling spaces", async () => {
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn(),
+      cfApps: vi.fn().mockResolvedValue(["new-dev-app"]),
+    }));
+
+    const { writeStructure, readStructure } = await import("../../src/structure.js");
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [
+            {
+              name: "demo-org",
+              spaces: [
+                { name: "dev", apps: [{ name: "old-dev-app" }] },
+                { name: "qa", apps: [{ name: "keep-qa-app" }] },
+              ],
+            },
+          ],
+        },
+        {
+          key: "eu10",
+          label: "stable eu10",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [],
+        },
+      ],
+    });
+
+    const { syncSpace } = await import("../../src/sync.js");
+    await syncSpace({
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+      email: "e",
+      password: "p",
+    });
+
+    const saved = await readStructure();
+    expect(saved?.regions.map((region) => region.key)).toEqual(["ap10", "eu10"]);
+    const spaces = saved?.regions[0]?.orgs[0]?.spaces ?? [];
+    expect(spaces.map((space) => [space.name, space.apps.map((app) => app.name)])).toEqual([
+      ["dev", ["new-dev-app"]],
+      ["qa", ["keep-qa-app"]],
+    ]);
+  });
+
+  it("merges a running-state space refresh without marking the region completed", async () => {
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn(),
+      cfApps: vi.fn().mockResolvedValue(["partial-dev-app"]),
+    }));
+
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "running-sync",
+          status: "running",
+          startedAt: "2026-04-18T00:00:00.000Z",
+          updatedAt: "2026-04-18T00:00:01.000Z",
+          requestedRegionKeys: ["ap10", "eu10"],
+          completedRegionKeys: [],
+          structure: {
+            syncedAt: "2026-04-18T00:00:01.000Z",
+            regions: [],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const { syncSpace } = await import("../../src/sync.js");
+    await syncSpace({
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+      email: "e",
+      password: "p",
+    });
+
+    const { readRuntimeState } = await import("../../src/structure.js");
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      status: "running",
+      completedRegionKeys: [],
+      structure: {
+        regions: [
+          {
+            key: "ap10",
+            orgs: [
+              {
+                name: "demo-org",
+                spaces: [{ name: "dev", apps: [{ name: "partial-dev-app" }] }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("does not make full sync skip a region that only has a partial space refresh", async () => {
+    const fullSyncGate = createDeferred();
+    let targetedSpace = "dev";
+
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn().mockImplementation(async () => {
+        await fullSyncGate.promise;
+        return ["demo-org"];
+      }),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockImplementation((_orgName: string, spaceName: string) => {
+        targetedSpace = spaceName;
+        return Promise.resolve();
+      }),
+      cfSpaces: vi.fn().mockResolvedValue(["dev", "qa"]),
+      cfApps: vi.fn().mockImplementation(() => Promise.resolve([`app-${targetedSpace}`])),
+    }));
+
+    const { runSync, syncSpace } = await import("../../src/sync.js");
+    const fullSync = runSync({
+      email: "e",
+      password: "p",
+      onlyRegions: ["ap10"],
+    });
+
+    const { readRuntimeState } = await import("../../src/structure.js");
+    for (;;) {
+      const state = await readRuntimeState();
+      if (state?.status === "running") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    await syncSpace({
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+      email: "e",
+      password: "p",
+    });
+
+    fullSyncGate.resolve();
+    await fullSync;
+
+    const { readStructure } = await import("../../src/structure.js");
+    const saved = await readStructure();
+    const spaces = saved?.regions[0]?.orgs[0]?.spaces ?? [];
+    expect(spaces.map((space) => [space.name, space.apps.map((app) => app.name)])).toEqual([
+      ["dev", ["app-dev"]],
+      ["qa", ["app-qa"]],
+    ]);
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      completedRegionKeys: ["ap10"],
+    });
+  });
+});

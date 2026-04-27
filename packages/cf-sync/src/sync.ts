@@ -10,6 +10,7 @@ import ora from "ora";
 import type { CfExecContext } from "./cf.js";
 import { cfApi, cfApps, cfAuth, cfOrgs, cfSpaces, cfTargetOrg, cfTargetSpace } from "./cf.js";
 import { getAllRegions } from "./regions.js";
+import { persistSpace } from "./space-sync-store.js";
 import {
   appendSyncHistory,
   completeRuntimeState,
@@ -54,10 +55,26 @@ export interface GetRegionOptions {
   readonly refreshIfMissing?: boolean;
 }
 
+export interface SyncSpaceOptions {
+  readonly regionKey: RegionKey;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly email: string;
+  readonly password: string;
+  readonly verbose?: boolean;
+}
+
 export interface SyncResult {
   readonly structure: CfStructure;
   readonly accessibleRegions: readonly string[];
   readonly inaccessibleRegions: readonly string[];
+}
+
+export interface SyncSpaceResult {
+  readonly region: RegionNode;
+  readonly org: OrgNode;
+  readonly space: SpaceNode;
+  readonly metadata?: SyncMetadata;
 }
 
 interface LogCtx {
@@ -353,7 +370,9 @@ async function runOwnedSync(
     for (const region of regions) {
       const currentState = await readRuntimeState();
       const existingRegion =
-        currentState?.syncId === syncId ? findRegion(currentState.structure, region.key) : undefined;
+        currentState?.syncId === syncId && currentState.completedRegionKeys.includes(region.key)
+          ? findRegion(currentState.structure, region.key)
+          : undefined;
 
       if (existingRegion) {
         log(ctx, `${region.key}: already available in runtime state`);
@@ -431,6 +450,69 @@ export async function getRegionView(options: GetRegionOptions): Promise<RegionVi
     };
   } catch {
     return cachedView;
+  }
+}
+
+async function collectSingleSpaceWithIsolatedSession(
+  region: Region,
+  orgName: string,
+  spaceName: string,
+  email: string,
+  password: string,
+  ctx: LogCtx,
+): Promise<SpaceNode> {
+  return await withCfSession(async (cfContext) => {
+    await recordHistory(ctx, "space_sync_auth_started", { regionKey: region.key, orgName, spaceName });
+    log(ctx, `Refreshing ${region.key} • ${orgName}/${spaceName}...`);
+    await cfApi(region.apiEndpoint, cfContext);
+    await cfAuth(email, password, cfContext);
+    return await collectSpace(region.key, orgName, spaceName, ctx, cfContext);
+  });
+}
+
+export async function syncSpace(options: SyncSpaceOptions): Promise<SyncSpaceResult> {
+  const region = getRegionDefinition(options.regionKey);
+  const syncId = randomUUID();
+  const ctx = createLogContext(
+    {
+      email: options.email,
+      password: options.password,
+      verbose: options.verbose ?? false,
+      interactive: false,
+    },
+    syncId,
+  );
+
+  try {
+    await recordHistory(ctx, "space_sync_requested", {
+      regionKey: options.regionKey,
+      orgName: options.orgName,
+      spaceName: options.spaceName,
+    });
+    const space = await collectSingleSpaceWithIsolatedSession(
+      region,
+      options.orgName,
+      options.spaceName,
+      options.email,
+      options.password,
+      ctx,
+    );
+    const result = await persistSpace(region, options.orgName, space);
+    await recordHistory(ctx, "space_sync_completed", {
+      regionKey: options.regionKey,
+      orgName: options.orgName,
+      spaceName: options.spaceName,
+      appCount: result.space.apps.length,
+    });
+    return result;
+  } catch (error) {
+    await recordHistory(ctx, "space_sync_failed", {
+      regionKey: options.regionKey,
+      orgName: options.orgName,
+      spaceName: options.spaceName,
+      error: errorMessage(error),
+    });
+    throw error;
   }
 }
 
