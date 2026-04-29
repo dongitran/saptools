@@ -51,7 +51,7 @@ pnpm add @saptools/gitport
 ```bash
 export GITPORT_GITLAB_TOKEN="<gitlab-token>"
 
-gitport gitlab mr \
+gitport \
   --source-mr 123 \
   --source-repo https://gitlab.example.com/repo-a.git \
   --dest-repo https://gitlab.example.com/repo-b.git \
@@ -72,12 +72,12 @@ gitport continue
 
 ## 🧰 CLI
 
-### 🔁 `gitport gitlab mr --source-mr <iid>`
+### 🔁 `gitport --source-mr <iid>`
 
 Port one GitLab merge request from a source repo into a destination repo.
 
 ```bash
-gitport gitlab mr \
+gitport \
   --source-mr 123 \
   --source-repo https://gitlab.example.com/repo-a.git \
   --dest-repo https://gitlab.example.com/repo-b.git \
@@ -140,7 +140,7 @@ The CLI and library use the same porting engine. Library consumers can build cus
 
 ```
 ┌──────────────────────────┐
-│ gitport gitlab mr        │
+│ gitport                  │
 │   --source-mr 123        │
 └─────────────┬────────────┘
               │

@@ -49,8 +49,6 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "gitlab",
-          "mr",
           "--source-mr",
           "123",
           "--source-repo",
@@ -86,8 +84,6 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "gitlab",
-          "mr",
           "--source-mr",
           "123",
           "--source-repo",
@@ -129,8 +125,6 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "gitlab",
-          "mr",
           "--source-mr",
           "123",
           "--source-repo",
@@ -165,8 +159,6 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "gitlab",
-          "mr",
           "--source-mr",
           "123",
           "--source-repo",
@@ -193,8 +185,6 @@ test.describe("GitLab MR porting", () => {
   test("User gets a helpful error when source MR is missing", async () => {
     const result = await runCli(
       [
-        "gitlab",
-        "mr",
         "--source-repo",
         "/tmp/repo-a.git",
         "--dest-repo",
@@ -212,8 +202,6 @@ test.describe("GitLab MR porting", () => {
   test("User gets a helpful error when source MR is invalid", async () => {
     const result = await runCli(
       [
-        "gitlab",
-        "mr",
         "--source-mr",
         "123abc",
         "--source-repo",
@@ -230,11 +218,12 @@ test.describe("GitLab MR porting", () => {
     expect(result.stderr).toContain("Invalid merge request IID: 123abc");
   });
 
-  test("User gets a helpful error when using the old positional source MR form", async () => {
+  test("User cannot use the old nested GitLab MR command", async () => {
     const result = await runCli(
       [
         "gitlab",
         "mr",
+        "--source-mr",
         "123",
         "--source-repo",
         "/tmp/repo-a.git",
@@ -247,6 +236,6 @@ test.describe("GitLab MR porting", () => {
     );
 
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain("required option '--source-mr <iid>'");
+    expect(result.stderr).toContain("too many arguments");
   });
 });

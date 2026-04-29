@@ -6,7 +6,7 @@ import { abortLatestRun, continueLatestRun, maskGitportError, portGitLabMergeReq
 import { parseRepoRef } from "./repo-url.js";
 import { GITPORT_GITLAB_TOKEN_ENV } from "./types.js";
 
-interface GitLabMrFlags {
+interface PortFlags {
   readonly sourceMr?: string | undefined;
   readonly sourceRepo?: string | undefined;
   readonly destRepo?: string | undefined;
@@ -21,7 +21,7 @@ interface GitLabMrFlags {
 
 function requireFlag(value: string | undefined, name: string): string {
   if (value === undefined || value.length === 0) {
-    throw new Error(`${name} is required`);
+    throw new Error(`required option '${name}'`);
   }
   return value;
 }
@@ -51,43 +51,45 @@ function defaultPortBranch(sourceRepo: string, sourceMergeRequestIid: number): s
   return `gitport/${branchSafeName(repo.name)}-mr-${sourceMergeRequestIid.toString()}`;
 }
 
-function addGitLabCommands(program: Command): void {
-  const gitlab = program.command("gitlab").description("GitLab porting commands");
-  gitlab
-    .command("mr")
-    .requiredOption("--source-mr <iid>", "Source GitLab merge request IID, such as 123")
-    .requiredOption("--source-repo <url>", "GitLab repo URL containing the source MR")
-    .requiredOption("--dest-repo <url>", "GitLab repo URL receiving the ported commits")
-    .requiredOption("--base-branch <name>", "Destination branch to create the port branch from")
+async function runPort(flags: PortFlags): Promise<void> {
+  const sourceRepo = requireFlag(flags.sourceRepo, "--source-repo <url>");
+  const sourceMergeRequestIid = parseIid(requireFlag(flags.sourceMr, "--source-mr <iid>"));
+  const portBranch = flags.portBranch ?? defaultPortBranch(sourceRepo, sourceMergeRequestIid);
+  const result = await portGitLabMergeRequest({
+    sourceRepo,
+    destRepo: requireFlag(flags.destRepo, "--dest-repo <url>"),
+    sourceMergeRequestIid,
+    baseBranch: requireFlag(flags.baseBranch, "--base-branch <name>"),
+    portBranch,
+    token: flags.token,
+    gitlabApiBase: flags.gitlabApiBase,
+    keepWorkdir: flags.keepWorkdir,
+    yes: flags.yes,
+  });
+  if (flags.json === true) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`Draft MR created: ${result.mergeRequestUrl}\n`);
+  process.stdout.write(`Run ID: ${result.runId}\n`);
+  process.stdout.write(`Commits: ${result.commits.length.toString()}\n`);
+  process.stdout.write(`Auto-resolved conflicts: ${result.conflicts.length.toString()}\n`);
+}
+
+function addPortOptions(program: Command): void {
+  program
+    .option("--source-mr <iid>", "Source GitLab merge request IID, such as 123")
+    .option("--source-repo <url>", "GitLab repo URL containing the source MR")
+    .option("--dest-repo <url>", "GitLab repo URL receiving the ported commits")
+    .option("--base-branch <name>", "Destination branch to create the port branch from")
     .option("--port-branch <name>", "Destination branch that receives the cherry-picks")
     .option("--token <token>", `GitLab token (falls back to ${GITPORT_GITLAB_TOKEN_ENV})`)
     .option("--gitlab-api-base <url>", "GitLab API base URL, such as https://gitlab.example.com/api/v4")
     .option("--keep-workdir", "Keep the isolated run folder after success", false)
     .option("--yes", "Skip interactive confirmation", false)
     .option("--json", "Print JSON result", false)
-    .action(async (flags: GitLabMrFlags): Promise<void> => {
-      const sourceRepo = requireFlag(flags.sourceRepo, "--source-repo");
-      const sourceMergeRequestIid = parseIid(requireFlag(flags.sourceMr, "--source-mr"));
-      const portBranch = flags.portBranch ?? defaultPortBranch(sourceRepo, sourceMergeRequestIid);
-      const result = await portGitLabMergeRequest({
-        sourceRepo,
-        destRepo: requireFlag(flags.destRepo, "--dest-repo"),
-        sourceMergeRequestIid,
-        baseBranch: requireFlag(flags.baseBranch, "--base-branch"),
-        portBranch,
-        token: flags.token,
-        gitlabApiBase: flags.gitlabApiBase,
-        keepWorkdir: flags.keepWorkdir,
-        yes: flags.yes,
-      });
-      if (flags.json === true) {
-        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-        return;
-      }
-      process.stdout.write(`Draft MR created: ${result.mergeRequestUrl}\n`);
-      process.stdout.write(`Run ID: ${result.runId}\n`);
-      process.stdout.write(`Commits: ${result.commits.length.toString()}\n`);
-      process.stdout.write(`Auto-resolved conflicts: ${result.conflicts.length.toString()}\n`);
+    .action(async (flags: PortFlags): Promise<void> => {
+      await runPort(flags);
     });
 }
 
@@ -112,7 +114,7 @@ function addRunRecoveryCommands(program: Command): void {
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   program.name("gitport").description("Port GitLab merge requests from repo A to repo B");
-  addGitLabCommands(program);
+  addPortOptions(program);
   addRunRecoveryCommands(program);
 
   await program.parseAsync([...argv]);
