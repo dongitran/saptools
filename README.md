@@ -26,6 +26,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-debugger`](./packages/cf-debugger) | Open an SSH debug tunnel to any CF Node.js app from your terminal | [![npm](https://img.shields.io/npm/v/@saptools/cf-debugger.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-debugger) |
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
 | [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
+| [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
 
 Archived code snapshot: [`_backup/`](./_backup) keeps the previous single-package implementation for reference during the migration.
 
@@ -87,6 +88,16 @@ Exports SAP HANA service bindings from VCAP_SERVICES into VS Code SQLTools conne
 
 Docs → [`packages/sqltools/README.md`](./packages/sqltools/README.md)
 
+### 🔁 `@saptools/gitport`
+
+Ports one GitLab source MR into another repository as a Draft MR, preserving review context for clean ports and incoming auto-resolved conflicts.
+
+- 🔗 source MR URL input, including GitLab tab URLs like `/diffs`
+- 🍒 sequential `git cherry-pick -x` replay into a destination branch
+- 📝 Draft MR creation with conflict excerpts for review
+
+Docs → [`packages/gitport/README.md`](./packages/gitport/README.md)
+
 ---
 
 ## 🧱 Monorepo Tooling
@@ -125,7 +136,8 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-xsuaa/
 │   ├── cf-debugger/
 │   ├── bruno/
-│   └── sqltools/
+│   ├── sqltools/
+│   └── gitport/
 ├── _backup/
 ├── package.json
 ├── pnpm-workspace.yaml
