@@ -22,7 +22,6 @@ describe("run metadata", () => {
           sourceMergeRequestIid: 123,
           baseBranch: "main",
           portBranch: "gitport/repo-a-mr-123",
-          remainingCommits: [],
         },
       });
 
@@ -50,7 +49,6 @@ describe("run metadata", () => {
           sourceMergeRequestIid: 123,
           baseBranch: "main",
           portBranch: "port",
-          remainingCommits: [],
           mergeRequestUrl: "https://gitlab.example.com/mr/1",
           mergeRequestIid: 1,
         },

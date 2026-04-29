@@ -1,6 +1,4 @@
 export {
-  abortLatestRun,
-  continueLatestRun,
   maskGitportError,
   portGitLabMergeRequest,
 } from "./port.js";

@@ -60,13 +60,7 @@ gitport \
 
 Gitport will clone the destination repo into an isolated run folder, fetch the source MR commits, replay them one by one with `git cherry-pick -x`, push the destination branch, and create a Draft GitLab MR. If `--port-branch` is omitted, Gitport creates a branch like `gitport/repo-a-mr-123`.
 
-If a conflict happens, Gitport captures the destination-side and incoming-side conflict hunks, resolves the file with incoming by default, continues the cherry-pick, and records the conflict details in the Draft MR description. The MR diff also keeps the overwritten destination lines visible during review.
-
-```bash
-# Only needed if incoming cannot produce a valid commit
-cd ~/.saptools/gitport/runs/<run-id>/dest
-gitport continue
-```
+If a conflict happens, Gitport captures the destination-side and incoming-side conflict hunks, resolves the file with incoming by default, completes the cherry-pick automatically, and records the conflict details in the Draft MR description. The MR diff also keeps the overwritten destination lines visible during review.
 
 ---
 
@@ -94,24 +88,6 @@ gitport \
 | `--token <token>` | GitLab token. Falls back to `GITPORT_GITLAB_TOKEN` |
 | `--keep-workdir` | Keep the isolated run folder after a successful port |
 | `--yes` | Skip interactive confirmation after the computed plan is shown |
-
-### ▶️ `gitport continue`
-
-Continue the latest conflicted run if incoming could not produce a valid commit and manual resolution was required.
-
-```bash
-gitport continue
-gitport continue --run-id 20260429-103000-a1b2c3
-```
-
-### ⏹️ `gitport abort`
-
-Abort a run and restore the destination worktree to the pre-port state.
-
-```bash
-gitport abort
-gitport abort --run-id 20260429-103000-a1b2c3
-```
 
 ---
 
@@ -151,7 +127,7 @@ The CLI and library use the same porting engine. Library consumers can build cus
   4. Fetch the source repo as a temporary remote
   5. Create the port branch from --base-branch
   6. Run git cherry-pick -x <sha> once per source MR commit
-  7. On conflict, capture ours/theirs hunks, choose incoming, and continue
+  7. On conflict, capture ours/theirs hunks, choose incoming, and complete the cherry-pick
   8. Push the destination branch
   9. Create the destination Draft MR and print its URL
  10. Write every auto-resolved conflict into the Draft MR description
@@ -201,7 +177,7 @@ The e2e suite should use local fixture Git repositories and a mocked GitLab HTTP
 ## 🗺️ Roadmap
 
 - MVP: one source GitLab MR to one destination Draft MR with sequential cherry-picks
-- Conflict flow: capture conflict hunks, choose incoming by default, report conflicts in Draft MR, support `continue` and `abort` for unresolved fallbacks
+- Conflict flow: capture conflict hunks, choose incoming by default, and report conflicts in the Draft MR
 - Batch mode: port one MR to multiple destination repos
 - Saved conflict rules: reuse known resolutions only when explicitly configured
 

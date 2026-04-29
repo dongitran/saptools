@@ -10,7 +10,7 @@ import {
 } from "./git.js";
 import { createGitLabClient } from "./gitlab.js";
 import { maskAll } from "./mask.js";
-import { readLatestRunMetadata, writeRunMetadata } from "./metadata.js";
+import { writeRunMetadata } from "./metadata.js";
 import { createRunId, runPaths } from "./paths.js";
 import { buildAuthenticatedRemote, parseRepoRef } from "./repo-url.js";
 import { buildDraftMergeRequestDescription, buildReportMarkdown } from "./report.js";
@@ -129,7 +129,6 @@ async function fetchSourceBranch(
     sourceMergeRequestIid: options.sourceMergeRequestIid,
     baseBranch: options.baseBranch,
     portBranch: options.portBranch,
-    remainingCommits: [],
   });
 }
 
@@ -261,7 +260,6 @@ export async function portGitLabMergeRequest(
     sourceMergeRequestIid: options.sourceMergeRequestIid,
     baseBranch: options.baseBranch,
     portBranch: options.portBranch,
-    remainingCommits: [],
     mergeRequestUrl: mergeRequest.webUrl,
     mergeRequestIid: mergeRequest.iid,
   });
@@ -277,26 +275,6 @@ export async function portGitLabMergeRequest(
     commits: results,
     conflicts,
   };
-}
-
-export async function continueLatestRun(options: { readonly workRoot?: string | undefined } = {}): Promise<void> {
-  const metadata = await readLatestRunMetadata({ workRoot: options.workRoot });
-  if (metadata === undefined) {
-    throw new GitportError(GITPORT_ERROR_CODE.MetadataFailed, "No Gitport run metadata found");
-  }
-  await runGit(["cherry-pick", "--continue"], { cwd: metadata.destDir });
-}
-
-export async function abortLatestRun(options: { readonly workRoot?: string | undefined } = {}): Promise<void> {
-  const metadata = await readLatestRunMetadata({ workRoot: options.workRoot });
-  if (metadata === undefined) {
-    throw new GitportError(GITPORT_ERROR_CODE.MetadataFailed, "No Gitport run metadata found");
-  }
-  await runGit(["cherry-pick", "--abort"], { cwd: metadata.destDir }).catch((error: unknown) => {
-    if (!(error instanceof GitCommandError)) {
-      throw error;
-    }
-  });
 }
 
 export function maskGitportError(error: unknown, secrets: readonly string[]): string {

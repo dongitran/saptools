@@ -2,7 +2,7 @@ export const GITPORT_GITLAB_TOKEN_ENV = "GITPORT_GITLAB_TOKEN";
 export const GITPORT_GITLAB_API_BASE_ENV = "GITPORT_GITLAB_API_BASE";
 
 export type CommitPortStatus = "applied" | "skipped" | "incoming-resolved";
-export type RunStatus = "running" | "completed" | "awaiting-manual-resolution" | "aborted";
+export type RunStatus = "running" | "completed";
 
 export interface SourceCommit {
   readonly sha: string;
@@ -77,7 +77,6 @@ export interface RunMetadata {
   readonly sourceMergeRequestIid: number;
   readonly baseBranch: string;
   readonly portBranch: string;
-  readonly remainingCommits: readonly string[];
   readonly mergeRequestUrl?: string | undefined;
   readonly mergeRequestIid?: number | undefined;
 }

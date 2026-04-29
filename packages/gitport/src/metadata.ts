@@ -34,7 +34,6 @@ function parseRunMetadata(value: unknown): RunMetadata {
   const sourceMergeRequestIid = value["sourceMergeRequestIid"];
   const baseBranch = value["baseBranch"];
   const portBranch = value["portBranch"];
-  const remainingCommits = value["remainingCommits"];
   if (
     typeof runId !== "string" ||
     typeof runDir !== "string" ||
@@ -44,9 +43,7 @@ function parseRunMetadata(value: unknown): RunMetadata {
     typeof destRepo !== "string" ||
     typeof sourceMergeRequestIid !== "number" ||
     typeof baseBranch !== "string" ||
-    typeof portBranch !== "string" ||
-    !Array.isArray(remainingCommits) ||
-    !remainingCommits.every((entry) => typeof entry === "string")
+    typeof portBranch !== "string"
   ) {
     throw new GitportError(GITPORT_ERROR_CODE.MetadataFailed, "Run metadata is missing fields");
   }
@@ -61,7 +58,6 @@ function parseRunMetadata(value: unknown): RunMetadata {
     sourceMergeRequestIid,
     baseBranch,
     portBranch,
-    remainingCommits,
     ...(typeof value["mergeRequestUrl"] === "string"
       ? { mergeRequestUrl: value["mergeRequestUrl"] }
       : {}),

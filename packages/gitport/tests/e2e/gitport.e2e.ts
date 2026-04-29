@@ -238,4 +238,18 @@ test.describe("GitLab MR porting", () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("too many arguments");
   });
+
+  test("User cannot use the removed continue command", async () => {
+    const result = await runCli(["continue"], buildBaseEnv());
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("too many arguments");
+  });
+
+  test("User cannot use the removed abort command", async () => {
+    const result = await runCli(["abort"], buildBaseEnv());
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("too many arguments");
+  });
 });

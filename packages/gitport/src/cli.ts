@@ -2,7 +2,7 @@ import process from "node:process";
 
 import { Command } from "commander";
 
-import { abortLatestRun, continueLatestRun, maskGitportError, portGitLabMergeRequest } from "./port.js";
+import { maskGitportError, portGitLabMergeRequest } from "./port.js";
 import { parseRepoRef } from "./repo-url.js";
 import { GITPORT_GITLAB_TOKEN_ENV } from "./types.js";
 
@@ -93,29 +93,10 @@ function addPortOptions(program: Command): void {
     });
 }
 
-function addRunRecoveryCommands(program: Command): void {
-  program
-    .command("continue")
-    .description("Continue the latest run after manual conflict resolution")
-    .action(async (): Promise<void> => {
-      await continueLatestRun();
-      process.stdout.write("Gitport run continued.\n");
-    });
-
-  program
-    .command("abort")
-    .description("Abort the latest run after an unresolved conflict")
-    .action(async (): Promise<void> => {
-      await abortLatestRun();
-      process.stdout.write("Gitport run aborted.\n");
-    });
-}
-
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   program.name("gitport").description("Port GitLab merge requests from repo A to repo B");
   addPortOptions(program);
-  addRunRecoveryCommands(program);
 
   await program.parseAsync([...argv]);
 }
