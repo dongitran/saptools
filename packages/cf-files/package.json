@@ -1,0 +1,66 @@
+{
+  "name": "@saptools/cf-files",
+  "version": "0.1.1",
+  "description": "Export Cloud Foundry app env to default-env.json and pull files from running SAP BTP Cloud Foundry containers",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "saptools-cf-files": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:fake": "playwright test tests/e2e/cf-files.e2e.ts",
+    "test:e2e:live": "playwright test tests/e2e/live.e2e.ts"
+  },
+  "keywords": [
+    "sap",
+    "cloud-foundry",
+    "btp",
+    "vcap",
+    "default-env",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-files"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-files#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "@saptools/cf-sync": "^0.4.3",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}

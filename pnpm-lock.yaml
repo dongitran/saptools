@@ -101,7 +101,7 @@ importers:
   packages/cf-files:
     dependencies:
       '@saptools/cf-sync':
-        specifier: ^0.3.5
+        specifier: ^0.4.3
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0
