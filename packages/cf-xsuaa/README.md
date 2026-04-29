@@ -273,10 +273,14 @@ export E2E_TARGET="ap10/my-org/my-space/my-srv"
 
 ---
 
-<div align="center">
+## 👨‍💻 Author
 
-Made with ❤️ for SAP BTP developers who refuse to click through the cockpit one more time.
+**dongtran** ✨
 
-**License** · [MIT](./LICENSE)
+## 📄 License
 
-</div>
+MIT
+
+---
+
+Made with ❤️ to make your work life easier!

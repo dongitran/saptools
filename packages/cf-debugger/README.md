@@ -324,10 +324,14 @@ The e2e suite hits live SAP BTP CF. Set `CF_DEBUGGER_E2E_REGIONS=eu10,ap10` (plu
 
 ---
 
-<div align="center">
+## 👨‍💻 Author
 
-Made with ❤️ for SAP BTP developers who'd rather attach than log-print.
+**dongtran** ✨
 
-**License** · [MIT](./LICENSE)
+## 📄 License
 
-</div>
+MIT
+
+---
+
+Made with ❤️ to make your work life easier!

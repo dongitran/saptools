@@ -317,10 +317,14 @@ Live e2e only performs **read-only** CF operations (`cf api`, `cf auth`, `cf tar
 
 ---
 
-<div align="center">
+## 👨‍💻 Author
 
-Made with ❤️ for SAP BTP developers who want to query HANA in VS Code without leaving the editor.
+**dongtran** ✨
 
-**License** · [MIT](./LICENSE)
+## 📄 License
 
-</div>
+MIT
+
+---
+
+Made with ❤️ to make your work life easier!

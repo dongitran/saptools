@@ -472,12 +472,14 @@ The e2e suite uses a stub `bru` binary and fixture CF snapshots, so it runs full
 
 ---
 
-<div align="center">
+## 👨‍💻 Author
 
-**Made with ❤️ for SAP BTP developers who'd rather script their API tests than click them.**
+**dongtran** ✨
 
-If this saved you an afternoon, consider ⭐ starring the [repo](https://github.com/dongitran/saptools) — it's the main thing that tells me to keep shipping.
+## 📄 License
 
-**License** · [MIT](./LICENSE)
+MIT
 
-</div>
+---
+
+Made with ❤️ to make your work life easier!

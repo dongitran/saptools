@@ -376,10 +376,14 @@ The e2e suite hits live SAP BTP CF. Set `CF_SYNC_E2E_ONLY=ap10,eu10` (plus `SAP_
 
 ---
 
-<div align="center">
+## 👨‍💻 Author
 
-Made with ❤️ for SAP BTP developers who'd rather script it than click it.
+**dongtran** ✨
 
-**License** · [MIT](./LICENSE)
+## 📄 License
 
-</div>
+MIT
+
+---
+
+Made with ❤️ to make your work life easier!

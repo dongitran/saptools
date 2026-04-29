@@ -322,6 +322,14 @@ This package deliberately stays small and predictable. It talks to the Graph `v1
 
 ---
 
-## License
+## 👨‍💻 Author
 
-MIT © Dong Tran
+**dongtran** ✨
+
+## 📄 License
+
+MIT
+
+---
+
+Made with ❤️ to make your work life easier!
