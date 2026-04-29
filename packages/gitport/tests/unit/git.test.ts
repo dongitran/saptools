@@ -25,7 +25,7 @@ describe("Git conflict helpers", () => {
     const root = await mkdtemp(join(tmpdir(), "gitport-conflict-"));
     try {
       const repo = join(root, "repo");
-      await execFileAsync("git", ["init", repo]);
+      await execFileAsync("git", ["init", "-b", "main", repo]);
       await git(repo, ["config", "user.email", "test@example.com"]);
       await git(repo, ["config", "user.name", "Test User"]);
       await writeFile(join(repo, "app.txt"), "value=base\n", "utf8");
