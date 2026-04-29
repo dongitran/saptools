@@ -38,10 +38,10 @@ describe("parseAppNames", () => {
       "Getting apps in org 'x' / space 'dev' as user@example.com...",
       "",
       "name               requested state   processes                      routes",
-      "demo-srv           started           web:1/1                         demo-srv.example.com",
+      "demo-app           started           web:1/1                         demo-app.example.com",
       "demo-worker        stopped           web:0/1                         ",
       "",
     ].join("\n");
-    expect(parseAppNames(stdout)).toEqual(["demo-srv", "demo-worker"]);
+    expect(parseAppNames(stdout)).toEqual(["demo-app", "demo-worker"]);
   });
 });

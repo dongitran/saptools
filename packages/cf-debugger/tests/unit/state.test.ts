@@ -31,14 +31,14 @@ describe("state management", () => {
 
   it("sessionKeyString formats region:org:space:app", () => {
     expect(
-      sessionKeyString({ region: "eu10", org: "org-a", space: "dev", app: "demo-srv" }),
-    ).toBe("eu10:org-a:dev:demo-srv");
+      sessionKeyString({ region: "eu10", org: "org-a", space: "dev", app: "demo-app" }),
+    ).toBe("eu10:org-a:dev:demo-app");
   });
 
   it("matchesKey returns true only for identical keys", () => {
-    const key = { region: "eu10", org: "org-a", space: "dev", app: "demo-srv" };
+    const key = { region: "eu10", org: "org-a", space: "dev", app: "demo-app" };
     expect(matchesKey(key, key)).toBe(true);
-    expect(matchesKey(key, { ...key, app: "other-srv" })).toBe(false);
+    expect(matchesKey(key, { ...key, app: "other-app" })).toBe(false);
   });
 
   it("registers a new session and makes it listable", async () => {
@@ -46,7 +46,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv",
+      app: "demo-app",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -56,7 +56,7 @@ describe("state management", () => {
 
     const sessions = await readActiveSessions();
     expect(sessions).toHaveLength(1);
-    expect(sessions[0]?.app).toBe("demo-srv");
+    expect(sessions[0]?.app).toBe("demo-app");
   });
 
   it("returns existing session when the same key is re-registered", async () => {
@@ -64,7 +64,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv",
+      app: "demo-app",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -73,7 +73,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv",
+      app: "demo-app",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -86,7 +86,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv-a",
+      app: "demo-app-a",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -95,7 +95,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv-b",
+      app: "demo-app-b",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -108,7 +108,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv",
+      app: "demo-app",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -123,7 +123,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv",
+      app: "demo-app",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -138,7 +138,7 @@ describe("state management", () => {
       region: "eu10",
       org: "org-a",
       space: "dev",
-      app: "demo-srv",
+      app: "demo-app",
       apiEndpoint: "https://example.com",
       portProbe: async () => true,
       cfHomeForSession: (id) => join(tempDir, id),
@@ -161,7 +161,7 @@ describe("state management", () => {
             region: "eu10",
             org: "org-a",
             space: "dev",
-            app: "demo-srv",
+            app: "demo-app",
             apiEndpoint: "https://example.com",
             localPort: 20_000,
             remotePort: 9229,

@@ -59,10 +59,10 @@ cf-debugger start \
   --region eu10 \
   --org my-org \
   --space dev \
-  --app my-srv \
+  --app my-app \
   --verbose
 
-# → Debugger ready for my-srv (eu10/my-org/dev).
+# → Debugger ready for my-app (eu10/my-org/dev).
 #     Local port:  20142
 #     Remote port: 9229
 #     Session id:  01HXYZ...
@@ -83,9 +83,9 @@ Ctrl+C cleans everything up — the SSH subprocess is killed, the local port is 
 Open a tunnel for one app and keep running until interrupted.
 
 ```bash
-cf-debugger start --region eu10 --org my-org --space dev --app my-srv
-cf-debugger start --region eu10 --org my-org --space dev --app my-srv --port 9230
-cf-debugger start --region eu10 --org my-org --space dev --app my-srv --timeout 60 --verbose
+cf-debugger start --region eu10 --org my-org --space dev --app my-app
+cf-debugger start --region eu10 --org my-org --space dev --app my-app --port 9230
+cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 60 --verbose
 ```
 
 | Flag | Description |
@@ -103,7 +103,7 @@ cf-debugger start --region eu10 --org my-org --space dev --app my-srv --timeout 
 Stop a specific session or everything at once.
 
 ```bash
-cf-debugger stop --region eu10 --org my-org --space dev --app my-srv
+cf-debugger stop --region eu10 --org my-org --space dev --app my-app
 cf-debugger stop --session-id 01HXYZABCD...
 cf-debugger stop --all
 ```
@@ -127,7 +127,7 @@ cf-debugger list | jq '.[] | {app, localPort, status}'
 Print one session by key (or `null` if no active session matches).
 
 ```bash
-cf-debugger status --region eu10 --org my-org --space dev --app my-srv
+cf-debugger status --region eu10 --org my-org --space dev --app my-app
 ```
 
 ---
@@ -147,7 +147,7 @@ const handle = await startDebugger({
   region: "eu10",
   org: "my-org",
   space: "dev",
-  app: "my-srv",
+  app: "my-app",
   email: process.env["SAP_EMAIL"],
   password: process.env["SAP_PASSWORD"],
   verbose: true,
@@ -243,7 +243,7 @@ All state lives under your home directory:
       "region": "eu10",
       "org": "my-org",
       "space": "dev",
-      "app": "my-srv",
+      "app": "my-app",
       "localPort": 20142,
       "remotePort": 9229,
       "pid": 83421,
