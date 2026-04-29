@@ -49,9 +49,9 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-repo",
+          "--source-mr-url",
           `${fixture.sourceMergeRequestRef}/diffs`,
-          "--dest-repo",
+          "--destination-repo-url",
           fixture.destBare,
           "--base-branch",
           "main",
@@ -96,9 +96,9 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-repo",
+          "--source-mr-url",
           fixture.sourceMergeRequestRef,
-          "--dest-repo",
+          "--destination-repo-url",
           fixture.destBare,
           "--base-branch",
           "main",
@@ -139,9 +139,9 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-repo",
+          "--source-mr-url",
           fixture.sourceMergeRequestRef,
-          "--dest-repo",
+          "--destination-repo-url",
           fixture.destBare,
           "--base-branch",
           "main",
@@ -173,9 +173,9 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-repo",
+          "--source-mr-url",
           fixture.sourceMergeRequestRef,
-          "--dest-repo",
+          "--destination-repo-url",
           fixture.destBare,
           "--base-branch",
           "main",
@@ -199,7 +199,7 @@ test.describe("GitLab MR porting", () => {
   test("User gets a helpful error when source MR URL is missing", async () => {
     const result = await runCli(
       [
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -212,15 +212,34 @@ test.describe("GitLab MR porting", () => {
     );
 
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain("required option '--source-repo <mr-url>'");
+    expect(result.stderr).toContain("required option '--source-mr-url <url>'");
   });
 
-  test("User gets a helpful error when source repo is not a merge request URL", async () => {
+  test("User gets a helpful error when destination repo URL is missing", async () => {
     const result = await runCli(
       [
-        "--source-repo",
+        "--source-mr-url",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("required option '--destination-repo-url <url>'");
+  });
+
+  test("User gets a helpful error when source MR URL is not a merge request URL", async () => {
+    const result = await runCli(
+      [
+        "--source-mr-url",
         "/tmp/repo-a.git",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -239,9 +258,9 @@ test.describe("GitLab MR porting", () => {
   test("User gets a helpful error when port branch is missing", async () => {
     const result = await runCli(
       [
-        "--source-repo",
+        "--source-mr-url",
         "/tmp/repo-a.git/-/merge_requests/123",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -258,9 +277,9 @@ test.describe("GitLab MR porting", () => {
   test("User gets a helpful error when title is missing", async () => {
     const result = await runCli(
       [
-        "--source-repo",
+        "--source-mr-url",
         "/tmp/repo-a.git/-/merge_requests/123",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -279,9 +298,9 @@ test.describe("GitLab MR porting", () => {
       [
         "--source-mr",
         "123",
-        "--source-repo",
+        "--source-mr-url",
         "/tmp/repo-a.git/-/merge_requests/123",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -297,14 +316,60 @@ test.describe("GitLab MR porting", () => {
     expect(result.stderr).toContain("unknown option '--source-mr'");
   });
 
+  test("User cannot use the old source repo flag", async () => {
+    const result = await runCli(
+      [
+        "--source-mr-url",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--source-repo",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--destination-repo-url",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("unknown option '--source-repo'");
+  });
+
+  test("User cannot use the old destination repo flag", async () => {
+    const result = await runCli(
+      [
+        "--source-mr-url",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--destination-repo-url",
+        "/tmp/repo-b.git",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("unknown option '--dest-repo'");
+  });
+
   test("User cannot use the old nested GitLab MR command", async () => {
     const result = await runCli(
       [
         "gitlab",
         "mr",
-        "--source-repo",
+        "--source-mr-url",
         "/tmp/repo-a.git/-/merge_requests/123",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -324,9 +389,9 @@ test.describe("GitLab MR porting", () => {
     const result = await runCli(
       [
         "continue",
-        "--source-repo",
+        "--source-mr-url",
         "/tmp/repo-a.git/-/merge_requests/123",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
@@ -346,9 +411,9 @@ test.describe("GitLab MR porting", () => {
     const result = await runCli(
       [
         "abort",
-        "--source-repo",
+        "--source-mr-url",
         "/tmp/repo-a.git/-/merge_requests/123",
-        "--dest-repo",
+        "--destination-repo-url",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",

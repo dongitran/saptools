@@ -7,8 +7,8 @@ import { parseSourceMergeRequestRef } from "./repo-url.js";
 import { GITPORT_GITLAB_TOKEN_ENV } from "./types.js";
 
 interface PortFlags {
-  readonly sourceRepo?: string | undefined;
-  readonly destRepo?: string | undefined;
+  readonly sourceMrUrl?: string | undefined;
+  readonly destinationRepoUrl?: string | undefined;
   readonly baseBranch?: string | undefined;
   readonly portBranch?: string | undefined;
   readonly title?: string | undefined;
@@ -27,11 +27,11 @@ function requireFlag(value: string | undefined, name: string): string {
 }
 
 async function runPort(flags: PortFlags): Promise<void> {
-  const source = parseSourceMergeRequestRef(requireFlag(flags.sourceRepo, "--source-repo <mr-url>"));
+  const source = parseSourceMergeRequestRef(requireFlag(flags.sourceMrUrl, "--source-mr-url <url>"));
   const result = await portGitLabMergeRequest({
     sourceRepo: source.sourceRepo.original,
     sourceMergeRequestIid: source.sourceMergeRequestIid,
-    destRepo: requireFlag(flags.destRepo, "--dest-repo <url>"),
+    destRepo: requireFlag(flags.destinationRepoUrl, "--destination-repo-url <url>"),
     baseBranch: requireFlag(flags.baseBranch, "--base-branch <name>"),
     portBranch: requireFlag(flags.portBranch, "--port-branch <name>"),
     title: requireFlag(flags.title, "--title <title>"),
@@ -51,8 +51,8 @@ async function runPort(flags: PortFlags): Promise<void> {
 
 function addPortOptions(program: Command): void {
   program
-    .requiredOption("--source-repo <mr-url>", "GitLab source merge request URL")
-    .requiredOption("--dest-repo <url>", "GitLab repo URL receiving the ported commits")
+    .requiredOption("--source-mr-url <url>", "GitLab source merge request URL")
+    .requiredOption("--destination-repo-url <url>", "GitLab repo URL receiving the ported commits")
     .requiredOption("--base-branch <name>", "Destination branch to create the port branch from")
     .requiredOption("--port-branch <name>", "Destination branch that receives the cherry-picks")
     .requiredOption("--title <title>", "Destination merge request title")

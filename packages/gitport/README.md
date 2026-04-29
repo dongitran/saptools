@@ -52,8 +52,8 @@ pnpm add @saptools/gitport
 export GITPORT_GITLAB_TOKEN="<gitlab-token>"
 
 gitport \
-  --source-repo https://gitlab.example.com/repo-a/-/merge_requests/123 \
-  --dest-repo https://gitlab.example.com/repo-b \
+  --source-mr-url https://gitlab.example.com/repo-a/-/merge_requests/123 \
+  --destination-repo-url https://gitlab.example.com/repo-b \
   --base-branch main \
   --port-branch gitport/repo-a-mr-123 \
   --title "JIR-112 carry feature"
@@ -67,14 +67,14 @@ If a conflict happens, Gitport captures the destination-side and incoming-side c
 
 ## 🧰 CLI
 
-### 🔁 `gitport --source-repo <mr-url>`
+### 🔁 `gitport --source-mr-url <url>`
 
 Port one GitLab merge request from a source repo into a destination repo.
 
 ```bash
 gitport \
-  --source-repo https://gitlab.example.com/repo-a/-/merge_requests/123 \
-  --dest-repo https://gitlab.example.com/repo-b \
+  --source-mr-url https://gitlab.example.com/repo-a/-/merge_requests/123 \
+  --destination-repo-url https://gitlab.example.com/repo-b \
   --base-branch main \
   --port-branch gitport/repo-a-mr-123 \
   --title "JIR-112 carry feature"
@@ -82,8 +82,8 @@ gitport \
 
 | Flag | Description |
 | --- | --- |
-| `--source-repo <mr-url>` | **Required.** GitLab source merge request URL, such as `https://gitlab.example.com/repo-a/-/merge_requests/123` |
-| `--dest-repo <url>` | **Required.** GitLab repo URL that receives the ported commits. The `.git` suffix is optional |
+| `--source-mr-url <url>` | **Required.** GitLab source merge request URL, such as `https://gitlab.example.com/repo-a/-/merge_requests/123` |
+| `--destination-repo-url <url>` | **Required.** GitLab repo URL that receives the ported commits. The `.git` suffix is optional |
 | `--base-branch <name>` | **Required.** Destination branch to create the port branch from |
 | `--port-branch <name>` | **Required.** New destination branch that receives the cherry-picks |
 | `--title <title>` | **Required.** Destination Draft MR title |
@@ -124,7 +124,7 @@ The CLI and library use the same porting engine. Library consumers can build cus
 ```
 ┌──────────────────────────┐
 │ gitport                  │
-│   --source-repo <mr-url> │
+│   --source-mr-url <url>  │
 └─────────────┬────────────┘
               │
               ▼
