@@ -51,14 +51,14 @@ pnpm add @saptools/gitport
 ```bash
 export GITPORT_GITLAB_TOKEN="<gitlab-token>"
 
-gitport gitlab mr 123 \
+gitport gitlab mr \
+  --source-mr 123 \
   --source-repo https://gitlab.example.com/repo-a.git \
   --dest-repo https://gitlab.example.com/repo-b.git \
-  --base-branch main \
-  --port-branch gitport/repo-a-mr-123
+  --base-branch main
 ```
 
-Gitport will clone the destination repo into an isolated run folder, fetch the source MR commits, replay them one by one with `git cherry-pick -x`, push the destination branch, and create a Draft GitLab MR.
+Gitport will clone the destination repo into an isolated run folder, fetch the source MR commits, replay them one by one with `git cherry-pick -x`, push the destination branch, and create a Draft GitLab MR. If `--port-branch` is omitted, Gitport creates a branch like `gitport/repo-a-mr-123`.
 
 If a conflict happens, Gitport captures the destination-side and incoming-side conflict hunks, resolves the file with incoming by default, continues the cherry-pick, and records the conflict details in the Draft MR description. The MR diff also keeps the overwritten destination lines visible during review.
 
@@ -72,24 +72,25 @@ gitport continue
 
 ## 🧰 CLI
 
-### 🔁 `gitport gitlab mr <iid>`
+### 🔁 `gitport gitlab mr --source-mr <iid>`
 
 Port one GitLab merge request from a source repo into a destination repo.
 
 ```bash
-gitport gitlab mr 123 \
+gitport gitlab mr \
+  --source-mr 123 \
   --source-repo https://gitlab.example.com/repo-a.git \
   --dest-repo https://gitlab.example.com/repo-b.git \
-  --base-branch main \
-  --port-branch gitport/repo-a-mr-123
+  --base-branch main
 ```
 
 | Flag | Description |
 | --- | --- |
+| `--source-mr <iid>` | **Required.** Source GitLab merge request IID, such as `123` for `!123` |
 | `--source-repo <url>` | **Required.** GitLab repo URL that contains the source MR |
 | `--dest-repo <url>` | **Required.** GitLab repo URL that receives the ported commits |
 | `--base-branch <name>` | **Required.** Destination branch to create the port branch from |
-| `--port-branch <name>` | **Required.** New destination branch that receives the cherry-picks |
+| `--port-branch <name>` | New destination branch that receives the cherry-picks. Defaults to `gitport/<source-repo-name>-mr-<iid>` |
 | `--token <token>` | GitLab token. Falls back to `GITPORT_GITLAB_TOKEN` |
 | `--keep-workdir` | Keep the isolated run folder after a successful port |
 | `--yes` | Skip interactive confirmation after the computed plan is shown |
@@ -139,7 +140,8 @@ The CLI and library use the same porting engine. Library consumers can build cus
 
 ```
 ┌──────────────────────────┐
-│ gitport gitlab mr 123    │
+│ gitport gitlab mr        │
+│   --source-mr 123        │
 └─────────────┬────────────┘
               │
               ▼
@@ -147,7 +149,7 @@ The CLI and library use the same porting engine. Library consumers can build cus
   2. Read source MR metadata and commits from GitLab
   3. Clone destination repo into ~/.saptools/gitport/runs/<run-id>/dest
   4. Fetch the source repo as a temporary remote
-  5. Create --port-branch from --base-branch
+  5. Create the port branch from --base-branch
   6. Run git cherry-pick -x <sha> once per source MR commit
   7. On conflict, capture ours/theirs hunks, choose incoming, and continue
   8. Push the destination branch

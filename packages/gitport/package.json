@@ -1,6 +1,6 @@
 {
   "name": "@saptools/gitport",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Port GitLab merge requests from repo A to repo B with sequential cherry-picks, Draft MRs, and incoming conflict capture.",
   "type": "module",
   "publishConfig": {

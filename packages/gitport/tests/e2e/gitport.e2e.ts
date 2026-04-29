@@ -21,11 +21,15 @@ interface GitportJsonResult {
   readonly conflicts: readonly unknown[];
 }
 
-function buildEnv(fixture: Fixture, fakeGitLab: FakeGitLab, includeToken = true): NodeJS.ProcessEnv {
+function buildBaseEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env["FORCE_COLOR"];
+  return env;
+}
+
+function buildEnv(fixture: Fixture, fakeGitLab: FakeGitLab, includeToken = true): NodeJS.ProcessEnv {
   return {
-    ...env,
+    ...buildBaseEnv(),
     HOME: fixture.homeDir,
     GITPORT_GITLAB_API_BASE: fakeGitLab.apiBase,
     GIT_COMMITTER_NAME: "Gitport Runner",
@@ -47,6 +51,7 @@ test.describe("GitLab MR porting", () => {
         [
           "gitlab",
           "mr",
+          "--source-mr",
           "123",
           "--source-repo",
           fixture.sourceBare,
@@ -54,8 +59,6 @@ test.describe("GitLab MR porting", () => {
           fixture.destBare,
           "--base-branch",
           "main",
-          "--port-branch",
-          "gitport/repo-a-mr-123",
         ],
         buildEnv(fixture, fakeGitLab),
       );
@@ -85,6 +88,7 @@ test.describe("GitLab MR porting", () => {
         [
           "gitlab",
           "mr",
+          "--source-mr",
           "123",
           "--source-repo",
           fixture.sourceBare,
@@ -127,6 +131,7 @@ test.describe("GitLab MR porting", () => {
         [
           "gitlab",
           "mr",
+          "--source-mr",
           "123",
           "--source-repo",
           fixture.sourceBare,
@@ -162,6 +167,7 @@ test.describe("GitLab MR porting", () => {
         [
           "gitlab",
           "mr",
+          "--source-mr",
           "123",
           "--source-repo",
           fixture.sourceBare,
@@ -182,5 +188,65 @@ test.describe("GitLab MR porting", () => {
       await fakeGitLab.stop();
       await cleanupFixture(fixture);
     }
+  });
+
+  test("User gets a helpful error when source MR is missing", async () => {
+    const result = await runCli(
+      [
+        "gitlab",
+        "mr",
+        "--source-repo",
+        "/tmp/repo-a.git",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("required option '--source-mr <iid>'");
+  });
+
+  test("User gets a helpful error when source MR is invalid", async () => {
+    const result = await runCli(
+      [
+        "gitlab",
+        "mr",
+        "--source-mr",
+        "123abc",
+        "--source-repo",
+        "/tmp/repo-a.git",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Invalid merge request IID: 123abc");
+  });
+
+  test("User gets a helpful error when using the old positional source MR form", async () => {
+    const result = await runCli(
+      [
+        "gitlab",
+        "mr",
+        "123",
+        "--source-repo",
+        "/tmp/repo-a.git",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("required option '--source-mr <iid>'");
   });
 });
