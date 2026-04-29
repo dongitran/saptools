@@ -1,0 +1,299 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { CdpEvalResult, CdpProperty, InspectorSession } from "../../src/inspector.js";
+import { captureSnapshot, internalsForTesting } from "../../src/snapshot.js";
+import type { CallFrameInfo, PauseEvent } from "../../src/types.js";
+
+const { sanitizeValue, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;
+
+describe("sanitizeValue", () => {
+  it("redacts values when name matches sensitive pattern", () => {
+    expect(sanitizeValue("password", "hunter2")).toBe("[REDACTED]");
+    expect(sanitizeValue("API_KEY", "abcd")).toBe("[REDACTED]");
+    expect(sanitizeValue("session", "deadbeef")).toBe("[REDACTED]");
+  });
+
+  it("truncates values longer than the limit", () => {
+    const long = "x".repeat(500);
+    const out = sanitizeValue("notSensitive", long);
+    expect(out.endsWith("...")).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(243);
+  });
+
+  it("returns short non-sensitive values unchanged", () => {
+    expect(sanitizeValue("count", "42")).toBe("42");
+  });
+});
+
+describe("describeProperty", () => {
+  it("formats string values as JSON-quoted strings", () => {
+    const prop: CdpProperty = { name: "n", value: { type: "string", value: "hi" } };
+    expect(describeProperty(prop)).toEqual({ value: '"hi"', type: "string" });
+  });
+
+  it("formats numeric primitives as their string form", () => {
+    const prop: CdpProperty = { name: "n", value: { type: "number", value: 42 } };
+    expect(describeProperty(prop)).toEqual({ value: "42", type: "number" });
+  });
+
+  it("preserves the description for objects", () => {
+    const prop: CdpProperty = {
+      name: "n",
+      value: { type: "object", description: "User { id: 1 }", objectId: "obj-1" },
+    };
+    expect(describeProperty(prop)).toEqual({
+      value: "User { id: 1 }",
+      type: "object",
+      objectId: "obj-1",
+    });
+  });
+
+  it("returns undefined when value is missing", () => {
+    expect(describeProperty({ name: "n" })).toEqual({ value: "undefined" });
+  });
+});
+
+describe("selectScopes", () => {
+  it("drops global scopes and orders by priority", () => {
+    const chain: CallFrameInfo["scopeChain"] = [
+      { type: "global", objectId: "g" },
+      { type: "closure", objectId: "c" },
+      { type: "local", objectId: "l" },
+      { type: "block", objectId: "b" },
+      { type: "module", objectId: "m" },
+    ];
+    const out = selectScopes(chain).map((s) => s.type);
+    expect(out).toEqual(["local", "block", "closure"]);
+  });
+
+  it("drops scopes without objectId", () => {
+    const chain: CallFrameInfo["scopeChain"] = [
+      { type: "local" },
+      { type: "closure", objectId: "c" },
+    ];
+    const out = selectScopes(chain).map((s) => s.type);
+    expect(out).toEqual(["closure"]);
+  });
+});
+
+describe("captureSnapshot", () => {
+  const localScopeId = "scope-local";
+  const argScopeId = "scope-args";
+  const userObjectId = "obj-user";
+
+  function makeSession(): InspectorSession {
+    const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === "Runtime.getProperties") {
+        const objectId = params["objectId"];
+        if (objectId === localScopeId) {
+          return {
+            result: [
+              { name: "userId", value: { type: "number", value: 7 } },
+              { name: "user", value: { type: "object", description: "{ id: 7 }", objectId: userObjectId } },
+              { name: "password", value: { type: "string", value: "leak-me-not" } },
+            ],
+          };
+        }
+        if (objectId === argScopeId) {
+          return {
+            result: [
+              { name: "req", value: { type: "object", description: "{ url: '/' }" } },
+            ],
+          };
+        }
+        if (objectId === userObjectId) {
+          return {
+            result: [
+              { name: "id", value: { type: "number", value: 7 } },
+              { name: "token", value: { type: "string", value: "abc-123" } },
+            ],
+          };
+        }
+        return { result: [] };
+      }
+      if (method === "Debugger.evaluateOnCallFrame") {
+        const expression = params["expression"];
+        if (expression === "user.id") {
+          return { result: { type: "number", value: 7 } };
+        }
+        if (expression === "throwy") {
+          return {
+            exceptionDetails: { exception: { description: "ReferenceError: throwy is not defined" } },
+          };
+        }
+        return { result: { type: "undefined" } };
+      }
+      return {};
+    });
+    return {
+      client: { send } as never,
+      target: { id: "t", type: "node" } as never,
+      scripts: new Map(),
+      pauseBuffer: [],
+      dispose: async (): Promise<void> => undefined,
+    };
+  }
+
+  function makePauseEvent(): PauseEvent {
+    return {
+      reason: "other",
+      hitBreakpoints: ["bp:1"],
+      callFrames: [
+        {
+          callFrameId: "f1",
+          functionName: "handle",
+          url: "file:///app/src/handler.ts",
+          lineNumber: 41,
+          columnNumber: 4,
+          scopeChain: [
+            { type: "local", objectId: localScopeId },
+            { type: "arguments", objectId: argScopeId },
+            { type: "global", objectId: "scope-global" },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("captures scopes and redacts sensitive variable names", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id", "throwy"],
+    });
+    expect(snapshot.reason).toBe("other");
+    expect(snapshot.hitBreakpoints).toEqual(["bp:1"]);
+    expect(snapshot.topFrame).toBeDefined();
+    expect(snapshot.topFrame?.line).toBe(42);
+    expect(snapshot.topFrame?.column).toBe(5);
+    expect(snapshot.topFrame?.scopes).toHaveLength(2);
+
+    const localScope = snapshot.topFrame?.scopes.find((s) => s.type === "local");
+    expect(localScope).toBeDefined();
+    const password = localScope?.variables.find((v) => v.name === "password");
+    expect(password?.value).toBe("[REDACTED]");
+    const userVar = localScope?.variables.find((v) => v.name === "user");
+    expect(userVar?.children?.find((c) => c.name === "token")?.value).toBe("[REDACTED]");
+
+    const captures = Object.fromEntries(
+      snapshot.captures.map((c) => [c.expression, c.value ?? c.error]),
+    );
+    expect(captures["user.id"]).toBe("7");
+    expect(captures["throwy"]).toContain("ReferenceError");
+  });
+
+  it("returns an empty topFrame when no call frames are present", async () => {
+    const snapshot = await captureSnapshot(makeSession(), {
+      reason: "other",
+      hitBreakpoints: [],
+      callFrames: [],
+    });
+    expect(snapshot.topFrame).toBeUndefined();
+    expect(snapshot.captures).toEqual([]);
+  });
+
+  it("records a capture error when evaluateOnFrame throws", async () => {
+    const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === "Runtime.getProperties") {
+        return { result: [] };
+      }
+      if (method === "Debugger.evaluateOnCallFrame") {
+        const expression = params["expression"];
+        if (expression === "boom") {
+          throw new Error("network down");
+        }
+      }
+      return { result: { type: "undefined" } };
+    });
+    const session = {
+      client: { send } as never,
+      target: { id: "t", type: "node" } as never,
+      scripts: new Map(),
+      pauseBuffer: [],
+      dispose: async (): Promise<void> => undefined,
+    };
+    const pause: PauseEvent = {
+      reason: "other",
+      hitBreakpoints: [],
+      callFrames: [
+        {
+          callFrameId: "f1",
+          functionName: "x",
+          url: "file:///x.js",
+          lineNumber: 0,
+          columnNumber: 0,
+          scopeChain: [{ type: "local", objectId: "scope-1" }],
+        },
+      ],
+    };
+    const snapshot = await captureSnapshot(session, pause, { captures: ["boom"] });
+    expect(snapshot.captures[0]?.error).toContain("network down");
+  });
+});
+
+describe("evalResultToCaptured", () => {
+  it("returns the resulting string value", () => {
+    const result: CdpEvalResult = { result: { type: "string", value: "ok" } };
+    expect(evalResultToCaptured("expr", result)).toEqual({
+      expression: "expr",
+      value: '"ok"',
+      type: "string",
+    });
+  });
+
+  it("redacts sensitive expressions even when not paused", () => {
+    const result: CdpEvalResult = { result: { type: "string", value: "secret" } };
+    const out = evalResultToCaptured("password", result);
+    expect(out.value).toBe("[REDACTED]");
+  });
+
+  it("includes the exception description on errors", () => {
+    const result: CdpEvalResult = {
+      exceptionDetails: { exception: { description: "ReferenceError: foo is not defined" } },
+    };
+    const out = evalResultToCaptured("foo", result);
+    expect(out.error).toContain("ReferenceError");
+  });
+
+  it("falls back to inner.description for object values", () => {
+    const result: CdpEvalResult = { result: { type: "object", description: "{ a: 1 }" } };
+    expect(evalResultToCaptured("expr", result)).toEqual({
+      expression: "expr",
+      value: "{ a: 1 }",
+      type: "object",
+    });
+  });
+
+  it("returns 'no result returned' when both result and exceptionDetails are missing", () => {
+    expect(evalResultToCaptured("expr", {})).toEqual({
+      expression: "expr",
+      error: "no result returned",
+    });
+  });
+
+  it("falls back to exception text when exception.description is missing", () => {
+    const result: CdpEvalResult = { exceptionDetails: { text: "plain failure" } };
+    expect(evalResultToCaptured("expr", result).error).toBe("plain failure");
+  });
+
+  it("returns 'evaluation failed' when neither description nor text is present", () => {
+    const result: CdpEvalResult = { exceptionDetails: {} };
+    expect(evalResultToCaptured("expr", result).error).toBe("evaluation failed");
+  });
+
+  it("returns 'undefined' when nothing matches a known shape", () => {
+    const result: CdpEvalResult = { result: { type: "object" } };
+    expect(evalResultToCaptured("expr", result)).toEqual({
+      expression: "expr",
+      value: "undefined",
+      type: "object",
+    });
+  });
+
+  it("captures bigint primitives via the type-driven branch", () => {
+    const result: CdpEvalResult = { result: { type: "bigint", value: 7n } };
+    expect(evalResultToCaptured("expr", result)).toEqual({
+      expression: "expr",
+      value: "7n",
+      type: "bigint",
+    });
+  });
+});

@@ -1,0 +1,71 @@
+{
+  "name": "@saptools/cf-inspector",
+  "version": "0.2.1",
+  "description": "Set breakpoints, capture variable snapshots, and evaluate expressions on a SAP BTP Cloud Foundry Node.js app via the Chrome DevTools Protocol — agent-friendly, no IDE required.",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "cf-inspector": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/sample-app.mjs",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test"
+  },
+  "keywords": [
+    "sap",
+    "cloud-foundry",
+    "btp",
+    "debug",
+    "cdp",
+    "chrome-devtools-protocol",
+    "node-inspector",
+    "breakpoint",
+    "snapshot",
+    "agent",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-inspector"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-inspector#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "@saptools/cf-debugger": "workspace:*",
+    "commander": "^13.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@types/ws": "^8.5.13",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
