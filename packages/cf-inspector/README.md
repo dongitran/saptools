@@ -69,7 +69,7 @@ export SAP_PASSWORD=...
 cf-inspector snapshot \
   --region eu10 --org my-org --space dev --app my-srv \
   --bp src/handler.ts:42 \
-  --remote-root 'regex:^/(home/vcap/app|srv-.*)$'
+  --remote-root 'regex:^/(home/vcap/app|example-root-.*)$'
 ```
 
 The first form connects directly to `localhost:9229`. The second internally calls `@saptools/cf-debugger` to open the SSH tunnel, runs the snapshot through it, and tears the tunnel down on exit.
@@ -265,8 +265,8 @@ Path mapping uses CDP's first-class `urlRegex`:
 | --- | --- |
 | _omitted_ | `(?:^|/)src/handler\.(?:ts\|js)$` |
 | `/home/vcap/app` (literal) | `^file:///home/vcap/app/src/handler\.(?:ts\|js)$` |
-| `regex:^/srv-.*$` | `^file:///srv-[^/]+/src/handler\.(?:ts\|js)$` |
-| `/^/srv-.*$/` | same as above |
+| `regex:^/example-root-.*$` | `^file:///example-root-[^/]+/src/handler\.(?:ts\|js)$` |
+| `/^/example-root-.*$/` | same as above |
 
 `.ts ↔ .js` is folded into the regex automatically because Node's V8 inspector normally serves both the source-mapped TypeScript URL and the runtime JavaScript URL — matching either is correct.
 

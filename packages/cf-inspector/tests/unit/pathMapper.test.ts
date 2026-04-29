@@ -59,21 +59,21 @@ describe("parseRemoteRoot", () => {
   });
 
   it("parses regex: prefix", () => {
-    const result = parseRemoteRoot("regex:^/srv-.*$");
+    const result = parseRemoteRoot("regex:^/example-root-.*$");
     expect(result.kind).toBe("regex");
     if (result.kind === "regex") {
-      expect(result.pattern).toBe("^/srv-.*$");
+      expect(result.pattern).toBe("^/example-root-.*$");
       expect(result.flags).toBe("");
-      expect(result.regex.test("/srv-foo")).toBe(true);
+      expect(result.regex.test("/example-root-foo")).toBe(true);
     }
   });
 
   it("parses /pattern/flags slash-delimited form", () => {
-    const result = parseRemoteRoot("/^\\/srv-[a-z]+$/i");
+    const result = parseRemoteRoot("/^\\/example-root-[a-z]+$/i");
     expect(result.kind).toBe("regex");
     if (result.kind === "regex") {
       expect(result.flags).toBe("i");
-      expect(result.regex.test("/SRV-FOO")).toBe(true);
+      expect(result.regex.test("/EXAMPLE-ROOT-FOO")).toBe(true);
     }
   });
 
@@ -122,18 +122,18 @@ describe("buildBreakpointUrlRegex", () => {
     const r = new RegExp(regex);
     expect(r.test("file:///home/vcap/app/src/handler.ts")).toBe(true);
     expect(r.test("file:///home/vcap/app/src/handler.js")).toBe(true);
-    expect(r.test("file:///srv-foo/src/handler.ts")).toBe(false);
+    expect(r.test("file:///example-root-foo/src/handler.ts")).toBe(false);
   });
 
   it("interpolates a regex remote-root", () => {
-    const setting = parseRemoteRoot("regex:/srv-[a-z]+");
+    const setting = parseRemoteRoot("regex:/example-root-[a-z]+");
     const regex = buildBreakpointUrlRegex({
       file: "src/handler.ts",
       remoteRoot: setting,
     });
     const r = new RegExp(regex);
-    expect(r.test("file:///srv-alpha/src/handler.ts")).toBe(true);
-    expect(r.test("file:///srv-beta/src/handler.js")).toBe(true);
+    expect(r.test("file:///example-root-alpha/src/handler.ts")).toBe(true);
+    expect(r.test("file:///example-root-beta/src/handler.js")).toBe(true);
     expect(r.test("file:///other/src/handler.ts")).toBe(false);
   });
 
