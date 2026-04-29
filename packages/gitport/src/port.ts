@@ -213,9 +213,10 @@ export async function portGitLabMergeRequest(
     token: run.token,
     fetchFn: options.fetchFn,
   });
-  const [sourceMr, commits] = await Promise.all([
+  const [sourceMr, commits, currentUser] = await Promise.all([
     client.getMergeRequest(run.source.projectPath, options.sourceMergeRequestIid),
     client.listMergeRequestCommits(run.source.projectPath, options.sourceMergeRequestIid),
+    client.getCurrentUser(),
   ]);
 
   await cloneAndPrepare(options, run);
@@ -233,21 +234,17 @@ export async function portGitLabMergeRequest(
   });
 
   const descriptionInput = {
-    sourceRepo: options.sourceRepo,
-    destRepo: options.destRepo,
     sourceMergeRequestIid: options.sourceMergeRequestIid,
     sourceMergeRequestTitle: sourceMr.title,
-    baseBranch: options.baseBranch,
-    portBranch: options.portBranch,
-    runId: run.runId,
-    commits: results,
+    sourceMergeRequestUrl: sourceMr.webUrl,
     conflicts,
   };
   const mergeRequest = await client.createDraftMergeRequest(run.dest.projectPath, {
     sourceBranch: options.portBranch,
     targetBranch: options.baseBranch,
-    title: `Port MR !${options.sourceMergeRequestIid.toString()} from ${run.source.name}`,
+    title: options.title,
     description: buildDraftMergeRequestDescription(descriptionInput),
+    assigneeId: currentUser.id,
   });
   await writeReports(run, descriptionInput);
   await writeMetadata(options, run, {

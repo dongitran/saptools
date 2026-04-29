@@ -13,6 +13,14 @@ export interface RepoRef {
   readonly defaultApiBase?: string | undefined;
 }
 
+export interface SourceMergeRequestRef {
+  readonly sourceRepo: RepoRef;
+  readonly sourceMergeRequestIid: number;
+  readonly sourceMergeRequestUrl: string;
+}
+
+const MERGE_REQUEST_PATH_MARKER = "/-/merge_requests/";
+
 function stripGitSuffix(value: string): string {
   return value.endsWith(".git") ? value.slice(0, -4) : value;
 }
@@ -85,6 +93,34 @@ function hasUrlScheme(input: string): boolean {
   return /^[a-z][a-z\d+.-]*:\/\//i.test(input);
 }
 
+function normalizeMergeRequestInput(input: string): string {
+  try {
+    const url = new URL(input);
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return input.replace(/\/+$/, "");
+  }
+}
+
+function parseMergeRequestIid(raw: string, input: string): number {
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new GitportError(
+      GITPORT_ERROR_CODE.InvalidInput,
+      `Source repo must be a GitLab merge request URL: ${input}`,
+    );
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new GitportError(
+      GITPORT_ERROR_CODE.InvalidInput,
+      `Source repo must be a GitLab merge request URL: ${input}`,
+    );
+  }
+  return value;
+}
+
 export function parseRepoRef(input: string): RepoRef {
   const trimmed = input.trim();
   if (trimmed.length === 0) {
@@ -105,6 +141,28 @@ export function parseRepoRef(input: string): RepoRef {
     throw new GitportError(GITPORT_ERROR_CODE.InvalidInput, `Invalid repo path: ${input}`);
   }
   return { original: input, projectPath: name, name, kind: "local" };
+}
+
+export function parseSourceMergeRequestRef(input: string): SourceMergeRequestRef {
+  const trimmed = input.trim();
+  const normalized = normalizeMergeRequestInput(trimmed);
+  const markerIndex = normalized.indexOf(MERGE_REQUEST_PATH_MARKER);
+  if (trimmed.length === 0 || markerIndex < 0) {
+    throw new GitportError(
+      GITPORT_ERROR_CODE.InvalidInput,
+      `Source repo must be a GitLab merge request URL: ${input}`,
+    );
+  }
+  const repoInput = normalized.slice(0, markerIndex);
+  const iidRaw = normalized
+    .slice(markerIndex + MERGE_REQUEST_PATH_MARKER.length)
+    .split("/")[0] ?? "";
+  const sourceMergeRequestUrl = `${repoInput}${MERGE_REQUEST_PATH_MARKER}${iidRaw}`;
+  return {
+    sourceRepo: parseRepoRef(repoInput),
+    sourceMergeRequestIid: parseMergeRequestIid(iidRaw, input),
+    sourceMergeRequestUrl,
+  };
 }
 
 export function encodeProjectPath(projectPath: string): string {

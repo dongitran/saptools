@@ -14,7 +14,12 @@ export interface GitLabMergeRequestInfo {
   readonly iid: number;
   readonly title: string;
   readonly sourceBranch: string;
-  readonly webUrl: string | undefined;
+  readonly webUrl: string;
+}
+
+export interface GitLabCurrentUser {
+  readonly id: number;
+  readonly username: string;
 }
 
 export interface CreatedMergeRequest {
@@ -47,6 +52,7 @@ export interface PortGitLabMergeRequestOptions {
   readonly sourceMergeRequestIid: number;
   readonly baseBranch: string;
   readonly portBranch: string;
+  readonly title: string;
   readonly token?: string | undefined;
   readonly gitlabApiBase?: string | undefined;
   readonly keepWorkdir?: boolean | undefined;

@@ -49,14 +49,16 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-mr",
-          "123",
           "--source-repo",
-          fixture.sourceBare,
+          `${fixture.sourceMergeRequestRef}/diffs`,
           "--dest-repo",
           fixture.destBare,
           "--base-branch",
           "main",
+          "--port-branch",
+          "gitport/repo-a-mr-123",
+          "--title",
+          "JIR-112 carry feature",
         ],
         buildEnv(fixture, fakeGitLab),
       );
@@ -68,7 +70,17 @@ test.describe("GitLab MR porting", () => {
         draft: true,
         source_branch: "gitport/repo-a-mr-123",
         target_branch: "main",
+        title: "Draft: JIR-112 carry feature",
+        assignee_ids: [42],
       });
+      expect(fakeGitLab.createdMergeRequests[0]?.description).toContain(
+        "Source MR: !123 Source MR ([MR Link](http://127.0.0.1/repo-a/-/merge_requests/123))",
+      );
+      expect(fakeGitLab.createdMergeRequests[0]?.description).not.toContain("Draft MR created by Gitport");
+      expect(fakeGitLab.createdMergeRequests[0]?.description).not.toContain("Source repo");
+      expect(fakeGitLab.createdMergeRequests[0]?.description).not.toContain("Destination repo");
+      expect(fakeGitLab.createdMergeRequests[0]?.description).not.toContain("Base branch");
+      expect(fakeGitLab.createdMergeRequests[0]?.description).not.toContain("Ported commits");
       await expect(readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt")).resolves.toBe(
         "ported feature\n",
       );
@@ -84,10 +96,8 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-mr",
-          "123",
           "--source-repo",
-          fixture.sourceBare,
+          fixture.sourceMergeRequestRef,
           "--dest-repo",
           fixture.destBare,
           "--base-branch",
@@ -96,6 +106,8 @@ test.describe("GitLab MR porting", () => {
           "gitport/repo-a-mr-123",
           "--keep-workdir",
           "--json",
+          "--title",
+          "JIR-112 resolve conflict",
         ],
         buildEnv(fixture, fakeGitLab),
       );
@@ -111,8 +123,10 @@ test.describe("GitLab MR porting", () => {
       expect(created?.description).toContain("old-destination");
       expect(created?.description).toContain("value=incoming");
       expect(created?.description).toContain("Auto-resolved conflicts");
+      expect(created?.description).not.toContain("Review this Draft MR before marking it ready");
       const report = await readFile(join(parsed.runDir, "report.md"), "utf8");
       expect(report).toContain("old-destination");
+      expect(report).not.toContain("Ported commits");
     } finally {
       await fakeGitLab.stop();
       await cleanupFixture(fixture);
@@ -125,10 +139,8 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-mr",
-          "123",
           "--source-repo",
-          fixture.sourceBare,
+          fixture.sourceMergeRequestRef,
           "--dest-repo",
           fixture.destBare,
           "--base-branch",
@@ -136,6 +148,8 @@ test.describe("GitLab MR porting", () => {
           "--port-branch",
           "gitport/repo-a-mr-123",
           "--json",
+          "--title",
+          "JIR-112 skip duplicates",
         ],
         buildEnv(fixture, fakeGitLab),
       );
@@ -143,7 +157,7 @@ test.describe("GitLab MR porting", () => {
       expect(result.code, result.stderr).toBe(0);
       const parsed = JSON.parse(result.stdout) as GitportJsonResult;
       expect(parsed.commits[0]?.status).toBe("skipped");
-      expect(fakeGitLab.createdMergeRequests[0]?.description).toContain("skipped");
+      expect(fakeGitLab.createdMergeRequests[0]?.description).not.toContain("skipped");
       await expect(readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt")).resolves.toBe(
         "ported feature\n",
       );
@@ -159,16 +173,16 @@ test.describe("GitLab MR porting", () => {
     try {
       const result = await runCli(
         [
-          "--source-mr",
-          "123",
           "--source-repo",
-          fixture.sourceBare,
+          fixture.sourceMergeRequestRef,
           "--dest-repo",
           fixture.destBare,
           "--base-branch",
           "main",
           "--port-branch",
           "gitport/repo-a-mr-123",
+          "--title",
+          "JIR-112 missing token",
         ],
         buildEnv(fixture, fakeGitLab, false),
       );
@@ -182,7 +196,26 @@ test.describe("GitLab MR porting", () => {
     }
   });
 
-  test("User gets a helpful error when source MR is missing", async () => {
+  test("User gets a helpful error when source MR URL is missing", async () => {
+    const result = await runCli(
+      [
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("required option '--source-repo <mr-url>'");
+  });
+
+  test("User gets a helpful error when source repo is not a merge request URL", async () => {
     const result = await runCli(
       [
         "--source-repo",
@@ -191,31 +224,77 @@ test.describe("GitLab MR porting", () => {
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
       ],
       buildBaseEnv(),
     );
 
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain("required option '--source-mr <iid>'");
+    expect(result.stderr).toContain("Source repo must be a GitLab merge request URL");
   });
 
-  test("User gets a helpful error when source MR is invalid", async () => {
+  test("User gets a helpful error when port branch is missing", async () => {
+    const result = await runCli(
+      [
+        "--source-repo",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("required option '--port-branch <name>'");
+  });
+
+  test("User gets a helpful error when title is missing", async () => {
+    const result = await runCli(
+      [
+        "--source-repo",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("required option '--title <title>'");
+  });
+
+  test("User cannot use the removed source MR flag", async () => {
     const result = await runCli(
       [
         "--source-mr",
-        "123abc",
+        "123",
         "--source-repo",
-        "/tmp/repo-a.git",
+        "/tmp/repo-a.git/-/merge_requests/123",
         "--dest-repo",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
       ],
       buildBaseEnv(),
     );
 
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain("Invalid merge request IID: 123abc");
+    expect(result.stderr).toContain("unknown option '--source-mr'");
   });
 
   test("User cannot use the old nested GitLab MR command", async () => {
@@ -223,14 +302,16 @@ test.describe("GitLab MR porting", () => {
       [
         "gitlab",
         "mr",
-        "--source-mr",
-        "123",
         "--source-repo",
-        "/tmp/repo-a.git",
+        "/tmp/repo-a.git/-/merge_requests/123",
         "--dest-repo",
         "/tmp/repo-b.git",
         "--base-branch",
         "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
       ],
       buildBaseEnv(),
     );
@@ -240,14 +321,44 @@ test.describe("GitLab MR porting", () => {
   });
 
   test("User cannot use the removed continue command", async () => {
-    const result = await runCli(["continue"], buildBaseEnv());
+    const result = await runCli(
+      [
+        "continue",
+        "--source-repo",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
 
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("too many arguments");
   });
 
   test("User cannot use the removed abort command", async () => {
-    const result = await runCli(["abort"], buildBaseEnv());
+    const result = await runCli(
+      [
+        "abort",
+        "--source-repo",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--dest-repo",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
 
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("too many arguments");

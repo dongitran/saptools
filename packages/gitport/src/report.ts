@@ -1,14 +1,9 @@
-import type { CommitPortResult, ConflictReport } from "./types.js";
+import type { ConflictReport } from "./types.js";
 
 export interface DraftDescriptionInput {
-  readonly sourceRepo: string;
-  readonly destRepo: string;
   readonly sourceMergeRequestIid: number;
   readonly sourceMergeRequestTitle: string;
-  readonly baseBranch: string;
-  readonly portBranch: string;
-  readonly runId: string;
-  readonly commits: readonly CommitPortResult[];
+  readonly sourceMergeRequestUrl: string;
   readonly conflicts: readonly ConflictReport[];
 }
 
@@ -18,15 +13,6 @@ function shortSha(sha: string): string {
 
 function fence(value: string): string {
   return value.split("```").join("` ` `");
-}
-
-function renderCommitRows(commits: readonly CommitPortResult[]): string {
-  if (commits.length === 0) {
-    return "- No commits were ported.";
-  }
-  return commits
-    .map((commit) => `- \`${shortSha(commit.sha)}\` ${commit.status}: ${commit.title}`)
-    .join("\n");
 }
 
 function renderConflict(conflict: ConflictReport): string {
@@ -51,26 +37,15 @@ function renderConflicts(conflicts: readonly ConflictReport[]): string {
 }
 
 export function buildDraftMergeRequestDescription(input: DraftDescriptionInput): string {
+  const sourceMergeRequestLine =
+    `- Source MR: !${input.sourceMergeRequestIid.toString()} ${input.sourceMergeRequestTitle} ` +
+    `([MR Link](${input.sourceMergeRequestUrl}))`;
   return [
-    "## Draft MR created by Gitport",
-    "",
-    `- Source MR: !${input.sourceMergeRequestIid.toString()} ${input.sourceMergeRequestTitle}`,
-    `- Source repo: \`${input.sourceRepo}\``,
-    `- Destination repo: \`${input.destRepo}\``,
-    `- Base branch: \`${input.baseBranch}\``,
-    `- Port branch: \`${input.portBranch}\``,
-    `- Run ID: \`${input.runId}\``,
-    "- Strategy: sequential `git cherry-pick -x`; conflicts choose incoming after capture.",
-    "",
-    "## Ported commits",
-    "",
-    renderCommitRows(input.commits),
+    sourceMergeRequestLine,
     "",
     "## Auto-resolved conflicts",
     "",
     renderConflicts(input.conflicts),
-    "",
-    "Review this Draft MR before marking it ready.",
   ].join("\n");
 }
 

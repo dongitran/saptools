@@ -1,7 +1,7 @@
 import { GITPORT_ERROR_CODE, GitportError } from "./errors.js";
 import { maskAll } from "./mask.js";
 import { encodeProjectPath } from "./repo-url.js";
-import type { CreatedMergeRequest, GitLabMergeRequestInfo, SourceCommit } from "./types.js";
+import type { CreatedMergeRequest, GitLabCurrentUser, GitLabMergeRequestInfo, SourceCommit } from "./types.js";
 
 export type FetchLike = typeof fetch;
 
@@ -16,6 +16,7 @@ export interface CreateDraftMergeRequestInput {
   readonly targetBranch: string;
   readonly title: string;
   readonly description: string;
+  readonly assigneeId: number;
 }
 
 interface RequestOptions {
@@ -54,10 +55,28 @@ function parseMergeRequest(value: unknown): GitLabMergeRequestInfo {
   const iid = numberField(value, "iid");
   const title = stringField(value, "title");
   const sourceBranch = stringField(value, "source_branch");
-  if (iid === undefined || title === undefined || sourceBranch === undefined) {
+  const webUrl = stringField(value, "web_url");
+  if (
+    iid === undefined ||
+    title === undefined ||
+    sourceBranch === undefined ||
+    webUrl === undefined
+  ) {
     throw new GitportError(GITPORT_ERROR_CODE.GitLabFailed, "GitLab MR response is missing fields");
   }
-  return { iid, title, sourceBranch, webUrl: stringField(value, "web_url") };
+  return { iid, title, sourceBranch, webUrl };
+}
+
+function parseCurrentUser(value: unknown): GitLabCurrentUser {
+  if (!isRecord(value)) {
+    throw new GitportError(GITPORT_ERROR_CODE.GitLabFailed, "Current user response is not an object");
+  }
+  const id = numberField(value, "id");
+  const username = stringField(value, "username");
+  if (id === undefined || username === undefined) {
+    throw new GitportError(GITPORT_ERROR_CODE.GitLabFailed, "Current user response is missing fields");
+  }
+  return { id, username };
 }
 
 function parseCommit(value: unknown): SourceCommit {
@@ -130,6 +149,7 @@ export class GitLabHttpError extends GitportError {
 }
 
 export interface GitLabClient {
+  getCurrentUser: () => Promise<GitLabCurrentUser>;
   getMergeRequest: (projectPath: string, iid: number) => Promise<GitLabMergeRequestInfo>;
   listMergeRequestCommits: (projectPath: string, iid: number) => Promise<readonly SourceCommit[]>;
   createDraftMergeRequest: (
@@ -189,6 +209,10 @@ export function createGitLabClient(options: GitLabClientOptions): GitLabClient {
     return parseMergeRequest(value);
   }
 
+  async function getCurrentUser(): Promise<GitLabCurrentUser> {
+    return parseCurrentUser(await requestJson("/user"));
+  }
+
   async function listMergeRequestCommits(
     projectPath: string,
     iid: number,
@@ -219,11 +243,12 @@ export function createGitLabClient(options: GitLabClientOptions): GitLabClient {
         title: ensureDraftTitle(input.title),
         description: input.description,
         draft: true,
+        assignee_ids: [input.assigneeId],
         remove_source_branch: false,
       },
     });
     return parseCreatedMergeRequest(value);
   }
 
-  return { getMergeRequest, listMergeRequestCommits, createDraftMergeRequest };
+  return { getCurrentUser, getMergeRequest, listMergeRequestCommits, createDraftMergeRequest };
 }

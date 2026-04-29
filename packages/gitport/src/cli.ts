@@ -3,15 +3,15 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { maskGitportError, portGitLabMergeRequest } from "./port.js";
-import { parseRepoRef } from "./repo-url.js";
+import { parseSourceMergeRequestRef } from "./repo-url.js";
 import { GITPORT_GITLAB_TOKEN_ENV } from "./types.js";
 
 interface PortFlags {
-  readonly sourceMr?: string | undefined;
   readonly sourceRepo?: string | undefined;
   readonly destRepo?: string | undefined;
   readonly baseBranch?: string | undefined;
   readonly portBranch?: string | undefined;
+  readonly title?: string | undefined;
   readonly token?: string | undefined;
   readonly gitlabApiBase?: string | undefined;
   readonly keepWorkdir?: boolean | undefined;
@@ -26,41 +26,15 @@ function requireFlag(value: string | undefined, name: string): string {
   return value;
 }
 
-function parseIid(raw: string): number {
-  if (!/^[1-9]\d*$/.test(raw)) {
-    throw new Error(`Invalid merge request IID: ${raw}`);
-  }
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) {
-    throw new Error(`Invalid merge request IID: ${raw}`);
-  }
-  return value;
-}
-
-function branchSafeName(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized.length > 0 ? normalized : "source";
-}
-
-function defaultPortBranch(sourceRepo: string, sourceMergeRequestIid: number): string {
-  const repo = parseRepoRef(sourceRepo);
-  return `gitport/${branchSafeName(repo.name)}-mr-${sourceMergeRequestIid.toString()}`;
-}
-
 async function runPort(flags: PortFlags): Promise<void> {
-  const sourceRepo = requireFlag(flags.sourceRepo, "--source-repo <url>");
-  const sourceMergeRequestIid = parseIid(requireFlag(flags.sourceMr, "--source-mr <iid>"));
-  const portBranch = flags.portBranch ?? defaultPortBranch(sourceRepo, sourceMergeRequestIid);
+  const source = parseSourceMergeRequestRef(requireFlag(flags.sourceRepo, "--source-repo <mr-url>"));
   const result = await portGitLabMergeRequest({
-    sourceRepo,
+    sourceRepo: source.sourceRepo.original,
+    sourceMergeRequestIid: source.sourceMergeRequestIid,
     destRepo: requireFlag(flags.destRepo, "--dest-repo <url>"),
-    sourceMergeRequestIid,
     baseBranch: requireFlag(flags.baseBranch, "--base-branch <name>"),
-    portBranch,
+    portBranch: requireFlag(flags.portBranch, "--port-branch <name>"),
+    title: requireFlag(flags.title, "--title <title>"),
     token: flags.token,
     gitlabApiBase: flags.gitlabApiBase,
     keepWorkdir: flags.keepWorkdir,
@@ -71,18 +45,17 @@ async function runPort(flags: PortFlags): Promise<void> {
     return;
   }
   process.stdout.write(`Draft MR created: ${result.mergeRequestUrl}\n`);
-  process.stdout.write(`Run ID: ${result.runId}\n`);
   process.stdout.write(`Commits: ${result.commits.length.toString()}\n`);
   process.stdout.write(`Auto-resolved conflicts: ${result.conflicts.length.toString()}\n`);
 }
 
 function addPortOptions(program: Command): void {
   program
-    .option("--source-mr <iid>", "Source GitLab merge request IID, such as 123")
-    .option("--source-repo <url>", "GitLab repo URL containing the source MR")
-    .option("--dest-repo <url>", "GitLab repo URL receiving the ported commits")
-    .option("--base-branch <name>", "Destination branch to create the port branch from")
-    .option("--port-branch <name>", "Destination branch that receives the cherry-picks")
+    .requiredOption("--source-repo <mr-url>", "GitLab source merge request URL")
+    .requiredOption("--dest-repo <url>", "GitLab repo URL receiving the ported commits")
+    .requiredOption("--base-branch <name>", "Destination branch to create the port branch from")
+    .requiredOption("--port-branch <name>", "Destination branch that receives the cherry-picks")
+    .requiredOption("--title <title>", "Destination merge request title")
     .option("--token <token>", `GitLab token (falls back to ${GITPORT_GITLAB_TOKEN_ENV})`)
     .option("--gitlab-api-base <url>", "GitLab API base URL, such as https://gitlab.example.com/api/v4")
     .option("--keep-workdir", "Keep the isolated run folder after success", false)

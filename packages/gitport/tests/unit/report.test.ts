@@ -5,17 +5,9 @@ import { buildDraftMergeRequestDescription, buildReportMarkdown } from "../../sr
 describe("buildDraftMergeRequestDescription", () => {
   it("includes commit summary and auto-resolved conflict excerpts", () => {
     const description = buildDraftMergeRequestDescription({
-      sourceRepo: "https://gitlab.example.com/repo-a.git",
-      destRepo: "https://gitlab.example.com/repo-b.git",
       sourceMergeRequestIid: 123,
       sourceMergeRequestTitle: "Fix auth",
-      baseBranch: "main",
-      portBranch: "gitport/repo-a-mr-123",
-      runId: "run-1",
-      commits: [
-        { sha: "abc", title: "fix auth", status: "applied" },
-        { sha: "def", title: "align config", status: "incoming-resolved" },
-      ],
+      sourceMergeRequestUrl: "https://gitlab.example.com/repo-a/-/merge_requests/123",
       conflicts: [
         {
           commitSha: "def",
@@ -31,40 +23,41 @@ describe("buildDraftMergeRequestDescription", () => {
       ],
     });
 
-    expect(description).toContain("Draft MR created by Gitport");
+    expect(description).toContain(
+      "- Source MR: !123 Fix auth ([MR Link](https://gitlab.example.com/repo-a/-/merge_requests/123))",
+    );
     expect(description).toContain("align config");
     expect(description).toContain("src/app.ts");
     expect(description).toContain("const mode = 'old';");
     expect(description).toContain("incoming");
+    expect(description).not.toContain("Draft MR created by Gitport");
+    expect(description).not.toContain("Source repo");
+    expect(description).not.toContain("Destination repo");
+    expect(description).not.toContain("Base branch");
+    expect(description).not.toContain("Port branch");
+    expect(description).not.toContain("Run ID");
+    expect(description).not.toContain("Strategy");
+    expect(description).not.toContain("Ported commits");
+    expect(description).not.toContain("Review this Draft MR before marking it ready");
   });
 
   it("renders clean ports without conflict sections", () => {
     const description = buildDraftMergeRequestDescription({
-      sourceRepo: "https://gitlab.example.com/repo-a.git",
-      destRepo: "https://gitlab.example.com/repo-b.git",
       sourceMergeRequestIid: 123,
       sourceMergeRequestTitle: "Fix auth",
-      baseBranch: "main",
-      portBranch: "gitport/repo-a-mr-123",
-      runId: "run-1",
-      commits: [],
+      sourceMergeRequestUrl: "https://gitlab.example.com/repo-a/-/merge_requests/123",
       conflicts: [],
     });
 
-    expect(description).toContain("No commits were ported.");
     expect(description).toContain("No cherry-pick conflicts were detected.");
+    expect(description).not.toContain("No commits were ported.");
   });
 
   it("escapes markdown code fences inside captured excerpts", () => {
     const description = buildDraftMergeRequestDescription({
-      sourceRepo: "a",
-      destRepo: "b",
       sourceMergeRequestIid: 1,
       sourceMergeRequestTitle: "MR",
-      baseBranch: "main",
-      portBranch: "p",
-      runId: "r",
-      commits: [{ sha: "abcdef1234567890", title: "commit", status: "incoming-resolved" }],
+      sourceMergeRequestUrl: "https://gitlab.example.com/a/-/merge_requests/1",
       conflicts: [
         {
           commitSha: "abcdef1234567890",
@@ -79,14 +72,9 @@ describe("buildDraftMergeRequestDescription", () => {
 
   it("uses the Draft MR description as the local markdown report", () => {
     const input = {
-      sourceRepo: "a",
-      destRepo: "b",
       sourceMergeRequestIid: 1,
       sourceMergeRequestTitle: "MR",
-      baseBranch: "main",
-      portBranch: "p",
-      runId: "r",
-      commits: [],
+      sourceMergeRequestUrl: "https://gitlab.example.com/a/-/merge_requests/1",
       conflicts: [],
     };
     expect(buildReportMarkdown(input)).toBe(buildDraftMergeRequestDescription(input));

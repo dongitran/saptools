@@ -24,6 +24,7 @@ export interface Fixture {
   readonly root: string;
   readonly homeDir: string;
   readonly sourceBare: string;
+  readonly sourceMergeRequestRef: string;
   readonly destBare: string;
   readonly sourceCommits: readonly string[];
 }
@@ -39,6 +40,7 @@ export interface CreatedMrBody {
   readonly title: string;
   readonly description: string;
   readonly draft: boolean;
+  readonly assignee_ids: readonly number[];
 }
 
 export interface FakeGitLab {
@@ -135,7 +137,14 @@ export async function createFixture(input: boolean | FixtureOptions): Promise<Fi
   await gitNoCwd(["clone", "--bare", seed, destBare]);
   const sourceCommits = await createSourceBranch(root, sourceBare, options);
   await customizeDestination(root, destBare, options);
-  return { root, homeDir, sourceBare, destBare, sourceCommits };
+  return {
+    root,
+    homeDir,
+    sourceBare,
+    sourceMergeRequestRef: `${sourceBare}/-/merge_requests/123`,
+    destBare,
+    sourceCommits,
+  };
 }
 
 export async function cleanupFixture(fixture: Fixture): Promise<void> {
@@ -172,7 +181,9 @@ function isCreatedMrBody(value: unknown): value is CreatedMrBody {
     typeof record["target_branch"] === "string" &&
     typeof record["title"] === "string" &&
     typeof record["description"] === "string" &&
-    typeof record["draft"] === "boolean"
+    typeof record["draft"] === "boolean" &&
+    Array.isArray(record["assignee_ids"]) &&
+    record["assignee_ids"].every((entry) => typeof entry === "number")
   );
 }
 
@@ -183,6 +194,10 @@ async function handleFakeGitLabRequest(
   createdMergeRequests: CreatedMrBody[],
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "GET" && url.pathname === "/api/v4/user") {
+    writeJson(response, 200, { id: 42, username: "gitport-bot" });
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/v4/projects/repo-a/merge_requests/123") {
     writeJson(response, 200, {
       iid: 123,
