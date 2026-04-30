@@ -46,20 +46,6 @@ pnpm add @saptools/cf-inspector
 
 ## 🚀 Quick Start
 
-### Local Node process
-
-```bash
-# Terminal 1 — run any Node app with the inspector enabled
-node --inspect=9229 my-app.js
-
-# Terminal 2 — capture a snapshot when handler.ts:42 hits
-cf-inspector snapshot \
-  --port 9229 \
-  --bp src/handler.ts:42 \
-  --capture 'this.user, req.body' \
-  --timeout 30
-```
-
 ### Cloud Foundry app (auto-tunnel)
 
 ```bash
@@ -72,7 +58,7 @@ cf-inspector snapshot \
   --remote-root 'regex:^/(home/vcap/app|example-root-.*)$'
 ```
 
-The first form connects directly to `localhost:9229`. The second internally calls `@saptools/cf-debugger` to open the SSH tunnel, runs the snapshot through it, and tears the tunnel down on exit.
+This command internally calls `@saptools/cf-debugger` to open the SSH tunnel, runs the snapshot through it, and tears the tunnel down on exit.
 
 ---
 
