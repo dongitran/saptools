@@ -312,6 +312,20 @@ async function renderObjectCapture(session: InspectorSession, objectId: string):
   }
 }
 
+function normalizeRenderedObjectCapture(rendered: string, original: string): string | undefined {
+  // Preserve richer built-in descriptions (Date/Map/Set/Promise...) if property
+  // expansion only produced an empty object payload.
+  if (rendered === "{}" && original !== "Object") {
+    return undefined;
+  }
+  // For empty arrays, property expansion often only yields {"length":0}.
+  // Convert it to [] for readability and consistency.
+  if (original.startsWith("Array(") && rendered === "{\"length\":0}") {
+    return "[]";
+  }
+  return rendered;
+}
+
 async function withSerializedObjectCapture(
   session: InspectorSession,
   expression: string,
@@ -329,7 +343,11 @@ async function withSerializedObjectCapture(
   if (rendered === undefined) {
     return captured;
   }
-  const value = sanitizeValue(expression, rendered);
+  const normalized = normalizeRenderedObjectCapture(rendered, captured.value);
+  if (normalized === undefined) {
+    return captured;
+  }
+  const value = sanitizeValue(expression, normalized);
   return captured.type === undefined
     ? { expression, value }
     : { expression, value, type: captured.type };

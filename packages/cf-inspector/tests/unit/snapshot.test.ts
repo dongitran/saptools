@@ -81,6 +81,8 @@ describe("captureSnapshot", () => {
   const argScopeId = "scope-args";
   const userObjectId = "obj-user";
   const credentialObjectId = "obj-credential";
+  const emptyArrayObjectId = "obj-empty-array";
+  const mapLikeObjectId = "obj-map-like";
 
   function makeSession(): InspectorSession {
     const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
@@ -121,6 +123,16 @@ describe("captureSnapshot", () => {
             ],
           };
         }
+        if (objectId === emptyArrayObjectId) {
+          return {
+            result: [
+              { name: "length", value: { type: "number", value: 0 } },
+            ],
+          };
+        }
+        if (objectId === mapLikeObjectId) {
+          return { result: [] };
+        }
         return { result: [] };
       }
       if (method === "Debugger.evaluateOnCallFrame") {
@@ -131,6 +143,16 @@ describe("captureSnapshot", () => {
         if (expression === "user") {
           return {
             result: { type: "object", description: "Object", objectId: userObjectId },
+          };
+        }
+        if (expression === "emptyArr") {
+          return {
+            result: { type: "object", description: "Array(0)", objectId: emptyArrayObjectId },
+          };
+        }
+        if (expression === "mapLike") {
+          return {
+            result: { type: "object", description: "Map(1)", objectId: mapLikeObjectId },
           };
         }
         if (expression === "throwy") {
@@ -407,6 +429,28 @@ describe("captureSnapshot", () => {
     expect(snapshot.captures[0]).toEqual({
       expression: "payload",
       value: "Object",
+      type: "object",
+    });
+  });
+
+  it("renders empty arrays as [] for captured object expressions", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["emptyArr"],
+    });
+    expect(snapshot.captures[0]).toEqual({
+      expression: "emptyArr",
+      value: "[]",
+      type: "object",
+    });
+  });
+
+  it("keeps non-generic object descriptions when expansion is empty", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["mapLike"],
+    });
+    expect(snapshot.captures[0]).toEqual({
+      expression: "mapLike",
+      value: "Map(1)",
       type: "object",
     });
   });
