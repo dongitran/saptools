@@ -355,6 +355,7 @@ async function withSerializedObjectCapture(
 
 export interface CaptureSnapshotOptions {
   readonly captures?: readonly string[];
+  readonly includeScopes?: boolean;
 }
 
 export async function captureSnapshot(
@@ -366,14 +367,16 @@ export async function captureSnapshot(
   let topFrame: FrameSnapshot | undefined;
   let captures: CapturedExpression[] = [];
   if (top) {
-    const scopes = await captureScopes(session, top);
     topFrame = {
       functionName: top.functionName,
       ...(top.url === undefined ? {} : { url: top.url }),
       line: top.lineNumber + 1,
       column: top.columnNumber + 1,
-      scopes,
     };
+    if (options.includeScopes === true) {
+      const scopes = await captureScopes(session, top);
+      topFrame = { ...topFrame, scopes };
+    }
     if (options.captures !== undefined && options.captures.length > 0) {
       captures = await Promise.all(
         options.captures.map(async (expression): Promise<CapturedExpression> => {

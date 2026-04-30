@@ -105,7 +105,7 @@ export interface FrameSnapshot {
   readonly url?: string;
   readonly line: number;
   readonly column: number;
-  readonly scopes: readonly ScopeSnapshot[];
+  readonly scopes?: readonly ScopeSnapshot[];
 }
 
 export interface CapturedExpression {

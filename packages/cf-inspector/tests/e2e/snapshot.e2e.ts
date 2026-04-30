@@ -33,12 +33,42 @@ test("snapshot captures the paused frame on the marker line", async () => {
     expect("captureDurationMs" in parsed).toBe(false);
     expect(parsed.hitBreakpoints.length).toBeGreaterThan(0);
     expect(parsed.topFrame).toBeDefined();
+    expect(parsed.topFrame?.line).toBe(14);
+    expect(parsed.topFrame === undefined ? false : "scopes" in parsed.topFrame).toBe(false);
 
     const captures = Object.fromEntries(
       parsed.captures.map((c) => [c.expression, c.value ?? c.error ?? null]),
     );
     expect(captures["user.id"]).toBeDefined();
     expect(captures["accumulator.length"]).toBe("4");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --include-scopes captures paused scope variables", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--capture",
+        "user.id",
+        "--timeout",
+        "10",
+        "--include-scopes",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    expect(parsed.topFrame?.scopes).toBeDefined();
+    expect(parsed.topFrame?.scopes?.length).toBeGreaterThan(0);
   } finally {
     await fixture.close();
   }

@@ -61,6 +61,7 @@ interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly json: boolean;
   readonly keepPaused?: boolean;
   readonly failOnUnmatchedPause?: boolean;
+  readonly includeScopes?: boolean;
 }
 
 interface EvalCommandOptions extends SharedTargetOptions {
@@ -346,10 +347,12 @@ function writeHumanSnapshot(snapshot: SnapshotResult): void {
     lines.push(
       `  frame:   ${fnName} ${sourceUrl}:${frame.line.toString()}:${frame.column.toString()}`,
     );
-    for (const scope of frame.scopes) {
-      lines.push(`  scope ${scope.type} (${scope.variables.length.toString()} vars):`);
-      for (const variable of scope.variables) {
-        lines.push(`    ${variable.name} = ${variable.value}`);
+    if (frame.scopes !== undefined) {
+      for (const scope of frame.scopes) {
+        lines.push(`  scope ${scope.type} (${scope.variables.length.toString()} vars):`);
+        for (const variable of scope.variables) {
+          lines.push(`    ${variable.name} = ${variable.value}`);
+        }
       }
     }
   }
@@ -410,7 +413,10 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
       },
     });
     const pausedStartedAt = pause.receivedAtMs ?? performance.now();
-    const snapshot = await captureSnapshot(session, pause, { captures });
+    const snapshot = await captureSnapshot(session, pause, {
+      captures,
+      includeScopes: opts.includeScopes === true,
+    });
     if (opts.keepPaused === true) {
       return withPausedDuration(snapshot, null);
     }
@@ -590,7 +596,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   applyTargetOptions(
     program
       .command("snapshot")
-      .description("Set a breakpoint, wait for it to hit, capture the scope, and resume"),
+      .description("Set a breakpoint, wait for it to hit, capture expressions, and resume"),
   )
     .option(
       "--bp <file:line>",
@@ -605,6 +611,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       "--condition <expr>",
       "Only pause when this JS expression evaluates truthy in the paused frame",
     )
+    .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--no-json", "Print a human-readable summary instead of JSON")
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
     .option("--fail-on-unmatched-pause", "Fail immediately if the target pauses somewhere else")

@@ -196,9 +196,27 @@ describe("captureSnapshot", () => {
     };
   }
 
-  it("captures scopes and redacts sensitive variable names", async () => {
+  it("omits scopes by default while still returning frame metadata and captures", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id"],
+    });
+    expect(snapshot.topFrame).toEqual({
+      functionName: "handle",
+      url: "file:///app/src/handler.ts",
+      line: 42,
+      column: 5,
+    });
+    expect(snapshot.captures[0]).toMatchObject({
+      expression: "user.id",
+      value: "7",
+      type: "number",
+    });
+  });
+
+  it("captures scopes and redacts sensitive variable names when requested", async () => {
     const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
       captures: ["user.id", "throwy"],
+      includeScopes: true,
     });
     expect(snapshot.reason).toBe("other");
     expect("captureDurationMs" in snapshot).toBe(false);
@@ -209,7 +227,7 @@ describe("captureSnapshot", () => {
     expect(snapshot.topFrame?.column).toBe(5);
     expect(snapshot.topFrame?.scopes).toHaveLength(2);
 
-    const localScope = snapshot.topFrame?.scopes.find((s) => s.type === "local");
+    const localScope = snapshot.topFrame?.scopes?.find((s) => s.type === "local");
     expect(localScope).toBeDefined();
     const password = localScope?.variables.find((v) => v.name === "password");
     expect(password?.value).toBe("[REDACTED]");
@@ -320,9 +338,9 @@ describe("captureSnapshot", () => {
       ],
     };
 
-    const snapshot = await captureSnapshot(session, pause);
-    const localScope = snapshot.topFrame?.scopes.find((scope) => scope.type === "local");
-    const argScope = snapshot.topFrame?.scopes.find((scope) => scope.type === "arguments");
+    const snapshot = await captureSnapshot(session, pause, { includeScopes: true });
+    const localScope = snapshot.topFrame?.scopes?.find((scope) => scope.type === "local");
+    const argScope = snapshot.topFrame?.scopes?.find((scope) => scope.type === "arguments");
     expect(localScope?.variables).toEqual([]);
     expect(argScope?.variables[0]?.name).toBe("requestId");
     expect(argScope?.variables[0]?.value).toBe('"r-1"');
@@ -366,7 +384,13 @@ describe("captureSnapshot", () => {
     const snapshot = await captureSnapshot(session, pause, { captures: ["one"] });
     expect("captureDurationMs" in snapshot).toBe(false);
     expect("pausedDurationMs" in snapshot).toBe(false);
-    expect(sendOrder).toEqual(["Runtime.getProperties", "Debugger.evaluateOnCallFrame"]);
+    expect(snapshot.topFrame).toEqual({
+      functionName: "x",
+      url: "file:///x.js",
+      line: 1,
+      column: 1,
+    });
+    expect(sendOrder).toEqual(["Debugger.evaluateOnCallFrame"]);
   });
 
   it("renders object captures as JSON when object serialization succeeds", async () => {

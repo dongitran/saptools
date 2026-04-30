@@ -18,7 +18,7 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 
 ## ✨ Features
 
-- 🎯 **One-shot snapshot** — `cf-inspector snapshot --bp src/handler.ts:42` sets the breakpoint, waits for it to hit, captures the scope, auto-resumes, prints JSON, exits
+- 🎯 **One-shot snapshot** — `cf-inspector snapshot --bp src/handler.ts:42` sets the breakpoint, waits for it to hit, captures requested expressions, auto-resumes, prints JSON, exits
 - ✅ **Conditional breakpoints** — `--condition 'req.userId === "abc"'` only pauses when the predicate is truthy
 - 🎭 **Multi-breakpoint** — repeat `--bp` to race several locations; first hit wins
 - 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes, **without ever pausing the inspectee** (safe for production traffic)
@@ -80,7 +80,7 @@ The first form connects directly to `localhost:9229`. The second internally call
 
 ### 📸 `cf-inspector snapshot`
 
-Set one or more breakpoints, wait for any of them to hit, capture the scope, auto-resume, exit.
+Set one or more breakpoints, wait for any of them to hit, capture frame metadata and requested expressions, auto-resume, exit.
 
 ```bash
 # Simple snapshot
@@ -112,11 +112,15 @@ cf-inspector snapshot --port 9229 \
 | `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved. Object results are materialized to JSON strings when serializable, with fallback to CDP descriptions for non-serializable values |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
+| `--include-scopes` | Include expanded paused-frame scopes under `topFrame.scopes`. Omitted by default to keep targeted captures concise |
 | `--no-json` | Print a human-readable summary instead of JSON |
 | `--keep-paused` | Skip `Debugger.resume` after capture; Node may resume when the CLI disconnects |
 | `--fail-on-unmatched-pause` | Fail immediately if the target pauses somewhere else instead of waiting cooperatively |
 
-JSON output includes `pausedDurationMs`, the client-observed time from receiving
+JSON output includes frame metadata and `captures` by default. `topFrame.scopes`
+is only present with `--include-scopes`, because Cloud Foundry Node apps often
+carry large local/closure/module objects that drown out targeted captures. The
+output also includes `pausedDurationMs`, the client-observed time from receiving
 the matching pause event until `Debugger.resume` completes. It does not include
 the time spent waiting for the breakpoint to hit. When `--keep-paused` is used,
 `pausedDurationMs` is `null` because `cf-inspector` intentionally skips
@@ -213,7 +217,9 @@ const bp = await setBreakpoint(session, {
   line: 42,
 });
 const pause = await waitForPause(session, { timeoutMs: 30_000 });
-const snapshot = await captureSnapshot(session, pause);
+const snapshot = await captureSnapshot(session, pause, {
+  captures: ["this.user"],
+});
 const topFrame = pause.callFrames[0];
 if (topFrame === undefined) {
   throw new Error("Breakpoint paused without a call frame");
@@ -234,7 +240,7 @@ console.log({ bp, snapshot, customValue });
 | `setBreakpoint(session, location)` | Set a breakpoint by file/line + optional remote root |
 | `removeBreakpoint(session, id)` | Remove a breakpoint by id |
 | `waitForPause(session, options)` | Resolve when the next `Debugger.paused` event fires |
-| `captureSnapshot(session, pause)` | Build a structured snapshot of the paused scope |
+| `captureSnapshot(session, pause, options)` | Build a structured snapshot of the paused frame. Pass `includeScopes: true` to expand scopes |
 | `evaluateOnFrame(session, frameId, expression)` | Evaluate in a paused frame |
 | `evaluateGlobal(session, expression)` | Evaluate against the global Runtime |
 | `listScripts(session)` | Return the scripts the V8 instance knows about |
@@ -280,7 +286,7 @@ console.log({ bp, snapshot, customValue });
 └──────────────────────┘   4. Debugger.setBreakpointByUrl({ urlRegex, lineNumber: Y - 1 })
             │              5. Wait for `Debugger.paused`
             ▼              6. Debugger.evaluateOnCallFrame(...)  for each --capture expression
-   JSON snapshot           7. Runtime.getProperties(scopeChain[i].object.objectId)
+   JSON snapshot           7. Runtime.getProperties(scopeChain[i].object.objectId) when --include-scopes is set
                            8. Debugger.resume   (unless --keep-paused)
 ```
 
