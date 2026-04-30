@@ -58,6 +58,7 @@ interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly timeout?: string;
   readonly remoteRoot?: string;
   readonly condition?: string;
+  readonly maxValueLength?: string;
   readonly json: boolean;
   readonly keepPaused?: boolean;
   readonly failOnUnmatchedPause?: boolean;
@@ -378,6 +379,7 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
   const remoteRoot = parseRemoteRoot(opts.remoteRoot);
   const captures = parseCaptureList(opts.capture);
   const timeoutSec = parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_BREAKPOINT_TIMEOUT_SEC;
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length");
   const timeoutMs = timeoutSec * 1000;
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
@@ -416,6 +418,7 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
     const snapshot = await captureSnapshot(session, pause, {
       captures,
       includeScopes: opts.includeScopes === true,
+      ...(maxValueLength === undefined ? {} : { maxValueLength }),
     });
     if (opts.keepPaused === true) {
       return withPausedDuration(snapshot, null);
@@ -606,6 +609,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     )
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
     .option("--timeout <seconds>", "How long to wait for the breakpoint to hit (default: 30)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option(
       "--condition <expr>",

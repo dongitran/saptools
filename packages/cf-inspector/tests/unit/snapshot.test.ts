@@ -7,11 +7,15 @@ import type { CallFrameInfo, PauseEvent } from "../../src/types.js";
 const { limitValueLength, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;
 
 describe("limitValueLength", () => {
-  it("truncates values longer than the limit", () => {
-    const long = "x".repeat(500);
+  it("truncates values longer than the default limit", () => {
+    const long = "x".repeat(5000);
     const out = limitValueLength(long);
     expect(out.endsWith("...")).toBe(true);
-    expect(out.length).toBeLessThanOrEqual(243);
+    expect(out.length).toBeLessThanOrEqual(4099);
+  });
+
+  it("truncates values longer than a custom limit", () => {
+    expect(limitValueLength("abcdef", 3)).toBe("abc...");
   });
 
   it("returns short values unchanged regardless of name", () => {
@@ -397,6 +401,25 @@ describe("captureSnapshot", () => {
     const parsed = JSON.parse(userCapture?.value ?? "{}") as { id?: number; token?: string };
     expect(parsed.id).toBe(7);
     expect(parsed.token).toBe("abc-123");
+  });
+
+  it("honors a custom max value length for object captures", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user"],
+      maxValueLength: 20,
+    });
+    const value = snapshot.captures[0]?.value ?? "";
+    expect(value.endsWith("...")).toBe(true);
+    expect(value.length).toBeLessThanOrEqual(23);
+  });
+
+  it("rejects invalid max value length overrides", async () => {
+    await expect(
+      captureSnapshot(makeSession(), makePauseEvent(), {
+        captures: ["user"],
+        maxValueLength: 0,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
   });
 
   it("falls back to the object description when serialization fails", async () => {

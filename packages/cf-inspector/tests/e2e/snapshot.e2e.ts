@@ -138,6 +138,36 @@ test("snapshot materializes object captures as readable JSON strings", async () 
   }
 });
 
+test("snapshot honors a custom max value length", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--capture",
+        "payload",
+        "--max-value-length",
+        "30",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    const payloadCapture = parsed.captures.find((entry) => entry.expression === "payload");
+    expect(payloadCapture?.value?.endsWith("...")).toBe(true);
+    expect(payloadCapture?.value?.length).toBeLessThanOrEqual(33);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("snapshot keeps nested commas inside a single capture expression", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

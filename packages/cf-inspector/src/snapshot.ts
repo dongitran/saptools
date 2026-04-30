@@ -1,5 +1,6 @@
 import { evaluateOnFrame, getProperties } from "./inspector.js";
 import type { CdpEvalResult, CdpProperty, InspectorSession } from "./inspector.js";
+import { CfInspectorError } from "./types.js";
 import type {
   CallFrameInfo,
   CapturedExpression,
@@ -14,7 +15,7 @@ const MAX_SCOPES = 3;
 const MAX_SCOPE_VARIABLES = 20;
 const MAX_CHILD_VARIABLES = 8;
 const MAX_VARIABLE_DEPTH = 2;
-const MAX_VALUE_LENGTH = 240;
+const DEFAULT_MAX_VALUE_LENGTH = 4096;
 
 const PRIORITY_BY_TYPE: Readonly<Record<string, number>> = {
   local: 0,
@@ -90,11 +91,24 @@ function formatPrimitive(value: string | number | boolean | bigint | symbol): st
   return String(value);
 }
 
-function limitValueLength(raw: string): string {
-  if (raw.length <= MAX_VALUE_LENGTH) {
+function resolveMaxValueLength(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_VALUE_LENGTH;
+  }
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new CfInspectorError(
+      "INVALID_ARGUMENT",
+      `Invalid maxValueLength: ${value.toString()} — expected a positive integer`,
+    );
+  }
+  return value;
+}
+
+function limitValueLength(raw: string, maxValueLength = DEFAULT_MAX_VALUE_LENGTH): string {
+  if (raw.length <= maxValueLength) {
     return raw;
   }
-  return `${raw.slice(0, MAX_VALUE_LENGTH)}...`;
+  return `${raw.slice(0, maxValueLength)}...`;
 }
 
 function isExpandable(type: string | undefined): boolean {
@@ -106,6 +120,7 @@ async function captureProperties(
   objectId: string,
   limit: number,
   depth: number,
+  maxValueLength: number,
 ): Promise<readonly VariableSnapshot[]> {
   const properties = await getProperties(session, objectId);
   const limited = properties.slice(0, limit);
@@ -121,6 +136,7 @@ async function captureProperties(
             described.objectId,
             MAX_CHILD_VARIABLES,
             depth - 1,
+            maxValueLength,
           );
           if (nested.length > 0) {
             children = nested;
@@ -129,7 +145,7 @@ async function captureProperties(
           // best-effort: skip nested expansion on error
         }
       }
-      const sanitizedValue = limitValueLength(described.value);
+      const sanitizedValue = limitValueLength(described.value, maxValueLength);
       const base: VariableSnapshot = { name, value: sanitizedValue };
       const withType = described.type === undefined ? base : { ...base, type: described.type };
       return children === undefined ? withType : { ...withType, children };
@@ -152,6 +168,7 @@ function priorityOf(type: string): number {
 async function captureScopes(
   session: InspectorSession,
   frame: CallFrameInfo,
+  maxValueLength: number,
 ): Promise<readonly ScopeSnapshot[]> {
   const scopes = selectScopes(frame.scopeChain);
   return await Promise.all(
@@ -161,7 +178,13 @@ async function captureScopes(
         return { type: scope.type, variables: [] };
       }
       try {
-        const variables = await captureProperties(session, objectId, MAX_SCOPE_VARIABLES, MAX_VARIABLE_DEPTH);
+        const variables = await captureProperties(
+          session,
+          objectId,
+          MAX_SCOPE_VARIABLES,
+          MAX_VARIABLE_DEPTH,
+          maxValueLength,
+        );
         return { type: scope.type, variables };
       } catch {
         return { type: scope.type, variables: [] };
@@ -170,13 +193,17 @@ async function captureScopes(
   );
 }
 
-function evalResultToCaptured(expression: string, result: CdpEvalResult): CapturedExpression {
+function evalResultToCaptured(
+  expression: string,
+  result: CdpEvalResult,
+  maxValueLength = DEFAULT_MAX_VALUE_LENGTH,
+): CapturedExpression {
   if (result.exceptionDetails !== undefined) {
     const text =
       typeof result.exceptionDetails.exception?.description === "string"
         ? result.exceptionDetails.exception.description
         : (typeof result.exceptionDetails.text === "string" ? result.exceptionDetails.text : "evaluation failed");
-    return { expression, error: limitValueLength(text) };
+    return { expression, error: limitValueLength(text, maxValueLength) };
   }
   const inner = result.result;
   if (!inner) {
@@ -185,7 +212,7 @@ function evalResultToCaptured(expression: string, result: CdpEvalResult): Captur
   const type = typeof inner.type === "string" ? inner.type : undefined;
 
   const buildCaptured = (rendered: string): CapturedExpression => {
-    const sanitized = limitValueLength(rendered);
+    const sanitized = limitValueLength(rendered, maxValueLength);
     const base: CapturedExpression = { expression, value: sanitized };
     return type === undefined ? base : { ...base, type };
   };
@@ -293,9 +320,16 @@ function toStructuredValue(variable: VariableSnapshot): unknown {
 async function renderObjectCapture(
   session: InspectorSession,
   objectId: string,
+  maxValueLength: number,
 ): Promise<string | undefined> {
   try {
-    const properties = await captureProperties(session, objectId, MAX_SCOPE_VARIABLES, MAX_VARIABLE_DEPTH);
+    const properties = await captureProperties(
+      session,
+      objectId,
+      MAX_SCOPE_VARIABLES,
+      MAX_VARIABLE_DEPTH,
+      maxValueLength,
+    );
     const structured: Record<string, unknown> = {};
     for (const variable of properties) {
       structured[variable.name] = toStructuredValue(variable);
@@ -325,6 +359,7 @@ async function withSerializedObjectCapture(
   expression: string,
   evalResult: CdpEvalResult,
   captured: CapturedExpression,
+  maxValueLength: number,
 ): Promise<CapturedExpression> {
   if (captured.error !== undefined || captured.value === undefined) {
     return captured;
@@ -333,7 +368,7 @@ async function withSerializedObjectCapture(
   if (objectId === undefined) {
     return captured;
   }
-  const rendered = await renderObjectCapture(session, objectId);
+  const rendered = await renderObjectCapture(session, objectId, maxValueLength);
   if (rendered === undefined) {
     return captured;
   }
@@ -341,7 +376,7 @@ async function withSerializedObjectCapture(
   if (normalized === undefined) {
     return captured;
   }
-  const value = limitValueLength(normalized);
+  const value = limitValueLength(normalized, maxValueLength);
   return captured.type === undefined
     ? { expression, value }
     : { expression, value, type: captured.type };
@@ -350,6 +385,7 @@ async function withSerializedObjectCapture(
 export interface CaptureSnapshotOptions {
   readonly captures?: readonly string[];
   readonly includeScopes?: boolean;
+  readonly maxValueLength?: number;
 }
 
 export async function captureSnapshot(
@@ -357,6 +393,7 @@ export async function captureSnapshot(
   pause: PauseEvent,
   options: CaptureSnapshotOptions = {},
 ): Promise<SnapshotCaptureResult> {
+  const maxValueLength = resolveMaxValueLength(options.maxValueLength);
   const top = pause.callFrames[0];
   let topFrame: FrameSnapshot | undefined;
   let captures: CapturedExpression[] = [];
@@ -368,7 +405,7 @@ export async function captureSnapshot(
       column: top.columnNumber + 1,
     };
     if (options.includeScopes === true) {
-      const scopes = await captureScopes(session, top);
+      const scopes = await captureScopes(session, top, maxValueLength);
       topFrame = { ...topFrame, scopes };
     }
     if (options.captures !== undefined && options.captures.length > 0) {
@@ -376,11 +413,17 @@ export async function captureSnapshot(
         options.captures.map(async (expression): Promise<CapturedExpression> => {
           try {
             const result = await evaluateOnFrame(session, top.callFrameId, expression);
-            const captured = evalResultToCaptured(expression, result);
-            return await withSerializedObjectCapture(session, expression, result, captured);
+            const captured = evalResultToCaptured(expression, result, maxValueLength);
+            return await withSerializedObjectCapture(
+              session,
+              expression,
+              result,
+              captured,
+              maxValueLength,
+            );
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
-            return { expression, error: limitValueLength(message) };
+            return { expression, error: limitValueLength(message, maxValueLength) };
           }
         }),
       );
@@ -396,7 +439,9 @@ export async function captureSnapshot(
 }
 
 export const internalsForTesting = {
+  DEFAULT_MAX_VALUE_LENGTH,
   limitValueLength,
+  resolveMaxValueLength,
   describeProperty,
   selectScopes,
   evalResultToCaptured,

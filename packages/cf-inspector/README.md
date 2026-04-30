@@ -111,6 +111,7 @@ cf-inspector snapshot --port 9229 \
 | `--condition <expr>` | Only pause when this JS expression evaluates truthy in the paused frame. Errors in the condition are silently treated as `false` by V8 |
 | `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved. Object results are materialized to JSON strings when serializable, with fallback to CDP descriptions for non-serializable values |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
+| `--max-value-length <chars>` | Maximum characters per captured value before truncation (default: `4096`) |
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
 | `--include-scopes` | Include expanded paused-frame scopes under `topFrame.scopes`. Omitted by default to keep targeted captures concise |
 | `--no-json` | Print a human-readable summary instead of JSON |
@@ -221,6 +222,7 @@ const bp = await setBreakpoint(session, {
 const pause = await waitForPause(session, { timeoutMs: 30_000 });
 const snapshot = await captureSnapshot(session, pause, {
   captures: ["this.user"],
+  maxValueLength: 4096,
 });
 const topFrame = pause.callFrames[0];
 if (topFrame === undefined) {
@@ -242,7 +244,7 @@ console.log({ bp, snapshot, customValue });
 | `setBreakpoint(session, location)` | Set a breakpoint by file/line + optional remote root |
 | `removeBreakpoint(session, id)` | Remove a breakpoint by id |
 | `waitForPause(session, options)` | Resolve when the next `Debugger.paused` event fires |
-| `captureSnapshot(session, pause, options)` | Build a structured snapshot of the paused frame. Pass `includeScopes: true` to expand scopes |
+| `captureSnapshot(session, pause, options)` | Build a structured snapshot of the paused frame. Pass `includeScopes: true` to expand scopes or `maxValueLength` to override the default captured value limit |
 | `evaluateOnFrame(session, frameId, expression)` | Evaluate in a paused frame |
 | `evaluateGlobal(session, expression)` | Evaluate against the global Runtime |
 | `listScripts(session)` | Return the scripts the V8 instance knows about |
