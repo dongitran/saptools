@@ -69,13 +69,6 @@ This command internally calls `@saptools/cf-debugger` to open the SSH tunnel, ru
 Set one or more breakpoints, wait for any of them to hit, capture frame metadata and requested expressions, auto-resume, exit.
 
 ```bash
-# Simple snapshot
-cf-inspector snapshot \
-  --port 9229 \
-  --bp src/handler.ts:42 \
-  --capture 'this.user, req.body' \
-  --timeout 30
-
 # Conditional snapshot — only pauses for the user we care about
 cf-inspector snapshot --port 9229 \
   --bp src/handler.ts:42 \
