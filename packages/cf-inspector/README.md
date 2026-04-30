@@ -233,14 +233,18 @@ console.log({ bp, snapshot, customValue });
 
 | Code | When |
 | --- | --- |
-| `INVALID_BREAKPOINT` | `--bp` is not in `file:line` form, or line is not a positive integer |
+| `INVALID_ARGUMENT` | A numeric flag (`--port`, `--timeout`, `--duration`, …) is not a positive integer |
+| `INVALID_BREAKPOINT` | `--bp` / `--at` is not in `file:line` form, or line is not a positive integer |
 | `INVALID_REMOTE_ROOT` | `--remote-root` regex did not compile |
+| `INVALID_EXPRESSION` | `--condition` or `--expr` failed to parse on V8 (`Runtime.compileScript` reported a SyntaxError) — fast-fail before the breakpoint is set |
+| `BREAKPOINT_DID_NOT_BIND` | Reserved: a breakpoint resolved to no scripts. Currently surfaced as a stderr warning only — see `BreakpointHandle.resolvedLocations` for programmatic detection |
 | `INSPECTOR_DISCOVERY_FAILED` | `/json/list` did not return a usable WebSocket URL |
-| `INSPECTOR_CONNECTION_FAILED` | WebSocket handshake failed |
-| `CDP_REQUEST_FAILED` | A CDP method returned an error result |
+| `INSPECTOR_CONNECTION_FAILED` | WebSocket handshake failed, or the connection closed mid-request |
+| `CDP_REQUEST_FAILED` | A CDP method returned an error result, timed out, or failed to send |
 | `BREAKPOINT_NOT_HIT` | The breakpoint did not hit before the timeout elapsed |
-| `EVALUATION_FAILED` | `Runtime.evaluate` / `Debugger.evaluateOnCallFrame` returned a remote exception |
-| `MISSING_TARGET` | Neither `--port` nor a CF target was provided |
+| `EVALUATION_FAILED` | Reserved for future use — current evaluation paths surface remote exceptions inline via `CapturedExpression.error` instead of throwing |
+| `MISSING_TARGET` | Neither `--port` nor a complete CF target (`--region/--org/--space/--app`) was provided |
+| `ABORTED` | Reserved for future use by long-running streams when an `AbortSignal` fires |
 
 </details>
 

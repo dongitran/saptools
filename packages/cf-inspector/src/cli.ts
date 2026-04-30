@@ -9,6 +9,7 @@ import {
   listScripts,
   resume,
   setBreakpoint,
+  validateExpression,
   waitForPause,
 } from "./inspector.js";
 import type { InspectorSession } from "./inspector.js";
@@ -18,7 +19,7 @@ import { parseBreakpointSpec, parseRemoteRoot } from "./pathMapper.js";
 import { captureSnapshot } from "./snapshot.js";
 import { openCfTunnel } from "./tunnel.js";
 import { CfInspectorError } from "./types.js";
-import type { SnapshotResult } from "./types.js";
+import type { BreakpointHandle, SnapshotResult } from "./types.js";
 
 const DEFAULT_BREAKPOINT_TIMEOUT_SEC = 30;
 const DEFAULT_CF_TIMEOUT_SEC = 60;
@@ -86,8 +87,8 @@ function parsePositiveInt(raw: string | undefined, label: string): number | unde
     return undefined;
   }
   const value = Number.parseInt(raw, 10);
-  if (Number.isNaN(value) || value <= 0) {
-    throw new CfInspectorError("MISSING_TARGET", `Invalid ${label}: "${raw}"`);
+  if (Number.isNaN(value) || value <= 0 || value.toString() !== raw.trim()) {
+    throw new CfInspectorError("INVALID_ARGUMENT", `Invalid ${label}: "${raw}" — expected a positive integer`);
   }
   return value;
 }
@@ -180,6 +181,25 @@ function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/**
+ * V8's `Debugger.setBreakpointByUrl` happily returns a breakpointId even when
+ * the file:line did not match any loaded script — `resolvedLocations` is then
+ * empty and the breakpoint will silently never fire. Surface a stderr warning
+ * (not an error: source maps may resolve later if the script loads) so users
+ * can spot a typo in --bp without staring at a BREAKPOINT_NOT_HIT timeout.
+ */
+function warnOnUnboundBreakpoints(handles: readonly BreakpointHandle[]): void {
+  for (const handle of handles) {
+    if (handle.resolvedLocations.length === 0) {
+      process.stderr.write(
+        `[cf-inspector] warning: breakpoint ${handle.file}:${handle.line.toString()} ` +
+          `did not bind to any loaded script. Check the path or pass --remote-root. ` +
+          `Use 'list-scripts' to inspect what V8 currently has loaded.\n`,
+      );
+    }
+  }
+}
+
 function writeHumanSnapshot(snapshot: SnapshotResult): void {
   const lines: string[] = [];
   lines.push(`Snapshot @ ${snapshot.capturedAt}`, `  reason:  ${snapshot.reason}`);
@@ -227,6 +247,9 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
     : undefined;
 
   const result = await withSession(target, async (session): Promise<SnapshotResult> => {
+    if (condition !== undefined) {
+      await validateExpression(session, condition);
+    }
     const handles = await Promise.all(
       breakpoints.map((bp) =>
         setBreakpoint(session, {
@@ -237,6 +260,7 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
         }),
       ),
     );
+    warnOnUnboundBreakpoints(handles);
     const breakpointIds = handles.map((h) => h.breakpointId);
     const pause = await waitForPause(session, { timeoutMs, breakpointIds });
     const snapshot = await captureSnapshot(session, pause, { captures });
@@ -322,6 +346,7 @@ async function handleLog(opts: LogCommandOptions): Promise<void> {
 
   try {
     await withSession(target, async (session) => {
+      await validateExpression(session, expression);
       const result = await streamLogpoint(session, {
         location,
         expression,
@@ -330,6 +355,9 @@ async function handleLog(opts: LogCommandOptions): Promise<void> {
         signal: abort.signal,
         onEvent: (event) => {
           writeLogEvent(event, opts.json);
+        },
+        onBreakpointSet: (handle) => {
+          warnOnUnboundBreakpoints([handle]);
         },
       });
       if (opts.json) {

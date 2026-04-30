@@ -165,6 +165,7 @@ describe("streamLogpoint", () => {
       target: { id: "t", type: "node" } as never,
       scripts: new Map(),
       pauseBuffer: [],
+      pauseWaitGate: { active: false },
       dispose: async (): Promise<void> => undefined,
     };
     return {
@@ -242,6 +243,25 @@ describe("streamLogpoint", () => {
     expect(result.stoppedReason).toBe("transport-closed");
   });
 
+  it("invokes onBreakpointSet exactly once with the resolved handle", async () => {
+    const { session } = makeSession();
+    const ac = new AbortController();
+    const seen: string[] = [];
+    const promise = streamLogpoint(session, {
+      location,
+      expression: "x",
+      signal: ac.signal,
+      onEvent: (): void => undefined,
+      onBreakpointSet: (handle) => {
+        seen.push(handle.breakpointId);
+      },
+    });
+    await new Promise<void>((r) => setTimeout(r, 5));
+    ac.abort();
+    await promise;
+    expect(seen).toEqual(["bp-1"]);
+  });
+
   it("returns immediately with stoppedReason='signal' if the signal is already aborted", async () => {
     const { session } = makeSession();
     const ac = new AbortController();
@@ -253,5 +273,49 @@ describe("streamLogpoint", () => {
       onEvent: (): void => undefined,
     });
     expect(result.stoppedReason).toBe("signal");
+  });
+
+  it("detaches the consoleAPICalled listener and rethrows when setBreakpoint fails", async () => {
+    // We attach the listener BEFORE setBreakpoint to fix a race where a fast
+    // inspectee could fire the BP before we subscribe. If setBreakpoint
+    // rejects, the early listener must still be cleaned up — otherwise it
+    // leaks for the lifetime of the session.
+    const sendCalls: { method: string; params: Record<string, unknown> }[] = [];
+    const eventListeners = new Map<string, ((p: unknown) => void)[]>();
+    const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      sendCalls.push({ method, params });
+      if (method === "Debugger.setBreakpointByUrl") {
+        throw new Error("backend down");
+      }
+      return {};
+    });
+    const session: InspectorSession = {
+      client: {
+        send,
+        on: (method: string, listener: (p: unknown) => void): (() => void) => {
+          const list = eventListeners.get(method) ?? [];
+          list.push(listener);
+          eventListeners.set(method, list);
+          return (): void => {
+            const next = (eventListeners.get(method) ?? []).filter((l) => l !== listener);
+            eventListeners.set(method, next);
+          };
+        },
+        onClose: (): (() => void) => (): void => undefined,
+      } as never,
+      target: { id: "t", type: "node" } as never,
+      scripts: new Map(),
+      pauseBuffer: [],
+      pauseWaitGate: { active: false },
+      dispose: async (): Promise<void> => undefined,
+    };
+    await expect(
+      streamLogpoint(session, {
+        location,
+        expression: "x",
+        onEvent: (): void => undefined,
+      }),
+    ).rejects.toThrow(/backend down/);
+    expect(eventListeners.get("Runtime.consoleAPICalled") ?? []).toHaveLength(0);
   });
 });

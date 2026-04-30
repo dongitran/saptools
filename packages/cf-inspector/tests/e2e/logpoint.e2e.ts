@@ -48,6 +48,34 @@ test("log streams JSON Lines from a logpoint and stops on duration", async () =>
   }
 });
 
+test("log --expr with a syntax error fails fast with INVALID_EXPRESSION", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const startedAt = Date.now();
+    const result = await runCli(
+      [
+        "log",
+        "--port",
+        fixture.port.toString(),
+        "--at",
+        "fixtures/sample-app.mjs:14",
+        "--expr",
+        "1 +)",
+        "--duration",
+        "30",
+      ],
+      30_000,
+    );
+    const elapsed = Date.now() - startedAt;
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("INVALID_EXPRESSION");
+    expect(elapsed).toBeLessThan(5_000);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("log expression that throws emits structured error events without crashing", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

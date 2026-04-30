@@ -124,6 +124,59 @@ test("snapshot --condition that never matches returns BREAKPOINT_NOT_HIT after t
   }
 });
 
+test("snapshot --condition with a syntax error surfaces INVALID_EXPRESSION fast (no timeout wait)", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const startedAt = Date.now();
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--condition",
+        "1 +)",
+        "--timeout",
+        "30",
+      ],
+      30_000,
+    );
+    const elapsed = Date.now() - startedAt;
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("INVALID_EXPRESSION");
+    // Must fail fast — should NOT wait for the 30s timeout.
+    expect(elapsed).toBeLessThan(5_000);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot warns to stderr when the breakpoint did not bind to any loaded script", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "no-such-file.mjs:1",
+        "--timeout",
+        "2",
+      ],
+      30_000,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("did not bind to any loaded script");
+    expect(result.stderr).toContain("BREAKPOINT_NOT_HIT");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("snapshot accepts repeated --bp and captures the first hit (multi-bp)", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

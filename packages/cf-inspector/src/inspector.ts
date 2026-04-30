@@ -34,11 +34,22 @@ interface InspectorVersion {
   readonly protocolVersion: string;
 }
 
+/**
+ * Internal coordination flag between the always-on `Debugger.paused` buffer in
+ * `connectInspector` and an active `waitForPause`. When `active` is true, the
+ * buffer listener skips pushing the live event so it cannot be replayed by a
+ * subsequent `waitForPause` call. See `connectInspector` for the full rationale.
+ */
+export interface PauseWaitGate {
+  active: boolean;
+}
+
 export interface InspectorSession {
   readonly client: CdpClient;
   readonly target: InspectorTarget;
   readonly scripts: ReadonlyMap<string, ScriptInfo>;
   readonly pauseBuffer: PauseEvent[];
+  readonly pauseWaitGate: PauseWaitGate;
   dispose(): Promise<void>;
 }
 
@@ -240,10 +251,23 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
   });
   // Buffer Debugger.paused events from the moment Debugger.enable is sent so
   // breakpoints that fire before waitForPause attaches its listener are not lost.
-  // Bounded to avoid unbounded memory growth on a paused-then-resumed loop.
+  // Bounded (FIFO drop-oldest) to avoid unbounded memory growth on a tight
+  // paused-then-resumed loop.
+  //
+  // The pauseWaitGate coordinates with waitForPause: when a waitForPause call
+  // is currently consuming the live CDP stream, this listener skips the buffer
+  // push so the same event isn't replayed by a subsequent waitForPause call.
+  // Without the gate, a buffer-miss path (waitForPause sees an empty buffer
+  // and falls through to client.waitFor) ends with both client.waitFor AND
+  // this listener handling the same event — the event is returned AND queued
+  // in the buffer, ready to be replayed on the next call.
   const PAUSE_BUFFER_LIMIT = 32;
   const pauseBuffer: PauseEvent[] = [];
+  const pauseWaitGate: PauseWaitGate = { active: false };
   client.on("Debugger.paused", (raw) => {
+    if (pauseWaitGate.active) {
+      return;
+    }
     const params = raw as CdpPauseParams;
     const event: PauseEvent = {
       reason: asString(params.reason),
@@ -264,6 +288,7 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
     target,
     scripts,
     pauseBuffer,
+    pauseWaitGate,
     dispose: async (): Promise<void> => {
       try {
         await client.send("Debugger.disable");
@@ -424,19 +449,28 @@ export async function waitForPause(
       return head;
     }
   }
-  const params = await session.client.waitFor<CdpPauseParams>("Debugger.paused", {
-    timeoutMs: options.timeoutMs,
-    predicate: (raw): boolean => {
-      const event: PauseEvent = {
-        reason: asString(raw.reason),
-        hitBreakpoints: Array.isArray(raw.hitBreakpoints)
+  // No buffered match — switch to live mode. The pauseWaitGate flips on so
+  // the always-on buffer listener skips the very event we're about to consume,
+  // preventing duplicate-replay on a follow-up waitForPause.
+  session.pauseWaitGate.active = true;
+  let params: CdpPauseParams;
+  try {
+    const expected = options.breakpointIds;
+    params = await session.client.waitFor<CdpPauseParams>("Debugger.paused", {
+      timeoutMs: options.timeoutMs,
+      predicate: (raw): boolean => {
+        if (expected === undefined || expected.length === 0) {
+          return true;
+        }
+        const ids = Array.isArray(raw.hitBreakpoints)
           ? raw.hitBreakpoints.filter((id): id is string => typeof id === "string")
-          : [],
-        callFrames: [],
-      };
-      return pauseMatches(event, options.breakpointIds);
-    },
-  });
+          : [];
+        return ids.some((id) => expected.includes(id));
+      },
+    });
+  } finally {
+    session.pauseWaitGate.active = false;
+  }
   return {
     reason: asString(params.reason),
     hitBreakpoints: Array.isArray(params.hitBreakpoints)
@@ -478,6 +512,43 @@ export async function evaluateGlobal(
 
 export function listScripts(session: InspectorSession): readonly ScriptInfo[] {
   return [...session.scripts.values()];
+}
+
+interface CdpCompileResult {
+  scriptId?: unknown;
+  exceptionDetails?: { text?: unknown; exception?: { description?: unknown } };
+}
+
+/**
+ * Pre-compile a JS expression on the inspectee using Runtime.compileScript so
+ * syntax errors surface as a CfInspectorError("INVALID_EXPRESSION") instead of
+ * being silently swallowed by V8 when wired into a breakpoint condition or a
+ * logpoint. Without this guard, a typo in --condition or --expr causes the
+ * breakpoint to silently never fire — the user would see BREAKPOINT_NOT_HIT
+ * after the timeout and have no idea why.
+ *
+ * persistScript: false — we don't actually want the compiled script around;
+ * we just want V8 to parse it and report any SyntaxError.
+ */
+export async function validateExpression(
+  session: InspectorSession,
+  expression: string,
+): Promise<void> {
+  const result = await session.client.send<CdpCompileResult>("Runtime.compileScript", {
+    expression,
+    sourceURL: "<cf-inspector-validate>",
+    persistScript: false,
+  });
+  if (result.exceptionDetails === undefined) {
+    return;
+  }
+  const description =
+    typeof result.exceptionDetails.exception?.description === "string"
+      ? result.exceptionDetails.exception.description
+      : (typeof result.exceptionDetails.text === "string"
+          ? result.exceptionDetails.text
+          : "expression failed to compile");
+  throw new CfInspectorError("INVALID_EXPRESSION", description);
 }
 
 interface CdpProperty {

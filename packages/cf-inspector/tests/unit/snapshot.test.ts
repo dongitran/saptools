@@ -130,6 +130,7 @@ describe("captureSnapshot", () => {
       target: { id: "t", type: "node" } as never,
       scripts: new Map(),
       pauseBuffer: [],
+      pauseWaitGate: { active: false },
       dispose: async (): Promise<void> => undefined,
     };
   }
@@ -208,6 +209,7 @@ describe("captureSnapshot", () => {
       target: { id: "t", type: "node" } as never,
       scripts: new Map(),
       pauseBuffer: [],
+      pauseWaitGate: { active: false },
       dispose: async (): Promise<void> => undefined,
     };
     const pause: PauseEvent = {

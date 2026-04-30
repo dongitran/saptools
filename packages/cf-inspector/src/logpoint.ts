@@ -22,6 +22,13 @@ export interface LogpointStreamOptions {
   readonly durationMs?: number;
   readonly signal?: AbortSignal;
   readonly onEvent: (event: LogpointEvent) => void;
+  /**
+   * Fires once, immediately after `Debugger.setBreakpointByUrl` returns, with
+   * the resolved breakpoint handle. Useful for surfacing warnings such as a BP
+   * that did not bind to any script — the caller can warn the user before
+   * the stream window elapses.
+   */
+  readonly onBreakpointSet?: (handle: BreakpointHandle) => void;
 }
 
 export interface LogpointStreamResult {
@@ -140,13 +147,12 @@ export async function streamLogpoint(
 ): Promise<LogpointStreamResult> {
   const sentinel = generateSentinel();
   const condition = buildLogpointCondition(sentinel, options.expression);
-  const handle = await setBreakpoint(session, {
-    file: options.location.file,
-    line: options.location.line,
-    ...(options.remoteRoot === undefined ? {} : { remoteRoot: options.remoteRoot }),
-    condition,
-  });
 
+  // Attach the consoleAPICalled listener BEFORE setBreakpoint. CDP messages
+  // travel on a single WebSocket; if we set the BP first, a fast inspectee
+  // (e.g. setInterval 200ms) can fire the BP and emit consoleAPICalled before
+  // we get a chance to subscribe — those events would be silently dropped.
+  // The sentinel filter is generated up front so attaching early is safe.
   let emitted = 0;
   const offEvent = session.client.on("Runtime.consoleAPICalled", (raw) => {
     const params = raw as ConsoleAPICalledParams;
@@ -161,6 +167,20 @@ export async function streamLogpoint(
     emitted += 1;
     options.onEvent(event);
   });
+
+  let handle: BreakpointHandle;
+  try {
+    handle = await setBreakpoint(session, {
+      file: options.location.file,
+      line: options.location.line,
+      ...(options.remoteRoot === undefined ? {} : { remoteRoot: options.remoteRoot }),
+      condition,
+    });
+  } catch (err: unknown) {
+    offEvent();
+    throw err;
+  }
+  options.onBreakpointSet?.(handle);
 
   const cleanup = async (): Promise<void> => {
     offEvent();

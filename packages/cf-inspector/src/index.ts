@@ -34,6 +34,7 @@ export {
   removeBreakpoint,
   resume,
   setBreakpoint,
+  validateExpression,
   waitForPause,
 } from "./inspector.js";
 export type {
