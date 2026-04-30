@@ -169,8 +169,12 @@ async function captureScopes(
       if (objectId === undefined) {
         return { type: scope.type, variables: [] };
       }
-      const variables = await captureProperties(session, objectId, MAX_SCOPE_VARIABLES, MAX_VARIABLE_DEPTH);
-      return { type: scope.type, variables };
+      try {
+        const variables = await captureProperties(session, objectId, MAX_SCOPE_VARIABLES, MAX_VARIABLE_DEPTH);
+        return { type: scope.type, variables };
+      } catch {
+        return { type: scope.type, variables: [] };
+      }
     }),
   );
 }
@@ -181,7 +185,7 @@ function evalResultToCaptured(expression: string, result: CdpEvalResult): Captur
       typeof result.exceptionDetails.exception?.description === "string"
         ? result.exceptionDetails.exception.description
         : (typeof result.exceptionDetails.text === "string" ? result.exceptionDetails.text : "evaluation failed");
-    return { expression, error: text };
+    return { expression, error: sanitizeValue(expression, text) };
   }
   const inner = result.result;
   if (!inner) {

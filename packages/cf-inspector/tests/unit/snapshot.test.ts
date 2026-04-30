@@ -249,6 +249,58 @@ describe("captureSnapshot", () => {
     expect(snapshot.captures[0]?.error).toContain("network down");
   });
 
+  it("keeps readable scopes when one top-level scope property read fails", async () => {
+    const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === "Runtime.getProperties") {
+        const objectId = params["objectId"];
+        if (objectId === "scope-local") {
+          throw new Error("scope backend down");
+        }
+        if (objectId === "scope-args") {
+          return {
+            result: [
+              { name: "requestId", value: { type: "string", value: "r-1" } },
+            ],
+          };
+        }
+      }
+      return { result: [] };
+    });
+    const session = {
+      client: { send } as never,
+      target: { id: "t", type: "node" } as never,
+      scripts: new Map(),
+      pauseBuffer: [],
+      pauseWaitGate: { active: false },
+      debuggerState: {},
+      dispose: async (): Promise<void> => undefined,
+    };
+    const pause: PauseEvent = {
+      reason: "other",
+      hitBreakpoints: [],
+      callFrames: [
+        {
+          callFrameId: "f1",
+          functionName: "x",
+          url: "file:///x.js",
+          lineNumber: 0,
+          columnNumber: 0,
+          scopeChain: [
+            { type: "local", objectId: "scope-local" },
+            { type: "arguments", objectId: "scope-args" },
+          ],
+        },
+      ],
+    };
+
+    const snapshot = await captureSnapshot(session, pause);
+    const localScope = snapshot.topFrame?.scopes.find((scope) => scope.type === "local");
+    const argScope = snapshot.topFrame?.scopes.find((scope) => scope.type === "arguments");
+    expect(localScope?.variables).toEqual([]);
+    expect(argScope?.variables[0]?.name).toBe("requestId");
+    expect(argScope?.variables[0]?.value).toBe('"r-1"');
+  });
+
   it("does not report paused duration because resume happens outside captureSnapshot", async () => {
     const sendOrder: string[] = [];
     const send = vi.fn(async (method: string) => {
@@ -313,6 +365,14 @@ describe("evalResultToCaptured", () => {
     };
     const out = evalResultToCaptured("foo", result);
     expect(out.error).toContain("ReferenceError");
+  });
+
+  it("redacts exception text for sensitive expressions", () => {
+    const result: CdpEvalResult = {
+      exceptionDetails: { exception: { description: "Error: secret value" } },
+    };
+    const out = evalResultToCaptured("password", result);
+    expect(out.error).toBe("[REDACTED]");
   });
 
   it("falls back to inner.description for object values", () => {
