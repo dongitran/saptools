@@ -49,6 +49,18 @@ describe("output parsers", () => {
     ]);
   });
 
+  it("does not confuse preview tab-number-tab text with the grep line delimiter", () => {
+    const raw = "CFX\tGREP\t/workspace/app/src/connect.js\t12\tvalue\t99\tstill-preview\n";
+    expect(parseGrepOutput(raw, 0, true)).toEqual([
+      {
+        instance: 0,
+        path: "/workspace/app/src/connect.js",
+        line: 12,
+        preview: "value\t99\tstill-preview",
+      },
+    ]);
+  });
+
   it("keeps legacy grep row compatibility", () => {
     const raw = "CFX\tGREP\t/workspace/app/src/connect.js:12:needle-api ok\n";
     expect(parseGrepOutput(raw, 0, true)[0]?.preview).toBe("needle-api ok");

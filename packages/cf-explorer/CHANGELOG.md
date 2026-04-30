@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.1
+
+### Bug fixes
+
+- Grep parsing now treats tab-delimited output as fixed fields, so preview text
+  cannot be mistaken for the path or line delimiter.
+- Persistent broker command failures now return typed IPC errors instead of
+  escaping from stdout event handlers.
+- Persistent sessions update `lastUsedAt` on broker requests.
+- Session registration rejects duplicate explicit session ids.
+- CF child-process collection now settles once across abort, timeout, spawn
+  error, and close races.
+
+## 0.2.0
+
 ### Bug fixes
 
 - IPC server now drains every newline-terminated request in a single chunk

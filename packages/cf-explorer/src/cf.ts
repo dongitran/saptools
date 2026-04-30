@@ -183,16 +183,33 @@ async function collectCfResult(
     let stdout = "";
     let stderr = "";
     let truncated = false;
+    let settled = false;
     const redactionRules = buildRedactionRules(context.credentials, options.redactValues);
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      context.signal?.removeEventListener("abort", abort);
+    };
+    const rejectOnce = (error: CfExplorerError): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new CfExplorerError("REMOTE_COMMAND_FAILED", `${describeCfCommand(args)} timed out.`));
+      rejectOnce(new CfExplorerError("REMOTE_COMMAND_FAILED", `${describeCfCommand(args)} timed out.`));
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const abort = (): void => {
       child.kill("SIGTERM");
-      reject(new CfExplorerError("ABORTED", "Operation aborted by caller."));
+      rejectOnce(new CfExplorerError("ABORTED", "Operation aborted by caller."));
     };
     context.signal?.addEventListener("abort", abort, { once: true });
+    if (context.signal?.aborted === true) {
+      abort();
+      return;
+    }
     child.stdout.on("data", (chunk: Buffer | string) => {
       const result = appendBounded(stdout, chunk, maxBytes);
       stdout = result.text;
@@ -204,13 +221,14 @@ async function collectCfResult(
       truncated ||= result.truncated;
     });
     child.once("error", (error) => {
-      clearTimeout(timeout);
-      context.signal?.removeEventListener("abort", abort);
-      reject(new CfExplorerError("REMOTE_COMMAND_FAILED", redactText(error.message, redactionRules)));
+      rejectOnce(new CfExplorerError("REMOTE_COMMAND_FAILED", redactText(error.message, redactionRules)));
     });
     child.once("close", (exitCode) => {
-      clearTimeout(timeout);
-      context.signal?.removeEventListener("abort", abort);
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
       const result = { stdout, stderr, exitCode, durationMs: Date.now() - startedAt, truncated };
       if (exitCode === 0) {
         resolve(result);

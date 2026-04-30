@@ -176,6 +176,11 @@ describe("CF command runner", () => {
     controller.abort();
     await expect(aborted).rejects.toMatchObject({ code: "ABORTED" });
 
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(runCfCommand(["hang"], { cfBin, cfHomeDir, signal: alreadyAborted.signal }))
+      .rejects.toMatchObject({ code: "ABORTED" });
+
     await expect(runCfCommand(["hang"], { cfBin, cfHomeDir }, { timeoutMs: 5 }))
       .rejects.toMatchObject({ code: "REMOTE_COMMAND_FAILED" });
     await expect(runCfCommand(["--version"], { cfBin: join(cfHomeDir, "missing-bin"), cfHomeDir }))

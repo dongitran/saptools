@@ -48,6 +48,20 @@ describe("session storage", () => {
     expect(await updateExplorerSession(homeDir, "missing", { status: "ready" })).toBeUndefined();
   });
 
+  it("rejects duplicate session ids", async () => {
+    const input = {
+      sessionId: "session-duplicate",
+      brokerPid: process.pid,
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      process: "web",
+      instance: 0,
+      homeDir,
+    } as const;
+
+    await registerExplorerSession(input);
+    await expect(registerExplorerSession(input)).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+  });
+
   it("marks matching sessions stale without storing secrets", async () => {
     const target = { region: "ap10", org: "org", space: "dev", app: "demo-app" };
     await registerExplorerSession({

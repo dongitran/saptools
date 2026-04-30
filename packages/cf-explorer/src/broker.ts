@@ -139,17 +139,28 @@ class PersistentShell {
       this.child.kill("SIGTERM");
       return;
     }
-    const frame = parseProtocolFrame(this.buffer, pending.wrapped);
+    let frame: ReturnType<typeof parseProtocolFrame>;
+    try {
+      frame = parseProtocolFrame(this.buffer, pending.wrapped);
+    } catch (error: unknown) {
+      this.rejectPending(normalizeBrokerError(error));
+      this.child.kill("SIGTERM");
+      return;
+    }
     if (frame === undefined) {
       return;
     }
     clearTimeout(pending.timeout);
     this.pending = undefined;
-    pending.resolve({
-      stdout: requireSuccessfulFrame(frame),
-      durationMs: Date.now() - pending.startedAt,
-      truncated: false,
-    });
+    try {
+      pending.resolve({
+        stdout: requireSuccessfulFrame(frame),
+        durationMs: Date.now() - pending.startedAt,
+        truncated: false,
+      });
+    } catch (error: unknown) {
+      pending.reject(normalizeBrokerError(error));
+    }
   }
 
   private handleStderr(chunk: string): void {
@@ -264,6 +275,10 @@ class ExplorerBroker {
         ? error
         : new CfExplorerError("BROKER_UNAVAILABLE", error instanceof Error ? error.message : String(error));
       return { ...errorResponse(request.requestId, explorerError), durationMs: Date.now() - startedAt };
+    } finally {
+      if (request.sessionId === this.bootstrap.sessionId) {
+        await this.touchLastUsed();
+      }
     }
   }
 
@@ -415,6 +430,20 @@ class ExplorerBroker {
     return prepared.context;
   }
 
+  private async touchLastUsed(): Promise<void> {
+    let updated: ExplorerSessionRecord | undefined;
+    try {
+      updated = await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
+        lastUsedAt: new Date().toISOString(),
+      });
+    } catch {
+      return;
+    }
+    if (updated !== undefined) {
+      this.session = updated;
+    }
+  }
+
   private armTimers(): void {
     this.resetIdleTimer();
     this.hardTimer = setTimeout(() => {
@@ -528,6 +557,12 @@ function positiveIntegerField(value: unknown, key: string): Record<string, numbe
     throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive integer.`);
   }
   return { [key]: value };
+}
+
+function normalizeBrokerError(error: unknown): Error {
+  return error instanceof Error
+    ? error
+    : new CfExplorerError("BROKER_UNAVAILABLE", String(error));
 }
 
 function parseBootstrap(raw: string | undefined): BrokerBootstrap {

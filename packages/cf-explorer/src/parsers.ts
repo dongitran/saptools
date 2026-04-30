@@ -9,7 +9,6 @@ import type {
 
 const ROOT_LINE_PATTERN = /^CFX\tROOT\t(.+)$/;
 const FIND_LINE_PATTERN = /^CFX\tFIND\t(file|directory)\t(.+)$/;
-const GREP_LINE_PATTERN = /^CFX\tGREP\t(.+)\t(\d+)\t(.*)$/;
 const LEGACY_GREP_PREFIX = "CFX\tGREP\t";
 const VIEW_LINE_PATTERN = /^CFX\tLINE\t(\d+)\t(.*)$/;
 
@@ -104,18 +103,32 @@ function parseGrepLine(
   instance: number,
   includePreview: boolean,
 ): GrepMatch | undefined {
-  const match = GREP_LINE_PATTERN.exec(lineText);
-  if (match !== null) {
-    return toGrepMatch({
-      path: match[1] ?? "",
-      line: match[2] ?? "",
-      preview: match[3] ?? "",
-    }, instance, includePreview);
-  }
   if (!lineText.startsWith(LEGACY_GREP_PREFIX)) {
     return undefined;
   }
-  return parseLegacyGrepLine(lineText.slice(LEGACY_GREP_PREFIX.length), instance, includePreview);
+  const payload = lineText.slice(LEGACY_GREP_PREFIX.length);
+  return parseTabDelimitedGrepLine(payload, instance, includePreview)
+    ?? parseLegacyGrepLine(payload, instance, includePreview);
+}
+
+function parseTabDelimitedGrepLine(
+  payload: string,
+  instance: number,
+  includePreview: boolean,
+): GrepMatch | undefined {
+  const pathEnd = payload.indexOf("\t");
+  if (pathEnd < 0) {
+    return undefined;
+  }
+  const lineEnd = payload.indexOf("\t", pathEnd + 1);
+  if (lineEnd < 0) {
+    return undefined;
+  }
+  return toGrepMatch({
+    path: payload.slice(0, pathEnd),
+    line: payload.slice(pathEnd + 1, lineEnd),
+    preview: payload.slice(lineEnd + 1),
+  }, instance, includePreview);
 }
 
 function parseLegacyGrepLine(

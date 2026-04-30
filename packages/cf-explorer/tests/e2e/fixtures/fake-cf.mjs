@@ -184,6 +184,11 @@ function handlePersistentShell(app) {
     if (!match || !buffer.includes(`__CF_EXPLORER_END_${match[1]}__`)) return;
     const id = match[1];
     process.stdout.write(`__CF_EXPLORER_START_${id}__\n`);
+    if (buffer.includes("CFX_TEXT='force-session-error'")) {
+      process.stdout.write(`__CF_EXPLORER_END_${id}__:7\n`);
+      buffer = "";
+      return;
+    }
     process.stdout.write(renderExplorerCommand(app, buffer));
     process.stdout.write(`__CF_EXPLORER_END_${id}__:0\n`);
     buffer = "";

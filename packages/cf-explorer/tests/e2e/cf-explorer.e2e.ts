@@ -184,6 +184,23 @@ test("User can reuse a persistent session through the broker", async () => {
   expect(grep.code).toBe(0);
   expect(JSON.parse(grep.stdout).matches[0].path).toContain("connect.js");
 
+  const rejected = await runCli(env, [
+    "session",
+    "grep",
+    "--session-id",
+    sessionId,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "force-session-error",
+  ]);
+  expect(rejected.code).not.toBe(0);
+  expect(rejected.stderr).toContain("SESSION_PROTOCOL_ERROR");
+
+  const recovered = await runCli(env, ["session", "roots", "--session-id", sessionId]);
+  expect(recovered.code).toBe(0);
+  expect(JSON.parse(recovered.stdout).roots).toContain("/workspace/app");
+
   const view = await runCli(env, [
     "session",
     "view",

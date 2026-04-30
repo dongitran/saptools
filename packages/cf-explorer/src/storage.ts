@@ -87,6 +87,9 @@ export async function registerExplorerSession(
     const current = await readAndPruneStateUnlocked(input.homeDir);
     const sessionId = input.sessionId ?? randomUUID();
     assertSafeSessionId(sessionId);
+    if (current.sessions.some((session) => session.sessionId === sessionId)) {
+      throw new CfExplorerError("UNSAFE_INPUT", "Session id already exists.");
+    }
     const now = new Date().toISOString();
     const session = createSessionRecord(input, sessionId, now);
     await writeStateUnlocked(input.homeDir, {
