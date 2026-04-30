@@ -217,6 +217,124 @@ function evalResultToCaptured(expression: string, result: CdpEvalResult): Captur
   return buildCaptured("undefined");
 }
 
+function objectIdFromEvalResult(result: CdpEvalResult): string | undefined {
+  const inner = result.result;
+  if (inner?.type !== "object") {
+    return undefined;
+  }
+  const objectId = inner.objectId;
+  if (typeof objectId !== "string" || objectId.length === 0) {
+    return undefined;
+  }
+  return objectId;
+}
+
+function parseQuotedString(value: string): string {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "string" ? parsed : value;
+  } catch {
+    return value;
+  }
+}
+
+function parseNumericIndex(name: string): number | undefined {
+  const parsed = Number.parseInt(name, 10);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed.toString() !== name) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function scalarFromVariable(variable: VariableSnapshot): unknown {
+  const value = variable.value;
+  if (variable.type === "string") {
+    return parseQuotedString(value);
+  }
+  if (variable.type === "number") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  if (variable.type === "boolean") {
+    if (value === "true") {
+      return true;
+    }
+    if (value === "false") {
+      return false;
+    }
+  }
+  if (variable.type === "undefined") {
+    return "[undefined]";
+  }
+  if (variable.type === "bigint") {
+    return value;
+  }
+  return value === "null" ? null : value;
+}
+
+function toStructuredValue(variable: VariableSnapshot): unknown {
+  const children = variable.children;
+  if (children === undefined || children.length === 0) {
+    return scalarFromVariable(variable);
+  }
+  const indexed = children.flatMap((child): readonly [number, unknown][] => {
+    const index = parseNumericIndex(child.name);
+    if (index === undefined) {
+      return [];
+    }
+    return [[index, toStructuredValue(child)]];
+  });
+  if (indexed.length > 0) {
+    const maxIndex = Math.max(...indexed.map(([index]) => index));
+    const out = Array.from({ length: maxIndex + 1 }, () => null as unknown);
+    for (const [index, entry] of indexed) {
+      out[index] = entry;
+    }
+    return out;
+  }
+  const out: Record<string, unknown> = {};
+  for (const child of children) {
+    out[child.name] = toStructuredValue(child);
+  }
+  return out;
+}
+
+async function renderObjectCapture(session: InspectorSession, objectId: string): Promise<string | undefined> {
+  try {
+    const properties = await captureProperties(session, objectId, MAX_SCOPE_VARIABLES, MAX_VARIABLE_DEPTH);
+    const structured: Record<string, unknown> = {};
+    for (const variable of properties) {
+      structured[variable.name] = toStructuredValue(variable);
+    }
+    return JSON.stringify(structured);
+  } catch {
+    return undefined;
+  }
+}
+
+async function withSerializedObjectCapture(
+  session: InspectorSession,
+  expression: string,
+  evalResult: CdpEvalResult,
+  captured: CapturedExpression,
+): Promise<CapturedExpression> {
+  if (captured.error !== undefined || captured.value === undefined) {
+    return captured;
+  }
+  const objectId = objectIdFromEvalResult(evalResult);
+  if (objectId === undefined) {
+    return captured;
+  }
+  const rendered = await renderObjectCapture(session, objectId);
+  if (rendered === undefined) {
+    return captured;
+  }
+  const value = sanitizeValue(expression, rendered);
+  return captured.type === undefined
+    ? { expression, value }
+    : { expression, value, type: captured.type };
+}
+
 export interface CaptureSnapshotOptions {
   readonly captures?: readonly string[];
 }
@@ -243,7 +361,8 @@ export async function captureSnapshot(
         options.captures.map(async (expression): Promise<CapturedExpression> => {
           try {
             const result = await evaluateOnFrame(session, top.callFrameId, expression);
-            return evalResultToCaptured(expression, result);
+            const captured = evalResultToCaptured(expression, result);
+            return await withSerializedObjectCapture(session, expression, result, captured);
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
             return { expression, error: message };

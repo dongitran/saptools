@@ -109,7 +109,7 @@ cf-inspector snapshot --port 9229 \
 | `--port <number>` | Local port the inspector or tunnel listens on. **Required** unless `--app/--region/--org/--space` are all set |
 | `--bp <file:line>` | **Required.** Source location to break at. Pass multiple times to race several locations — the first one to hit wins |
 | `--condition <expr>` | Only pause when this JS expression evaluates truthy in the paused frame. Errors in the condition are silently treated as `false` by V8 |
-| `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved |
+| `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved. Object results are materialized to JSON strings when serializable, with fallback to CDP descriptions for non-serializable values |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
 | `--no-json` | Print a human-readable summary instead of JSON |

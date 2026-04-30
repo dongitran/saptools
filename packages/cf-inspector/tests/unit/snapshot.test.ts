@@ -128,6 +128,11 @@ describe("captureSnapshot", () => {
         if (expression === "user.id") {
           return { result: { type: "number", value: 7 } };
         }
+        if (expression === "user") {
+          return {
+            result: { type: "object", description: "Object", objectId: userObjectId },
+          };
+        }
         if (expression === "throwy") {
           return {
             exceptionDetails: { exception: { description: "ReferenceError: throwy is not defined" } },
@@ -340,6 +345,70 @@ describe("captureSnapshot", () => {
     expect("captureDurationMs" in snapshot).toBe(false);
     expect("pausedDurationMs" in snapshot).toBe(false);
     expect(sendOrder).toEqual(["Runtime.getProperties", "Debugger.evaluateOnCallFrame"]);
+  });
+
+  it("renders object captures as JSON when object serialization succeeds", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user"],
+    });
+    const userCapture = snapshot.captures[0];
+    expect(userCapture?.type).toBe("object");
+    const parsed = JSON.parse(userCapture?.value ?? "{}") as { id?: number; token?: string };
+    expect(parsed.id).toBe(7);
+    expect(parsed.token).toBe("[REDACTED]");
+  });
+
+  it("falls back to the object description when serialization fails", async () => {
+    const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === "Runtime.getProperties") {
+        const objectId = params["objectId"];
+        if (objectId === "scope-1") {
+          return { result: [] };
+        }
+        if (objectId === "payload-1") {
+          throw new Error("property backend unavailable");
+        }
+        return { result: [] };
+      }
+      if (method === "Debugger.evaluateOnCallFrame") {
+        if (params["expression"] === "payload") {
+          return {
+            result: { type: "object", description: "Object", objectId: "payload-1" },
+          };
+        }
+        return { result: { type: "undefined" } };
+      }
+      return {};
+    });
+    const session = {
+      client: { send } as never,
+      target: { id: "t", type: "node" } as never,
+      scripts: new Map(),
+      pauseBuffer: [],
+      pauseWaitGate: { active: false },
+      debuggerState: {},
+      dispose: async (): Promise<void> => undefined,
+    };
+    const pause: PauseEvent = {
+      reason: "other",
+      hitBreakpoints: [],
+      callFrames: [
+        {
+          callFrameId: "f1",
+          functionName: "x",
+          url: "file:///x.js",
+          lineNumber: 0,
+          columnNumber: 0,
+          scopeChain: [{ type: "local", objectId: "scope-1" }],
+        },
+      ],
+    };
+    const snapshot = await captureSnapshot(session, pause, { captures: ["payload"] });
+    expect(snapshot.captures[0]).toEqual({
+      expression: "payload",
+      value: "Object",
+      type: "object",
+    });
   });
 });
 
