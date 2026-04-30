@@ -28,8 +28,9 @@ test("snapshot captures the paused frame on the marker line", async () => {
     expect(stdout.startsWith("{")).toBe(true);
     const parsed = JSON.parse(stdout) as SnapshotResult;
     expect(parsed.reason).toBe("other");
-    expect(typeof parsed.captureDurationMs).toBe("number");
-    expect(parsed.captureDurationMs).toBeGreaterThanOrEqual(0);
+    expect(typeof parsed.pausedDurationMs).toBe("number");
+    expect(parsed.pausedDurationMs).toBeGreaterThanOrEqual(0);
+    expect("captureDurationMs" in parsed).toBe(false);
     expect(parsed.hitBreakpoints.length).toBeGreaterThan(0);
     expect(parsed.topFrame).toBeDefined();
 

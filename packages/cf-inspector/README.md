@@ -115,9 +115,10 @@ cf-inspector snapshot --port 9229 \
 | `--no-json` | Print a human-readable summary instead of JSON |
 | `--keep-paused` | Skip the auto-resume after capture (useful for diagnostics) |
 
-JSON output includes `captureDurationMs`, the time spent collecting scopes and
-`--capture` expressions after the breakpoint has paused the process. It does
-not include the time spent waiting for the breakpoint to hit.
+JSON output includes `pausedDurationMs`, the client-observed time from receiving
+the matching pause event until `Debugger.resume` completes. It does not include
+the time spent waiting for the breakpoint to hit. When `--keep-paused` is used,
+`pausedDurationMs` is `null` because the process intentionally remains paused.
 
 For Cloud Foundry targets, replace `--port` with `--region/--org/--space/--app` (and optionally `--cf-timeout <seconds>` for the tunnel).
 

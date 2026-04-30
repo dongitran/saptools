@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import { Command } from "commander";
@@ -19,7 +20,7 @@ import { parseBreakpointSpec, parseRemoteRoot } from "./pathMapper.js";
 import { captureSnapshot } from "./snapshot.js";
 import { openCfTunnel } from "./tunnel.js";
 import { CfInspectorError } from "./types.js";
-import type { BreakpointHandle, SnapshotResult } from "./types.js";
+import type { BreakpointHandle, SnapshotCaptureResult, SnapshotResult } from "./types.js";
 
 const DEFAULT_BREAKPOINT_TIMEOUT_SEC = 30;
 const DEFAULT_CF_TIMEOUT_SEC = 60;
@@ -200,12 +201,33 @@ function warnOnUnboundBreakpoints(handles: readonly BreakpointHandle[]): void {
   }
 }
 
+function roundDurationMs(durationMs: number): number {
+  return Math.round(durationMs * 1000) / 1000;
+}
+
+function withPausedDuration(
+  snapshot: SnapshotCaptureResult,
+  pausedDurationMs: number | null,
+): SnapshotResult {
+  return {
+    reason: snapshot.reason,
+    hitBreakpoints: snapshot.hitBreakpoints,
+    capturedAt: snapshot.capturedAt,
+    pausedDurationMs,
+    ...(snapshot.topFrame === undefined ? {} : { topFrame: snapshot.topFrame }),
+    captures: snapshot.captures,
+  };
+}
+
 function writeHumanSnapshot(snapshot: SnapshotResult): void {
+  const pausedDuration = snapshot.pausedDurationMs === null
+    ? "still paused"
+    : `${snapshot.pausedDurationMs.toFixed(1)}ms`;
   const lines: string[] = [];
   lines.push(
     `Snapshot @ ${snapshot.capturedAt}`,
     `  reason:  ${snapshot.reason}`,
-    `  capture: ${snapshot.captureDurationMs.toFixed(1)}ms`,
+    `  paused:  ${pausedDuration}`,
   );
   // Skip the raw CDP breakpoint IDs in human output — the frame line below
   // already shows file:line, and the IDs include the verbose internal urlRegex.
@@ -267,15 +289,21 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
     warnOnUnboundBreakpoints(handles);
     const breakpointIds = handles.map((h) => h.breakpointId);
     const pause = await waitForPause(session, { timeoutMs, breakpointIds });
+    const pausedStartedAt = performance.now();
     const snapshot = await captureSnapshot(session, pause, { captures });
-    if (opts.keepPaused !== true) {
-      try {
-        await resume(session);
-      } catch {
-        // best-effort
-      }
+    if (opts.keepPaused === true) {
+      return withPausedDuration(snapshot, null);
     }
-    return snapshot;
+    try {
+      await resume(session);
+      return withPausedDuration(
+        snapshot,
+        roundDurationMs(performance.now() - pausedStartedAt),
+      );
+    } catch {
+      // best-effort; a failed resume means the final paused duration is unknown.
+      return withPausedDuration(snapshot, null);
+    }
   });
 
   if (opts.json) {

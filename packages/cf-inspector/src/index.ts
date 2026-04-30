@@ -12,6 +12,7 @@ export type {
   ResolvedLocation,
   ScopeInfo,
   ScopeSnapshot,
+  SnapshotCaptureResult,
   ScriptInfo,
   SnapshotResult,
   VariableSnapshot,

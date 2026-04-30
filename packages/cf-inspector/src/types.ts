@@ -112,13 +112,16 @@ export interface CapturedExpression {
   readonly error?: string;
 }
 
-export interface SnapshotResult {
+export interface SnapshotCaptureResult {
   readonly reason: string;
   readonly hitBreakpoints: readonly string[];
   readonly capturedAt: string;
-  readonly captureDurationMs: number;
   readonly topFrame?: FrameSnapshot;
   readonly captures: readonly CapturedExpression[];
+}
+
+export interface SnapshotResult extends SnapshotCaptureResult {
+  readonly pausedDurationMs: number | null;
 }
 
 export interface ScriptInfo {
