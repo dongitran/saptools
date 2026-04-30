@@ -146,13 +146,14 @@ pnpm --filter @saptools/cf-sync test:unit
 
 ---
 
-## 🔗 GitHub
+## 👨‍💻 Author
 
-- Repository: https://github.com/dongitran/saptools
-- Issues: https://github.com/dongitran/saptools/issues
+**dongtran** ✨
+
+## 📄 License
+
+MIT
 
 ---
 
-## 🤝 Author
-
-Maintained by [dongtran](https://github.com/dongitran).
+Made with ❤️ to make your work life easier!
