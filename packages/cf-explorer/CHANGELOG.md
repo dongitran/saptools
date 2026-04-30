@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.2
+
+### Bug fixes
+
+- Preserved explicit credential passwords exactly instead of trimming leading or
+  trailing characters.
+- Propagated timeout/output limits to `cf app` and lifecycle CF calls.
+- Tightened malformed grep/protocol numeric parsing.
+
+### Hardening
+
+- Redacted generated one-shot SSH scripts from CF failure details.
+- Validated CF runner timeout/output limits before spawning child processes.
+- Handled persistent SSH shell spawn errors without an unhandled broker error.
+
 ## 0.2.1
 
 ### Bug fixes

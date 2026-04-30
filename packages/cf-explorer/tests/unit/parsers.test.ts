@@ -35,6 +35,8 @@ describe("output parsers", () => {
     expect(parseGrepOutput(raw, 0, true)[0]?.preview).toBe("needle-api ok");
     expect(parseGrepOutput("CFX\tGREP\t/workspace/app/src/connect.js\t0\tnope\n", 0, false))
       .toEqual([]);
+    expect(parseGrepOutput("CFX\tGREP\t/workspace/app/src/connect.js\t12abc\tnope\n", 0, false))
+      .toEqual([]);
   });
 
   it("does not confuse preview colon-number-colon text with the grep line delimiter", () => {
@@ -95,6 +97,8 @@ describe("output parsers", () => {
       { index: 0, state: "running" },
       { index: 1, state: "running" },
     ]);
+    expect(parseCfAppInstances("instances: 10001/10001")).toEqual([]);
+    expect(parseCfAppInstances("instances: 9007199254740993/9007199254740993")).toEqual([]);
     expect(parseCfAppInstances("no instance information")).toEqual([]);
   });
 

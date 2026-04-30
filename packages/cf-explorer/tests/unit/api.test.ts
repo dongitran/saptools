@@ -14,7 +14,13 @@ import {
 import { CfExplorerError } from "../../src/errors.js";
 
 const mocks = vi.hoisted(() => ({
-  cfApp: vi.fn<() => Promise<string>>(),
+  cfApp: vi.fn<
+    (
+      target: unknown,
+      context: unknown,
+      options: unknown,
+    ) => Promise<string>
+  >(),
   executeRemoteScript: vi.fn<
     (input: { readonly instance: number }) => Promise<{
       readonly stdout: string;
@@ -83,6 +89,24 @@ describe("discovery API", () => {
 
     expect(result.instances).toHaveLength(2);
     expect(result.instances?.every((item) => item.durationMs >= 15)).toBe(true);
+  });
+
+  it("passes effective timeout and output limits to cf app instance reads", async () => {
+    mocks.cfApp.mockResolvedValue("instances: 1/1\n#0 running today\n");
+
+    await listInstances({ target, timeoutMs: 1234, maxBytes: 5678 });
+    expect(mocks.cfApp).toHaveBeenLastCalledWith(
+      target,
+      expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
+      { timeoutMs: 1234, maxBytes: 5678 },
+    );
+
+    await listInstances({ target, runtime: { timeoutMs: 2222, maxBytes: 3333 } });
+    expect(mocks.cfApp).toHaveBeenLastCalledWith(
+      target,
+      expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
+      { timeoutMs: 2222, maxBytes: 3333 },
+    );
   });
 
   it("aggregates all-instance successes and partial failures", async () => {

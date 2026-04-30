@@ -49,7 +49,7 @@ export function parseViewOutput(stdout: string): readonly ViewLine[] {
     .split(/\r?\n/)
     .map((line) => VIEW_LINE_PATTERN.exec(line))
     .filter((match): match is RegExpExecArray => match !== null)
-    .map((match) => ({ line: Number.parseInt(match[1] ?? "0", 10), text: match[2] ?? "" }))
+    .map((match) => ({ line: parsePositiveDecimal(match[1] ?? "") ?? 0, text: match[2] ?? "" }))
     .filter((line) => line.line > 0);
 }
 
@@ -152,9 +152,9 @@ function toGrepMatch(
   instance: number,
   includePreview: boolean,
 ): GrepMatch | undefined {
-  const line = Number.parseInt(input.line, 10);
+  const line = parsePositiveDecimal(input.line);
   const path = input.path;
-  if (!Number.isInteger(line) || line <= 0 || path.length === 0) {
+  if (line === undefined || path.length === 0) {
     return undefined;
   }
   return {
@@ -170,8 +170,12 @@ function parseInstanceRow(line: string): InstanceInfo | undefined {
   if (match === null) {
     return undefined;
   }
+  const index = parseNonNegativeDecimal(match[1] ?? "");
+  if (index === undefined) {
+    return undefined;
+  }
   return {
-    index: Number.parseInt(match[1] ?? "0", 10),
+    index,
     state: match[2] ?? "unknown",
     ...(match[3] === undefined ? {} : { since: match[3].trim() }),
   };
@@ -179,7 +183,10 @@ function parseInstanceRow(line: string): InstanceInfo | undefined {
 
 function parseInstanceCountFallback(stdout: string): readonly InstanceInfo[] {
   const match = /instances:\s*(\d+)\/(\d+)/i.exec(stdout);
-  const running = Number.parseInt(match?.[1] ?? "0", 10);
+  const running = parseNonNegativeDecimal(match?.[1] ?? "") ?? 0;
+  if (running > 10_000) {
+    return [];
+  }
   return Array.from({ length: running }, (_value, index) => ({ index, state: "running" }));
 }
 
@@ -192,4 +199,17 @@ function confidenceForPath(path: string): SuggestedBreakpoint["confidence"] {
 
 function uniqueSorted(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function parsePositiveDecimal(value: string): number | undefined {
+  const parsed = parseNonNegativeDecimal(value);
+  return parsed === undefined || parsed <= 0 ? undefined : parsed;
+}
+
+function parseNonNegativeDecimal(value: string): number | undefined {
+  if (!/^\d+$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }

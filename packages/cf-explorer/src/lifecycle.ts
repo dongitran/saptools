@@ -1,4 +1,4 @@
-import { cfEnableSsh, cfRestartApp, cfSshEnabled } from "./cf.js";
+import { cfEnableSsh, cfRestartApp, cfSshEnabled, type CfRunOptions } from "./cf.js";
 import { CfExplorerError } from "./errors.js";
 import { explorerHome } from "./paths.js";
 import { withPreparedCfSession } from "./runner.js";
@@ -35,7 +35,7 @@ export async function sshStatus(options: LifecycleOptions): Promise<LifecycleRes
   const processName = resolveLifecycleProcess(options);
   const target = normalizeTarget(options.target);
   const enabled = await withPreparedCfSession(target, options.runtime, async (context) => {
-    return await cfSshEnabled(target, context);
+    return await cfSshEnabled(target, context, effectiveRunLimits(options));
   });
   return {
     meta: buildLifecycleMeta(options, processName, startedAt, false),
@@ -51,7 +51,7 @@ export async function enableSsh(options: LifecycleOptions): Promise<LifecycleRes
   const startedAt = Date.now();
   const target = normalizeTarget(options.target);
   await withPreparedCfSession(target, options.runtime, async (context) => {
-    await cfEnableSsh(target, context);
+    await cfEnableSsh(target, context, effectiveRunLimits(options));
   });
   return {
     meta: buildLifecycleMeta(options, processName, startedAt, false),
@@ -67,7 +67,7 @@ export async function restartApp(options: LifecycleOptions): Promise<LifecycleRe
   const startedAt = Date.now();
   const target = normalizeTarget(options.target);
   await withPreparedCfSession(target, options.runtime, async (context) => {
-    await cfRestartApp(target, context);
+    await cfRestartApp(target, context, effectiveRunLimits(options));
   });
   await invalidateSessions(options, "App restart invalidated the SSH session.");
   return {
@@ -83,13 +83,14 @@ export async function prepareSsh(options: LifecycleOptions): Promise<LifecycleRe
   const processName = resolveLifecycleProcess(options);
   const target = normalizeTarget(options.target);
   const changed = await withPreparedCfSession(target, options.runtime, async (context) => {
-    const enabled = await cfSshEnabled(target, context);
+    const limits = effectiveRunLimits(options);
+    const enabled = await cfSshEnabled(target, context, limits);
     if (enabled) {
       return false;
     }
     requireLifecycleConfirmation("prepare-ssh", options.confirmImpact);
-    await cfEnableSsh(target, context);
-    await cfRestartApp(target, context);
+    await cfEnableSsh(target, context, limits);
+    await cfRestartApp(target, context, limits);
     return true;
   });
   if (changed) {
@@ -115,4 +116,12 @@ function resolveLifecycleProcess(options: LifecycleOptions): string {
     throw new CfExplorerError("UNSAFE_INPUT", "Lifecycle commands are app-level; omit instance selectors.");
   }
   return resolveProcessName(options.process);
+}
+
+function effectiveRunLimits(options: LifecycleOptions): CfRunOptions {
+  const runtime = options.runtime;
+  return {
+    ...(runtime?.timeoutMs === undefined ? {} : { timeoutMs: runtime.timeoutMs }),
+    ...(runtime?.maxBytes === undefined ? {} : { maxBytes: runtime.maxBytes }),
+  };
 }

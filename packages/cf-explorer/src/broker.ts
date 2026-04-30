@@ -86,6 +86,9 @@ class PersistentShell {
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.handleStderr(chunk.toString());
     });
+    child.once("error", (error) => {
+      this.markExited(`Persistent SSH shell failed: ${error.message}`);
+    });
     child.once("close", () => {
       this.markExited("Persistent SSH shell exited.");
     });

@@ -337,7 +337,9 @@ Read-only discovery commands:
 - enforce output, file, context, depth, and timeout limits;
 - prune noisy folders such as `node_modules`, `.git`, `dist`, `build`, and
   `.cache`;
-- redact sensitive-looking values when previews are enabled.
+- omit grep previews unless explicitly requested. Preview and `view` output can
+  contain remote file content, so it is returned only to the caller and is not
+  stored in session state.
 
 Explicit lifecycle commands:
 

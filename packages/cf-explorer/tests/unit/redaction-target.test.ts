@@ -36,6 +36,27 @@ describe("redaction and target helpers", () => {
   it("normalizes target fields", () => {
     expect(normalizeTarget({ region: " ap10 ", org: " org ", space: " dev ", app: " app " }))
       .toEqual({ region: "ap10", org: "org", space: "dev", app: "app" });
+    expect(normalizeTarget({
+      region: "ap10",
+      org: "org",
+      space: "dev",
+      app: "app",
+      apiEndpoint: " https://api.example.test ",
+    })).toMatchObject({ apiEndpoint: "https://api.example.test" });
+    expect(normalizeTarget({
+      region: "ap10",
+      org: "org",
+      space: "dev",
+      app: "app",
+      apiEndpoint: " ",
+    })).not.toHaveProperty("apiEndpoint");
+    expect(() => normalizeTarget({
+      region: "ap10",
+      org: "org",
+      space: "dev",
+      app: "app",
+      apiEndpoint: "https://api.example.test\nbad",
+    })).toThrow(/line breaks/);
   });
 
   it("resolves region endpoints and explicit endpoint overrides", () => {
@@ -62,11 +83,14 @@ describe("redaction and target helpers", () => {
 
   it("resolves credentials from explicit runtime or env", () => {
     expect(resolveCredentials({
-      credentials: { email: "direct@example.com", password: "secret" },
-    }).email).toBe("direct@example.com");
+      credentials: { email: "direct@example.com", password: " secret " },
+    })).toEqual({ email: "direct@example.com", password: " secret " });
     expect(resolveCredentials({
       env: { SAP_EMAIL: "env@example.com", SAP_PASSWORD: "pw" },
     }).password).toBe("pw");
+    expect(() => resolveCredentials({
+      credentials: { email: "direct@example.com", password: "bad\nsecret" },
+    })).toThrow(/line breaks/);
   });
 
   it("validates integer flags", () => {

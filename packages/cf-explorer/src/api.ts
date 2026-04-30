@@ -1,4 +1,4 @@
-import { cfApp, type CfCommandContext } from "./cf.js";
+import { cfApp, type CfCommandContext, type CfRunOptions } from "./cf.js";
 import {
   buildFindScript,
   buildGrepScript,
@@ -64,7 +64,7 @@ export async function listInstances(options: DiscoveryOptions): Promise<Instance
   const target = normalizeTarget(options.target);
   const processName = resolveProcessName(options.process);
   const stdout = await withPreparedCfSession(target, options.runtime, async (context) => {
-    return await cfApp(target, context);
+    return await cfApp(target, context, effectiveRunLimits(options));
   });
   return {
     meta: buildMeta(target, processName, undefined, Date.now() - startedAt, false),
@@ -341,4 +341,13 @@ function hasTruncated(results: readonly InstanceResult<unknown>[]): boolean {
 
 function unique(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function effectiveRunLimits(options: DiscoveryOptions): CfRunOptions {
+  const timeoutMs = options.timeoutMs ?? options.runtime?.timeoutMs;
+  const maxBytes = options.maxBytes ?? options.runtime?.maxBytes;
+  return {
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+  };
 }

@@ -22,6 +22,28 @@ export function requireNonEmptyText(value: string | undefined, label: string): s
   return trimmed;
 }
 
+function requireSecretValue(value: string | undefined, label: string): string {
+  const raw = value ?? "";
+  if (raw.trim().length === 0) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${label} is required.`);
+  }
+  if (raw.includes("\0") || raw.includes("\n") || raw.includes("\r")) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${label} must not contain control line breaks.`);
+  }
+  return raw;
+}
+
+function normalizeOptionalText(value: string | undefined, label: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value.includes("\0") || value.includes("\n") || value.includes("\r")) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${label} must not contain control line breaks.`);
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
 export function resolveApiEndpoint(target: ExplorerTarget): string {
   if (target.apiEndpoint !== undefined && target.apiEndpoint.trim().length > 0) {
     return target.apiEndpoint.trim();
@@ -35,19 +57,20 @@ export function resolveApiEndpoint(target: ExplorerTarget): string {
 }
 
 export function normalizeTarget(target: ExplorerTarget): ExplorerTarget {
+  const apiEndpoint = normalizeOptionalText(target.apiEndpoint, "apiEndpoint");
   return {
     region: requireNonEmptyText(target.region, "region"),
     org: requireNonEmptyText(target.org, "org"),
     space: requireNonEmptyText(target.space, "space"),
     app: requireNonEmptyText(target.app, "app"),
-    ...(target.apiEndpoint === undefined ? {} : { apiEndpoint: target.apiEndpoint.trim() }),
+    ...(apiEndpoint === undefined ? {} : { apiEndpoint }),
   };
 }
 
 export function resolveCredentials(options: ExplorerRuntimeOptions = {}): ExplorerCredentials {
   if (options.credentials !== undefined) {
     const email = requireNonEmptyText(options.credentials.email, "email");
-    const password = requireNonEmptyText(options.credentials.password, "password");
+    const password = requireSecretValue(options.credentials.password, "password");
     return { email, password };
   }
 
@@ -66,7 +89,7 @@ export function resolveCredentials(options: ExplorerRuntimeOptions = {}): Explor
       "SAP password is required. Pass credentials or set SAP_PASSWORD.",
     );
   }
-  return { email: email.trim(), password };
+  return { email: email.trim(), password: requireSecretValue(password, "password") };
 }
 
 export function resolveProcessName(value: string | undefined): string {

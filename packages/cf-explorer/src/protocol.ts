@@ -78,8 +78,12 @@ function findEndMarker(
   }
   const lineEnd = buffer.indexOf("\n", markerIndex);
   const markerLine = buffer.slice(markerIndex, lineEnd < 0 ? buffer.length : lineEnd);
-  const exitCode = Number.parseInt(markerLine.slice(endMarkerPrefix.length + 1), 10);
-  if (!Number.isInteger(exitCode)) {
+  const markerValue = markerLine.slice(endMarkerPrefix.length);
+  if (!markerValue.startsWith(":") || !/^\d+$/.test(markerValue.slice(1))) {
+    throw new CfExplorerError("SESSION_PROTOCOL_ERROR", "Malformed remote session end marker.");
+  }
+  const exitCode = Number(markerValue.slice(1));
+  if (!Number.isSafeInteger(exitCode)) {
     throw new CfExplorerError("SESSION_PROTOCOL_ERROR", "Malformed remote session end marker.");
   }
   return { markerIndex, exitCode };

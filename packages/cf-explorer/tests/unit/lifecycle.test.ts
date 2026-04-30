@@ -4,9 +4,9 @@ import { CfExplorerError } from "../../src/errors.js";
 import { enableSsh, prepareSsh, restartApp, sshStatus } from "../../src/lifecycle.js";
 
 const mocks = vi.hoisted(() => ({
-  cfEnableSsh: vi.fn<() => Promise<void>>(),
-  cfRestartApp: vi.fn<() => Promise<void>>(),
-  cfSshEnabled: vi.fn<() => Promise<boolean>>(),
+  cfEnableSsh: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<void>>(),
+  cfRestartApp: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<void>>(),
+  cfSshEnabled: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<boolean>>(),
   markSessionsStaleForTarget: vi.fn<() => Promise<readonly unknown[]>>(),
 }));
 
@@ -49,6 +49,14 @@ describe("lifecycle API", () => {
     mocks.cfSshEnabled.mockResolvedValue(false);
     await expect(sshStatus({ target, process: "worker" }))
       .resolves.toMatchObject({ status: "disabled", meta: { process: "worker" } });
+
+    mocks.cfSshEnabled.mockResolvedValue(true);
+    await sshStatus({ target, runtime: { timeoutMs: 1234, maxBytes: 5678 } });
+    expect(mocks.cfSshEnabled).toHaveBeenLastCalledWith(
+      target,
+      expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
+      { timeoutMs: 1234, maxBytes: 5678 },
+    );
   });
 
   it("rejects instance selectors for app-level lifecycle operations", async () => {
@@ -67,8 +75,17 @@ describe("lifecycle API", () => {
   it("marks matching sessions stale after restart", async () => {
     const result = await restartApp({ target, confirmImpact: true });
     expect(result.status).toBe("restarted");
-    await restartApp({ target, confirmImpact: true, runtime: { homeDir: "/tmp/explorer-home" } });
+    await restartApp({
+      target,
+      confirmImpact: true,
+      runtime: { homeDir: "/tmp/explorer-home", timeoutMs: 4321, maxBytes: 8765 },
+    });
     expect(mocks.cfRestartApp).toHaveBeenCalledTimes(2);
+    expect(mocks.cfRestartApp).toHaveBeenLastCalledWith(
+      target,
+      expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
+      { timeoutMs: 4321, maxBytes: 8765 },
+    );
     expect(mocks.markSessionsStaleForTarget).toHaveBeenCalledWith(
       expect.any(String),
       target,

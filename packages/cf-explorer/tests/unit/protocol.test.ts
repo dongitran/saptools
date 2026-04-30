@@ -43,5 +43,9 @@ describe("persistent session protocol", () => {
       `${wrapped.startMarker}\nhello\n${wrapped.endMarkerPrefix}:nope\n`,
       wrapped,
     )).toThrow(CfExplorerError);
+    expect(() => parseProtocolFrame(
+      `${wrapped.startMarker}\nhello\n${wrapped.endMarkerPrefix}:7junk\n`,
+      wrapped,
+    )).toThrow(CfExplorerError);
   });
 });

@@ -101,7 +101,7 @@ function describeCfSshCommand(args: readonly string[]): string {
 function errorCodeForCommand(args: readonly string[], stderr: string): CfExplorerError["code"] {
   const command = args[0] ?? "";
   const lower = stderr.toLowerCase();
-  if (command === "auth") {
+  if (command === "api" || command === "auth") {
     return "CF_LOGIN_FAILED";
   }
   if (command === "target") {
@@ -156,6 +156,14 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return output;
 }
 
+function resolvePositiveRunLimit(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isInteger(resolved) || resolved <= 0) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${label} must be a positive integer.`);
+  }
+  return resolved;
+}
+
 export async function runCfCommand(
   args: readonly string[],
   context: CfCommandContext,
@@ -163,12 +171,13 @@ export async function runCfCommand(
 ): Promise<CfRunResult> {
   const command = resolveSpawnCommand(context);
   const startedAt = Date.now();
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const timeoutMs = resolvePositiveRunLimit(options.timeoutMs, DEFAULT_TIMEOUT_MS, "timeoutMs");
+  const maxBytes = resolvePositiveRunLimit(options.maxBytes, DEFAULT_MAX_BYTES, "maxBytes");
   const child = spawn(command.bin, [...command.argsPrefix, ...args], {
     env: buildChildEnv(context, options.envOverrides),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return await collectCfResult(child, args, context, startedAt, maxBytes, options);
+  return await collectCfResult(child, args, context, startedAt, timeoutMs, maxBytes, options);
 }
 
 async function collectCfResult(
@@ -176,6 +185,7 @@ async function collectCfResult(
   args: readonly string[],
   context: CfCommandContext,
   startedAt: number,
+  timeoutMs: number,
   maxBytes: number,
   options: CfRunOptions,
 ): Promise<CfRunResult> {
@@ -200,7 +210,7 @@ async function collectCfResult(
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
       rejectOnce(new CfExplorerError("REMOTE_COMMAND_FAILED", `${describeCfCommand(args)} timed out.`));
-    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    }, timeoutMs);
     const abort = (): void => {
       child.kill("SIGTERM");
       rejectOnce(new CfExplorerError("ABORTED", "Operation aborted by caller."));
@@ -273,25 +283,45 @@ async function runCfAuth(
   });
 }
 
-export async function cfApp(target: ExplorerTarget, context: CfCommandContext): Promise<string> {
-  const result = await runCfCommand(["app", target.app], context);
+export async function cfApp(
+  target: ExplorerTarget,
+  context: CfCommandContext,
+  options: CfRunOptions = {},
+): Promise<string> {
+  const result = await runCfCommand(["app", target.app], context, options);
   return result.stdout;
 }
 
 export async function cfSshEnabled(
   target: ExplorerTarget,
   context: CfCommandContext,
+  options: CfRunOptions = {},
 ): Promise<boolean> {
-  const result = await runCfCommand(["ssh-enabled", target.app], context);
-  return result.stdout.toLowerCase().includes("enabled");
+  const result = await runCfCommand(["ssh-enabled", target.app], context, options);
+  const lower = result.stdout.toLowerCase();
+  if (lower.includes("disabled") || lower.includes("not enabled")) {
+    return false;
+  }
+  return lower.includes("enabled");
 }
 
-export async function cfEnableSsh(target: ExplorerTarget, context: CfCommandContext): Promise<void> {
-  await runCfCommand(["enable-ssh", target.app], context);
+export async function cfEnableSsh(
+  target: ExplorerTarget,
+  context: CfCommandContext,
+  options: CfRunOptions = {},
+): Promise<void> {
+  await runCfCommand(["enable-ssh", target.app], context, options);
 }
 
-export async function cfRestartApp(target: ExplorerTarget, context: CfCommandContext): Promise<void> {
-  await runCfCommand(["restart", target.app], context, { timeoutMs: RESTART_TIMEOUT_MS });
+export async function cfRestartApp(
+  target: ExplorerTarget,
+  context: CfCommandContext,
+  options: CfRunOptions = {},
+): Promise<void> {
+  await runCfCommand(["restart", target.app], context, {
+    ...options,
+    timeoutMs: options.timeoutMs ?? RESTART_TIMEOUT_MS,
+  });
 }
 
 export async function cfSshOneShot(
@@ -313,7 +343,10 @@ export async function cfSshOneShot(
     "-c",
     command,
   ];
-  return await runCfCommand(args, context, options);
+  return await runCfCommand(args, context, {
+    ...options,
+    redactValues: [command, ...(options.redactValues ?? [])],
+  });
 }
 
 export function spawnPersistentSshShell(

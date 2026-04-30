@@ -95,6 +95,8 @@ describe("CF command runner", () => {
       .resolves.toContain("instances: 1/1");
     await expect(cfSshEnabled({ region: "ap10", org: "org", space: "dev", app: "demo-app" }, context))
       .resolves.toBe(true);
+    await expect(cfSshEnabled({ region: "ap10", org: "org", space: "dev", app: "not-enabled-app" }, context))
+      .resolves.toBe(false);
     await expect(cfEnableSsh({ region: "ap10", org: "org", space: "dev", app: "demo-app" }, context))
       .resolves.toBeUndefined();
     await expect(cfRestartApp({ region: "ap10", org: "org", space: "dev", app: "demo-app" }, context))
@@ -158,14 +160,30 @@ describe("CF command runner", () => {
       .rejects.toMatchObject({ code: "APP_NOT_FOUND" });
     await expect(runCfCommand(["target", "-o", "org"], { cfBin, cfHomeDir }))
       .rejects.toMatchObject({ code: "CF_TARGET_FAILED" });
+    await expect(runCfCommand(["api", "https://api.example.test"], { cfBin, cfHomeDir }))
+      .rejects.toMatchObject({ code: "CF_LOGIN_FAILED" });
     await expect(runCfCommand(["ssh", "demo-app"], { cfBin, cfHomeDir }))
       .rejects.toMatchObject({ code: "SSH_DISABLED" });
     await expect(runCfCommand(["ssh", "demo-app", "-i", "9"], { cfBin, cfHomeDir }))
       .rejects.toMatchObject({ code: "INSTANCE_NOT_FOUND" });
+    await expect(cfSshOneShot(
+      { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      "CFX_TEXT='private-needle'",
+      { cfBin, cfHomeDir },
+      "web",
+      0,
+    )).rejects.toMatchObject({
+      code: "REMOTE_COMMAND_FAILED",
+      message: expect.not.stringContaining("private-needle"),
+    });
   });
 
   it("handles truncation, aborts, timeouts, and spawn errors", async () => {
     const cfBin = await writeFakeCf();
+    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: 0 }))
+      .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { maxBytes: 0 }))
+      .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(runCfCommand(["big"], { cfBin, cfHomeDir }, { maxBytes: 4 }))
       .resolves.toMatchObject({ stdout: "0123", truncated: true });
     await expect(runCfCommand(["unicode"], { cfBin, cfHomeDir }, { maxBytes: 4 }))
@@ -212,6 +230,7 @@ describe("CF command runner", () => {
       "  process.stdout.write('OK\\n');",
       "}",
       "else if (command === 'app') process.stdout.write('instances: 1/1\\n#0 running today\\n');",
+      "else if (command === 'ssh-enabled' && process.argv[3] === 'not-enabled-app') process.stdout.write('SSH support is not enabled\\n');",
       "else if (command === 'ssh-enabled') process.stdout.write('SSH support is enabled\\n');",
       "else if (command === 'enable-ssh' || command === 'restart') process.stdout.write('OK\\n');",
       "else if (command === 'ssh' && process.argv.at(-1) === 'sh') setInterval(() => {}, 1000);",
@@ -232,6 +251,7 @@ describe("CF command runner", () => {
       "if (command === 'app') { process.stderr.write('App not found\\n'); process.exit(1); }",
       "if (command === 'target') { process.stderr.write('target failed\\n'); process.exit(1); }",
       "if (command === 'ssh' && process.argv.includes('9')) { process.stderr.write('App instance index 9 is out of range\\n'); process.exit(1); }",
+      "if (command === 'ssh' && process.argv.some((arg) => arg.includes('private-needle'))) { process.stderr.write(`remote failed ${process.argv.at(-1)}\\n`); process.exit(1); }",
       "if (command === 'ssh') { process.stderr.write('SSH support is disabled\\n'); process.exit(1); }",
       "process.exit(2);",
     ].join("\n"), "utf8");
