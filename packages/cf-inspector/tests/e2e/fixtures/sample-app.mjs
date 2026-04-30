@@ -4,7 +4,7 @@
 let counter = 0;
 
 function handle(payload) {
-  const user = { id: payload.id, name: payload.name };
+  const user = { id: payload.id, name: payload.name, token: payload.token };
   const accumulator = ['begin'];
   for (let i = 0; i < 3; i += 1) {
     accumulator.push(`step-${i}`);
@@ -15,7 +15,7 @@ function handle(payload) {
 }
 
 setInterval(() => {
-  const result = handle({ id: counter + 1, name: `sample-${(counter + 1).toString()}` });
+  const result = handle({ id: counter + 1, name: `sample-${(counter + 1).toString()}`, token: 'fixture-token' });
   if (process.env['SAMPLE_VERBOSE'] === '1') {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   }

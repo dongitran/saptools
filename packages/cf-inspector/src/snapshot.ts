@@ -15,7 +15,6 @@ const MAX_SCOPE_VARIABLES = 20;
 const MAX_CHILD_VARIABLES = 8;
 const MAX_VARIABLE_DEPTH = 2;
 const MAX_VALUE_LENGTH = 240;
-const SENSITIVE_NAME_REGEX = /(pass(?:word)?|credentials?|creds?|token|secret|api[_-]?key|authorization|cookie|session|private[_-]?key)/i;
 
 const PRIORITY_BY_TYPE: Readonly<Record<string, number>> = {
   local: 0,
@@ -91,14 +90,7 @@ function formatPrimitive(value: string | number | boolean | bigint | symbol): st
   return String(value);
 }
 
-function isSensitiveName(name: string): boolean {
-  return SENSITIVE_NAME_REGEX.test(name);
-}
-
-function sanitizeValue(name: string, raw: string): string {
-  if (isSensitiveName(name)) {
-    return "[REDACTED]";
-  }
+function limitValueLength(raw: string): string {
   if (raw.length <= MAX_VALUE_LENGTH) {
     return raw;
   }
@@ -121,9 +113,8 @@ async function captureProperties(
     limited.map(async (prop): Promise<VariableSnapshot> => {
       const name = typeof prop.name === "string" ? prop.name : "?";
       const described = describeProperty(prop);
-      const sensitive = isSensitiveName(name);
       let children: readonly VariableSnapshot[] | undefined;
-      if (!sensitive && depth > 0 && described.objectId !== undefined && isExpandable(described.type)) {
+      if (depth > 0 && described.objectId !== undefined && isExpandable(described.type)) {
         try {
           const nested = await captureProperties(
             session,
@@ -138,7 +129,7 @@ async function captureProperties(
           // best-effort: skip nested expansion on error
         }
       }
-      const sanitizedValue = sensitive ? "[REDACTED]" : sanitizeValue(name, described.value);
+      const sanitizedValue = limitValueLength(described.value);
       const base: VariableSnapshot = { name, value: sanitizedValue };
       const withType = described.type === undefined ? base : { ...base, type: described.type };
       return children === undefined ? withType : { ...withType, children };
@@ -185,7 +176,7 @@ function evalResultToCaptured(expression: string, result: CdpEvalResult): Captur
       typeof result.exceptionDetails.exception?.description === "string"
         ? result.exceptionDetails.exception.description
         : (typeof result.exceptionDetails.text === "string" ? result.exceptionDetails.text : "evaluation failed");
-    return { expression, error: sanitizeValue(expression, text) };
+    return { expression, error: limitValueLength(text) };
   }
   const inner = result.result;
   if (!inner) {
@@ -194,7 +185,7 @@ function evalResultToCaptured(expression: string, result: CdpEvalResult): Captur
   const type = typeof inner.type === "string" ? inner.type : undefined;
 
   const buildCaptured = (rendered: string): CapturedExpression => {
-    const sanitized = sanitizeValue(expression, rendered);
+    const sanitized = limitValueLength(rendered);
     const base: CapturedExpression = { expression, value: sanitized };
     return type === undefined ? base : { ...base, type };
   };
@@ -299,7 +290,10 @@ function toStructuredValue(variable: VariableSnapshot): unknown {
   return out;
 }
 
-async function renderObjectCapture(session: InspectorSession, objectId: string): Promise<string | undefined> {
+async function renderObjectCapture(
+  session: InspectorSession,
+  objectId: string,
+): Promise<string | undefined> {
   try {
     const properties = await captureProperties(session, objectId, MAX_SCOPE_VARIABLES, MAX_VARIABLE_DEPTH);
     const structured: Record<string, unknown> = {};
@@ -347,7 +341,7 @@ async function withSerializedObjectCapture(
   if (normalized === undefined) {
     return captured;
   }
-  const value = sanitizeValue(expression, normalized);
+  const value = limitValueLength(normalized);
   return captured.type === undefined
     ? { expression, value }
     : { expression, value, type: captured.type };
@@ -386,7 +380,7 @@ export async function captureSnapshot(
             return await withSerializedObjectCapture(session, expression, result, captured);
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);
-            return { expression, error: message };
+            return { expression, error: limitValueLength(message) };
           }
         }),
       );
@@ -402,7 +396,7 @@ export async function captureSnapshot(
 }
 
 export const internalsForTesting = {
-  sanitizeValue,
+  limitValueLength,
   describeProperty,
   selectScopes,
   evalResultToCaptured,

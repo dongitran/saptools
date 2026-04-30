@@ -74,6 +74,39 @@ test("snapshot --include-scopes captures paused scope variables", async () => {
   }
 });
 
+test("snapshot exposes sensitive-looking values by default", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--capture",
+        "user",
+        "--timeout",
+        "10",
+        "--include-scopes",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    const userCapture = parsed.captures.find((entry) => entry.expression === "user");
+    const capturedUser = JSON.parse(userCapture?.value ?? "{}") as { token?: string };
+    expect(capturedUser.token).toBe("fixture-token");
+
+    const localScope = parsed.topFrame?.scopes?.find((scope) => scope.type === "local");
+    const userVar = localScope?.variables.find((variable) => variable.name === "user");
+    expect(userVar?.children?.find((child) => child.name === "token")?.value).toBe("\"fixture-token\"");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("snapshot materializes object captures as readable JSON strings", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

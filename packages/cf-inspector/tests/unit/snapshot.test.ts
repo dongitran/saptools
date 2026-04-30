@@ -4,24 +4,19 @@ import type { CdpEvalResult, CdpProperty, InspectorSession } from "../../src/ins
 import { captureSnapshot, internalsForTesting } from "../../src/snapshot.js";
 import type { CallFrameInfo, PauseEvent } from "../../src/types.js";
 
-const { sanitizeValue, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;
+const { limitValueLength, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;
 
-describe("sanitizeValue", () => {
-  it("redacts values when name matches sensitive pattern", () => {
-    expect(sanitizeValue("password", "hunter2")).toBe("[REDACTED]");
-    expect(sanitizeValue("API_KEY", "abcd")).toBe("[REDACTED]");
-    expect(sanitizeValue("session", "deadbeef")).toBe("[REDACTED]");
-  });
-
+describe("limitValueLength", () => {
   it("truncates values longer than the limit", () => {
     const long = "x".repeat(500);
-    const out = sanitizeValue("notSensitive", long);
+    const out = limitValueLength(long);
     expect(out.endsWith("...")).toBe(true);
     expect(out.length).toBeLessThanOrEqual(243);
   });
 
-  it("returns short non-sensitive values unchanged", () => {
-    expect(sanitizeValue("count", "42")).toBe("42");
+  it("returns short values unchanged regardless of name", () => {
+    expect(limitValueLength("42")).toBe("42");
+    expect(limitValueLength("hunter2")).toBe("hunter2");
   });
 });
 
@@ -213,7 +208,7 @@ describe("captureSnapshot", () => {
     });
   });
 
-  it("captures scopes and redacts sensitive variable names when requested", async () => {
+  it("captures scopes and preserves sensitive-looking variable names when requested", async () => {
     const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
       captures: ["user.id", "throwy"],
       includeScopes: true,
@@ -230,12 +225,12 @@ describe("captureSnapshot", () => {
     const localScope = snapshot.topFrame?.scopes?.find((s) => s.type === "local");
     expect(localScope).toBeDefined();
     const password = localScope?.variables.find((v) => v.name === "password");
-    expect(password?.value).toBe("[REDACTED]");
+    expect(password?.value).toBe("\"leak-me-not\"");
     const credentials = localScope?.variables.find((v) => v.name === "credentials");
-    expect(credentials?.value).toBe("[REDACTED]");
-    expect(credentials?.children).toBeUndefined();
+    expect(credentials?.value).toBe("{ value: 'hidden' }");
+    expect(credentials?.children?.find((child) => child.name === "value")?.value).toBe("\"must-not-expand\"");
     const userVar = localScope?.variables.find((v) => v.name === "user");
-    expect(userVar?.children?.find((c) => c.name === "token")?.value).toBe("[REDACTED]");
+    expect(userVar?.children?.find((c) => c.name === "token")?.value).toBe("\"abc-123\"");
 
     const captures = Object.fromEntries(
       snapshot.captures.map((c) => [c.expression, c.value ?? c.error]),
@@ -401,7 +396,7 @@ describe("captureSnapshot", () => {
     expect(userCapture?.type).toBe("object");
     const parsed = JSON.parse(userCapture?.value ?? "{}") as { id?: number; token?: string };
     expect(parsed.id).toBe(7);
-    expect(parsed.token).toBe("[REDACTED]");
+    expect(parsed.token).toBe("abc-123");
   });
 
   it("falls back to the object description when serialization fails", async () => {
@@ -490,10 +485,10 @@ describe("evalResultToCaptured", () => {
     });
   });
 
-  it("redacts sensitive expressions even when not paused", () => {
+  it("keeps sensitive-looking expressions unchanged", () => {
     const result: CdpEvalResult = { result: { type: "string", value: "secret" } };
     const out = evalResultToCaptured("password", result);
-    expect(out.value).toBe("[REDACTED]");
+    expect(out.value).toBe("\"secret\"");
   });
 
   it("includes the exception description on errors", () => {
@@ -504,12 +499,12 @@ describe("evalResultToCaptured", () => {
     expect(out.error).toContain("ReferenceError");
   });
 
-  it("redacts exception text for sensitive expressions", () => {
+  it("keeps exception text for sensitive-looking expressions", () => {
     const result: CdpEvalResult = {
       exceptionDetails: { exception: { description: "Error: secret value" } },
     };
     const out = evalResultToCaptured("password", result);
-    expect(out.error).toBe("[REDACTED]");
+    expect(out.error).toBe("Error: secret value");
   });
 
   it("falls back to inner.description for object values", () => {

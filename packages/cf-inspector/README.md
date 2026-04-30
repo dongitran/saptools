@@ -22,7 +22,7 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 - ✅ **Conditional breakpoints** — `--condition 'req.userId === "abc"'` only pauses when the predicate is truthy
 - 🎭 **Multi-breakpoint** — repeat `--bp` to race several locations; first hit wins
 - 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes, **without ever pausing the inspectee** (safe for production traffic)
-- 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shape, sensitive-name redaction (`password`, `credentials`, `token`, `secret`, `cookie`, …) baked in
+- 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shape, bounded value previews for large debugger payloads
 - 🧭 **Path mapping** — local `src/handler.ts:42` is matched against the remote URL via a `urlRegex`, with optional `--remote-root` literal or regex (same DSL as `cds-debug`)
 - 🔁 **Composes with `cf-debugger`** — pass `--app/--region/--org/--space` and the tunnel is opened automatically; pass `--port` to attach to anything CDP-speaking
 - 🪶 **Tiny dependency footprint** — `commander` + `ws` only, no heavy CDP framework
@@ -120,7 +120,9 @@ cf-inspector snapshot --port 9229 \
 JSON output includes frame metadata and `captures` by default. `topFrame.scopes`
 is only present with `--include-scopes`, because Cloud Foundry Node apps often
 carry large local/closure/module objects that drown out targeted captures. The
-output also includes `pausedDurationMs`, the client-observed time from receiving
+output contains raw debugger values; use it only against trusted targets and be
+careful when sharing logs. The output also includes `pausedDurationMs`, the
+client-observed time from receiving
 the matching pause event until `Debugger.resume` completes. It does not include
 the time spent waiting for the breakpoint to hit. When `--keep-paused` is used,
 `pausedDurationMs` is `null` because `cf-inspector` intentionally skips
