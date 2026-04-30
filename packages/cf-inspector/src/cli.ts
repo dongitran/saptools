@@ -20,7 +20,7 @@ import { parseBreakpointSpec, parseRemoteRoot } from "./pathMapper.js";
 import { captureSnapshot } from "./snapshot.js";
 import { openCfTunnel } from "./tunnel.js";
 import { CfInspectorError } from "./types.js";
-import type { BreakpointHandle, SnapshotCaptureResult, SnapshotResult } from "./types.js";
+import type { BreakpointHandle, PauseEvent, SnapshotCaptureResult, SnapshotResult } from "./types.js";
 
 const DEFAULT_BREAKPOINT_TIMEOUT_SEC = 30;
 const DEFAULT_CF_TIMEOUT_SEC = 60;
@@ -60,6 +60,7 @@ interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly condition?: string;
   readonly json: boolean;
   readonly keepPaused?: boolean;
+  readonly failOnUnmatchedPause?: boolean;
 }
 
 interface EvalCommandOptions extends SharedTargetOptions {
@@ -155,10 +156,100 @@ function parseCaptureList(raw: string | undefined): readonly string[] {
   if (raw === undefined || raw.trim().length === 0) {
     return [];
   }
-  return raw
-    .split(",")
-    .map((piece) => piece.trim())
-    .filter((piece) => piece.length > 0);
+  return splitCaptureExpressions(raw);
+}
+
+type QuoteChar = "'" | "\"" | "`";
+
+interface CaptureSplitState {
+  quote: QuoteChar | undefined;
+  escaped: boolean;
+  parenDepth: number;
+  bracketDepth: number;
+  braceDepth: number;
+  start: number;
+  readonly pieces: string[];
+}
+
+function isQuoteChar(value: string): value is QuoteChar {
+  return value === "'" || value === "\"" || value === "`";
+}
+
+function consumeQuotedChar(state: CaptureSplitState, char: string): boolean {
+  if (state.quote === undefined) {
+    return false;
+  }
+  if (state.escaped) {
+    state.escaped = false;
+    return true;
+  }
+  if (char === "\\") {
+    state.escaped = true;
+    return true;
+  }
+  if (char === state.quote) {
+    state.quote = undefined;
+  }
+  return true;
+}
+
+function updateCaptureDepth(state: CaptureSplitState, char: string): void {
+  if (char === "(") {
+    state.parenDepth += 1;
+  } else if (char === ")") {
+    state.parenDepth = Math.max(0, state.parenDepth - 1);
+  } else if (char === "[") {
+    state.bracketDepth += 1;
+  } else if (char === "]") {
+    state.bracketDepth = Math.max(0, state.bracketDepth - 1);
+  } else if (char === "{") {
+    state.braceDepth += 1;
+  } else if (char === "}") {
+    state.braceDepth = Math.max(0, state.braceDepth - 1);
+  }
+}
+
+function isTopLevel(state: CaptureSplitState): boolean {
+  return state.parenDepth === 0 && state.bracketDepth === 0 && state.braceDepth === 0;
+}
+
+function appendCapturePiece(raw: string, state: CaptureSplitState, end: number): void {
+  const piece = raw.slice(state.start, end).trim();
+  if (piece.length > 0) {
+    state.pieces.push(piece);
+  }
+}
+
+function splitCaptureExpressions(raw: string): readonly string[] {
+  const state: CaptureSplitState = {
+    escaped: false,
+    parenDepth: 0,
+    bracketDepth: 0,
+    braceDepth: 0,
+    quote: undefined,
+    start: 0,
+    pieces: [],
+  };
+  for (let idx = 0; idx < raw.length; idx += 1) {
+    const char = raw[idx];
+    if (char === undefined) {
+      continue;
+    }
+    if (consumeQuotedChar(state, char)) {
+      continue;
+    }
+    if (isQuoteChar(char)) {
+      state.quote = char;
+      continue;
+    }
+    updateCaptureDepth(state, char);
+    if (char === "," && isTopLevel(state)) {
+      appendCapturePiece(raw, state, idx);
+      state.start = idx + 1;
+    }
+  }
+  appendCapturePiece(raw, state, raw.length);
+  return state.pieces;
 }
 
 async function withSession<T>(
@@ -205,6 +296,23 @@ function roundDurationMs(durationMs: number): number {
   return Math.round(durationMs * 1000) / 1000;
 }
 
+function formatPauseLocation(pause: PauseEvent): string {
+  const top = pause.callFrames[0];
+  if (top === undefined) {
+    return "(no call frame)";
+  }
+  const url = top.url !== undefined && top.url.length > 0 ? top.url : "(unknown)";
+  return `${url}:${(top.lineNumber + 1).toString()}:${(top.columnNumber + 1).toString()}`;
+}
+
+function warnOnUnmatchedPause(pause: PauseEvent): void {
+  const reason = pause.reason.length > 0 ? pause.reason : "unknown";
+  process.stderr.write(
+    `[cf-inspector] warning: target is paused by another debugger event ` +
+      `(${reason} at ${formatPauseLocation(pause)}); waiting for it to resume...\n`,
+  );
+}
+
 function withPausedDuration(
   snapshot: SnapshotCaptureResult,
   pausedDurationMs: number | null,
@@ -221,7 +329,7 @@ function withPausedDuration(
 
 function writeHumanSnapshot(snapshot: SnapshotResult): void {
   const pausedDuration = snapshot.pausedDurationMs === null
-    ? "still paused"
+    ? "unknown"
     : `${snapshot.pausedDurationMs.toFixed(1)}ms`;
   const lines: string[] = [];
   lines.push(
@@ -288,8 +396,20 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
     );
     warnOnUnboundBreakpoints(handles);
     const breakpointIds = handles.map((h) => h.breakpointId);
-    const pause = await waitForPause(session, { timeoutMs, breakpointIds });
-    const pausedStartedAt = performance.now();
+    let warnedUnmatchedPause = false;
+    const pause = await waitForPause(session, {
+      timeoutMs,
+      breakpointIds,
+      unmatchedPausePolicy: opts.failOnUnmatchedPause === true ? "fail" : "wait-for-resume",
+      onUnmatchedPause: (unmatchedPause) => {
+        if (warnedUnmatchedPause || opts.failOnUnmatchedPause === true) {
+          return;
+        }
+        warnedUnmatchedPause = true;
+        warnOnUnmatchedPause(unmatchedPause);
+      },
+    });
+    const pausedStartedAt = pause.receivedAtMs ?? performance.now();
     const snapshot = await captureSnapshot(session, pause, { captures });
     if (opts.keepPaused === true) {
       return withPausedDuration(snapshot, null);
@@ -301,6 +421,9 @@ async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
         roundDurationMs(performance.now() - pausedStartedAt),
       );
     } catch {
+      process.stderr.write(
+        "[cf-inspector] warning: Debugger.resume failed after snapshot; pausedDurationMs is unknown.\n",
+      );
       // best-effort; a failed resume means the final paused duration is unknown.
       return withPausedDuration(snapshot, null);
     }
@@ -320,6 +443,9 @@ async function handleEval(opts: EvalCommandOptions): Promise<void> {
   });
   if (opts.json) {
     writeJson(result);
+    if (result.exceptionDetails !== undefined) {
+      process.exitCode = 1;
+    }
     return;
   }
   if (result.exceptionDetails !== undefined) {
@@ -472,7 +598,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       collectStrings,
       [] as readonly string[],
     )
-    .option("--capture <expr,…>", "Comma-separated expressions to evaluate in the paused frame")
+    .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
     .option("--timeout <seconds>", "How long to wait for the breakpoint to hit (default: 30)")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option(
@@ -480,7 +606,8 @@ export async function main(argv: readonly string[]): Promise<void> {
       "Only pause when this JS expression evaluates truthy in the paused frame",
     )
     .option("--no-json", "Print a human-readable summary instead of JSON")
-    .option("--keep-paused", "Skip the auto-resume after capture")
+    .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
+    .option("--fail-on-unmatched-pause", "Fail immediately if the target pauses somewhere else")
     .action(async (opts: SnapshotCommandOptions): Promise<void> => {
       await handleSnapshot(opts);
     });

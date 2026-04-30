@@ -166,6 +166,7 @@ describe("streamLogpoint", () => {
       scripts: new Map(),
       pauseBuffer: [],
       pauseWaitGate: { active: false },
+      debuggerState: {},
       dispose: async (): Promise<void> => undefined,
     };
     return {
@@ -307,6 +308,7 @@ describe("streamLogpoint", () => {
       scripts: new Map(),
       pauseBuffer: [],
       pauseWaitGate: { active: false },
+      debuggerState: {},
       dispose: async (): Promise<void> => undefined,
     };
     await expect(

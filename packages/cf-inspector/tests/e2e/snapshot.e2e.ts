@@ -44,6 +44,65 @@ test("snapshot captures the paused frame on the marker line", async () => {
   }
 });
 
+test("snapshot keeps nested commas inside a single capture expression", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const expression = "JSON.stringify({ id: user.id, steps: accumulator.length })";
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--capture",
+        expression,
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    const capture = parsed.captures.find((entry) => entry.expression === expression);
+    expect(capture?.error).toBeUndefined();
+    expect(capture?.value).toBeDefined();
+    const encoded = JSON.parse(capture?.value ?? "\"\"") as string;
+    const decoded = JSON.parse(encoded) as { id?: number; steps?: number };
+    expect(typeof decoded.id).toBe("number");
+    expect(decoded.steps).toBe(4);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --keep-paused human output does not claim a durable pause", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--timeout",
+        "10",
+        "--no-json",
+        "--keep-paused",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("paused:  unknown");
+    expect(result.stdout).not.toContain("still paused");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("snapshot rejects an invalid breakpoint spec", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();
@@ -151,6 +210,56 @@ test("snapshot --condition with a syntax error surfaces INVALID_EXPRESSION fast 
     expect(result.stderr).toContain("INVALID_EXPRESSION");
     // Must fail fast — should NOT wait for the 30s timeout.
     expect(elapsed).toBeLessThan(5_000);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot reports a dedicated timeout when the target stays paused elsewhere", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ env: { SAMPLE_DEBUG_PAUSE: "1" } });
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--timeout",
+        "2",
+      ],
+      30_000,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("waiting for it to resume");
+    expect(result.stderr).toContain("UNRELATED_PAUSE_TIMEOUT");
+    expect(result.stderr).not.toContain("BREAKPOINT_NOT_HIT");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot can fail immediately on unmatched pauses in strict mode", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ env: { SAMPLE_DEBUG_PAUSE: "1" } });
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--timeout",
+        "10",
+        "--fail-on-unmatched-pause",
+      ],
+      30_000,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("UNRELATED_PAUSE");
+    expect(result.stderr).not.toContain("UNRELATED_PAUSE_TIMEOUT");
   } finally {
     await fixture.close();
   }

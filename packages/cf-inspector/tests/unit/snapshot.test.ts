@@ -80,6 +80,7 @@ describe("captureSnapshot", () => {
   const localScopeId = "scope-local";
   const argScopeId = "scope-args";
   const userObjectId = "obj-user";
+  const credentialObjectId = "obj-credential";
 
   function makeSession(): InspectorSession {
     const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
@@ -91,6 +92,10 @@ describe("captureSnapshot", () => {
               { name: "userId", value: { type: "number", value: 7 } },
               { name: "user", value: { type: "object", description: "{ id: 7 }", objectId: userObjectId } },
               { name: "password", value: { type: "string", value: "leak-me-not" } },
+              {
+                name: "credentials",
+                value: { type: "object", description: "{ value: 'hidden' }", objectId: credentialObjectId },
+              },
             ],
           };
         }
@@ -106,6 +111,13 @@ describe("captureSnapshot", () => {
             result: [
               { name: "id", value: { type: "number", value: 7 } },
               { name: "token", value: { type: "string", value: "abc-123" } },
+            ],
+          };
+        }
+        if (objectId === credentialObjectId) {
+          return {
+            result: [
+              { name: "value", value: { type: "string", value: "must-not-expand" } },
             ],
           };
         }
@@ -131,6 +143,7 @@ describe("captureSnapshot", () => {
       scripts: new Map(),
       pauseBuffer: [],
       pauseWaitGate: { active: false },
+      debuggerState: {},
       dispose: async (): Promise<void> => undefined,
     };
   }
@@ -173,6 +186,9 @@ describe("captureSnapshot", () => {
     expect(localScope).toBeDefined();
     const password = localScope?.variables.find((v) => v.name === "password");
     expect(password?.value).toBe("[REDACTED]");
+    const credentials = localScope?.variables.find((v) => v.name === "credentials");
+    expect(credentials?.value).toBe("[REDACTED]");
+    expect(credentials?.children).toBeUndefined();
     const userVar = localScope?.variables.find((v) => v.name === "user");
     expect(userVar?.children?.find((c) => c.name === "token")?.value).toBe("[REDACTED]");
 
@@ -212,6 +228,7 @@ describe("captureSnapshot", () => {
       scripts: new Map(),
       pauseBuffer: [],
       pauseWaitGate: { active: false },
+      debuggerState: {},
       dispose: async (): Promise<void> => undefined,
     };
     const pause: PauseEvent = {
@@ -250,6 +267,7 @@ describe("captureSnapshot", () => {
       scripts: new Map(),
       pauseBuffer: [],
       pauseWaitGate: { active: false },
+      debuggerState: {},
       dispose: async (): Promise<void> => undefined,
     };
     const pause: PauseEvent = {

@@ -25,6 +25,10 @@ export interface SpawnedFixture {
   readonly close: () => Promise<void>;
 }
 
+export interface SpawnFixtureOptions {
+  readonly env?: Readonly<Record<string, string>>;
+}
+
 interface InspectorList {
   webSocketDebuggerUrl: string;
 }
@@ -80,10 +84,10 @@ function parseDebuggerListening(stderr: string): number | undefined {
   return Number.parseInt(match[1], 10);
 }
 
-export async function spawnFixture(): Promise<SpawnedFixture> {
+export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<SpawnedFixture> {
   const child = spawn(process.execPath, ["--inspect=0", FIXTURE_PATH], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...process.env, ...options.env },
   });
 
   let stderrBuf = "";
@@ -109,13 +113,17 @@ export async function spawnFixture(): Promise<SpawnedFixture> {
     if (child.exitCode !== null || child.signalCode !== null) {
       return;
     }
-    child.kill("SIGTERM");
-    await new Promise<void>((r) => {
+    await new Promise<void>((resolveOnce) => {
+      let settled = false;
       const finish = (): void => {
-        r();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolveOnce();
       };
-      child.once("exit", finish);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         try {
           child.kill("SIGKILL");
         } catch {
@@ -123,6 +131,8 @@ export async function spawnFixture(): Promise<SpawnedFixture> {
         }
         finish();
       }, 2000);
+      child.once("exit", finish);
+      child.kill("SIGTERM");
     });
   };
 

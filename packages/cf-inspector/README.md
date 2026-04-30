@@ -22,7 +22,7 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 - ✅ **Conditional breakpoints** — `--condition 'req.userId === "abc"'` only pauses when the predicate is truthy
 - 🎭 **Multi-breakpoint** — repeat `--bp` to race several locations; first hit wins
 - 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes, **without ever pausing the inspectee** (safe for production traffic)
-- 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shape, sensitive-name redaction (`password`, `token`, `secret`, `cookie`, …) baked in
+- 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shape, sensitive-name redaction (`password`, `credentials`, `token`, `secret`, `cookie`, …) baked in
 - 🧭 **Path mapping** — local `src/handler.ts:42` is matched against the remote URL via a `urlRegex`, with optional `--remote-root` literal or regex (same DSL as `cds-debug`)
 - 🔁 **Composes with `cf-debugger`** — pass `--app/--region/--org/--space` and the tunnel is opened automatically; pass `--port` to attach to anything CDP-speaking
 - 🪶 **Tiny dependency footprint** — `commander` + `ws` only, no heavy CDP framework
@@ -109,16 +109,26 @@ cf-inspector snapshot --port 9229 \
 | `--port <number>` | Local port the inspector or tunnel listens on. **Required** unless `--app/--region/--org/--space` are all set |
 | `--bp <file:line>` | **Required.** Source location to break at. Pass multiple times to race several locations — the first one to hit wins |
 | `--condition <expr>` | Only pause when this JS expression evaluates truthy in the paused frame. Errors in the condition are silently treated as `false` by V8 |
-| `--capture <expr,…>` | Comma-separated expressions to evaluate in the paused frame; results merged into the snapshot |
+| `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
 | `--no-json` | Print a human-readable summary instead of JSON |
-| `--keep-paused` | Skip the auto-resume after capture (useful for diagnostics) |
+| `--keep-paused` | Skip `Debugger.resume` after capture; Node may resume when the CLI disconnects |
+| `--fail-on-unmatched-pause` | Fail immediately if the target pauses somewhere else instead of waiting cooperatively |
 
 JSON output includes `pausedDurationMs`, the client-observed time from receiving
 the matching pause event until `Debugger.resume` completes. It does not include
 the time spent waiting for the breakpoint to hit. When `--keep-paused` is used,
-`pausedDurationMs` is `null` because the process intentionally remains paused.
+`pausedDurationMs` is `null` because `cf-inspector` intentionally skips
+`Debugger.resume`. Node may resume execution when this one-shot CLI disconnects,
+so treat `--keep-paused` as a low-level diagnostic escape hatch, not a durable
+paused-session mode.
+
+If the target pauses somewhere else first, for example another debugger's
+breakpoint or a `debugger;` statement, `snapshot` does not resume it by default.
+It warns once, waits for `Debugger.resumed`, then continues waiting for its own
+breakpoint within the remaining timeout. Use `--fail-on-unmatched-pause` when a
+strict immediate error is preferred.
 
 For Cloud Foundry targets, replace `--port` with `--region/--org/--space/--app` (and optionally `--cf-timeout <seconds>` for the tunnel).
 
@@ -161,7 +171,7 @@ When the user expression throws, the event is emitted with `error` instead of `v
 
 ### 🧮 `cf-inspector eval`
 
-Evaluate one expression and print the result. If a breakpoint is currently paused, it runs in the top frame; otherwise it runs against `Runtime.evaluate` in the global scope.
+Evaluate one expression with `Runtime.evaluate` in the global scope and print the result. For paused-frame values, use `snapshot --capture` or the programmatic `evaluateOnFrame(...)` API.
 
 ```bash
 cf-inspector eval --port 9229 --expr 'process.uptime()'
@@ -204,7 +214,11 @@ const bp = await setBreakpoint(session, {
 });
 const pause = await waitForPause(session, { timeoutMs: 30_000 });
 const snapshot = await captureSnapshot(session, pause);
-const customValue = await evaluateOnFrame(session, pause.callFrames[0]!.callFrameId, "this.user");
+const topFrame = pause.callFrames[0];
+if (topFrame === undefined) {
+  throw new Error("Breakpoint paused without a call frame");
+}
+const customValue = await evaluateOnFrame(session, topFrame.callFrameId, "this.user");
 await resume(session);
 await session.dispose();
 
@@ -247,6 +261,8 @@ console.log({ bp, snapshot, customValue });
 | `INSPECTOR_CONNECTION_FAILED` | WebSocket handshake failed, or the connection closed mid-request |
 | `CDP_REQUEST_FAILED` | A CDP method returned an error result, timed out, or failed to send |
 | `BREAKPOINT_NOT_HIT` | The breakpoint did not hit before the timeout elapsed |
+| `UNRELATED_PAUSE` | The target paused somewhere else and `--fail-on-unmatched-pause` was enabled |
+| `UNRELATED_PAUSE_TIMEOUT` | The target stayed paused somewhere else until the snapshot timeout elapsed |
 | `EVALUATION_FAILED` | Reserved for future use — current evaluation paths surface remote exceptions inline via `CapturedExpression.error` instead of throwing |
 | `MISSING_TARGET` | Neither `--port` nor a complete CF target (`--region/--org/--space/--app`) was provided |
 | `ABORTED` | Reserved for future use by long-running streams when an `AbortSignal` fires |
@@ -272,10 +288,10 @@ Path mapping uses CDP's first-class `urlRegex`:
 
 | `--remote-root` | Resulting urlRegex (line `42` of `src/handler.ts`) |
 | --- | --- |
-| _omitted_ | `(?:^|/)src/handler\.(?:ts\|js)$` |
-| `/home/vcap/app` (literal) | `^file:///home/vcap/app/src/handler\.(?:ts\|js)$` |
-| `regex:^/example-root-.*$` | `^file:///example-root-[^/]+/src/handler\.(?:ts\|js)$` |
-| `/^/example-root-.*$/` | same as above |
+| _omitted_ | `(?:^|/)src/handler\.(?:ts\|js\|mts\|mjs\|cts\|cjs)$` |
+| `/home/vcap/app` (literal) | `^file:///home/vcap/app/src/handler\.(?:ts\|js\|mts\|mjs\|cts\|cjs)$` |
+| `regex:^/example-root-.*$` | `^file:///example-root-.*/src/handler\.(?:ts\|js\|mts\|mjs\|cts\|cjs)$` |
+| `regex:^/(home/vcap/app\|example-root-.*)$` | `^file:///(home/vcap/app\|example-root-.*)/src/handler\.(?:ts\|js\|mts\|mjs\|cts\|cjs)$` |
 
 `.ts ↔ .js` is folded into the regex automatically because Node's V8 inspector normally serves both the source-mapped TypeScript URL and the runtime JavaScript URL — matching either is correct.
 

@@ -10,7 +10,7 @@ function handle(payload) {
     accumulator.push(`step-${i}`);
   }
   // Marker line that the e2e suite breaks on.
-  counter += 1;
+  if (process.env['SAMPLE_DEBUG_PAUSE'] === '1') { debugger; } counter += 1;
   return { user, counter, accumulator };
 }
 

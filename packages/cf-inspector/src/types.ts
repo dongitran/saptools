@@ -8,6 +8,8 @@ export type CfInspectorErrorCode =
   | "INSPECTOR_CONNECTION_FAILED"
   | "CDP_REQUEST_FAILED"
   | "BREAKPOINT_NOT_HIT"
+  | "UNRELATED_PAUSE"
+  | "UNRELATED_PAUSE_TIMEOUT"
   | "EVALUATION_FAILED"
   | "MISSING_TARGET"
   | "ABORTED";
@@ -83,6 +85,7 @@ export interface PauseEvent {
   readonly reason: string;
   readonly hitBreakpoints: readonly string[];
   readonly callFrames: readonly CallFrameInfo[];
+  readonly receivedAtMs?: number;
 }
 
 export interface VariableSnapshot {

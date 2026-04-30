@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { performance } from "node:perf_hooks";
 
 import { CdpClient } from "./cdp.js";
 import { buildBreakpointUrlRegex } from "./pathMapper.js";
@@ -44,12 +45,17 @@ export interface PauseWaitGate {
   active: boolean;
 }
 
+export interface DebuggerState {
+  lastResumedAtMs?: number;
+}
+
 export interface InspectorSession {
   readonly client: CdpClient;
   readonly target: InspectorTarget;
   readonly scripts: ReadonlyMap<string, ScriptInfo>;
   readonly pauseBuffer: PauseEvent[];
   readonly pauseWaitGate: PauseWaitGate;
+  readonly debuggerState: DebuggerState;
   dispose(): Promise<void>;
 }
 
@@ -264,22 +270,20 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
   const PAUSE_BUFFER_LIMIT = 32;
   const pauseBuffer: PauseEvent[] = [];
   const pauseWaitGate: PauseWaitGate = { active: false };
+  const debuggerState: DebuggerState = {};
   client.on("Debugger.paused", (raw) => {
     if (pauseWaitGate.active) {
       return;
     }
     const params = raw as CdpPauseParams;
-    const event: PauseEvent = {
-      reason: asString(params.reason),
-      hitBreakpoints: Array.isArray(params.hitBreakpoints)
-        ? params.hitBreakpoints.filter((id): id is string => typeof id === "string")
-        : [],
-      callFrames: toCallFrames(params.callFrames),
-    };
+    const event = toPauseEvent(params, performance.now());
     if (pauseBuffer.length >= PAUSE_BUFFER_LIMIT) {
       pauseBuffer.shift();
     }
     pauseBuffer.push(event);
+  });
+  client.on("Debugger.resumed", () => {
+    debuggerState.lastResumedAtMs = performance.now();
   });
   await client.send("Runtime.enable");
   await client.send("Debugger.enable");
@@ -289,6 +293,7 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
     scripts,
     pauseBuffer,
     pauseWaitGate,
+    debuggerState,
     dispose: async (): Promise<void> => {
       try {
         await client.send("Debugger.disable");
@@ -427,6 +432,8 @@ function toCallFrames(value: unknown): readonly CallFrameInfo[] {
 export interface WaitForPauseOptions {
   readonly timeoutMs: number;
   readonly breakpointIds?: readonly string[];
+  readonly unmatchedPausePolicy?: "wait-for-resume" | "fail";
+  readonly onUnmatchedPause?: (pause: PauseEvent) => void;
 }
 
 function pauseMatches(pause: PauseEvent, breakpointIds: readonly string[] | undefined): boolean {
@@ -436,48 +443,148 @@ function pauseMatches(pause: PauseEvent, breakpointIds: readonly string[] | unde
   return pause.hitBreakpoints.some((id) => breakpointIds.includes(id));
 }
 
-export async function waitForPause(
-  session: InspectorSession,
-  options: WaitForPauseOptions,
-): Promise<PauseEvent> {
-  // Check the buffer first — a breakpoint may have fired between setBreakpoint
-  // returning and waitForPause being called (the inspectee runs continuously).
-  const buffer = session.pauseBuffer;
-  while (buffer.length > 0) {
-    const head = buffer.shift();
-    if (head !== undefined && pauseMatches(head, options.breakpointIds)) {
-      return head;
-    }
-  }
-  // No buffered match — switch to live mode. The pauseWaitGate flips on so
-  // the always-on buffer listener skips the very event we're about to consume,
-  // preventing duplicate-replay on a follow-up waitForPause.
-  session.pauseWaitGate.active = true;
-  let params: CdpPauseParams;
-  try {
-    const expected = options.breakpointIds;
-    params = await session.client.waitFor<CdpPauseParams>("Debugger.paused", {
-      timeoutMs: options.timeoutMs,
-      predicate: (raw): boolean => {
-        if (expected === undefined || expected.length === 0) {
-          return true;
-        }
-        const ids = Array.isArray(raw.hitBreakpoints)
-          ? raw.hitBreakpoints.filter((id): id is string => typeof id === "string")
-          : [];
-        return ids.some((id) => expected.includes(id));
-      },
-    });
-  } finally {
-    session.pauseWaitGate.active = false;
-  }
+function toPauseEvent(params: CdpPauseParams, receivedAtMs: number): PauseEvent {
   return {
     reason: asString(params.reason),
     hitBreakpoints: Array.isArray(params.hitBreakpoints)
       ? params.hitBreakpoints.filter((id): id is string => typeof id === "string")
       : [],
     callFrames: toCallFrames(params.callFrames),
+    receivedAtMs,
   };
+}
+
+function remainingUntil(deadlineMs: number): number {
+  return Math.max(0, deadlineMs - performance.now());
+}
+
+function topFrameLocation(pause: PauseEvent): string {
+  const top = pause.callFrames[0];
+  if (top === undefined) {
+    return "(no call frame)";
+  }
+  const url = top.url !== undefined && top.url.length > 0 ? top.url : "(unknown)";
+  return `${url}:${(top.lineNumber + 1).toString()}:${(top.columnNumber + 1).toString()}`;
+}
+
+function pauseDetail(pause: PauseEvent): string {
+  return JSON.stringify({
+    reason: pause.reason,
+    hitBreakpoints: pause.hitBreakpoints,
+    topFrame: topFrameLocation(pause),
+  });
+}
+
+function hasResumedSincePause(session: InspectorSession, pause: PauseEvent): boolean {
+  const pauseAt = pause.receivedAtMs;
+  const resumedAt = session.debuggerState.lastResumedAtMs;
+  return pauseAt !== undefined && resumedAt !== undefined && resumedAt >= pauseAt;
+}
+
+function throwBreakpointTimeout(timeoutMs: number): never {
+  throw new CfInspectorError(
+    "BREAKPOINT_NOT_HIT",
+    `Timed out waiting for matching Debugger.paused after ${timeoutMs.toString()}ms`,
+  );
+}
+
+function throwUnrelatedPauseTimeout(pause: PauseEvent, timeoutMs: number): never {
+  throw new CfInspectorError(
+    "UNRELATED_PAUSE_TIMEOUT",
+    `Target stayed paused by another debugger event before this command's breakpoint could hit within ${timeoutMs.toString()}ms`,
+    pauseDetail(pause),
+  );
+}
+
+async function waitForUnmatchedPauseToResume(
+  session: InspectorSession,
+  pause: PauseEvent,
+  deadlineMs: number,
+  timeoutMs: number,
+): Promise<void> {
+  if (hasResumedSincePause(session, pause)) {
+    return;
+  }
+  const remainingMs = remainingUntil(deadlineMs);
+  if (remainingMs <= 0) {
+    throwUnrelatedPauseTimeout(pause, timeoutMs);
+  }
+  try {
+    await session.client.waitFor("Debugger.resumed", { timeoutMs: remainingMs });
+    session.debuggerState.lastResumedAtMs = performance.now();
+  } catch (err: unknown) {
+    if (err instanceof CfInspectorError && err.code === "BREAKPOINT_NOT_HIT") {
+      throwUnrelatedPauseTimeout(pause, timeoutMs);
+    }
+    throw err;
+  }
+}
+
+async function handleUnmatchedPause(
+  session: InspectorSession,
+  pause: PauseEvent,
+  options: WaitForPauseOptions,
+  deadlineMs: number,
+): Promise<void> {
+  if (options.unmatchedPausePolicy === "fail") {
+    throw new CfInspectorError(
+      "UNRELATED_PAUSE",
+      "Target paused before this command's breakpoint was reached",
+      pauseDetail(pause),
+    );
+  }
+  if (hasResumedSincePause(session, pause)) {
+    return;
+  }
+  options.onUnmatchedPause?.(pause);
+  await waitForUnmatchedPauseToResume(session, pause, deadlineMs, options.timeoutMs);
+}
+
+export async function waitForPause(
+  session: InspectorSession,
+  options: WaitForPauseOptions,
+): Promise<PauseEvent> {
+  const deadlineMs = performance.now() + options.timeoutMs;
+  // Check the buffer first — a breakpoint may have fired between setBreakpoint
+  // returning and waitForPause being called (the inspectee runs continuously).
+  const buffer = session.pauseBuffer;
+  while (buffer.length > 0 || remainingUntil(deadlineMs) > 0) {
+    while (buffer.length > 0) {
+      const buffered = buffer.shift();
+      if (buffered === undefined) {
+        continue;
+      }
+      if (pauseMatches(buffered, options.breakpointIds)) {
+        return buffered;
+      }
+      await handleUnmatchedPause(session, buffered, options, deadlineMs);
+    }
+
+    const remainingMs = remainingUntil(deadlineMs);
+    if (remainingMs <= 0) {
+      throwBreakpointTimeout(options.timeoutMs);
+    }
+    session.pauseWaitGate.active = true;
+    let receivedAtMs: number | undefined;
+    let params: CdpPauseParams;
+    try {
+      params = await session.client.waitFor<CdpPauseParams>("Debugger.paused", {
+        timeoutMs: remainingMs,
+        predicate: (): boolean => {
+          receivedAtMs = performance.now();
+          return true;
+        },
+      });
+    } finally {
+      session.pauseWaitGate.active = false;
+    }
+    const pause = toPauseEvent(params, receivedAtMs ?? performance.now());
+    if (pauseMatches(pause, options.breakpointIds)) {
+      return pause;
+    }
+    await handleUnmatchedPause(session, pause, options, deadlineMs);
+  }
+  throwBreakpointTimeout(options.timeoutMs);
 }
 
 export async function resume(session: InspectorSession): Promise<void> {

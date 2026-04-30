@@ -15,7 +15,7 @@ const MAX_SCOPE_VARIABLES = 20;
 const MAX_CHILD_VARIABLES = 8;
 const MAX_VARIABLE_DEPTH = 2;
 const MAX_VALUE_LENGTH = 240;
-const SENSITIVE_NAME_REGEX = /(pass(?:word)?|token|secret|api[_-]?key|authorization|cookie|session|private[_-]?key)/i;
+const SENSITIVE_NAME_REGEX = /(pass(?:word)?|credentials?|creds?|token|secret|api[_-]?key|authorization|cookie|session|private[_-]?key)/i;
 
 const PRIORITY_BY_TYPE: Readonly<Record<string, number>> = {
   local: 0,
@@ -91,8 +91,12 @@ function formatPrimitive(value: string | number | boolean | bigint | symbol): st
   return String(value);
 }
 
+function isSensitiveName(name: string): boolean {
+  return SENSITIVE_NAME_REGEX.test(name);
+}
+
 function sanitizeValue(name: string, raw: string): string {
-  if (SENSITIVE_NAME_REGEX.test(name)) {
+  if (isSensitiveName(name)) {
     return "[REDACTED]";
   }
   if (raw.length <= MAX_VALUE_LENGTH) {
@@ -117,8 +121,9 @@ async function captureProperties(
     limited.map(async (prop): Promise<VariableSnapshot> => {
       const name = typeof prop.name === "string" ? prop.name : "?";
       const described = describeProperty(prop);
+      const sensitive = isSensitiveName(name);
       let children: readonly VariableSnapshot[] | undefined;
-      if (depth > 0 && described.objectId !== undefined && isExpandable(described.type)) {
+      if (!sensitive && depth > 0 && described.objectId !== undefined && isExpandable(described.type)) {
         try {
           const nested = await captureProperties(
             session,
@@ -133,7 +138,7 @@ async function captureProperties(
           // best-effort: skip nested expansion on error
         }
       }
-      const sanitizedValue = sanitizeValue(name, described.value);
+      const sanitizedValue = sensitive ? "[REDACTED]" : sanitizeValue(name, described.value);
       const base: VariableSnapshot = { name, value: sanitizedValue };
       const withType = described.type === undefined ? base : { ...base, type: described.type };
       return children === undefined ? withType : { ...withType, children };

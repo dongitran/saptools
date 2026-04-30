@@ -39,6 +39,7 @@ export {
   waitForPause,
 } from "./inspector.js";
 export type {
+  DebuggerState,
   InspectorSession,
   InspectorTarget,
   SetBreakpointInput,

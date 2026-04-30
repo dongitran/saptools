@@ -137,6 +137,41 @@ describe("buildBreakpointUrlRegex", () => {
     expect(r.test("file:///other/src/handler.ts")).toBe(false);
   });
 
+  it("normalizes anchored regex remote-roots before embedding them in a file URL regex", () => {
+    const setting = parseRemoteRoot("regex:^/(home/vcap/app|example-root-.*)$");
+    const regex = buildBreakpointUrlRegex({
+      file: "src/handler.ts",
+      remoteRoot: setting,
+    });
+    const r = new RegExp(regex);
+    expect(regex).toBe("^file:///(home/vcap/app|example-root-.*)/src/handler\\.(?:ts|js|mts|mjs|cts|cjs)$");
+    expect(r.test("file:///home/vcap/app/src/handler.ts")).toBe(true);
+    expect(r.test("file:///example-root-alpha/src/handler.js")).toBe(true);
+    expect(r.test("file:///other/src/handler.ts")).toBe(false);
+  });
+
+  it("normalizes anchored slash-delimited regex remote-roots before embedding them", () => {
+    const setting = parseRemoteRoot("/^\\/example-root-[a-z]+$/i");
+    const regex = buildBreakpointUrlRegex({
+      file: "src/handler.ts",
+      remoteRoot: setting,
+    });
+    const r = new RegExp(regex);
+    expect(r.test("file:///example-root-alpha/src/handler.ts")).toBe(true);
+    expect(r.test("file:///other/src/handler.ts")).toBe(false);
+  });
+
+  it("does not add a duplicate slash for root remote-root values", () => {
+    const regex = buildBreakpointUrlRegex({
+      file: "src/handler.ts",
+      remoteRoot: { kind: "literal", value: "/" },
+    });
+    const r = new RegExp(regex);
+    expect(regex).toBe("^file:///src/handler\\.(?:ts|js|mts|mjs|cts|cjs)$");
+    expect(r.test("file:///src/handler.ts")).toBe(true);
+    expect(r.test("file:////src/handler.ts")).toBe(false);
+  });
+
   it("strips ./ leading and accepts files without .ts/.js extension", () => {
     const regex = buildBreakpointUrlRegex({
       file: "./src/server",

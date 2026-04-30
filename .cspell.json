@@ -89,7 +89,12 @@
     "approuter",
     "refetches",
     "csecret",
-    "worktree"
+    "worktree",
+    "Logpoint",
+    "logpoints",
+    "Inspectee",
+    "throwy",
+    "unmatch"
   ],
   "ignorePaths": [
     "node_modules/**",

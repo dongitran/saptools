@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { CdpClient } from "../../src/cdp.js";
@@ -18,13 +20,20 @@ import type { PauseEvent } from "../../src/types.js";
 function makeSession(buffer: PauseEvent[] = []): {
   session: InspectorSession;
   fireEvent: (params: unknown) => void;
+  fireResumed: () => void;
 } {
   const listeners = new Map<string, ((p: unknown) => void)[]>();
-  const fireEvent = (params: unknown): void => {
-    const list = listeners.get("Debugger.paused") ?? [];
+  const fire = (method: string, params: unknown): void => {
+    const list = listeners.get(method) ?? [];
     for (const fn of list) {
       fn(params);
     }
+  };
+  const fireEvent = (params: unknown): void => {
+    fire("Debugger.paused", params);
+  };
+  const fireResumed = (): void => {
+    fire("Debugger.resumed", {});
   };
   const client = {
     waitFor: vi.fn(async (method: string, options: { timeoutMs: number; predicate?: (p: unknown) => boolean }) => {
@@ -47,7 +56,7 @@ function makeSession(buffer: PauseEvent[] = []): {
         })();
         const timer = setTimeout(() => {
           cleanup();
-          reject(new Error(`timed out after ${options.timeoutMs.toString()}ms`));
+          reject(new CfInspectorError("BREAKPOINT_NOT_HIT", `timed out after ${options.timeoutMs.toString()}ms`));
         }, options.timeoutMs);
         function cleanup(): void {
           clearTimeout(timer);
@@ -62,9 +71,10 @@ function makeSession(buffer: PauseEvent[] = []): {
     scripts: new Map(),
     pauseBuffer: [...buffer],
     pauseWaitGate: { active: false },
+    debuggerState: {},
     dispose: async (): Promise<void> => undefined,
   };
-  return { session, fireEvent };
+  return { session, fireEvent, fireResumed };
 }
 
 describe("waitForPause", () => {
@@ -74,14 +84,16 @@ describe("waitForPause", () => {
         reason: "other",
         hitBreakpoints: ["bp-1"],
         callFrames: [],
+        receivedAtMs: 123,
       },
     ]);
     const result = await waitForPause(session, { timeoutMs: 50, breakpointIds: ["bp-1"] });
     expect(result.hitBreakpoints).toEqual(["bp-1"]);
+    expect(result.receivedAtMs).toBe(123);
     expect(session.pauseBuffer).toHaveLength(0);
   });
 
-  it("drops buffered events whose breakpointId does not match and times out", async () => {
+  it("reports a dedicated timeout when a buffered unmatched pause never resumes", async () => {
     const { session } = makeSession([
       {
         reason: "other",
@@ -91,7 +103,7 @@ describe("waitForPause", () => {
     ]);
     await expect(
       waitForPause(session, { timeoutMs: 30, breakpointIds: ["bp-1"] }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: "UNRELATED_PAUSE_TIMEOUT" });
   });
 
   it("returns the first buffered event when no breakpointIds filter is given", async () => {
@@ -107,6 +119,7 @@ describe("waitForPause", () => {
 
   it("waits on the live CDP event when buffer is empty", async () => {
     const { session, fireEvent } = makeSession([]);
+    const before = performance.now();
     const promise = waitForPause(session, { timeoutMs: 200, breakpointIds: ["bp-7"] });
     setTimeout(() => {
       fireEvent({
@@ -128,16 +141,77 @@ describe("waitForPause", () => {
     expect(result.hitBreakpoints).toEqual(["bp-7"]);
     expect(result.callFrames).toHaveLength(1);
     expect(result.callFrames[0]?.functionName).toBe("fn");
+    expect(result.receivedAtMs).toBeDefined();
+    const receivedAtMs = result.receivedAtMs ?? 0;
+    expect(receivedAtMs).toBeGreaterThanOrEqual(before);
+    expect(receivedAtMs).toBeLessThanOrEqual(performance.now());
   });
 
   it("ignores live events whose breakpointId is not in the filter", async () => {
-    const { session, fireEvent } = makeSession([]);
+    const { session, fireEvent, fireResumed } = makeSession([]);
     const promise = waitForPause(session, { timeoutMs: 100, breakpointIds: ["bp-9"] });
     setTimeout(() => {
-      // Non-matching event should be ignored by predicate.
       fireEvent({ reason: "other", hitBreakpoints: ["bp-other"], callFrames: [] });
     }, 5);
+    setTimeout(() => {
+      fireResumed();
+    }, 15);
     await expect(promise).rejects.toThrow();
+  });
+
+  it("waits cooperatively through an unmatched pause and then returns a matching pause", async () => {
+    const { session, fireEvent, fireResumed } = makeSession([]);
+    const unmatched: PauseEvent[] = [];
+    const promise = waitForPause(session, {
+      timeoutMs: 300,
+      breakpointIds: ["bp-1"],
+      onUnmatchedPause: (pause) => {
+        unmatched.push(pause);
+      },
+    });
+    setTimeout(() => {
+      fireEvent({ reason: "debuggerStatement", hitBreakpoints: [], callFrames: [] });
+    }, 5);
+    setTimeout(() => {
+      fireResumed();
+    }, 20);
+    setTimeout(() => {
+      fireEvent({ reason: "other", hitBreakpoints: ["bp-1"], callFrames: [] });
+    }, 35);
+    const result = await promise;
+    expect(result.hitBreakpoints).toEqual(["bp-1"]);
+    expect(unmatched).toHaveLength(1);
+    expect(unmatched[0]?.reason).toBe("debuggerStatement");
+  });
+
+  it("fails immediately on unmatched pauses in strict mode", async () => {
+    const { session, fireEvent } = makeSession([]);
+    const promise = waitForPause(session, {
+      timeoutMs: 300,
+      breakpointIds: ["bp-1"],
+      unmatchedPausePolicy: "fail",
+    });
+    setTimeout(() => {
+      fireEvent({ reason: "debuggerStatement", hitBreakpoints: [], callFrames: [] });
+    }, 5);
+    await expect(promise).rejects.toMatchObject({ code: "UNRELATED_PAUSE" });
+  });
+
+  it("does not wait for resume when a buffered unmatched pause already resumed", async () => {
+    const { session, fireEvent } = makeSession([
+      {
+        reason: "debuggerStatement",
+        hitBreakpoints: [],
+        callFrames: [],
+        receivedAtMs: 10,
+      },
+    ]);
+    session.debuggerState.lastResumedAtMs = 20;
+    const promise = waitForPause(session, { timeoutMs: 300, breakpointIds: ["bp-1"] });
+    setTimeout(() => {
+      fireEvent({ reason: "other", hitBreakpoints: ["bp-1"], callFrames: [] });
+    }, 5);
+    await expect(promise).resolves.toMatchObject({ hitBreakpoints: ["bp-1"] });
   });
 
   it("flips pauseWaitGate.active on while waiting and back off after the live event resolves", async () => {
@@ -191,6 +265,7 @@ function makeSendSession(
     scripts: new Map(),
     pauseBuffer: [],
     pauseWaitGate: { active: false },
+    debuggerState: {},
     dispose: async (): Promise<void> => undefined,
   };
   return { session, calls };

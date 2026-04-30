@@ -106,6 +106,20 @@ function stripTrailingSlash(value: string): string {
   return value;
 }
 
+function normalizeRegexRootPattern(pattern: string): string {
+  const withoutStartAnchor = pattern.startsWith("^") ? pattern.slice(1) : pattern;
+  const withoutEndAnchor =
+    withoutStartAnchor.endsWith("$") && !isEscaped(withoutStartAnchor, withoutStartAnchor.length - 1)
+      ? withoutStartAnchor.slice(0, -1)
+      : withoutStartAnchor;
+  return stripTrailingSlash(withoutEndAnchor);
+}
+
+function buildFileUrlRegex(rootPattern: string, tail: string): string {
+  const separator = rootPattern.endsWith("/") ? "" : "/";
+  return `^file://${rootPattern}${separator}${tail}$`;
+}
+
 function escapeRegExp(value: string): string {
   return value.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
@@ -142,10 +156,11 @@ export function buildBreakpointUrlRegex(input: BuildUrlRegexInput): string {
     }
     case "literal": {
       const escapedRoot = escapeRegExp(input.remoteRoot.value);
-      return `^file://${escapedRoot}/${tail}$`;
+      return buildFileUrlRegex(escapedRoot, tail);
     }
     case "regex": {
-      return `^file://${input.remoteRoot.pattern}/${tail}$`;
+      const rootPattern = normalizeRegexRootPattern(input.remoteRoot.pattern);
+      return buildFileUrlRegex(rootPattern, tail);
     }
   }
 }

@@ -32,6 +32,22 @@ test("eval surfaces evaluation errors", async () => {
   }
 });
 
+test("eval exits non-zero for JSON-mode evaluation errors", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      ["eval", "--port", fixture.port.toString(), "--expr", "undefinedReference"],
+      30_000,
+    );
+    expect(result.exitCode).toBe(1);
+    const parsed = JSON.parse(result.stdout) as { exceptionDetails?: unknown };
+    expect(parsed.exceptionDetails).toBeDefined();
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("attach reports the inspector version", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();
