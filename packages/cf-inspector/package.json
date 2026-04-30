@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-inspector",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Set breakpoints, capture variable snapshots, and evaluate expressions on a SAP BTP Cloud Foundry Node.js app via the Chrome DevTools Protocol — agent-friendly, no IDE required.",
   "type": "module",
   "publishConfig": {

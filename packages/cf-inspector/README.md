@@ -101,21 +101,17 @@ cf-inspector snapshot --port 9229 \
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
 | `--include-scopes` | Include expanded paused-frame scopes under `topFrame.scopes`. Omitted by default to keep targeted captures concise |
 | `--no-json` | Print a human-readable summary instead of JSON |
-| `--keep-paused` | Skip `Debugger.resume` after capture; Node may resume when the CLI disconnects |
+| `--keep-paused` | Skip `Debugger.resume` after capture |
 | `--fail-on-unmatched-pause` | Fail immediately if the target pauses somewhere else instead of waiting cooperatively |
 
-JSON output includes frame metadata and `captures` by default. `topFrame.scopes`
-is only present with `--include-scopes`, because Cloud Foundry Node apps often
-carry large local/closure/module objects that drown out targeted captures. The
-output contains raw debugger values; use it only against trusted targets and be
-careful when sharing logs. The output also includes `pausedDurationMs`, the
-client-observed time from receiving
-the matching pause event until `Debugger.resume` completes. It does not include
-the time spent waiting for the breakpoint to hit. When `--keep-paused` is used,
-`pausedDurationMs` is `null` because `cf-inspector` intentionally skips
-`Debugger.resume`. Node may resume execution when this one-shot CLI disconnects,
-so treat `--keep-paused` as a low-level diagnostic escape hatch, not a durable
-paused-session mode.
+Snapshot JSON includes frame metadata and `captures` by default. `topFrame.scopes`
+is only present with `--include-scopes` because scope objects can be large and
+drown out targeted captures. Values are raw debugger values, so be careful when
+sharing logs.
+
+`pausedDurationMs` measures the client-observed time from receiving the matching
+pause event until `Debugger.resume` completes. With `--keep-paused`, it is `null`
+because resume is intentionally skipped.
 
 If the target pauses somewhere else first, for example another debugger's
 breakpoint or a `debugger;` statement, `snapshot` does not resume it by default.
