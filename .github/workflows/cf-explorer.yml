@@ -1,0 +1,173 @@
+name: cf-explorer
+# cspell:words pipefail endgroup
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish @saptools/cf-explorer to npm
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cf-explorer.yml"
+      - "packages/cf-explorer/package.json"
+      - "packages/cf-explorer/README.md"
+      - "packages/cf-explorer/src/**"
+      - "packages/cf-explorer/tests/**"
+      - "packages/cf-explorer/eslint.config.js"
+      - "packages/cf-explorer/playwright.config.ts"
+      - "packages/cf-explorer/tsconfig.json"
+      - "packages/cf-explorer/tsup.config.ts"
+      - "packages/cf-explorer/vitest.config.ts"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cf-explorer.yml"
+      - "packages/cf-explorer/package.json"
+      - "packages/cf-explorer/README.md"
+      - "packages/cf-explorer/src/**"
+      - "packages/cf-explorer/tests/**"
+      - "packages/cf-explorer/eslint.config.js"
+      - "packages/cf-explorer/playwright.config.ts"
+      - "packages/cf-explorer/tsconfig.json"
+      - "packages/cf-explorer/tsup.config.ts"
+      - "packages/cf-explorer/vitest.config.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cf-explorer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build and verify cf-explorer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace deps and cf-explorer
+        run: pnpm --filter @saptools/cf-explorer... build
+
+      - name: Lint
+        run: pnpm --filter @saptools/cf-explorer lint
+
+      - name: Typecheck
+        run: pnpm --filter @saptools/cf-explorer typecheck
+
+      - name: Run unit tests
+        run: pnpm --filter @saptools/cf-explorer test:unit
+
+      - name: Run e2e tests
+        run: pnpm --filter @saptools/cf-explorer test:e2e
+
+      - name: Verify publish tarball
+        run: pnpm pack
+        working-directory: packages/cf-explorer
+
+  publish:
+    name: Publish cf-explorer to npm
+    runs-on: ubuntu-latest
+    needs: ci
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace deps and cf-explorer
+        run: pnpm --filter @saptools/cf-explorer... build
+
+      - name: Check whether version is already published
+        id: publish_check
+        working-directory: packages/cf-explorer
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${package_version} is already published. Skipping npm publish."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait for @saptools/* deps to appear on npm
+        if: steps.publish_check.outputs.should_publish == 'true'
+        working-directory: packages/cf-explorer
+        run: |
+          set -euo pipefail
+          deps=$(node -e "
+            const p = require('./package.json');
+            for (const [n, v] of Object.entries(p.dependencies || {})) {
+              if (n.startsWith('@saptools/')) {
+                console.log(n + '@' + v.replace(/^[\^~]/, ''));
+              }
+            }
+          ")
+          if [ -z "$deps" ]; then
+            echo "No @saptools/* deps to wait for."
+            exit 0
+          fi
+          while IFS= read -r spec; do
+            [ -z "$spec" ] && continue
+            echo "::group::Waiting for $spec (timeout 5m)"
+            found=0
+            for i in $(seq 1 60); do
+              if npm view "$spec" version >/dev/null 2>&1; then
+                echo "✔ $spec is available"
+                found=1
+                break
+              fi
+              echo "Attempt $i/60: not yet, sleeping 5s..."
+              sleep 5
+            done
+            echo "::endgroup::"
+            if [ "$found" -eq 0 ]; then
+              echo "::error::Timed out waiting for $spec after 5 minutes"
+              exit 1
+            fi
+          done <<< "$deps"
+
+      - name: Publish
+        if: steps.publish_check.outputs.should_publish == 'true'
+        run: pnpm publish --provenance --access public --no-git-checks
+        working-directory: packages/cf-explorer
