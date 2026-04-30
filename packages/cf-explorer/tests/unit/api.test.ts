@@ -22,6 +22,13 @@ const mocks = vi.hoisted(() => ({
       readonly truncated: boolean;
     }>
   >(),
+  executeRemoteScriptWithContext: vi.fn<
+    (input: { readonly instance: number }, context: unknown) => Promise<{
+      readonly stdout: string;
+      readonly durationMs: number;
+      readonly truncated: boolean;
+    }>
+  >(),
 }));
 
 vi.mock("../../src/cf.js", () => ({
@@ -30,6 +37,7 @@ vi.mock("../../src/cf.js", () => ({
 
 vi.mock("../../src/runner.js", () => ({
   executeRemoteScript: mocks.executeRemoteScript,
+  executeRemoteScriptWithContext: mocks.executeRemoteScriptWithContext,
   withPreparedCfSession: async (
     _target: unknown,
     _runtime: unknown,
@@ -43,6 +51,11 @@ describe("discovery API", () => {
   beforeEach(() => {
     mocks.cfApp.mockReset();
     mocks.executeRemoteScript.mockReset();
+    mocks.executeRemoteScriptWithContext.mockReset();
+    // All-instance flows share one prepared CF session via
+    // executeRemoteScriptWithContext; delegate to the same fake so existing
+    // executeRemoteScript expectations remain useful.
+    mocks.executeRemoteScriptWithContext.mockImplementation(async (input) => await mocks.executeRemoteScript(input));
   });
 
   it("measures all-instance duration after the instance work completes", async () => {
@@ -232,6 +245,34 @@ describe("discovery API", () => {
     })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(inspectCandidates({ target, root: "/workspace/app", text: "needle" }))
       .resolves.toMatchObject({ suggestedBreakpoints: [{ line: 2 }] });
+  });
+
+  it("shares one prepared CF session across parallel instance work", async () => {
+    mocks.cfApp.mockResolvedValue([
+      "instances: 3/3",
+      "     state     since",
+      "#0   running   today",
+      "#1   running   today",
+      "#2   running   today",
+    ].join("\n"));
+    mocks.executeRemoteScript.mockResolvedValue({
+      stdout: "CFX\tROOT\t/workspace/app\n",
+      durationMs: 1,
+      truncated: false,
+    });
+    await roots({ target, allInstances: true });
+    expect(mocks.executeRemoteScriptWithContext).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws INSTANCE_NOT_FOUND when no instances are running for all-instances aggregate", async () => {
+    mocks.cfApp.mockResolvedValue([
+      "instances: 0/2",
+      "     state",
+      "#0   stopped",
+      "#1   crashed",
+    ].join("\n"));
+    await expect(roots({ target, allInstances: true }))
+      .rejects.toMatchObject({ code: "INSTANCE_NOT_FOUND" });
   });
 
   it("runs single-instance grep with optional preview", async () => {

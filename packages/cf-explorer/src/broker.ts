@@ -16,7 +16,7 @@ import {
   buildViewScript,
 } from "./commands.js";
 import { CfExplorerError } from "./errors.js";
-import { createIpcServer, errorResponse, type IpcRequest, type IpcResponse } from "./ipc.js";
+import { createIpcServer, errorResponse, type IpcHandlerResult, type IpcRequest, type IpcResponse } from "./ipc.js";
 import {
   parseFindOutput,
   parseGrepOutput,
@@ -74,8 +74,12 @@ class PersistentShell {
     readonly reject: (error: Error) => void;
   } | undefined;
   private queue = Promise.resolve();
+  private exited = false;
 
-  public constructor(private readonly child: ChildProcessWithoutNullStreams) {
+  public constructor(
+    private readonly child: ChildProcessWithoutNullStreams,
+    private readonly onExit?: (reason: string) => void,
+  ) {
     child.stdout.on("data", (chunk: Buffer | string) => {
       this.handleStdout(chunk.toString());
     });
@@ -83,8 +87,12 @@ class PersistentShell {
       this.handleStderr(chunk.toString());
     });
     child.once("close", () => {
-      this.rejectPending(new CfExplorerError("SESSION_STALE", "Persistent SSH shell exited."));
+      this.markExited("Persistent SSH shell exited.");
     });
+  }
+
+  public get isAlive(): boolean {
+    return !this.exited;
   }
 
   public execute(script: string, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES): Promise<PersistentResult> {
@@ -102,6 +110,9 @@ class PersistentShell {
     timeoutMs: number,
     maxBytes: number,
   ): Promise<PersistentResult> {
+    if (this.exited) {
+      throw new CfExplorerError("SESSION_STALE", "Persistent SSH shell has exited.");
+    }
     if (this.pending !== undefined) {
       throw new CfExplorerError("SESSION_BUSY", "Persistent session is busy.");
     }
@@ -143,7 +154,20 @@ class PersistentShell {
 
   private handleStderr(chunk: string): void {
     if (chunk.toLowerCase().includes("closed")) {
-      this.rejectPending(new CfExplorerError("SESSION_STALE", "Persistent SSH shell closed."));
+      this.markExited("Persistent SSH shell closed.");
+    }
+  }
+
+  private markExited(reason: string): void {
+    if (this.exited) {
+      return;
+    }
+    this.exited = true;
+    this.rejectPending(new CfExplorerError("SESSION_STALE", reason));
+    try {
+      this.onExit?.(reason);
+    } catch {
+      // Listener errors must not crash the broker.
     }
   }
 
@@ -179,20 +203,54 @@ class ExplorerBroker {
       this.session = await this.requireSession();
       const context = await this.prepareContext();
       const child = spawnPersistentSshShell(this.bootstrap.target, context, this.bootstrap.process, this.bootstrap.instance);
-      this.shell = new PersistentShell(child);
+      this.shell = new PersistentShell(child, (reason) => {
+        this.handleShellExit(reason);
+      });
       await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
         status: "busy",
         ...(child.pid === undefined ? {} : { sshPid: child.pid }),
       });
-      await this.shell.execute("printf 'CFX\\tHANDSHAKE\\tok\\n'");
+      await this.runHandshake();
       await rm(this.session.socketPath, { force: true });
-      await createIpcServer(this.session.socketPath, async (request) => await this.handleRequest(request));
+      await createIpcServer(this.session.socketPath, async (request) => await this.handleIpcRequest(request));
       await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, { status: "ready" });
       this.armTimers();
     } catch (error: unknown) {
       await this.failStartup(error);
       throw error;
     }
+  }
+
+  private async runHandshake(): Promise<void> {
+    const shell = this.requireShell();
+    try {
+      const result = await shell.execute("printf 'CFX\\tHANDSHAKE\\tok\\n'");
+      if (!result.stdout.includes("CFX\tHANDSHAKE\tok")) {
+        throw new CfExplorerError(
+          "SESSION_HANDSHAKE_FAILED",
+          "Persistent shell handshake produced unexpected output.",
+        );
+      }
+    } catch (error: unknown) {
+      if (error instanceof CfExplorerError && error.code === "SESSION_HANDSHAKE_FAILED") {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new CfExplorerError("SESSION_HANDSHAKE_FAILED", `Persistent shell handshake failed: ${message}`);
+    }
+  }
+
+  private async handleIpcRequest(request: IpcRequest): Promise<IpcResponse | IpcHandlerResult> {
+    const response = await this.handleRequest(request);
+    if (request.sessionId === this.bootstrap.sessionId && request.command === "stop" && response.ok) {
+      return {
+        response,
+        afterFlush: () => {
+          void this.shutdown();
+        },
+      };
+    }
+    return response;
   }
 
   private async handleRequest(request: IpcRequest): Promise<IpcResponse> {
@@ -217,9 +275,6 @@ class ExplorerBroker {
       return this.session;
     }
     if (request.command === "stop") {
-      setTimeout(() => {
-        void this.shutdown();
-      }, 10);
       return { stopped: true };
     }
     await this.ensureSessionCanRunCommand();
@@ -350,6 +405,13 @@ class ExplorerBroker {
     };
     const session = await this.requireSession();
     const prepared = await prepareCfCliSession(this.bootstrap.target, session.cfHomeDir, runtime);
+    // Auth state is now stored in CF_HOME; clear inherited credentials from
+    // process.env so /proc/<pid>/environ does not leak them for the broker
+    // lifetime.
+    delete process.env["SAP_EMAIL"];
+    delete process.env["SAP_PASSWORD"];
+    delete process.env["CF_USERNAME"];
+    delete process.env["CF_PASSWORD"];
     return prepared.context;
   }
 
@@ -367,6 +429,17 @@ class ExplorerBroker {
     this.idleTimer = setTimeout(() => {
       void this.shutdown();
     }, this.bootstrap.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
+  }
+
+  private handleShellExit(reason: string): void {
+    void updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
+      status: "stale",
+      message: reason,
+    }).catch(() => {
+      // Best-effort: persistence errors must not loop into shutdown.
+    }).finally(() => {
+      void this.shutdown(1);
+    });
   }
 
   public async shutdown(exitCode = 0): Promise<void> {

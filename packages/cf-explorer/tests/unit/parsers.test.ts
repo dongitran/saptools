@@ -54,6 +54,18 @@ describe("output parsers", () => {
     expect(parseGrepOutput(raw, 0, true)[0]?.preview).toBe("needle-api ok");
   });
 
+  it("keeps legacy grep preview colon-number-colon text in the preview", () => {
+    const raw = "CFX\tGREP\t/workspace/app/src/connect.js:12:value:99:still-preview\n";
+    expect(parseGrepOutput(raw, 0, true)).toEqual([
+      {
+        instance: 0,
+        path: "/workspace/app/src/connect.js",
+        line: 12,
+        preview: "value:99:still-preview",
+      },
+    ]);
+  });
+
   it("parses view line rows", () => {
     expect(parseViewOutput("CFX\tLINE\t0\tbad\nCFX\tLINE\t8\tfirst\nCFX\tLINE\t9\tsecond\n")).toEqual([
       { line: 8, text: "first" },

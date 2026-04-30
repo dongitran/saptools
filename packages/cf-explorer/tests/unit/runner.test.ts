@@ -113,4 +113,27 @@ describe("one-shot remote runner", () => {
       {},
     );
   });
+
+  it("falls back to runtime timeout/maxBytes when per-call values are absent", async () => {
+    mocks.cfSshOneShot.mockResolvedValue({
+      stdout: "ok\n",
+      durationMs: 1,
+      truncated: false,
+    });
+    await executeRemoteScript({
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      processName: "web",
+      instance: 0,
+      script: "printf ok",
+      runtime: { homeDir, timeoutMs: 9000, maxBytes: 4096 },
+    });
+    expect(mocks.cfSshOneShot).toHaveBeenLastCalledWith(
+      expect.any(Object),
+      "printf ok",
+      expect.any(Object),
+      "web",
+      0,
+      { timeoutMs: 9000, maxBytes: 4096 },
+    );
+  });
 });

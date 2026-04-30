@@ -154,4 +154,45 @@ describe("persistent session client", () => {
       allInstances: true,
     })).rejects.toThrow(CfExplorerError);
   });
+
+  it("returns dead-status flags for crashed brokers and missing sockets", async () => {
+    await registerExplorerSession({
+      sessionId: "dead-broker",
+      brokerPid: 2_147_483_500,
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      process: "web",
+      instance: 0,
+      homeDir,
+      status: "error",
+    });
+    const status = await getExplorerSessionStatus("dead-broker", { homeDir });
+    expect(status).toMatchObject({
+      sessionId: "dead-broker",
+      brokerAlive: false,
+      sshAlive: false,
+      socketAlive: false,
+      status: "error",
+    });
+  });
+
+  it("returns SESSION_NOT_FOUND when listing a missing session", async () => {
+    await expect(getExplorerSessionStatus("does-not-exist", { homeDir }))
+      .rejects.toMatchObject({ code: "SESSION_NOT_FOUND" });
+    await expect(attachExplorerSession("does-not-exist", { homeDir }))
+      .rejects.toMatchObject({ code: "SESSION_NOT_FOUND" });
+  });
+
+  it("rejects attach for sessions that are not ready or busy", async () => {
+    await registerExplorerSession({
+      sessionId: "starting-session",
+      brokerPid: process.pid,
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      process: "web",
+      instance: 0,
+      homeDir,
+      status: "starting",
+    });
+    await expect(attachExplorerSession("starting-session", { homeDir }))
+      .rejects.toMatchObject({ code: "BROKER_UNAVAILABLE" });
+  });
 });

@@ -25,6 +25,11 @@ export function socketsDir(homeDir: string = explorerHome()): string {
   return join(homeDir, "sockets");
 }
 
+function fallbackSocketsDir(): string {
+  const uidSuffix = typeof process.getuid === "function" ? `-${process.getuid().toString()}` : "";
+  return join("/tmp", `saptools-cf-explorer${uidSuffix}`);
+}
+
 export function sessionSocketPath(sessionId: string, homeDir: string = explorerHome()): string {
   if (process.platform === "win32") {
     return `\\\\.\\pipe\\saptools-cf-explorer-${sessionId}`;
@@ -32,7 +37,7 @@ export function sessionSocketPath(sessionId: string, homeDir: string = explorerH
   const socketPath = join(socketsDir(homeDir), `${sessionId}.sock`);
   return socketPath.length < 100
     ? socketPath
-    : join("/tmp", "saptools-cf-explorer", `${sessionId}.sock`);
+    : join(fallbackSocketsDir(), `${sessionId}.sock`);
 }
 
 export function cfHomesDir(homeDir: string = explorerHome()): string {

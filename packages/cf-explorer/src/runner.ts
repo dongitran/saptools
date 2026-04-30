@@ -27,23 +27,32 @@ export async function executeRemoteScript(
   input: RemoteExecutionInput,
 ): Promise<RemoteExecutionResult> {
   return await withPreparedCfSession(input.target, input.runtime, async (context) => {
-    const result = await cfSshOneShot(
-      normalizeTarget(input.target),
-      input.script,
-      context,
-      input.processName,
-      input.instance,
-      {
-        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
-        ...(input.maxBytes === undefined ? {} : { maxBytes: input.maxBytes }),
-      },
-    );
-    return {
-      stdout: result.stdout,
-      durationMs: result.durationMs,
-      truncated: result.truncated,
-    };
+    return await executeRemoteScriptWithContext(input, context);
   });
+}
+
+export async function executeRemoteScriptWithContext(
+  input: RemoteExecutionInput,
+  context: CfCommandContext,
+): Promise<RemoteExecutionResult> {
+  const timeoutMs = input.timeoutMs ?? input.runtime?.timeoutMs;
+  const maxBytes = input.maxBytes ?? input.runtime?.maxBytes;
+  const result = await cfSshOneShot(
+    normalizeTarget(input.target),
+    input.script,
+    context,
+    input.processName,
+    input.instance,
+    {
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(maxBytes === undefined ? {} : { maxBytes }),
+    },
+  );
+  return {
+    stdout: result.stdout,
+    durationMs: result.durationMs,
+    truncated: result.truncated,
+  };
 }
 
 export async function withPreparedCfSession<T>(

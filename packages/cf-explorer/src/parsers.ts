@@ -10,7 +10,7 @@ import type {
 const ROOT_LINE_PATTERN = /^CFX\tROOT\t(.+)$/;
 const FIND_LINE_PATTERN = /^CFX\tFIND\t(file|directory)\t(.+)$/;
 const GREP_LINE_PATTERN = /^CFX\tGREP\t(.+)\t(\d+)\t(.*)$/;
-const LEGACY_GREP_LINE_PATTERN = /^CFX\tGREP\t(.+):(\d+):(.*)$/;
+const LEGACY_GREP_PREFIX = "CFX\tGREP\t";
 const VIEW_LINE_PATTERN = /^CFX\tLINE\t(\d+)\t(.*)$/;
 
 export function parseRootsOutput(stdout: string): readonly string[] {
@@ -104,7 +104,26 @@ function parseGrepLine(
   instance: number,
   includePreview: boolean,
 ): GrepMatch | undefined {
-  const match = GREP_LINE_PATTERN.exec(lineText) ?? LEGACY_GREP_LINE_PATTERN.exec(lineText);
+  const match = GREP_LINE_PATTERN.exec(lineText);
+  if (match !== null) {
+    return toGrepMatch({
+      path: match[1] ?? "",
+      line: match[2] ?? "",
+      preview: match[3] ?? "",
+    }, instance, includePreview);
+  }
+  if (!lineText.startsWith(LEGACY_GREP_PREFIX)) {
+    return undefined;
+  }
+  return parseLegacyGrepLine(lineText.slice(LEGACY_GREP_PREFIX.length), instance, includePreview);
+}
+
+function parseLegacyGrepLine(
+  payload: string,
+  instance: number,
+  includePreview: boolean,
+): GrepMatch | undefined {
+  const match = /^(.+?):(\d+):(.*)$/.exec(payload);
   if (match === null) {
     return undefined;
   }

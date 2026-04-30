@@ -1,5 +1,7 @@
 import type { ExplorerCredentials } from "./types.js";
 
+const MIN_REDACTION_LENGTH = 4;
+
 export interface RedactionRule {
   readonly value: string;
   readonly replacement: string;
@@ -19,7 +21,7 @@ export function buildRedactionRules(
 
   for (const value of values) {
     const trimmed = value.trim();
-    if (trimmed.length === 0 || unique.has(trimmed)) {
+    if (trimmed.length < MIN_REDACTION_LENGTH || unique.has(trimmed)) {
       continue;
     }
     unique.add(trimmed);

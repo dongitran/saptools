@@ -1,4 +1,4 @@
-import { cfApp } from "./cf.js";
+import { cfApp, type CfCommandContext } from "./cf.js";
 import {
   buildFindScript,
   buildGrepScript,
@@ -18,6 +18,7 @@ import {
 } from "./parsers.js";
 import {
   executeRemoteScript,
+  executeRemoteScriptWithContext,
   withPreparedCfSession,
   type RemoteExecutionResult,
 } from "./runner.js";
@@ -175,8 +176,8 @@ export async function createExplorer(options: CreateExplorerOptions): Promise<Ex
 
 async function rootsAllInstances(options: DiscoveryOptions): Promise<RootsResult> {
   const processName = resolveProcessName(options.process);
-  const results = await runAcrossInstances(options, async (instance) => {
-    const output = await execute(inputFor(options, processName, instance, buildRootsScript(options.maxFiles).script));
+  const results = await runAcrossInstances(options, async (instance, context) => {
+    const output = await executeWithContext(options, processName, instance, buildRootsScript(options.maxFiles).script, context);
     return { value: { roots: parseRootsOutput(output.stdout) }, truncated: output.truncated };
   });
   return {
@@ -188,8 +189,8 @@ async function rootsAllInstances(options: DiscoveryOptions): Promise<RootsResult
 
 async function findAllInstances(options: FindOptions): Promise<FindResult> {
   const processName = resolveProcessName(options.process);
-  const results = await runAcrossInstances(options, async (instance) => {
-    const output = await execute(inputFor(options, processName, instance, buildFindScript(options).script));
+  const results = await runAcrossInstances(options, async (instance, context) => {
+    const output = await executeWithContext(options, processName, instance, buildFindScript(options).script, context);
     return { value: { matches: parseFindOutput(output.stdout, instance) }, truncated: output.truncated };
   });
   return {
@@ -201,8 +202,8 @@ async function findAllInstances(options: FindOptions): Promise<FindResult> {
 
 async function grepAllInstances(options: GrepOptions): Promise<GrepResult> {
   const processName = resolveProcessName(options.process);
-  const results = await runAcrossInstances(options, async (instance) => {
-    const output = await execute(inputFor(options, processName, instance, buildGrepScript(options).script));
+  const results = await runAcrossInstances(options, async (instance, context) => {
+    const output = await executeWithContext(options, processName, instance, buildGrepScript(options).script, context);
     return {
       value: { matches: parseGrepOutput(output.stdout, instance, options.preview === true) },
       truncated: output.truncated,
@@ -217,8 +218,8 @@ async function grepAllInstances(options: GrepOptions): Promise<GrepResult> {
 
 async function inspectAllInstances(options: InspectCandidatesOptions): Promise<InspectCandidatesResult> {
   const processName = resolveProcessName(options.process);
-  const results = await runAcrossInstances(options, async (instance) => {
-    const output = await execute(inputFor(options, processName, instance, buildInspectCandidatesScript(options).script));
+  const results = await runAcrossInstances(options, async (instance, context) => {
+    const output = await executeWithContext(options, processName, instance, buildInspectCandidatesScript(options).script, context);
     return { value: parseInspectOutput(output.stdout, instance, false), truncated: output.truncated };
   });
   return {
@@ -233,11 +234,25 @@ async function inspectAllInstances(options: InspectCandidatesOptions): Promise<I
 
 async function runAcrossInstances<T>(
   options: DiscoveryOptions,
-  work: (instance: number) => Promise<InstanceWorkResult<T>>,
+  work: (instance: number, context: CfCommandContext) => Promise<InstanceWorkResult<T>>,
 ): Promise<readonly InstanceResult<T>[]> {
   const instances = await listInstances({ ...options, allInstances: false });
   const running = instances.instances.filter((instance) => instance.state.toLowerCase() === "running");
-  return await Promise.all(running.map(async (item) => await runInstance(item, work)));
+  if (running.length === 0) {
+    throw new CfExplorerError(
+      "INSTANCE_NOT_FOUND",
+      "No running instances were found for the target app.",
+    );
+  }
+  // Share one prepared CF session across parallel SSH calls so we authenticate
+  // once instead of once per instance.
+  return await withPreparedCfSession(
+    normalizeTarget(options.target),
+    options.runtime,
+    async (context) => {
+      return await Promise.all(running.map(async (item) => await runInstance(item, async (instance) => await work(instance, context))));
+    },
+  );
 }
 
 async function runInstance<T>(
@@ -268,6 +283,19 @@ async function runInstance<T>(
 
 async function execute(input: ExecuteInput): Promise<RemoteExecutionResult> {
   return await executeRemoteScript(input);
+}
+
+async function executeWithContext(
+  options: DiscoveryOptions,
+  processName: string,
+  instance: number,
+  script: string,
+  context: CfCommandContext,
+): Promise<RemoteExecutionResult> {
+  return await executeRemoteScriptWithContext(
+    inputFor(options, processName, instance, script),
+    context,
+  );
 }
 
 function inputFor(

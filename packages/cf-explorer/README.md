@@ -153,7 +153,7 @@ All read/discovery commands accept:
 | `--timeout <seconds>` | Command timeout |
 | `--max-files <count>` | File match limit |
 | `--max-bytes <bytes>` | Output byte limit |
-| `--json` / `--no-json` | Structured or human-readable output |
+| `--json` / `--no-json` | Structured JSON (default) or compact human-readable output |
 
 ### 🪄 Discovery
 
@@ -284,10 +284,11 @@ const explorer = await createExplorer({
   },
 });
 
-const roots = await explorer.roots();
+const rootsResult = await explorer.roots();
+const root = rootsResult.roots[0] ?? "/app-root";
 
 const matches = await explorer.grep({
-  root: roots[0] ?? "/app-root",
+  root,
   text: "needle",
   instance: 0,
 });

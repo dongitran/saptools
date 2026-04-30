@@ -7,7 +7,6 @@ const NOISY_DIRS = ["node_modules", ".git", "dist", "build", ".cache", "tmp", "t
 const ROOT_CANDIDATES = ["/home/vcap/app", "/workspace/app", "/workspace", "/app", "/srv", "/opt/app"] as const;
 
 export interface RemoteScript {
-  readonly operation: "find" | "grep" | "inspect" | "roots" | "view";
   readonly script: string;
 }
 
@@ -88,12 +87,11 @@ export function buildRootsScript(maxFiles?: number): RemoteScript {
   const max = resolveMaxFiles(maxFiles);
   const rootLines = ROOT_CANDIDATES.map((root) => `emit_root ${quoteRemoteShellArg(root)}`).join("\n");
   return {
-    operation: "roots",
     script: [
       "CFX_OP='roots'",
       emitFunctions(),
       rootLines,
-      `find / -maxdepth 4 -type f \\( -name 'package.json' -o -name '*.js' -o -name '*.ts' \\) 2>/dev/null | sed 's#/[^/]*$##' | head -n ${max.toString()} | while IFS= read -r cfx_root; do emit_root "$cfx_root"; done`,
+      `${rootDiscoveryFind(max)} | sed 's#/[^/]*$##' | head -n ${max.toString()} | while IFS= read -r cfx_root; do emit_root "$cfx_root"; done`,
     ].join("\n"),
   };
 }
@@ -104,7 +102,6 @@ export function buildFindScript(input: BuildFindScriptInput): RemoteScript {
   const max = resolveMaxFiles(input.maxFiles);
   const pattern = input.name.includes("*") ? input.name : `*${input.name}*`;
   return {
-    operation: "find",
     script: [
       "CFX_OP='find'",
       `CFX_ROOT=${quoteRemoteShellArg(input.root)}`,
@@ -130,7 +127,6 @@ export function buildGrepScript(input: BuildGrepScriptInput): RemoteScript {
       "printf 'CFX\\tGREP\\t%s\\t%s\\t\\n' \"$cfx_file\" \"$cfx_line\"",
     ].join("; ");
   return {
-    operation: "grep",
     script: [
       "CFX_OP='grep'",
       `CFX_ROOT=${quoteRemoteShellArg(input.root)}`,
@@ -150,7 +146,6 @@ export function buildViewScript(input: BuildViewScriptInput): RemoteScript {
   const start = Math.max(1, input.line - context);
   const end = input.line + context;
   return {
-    operation: "view",
     script: [
       "CFX_OP='view'",
       `CFX_FILE=${quoteRemoteShellArg(input.file)}`,
@@ -170,7 +165,6 @@ export function buildInspectCandidatesScript(input: BuildInspectScriptInput): Re
   const max = resolveMaxFiles(input.maxFiles);
   const name = input.name?.includes("*") ? input.name : `*${input.name ?? ""}*`;
   return {
-    operation: "inspect",
     script: input.root === undefined
       ? buildDynamicInspectScript(input.text, name, max)
       : buildSingleRootInspectScript(input.root, input.text, name, max),
@@ -230,9 +224,13 @@ function buildDynamicInspectScript(text: string, name: string, max: number): str
     "}",
     "{",
     candidateLines,
-    `find / -maxdepth 4 -type f \\( -name 'package.json' -o -name '*.js' -o -name '*.ts' \\) 2>/dev/null | sed 's#/[^/]*$##'`,
+    `${rootDiscoveryFind(max)} | sed 's#/[^/]*$##'`,
     `} | sort -u | head -n ${max.toString()} | while IFS= read -r cfx_root; do inspect_root "$cfx_root"; done`,
   ].join("\n");
+}
+
+function rootDiscoveryFind(max: number): string {
+  return `find / -maxdepth 4 ${pruneExpression()} -prune -o -type f \\( -name 'package.json' -o -name '*.js' -o -name '*.ts' \\) -print 2>/dev/null | head -n ${(max * 4).toString()}`;
 }
 
 function findCommand(rootExpression: string, nameExpression: string, max: number): string {

@@ -1,15 +1,15 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { sessionCfHomeDir, sessionSocketPath } from "../../src/paths.js";
 import {
-  listExplorerSessions,
-  markSessionsStaleForTarget,
   cleanupSessionFiles,
   isPidAlive,
+  listExplorerSessions,
+  markSessionsStaleForTarget,
   matchesSessionTarget,
   pathExists,
   readExplorerSession,
@@ -179,6 +179,27 @@ describe("session storage", () => {
     });
     await expect(cleanupSessionFiles({ ...session, cfHomeDir: "/" }, homeDir))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+  });
+
+  it("cleans up cf-home and socket files when pruning crashed local sessions", async () => {
+    const sessionId = "dead-cleanup";
+    const cfHome = sessionCfHomeDir(sessionId, homeDir);
+    const socketPath = sessionSocketPath(sessionId, homeDir);
+    await mkdir(cfHome, { recursive: true });
+    await writeFile(join(cfHome, "config.json"), "{}", "utf8");
+    await mkdir(dirname(socketPath), { recursive: true });
+    await writeFile(socketPath, "", "utf8");
+    await registerExplorerSession({
+      sessionId,
+      brokerPid: 2_147_483_600,
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      process: "web",
+      instance: 0,
+      homeDir,
+    });
+    expect(await listExplorerSessions(homeDir)).toEqual([]);
+    expect(await pathExists(cfHome)).toBe(false);
+    expect(await pathExists(socketPath)).toBe(false);
   });
 
   it("exposes pid, path, and target helpers", async () => {

@@ -28,6 +28,7 @@ export interface CfRunOptions {
   readonly timeoutMs?: number;
   readonly maxBytes?: number;
   readonly redactValues?: readonly string[];
+  readonly envOverrides?: NodeJS.ProcessEnv;
 }
 
 export interface CfRunResult {
@@ -66,6 +67,8 @@ function buildChildEnv(
   const env = { ...process.env, ...context.env };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
+  delete env["CF_USERNAME"];
+  delete env["CF_PASSWORD"];
   return { ...env, ...overrides, CF_HOME: context.cfHomeDir };
 }
 
@@ -109,6 +112,9 @@ function errorCodeForCommand(args: readonly string[], stderr: string): CfExplore
   }
   if (command === "ssh" && isSshDisabledMessage(stderr)) {
     return "SSH_DISABLED";
+  }
+  if (command === "ssh" && isInstanceNotFoundMessage(stderr)) {
+    return "INSTANCE_NOT_FOUND";
   }
   return "REMOTE_COMMAND_FAILED";
 }
@@ -159,7 +165,7 @@ export async function runCfCommand(
   const startedAt = Date.now();
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const child = spawn(command.bin, [...command.argsPrefix, ...args], {
-    env: buildChildEnv(context),
+    env: buildChildEnv(context, options.envOverrides),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return await collectCfResult(child, args, context, startedAt, maxBytes, options);
@@ -240,15 +246,13 @@ async function runCfAuth(
   context: CfCommandContext,
   runtime: ExplorerRuntimeOptions,
 ): Promise<void> {
-  const authContext = {
-    ...context,
-    env: {
-      ...context.env,
+  await runCfCommand(["auth"], context, {
+    ...runtime,
+    envOverrides: {
       CF_USERNAME: credentials.email,
       CF_PASSWORD: credentials.password,
     },
-  };
-  await runCfCommand(["auth"], authContext, runtime);
+  });
 }
 
 export async function cfApp(target: ExplorerTarget, context: CfCommandContext): Promise<string> {
@@ -322,6 +326,17 @@ export function spawnPersistentSshShell(
 export function isSshDisabledMessage(message: string): boolean {
   const lower = message.toLowerCase();
   return lower.includes("not authorized") || lower.includes("ssh support is disabled");
+}
+
+export function isInstanceNotFoundMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    /instance.{0,12}\bindex\b.{0,20}\bout of\b/.test(lower) ||
+    /instance.{0,20}\bnot (?:found|valid)\b/.test(lower) ||
+    /\bvalid index\b/.test(lower) ||
+    lower.includes("invalid instance") ||
+    lower.includes("instance index is invalid")
+  );
 }
 
 export const internals = {

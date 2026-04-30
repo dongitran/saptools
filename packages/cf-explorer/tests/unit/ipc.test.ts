@@ -43,6 +43,52 @@ describe("IPC transport", () => {
     });
   });
 
+  it("drains multiple newline-delimited requests received in one chunk", async () => {
+    const socketPath = join(dir, "drain.sock");
+    const seen: string[] = [];
+    server = await createIpcServer(socketPath, async (request) => {
+      seen.push(request.requestId);
+      return { requestId: request.requestId, ok: true, durationMs: 0, result: {} };
+    });
+
+    const responses = await new Promise<string[]>((resolve) => {
+      const socket = createConnection(socketPath);
+      let buffer = "";
+      const collected: string[] = [];
+      socket.on("connect", () => {
+        const requestA = JSON.stringify({
+          requestId: "req-a",
+          sessionId: "session-a",
+          command: "roots",
+          args: {},
+        });
+        const requestB = JSON.stringify({
+          requestId: "req-b",
+          sessionId: "session-a",
+          command: "roots",
+          args: {},
+        });
+        socket.write(`${requestA}\n${requestB}\n`);
+      });
+      socket.on("data", (chunk: Buffer | string) => {
+        buffer += chunk.toString();
+        let lineEnd = buffer.indexOf("\n");
+        while (lineEnd >= 0) {
+          collected.push(buffer.slice(0, lineEnd));
+          buffer = buffer.slice(lineEnd + 1);
+          lineEnd = buffer.indexOf("\n");
+          if (collected.length === 2) {
+            socket.end();
+            resolve(collected);
+            return;
+          }
+        }
+      });
+    });
+    expect(seen).toEqual(["req-a", "req-b"]);
+    expect(responses).toHaveLength(2);
+  });
+
   it("turns handler failures into structured responses", async () => {
     const socketPath = join(dir, "error.sock");
     server = await createIpcServer(socketPath, async () => {

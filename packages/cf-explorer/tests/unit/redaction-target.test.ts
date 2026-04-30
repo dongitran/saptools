@@ -27,6 +27,12 @@ describe("redaction and target helpers", () => {
     ]);
   });
 
+  it("skips too-short redaction values to prevent text bleed", () => {
+    expect(buildRedactionRules({ email: "u@x", password: "ok" }, ["pw"])).toEqual([]);
+    const rules = buildRedactionRules({ email: "user@example.com", password: "abcd" });
+    expect(rules.map((rule) => rule.value)).toEqual(["user@example.com", "abcd"]);
+  });
+
   it("normalizes target fields", () => {
     expect(normalizeTarget({ region: " ap10 ", org: " org ", space: " dev ", app: " app " }))
       .toEqual({ region: "ap10", org: "org", space: "dev", app: "app" });

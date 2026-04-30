@@ -25,10 +25,10 @@ describe("remote command builders", () => {
 
   it("builds a bounded roots script", () => {
     const script = buildRootsScript(3);
-    expect(script.operation).toBe("roots");
     expect(script.script).toContain("CFX_OP='roots'");
     expect(script.script).toContain("emit_root '/workspace/app'");
     expect(script.script).toContain("find / -maxdepth 4");
+    expect(script.script).toContain("-path '*/node_modules'");
     expect(script.script).toContain("head -n 3");
   });
 
@@ -72,7 +72,6 @@ describe("remote command builders", () => {
       text: "needle-api",
       name: "connect",
     });
-    expect(script.operation).toBe("inspect");
     expect(script.script).toContain("CFX_OP='inspect'");
     expect(script.script).toContain("CFX_ROOT='/workspace/app'");
     expect(script.script).toContain("CFX_TEXT='needle-api'");

@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 
@@ -26,14 +26,42 @@ export interface IpcResponse {
   };
 }
 
-export type IpcHandler = (request: IpcRequest) => Promise<IpcResponse>;
+export interface IpcHandlerResult {
+  readonly response: IpcResponse;
+  readonly afterFlush?: () => void;
+}
+
+export type IpcHandler = (request: IpcRequest) => Promise<IpcResponse | IpcHandlerResult>;
+
+function isHandlerResult(value: IpcResponse | IpcHandlerResult): value is IpcHandlerResult {
+  return "response" in value;
+}
+
+function writeFlush(socket: Socket, data: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.write(data, (error?: Error | null) => {
+      if (error === null || error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    });
+  });
+}
 
 export async function createIpcServer(
   socketPath: string,
   handler: IpcHandler,
 ): Promise<Server> {
   if (process.platform !== "win32") {
-    await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 });
+    const parent = dirname(socketPath);
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    // mkdir does not chmod existing dirs; force perms so a pre-existing
+    // shared fallback (e.g. /tmp/saptools-cf-explorer-<uid>/) is locked down.
+    await chmod(parent, 0o700).catch(() => {
+      // Best-effort: chmod can fail for paths owned by other users; the
+      // listen call below will still fail loudly on permission issues.
+    });
   }
   const server = createServer((socket) => {
     attachSocketHandler(socket, handler);
@@ -83,26 +111,32 @@ function attachSocketHandler(socket: Socket, handler: IpcHandler): void {
   let buffer = "";
   socket.on("data", (chunk: Buffer | string) => {
     buffer += chunk.toString();
-    const lineEnd = buffer.indexOf("\n");
-    if (lineEnd < 0) {
-      return;
+    let lineEnd = buffer.indexOf("\n");
+    while (lineEnd >= 0) {
+      const line = buffer.slice(0, lineEnd);
+      buffer = buffer.slice(lineEnd + 1);
+      void respondToRequest(socket, handler, line);
+      lineEnd = buffer.indexOf("\n");
     }
-    const line = buffer.slice(0, lineEnd);
-    buffer = buffer.slice(lineEnd + 1);
-    void respondToRequest(socket, handler, line);
   });
 }
 
 async function respondToRequest(socket: Socket, handler: IpcHandler, line: string): Promise<void> {
   try {
     const request = parseIpcRequest(line);
-    const response = await handler(request);
-    socket.write(`${JSON.stringify(response)}\n`);
+    const handled = await handler(request);
+    const response = isHandlerResult(handled) ? handled.response : handled;
+    await writeFlush(socket, `${JSON.stringify(response)}\n`);
+    if (isHandlerResult(handled)) {
+      handled.afterFlush?.();
+    }
   } catch (error: unknown) {
     const explorerError = error instanceof CfExplorerError
       ? error
       : new CfExplorerError("IPC_FAILED", error instanceof Error ? error.message : String(error));
-    socket.write(`${JSON.stringify(errorResponse("unknown", explorerError))}\n`);
+    await writeFlush(socket, `${JSON.stringify(errorResponse("unknown", explorerError))}\n`).catch(() => {
+      // Socket may have already been closed by the peer.
+    });
   }
 }
 

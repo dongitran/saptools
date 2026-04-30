@@ -170,9 +170,7 @@ async function stopOneSession(homeDir: string, session: ExplorerSessionRecord): 
   if (await pathExists(session.socketPath)) {
     await sendStopRequest(session).catch(() => Promise.resolve());
   }
-  if (isPidAlive(session.brokerPid)) {
-    process.kill(session.brokerPid, "SIGTERM");
-  }
+  terminateProcess(session.brokerPid);
   const removed = await removeExplorerSession(homeDir, session.sessionId);
   if (removed !== undefined) {
     await cleanupSessionFiles(removed, homeDir);
@@ -312,7 +310,7 @@ async function cleanupFailedStart(
   childPid: number | undefined,
 ): Promise<void> {
   if (childPid !== undefined && isPidAlive(childPid)) {
-    process.kill(childPid, "SIGTERM");
+    terminateProcess(childPid);
   }
   const removed = await removeExplorerSession(homeDir, sessionId);
   if (removed !== undefined) {
@@ -324,6 +322,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function terminateProcess(pid: number): void {
+  if (pid === process.pid || !isPidAlive(pid)) {
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH") {
+      throw error;
+    }
+  }
 }
 
 function readPositiveNumber(args: Record<string, unknown>, key: string): number | undefined {

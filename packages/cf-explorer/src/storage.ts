@@ -176,7 +176,15 @@ async function readAndPruneStateUnlocked(homeDir: string): Promise<SessionStateF
   const state = await readStateUnlocked(homeDir);
   const sessions = state.sessions.filter(isSessionUsable);
   if (sessions.length !== state.sessions.length) {
+    const pruned = state.sessions.filter((session) => !isSessionUsable(session));
     await writeStateUnlocked(homeDir, { version: 1, sessions });
+    for (const session of pruned) {
+      if (session.hostname === getHostname()) {
+        await cleanupSessionFiles(session, homeDir).catch(() => {
+          // Best-effort: leftover files will be retried on the next prune.
+        });
+      }
+    }
   }
   return { version: 1, sessions };
 }
