@@ -4,6 +4,8 @@ import { dirname } from "node:path";
 
 import { CfExplorerError } from "./errors.js";
 
+export const MAX_IPC_MESSAGE_BYTES = 32 * 1024 * 1024;
+
 export const IPC_COMMANDS = ["find", "grep", "inspect", "roots", "status", "stop", "view"] as const;
 export type IpcCommand = (typeof IPC_COMMANDS)[number];
 
@@ -33,6 +35,10 @@ export interface IpcHandlerResult {
 
 export type IpcHandler = (request: IpcRequest) => Promise<IpcResponse | IpcHandlerResult>;
 
+export interface IpcTransportOptions {
+  readonly maxMessageBytes?: number;
+}
+
 function isHandlerResult(value: IpcResponse | IpcHandlerResult): value is IpcHandlerResult {
   return "response" in value;
 }
@@ -52,6 +58,7 @@ function writeFlush(socket: Socket, data: string): Promise<void> {
 export async function createIpcServer(
   socketPath: string,
   handler: IpcHandler,
+  options: IpcTransportOptions = {},
 ): Promise<Server> {
   if (process.platform !== "win32") {
     const parent = dirname(socketPath);
@@ -64,7 +71,7 @@ export async function createIpcServer(
     });
   }
   const server = createServer((socket) => {
-    attachSocketHandler(socket, handler);
+    attachSocketHandler(socket, handler, options.maxMessageBytes ?? MAX_IPC_MESSAGE_BYTES);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -76,10 +83,15 @@ export async function createIpcServer(
   return server;
 }
 
-export async function sendIpcRequest(socketPath: string, request: IpcRequest): Promise<IpcResponse> {
+export async function sendIpcRequest(
+  socketPath: string,
+  request: IpcRequest,
+  options: IpcTransportOptions = {},
+): Promise<IpcResponse> {
   return await new Promise<IpcResponse>((resolve, reject) => {
     const socket = createConnection(socketPath);
     let buffer = "";
+    const maxMessageBytes = options.maxMessageBytes ?? MAX_IPC_MESSAGE_BYTES;
     const timeout = setTimeout(() => {
       socket.destroy();
       reject(new CfExplorerError("IPC_FAILED", "Timed out waiting for broker response."));
@@ -89,6 +101,12 @@ export async function sendIpcRequest(socketPath: string, request: IpcRequest): P
     });
     socket.on("data", (chunk: Buffer | string) => {
       buffer += chunk.toString();
+      if (Buffer.byteLength(buffer, "utf8") > maxMessageBytes) {
+        clearTimeout(timeout);
+        socket.destroy();
+        reject(new CfExplorerError("IPC_FAILED", "Broker response exceeded IPC size limit."));
+        return;
+      }
       const lineEnd = buffer.indexOf("\n");
       if (lineEnd >= 0) {
         clearTimeout(timeout);
@@ -107,10 +125,25 @@ export async function sendIpcRequest(socketPath: string, request: IpcRequest): P
   });
 }
 
-function attachSocketHandler(socket: Socket, handler: IpcHandler): void {
+function attachSocketHandler(socket: Socket, handler: IpcHandler, maxMessageBytes: number): void {
   let buffer = "";
   socket.on("data", (chunk: Buffer | string) => {
     buffer += chunk.toString();
+    if (Buffer.byteLength(buffer, "utf8") > maxMessageBytes) {
+      void writeFlush(
+        socket,
+        `${JSON.stringify(errorResponse(
+          "unknown",
+          new CfExplorerError("IPC_FAILED", "Broker request exceeded IPC size limit."),
+        ))}\n`,
+      ).catch(() => {
+        socket.destroy();
+      }).finally(() => {
+        socket.end();
+      });
+      buffer = "";
+      return;
+    }
     let lineEnd = buffer.indexOf("\n");
     while (lineEnd >= 0) {
       const line = buffer.slice(0, lineEnd);

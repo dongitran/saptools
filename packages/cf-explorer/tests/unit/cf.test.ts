@@ -164,6 +164,14 @@ describe("CF command runner", () => {
       .rejects.toMatchObject({ code: "CF_LOGIN_FAILED" });
     await expect(runCfCommand(["ssh", "demo-app"], { cfBin, cfHomeDir }))
       .rejects.toMatchObject({ code: "SSH_DISABLED" });
+    await expect(runCfCommand(["ssh", "demo-app"], {
+      cfBin,
+      cfHomeDir,
+      credentials: { email: "user@example.com", password: "disabled" },
+    })).rejects.toMatchObject({
+      code: "SSH_DISABLED",
+      message: expect.not.stringContaining("disabled"),
+    });
     await expect(runCfCommand(["ssh", "demo-app", "-i", "9"], { cfBin, cfHomeDir }))
       .rejects.toMatchObject({ code: "INSTANCE_NOT_FOUND" });
     await expect(cfSshOneShot(

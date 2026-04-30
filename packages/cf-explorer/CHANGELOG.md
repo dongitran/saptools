@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.3
+
+### Bug fixes
+
+- Classified CF command failures before redacting detail text, preserving typed
+  errors when credential values overlap with CF error keywords.
+
+### Hardening
+
+- Added bounded IPC request/response buffering for persistent-session sockets.
+- Validated broker bootstrap payloads before starting broker session work.
+
 ## 0.2.2
 
 ### Bug fixes

@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { parseBrokerBootstrap, type BrokerBootstrap } from "./broker-bootstrap.js";
 import {
   prepareCfCliSession,
   spawnPersistentSshShell,
@@ -31,24 +32,12 @@ import type {
   ExplorerMeta,
   ExplorerRuntimeOptions,
   ExplorerSessionRecord,
-  ExplorerTarget,
   FindResult,
   GrepResult,
   InspectCandidatesResult,
   RootsResult,
   ViewResult,
 } from "./types.js";
-
-interface BrokerBootstrap {
-  readonly sessionId: string;
-  readonly homeDir: string;
-  readonly target: ExplorerTarget;
-  readonly process: string;
-  readonly instance: number;
-  readonly cfBin?: string;
-  readonly idleTimeoutMs?: number;
-  readonly maxLifetimeMs?: number;
-}
 
 interface PersistentResult {
   readonly stdout: string;
@@ -197,7 +186,7 @@ class PersistentShell {
 }
 
 export async function runBrokerFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const bootstrap = parseBootstrap(env["CF_EXPLORER_BROKER_BOOTSTRAP"]);
+  const bootstrap = parseBrokerBootstrap(env["CF_EXPLORER_BROKER_BOOTSTRAP"]);
   const broker = new ExplorerBroker(bootstrap);
   activeBroker = broker;
   await broker.start();
@@ -566,33 +555,6 @@ function normalizeBrokerError(error: unknown): Error {
   return error instanceof Error
     ? error
     : new CfExplorerError("BROKER_UNAVAILABLE", String(error));
-}
-
-function parseBootstrap(raw: string | undefined): BrokerBootstrap {
-  if (raw === undefined || raw.length === 0) {
-    throw new CfExplorerError("BROKER_UNAVAILABLE", "Missing broker bootstrap payload.");
-  }
-  const parsed = JSON.parse(raw) as unknown;
-  if (!isBootstrap(parsed)) {
-    throw new CfExplorerError("BROKER_UNAVAILABLE", "Invalid broker bootstrap payload.");
-  }
-  return parsed;
-}
-
-function isBootstrap(value: unknown): value is BrokerBootstrap {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const candidate = value as Partial<BrokerBootstrap>;
-  const target = (value as { readonly target?: unknown }).target;
-  return (
-    typeof candidate.sessionId === "string" &&
-    typeof candidate.homeDir === "string" &&
-    typeof candidate.process === "string" &&
-    typeof candidate.instance === "number" &&
-    typeof target === "object" &&
-    target !== null
-  );
 }
 
 function ignoreQueueResult(): void {

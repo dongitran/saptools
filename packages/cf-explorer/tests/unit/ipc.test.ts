@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CfExplorerError } from "../../src/errors.js";
 import { createIpcServer, errorResponse, sendIpcRequest } from "../../src/ipc.js";
 
+const SMALL_IPC_LIMIT_BYTES = 64;
+
 describe("IPC transport", () => {
   let dir: string;
   let server: Server | undefined;
@@ -159,6 +161,66 @@ describe("IPC transport", () => {
       command: "roots",
       args: {},
     })).rejects.toMatchObject({ code: "IPC_FAILED" });
+  });
+
+  it("rejects oversized broker responses", async () => {
+    const socketPath = join(dir, "oversized-response.sock");
+    server = createServer((socket) => {
+      socket.on("data", () => {
+        socket.write("x".repeat(SMALL_IPC_LIMIT_BYTES + 1));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(socketPath, () => {
+        resolve();
+      });
+    });
+
+    await expect(sendIpcRequest(socketPath, {
+      requestId: "request-big",
+      sessionId: "session-a",
+      command: "roots",
+      args: {},
+    }, { maxMessageBytes: SMALL_IPC_LIMIT_BYTES })).rejects.toMatchObject({
+      code: "IPC_FAILED",
+      message: "Broker response exceeded IPC size limit.",
+    });
+  });
+
+  it("returns a structured error for oversized broker requests", async () => {
+    const socketPath = join(dir, "oversized-request.sock");
+    server = await createIpcServer(
+      socketPath,
+      async () => ({
+        requestId: "unreachable",
+        ok: true,
+        durationMs: 0,
+      }),
+      { maxMessageBytes: SMALL_IPC_LIMIT_BYTES },
+    );
+
+    const response = await new Promise<string>((resolve) => {
+      const socket = createConnection(socketPath);
+      let buffer = "";
+      socket.on("connect", () => {
+        socket.write("x".repeat(SMALL_IPC_LIMIT_BYTES + 1));
+      });
+      socket.on("data", (chunk: Buffer | string) => {
+        buffer += chunk.toString();
+        if (buffer.includes("\n")) {
+          socket.end();
+          resolve(buffer);
+        }
+      });
+    });
+    expect(JSON.parse(response) as unknown).toMatchObject({
+      requestId: "unknown",
+      ok: false,
+      error: {
+        code: "IPC_FAILED",
+        message: "Broker request exceeded IPC size limit.",
+      },
+    });
   });
 
   it("reports connection errors as IPC failures", async () => {

@@ -124,10 +124,11 @@ function createProcessError(
   result: CfRunResult,
   redactionRules: ReturnType<typeof buildRedactionRules>,
 ): CfExplorerError {
-  const detail = redactText(result.stderr.trim() || result.stdout.trim(), redactionRules);
+  const rawDetail = result.stderr.trim() || result.stdout.trim();
+  const detail = redactText(rawDetail, redactionRules);
   const command = describeCfCommand(args);
   const message = detail.length > 0 ? `${command} failed: ${detail}` : `${command} failed.`;
-  return new CfExplorerError(errorCodeForCommand(args, detail), message, detail);
+  return new CfExplorerError(errorCodeForCommand(args, rawDetail), message, detail);
 }
 
 function appendBounded(
