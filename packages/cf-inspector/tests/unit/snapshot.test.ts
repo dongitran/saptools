@@ -161,6 +161,8 @@ describe("captureSnapshot", () => {
       captures: ["user.id", "throwy"],
     });
     expect(snapshot.reason).toBe("other");
+    expect(typeof snapshot.captureDurationMs).toBe("number");
+    expect(snapshot.captureDurationMs).toBeGreaterThanOrEqual(0);
     expect(snapshot.hitBreakpoints).toEqual(["bp:1"]);
     expect(snapshot.topFrame).toBeDefined();
     expect(snapshot.topFrame?.line).toBe(42);
@@ -228,6 +230,59 @@ describe("captureSnapshot", () => {
     };
     const snapshot = await captureSnapshot(session, pause, { captures: ["boom"] });
     expect(snapshot.captures[0]?.error).toContain("network down");
+  });
+
+  it("measures elapsed work between performance.now() boundaries with 3-decimal rounding", async () => {
+    let consumed = 0;
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => {
+      const value = consumed === 0 ? 0 : 12.345678;
+      consumed += 1;
+      return value;
+    });
+    try {
+      const sendOrder: string[] = [];
+      const consumedAtSend: number[] = [];
+      const send = vi.fn(async (method: string) => {
+        sendOrder.push(method);
+        consumedAtSend.push(consumed);
+        if (method === "Runtime.getProperties") {
+          return { result: [] };
+        }
+        if (method === "Debugger.evaluateOnCallFrame") {
+          return { result: { type: "number", value: 1 } };
+        }
+        return {};
+      });
+      const session = {
+        client: { send } as never,
+        target: { id: "t", type: "node" } as never,
+        scripts: new Map(),
+        pauseBuffer: [],
+        pauseWaitGate: { active: false },
+        dispose: async (): Promise<void> => undefined,
+      };
+      const pause: PauseEvent = {
+        reason: "other",
+        hitBreakpoints: [],
+        callFrames: [
+          {
+            callFrameId: "f1",
+            functionName: "x",
+            url: "file:///x.js",
+            lineNumber: 0,
+            columnNumber: 0,
+            scopeChain: [{ type: "local", objectId: "scope-1" }],
+          },
+        ],
+      };
+      const snapshot = await captureSnapshot(session, pause, { captures: ["one"] });
+      expect(snapshot.captureDurationMs).toBe(12.346);
+      expect(sendOrder).toEqual(["Runtime.getProperties", "Debugger.evaluateOnCallFrame"]);
+      expect(consumedAtSend).toEqual([1, 1]);
+      expect(consumed).toBeGreaterThanOrEqual(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
 

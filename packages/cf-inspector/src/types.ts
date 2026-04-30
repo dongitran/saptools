@@ -116,6 +116,7 @@ export interface SnapshotResult {
   readonly reason: string;
   readonly hitBreakpoints: readonly string[];
   readonly capturedAt: string;
+  readonly captureDurationMs: number;
   readonly topFrame?: FrameSnapshot;
   readonly captures: readonly CapturedExpression[];
 }

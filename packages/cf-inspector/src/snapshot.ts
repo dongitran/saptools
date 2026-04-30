@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { evaluateOnFrame, getProperties } from "./inspector.js";
 import type { CdpEvalResult, CdpProperty, InspectorSession } from "./inspector.js";
 import type {
@@ -217,6 +219,7 @@ export async function captureSnapshot(
   pause: PauseEvent,
   options: CaptureSnapshotOptions = {},
 ): Promise<SnapshotResult> {
+  const startedAt = performance.now();
   const top = pause.callFrames[0];
   let topFrame: FrameSnapshot | undefined;
   let captures: CapturedExpression[] = [];
@@ -243,10 +246,12 @@ export async function captureSnapshot(
       );
     }
   }
+  const captureDurationMs = Math.round((performance.now() - startedAt) * 1000) / 1000;
   return {
     reason: pause.reason,
     hitBreakpoints: pause.hitBreakpoints,
     capturedAt: new Date().toISOString(),
+    captureDurationMs,
     ...(topFrame === undefined ? {} : { topFrame }),
     captures,
   };

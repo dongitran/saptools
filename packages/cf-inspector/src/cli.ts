@@ -202,7 +202,11 @@ function warnOnUnboundBreakpoints(handles: readonly BreakpointHandle[]): void {
 
 function writeHumanSnapshot(snapshot: SnapshotResult): void {
   const lines: string[] = [];
-  lines.push(`Snapshot @ ${snapshot.capturedAt}`, `  reason:  ${snapshot.reason}`);
+  lines.push(
+    `Snapshot @ ${snapshot.capturedAt}`,
+    `  reason:  ${snapshot.reason}`,
+    `  capture: ${snapshot.captureDurationMs.toFixed(1)}ms`,
+  );
   // Skip the raw CDP breakpoint IDs in human output — the frame line below
   // already shows file:line, and the IDs include the verbose internal urlRegex.
   if (snapshot.topFrame) {
