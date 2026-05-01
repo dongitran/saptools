@@ -1,11 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatOutput } from "../../src/cli-render.js";
+import { formatOutput, writeOutput } from "../../src/cli-render.js";
 
 const target = { region: "ap10", org: "org", space: "dev", app: "demo-app" } as const;
 const meta = { target, process: "web", instance: 0, durationMs: 1, truncated: false } as const;
 
 describe("CLI output rendering", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes formatted output to stdout", () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    writeOutput({ ok: true });
+
+    expect(write).toHaveBeenCalledWith("{\n  \"ok\": true\n}\n");
+  });
+
   it("formats JSON output with a trailing newline", () => {
     expect(formatOutput({ ok: true })).toBe("{\n  \"ok\": true\n}\n");
   });
@@ -23,6 +35,8 @@ describe("CLI output rendering", () => {
       instances: [{ index: 0, state: "running", since: "today" }],
     }, false)).toBe("#0\trunning\ttoday\n");
     expect(formatOutput({ meta, instances: [] }, false)).toBe("No instances reported.\n");
+    expect(formatOutput({ meta, instances: [null] }, false))
+      .toBe(`${JSON.stringify({ meta, instances: [null] }, null, 2)}\n`);
     expect(formatOutput({
       meta,
       path: "/workspace/app",
