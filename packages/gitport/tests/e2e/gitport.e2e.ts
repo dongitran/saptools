@@ -127,6 +127,44 @@ test.describe("GitLab MR porting", () => {
     }
   });
 
+  test("User can port MR commits returned across GitLab pages", async () => {
+    const fixture = await createFixture({
+      secondCleanCommit: true,
+      gitlabCommitPageSize: 1,
+    });
+    const fakeGitLab = await startFakeGitLab(fixture);
+    try {
+      const result = await runCli(
+        [
+          "--source-mr-url",
+          fixture.sourceMergeRequestRef,
+          "--destination-repo-url",
+          fixture.destBare,
+          "--base-branch",
+          "main",
+          "--port-branch",
+          "gitport/repo-a-mr-123",
+          "--json",
+          "--title",
+          "JIR-112 carry paginated feature",
+        ],
+        buildEnv(fixture, fakeGitLab),
+      );
+
+      expect(result.code, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as GitportJsonResult;
+      expect(parsed.commits.map((commit) => commit.status)).toEqual(["applied", "applied"]);
+      expect(parsed.commits.map((commit) => commit.title)).toEqual(["port change", "extra change"]);
+      expect(fakeGitLab.createdMergeRequests).toHaveLength(1);
+      await expect(readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt")).resolves.toBe(
+        "ported feature\nsecond line\n",
+      );
+    } finally {
+      await fakeGitLab.stop();
+      await cleanupFixture(fixture);
+    }
+  });
+
   test("User can auto-resolve conflicts with incoming and review old code in the Draft MR", async () => {
     const fixture = await createFixture(true);
     const fakeGitLab = await startFakeGitLab(fixture);

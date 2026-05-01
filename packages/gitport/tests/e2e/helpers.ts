@@ -28,6 +28,7 @@ export interface Fixture {
   readonly destBare: string;
   readonly sourceCommits: readonly string[];
   readonly gitlabCommitOrder: readonly string[];
+  readonly gitlabCommitPageSize?: number | undefined;
 }
 
 export interface FixtureOptions {
@@ -37,6 +38,7 @@ export interface FixtureOptions {
   readonly incomingDeleteConflict?: boolean | undefined;
   readonly secondCleanCommit?: boolean | undefined;
   readonly reverseGitLabCommitOrder?: boolean | undefined;
+  readonly gitlabCommitPageSize?: number | undefined;
 }
 
 export interface CreatedMrBody {
@@ -171,6 +173,9 @@ export async function createFixture(input: boolean | FixtureOptions): Promise<Fi
     destBare,
     sourceCommits,
     gitlabCommitOrder,
+    ...(options.gitlabCommitPageSize === undefined
+      ? {}
+      : { gitlabCommitPageSize: options.gitlabCommitPageSize }),
   };
 }
 
@@ -220,7 +225,8 @@ function gitlabCommitTitle(fixture: Fixture, sha: string): string {
 
 function writeCommitPage(response: ServerResponse, url: URL, fixture: Fixture): void {
   const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
-  const perPage = Number.parseInt(url.searchParams.get("per_page") ?? "100", 10);
+  const requestedPerPage = Number.parseInt(url.searchParams.get("per_page") ?? "100", 10);
+  const perPage = fixture.gitlabCommitPageSize ?? requestedPerPage;
   const start = (page - 1) * perPage;
   const values = fixture.gitlabCommitOrder.slice(start, start + perPage);
   const nextPage = start + perPage < fixture.gitlabCommitOrder.length ? (page + 1).toString() : "";
