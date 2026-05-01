@@ -5,16 +5,16 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CfExplorerError } from "../../src/errors.js";
-import { createIpcServer, type IpcRequest } from "../../src/ipc.js";
+import { CfExplorerError } from "../../src/core/errors.js";
 import {
   attachExplorerSession,
   getExplorerSessionStatus,
   listExplorerSessions,
   startExplorerSession,
   stopExplorerSession,
-} from "../../src/session.js";
-import { markSessionsStaleForTarget, registerExplorerSession } from "../../src/storage.js";
+} from "../../src/session/client.js";
+import { createIpcServer, type IpcRequest } from "../../src/session/ipc.js";
+import { markSessionsStaleForTarget, registerExplorerSession } from "../../src/session/storage.js";
 
 describe("persistent session client", () => {
   let homeDir: string;

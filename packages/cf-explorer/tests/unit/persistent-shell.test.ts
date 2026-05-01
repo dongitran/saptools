@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { PersistentShell } from "../../src/persistent-shell.js";
+import { PersistentShell } from "../../src/broker/persistent-shell.js";
 
 const RESPONDER_SCRIPT = [
   "process.stdin.setEncoding('utf8');",

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatOutput, writeOutput } from "../../src/cli-render.js";
+import { formatOutput, writeOutput } from "../../src/cli/render.js";
 
 const target = { region: "ap10", org: "org", space: "dev", app: "demo-app" } as const;
 const meta = { target, process: "web", instance: 0, durationMs: 1, truncated: false } as const;

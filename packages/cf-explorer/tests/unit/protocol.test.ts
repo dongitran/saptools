@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { CfExplorerError } from "../../src/errors.js";
 import {
   createCommandId,
   parseProtocolFrame,
   requireSuccessfulFrame,
   wrapRemoteScript,
-} from "../../src/protocol.js";
+} from "../../src/broker/protocol.js";
+import { CfExplorerError } from "../../src/core/errors.js";
 
 describe("persistent session protocol", () => {
   it("wraps scripts with unique sentinel markers", () => {

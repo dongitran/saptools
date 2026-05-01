@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { CfExplorerError } from "../../src/core/errors.js";
 import {
   buildFindScript,
   buildGrepScript,
@@ -8,8 +9,7 @@ import {
   buildRootsScript,
   buildViewScript,
   quoteRemoteShellArg,
-} from "../../src/commands.js";
-import { CfExplorerError } from "../../src/errors.js";
+} from "../../src/discovery/commands.js";
 
 describe("remote command builders", () => {
   it("quotes shell arguments and escapes single quotes", () => {

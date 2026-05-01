@@ -5,8 +5,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CfExplorerError } from "../../src/errors.js";
-import { createIpcServer, errorResponse, sendIpcRequest } from "../../src/ipc.js";
+import { CfExplorerError } from "../../src/core/errors.js";
+import { createIpcServer, errorResponse, sendIpcRequest } from "../../src/session/ipc.js";
 
 const SMALL_IPC_LIMIT_BYTES = 64;
 

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { sessionCfHomeDir, sessionSocketPath } from "../../src/paths.js";
+import { sessionCfHomeDir, sessionSocketPath } from "../../src/session/paths.js";
 import {
   cleanupSessionFiles,
   isPidAlive,
@@ -17,7 +17,7 @@ import {
   removeExplorerSession,
   toSessionTarget,
   updateExplorerSession,
-} from "../../src/storage.js";
+} from "../../src/session/storage.js";
 
 describe("session storage", () => {
   let homeDir: string;

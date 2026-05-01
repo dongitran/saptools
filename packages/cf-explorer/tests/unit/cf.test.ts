@@ -16,7 +16,7 @@ import {
   prepareCfCliSession,
   runCfCommand,
   spawnPersistentSshShell,
-} from "../../src/cf.js";
+} from "../../src/cf/client.js";
 
 describe("CF command runner", () => {
   let cfHomeDir: string;

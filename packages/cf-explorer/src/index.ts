@@ -7,20 +7,20 @@ export {
   lsRemote,
   roots,
   viewRemote,
-} from "./api.js";
+} from "./discovery/api.js";
 export {
   enableSsh,
   prepareSsh,
   restartApp,
   sshStatus,
-} from "./lifecycle.js";
+} from "./cf/lifecycle.js";
 export {
   attachExplorerSession,
   getExplorerSessionStatus,
   listExplorerSessions,
   startExplorerSession,
   stopExplorerSession,
-} from "./session.js";
+} from "./session/client.js";
 export {
   assertSafeRemoteFile,
   assertSafeRemoteRoot,
@@ -32,8 +32,8 @@ export {
   buildRootsScript,
   buildViewScript,
   quoteRemoteShellArg,
-} from "./commands.js";
-export { CfExplorerError, toExplorerError } from "./errors.js";
+} from "./discovery/commands.js";
+export { CfExplorerError, toExplorerError } from "./core/errors.js";
 export {
   parseCfAppInstances,
   parseFindOutput,
@@ -43,6 +43,6 @@ export {
   parseRootsOutput,
   parseViewOutput,
   suggestBreakpoints,
-} from "./parsers.js";
-export { resolveApiEndpoint, resolveCredentials } from "./target.js";
-export type * from "./types.js";
+} from "./discovery/parsers.js";
+export { resolveApiEndpoint, resolveCredentials } from "./cf/target.js";
+export type * from "./core/types.js";

@@ -15,7 +15,7 @@ export default defineConfig({
       // by tests/unit/session.test.ts.
       // cli entry and program: thin executable wrapper and Commander wiring.
       // index.ts: public re-export barrel.
-      // core/types.ts and types.ts: type declarations and as-const literals.
+      // core/types.ts: type declarations and as-const literals.
       exclude: [
         "src/broker/explorer-broker.ts",
         "src/broker.ts",
@@ -24,7 +24,6 @@ export default defineConfig({
         "src/core/types.ts",
         "src/index.ts",
         "src/session/client.ts",
-        "src/types.ts",
       ],
       reporter: ["text", "html"],
       thresholds: {

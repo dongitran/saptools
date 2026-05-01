@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CfExplorerError } from "../../src/core/errors.js";
 import {
   createExplorer,
   findRemote,
@@ -11,8 +12,7 @@ import {
   lsRemote,
   roots,
   viewRemote,
-} from "../../src/api.js";
-import { CfExplorerError } from "../../src/errors.js";
+} from "../../src/discovery/api.js";
 
 const mocks = vi.hoisted(() => ({
   cfApp: vi.fn<

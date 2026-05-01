@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRedactionRules, redactText } from "../../src/redaction.js";
 import {
   normalizeTarget,
-  requireNonEmptyText,
-  resolveApiEndpoint,
   parseNonNegativeInteger,
   parsePositiveInteger,
+  requireNonEmptyText,
+  resolveApiEndpoint,
   resolveCredentials,
   resolveInstance,
   resolveInstanceSelector,
   resolveProcessName,
-} from "../../src/target.js";
+} from "../../src/cf/target.js";
+import { buildRedactionRules, redactText } from "../../src/core/redaction.js";
 
 describe("redaction and target helpers", () => {
   it("redacts credentials and extra values", () => {

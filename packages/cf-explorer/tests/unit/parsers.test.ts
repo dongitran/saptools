@@ -9,7 +9,7 @@ import {
   parseRootsOutput,
   parseViewOutput,
   suggestBreakpoints,
-} from "../../src/parsers.js";
+} from "../../src/discovery/parsers.js";
 
 describe("output parsers", () => {
   it("deduplicates and sorts roots", () => {

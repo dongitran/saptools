@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { withFileLock } from "../../src/lock.js";
+import { withFileLock } from "../../src/session/lock.js";
 import {
   cfHomesDir,
   explorerHome,
@@ -15,7 +15,7 @@ import {
   socketsDir,
   tmpRunDir,
   tmpRunsDir,
-} from "../../src/paths.js";
+} from "../../src/session/paths.js";
 
 describe("paths and file locks", () => {
   let dir: string;

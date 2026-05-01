@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CfExplorerError, toExplorerError } from "../../src/errors.js";
+import { CfExplorerError, toExplorerError } from "../../src/core/errors.js";
 
 describe("typed errors", () => {
   it("preserves existing explorer errors", () => {

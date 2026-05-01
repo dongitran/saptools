@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { executeRemoteScript, withPreparedCfSession } from "../../src/runner.js";
+import { executeRemoteScript, withPreparedCfSession } from "../../src/discovery/runner.js";
 
 const mocks = vi.hoisted(() => ({
   cfSshOneShot: vi.fn<

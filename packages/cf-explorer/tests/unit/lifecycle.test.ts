@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CfExplorerError } from "../../src/errors.js";
-import { enableSsh, prepareSsh, restartApp, sshStatus } from "../../src/lifecycle.js";
+import { enableSsh, prepareSsh, restartApp, sshStatus } from "../../src/cf/lifecycle.js";
+import { CfExplorerError } from "../../src/core/errors.js";
 
 const mocks = vi.hoisted(() => ({
   cfEnableSsh: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<void>>(),

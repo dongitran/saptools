@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.11
+
+### Maintenance
+
+- Removed obsolete one-line source wrapper modules and pointed internal tests
+  and package-root exports at the focused implementation folders.
+
 ## 0.2.10
 
 ### Maintenance

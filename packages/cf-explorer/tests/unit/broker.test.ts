@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseBrokerBootstrap } from "../../src/broker-bootstrap.js";
+import { parseBrokerBootstrap } from "../../src/broker/bootstrap.js";
 import { runBrokerFromEnv } from "../../src/broker.js";
 
 describe("broker bootstrap", () => {
