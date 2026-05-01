@@ -3,6 +3,7 @@ import process from "node:process";
 
 import { Command } from "commander";
 
+import { writeHumanSnapshot, writeJson, writeLogEvent } from "./cliOutput.js";
 import {
   connectInspector,
   evaluateGlobal,
@@ -15,7 +16,6 @@ import {
 } from "./inspector.js";
 import type { InspectorSession } from "./inspector.js";
 import { streamLogpoint } from "./logpoint.js";
-import type { LogpointEvent } from "./logpoint.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "./pathMapper.js";
 import { captureSnapshot } from "./snapshot.js";
 import { openCfTunnel } from "./tunnel.js";
@@ -271,10 +271,6 @@ async function withSession<T>(
   }
 }
 
-function writeJson(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-}
-
 /**
  * V8's `Debugger.setBreakpointByUrl` happily returns a breakpointId even when
  * the file:line did not match any loaded script — `resolvedLocations` is then
@@ -327,44 +323,6 @@ function withPausedDuration(
     ...(snapshot.topFrame === undefined ? {} : { topFrame: snapshot.topFrame }),
     captures: snapshot.captures,
   };
-}
-
-function writeHumanSnapshot(snapshot: SnapshotResult): void {
-  const pausedDuration = snapshot.pausedDurationMs === null
-    ? "unknown"
-    : `${snapshot.pausedDurationMs.toFixed(1)}ms`;
-  const lines: string[] = [];
-  lines.push(
-    `Snapshot @ ${snapshot.capturedAt}`,
-    `  reason:  ${snapshot.reason}`,
-    `  paused:  ${pausedDuration}`,
-  );
-  // Skip the raw CDP breakpoint IDs in human output — the frame line below
-  // already shows file:line, and the IDs include the verbose internal urlRegex.
-  if (snapshot.topFrame) {
-    const frame = snapshot.topFrame;
-    const fnName = frame.functionName.length === 0 ? "(anonymous)" : frame.functionName;
-    const sourceUrl = frame.url !== undefined && frame.url.length > 0 ? frame.url : "(unknown)";
-    lines.push(
-      `  frame:   ${fnName} ${sourceUrl}:${frame.line.toString()}:${frame.column.toString()}`,
-    );
-    if (frame.scopes !== undefined) {
-      for (const scope of frame.scopes) {
-        lines.push(`  scope ${scope.type} (${scope.variables.length.toString()} vars):`);
-        for (const variable of scope.variables) {
-          lines.push(`    ${variable.name} = ${variable.value}`);
-        }
-      }
-    }
-  }
-  if (snapshot.captures.length > 0) {
-    lines.push("  captures:");
-    for (const capture of snapshot.captures) {
-      const detail = capture.error ?? capture.value ?? "undefined";
-      lines.push(`    ${capture.expression} = ${detail}`);
-    }
-  }
-  process.stdout.write(`${lines.join("\n")}\n`);
 }
 
 async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
@@ -480,18 +438,6 @@ async function handleEval(opts: EvalCommandOptions): Promise<void> {
     return;
   }
   process.stdout.write(`${JSON.stringify(inner.value)}\n`);
-}
-
-function writeLogEvent(event: LogpointEvent, json: boolean): void {
-  if (json) {
-    process.stdout.write(`${JSON.stringify(event)}\n`);
-    return;
-  }
-  if (event.error !== undefined) {
-    process.stdout.write(`[${event.ts}] ${event.at} !err ${event.error}\n`);
-    return;
-  }
-  process.stdout.write(`[${event.ts}] ${event.at} ${event.value ?? ""}\n`);
 }
 
 async function handleLog(opts: LogCommandOptions): Promise<void> {
