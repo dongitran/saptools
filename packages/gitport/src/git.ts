@@ -250,29 +250,31 @@ export async function captureConflict(
   return { commitSha: input.commitSha, commitTitle: input.commitTitle, files };
 }
 
-async function checkoutIncoming(cwd: string, path: string, secrets: readonly string[]): Promise<void> {
+async function checkoutIncoming(cwd: string, path: string, options: GitRunOptions): Promise<void> {
+  const runOptions = { cwd, env: options.env, secrets: options.secrets };
   try {
-    await runGit(["checkout", "--theirs", "--", path], { cwd, secrets });
+    await runGit(["checkout", "--theirs", "--", path], runOptions);
   } catch (error: unknown) {
     if (!(error instanceof GitCommandError)) {
       throw error;
     }
-    await runGit(["rm", "--ignore-unmatch", "--", path], { cwd, secrets });
+    await runGit(["rm", "--ignore-unmatch", "--", path], runOptions);
     return;
   }
-  await runGit(["add", "--", path], { cwd, secrets });
+  await runGit(["add", "--", path], runOptions);
 }
 
 export function isEmptyCherryPickMessage(detail: string): boolean {
   return detail.includes("previous cherry-pick is now empty") || detail.includes("nothing to commit");
 }
 
-async function continueCherryPick(cwd: string, secrets: readonly string[]): Promise<void> {
+async function continueCherryPick(cwd: string, options: GitRunOptions): Promise<void> {
+  const runOptions = { cwd, env: options.env, secrets: options.secrets };
   try {
-    await runGit(["cherry-pick", "--continue"], { cwd, secrets });
+    await runGit(["cherry-pick", "--continue"], runOptions);
   } catch (error: unknown) {
     if (error instanceof GitCommandError && isEmptyCherryPickMessage(error.stderr)) {
-      await runGit(["cherry-pick", "--skip"], { cwd, secrets });
+      await runGit(["cherry-pick", "--skip"], runOptions);
       return;
     }
     throw error;
@@ -284,6 +286,7 @@ export async function autoResolveIncomingConflict(
   input: {
     readonly commitSha: string;
     readonly commitTitle: string;
+    readonly env?: NodeJS.ProcessEnv | undefined;
     readonly secrets: readonly string[];
   },
 ): Promise<ConflictReport> {
@@ -294,11 +297,11 @@ export async function autoResolveIncomingConflict(
   await conflict.files.reduce(
     async (previous, file): Promise<void> => {
       await previous;
-      await checkoutIncoming(cwd, file.path, input.secrets);
+      await checkoutIncoming(cwd, file.path, { env: input.env, secrets: input.secrets });
     },
     Promise.resolve(),
   );
-  await continueCherryPick(cwd, input.secrets);
+  await continueCherryPick(cwd, { env: input.env, secrets: input.secrets });
   return conflict;
 }
 

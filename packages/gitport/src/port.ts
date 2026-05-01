@@ -196,6 +196,7 @@ async function cherryPickCommit(
     const conflict = await autoResolveIncomingConflict(run.paths.destDir, {
       commitSha: commit.sha,
       commitTitle: commit.title,
+      env: run.gitEnv,
       secrets: run.secrets,
     });
     return {
