@@ -149,6 +149,12 @@ cf-explorer inspect-candidates \
 
 ## 🧰 CLI
 
+Check the installed CLI version:
+
+```bash
+cf-explorer --version
+```
+
 All read/discovery commands accept:
 
 | Flag | Description |
@@ -237,7 +243,9 @@ cf-explorer session start \
   --org org-name \
   --space space-name \
   --app app-name \
-  --instance 0
+  --instance 0 \
+  --idle-timeout 900 \
+  --max-lifetime 3600
 
 cf-explorer session list
 cf-explorer session status --session-id <id>
@@ -248,6 +256,9 @@ cf-explorer session view --session-id <id> --file /app-root/src/handler.js --lin
 
 cf-explorer session stop --session-id <id>
 ```
+
+`--idle-timeout` and `--max-lifetime` are optional seconds-based guards for
+the local broker process.
 
 ### 🛰️ How Session Reuse Works
 

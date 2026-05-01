@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import process from "node:process";
 
 import { Command } from "commander";
@@ -82,6 +83,15 @@ interface LifecycleFlags extends TargetFlags {
 interface SessionFlags extends TargetFlags {
   readonly sessionId?: string;
   readonly all?: boolean;
+}
+
+interface SessionStartFlags extends TargetFlags {
+  readonly idleTimeout?: string;
+  readonly maxLifetime?: string;
+}
+
+interface PackageJsonVersion {
+  readonly version: string;
 }
 
 function requireFlag(value: string | undefined, label: string): string {
@@ -196,6 +206,28 @@ function buildLifecycle(flags: LifecycleFlags): LifecycleOptions {
     ...buildSelector(flags),
     ...(flags.yes === true ? { confirmImpact: true } : {}),
   };
+}
+
+function parseSecondsAsMilliseconds(value: string | undefined, label: string): number | undefined {
+  const seconds = parsePositiveInteger(value, label);
+  return seconds === undefined ? undefined : seconds * 1000;
+}
+
+function readPackageVersion(): string {
+  const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  const parsed: unknown = JSON.parse(raw);
+  if (!isPackageJsonVersion(parsed)) {
+    throw new CfExplorerError("UNSAFE_INPUT", "Package version metadata is missing.");
+  }
+  return parsed.version;
+}
+
+function isPackageJsonVersion(value: unknown): value is PackageJsonVersion {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly version?: unknown }).version === "string"
+  );
 }
 
 function writeOutput(value: unknown, json = true): void {
@@ -422,7 +454,10 @@ function addSessionReadOptions(command: Command): Command {
 
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
-  program.name("cf-explorer").description("Safe Cloud Foundry app file explorer");
+  program
+    .name("cf-explorer")
+    .description("Safe Cloud Foundry app file explorer")
+    .version(readPackageVersion());
   addDiscoveryCommands(program);
   addLifecycleCommands(program);
   addSessionCommands(program);
@@ -495,11 +530,17 @@ function addSessionCommands(program: Command): void {
   const session = program.command("session").description("Manage persistent explorer sessions");
   addSingleInstanceTargetOptions(session.command("start").description("Start a persistent explorer session"))
     .option("--timeout <seconds>", "Startup timeout in seconds")
-    .action(async (flags: TargetFlags): Promise<void> => {
+    .option("--idle-timeout <seconds>", "Idle timeout in seconds")
+    .option("--max-lifetime <seconds>", "Maximum session lifetime in seconds")
+    .action(async (flags: SessionStartFlags): Promise<void> => {
+      const idleTimeoutMs = parseSecondsAsMilliseconds(flags.idleTimeout, "--idle-timeout");
+      const maxLifetimeMs = parseSecondsAsMilliseconds(flags.maxLifetime, "--max-lifetime");
       writeOutput(await startExplorerSession({
         target: buildTarget(flags),
         runtime: buildRuntime(flags),
         ...buildSelector(flags),
+        ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+        ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
       }));
     });
   session.command("list").description("List persistent sessions")

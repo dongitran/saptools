@@ -1,6 +1,10 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
 import {
+  PACKAGE_DIR,
   type Scenario,
   createEnv,
   prepareCase,
@@ -60,6 +64,26 @@ const targetArgs = [
   "--app",
   "demo-app",
 ] as const;
+
+async function readPackageVersion(): Promise<string> {
+  const raw = await readFile(join(PACKAGE_DIR, "package.json"), "utf8");
+  const parsed = JSON.parse(raw) as { readonly version?: unknown };
+  const version = parsed.version;
+  expect(typeof version).toBe("string");
+  if (typeof version !== "string") {
+    throw new Error("Package version must be a string.");
+  }
+  return version;
+}
+
+test("User can inspect the installed CLI version", async () => {
+  const version = await readPackageVersion();
+
+  const result = await runCli(process.env, ["--version"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout.trim()).toBe(version);
+});
 
 test("User can discover roots, instances, files, content, and line context", async () => {
   const paths = await prepareCase("discovery", scenario());
@@ -250,4 +274,34 @@ test("User can reuse a persistent session through the broker", async () => {
   const stopped = await runCli(env, ["session", "stop", "--session-id", sessionId]);
   expect(stopped.code).toBe(0);
   expect(JSON.parse(stopped.stdout)).toEqual({ stopped: 1 });
+});
+
+test("User can tune persistent session timers", async () => {
+  const paths = await prepareCase("session-timers", scenario());
+  const env = createEnv(paths);
+
+  const started = await runCli(env, [
+    "session",
+    "start",
+    ...targetArgs,
+    "--idle-timeout",
+    "1",
+    "--max-lifetime",
+    "10",
+  ]);
+  expect(started.code).toBe(0);
+  const sessionId = JSON.parse(started.stdout).sessionId as string;
+
+  await expect.poll(async () => {
+    const listed = await runCli(env, ["session", "list"]);
+    expect(listed.code).toBe(0);
+    return (JSON.parse(listed.stdout) as { readonly sessions: readonly unknown[] }).sessions.length;
+  }, {
+    intervals: [250, 500, 1_000],
+    timeout: 5_000,
+  }).toBe(0);
+
+  const status = await runCli(env, ["session", "status", "--session-id", sessionId]);
+  expect(status.code).not.toBe(0);
+  expect(status.stderr).toContain("SESSION_NOT_FOUND");
 });

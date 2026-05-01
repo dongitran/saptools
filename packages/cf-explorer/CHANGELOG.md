@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.7
+
+### Improvements
+
+- Added root `--version` output for quick installed CLI checks.
+- Added `session start --idle-timeout` and `--max-lifetime` flags to expose
+  the existing broker timer controls from the CLI.
+
 ## 0.2.6
 
 ### Improvements
