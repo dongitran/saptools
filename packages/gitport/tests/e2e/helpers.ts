@@ -27,12 +27,15 @@ export interface Fixture {
   readonly sourceMergeRequestRef: string;
   readonly destBare: string;
   readonly sourceCommits: readonly string[];
+  readonly gitlabCommitOrder: readonly string[];
 }
 
 export interface FixtureOptions {
   readonly conflict?: boolean;
   readonly duplicate?: boolean;
   readonly existingPortBranch?: string | undefined;
+  readonly secondCleanCommit?: boolean | undefined;
+  readonly reverseGitLabCommitOrder?: boolean | undefined;
 }
 
 export interface CreatedMrBody {
@@ -91,6 +94,10 @@ async function createSourceBranch(
     await writeFile(join(work, "feature.txt"), "ported feature\n", "utf8");
     await git(work, ["add", "feature.txt"]);
     await git(work, ["commit", "-m", "add portable feature"]);
+    if (options.secondCleanCommit === true) {
+      await writeFile(join(work, "feature.txt"), "ported feature\nsecond line\n", "utf8");
+      await git(work, ["commit", "-am", "extend portable feature"]);
+    }
   }
   await git(work, ["push", "origin", "feature/gitport"]);
   const raw = await git(work, ["rev-list", "--reverse", "main..feature/gitport"]);
@@ -148,6 +155,8 @@ export async function createFixture(input: boolean | FixtureOptions): Promise<Fi
   await gitNoCwd(["clone", "--bare", seed, sourceBare]);
   await gitNoCwd(["clone", "--bare", seed, destBare]);
   const sourceCommits = await createSourceBranch(root, sourceBare, options);
+  const gitlabCommitOrder =
+    options.reverseGitLabCommitOrder === true ? [...sourceCommits].reverse() : sourceCommits;
   await customizeDestination(root, destBare, options);
   return {
     root,
@@ -156,6 +165,7 @@ export async function createFixture(input: boolean | FixtureOptions): Promise<Fi
     sourceMergeRequestRef: `${sourceBare}/-/merge_requests/123`,
     destBare,
     sourceCommits,
+    gitlabCommitOrder,
   };
 }
 
@@ -199,6 +209,28 @@ function isCreatedMrBody(value: unknown): value is CreatedMrBody {
   );
 }
 
+function gitlabCommitTitle(fixture: Fixture, sha: string): string {
+  return sha === fixture.sourceCommits[0] ? "port change" : "extra change";
+}
+
+function writeCommitPage(response: ServerResponse, url: URL, fixture: Fixture): void {
+  const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+  const perPage = Number.parseInt(url.searchParams.get("per_page") ?? "100", 10);
+  const start = (page - 1) * perPage;
+  const values = fixture.gitlabCommitOrder.slice(start, start + perPage);
+  const nextPage = start + perPage < fixture.gitlabCommitOrder.length ? (page + 1).toString() : "";
+  writeJson(
+    response,
+    200,
+    values.map((sha) => ({
+      id: sha,
+      title: gitlabCommitTitle(fixture, sha),
+      message: "port change\n",
+    })),
+    { "x-next-page": nextPage },
+  );
+}
+
 async function handleFakeGitLabRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -220,21 +252,7 @@ async function handleFakeGitLabRequest(
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/v4/projects/repo-a/merge_requests/123/commits") {
-    const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
-    const perPage = Number.parseInt(url.searchParams.get("per_page") ?? "100", 10);
-    const start = (page - 1) * perPage;
-    const values = fixture.sourceCommits.slice(start, start + perPage);
-    const nextPage = start + perPage < fixture.sourceCommits.length ? (page + 1).toString() : "";
-    writeJson(
-      response,
-      200,
-      values.map((sha) => ({
-        id: sha,
-        title: sha === fixture.sourceCommits[0] ? "port change" : "extra change",
-        message: "port change\n",
-      })),
-      { "x-next-page": nextPage },
-    );
+    writeCommitPage(response, url, fixture);
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/v4/projects/repo-b/merge_requests") {

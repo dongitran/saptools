@@ -2,10 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 
 import { GITPORT_ERROR_CODE, GitportError } from "./errors.js";
 import {
-  autoResolveIncomingConflict,
   buildGitCredentialEnv,
-  gitHead,
-  isEmptyCherryPickMessage,
   listPatchEquivalentCommits,
   orderCommitsBySourceHistory,
   runGit,
@@ -17,15 +14,13 @@ import { createGitLabClient } from "./gitlab.js";
 import { maskAll } from "./mask.js";
 import { writeRunMetadata } from "./metadata.js";
 import { createRunId, runPaths } from "./paths.js";
+import { cherryPickCommits } from "./port-cherry-pick.js";
 import { parseRepoRef } from "./repo-url.js";
 import { buildDraftMergeRequestDescription, buildReportMarkdown } from "./report.js";
 import type {
-  CommitPortResult,
-  ConflictReport,
   PortGitLabMergeRequestOptions,
   PortGitLabMergeRequestResult,
   RunMetadata,
-  SourceCommit,
 } from "./types.js";
 import { GITPORT_GITLAB_API_BASE_ENV, GITPORT_GITLAB_TOKEN_ENV } from "./types.js";
 
@@ -40,11 +35,6 @@ interface PreparedRun {
   readonly destRemote: string;
   readonly gitEnv?: NodeJS.ProcessEnv | undefined;
   readonly gitlabApiBase: string;
-}
-
-interface CherryPickState {
-  readonly results: readonly CommitPortResult[];
-  readonly conflicts: readonly ConflictReport[];
 }
 
 function resolveToken(options: PortGitLabMergeRequestOptions): string {
@@ -172,73 +162,6 @@ async function fetchSourceBranch(
   });
 }
 
-async function cherryPickCommit(
-  run: PreparedRun,
-  commit: SourceCommit,
-): Promise<{ readonly result: CommitPortResult; readonly conflict?: ConflictReport | undefined }> {
-  const before = await gitHead(run.paths.destDir);
-  try {
-    await runGit(["cherry-pick", "-x", commit.sha], gitOptions(run, run.paths.destDir));
-  } catch (error: unknown) {
-    if (!(error instanceof GitCommandError)) {
-      throw error;
-    }
-    const unmerged = await runGit(["diff", "--name-only", "--diff-filter=U"], {
-      ...gitOptions(run, run.paths.destDir),
-    });
-    if (unmerged.stdout.trim().length === 0) {
-      if (!isEmptyCherryPickMessage(error.stderr)) {
-        throw error;
-      }
-      await runGit(["cherry-pick", "--skip"], gitOptions(run, run.paths.destDir));
-      return { result: { sha: commit.sha, title: commit.title, status: "skipped" } };
-    }
-    const conflict = await autoResolveIncomingConflict(run.paths.destDir, {
-      commitSha: commit.sha,
-      commitTitle: commit.title,
-      env: run.gitEnv,
-      secrets: run.secrets,
-    });
-    return {
-      result: { sha: commit.sha, title: commit.title, status: "incoming-resolved" },
-      conflict,
-    };
-  }
-  const after = await gitHead(run.paths.destDir);
-  const status: CommitPortResult["status"] = before === after ? "skipped" : "applied";
-  return { result: { sha: commit.sha, title: commit.title, status } };
-}
-
-async function cherryPickCommits(
-  run: PreparedRun,
-  commits: readonly SourceCommit[],
-  duplicateShas: ReadonlySet<string>,
-): Promise<{ readonly results: readonly CommitPortResult[]; readonly conflicts: readonly ConflictReport[] }> {
-  const initialState: Promise<CherryPickState> = Promise.resolve({
-    results: [],
-    conflicts: [],
-  });
-  const outcomes = await commits.reduce<Promise<CherryPickState>>(
-    async (previous, commit): Promise<CherryPickState> => {
-      const state = await previous;
-      if (duplicateShas.has(commit.sha)) {
-        const skipped: CommitPortResult = { sha: commit.sha, title: commit.title, status: "skipped" };
-        return {
-          results: [...state.results, skipped],
-          conflicts: state.conflicts,
-        };
-      }
-      const outcome = await cherryPickCommit(run, commit);
-      return {
-        results: [...state.results, outcome.result],
-        conflicts: outcome.conflict === undefined ? state.conflicts : [...state.conflicts, outcome.conflict],
-      };
-    },
-    initialState,
-  );
-  return outcomes;
-}
-
 async function writeReports(
   run: PreparedRun,
   input: Parameters<typeof buildDraftMergeRequestDescription>[0],
@@ -279,7 +202,11 @@ export async function portGitLabMergeRequest(
     sourceRef,
     run.secrets,
   );
-  const { results, conflicts } = await cherryPickCommits(run, orderedCommits, duplicateShas);
+  const { results, conflicts } = await cherryPickCommits(
+    { destDir: run.paths.destDir, gitEnv: run.gitEnv, secrets: run.secrets },
+    orderedCommits,
+    duplicateShas,
+  );
   await runGit(["push", "-u", "origin", options.portBranch], gitOptions(run, run.paths.destDir));
 
   const descriptionInput = {
