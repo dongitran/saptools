@@ -81,7 +81,8 @@ function prepareRun(options: PortGitLabMergeRequestOptions): PreparedRun {
   const source = parseRepoRef(options.sourceRepo);
   const dest = parseRepoRef(options.destRepo);
   const runId = options.runId ?? createRunId();
-  const gitEnv = source.kind === "http" || dest.kind === "http" ? buildGitCredentialEnv(token) : undefined;
+  const credentialEnv = source.kind === "http" || dest.kind === "http" ? buildGitCredentialEnv(token) : undefined;
+  const gitEnv = credentialEnv === undefined ? options.env : { ...options.env, ...credentialEnv };
   return {
     runId,
     paths: runPaths(runId, options.workRoot),

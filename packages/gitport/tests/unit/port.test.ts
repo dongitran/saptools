@@ -31,6 +31,15 @@ interface CreatedMergeRequestBody {
   readonly assignee_ids: readonly number[];
 }
 
+const TEST_GIT_ENV: NodeJS.ProcessEnv = {
+  GIT_COMMITTER_NAME: "Gitport Test Runner",
+  GIT_COMMITTER_EMAIL: "gitport-test@example.com",
+};
+
+function gitportTestEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...TEST_GIT_ENV, ...extra };
+}
+
 async function git(cwd: string, args: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", [...args], { cwd, maxBuffer: 32 * 1024 * 1024 });
   return stdout;
@@ -129,6 +138,18 @@ async function readBranchFile(
   return stdout;
 }
 
+async function readBranchCommitter(bareRepo: string, branch: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", [
+    "--git-dir",
+    bareRepo,
+    "log",
+    "-1",
+    "--format=%cn <%ce>",
+    branch,
+  ]);
+  return stdout.trim();
+}
+
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
@@ -206,6 +227,7 @@ describe("portGitLabMergeRequest", () => {
         title: "JIR-112 carry feature",
         token: "super-token",
         gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
         workRoot: fixture.workRoot,
         runId: "run-1",
         keepWorkdir: true,
@@ -219,6 +241,9 @@ describe("portGitLabMergeRequest", () => {
       await expect(
         readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt"),
       ).resolves.toBe("one\ntwo\n");
+      await expect(readBranchCommitter(fixture.destBare, "gitport/repo-a-mr-123")).resolves.toBe(
+        "Gitport Test Runner <gitport-test@example.com>",
+      );
       expect(fakeGitLab.createdBodies[0]).toMatchObject({
         source_branch: "gitport/repo-a-mr-123",
         target_branch: "main",
@@ -247,6 +272,7 @@ describe("portGitLabMergeRequest", () => {
         title: "JIR-112 carry feature",
         token: "super-token",
         gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
         workRoot: fixture.workRoot,
         runId: "run-1",
         fetchFn: fakeGitLab.fetchFn,
@@ -273,6 +299,7 @@ describe("portGitLabMergeRequest", () => {
         title: "JIR-112 skip duplicates",
         token: "super-token",
         gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
         workRoot: fixture.workRoot,
         runId: "run-1",
         fetchFn: fakeGitLab.fetchFn,
@@ -297,6 +324,7 @@ describe("portGitLabMergeRequest", () => {
         title: "JIR-112 resolve conflict",
         token: "super-token",
         gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
         workRoot: fixture.workRoot,
         runId: "run-1",
         keepWorkdir: true,
@@ -329,6 +357,7 @@ describe("portGitLabMergeRequest", () => {
           title: "JIR-112 carry feature",
           token: "super-token",
           gitlabApiBase: "http://gitlab.test/api/v4",
+          env: gitportTestEnv(),
           workRoot: fixture.workRoot,
           runId: "run-1",
           fetchFn: fakeGitLab.fetchFn,
