@@ -94,7 +94,12 @@
     "logpoints",
     "Inspectee",
     "throwy",
-    "unmatch"
+    "gitport",
+    "GITPORT",
+    "Gitport",
+    "rerere",
+    "unmatch",
+    "ENOENT"
   ],
   "ignorePaths": [
     "node_modules/**",
