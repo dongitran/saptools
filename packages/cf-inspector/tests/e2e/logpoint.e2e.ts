@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import type { LogpointEvent } from "../../src/logpoint.js";
+import type { LogpointEvent } from "../../src/logpoint/events.js";
 
 import { ensureCliBuilt, runCli, spawnFixture } from "./helpers.js";
 

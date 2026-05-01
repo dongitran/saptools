@@ -37,24 +37,27 @@ export {
   setBreakpoint,
   validateExpression,
   waitForPause,
-} from "./inspector.js";
+} from "./inspector/index.js";
 export type {
   DebuggerState,
   InspectorSession,
   InspectorTarget,
   SetBreakpointInput,
   WaitForPauseOptions,
-} from "./inspector.js";
+} from "./inspector/index.js";
 
-export { captureSnapshot } from "./snapshot.js";
-export type { CaptureSnapshotOptions } from "./snapshot.js";
+export { captureSnapshot } from "./snapshot/capture.js";
+export type { CaptureSnapshotOptions } from "./snapshot/capture.js";
 
-export { buildLogpointCondition, streamLogpoint } from "./logpoint.js";
+export { buildLogpointCondition } from "./logpoint/condition.js";
+export { streamLogpoint } from "./logpoint/stream.js";
 export type {
   LogpointEvent,
+} from "./logpoint/events.js";
+export type {
   LogpointStreamOptions,
   LogpointStreamResult,
-} from "./logpoint.js";
+} from "./logpoint/stream.js";
 
-export { openCfTunnel } from "./tunnel.js";
-export type { OpenedTunnel, TunnelTarget } from "./tunnel.js";
+export { openCfTunnel } from "./cf/tunnel.js";
+export type { OpenedTunnel, TunnelTarget } from "./cf/tunnel.js";

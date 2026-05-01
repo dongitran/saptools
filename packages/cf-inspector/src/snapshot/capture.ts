@@ -1,5 +1,5 @@
-import { evaluateOnFrame } from "../inspector.js";
-import type { InspectorSession } from "../inspector.js";
+import { evaluateOnFrame } from "../inspector/runtime.js";
+import type { InspectorSession } from "../inspector/types.js";
 import type {
   CapturedExpression,
   FrameSnapshot,

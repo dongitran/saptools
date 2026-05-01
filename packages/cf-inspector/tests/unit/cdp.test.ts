@@ -2,8 +2,8 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { CdpClient } from "../../src/cdp.js";
-import type { CdpTransport } from "../../src/cdp.js";
+import { CdpClient } from "../../src/cdp/client.js";
+import type { CdpTransport } from "../../src/cdp/client.js";
 import { CfInspectorError } from "../../src/types.js";
 
 class MockTransport extends EventEmitter {

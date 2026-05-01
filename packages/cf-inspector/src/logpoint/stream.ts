@@ -1,5 +1,5 @@
-import { removeBreakpoint, setBreakpoint } from "../inspector.js";
-import type { InspectorSession } from "../inspector.js";
+import { removeBreakpoint, setBreakpoint } from "../inspector/breakpoints.js";
+import type { InspectorSession } from "../inspector/types.js";
 import type { BreakpointHandle, BreakpointLocation, RemoteRootSetting } from "../types.js";
 
 import { buildLogpointCondition, generateSentinel } from "./condition.js";

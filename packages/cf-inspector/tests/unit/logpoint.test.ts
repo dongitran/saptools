@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { InspectorSession } from "../../src/inspector.js";
-import { internalsForTesting, streamLogpoint } from "../../src/logpoint.js";
+import type { InspectorSession } from "../../src/inspector/index.js";
+import { internalsForTesting, streamLogpoint } from "../../src/logpoint/index.js";
 import type { BreakpointLocation } from "../../src/types.js";
 
 const { buildLogpointCondition, parseLogEvent, generateSentinel, SENTINEL_PREFIX } = internalsForTesting;

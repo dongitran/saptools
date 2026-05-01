@@ -6,9 +6,9 @@ import {
   setBreakpoint,
   validateExpression,
   waitForPause,
-} from "../../inspector.js";
+} from "../../inspector/index.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
-import { captureSnapshot } from "../../snapshot.js";
+import { captureSnapshot } from "../../snapshot/capture.js";
 import { CfInspectorError } from "../../types.js";
 import type { BreakpointLocation, RemoteRootSetting, SnapshotResult } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";

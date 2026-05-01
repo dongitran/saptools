@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   discoverInspectorTargets,
   fetchInspectorVersion,
-} from "../../src/inspectorDiscovery.js";
+} from "../../src/inspector/discovery.js";
 
 interface RouteResponse {
   readonly statusCode?: number;

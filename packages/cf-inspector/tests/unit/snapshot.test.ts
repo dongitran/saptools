@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { CdpEvalResult, CdpProperty, InspectorSession } from "../../src/inspector.js";
-import { captureSnapshot, internalsForTesting } from "../../src/snapshot.js";
+import type { CdpEvalResult, CdpProperty, InspectorSession } from "../../src/inspector/index.js";
+import { captureSnapshot, internalsForTesting } from "../../src/snapshot/capture.js";
 import type { CallFrameInfo, PauseEvent } from "../../src/types.js";
 
 const { limitValueLength, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;

@@ -1,4 +1,4 @@
-import type { InspectorSession } from "../inspector.js";
+import type { InspectorSession } from "../inspector/types.js";
 import type { CallFrameInfo, ScopeSnapshot } from "../types.js";
 
 import {

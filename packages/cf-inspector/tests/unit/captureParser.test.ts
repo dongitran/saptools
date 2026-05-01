@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCaptureList } from "../../src/captureParser.js";
+import { parseCaptureList } from "../../src/cli/captureParser.js";
 
 describe("parseCaptureList", () => {
   it("returns an empty list for undefined or blank input", () => {

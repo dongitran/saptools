@@ -1,4 +1,4 @@
-import type { CdpEvalResult } from "../inspector.js";
+import type { CdpEvalResult } from "../inspector/types.js";
 import type { CapturedExpression } from "../types.js";
 
 import {

@@ -1,5 +1,5 @@
-import { getProperties } from "../inspector.js";
-import type { CdpProperty, InspectorSession } from "../inspector.js";
+import { getProperties } from "../inspector/runtime.js";
+import type { CdpProperty, InspectorSession } from "../inspector/types.js";
 import type { VariableSnapshot } from "../types.js";
 
 import { formatPrimitive, isPrimitive, limitValueLength } from "./values.js";

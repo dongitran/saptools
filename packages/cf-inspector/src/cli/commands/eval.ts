@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { evaluateGlobal } from "../../inspector.js";
+import { evaluateGlobal } from "../../inspector/runtime.js";
 import type { EvalCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
 import { resolveTarget, withSession } from "../target.js";

@@ -2,8 +2,8 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { CdpClient } from "../../src/cdp.js";
-import type { InspectorSession } from "../../src/inspector.js";
+import type { CdpClient } from "../../src/cdp/client.js";
+import type { InspectorSession } from "../../src/inspector/index.js";
 import {
   evaluateGlobal,
   evaluateOnFrame,
@@ -13,7 +13,7 @@ import {
   setBreakpoint,
   validateExpression,
   waitForPause,
-} from "../../src/inspector.js";
+} from "../../src/inspector/index.js";
 import { CfInspectorError } from "../../src/types.js";
 import type { PauseEvent } from "../../src/types.js";
 

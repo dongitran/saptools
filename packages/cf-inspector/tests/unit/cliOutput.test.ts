@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { writeHumanSnapshot, writeJson, writeLogEvent } from "../../src/cliOutput.js";
-import type { LogpointEvent } from "../../src/logpoint.js";
+import { writeHumanSnapshot, writeJson, writeLogEvent } from "../../src/cli/output.js";
+import type { LogpointEvent } from "../../src/logpoint/events.js";
 import type { SnapshotResult } from "../../src/types.js";
 
 const writeSpy = vi.spyOn(process.stdout, "write");

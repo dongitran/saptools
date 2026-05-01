@@ -1,6 +1,6 @@
-import { connectInspector } from "../inspector.js";
-import type { InspectorSession } from "../inspector.js";
-import { openCfTunnel } from "../tunnel.js";
+import { openCfTunnel } from "../cf/tunnel.js";
+import { connectInspector } from "../inspector/session.js";
+import type { InspectorSession } from "../inspector/types.js";
 import { CfInspectorError } from "../types.js";
 
 import { DEFAULT_CF_TIMEOUT_SEC } from "./commandTypes.js";

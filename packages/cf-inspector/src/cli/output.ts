@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import type { LogpointEvent } from "../logpoint.js";
+import type { LogpointEvent } from "../logpoint/events.js";
 import type { SnapshotResult } from "../types.js";
 
 export function writeJson(value: unknown): void {

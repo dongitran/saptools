@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { listScripts } from "../../inspector.js";
+import { listScripts } from "../../inspector/runtime.js";
 import type { ListScriptsCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
 import { resolveTarget, withSession } from "../target.js";

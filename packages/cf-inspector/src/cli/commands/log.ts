@@ -1,7 +1,7 @@
 import process from "node:process";
 
-import { validateExpression } from "../../inspector.js";
-import { streamLogpoint } from "../../logpoint.js";
+import { validateExpression } from "../../inspector/runtime.js";
+import { streamLogpoint } from "../../logpoint/stream.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { CfInspectorError } from "../../types.js";
 import type { LogCommandOptions } from "../commandTypes.js";

@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { fetchInspectorVersion } from "../../inspector.js";
+import { fetchInspectorVersion } from "../../inspector/discovery.js";
 import type { AttachCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
 import { openTarget, resolveTarget } from "../target.js";
