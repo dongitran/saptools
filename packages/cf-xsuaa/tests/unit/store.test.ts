@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import type * as OsModule from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -44,6 +44,29 @@ describe("store", () => {
     };
     await writeStore(store);
     expect(await readStore()).toEqual(store);
+  });
+
+  it("writeStore creates the cache with owner-only permissions", async () => {
+    const { writeStore } = await import("../../src/store.js");
+    const { xsuaaDataPath } = await import("../../src/paths.js");
+    await writeStore({ version: 1, entries: [] });
+    const mode = (await stat(xsuaaDataPath())).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it("writeStore tightens permissions on an existing cache", async () => {
+    const { writeStore } = await import("../../src/store.js");
+    const { xsuaaDataPath } = await import("../../src/paths.js");
+    await mkdir(dirname(xsuaaDataPath()), { recursive: true });
+    await writeFile(xsuaaDataPath(), JSON.stringify({ version: 1, entries: [] }), {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+
+    await writeStore({ version: 1, entries: [] });
+
+    const mode = (await stat(xsuaaDataPath())).mode & 0o777;
+    expect(mode).toBe(0o600);
   });
 
   it("readStore ignores malformed data gracefully", async () => {

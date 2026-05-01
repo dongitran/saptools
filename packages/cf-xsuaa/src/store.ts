@@ -1,10 +1,15 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { xsuaaDataPath } from "./paths.js";
 import type { AppRef, CachedToken, XsuaaCredentials, XsuaaEntry, XsuaaStore } from "./types.js";
 
 const EMPTY_STORE: XsuaaStore = { version: 1, entries: [] };
+const STORE_FILE_MODE = 0o600;
+
+function isMissingFileError(err: unknown): boolean {
+  return err instanceof Error && "code" in err && err.code === "ENOENT";
+}
 
 export async function readStore(): Promise<XsuaaStore> {
   try {
@@ -14,8 +19,8 @@ export async function readStore(): Promise<XsuaaStore> {
       return EMPTY_STORE;
     }
     return parsed as XsuaaStore;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+  } catch (err: unknown) {
+    if (isMissingFileError(err)) {
       return EMPTY_STORE;
     }
     throw err;
@@ -25,7 +30,11 @@ export async function readStore(): Promise<XsuaaStore> {
 export async function writeStore(store: XsuaaStore): Promise<void> {
   const path = xsuaaDataPath();
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  await writeFile(path, `${JSON.stringify(store, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: STORE_FILE_MODE,
+  });
+  await chmod(path, STORE_FILE_MODE);
 }
 
 export function matchesRef(entry: XsuaaEntry, ref: AppRef): boolean {
