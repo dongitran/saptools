@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.9
+
+### Maintenance
+
+- Split persistent SSH shell handling into a focused broker module with direct
+  unit coverage, keeping persistent-session behavior unchanged.
+
 ## 0.2.8
 
 ### Maintenance
