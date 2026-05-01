@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.8
+
+### Maintenance
+
+- Split CLI human-output rendering into a focused module with unit coverage,
+  keeping command behavior unchanged while reducing the main CLI file size.
+
 ## 0.2.7
 
 ### Improvements
