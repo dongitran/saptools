@@ -170,6 +170,40 @@ test.describe("GitLab MR porting", () => {
     }
   });
 
+  test("User can auto-resolve incoming delete conflicts by removing the destination file", async () => {
+    const fixture = await createFixture({ incomingDeleteConflict: true });
+    const fakeGitLab = await startFakeGitLab(fixture);
+    try {
+      const result = await runCli(
+        [
+          "--source-mr-url",
+          fixture.sourceMergeRequestRef,
+          "--destination-repo-url",
+          fixture.destBare,
+          "--base-branch",
+          "main",
+          "--port-branch",
+          "gitport/repo-a-mr-123",
+          "--json",
+          "--title",
+          "JIR-112 delete obsolete file",
+        ],
+        buildEnv(fixture, fakeGitLab),
+      );
+
+      expect(result.code, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as GitportJsonResult;
+      expect(parsed.commits[0]?.status).toBe("incoming-resolved");
+      expect(parsed.conflicts).toHaveLength(1);
+      await expect(readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "app.txt")).rejects.toThrow();
+      expect(fakeGitLab.createdMergeRequests[0]?.description).toContain("old-destination");
+      expect(fakeGitLab.createdMergeRequests[0]?.description).toContain("(missing)");
+    } finally {
+      await fakeGitLab.stop();
+      await cleanupFixture(fixture);
+    }
+  });
+
   test("User can skip patches that already exist in the destination repo", async () => {
     const fixture = await createFixture({ duplicate: true });
     const fakeGitLab = await startFakeGitLab(fixture);

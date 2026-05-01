@@ -34,6 +34,7 @@ export interface FixtureOptions {
   readonly conflict?: boolean;
   readonly duplicate?: boolean;
   readonly existingPortBranch?: string | undefined;
+  readonly incomingDeleteConflict?: boolean | undefined;
   readonly secondCleanCommit?: boolean | undefined;
   readonly reverseGitLabCommitOrder?: boolean | undefined;
 }
@@ -87,7 +88,10 @@ async function createSourceBranch(
   await gitNoCwd(["clone", sourceBare, work]);
   await configureGit(work);
   await git(work, ["checkout", "-b", "feature/gitport"]);
-  if (options.conflict === true) {
+  if (options.incomingDeleteConflict === true) {
+    await git(work, ["rm", "app.txt"]);
+    await git(work, ["commit", "-m", "delete incoming file"]);
+  } else if (options.conflict === true) {
     await writeFile(join(work, "app.txt"), "value=incoming\n", "utf8");
     await git(work, ["commit", "-am", "incoming conflict change"]);
   } else {
@@ -115,14 +119,15 @@ async function customizeDestination(
   if (
     options.conflict !== true &&
     options.duplicate !== true &&
-    options.existingPortBranch === undefined
+    options.existingPortBranch === undefined &&
+    options.incomingDeleteConflict !== true
   ) {
     return;
   }
   const work = join(root, "dest-work");
   await gitNoCwd(["clone", destBare, work]);
   await configureGit(work);
-  if (options.conflict === true) {
+  if (options.conflict === true || options.incomingDeleteConflict === true) {
     await writeFile(join(work, "app.txt"), "value=old-destination\n", "utf8");
     await git(work, ["commit", "-am", "destination customization"]);
   } else {

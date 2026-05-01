@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -7,12 +7,9 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 import {
-  autoResolveIncomingConflict,
   buildGitCredentialEnv,
   gitHead,
-  isEmptyCherryPickMessage,
   listPatchEquivalentCommits,
-  listUnmergedFiles,
   orderCommitsBySourceHistory,
   runGit,
   validatePortBranches,
@@ -25,7 +22,7 @@ async function git(cwd: string, args: readonly string[]): Promise<void> {
   await execFileAsync("git", [...args], { cwd });
 }
 
-describe("Git conflict helpers", () => {
+describe("Git helpers", () => {
   it("builds a credential helper environment without putting the token in Git config", () => {
     const env = buildGitCredentialEnv("super-token");
     const {
@@ -40,12 +37,6 @@ describe("Git conflict helpers", () => {
     expect(configValue).toContain("GITPORT_GIT_CREDENTIAL_TOKEN");
     expect(configValue).not.toContain("super-token");
     expect(terminalPrompt).toBe("0");
-  });
-
-  it("classifies only empty cherry-pick messages as skippable", () => {
-    expect(isEmptyCherryPickMessage("The previous cherry-pick is now empty")).toBe(true);
-    expect(isEmptyCherryPickMessage("nothing to commit, working tree clean")).toBe(true);
-    expect(isEmptyCherryPickMessage("commit abc is a merge but no -m option was given")).toBe(false);
   });
 
   it("validates branch names and rejects ambiguous port branches", async () => {
@@ -117,87 +108,7 @@ describe("Git conflict helpers", () => {
     }
   });
 
-  it("rejects incoming conflict resolution when the repo has no unmerged files", async () => {
-    const root = await mkdtemp(join(tmpdir(), "gitport-no-conflict-"));
-    try {
-      const repo = join(root, "repo");
-      await execFileAsync("git", ["init", "-b", "main", repo]);
-      await configureCleanRepo(repo);
-
-      await expect(
-        autoResolveIncomingConflict(repo, {
-          commitSha: "abc",
-          commitTitle: "no conflict",
-          secrets: [],
-        }),
-      ).rejects.toThrow(/no unmerged files/);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("captures destination-side code and resolves with incoming", async () => {
-    const root = await mkdtemp(join(tmpdir(), "gitport-conflict-"));
-    try {
-      const repo = join(root, "repo");
-      await execFileAsync("git", ["init", "-b", "main", repo]);
-      await git(repo, ["config", "user.email", "test@example.com"]);
-      await git(repo, ["config", "user.name", "Test User"]);
-      await writeFile(join(repo, "app.txt"), "value=base\n", "utf8");
-      await git(repo, ["add", "app.txt"]);
-      await git(repo, ["commit", "-m", "base"]);
-      await git(repo, ["checkout", "-b", "source"]);
-      await writeFile(join(repo, "app.txt"), "value=incoming\n", "utf8");
-      await git(repo, ["commit", "-am", "incoming"]);
-      const incomingSha = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repo })).stdout.trim();
-      await git(repo, ["checkout", "main"]);
-      await writeFile(join(repo, "app.txt"), "value=old-destination\n", "utf8");
-      await git(repo, ["commit", "-am", "destination"]);
-
-      await expect(runGit(["cherry-pick", incomingSha], { cwd: repo })).rejects.toThrow();
-      const conflict = await autoResolveIncomingConflict(repo, {
-        commitSha: incomingSha,
-        commitTitle: "incoming",
-        secrets: [],
-      });
-
-      expect(conflict.files[0]?.oursExcerpt).toContain("old-destination");
-      expect(conflict.files[0]?.theirsExcerpt).toContain("incoming");
-      expect(await readFile(join(repo, "app.txt"), "utf8")).toBe("value=incoming\n");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("resolves incoming delete conflicts by removing the destination file", async () => {
-    const root = await mkdtemp(join(tmpdir(), "gitport-delete-conflict-"));
-    try {
-      const repo = join(root, "repo");
-      await execFileAsync("git", ["init", "-b", "main", repo]);
-      await configureCleanRepo(repo);
-      await git(repo, ["checkout", "-b", "source"]);
-      await git(repo, ["rm", "app.txt"]);
-      await git(repo, ["commit", "-m", "delete incoming"]);
-      const incomingSha = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repo })).stdout.trim();
-      await git(repo, ["checkout", "main"]);
-      await writeFile(join(repo, "app.txt"), "value=old-destination\n", "utf8");
-      await git(repo, ["commit", "-am", "destination customization"]);
-
-      await expect(runGit(["cherry-pick", incomingSha], { cwd: repo })).rejects.toThrow();
-      const conflict = await autoResolveIncomingConflict(repo, {
-        commitSha: incomingSha,
-        commitTitle: "delete incoming",
-        secrets: [],
-      });
-
-      expect(conflict.files[0]?.oursExcerpt).toContain("old-destination");
-      await expect(readFile(join(repo, "app.txt"), "utf8")).rejects.toThrow();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("reads HEAD and lists no unmerged files in a clean repo", async () => {
+  it("reads HEAD in a clean repo", async () => {
     const root = await mkdtemp(join(tmpdir(), "gitport-clean-"));
     try {
       const repo = join(root, "repo");
@@ -205,7 +116,6 @@ describe("Git conflict helpers", () => {
       await configureCleanRepo(repo);
       const head = await gitHead(repo);
       expect(head).toMatch(/^[a-f0-9]{40}$/);
-      await expect(listUnmergedFiles(repo)).resolves.toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

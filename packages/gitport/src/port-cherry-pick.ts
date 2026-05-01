@@ -1,11 +1,10 @@
+import { autoResolveIncomingConflict, isEmptyCherryPickMessage } from "./git-conflicts.js";
 import {
-  autoResolveIncomingConflict,
-  gitHead,
-  isEmptyCherryPickMessage,
-  runGit,
   GitCommandError,
+  gitHead,
+  runGit,
+  type GitRunOptions,
 } from "./git.js";
-import type { GitRunOptions } from "./git.js";
 import type { CommitPortResult, ConflictReport, SourceCommit } from "./types.js";
 
 export interface CherryPickRunContext {
