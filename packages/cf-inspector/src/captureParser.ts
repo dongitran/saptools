@@ -77,10 +77,7 @@ function splitCaptureExpressions(raw: string): readonly string[] {
     pieces: [],
   };
   for (let idx = 0; idx < raw.length; idx += 1) {
-    const char = raw[idx];
-    if (char === undefined) {
-      continue;
-    }
+    const char = raw.charAt(idx);
     if (consumeQuotedChar(state, char)) {
       continue;
     }
