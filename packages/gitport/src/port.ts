@@ -3,16 +3,21 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { GITPORT_ERROR_CODE, GitportError } from "./errors.js";
 import {
   autoResolveIncomingConflict,
+  buildGitCredentialEnv,
   gitHead,
+  isEmptyCherryPickMessage,
   listPatchEquivalentCommits,
+  orderCommitsBySourceHistory,
   runGit,
   GitCommandError,
+  validatePortBranches,
 } from "./git.js";
+import type { GitRunOptions } from "./git.js";
 import { createGitLabClient } from "./gitlab.js";
 import { maskAll } from "./mask.js";
 import { writeRunMetadata } from "./metadata.js";
 import { createRunId, runPaths } from "./paths.js";
-import { buildAuthenticatedRemote, parseRepoRef } from "./repo-url.js";
+import { parseRepoRef } from "./repo-url.js";
 import { buildDraftMergeRequestDescription, buildReportMarkdown } from "./report.js";
 import type {
   CommitPortResult,
@@ -33,6 +38,7 @@ interface PreparedRun {
   readonly dest: ReturnType<typeof parseRepoRef>;
   readonly sourceRemote: string;
   readonly destRemote: string;
+  readonly gitEnv?: NodeJS.ProcessEnv | undefined;
   readonly gitlabApiBase: string;
 }
 
@@ -75,16 +81,29 @@ function prepareRun(options: PortGitLabMergeRequestOptions): PreparedRun {
   const source = parseRepoRef(options.sourceRepo);
   const dest = parseRepoRef(options.destRepo);
   const runId = options.runId ?? createRunId();
+  const gitEnv = source.kind === "http" || dest.kind === "http" ? buildGitCredentialEnv(token) : undefined;
   return {
     runId,
     paths: runPaths(runId, options.workRoot),
     token,
-    secrets: [token, buildAuthenticatedRemote(options.sourceRepo, token), buildAuthenticatedRemote(options.destRepo, token)],
+    secrets: [token],
     source,
     dest,
-    sourceRemote: buildAuthenticatedRemote(options.sourceRepo, token),
-    destRemote: buildAuthenticatedRemote(options.destRepo, token),
+    sourceRemote: options.sourceRepo,
+    destRemote: options.destRepo,
+    ...(gitEnv === undefined ? {} : { gitEnv }),
     gitlabApiBase: resolveApiBase(options, source.defaultApiBase),
+  };
+}
+
+function gitOptions(
+  run: PreparedRun,
+  cwd?: string,
+): GitRunOptions {
+  return {
+    ...(cwd === undefined ? {} : { cwd }),
+    secrets: run.secrets,
+    ...(run.gitEnv === undefined ? {} : { env: run.gitEnv }),
   };
 }
 
@@ -98,12 +117,33 @@ async function writeMetadata(
 
 async function cloneAndPrepare(options: PortGitLabMergeRequestOptions, run: PreparedRun): Promise<void> {
   await mkdir(run.paths.runDir, { recursive: true });
-  await runGit(["clone", run.destRemote, run.paths.destDir], { secrets: run.secrets });
-  await runGit(["fetch", "origin", options.baseBranch], { cwd: run.paths.destDir, secrets: run.secrets });
+  await runGit(["clone", run.destRemote, run.paths.destDir], gitOptions(run));
+  await ensurePortBranchDoesNotExist(options, run);
+  await runGit(["fetch", "origin", options.baseBranch], gitOptions(run, run.paths.destDir));
   await runGit(["checkout", "-B", options.portBranch, `origin/${options.baseBranch}`], {
-    cwd: run.paths.destDir,
-    secrets: run.secrets,
+    ...gitOptions(run, run.paths.destDir),
   });
+}
+
+async function ensurePortBranchDoesNotExist(
+  options: PortGitLabMergeRequestOptions,
+  run: PreparedRun,
+): Promise<void> {
+  try {
+    await runGit(
+      ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${options.portBranch}`],
+      gitOptions(run, run.paths.destDir),
+    );
+  } catch (error: unknown) {
+    if (error instanceof GitCommandError) {
+      return;
+    }
+    throw error;
+  }
+  throw new GitportError(
+    GITPORT_ERROR_CODE.InvalidInput,
+    `Port branch already exists in destination: ${options.portBranch}`,
+  );
 }
 
 async function fetchSourceBranch(
@@ -112,12 +152,11 @@ async function fetchSourceBranch(
   sourceBranch: string,
 ): Promise<void> {
   await runGit(["remote", "add", "gitport-source", run.sourceRemote], {
-    cwd: run.paths.destDir,
-    secrets: run.secrets,
+    ...gitOptions(run, run.paths.destDir),
   });
   await runGit(
     ["fetch", "gitport-source", `${sourceBranch}:refs/remotes/gitport-source/${sourceBranch}`],
-    { cwd: run.paths.destDir, secrets: run.secrets },
+    gitOptions(run, run.paths.destDir),
   );
   await writeMetadata(options, run, {
     runId: run.runId,
@@ -138,17 +177,19 @@ async function cherryPickCommit(
 ): Promise<{ readonly result: CommitPortResult; readonly conflict?: ConflictReport | undefined }> {
   const before = await gitHead(run.paths.destDir);
   try {
-    await runGit(["cherry-pick", "-x", commit.sha], { cwd: run.paths.destDir, secrets: run.secrets });
+    await runGit(["cherry-pick", "-x", commit.sha], gitOptions(run, run.paths.destDir));
   } catch (error: unknown) {
     if (!(error instanceof GitCommandError)) {
       throw error;
     }
     const unmerged = await runGit(["diff", "--name-only", "--diff-filter=U"], {
-      cwd: run.paths.destDir,
-      secrets: run.secrets,
+      ...gitOptions(run, run.paths.destDir),
     });
     if (unmerged.stdout.trim().length === 0) {
-      await runGit(["cherry-pick", "--skip"], { cwd: run.paths.destDir, secrets: run.secrets });
+      if (!isEmptyCherryPickMessage(error.stderr)) {
+        throw error;
+      }
+      await runGit(["cherry-pick", "--skip"], gitOptions(run, run.paths.destDir));
       return { result: { sha: commit.sha, title: commit.title, status: "skipped" } };
     }
     const conflict = await autoResolveIncomingConflict(run.paths.destDir, {
@@ -207,6 +248,7 @@ async function writeReports(
 export async function portGitLabMergeRequest(
   options: PortGitLabMergeRequestOptions,
 ): Promise<PortGitLabMergeRequestResult> {
+  await validatePortBranches(options.baseBranch, options.portBranch);
   const run = prepareRun(options);
   const client = createGitLabClient({
     baseUrl: run.gitlabApiBase,
@@ -221,17 +263,22 @@ export async function portGitLabMergeRequest(
 
   await cloneAndPrepare(options, run);
   await fetchSourceBranch(options, run, sourceMr.sourceBranch);
+  const sourceRef = `refs/remotes/gitport-source/${sourceMr.sourceBranch}`;
+  const orderedCommits = await orderCommitsBySourceHistory(
+    run.paths.destDir,
+    commits,
+    "HEAD",
+    sourceRef,
+    run.secrets,
+  );
   const duplicateShas = await listPatchEquivalentCommits(
     run.paths.destDir,
     "HEAD",
-    `refs/remotes/gitport-source/${sourceMr.sourceBranch}`,
+    sourceRef,
     run.secrets,
   );
-  const { results, conflicts } = await cherryPickCommits(run, commits, duplicateShas);
-  await runGit(["push", "-u", "origin", options.portBranch], {
-    cwd: run.paths.destDir,
-    secrets: run.secrets,
-  });
+  const { results, conflicts } = await cherryPickCommits(run, orderedCommits, duplicateShas);
+  await runGit(["push", "-u", "origin", options.portBranch], gitOptions(run, run.paths.destDir));
 
   const descriptionInput = {
     sourceMergeRequestIid: options.sourceMergeRequestIid,

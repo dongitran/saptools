@@ -36,7 +36,14 @@ function parseHttpRepoRef(input: string): RepoRef | undefined {
     if (url.protocol !== "https:" && url.protocol !== "http:") {
       return undefined;
     }
-    const projectPath = stripGitSuffix(decodeURIComponent(url.pathname.replace(/^\/+/, "")));
+    if (url.username.length > 0 || url.password.length > 0) {
+      throw new GitportError(
+        GITPORT_ERROR_CODE.InvalidInput,
+        "Repo URL must not include embedded credentials; pass --token or set GITPORT_GITLAB_TOKEN",
+      );
+    }
+    const normalizedPath = url.pathname.replace(/^\/+/, "").replace(/\/+$/, "");
+    const projectPath = stripGitSuffix(decodeURIComponent(normalizedPath));
     if (projectPath.length === 0) {
       throw new GitportError(GITPORT_ERROR_CODE.InvalidInput, `Invalid repo URL: ${input}`);
     }
@@ -167,18 +174,4 @@ export function parseSourceMergeRequestRef(input: string): SourceMergeRequestRef
 
 export function encodeProjectPath(projectPath: string): string {
   return encodeURIComponent(projectPath);
-}
-
-export function buildAuthenticatedRemote(remote: string, token: string): string {
-  try {
-    const url = new URL(remote);
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      return remote;
-    }
-    url.username = "oauth2";
-    url.password = token;
-    return url.toString();
-  } catch {
-    return remote;
-  }
 }

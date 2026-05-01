@@ -4,7 +4,6 @@ export {
 } from "./port.js";
 export { createGitLabClient, GitLabHttpError } from "./gitlab.js";
 export {
-  buildAuthenticatedRemote,
   encodeProjectPath,
   parseRepoRef,
   parseSourceMergeRequestRef,

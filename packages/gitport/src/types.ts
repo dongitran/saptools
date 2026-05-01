@@ -56,7 +56,6 @@ export interface PortGitLabMergeRequestOptions {
   readonly token?: string | undefined;
   readonly gitlabApiBase?: string | undefined;
   readonly keepWorkdir?: boolean | undefined;
-  readonly yes?: boolean | undefined;
   readonly runId?: string | undefined;
   readonly workRoot?: string | undefined;
   readonly fetchFn?: typeof fetch | undefined;

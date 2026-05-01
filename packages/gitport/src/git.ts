@@ -3,11 +3,18 @@ import process from "node:process";
 
 import { GITPORT_ERROR_CODE, GitportError } from "./errors.js";
 import { maskAll } from "./mask.js";
-import type { ConflictReport } from "./types.js";
+import type { ConflictReport, SourceCommit } from "./types.js";
 
 const MAX_BUFFER = 32 * 1024 * 1024;
 const EXCERPT_MAX_CHARS = 4000;
 const EXCERPT_MAX_LINES = 80;
+export const GITPORT_GIT_CREDENTIAL_TOKEN_ENV = "GITPORT_GIT_CREDENTIAL_TOKEN";
+
+// cspell:ignore topo
+const GIT_TOPOLOGICAL_ORDER_FLAG = "--topo-order";
+const GIT_CREDENTIAL_HELPER_CONFIG =
+  `!f() { if test "$1" = get; then printf '%s\\n' username=oauth2 ` +
+  `password="$${GITPORT_GIT_CREDENTIAL_TOKEN_ENV}"; fi; }; f`;
 
 export interface GitRunOptions {
   readonly cwd?: string | undefined;
@@ -50,6 +57,16 @@ function buildGitEnv(options: GitRunOptions): NodeJS.ProcessEnv {
     ...process.env,
     ...options.env,
     GIT_EDITOR: "true",
+  };
+}
+
+export function buildGitCredentialEnv(token: string): NodeJS.ProcessEnv {
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: GIT_CREDENTIAL_HELPER_CONFIG,
+    [GITPORT_GIT_CREDENTIAL_TOKEN_ENV]: token,
   };
 }
 
@@ -125,6 +142,99 @@ export async function listPatchEquivalentCommits(
   return new Set(duplicateShas);
 }
 
+function isPreRejectedBranchName(branch: string): boolean {
+  return (
+    branch.length === 0 ||
+    branch.trim() !== branch ||
+    branch.startsWith("-") ||
+    branch.includes("@{")
+  );
+}
+
+function invalidBranchError(label: string, branch: string): GitportError {
+  return new GitportError(
+    GITPORT_ERROR_CODE.InvalidInput,
+    `${label} is not a valid branch name: ${branch}`,
+  );
+}
+
+export async function validateBranchName(branch: string, label: string): Promise<void> {
+  if (isPreRejectedBranchName(branch)) {
+    throw invalidBranchError(label, branch);
+  }
+  try {
+    await runGit(["check-ref-format", "--branch", branch]);
+  } catch (error: unknown) {
+    if (error instanceof GitCommandError) {
+      throw invalidBranchError(label, branch);
+    }
+    throw error;
+  }
+}
+
+export async function validatePortBranches(baseBranch: string, portBranch: string): Promise<void> {
+  await Promise.all([
+    validateBranchName(baseBranch, "Base branch"),
+    validateBranchName(portBranch, "Port branch"),
+  ]);
+  if (baseBranch === portBranch) {
+    throw new GitportError(
+      GITPORT_ERROR_CODE.InvalidInput,
+      "Base branch and port branch must differ",
+    );
+  }
+}
+
+async function sourceHistoryRange(
+  cwd: string,
+  upstreamRef: string,
+  sourceRef: string,
+  secrets: readonly string[],
+): Promise<string> {
+  try {
+    const mergeBase = await runGit(["merge-base", upstreamRef, sourceRef], { cwd, secrets });
+    const base = mergeBase.stdout.trim();
+    return base.length === 0 ? sourceRef : `${base}..${sourceRef}`;
+  } catch (error: unknown) {
+    if (error instanceof GitCommandError) {
+      return sourceRef;
+    }
+    throw error;
+  }
+}
+
+export async function orderCommitsBySourceHistory(
+  cwd: string,
+  commits: readonly SourceCommit[],
+  upstreamRef: string,
+  sourceRef: string,
+  secrets: readonly string[] = [],
+): Promise<readonly SourceCommit[]> {
+  if (commits.length === 0) {
+    return commits;
+  }
+  const bySha = new Map(commits.map((commit) => [commit.sha, commit]));
+  const range = await sourceHistoryRange(cwd, upstreamRef, sourceRef, secrets);
+  const history = await runGit(["rev-list", "--reverse", GIT_TOPOLOGICAL_ORDER_FLAG, range], {
+    cwd,
+    secrets,
+  });
+  const ordered = history.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .reduce<SourceCommit[]>((current, sha) => {
+      const commit = bySha.get(sha);
+      return commit === undefined ? current : [...current, commit];
+    }, []);
+  if (ordered.length !== commits.length) {
+    throw new GitportError(
+      GITPORT_ERROR_CODE.GitFailed,
+      "GitLab MR commits are not reachable from the fetched source branch",
+    );
+  }
+  return ordered;
+}
+
 export async function captureConflict(
   cwd: string,
   input: { readonly commitSha: string; readonly commitTitle: string },
@@ -153,7 +263,7 @@ async function checkoutIncoming(cwd: string, path: string, secrets: readonly str
   await runGit(["add", "--", path], { cwd, secrets });
 }
 
-function isEmptyCherryPick(detail: string): boolean {
+export function isEmptyCherryPickMessage(detail: string): boolean {
   return detail.includes("previous cherry-pick is now empty") || detail.includes("nothing to commit");
 }
 
@@ -161,7 +271,7 @@ async function continueCherryPick(cwd: string, secrets: readonly string[]): Prom
   try {
     await runGit(["cherry-pick", "--continue"], { cwd, secrets });
   } catch (error: unknown) {
-    if (error instanceof GitCommandError && isEmptyCherryPick(error.stderr)) {
+    if (error instanceof GitCommandError && isEmptyCherryPickMessage(error.stderr)) {
       await runGit(["cherry-pick", "--skip"], { cwd, secrets });
       return;
     }

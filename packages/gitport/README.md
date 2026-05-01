@@ -89,7 +89,6 @@ gitport \
 | `--title <title>` | **Required.** Destination Draft MR title |
 | `--token <token>` | GitLab token. Falls back to `GITPORT_GITLAB_TOKEN` |
 | `--keep-workdir` | Keep the isolated run folder after a successful port |
-| `--yes` | Skip interactive confirmation after the computed plan is shown |
 
 ---
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import process from "node:process";
 
 import { Command } from "commander";
@@ -15,7 +16,6 @@ interface PortFlags {
   readonly token?: string | undefined;
   readonly gitlabApiBase?: string | undefined;
   readonly keepWorkdir?: boolean | undefined;
-  readonly yes?: boolean | undefined;
   readonly json?: boolean | undefined;
 }
 
@@ -38,7 +38,6 @@ async function runPort(flags: PortFlags): Promise<void> {
     token: flags.token,
     gitlabApiBase: flags.gitlabApiBase,
     keepWorkdir: flags.keepWorkdir,
-    yes: flags.yes,
   });
   if (flags.json === true) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -59,7 +58,6 @@ function addPortOptions(program: Command): void {
     .option("--token <token>", `GitLab token (falls back to ${GITPORT_GITLAB_TOKEN_ENV})`)
     .option("--gitlab-api-base <url>", "GitLab API base URL, such as https://gitlab.example.com/api/v4")
     .option("--keep-workdir", "Keep the isolated run folder after success", false)
-    .option("--yes", "Skip interactive confirmation", false)
     .option("--json", "Print JSON result", false)
     .action(async (flags: PortFlags): Promise<void> => {
       await runPort(flags);
@@ -68,7 +66,7 @@ function addPortOptions(program: Command): void {
 
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
-  program.name("gitport").description("Port GitLab merge requests from repo A to repo B");
+  program.name("gitport").description("Port GitLab merge requests into another repository");
   addPortOptions(program);
 
   await program.parseAsync([...argv]);

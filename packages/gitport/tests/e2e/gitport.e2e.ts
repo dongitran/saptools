@@ -293,6 +293,108 @@ test.describe("GitLab MR porting", () => {
     expect(result.stderr).toContain("required option '--title <title>'");
   });
 
+  test("User gets a helpful error when the port branch name is invalid", async () => {
+    const fixture = await createFixture(false);
+    const fakeGitLab = await startFakeGitLab(fixture);
+    try {
+      const result = await runCli(
+        [
+          "--source-mr-url",
+          fixture.sourceMergeRequestRef,
+          "--destination-repo-url",
+          fixture.destBare,
+          "--base-branch",
+          "main",
+          "--port-branch",
+          "-bad",
+          "--title",
+          "JIR-112 invalid branch",
+        ],
+        buildEnv(fixture, fakeGitLab),
+      );
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("Port branch is not a valid branch name");
+      expect(fakeGitLab.createdMergeRequests).toHaveLength(0);
+    } finally {
+      await fakeGitLab.stop();
+      await cleanupFixture(fixture);
+    }
+  });
+
+  test("User gets a helpful error when the destination port branch already exists", async () => {
+    const fixture = await createFixture({ existingPortBranch: "gitport/repo-a-mr-123" });
+    const fakeGitLab = await startFakeGitLab(fixture);
+    try {
+      const result = await runCli(
+        [
+          "--source-mr-url",
+          fixture.sourceMergeRequestRef,
+          "--destination-repo-url",
+          fixture.destBare,
+          "--base-branch",
+          "main",
+          "--port-branch",
+          "gitport/repo-a-mr-123",
+          "--title",
+          "JIR-112 existing branch",
+        ],
+        buildEnv(fixture, fakeGitLab),
+      );
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("Port branch already exists in destination");
+      expect(fakeGitLab.createdMergeRequests).toHaveLength(0);
+    } finally {
+      await fakeGitLab.stop();
+      await cleanupFixture(fixture);
+    }
+  });
+
+  test("User cannot use the removed yes flag", async () => {
+    const result = await runCli(
+      [
+        "--source-mr-url",
+        "/tmp/repo-a.git/-/merge_requests/123",
+        "--destination-repo-url",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+        "--yes",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("unknown option '--yes'");
+  });
+
+  test("User cannot pass repo credentials in the source MR URL", async () => {
+    const result = await runCli(
+      [
+        "--source-mr-url",
+        "https://oauth2:secret@gitlab.example.com/repo-a/-/merge_requests/123",
+        "--destination-repo-url",
+        "/tmp/repo-b.git",
+        "--base-branch",
+        "main",
+        "--port-branch",
+        "gitport/repo-a-mr-123",
+        "--title",
+        "JIR-112",
+      ],
+      buildBaseEnv(),
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("must not include embedded credentials");
+    expect(result.stderr).not.toContain("secret");
+  });
+
   test("User cannot use the removed source MR flag", async () => {
     const result = await runCli(
       [

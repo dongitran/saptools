@@ -32,6 +32,7 @@ export interface Fixture {
 export interface FixtureOptions {
   readonly conflict?: boolean;
   readonly duplicate?: boolean;
+  readonly existingPortBranch?: string | undefined;
 }
 
 export interface CreatedMrBody {
@@ -104,7 +105,11 @@ async function customizeDestination(
   destBare: string,
   options: FixtureOptions,
 ): Promise<void> {
-  if (options.conflict !== true && options.duplicate !== true) {
+  if (
+    options.conflict !== true &&
+    options.duplicate !== true &&
+    options.existingPortBranch === undefined
+  ) {
     return;
   }
   const work = join(root, "dest-work");
@@ -119,6 +124,13 @@ async function customizeDestination(
     await git(work, ["commit", "-m", "already ported patch"]);
   }
   await git(work, ["push", "origin", "main"]);
+  if (options.existingPortBranch !== undefined) {
+    await git(work, ["checkout", "-b", options.existingPortBranch]);
+    await writeFile(join(work, "existing-port.txt"), "existing\n", "utf8");
+    await git(work, ["add", "existing-port.txt"]);
+    await git(work, ["commit", "-m", "existing port branch"]);
+    await git(work, ["push", "origin", options.existingPortBranch]);
+  }
 }
 
 function normalizeFixtureOptions(input: boolean | FixtureOptions): FixtureOptions {

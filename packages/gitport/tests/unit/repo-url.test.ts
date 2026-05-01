@@ -3,7 +3,6 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  buildAuthenticatedRemote,
   encodeProjectPath,
   parseRepoRef,
   parseSourceMergeRequestRef,
@@ -23,6 +22,18 @@ describe("parseRepoRef", () => {
     expect(spec.projectPath).toBe("team/repo-a");
     expect(spec.defaultApiBase).toBe("https://gitlab.example.com/api/v4");
     expect(spec.name).toBe("repo-a");
+  });
+
+  it("normalizes HTTPS GitLab repo URLs with trailing slashes", () => {
+    const spec = parseRepoRef("https://gitlab.example.com/team/repo-a.git/");
+    expect(spec.projectPath).toBe("team/repo-a");
+    expect(spec.name).toBe("repo-a");
+  });
+
+  it("rejects HTTPS repo URLs with embedded credentials", () => {
+    expect(() => parseRepoRef("https://oauth2:secret@gitlab.example.com/team/repo-a")).toThrow(
+      /must not include embedded credentials/,
+    );
   });
 
   it("parses SSH scp-style repo URLs", () => {
@@ -124,6 +135,12 @@ describe("parseSourceMergeRequestRef", () => {
     );
   });
 
+  it("rejects source MR URLs with embedded credentials", () => {
+    expect(() =>
+      parseSourceMergeRequestRef("https://oauth2:secret@gitlab.example.com/team/repo-a/-/merge_requests/123"),
+    ).toThrow(/must not include embedded credentials/);
+  });
+
   it("rejects invalid merge request IIDs", () => {
     expect(() =>
       parseSourceMergeRequestRef("https://gitlab.example.com/team/repo-a/-/merge_requests/abc"),
@@ -142,35 +159,5 @@ describe("parseSourceMergeRequestRef", () => {
     expect(() =>
       parseSourceMergeRequestRef("https://gitlab.example.com/team/repo-a/-/merge_requests/"),
     ).toThrow(/Source repo must be a GitLab merge request URL/);
-  });
-});
-
-describe("buildAuthenticatedRemote", () => {
-  it("embeds OAuth token for HTTPS remotes", () => {
-    const remote = buildAuthenticatedRemote("https://gitlab.example.com/repo-a.git", "abc123");
-    expect(remote).toBe("https://oauth2:abc123@gitlab.example.com/repo-a.git");
-  });
-
-  it("embeds OAuth token for HTTPS remotes without .git suffixes", () => {
-    const remote = buildAuthenticatedRemote("https://gitlab.example.com/team/repo-a", "abc123");
-    expect(remote).toBe("https://oauth2:abc123@gitlab.example.com/team/repo-a");
-  });
-
-  it("does not mutate local paths", () => {
-    expect(buildAuthenticatedRemote("/tmp/repo-a.git", "abc123")).toBe("/tmp/repo-a.git");
-  });
-
-  it("does not mutate file remotes", () => {
-    expect(buildAuthenticatedRemote("file:///tmp/repo-a.git", "abc123")).toBe("file:///tmp/repo-a.git");
-  });
-
-  it("does not mutate SSH remotes", () => {
-    expect(buildAuthenticatedRemote("git@gitlab.example.com:repo-a.git", "abc123")).toBe(
-      "git@gitlab.example.com:repo-a.git",
-    );
-  });
-
-  it("does not mutate malformed URL strings", () => {
-    expect(buildAuthenticatedRemote("https://", "abc123")).toBe("https://");
   });
 });
