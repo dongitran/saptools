@@ -7,6 +7,7 @@ import {
   grepRemote,
   inspectCandidates,
   listInstances,
+  lsRemote,
   roots,
   viewRemote,
 } from "./api.js";
@@ -29,6 +30,7 @@ import type {
   InspectCandidatesOptions,
   InstanceSelector,
   LifecycleOptions,
+  LsOptions,
   ViewOptions,
 } from "./types.js";
 
@@ -49,6 +51,10 @@ interface TargetFlags {
 interface FindFlags extends TargetFlags {
   readonly root?: string;
   readonly name?: string;
+}
+
+interface LsFlags extends TargetFlags {
+  readonly path?: string;
 }
 
 interface GrepFlags extends TargetFlags {
@@ -148,6 +154,13 @@ function buildFind(flags: FindFlags): FindOptions {
   };
 }
 
+function buildLs(flags: LsFlags): LsOptions {
+  return {
+    ...buildDiscovery(flags),
+    path: requireFlag(flags.path, "--path"),
+  };
+}
+
 function buildGrep(flags: GrepFlags): GrepOptions {
   return {
     ...buildDiscovery(flags),
@@ -213,6 +226,9 @@ function renderHuman(value: Record<string, unknown>): string | undefined {
   if (Array.isArray(value["roots"]) && Array.isArray(value["suggestedBreakpoints"])) {
     return renderInspectResult(value);
   }
+  if (Array.isArray(value["entries"]) && typeof value["path"] === "string") {
+    return renderLsResult(value);
+  }
   if (Array.isArray(value["roots"])) {
     return renderRootsResult(value);
   }
@@ -260,6 +276,23 @@ function renderInstancesResult(value: Record<string, unknown>): string {
   }
   return instances
     .map((item) => `#${item.index.toString()}\t${item.state}${item.since === undefined ? "" : `\t${item.since}`}`)
+    .join("\n");
+}
+
+function renderLsResult(value: Record<string, unknown>): string {
+  const entries = value["entries"] as readonly Record<string, unknown>[];
+  if (entries.length === 0) {
+    return "No entries.";
+  }
+  return entries
+    .map((entry) => {
+      const kind = typeof entry["kind"] === "string" ? entry["kind"] : "unknown";
+      const name = typeof entry["name"] === "string" ? entry["name"] : "";
+      const path = typeof entry["path"] === "string" ? entry["path"] : "";
+      const instance = entry["instance"];
+      const instancePrefix = typeof instance === "number" ? `#${instance.toString()}\t` : "";
+      return `${instancePrefix}[${kind}]\t${name}\t${path}`;
+    })
     .join("\n");
 }
 
@@ -405,6 +438,11 @@ function addDiscoveryCommands(program: Command): void {
     .action(async (flags: TargetFlags): Promise<void> => {
       writeOutput(await listInstances(buildDiscovery(flags)), flags.json);
     });
+  addCommonOptions(program.command("ls").description("List direct children under a remote path"))
+    .requiredOption("--path <path>", "Remote directory path")
+    .action(async (flags: LsFlags): Promise<void> => {
+      writeOutput(await lsRemote(buildLs(flags)), flags.json);
+    });
   addCommonOptions(program.command("find").description("Search filenames under a root"))
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--name <pattern>", "File name pattern")
@@ -488,6 +526,18 @@ function addSessionCommands(program: Command): void {
     .action(async (flags: SessionFlags): Promise<void> => {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
       writeOutput(await attached.roots({ ...maxFilesField(flags), ...sessionLimitFields(flags) }));
+    });
+  addSessionReadOptions(session.command("ls").description("List direct children through an existing session"))
+    .requiredOption("--session-id <id>", "Session id")
+    .requiredOption("--path <path>", "Remote directory path")
+    .option("--max-files <count>", "Maximum remote paths to return")
+    .action(async (flags: SessionFlags & LsFlags): Promise<void> => {
+      const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
+      writeOutput(await attached.ls({
+        path: requireFlag(flags.path, "--path"),
+        ...maxFilesField(flags),
+        ...sessionLimitFields(flags),
+      }));
     });
   addSessionReadOptions(session.command("find").description("Search filenames through an existing session"))
     .requiredOption("--session-id <id>", "Session id")

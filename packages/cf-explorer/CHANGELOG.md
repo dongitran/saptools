@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.6
+
+### Improvements
+
+- Added read-only `ls` commands for one-level remote directory listings in
+  one-shot and persistent-session workflows.
+
 ## 0.2.5
 
 ### Bug fixes

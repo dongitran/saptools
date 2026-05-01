@@ -4,6 +4,7 @@ import {
   buildFindScript,
   buildGrepScript,
   buildInspectCandidatesScript,
+  buildLsScript,
   buildRootsScript,
   buildViewScript,
   quoteRemoteShellArg,
@@ -38,6 +39,15 @@ describe("remote command builders", () => {
     expect(script.script).toContain("CFX_NAME='*service*'");
     expect(script.script).toContain("-path '*/node_modules'");
     expect(script.script).toContain("-path '*/node_modules/*'");
+  });
+
+  it("builds one-level directory listing with bounded output", () => {
+    const script = buildLsScript({ path: "/workspace/app", maxFiles: 5 });
+    expect(script.script).toContain("CFX_OP='ls'");
+    expect(script.script).toContain("CFX_PATH='/workspace/app'");
+    expect(script.script).toContain("-mindepth 1 -maxdepth 1");
+    expect(script.script).toContain("CFX\\tLS\\t%s\\t%s\\t%s\\n");
+    expect(script.script).toContain("head -n 5");
   });
 
   it("builds grep with fixed-string search without preview by default", () => {
@@ -92,6 +102,7 @@ describe("remote command builders", () => {
 
   it("rejects invalid roots, line context, and max file limits", () => {
     expect(() => buildFindScript({ root: "relative", name: "x" })).toThrow(/absolute/);
+    expect(() => buildLsScript({ path: "relative" })).toThrow(/absolute/);
     expect(() => buildFindScript({ root: "/workspace/../app", name: "x" })).toThrow(/parent/);
     expect(() => buildRootsScript(0)).toThrow(/maxFiles/);
     expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 0 })).toThrow(/line/);

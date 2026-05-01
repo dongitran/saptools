@@ -104,6 +104,20 @@ export interface FindMatch {
   readonly kind: "file" | "directory";
 }
 
+export interface LsEntry {
+  readonly instance: number;
+  readonly path: string;
+  readonly name: string;
+  readonly kind: "file" | "directory" | "symlink" | "other";
+}
+
+export interface LsResult {
+  readonly meta: ExplorerMeta;
+  readonly path: string;
+  readonly entries: readonly LsEntry[];
+  readonly instances?: readonly InstanceResult<Pick<LsResult, "entries" | "path">>[];
+}
+
 export interface FindResult {
   readonly meta: ExplorerMeta;
   readonly matches: readonly FindMatch[];
@@ -174,6 +188,10 @@ export interface DiscoveryOptions extends InstanceSelector {
 export interface FindOptions extends DiscoveryOptions {
   readonly root: string;
   readonly name: string;
+}
+
+export interface LsOptions extends DiscoveryOptions {
+  readonly path: string;
 }
 
 export interface GrepOptions extends DiscoveryOptions {
@@ -275,6 +293,10 @@ export type AttachedFindOptions = Omit<
   FindOptions,
   "allInstances" | "instance" | "process" | "runtime" | "target"
 >;
+export type AttachedLsOptions = Omit<
+  LsOptions,
+  "allInstances" | "instance" | "process" | "runtime" | "target"
+>;
 export type AttachedGrepOptions = Omit<
   GrepOptions,
   "allInstances" | "instance" | "process" | "runtime" | "target"
@@ -291,6 +313,7 @@ export type AttachedInspectCandidatesOptions = Omit<
 export interface AttachedExplorerSession {
   readonly session: ExplorerSessionRecord;
   roots(options?: AttachedDiscoveryOptions): Promise<RootsResult>;
+  ls(options: AttachedLsOptions): Promise<LsResult>;
   find(options: AttachedFindOptions): Promise<FindResult>;
   grep(options: AttachedGrepOptions): Promise<GrepResult>;
   view(options: AttachedViewOptions): Promise<ViewResult>;
@@ -303,6 +326,7 @@ export interface AttachedExplorerSession {
 export interface Explorer {
   roots(options?: Omit<DiscoveryOptions, "runtime" | "target">): Promise<RootsResult>;
   instances(options?: Omit<DiscoveryOptions, "runtime" | "target">): Promise<InstancesResult>;
+  ls(options: Omit<LsOptions, "runtime" | "target">): Promise<LsResult>;
   find(options: Omit<FindOptions, "runtime" | "target">): Promise<FindResult>;
   grep(options: Omit<GrepOptions, "runtime" | "target">): Promise<GrepResult>;
   view(options: Omit<ViewOptions, "runtime" | "target">): Promise<ViewResult>;

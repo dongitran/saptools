@@ -4,6 +4,7 @@ export {
   grepRemote,
   inspectCandidates,
   listInstances,
+  lsRemote,
   roots,
   viewRemote,
 } from "./api.js";
@@ -27,6 +28,7 @@ export {
   buildFindScript,
   buildGrepScript,
   buildInspectCandidatesScript,
+  buildLsScript,
   buildRootsScript,
   buildViewScript,
   quoteRemoteShellArg,
@@ -37,6 +39,7 @@ export {
   parseFindOutput,
   parseGrepOutput,
   parseInspectOutput,
+  parseLsOutput,
   parseRootsOutput,
   parseViewOutput,
   suggestBreakpoints,

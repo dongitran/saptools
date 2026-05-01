@@ -6,7 +6,7 @@ import { CfExplorerError } from "./errors.js";
 
 export const MAX_IPC_MESSAGE_BYTES = 32 * 1024 * 1024;
 
-export const IPC_COMMANDS = ["find", "grep", "inspect", "roots", "status", "stop", "view"] as const;
+export const IPC_COMMANDS = ["find", "grep", "inspect", "ls", "roots", "status", "stop", "view"] as const;
 export type IpcCommand = (typeof IPC_COMMANDS)[number];
 
 export interface IpcRequest {

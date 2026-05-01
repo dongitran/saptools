@@ -16,6 +16,11 @@ export interface BuildFindScriptInput {
   readonly maxFiles?: number;
 }
 
+export interface BuildLsScriptInput {
+  readonly path: string;
+  readonly maxFiles?: number;
+}
+
 export interface BuildGrepScriptInput {
   readonly root: string;
   readonly text: string;
@@ -112,6 +117,20 @@ export function buildFindScript(input: BuildFindScriptInput): RemoteScript {
   };
 }
 
+export function buildLsScript(input: BuildLsScriptInput): RemoteScript {
+  assertSafeRemoteRoot(input.path);
+  const max = resolveMaxFiles(input.maxFiles);
+  return {
+    script: [
+      "CFX_OP='ls'",
+      `CFX_PATH=${quoteRemoteShellArg(input.path)}`,
+      emitLsFunction(),
+      "[ -d \"$CFX_PATH\" ] || exit 0",
+      `find "$CFX_PATH" -mindepth 1 -maxdepth 1 -print 2>/dev/null | sort | head -n ${max.toString()} | while IFS= read -r cfx_path; do emit_ls "$cfx_path"; done`,
+    ].join("\n"),
+  };
+}
+
 export function buildGrepScript(input: BuildGrepScriptInput): RemoteScript {
   assertSafeRemoteRoot(input.root);
   assertSafeRemoteValue(input.text, "search text");
@@ -177,6 +196,17 @@ function emitFunctions(): string {
   return [
     "emit_root() { if [ -d \"$1\" ]; then printf 'CFX\\tROOT\\t%s\\n' \"$1\"; fi; }",
     "emit_find() { if [ -d \"$1\" ]; then printf 'CFX\\tFIND\\tdirectory\\t%s\\n' \"$1\"; else printf 'CFX\\tFIND\\tfile\\t%s\\n' \"$1\"; fi; }",
+  ].join("\n");
+}
+
+function emitLsFunction(): string {
+  return [
+    "emit_ls() {",
+    "  cfx_path=\"$1\"",
+    "  if [ -L \"$cfx_path\" ]; then cfx_kind='symlink'; elif [ -d \"$cfx_path\" ]; then cfx_kind='directory'; elif [ -f \"$cfx_path\" ]; then cfx_kind='file'; else cfx_kind='other'; fi",
+    "  cfx_name=${cfx_path##*/}",
+    "  printf 'CFX\\tLS\\t%s\\t%s\\t%s\\n' \"$cfx_kind\" \"$cfx_name\" \"$cfx_path\"",
+    "}",
   ].join("\n");
 }
 

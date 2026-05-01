@@ -46,6 +46,7 @@ Cloud Foundry app exploration often starts with a slow, repetitive loop:
 | --- | --- |
 | `roots` | Locate likely app roots with bounded read-only probes |
 | `instances` | Show app process instance indexes and status |
+| `ls` | List direct children under a known remote directory |
 | `find` | Search filenames under a remote root |
 | `grep` | Search remote file content and return path + line |
 | `view` | Print a bounded line window around a remote file location |
@@ -104,6 +105,15 @@ cf-explorer roots \
 ```
 
 ```bash
+cf-explorer ls \
+  --region region-key \
+  --org org-name \
+  --space space-name \
+  --app app-name \
+  --path /app-root
+```
+
+```bash
 cf-explorer grep \
   --region region-key \
   --org org-name \
@@ -151,7 +161,7 @@ All read/discovery commands accept:
 | `--instance <index>` | One app process instance |
 | `--all-instances` | Run supported read-only commands across running instances |
 | `--timeout <seconds>` | Command timeout |
-| `--max-files <count>` | File match limit |
+| `--max-files <count>` | Result limit for path-like outputs |
 | `--max-bytes <bytes>` | Output byte limit |
 | `--json` / `--no-json` | Structured JSON (default) or compact human-readable output |
 
@@ -160,6 +170,7 @@ All read/discovery commands accept:
 ```bash
 cf-explorer roots --region region-key --org org-name --space space-name --app app-name
 cf-explorer instances --region region-key --org org-name --space space-name --app app-name
+cf-explorer ls --region region-key --org org-name --space space-name --app app-name --path /app-root
 cf-explorer find --region region-key --org org-name --space space-name --app app-name --root /app-root --name "*handler*.js"
 cf-explorer grep --region region-key --org org-name --space space-name --app app-name --root /app-root --text "needle"
 cf-explorer view --region region-key --org org-name --space space-name --app app-name --file /app-root/src/handler.js --line 42 --context 8
@@ -231,6 +242,7 @@ cf-explorer session start \
 cf-explorer session list
 cf-explorer session status --session-id <id>
 
+cf-explorer session ls --session-id <id> --path /app-root
 cf-explorer session grep --session-id <id> --root /app-root --text "needle"
 cf-explorer session view --session-id <id> --file /app-root/src/handler.js --line 42
 
@@ -286,6 +298,7 @@ const explorer = await createExplorer({
 
 const rootsResult = await explorer.roots();
 const root = rootsResult.roots[0] ?? "/app-root";
+const entries = await explorer.ls({ path: root, instance: 0 });
 
 const matches = await explorer.grep({
   root,
@@ -310,6 +323,7 @@ const session = await startExplorerSession({
 });
 
 const attached = await attachExplorerSession(session.sessionId);
+const entries = await attached.ls({ path: "/app-root" });
 const result = await attached.grep({ root: "/app-root", text: "needle" });
 
 await stopExplorerSession({ sessionId: session.sessionId });

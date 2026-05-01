@@ -127,6 +127,31 @@ function renderFind(app, command) {
     .join("\n") + "\n";
 }
 
+function listDirectEntries(files, path) {
+  const prefix = path.endsWith("/") ? path : `${path}/`;
+  const entries = new Map();
+  for (const filePath of Object.keys(files)) {
+    if (!filePath.startsWith(prefix)) continue;
+    const relative = filePath.slice(prefix.length);
+    const name = relative.split("/")[0];
+    if (!name) continue;
+    const entryPath = `${prefix}${name}`;
+    const kind = relative.includes("/") ? "directory" : "file";
+    if (entries.get(name)?.kind === "directory") continue;
+    entries.set(name, { kind, path: entryPath });
+  }
+  return [...entries.entries()]
+    .map(([name, entry]) => ({ name, ...entry }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function renderLs(app, command) {
+  const path = parseVar(command, "CFX_PATH") ?? "/";
+  return listDirectEntries(app.files, path)
+    .map((entry) => `CFX\tLS\t${entry.kind}\t${entry.name}\t${entry.path}`)
+    .join("\n") + "\n";
+}
+
 function renderGrep(app, command) {
   const root = parseVar(command, "CFX_ROOT") ?? "/";
   const text = parseVar(command, "CFX_TEXT") ?? "";
@@ -163,6 +188,7 @@ function renderExplorerCommand(app, command) {
   }
   const firstOp = /CFX_OP='([^']+)'/.exec(command)?.[1];
   if (firstOp === "roots") return renderRoots(app);
+  if (firstOp === "ls") return renderLs(app, command);
   if (firstOp === "find") return renderFind(app, command);
   if (firstOp === "grep") return renderGrep(app, command);
   if (firstOp === "view") return renderView(app, command);

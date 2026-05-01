@@ -3,12 +3,14 @@ import type {
   GrepMatch,
   InspectCandidatesResult,
   InstanceInfo,
+  LsEntry,
   SuggestedBreakpoint,
   ViewLine,
 } from "./types.js";
 
 const ROOT_LINE_PATTERN = /^CFX\tROOT\t(.+)$/;
 const FIND_LINE_PATTERN = /^CFX\tFIND\t(file|directory)\t(.+)$/;
+const LS_LINE_PATTERN = /^CFX\tLS\t(file|directory|symlink|other)\t([^\t]+)\t(.+)$/;
 const LEGACY_GREP_PREFIX = "CFX\tGREP\t";
 const VIEW_LINE_PATTERN = /^CFX\tLINE\t(\d+)\t(.*)$/;
 
@@ -31,6 +33,20 @@ export function parseFindOutput(stdout: string, instance: number): readonly Find
       return { instance, kind, path: match[2] ?? "" };
     })
     .filter((match) => match.path.length > 0);
+}
+
+export function parseLsOutput(stdout: string, instance: number): readonly LsEntry[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => LS_LINE_PATTERN.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => ({
+      instance,
+      kind: parseLsKind(match[1] ?? "other"),
+      name: match[2] ?? "",
+      path: match[3] ?? "",
+    }))
+    .filter((entry) => entry.name.length > 0 && entry.path.length > 0);
 }
 
 export function parseGrepOutput(
@@ -179,6 +195,13 @@ function parseInstanceRow(line: string): InstanceInfo | undefined {
     state: match[2] ?? "unknown",
     ...(match[3] === undefined ? {} : { since: match[3].trim() }),
   };
+}
+
+function parseLsKind(value: string): LsEntry["kind"] {
+  if (value === "file" || value === "directory" || value === "symlink") {
+    return value;
+  }
+  return "other";
 }
 
 function parseInstanceCountFallback(stdout: string): readonly InstanceInfo[] {

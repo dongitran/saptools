@@ -74,16 +74,28 @@ describe("persistent session client", () => {
         requestId: request.requestId,
         ok: true,
         durationMs: 1,
-        result: {
-          meta: {
-            target: session.target,
-            process: "web",
-            instance: 0,
-            durationMs: 1,
-            truncated: false,
+        result: request.command === "ls"
+          ? {
+            meta: {
+              target: session.target,
+              process: "web",
+              instance: 0,
+              durationMs: 1,
+              truncated: false,
+            },
+            path: "/workspace/app",
+            entries: [{ instance: 0, kind: "directory", name: "src", path: "/workspace/app/src" }],
+          }
+          : {
+            meta: {
+              target: session.target,
+              process: "web",
+              instance: 0,
+              durationMs: 1,
+              truncated: false,
+            },
+            roots: ["/workspace/app"],
           },
-          roots: ["/workspace/app"],
-        },
       };
     });
 
@@ -102,6 +114,13 @@ describe("persistent session client", () => {
     expect(seenRequest).toMatchObject({
       timeoutMs: 123,
       args: { timeoutMs: 123, maxBytes: 456 },
+    });
+    await expect(attached.ls({ path: "/workspace/app", timeoutMs: 123, maxBytes: 456 }))
+      .resolves.toMatchObject({ entries: [{ name: "src" }] });
+    expect(seenRequest).toMatchObject({
+      command: "ls",
+      timeoutMs: 123,
+      args: { path: "/workspace/app", timeoutMs: 123, maxBytes: 456 },
     });
     await expect(attached.roots({ timeoutMs: -1 })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(stopExplorerSession({ sessionId: "missing", runtime: { homeDir } })).resolves.toEqual({

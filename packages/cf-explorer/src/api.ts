@@ -3,6 +3,7 @@ import {
   buildFindScript,
   buildGrepScript,
   buildInspectCandidatesScript,
+  buildLsScript,
   buildRootsScript,
   buildViewScript,
 } from "./commands.js";
@@ -13,6 +14,7 @@ import {
   parseFindOutput,
   parseGrepOutput,
   parseInspectOutput,
+  parseLsOutput,
   parseRootsOutput,
   parseViewOutput,
 } from "./parsers.js";
@@ -39,6 +41,8 @@ import type {
   InstanceInfo,
   InstanceResult,
   InstancesResult,
+  LsOptions,
+  LsResult,
   RootsResult,
   ViewOptions,
   ViewResult,
@@ -102,6 +106,22 @@ export async function findRemote(options: FindOptions): Promise<FindResult> {
   };
 }
 
+export async function lsRemote(options: LsOptions): Promise<LsResult> {
+  const selector = resolveInstanceSelector(options);
+  if (selector.allInstances === true) {
+    return await lsAllInstances(options);
+  }
+  const processName = selector.process ?? "web";
+  const instance = resolveInstance(selector.instance);
+  const script = buildLsScript(options);
+  const result = await execute(inputFor(options, processName, instance, script.script));
+  return {
+    meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
+    path: options.path,
+    entries: parseLsOutput(protocolStdout(result), instance),
+  };
+}
+
 export async function grepRemote(options: GrepOptions): Promise<GrepResult> {
   const selector = resolveInstanceSelector(options);
   if (selector.allInstances === true) {
@@ -162,6 +182,7 @@ export async function createExplorer(options: CreateExplorerOptions): Promise<Ex
   return {
     roots: async (input = {}) => await roots({ ...input, process: input.process ?? defaultProcess, target: normalizedTarget, runtime }),
     instances: async (input = {}) => await listInstances({ ...input, process: input.process ?? defaultProcess, target: normalizedTarget, runtime }),
+    ls: async (input) => await lsRemote({ ...input, process: input.process ?? defaultProcess, target: normalizedTarget, runtime }),
     find: async (input) => await findRemote({ ...input, process: input.process ?? defaultProcess, target: normalizedTarget, runtime }),
     grep: async (input) => await grepRemote({ ...input, process: input.process ?? defaultProcess, target: normalizedTarget, runtime }),
     view: async (input) => await viewRemote({ ...input, process: input.process ?? defaultProcess, target: normalizedTarget, runtime }),
@@ -196,6 +217,23 @@ async function findAllInstances(options: FindOptions): Promise<FindResult> {
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, undefined, sumDurations(results), hasTruncated(results)),
     matches: results.flatMap((result) => result.result?.matches ?? []),
+    instances: results,
+  };
+}
+
+async function lsAllInstances(options: LsOptions): Promise<LsResult> {
+  const processName = resolveProcessName(options.process);
+  const results = await runAcrossInstances(options, async (instance, context) => {
+    const output = await executeWithContext(options, processName, instance, buildLsScript(options).script, context);
+    return {
+      value: { path: options.path, entries: parseLsOutput(protocolStdout(output), instance) },
+      truncated: output.truncated,
+    };
+  });
+  return {
+    meta: buildMeta(normalizeTarget(options.target), processName, undefined, sumDurations(results), hasTruncated(results)),
+    path: options.path,
+    entries: results.flatMap((result) => result.result?.entries ?? []),
     instances: results,
   };
 }

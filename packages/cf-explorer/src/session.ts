@@ -25,6 +25,7 @@ import type {
   FindResult,
   GrepResult,
   InspectCandidatesResult,
+  LsResult,
   RootsResult,
   SessionListResult,
   SessionStatusResult,
@@ -137,6 +138,7 @@ export async function attachExplorerSession(
   return {
     session,
     roots: async (options = {}) => await requestSession<RootsResult>(homeDir, session, "roots", options),
+    ls: async (options) => await requestSession<LsResult>(homeDir, session, "ls", options),
     find: async (options) => await requestSession<FindResult>(homeDir, session, "find", options),
     grep: async (options) => await requestSession<GrepResult>(homeDir, session, "grep", options),
     view: async (options) => await requestSession<ViewResult>(homeDir, session, "view", options),

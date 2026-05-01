@@ -13,6 +13,7 @@ import {
   buildFindScript,
   buildGrepScript,
   buildInspectCandidatesScript,
+  buildLsScript,
   buildRootsScript,
   buildViewScript,
 } from "./commands.js";
@@ -22,6 +23,7 @@ import {
   parseFindOutput,
   parseGrepOutput,
   parseInspectOutput,
+  parseLsOutput,
   parseRootsOutput,
   parseViewOutput,
 } from "./parsers.js";
@@ -35,6 +37,7 @@ import type {
   FindResult,
   GrepResult,
   InspectCandidatesResult,
+  LsResult,
   RootsResult,
   ViewResult,
 } from "./types.js";
@@ -319,6 +322,13 @@ class ExplorerBroker {
         ...numberField(args, "maxFiles"),
       }).script, limits.timeoutMs, limits.maxBytes));
     }
+    if (request.command === "ls") {
+      const path = readString(args, "path");
+      return this.buildLs(await shell.execute(buildLsScript({
+        path,
+        ...numberField(args, "maxFiles"),
+      }).script, limits.timeoutMs, limits.maxBytes), path);
+    }
     if (request.command === "grep") {
       return this.buildGrep(await shell.execute(buildGrepScript({
         root: readString(args, "root"),
@@ -353,6 +363,14 @@ class ExplorerBroker {
     return {
       meta: this.meta(result),
       matches: parseFindOutput(result.stdout, this.bootstrap.instance),
+    };
+  }
+
+  private buildLs(result: PersistentResult, path: string): LsResult {
+    return {
+      meta: this.meta(result),
+      path,
+      entries: parseLsOutput(result.stdout, this.bootstrap.instance),
     };
   }
 

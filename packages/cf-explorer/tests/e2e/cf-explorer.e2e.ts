@@ -69,6 +69,12 @@ test("User can discover roots, instances, files, content, and line context", asy
   expect(roots.code).toBe(0);
   expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
 
+  const list = await runCli(env, ["ls", ...targetArgs, "--path", "/workspace/app"]);
+  expect(list.code).toBe(0);
+  expect(JSON.parse(list.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(
+    expect.arrayContaining(["README.md", "package.json", "src"]),
+  );
+
   const instances = await runCli(env, ["instances", ...targetArgs]);
   expect(instances.code).toBe(0);
   expect(JSON.parse(instances.stdout).instances).toHaveLength(2);
@@ -170,6 +176,23 @@ test("User can reuse a persistent session through the broker", async () => {
   const roots = await runCli(env, ["session", "roots", "--session-id", sessionId]);
   expect(roots.code).toBe(0);
   expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
+
+  const list = await runCli(env, [
+    "session",
+    "ls",
+    "--session-id",
+    sessionId,
+    "--path",
+    "/workspace/app",
+    "--timeout",
+    "30",
+    "--max-bytes",
+    "1048576",
+  ]);
+  expect(list.code).toBe(0);
+  expect(JSON.parse(list.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(
+    expect.arrayContaining(["README.md", "package.json", "src"]),
+  );
 
   const grep = await runCli(env, [
     "session",
