@@ -319,6 +319,30 @@ describe("discovery API", () => {
     });
   });
 
+  it("drops incomplete protocol rows from truncated one-shot output", async () => {
+    mocks.executeRemoteScript
+      .mockResolvedValueOnce({
+        stdout: "CFX\tROOT\t/workspace/app\nCFX\tROOT\t/workspace/incomplete",
+        durationMs: 4,
+        truncated: true,
+      })
+      .mockResolvedValueOnce({
+        stdout: "CFX\tFIND\tfile\t/workspace/app/src/connect.js\nCFX\tFIND\tfile\t/workspace/app/src/partial",
+        durationMs: 5,
+        truncated: true,
+      });
+
+    await expect(roots({ target })).resolves.toMatchObject({
+      meta: { truncated: true },
+      roots: ["/workspace/app"],
+    });
+    await expect(findRemote({ target, root: "/workspace/app", name: "connect" }))
+      .resolves.toMatchObject({
+        meta: { truncated: true },
+        matches: [{ path: "/workspace/app/src/connect.js" }],
+      });
+  });
+
   it("creates an explorer facade over the public APIs", async () => {
     mocks.executeRemoteScript.mockResolvedValue({
       stdout: "CFX\tROOT\t/workspace/app\n",

@@ -128,6 +128,18 @@ function maxFilesField(flags: TargetFlags): { readonly maxFiles?: number } {
   return maxFiles === undefined ? {} : { maxFiles };
 }
 
+function sessionLimitFields(flags: TargetFlags): {
+  readonly timeoutMs?: number;
+  readonly maxBytes?: number;
+} {
+  const timeoutSeconds = parsePositiveInteger(flags.timeout, "--timeout");
+  const maxBytes = parsePositiveInteger(flags.maxBytes, "--max-bytes");
+  return {
+    ...(timeoutSeconds === undefined ? {} : { timeoutMs: timeoutSeconds * 1000 }),
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+  };
+}
+
 function buildFind(flags: FindFlags): FindOptions {
   return {
     ...buildDiscovery(flags),
@@ -369,6 +381,12 @@ function addLifecycleOptions(command: Command): Command {
     .option("--no-json", "Emit human-readable output");
 }
 
+function addSessionReadOptions(command: Command): Command {
+  return command
+    .option("--timeout <seconds>", "Per-request timeout in seconds")
+    .option("--max-bytes <bytes>", "Maximum command output bytes");
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   program.name("cf-explorer").description("Safe Cloud Foundry app file explorer");
@@ -464,14 +482,14 @@ function addSessionCommands(program: Command): void {
         ...(flags.all === undefined ? {} : { all: flags.all }),
       }));
     });
-  session.command("roots").description("Locate roots through an existing session")
+  addSessionReadOptions(session.command("roots").description("Locate roots through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .option("--max-files <count>", "Maximum remote paths to return")
     .action(async (flags: SessionFlags): Promise<void> => {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
-      writeOutput(await attached.roots(maxFilesField(flags)));
+      writeOutput(await attached.roots({ ...maxFilesField(flags), ...sessionLimitFields(flags) }));
     });
-  session.command("find").description("Search filenames through an existing session")
+  addSessionReadOptions(session.command("find").description("Search filenames through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--name <pattern>", "File name pattern")
@@ -482,9 +500,10 @@ function addSessionCommands(program: Command): void {
         root: requireFlag(flags.root, "--root"),
         name: requireFlag(flags.name, "--name"),
         ...maxFilesField(flags),
+        ...sessionLimitFields(flags),
       }));
     });
-  session.command("grep").description("Search through an existing session")
+  addSessionReadOptions(session.command("grep").description("Search through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--text <text>", "Search text")
@@ -497,9 +516,10 @@ function addSessionCommands(program: Command): void {
         text: requireFlag(flags.text, "--text"),
         ...(flags.preview === true ? { preview: true } : {}),
         ...maxFilesField(flags),
+        ...sessionLimitFields(flags),
       }));
     });
-  session.command("view").description("Read line context through an existing session")
+  addSessionReadOptions(session.command("view").description("Read line context through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--file <path>", "Remote file")
     .requiredOption("--line <n>", "Line number")
@@ -511,9 +531,10 @@ function addSessionCommands(program: Command): void {
         file: requireFlag(flags.file, "--file"),
         line: parsePositiveInteger(requireFlag(flags.line, "--line"), "--line") ?? 1,
         ...(context === undefined ? {} : { context }),
+        ...sessionLimitFields(flags),
       }));
     });
-  session.command("inspect-candidates").description("Find candidates through an existing session")
+  addSessionReadOptions(session.command("inspect-candidates").description("Find candidates through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--text <text>", "Search text")
     .option("--root <path>", "Remote root")
@@ -526,6 +547,7 @@ function addSessionCommands(program: Command): void {
         ...(flags.root === undefined ? {} : { root: flags.root }),
         ...(flags.name === undefined ? {} : { name: flags.name }),
         ...maxFilesField(flags),
+        ...sessionLimitFields(flags),
       }));
     });
 }

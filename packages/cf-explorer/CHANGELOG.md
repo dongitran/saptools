@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.2.5
+
+### Bug fixes
+
+- Dropped incomplete trailing protocol rows from truncated one-shot remote
+  output so partial paths are not reported as real discovery results.
+- Parsed only the timestamp-like `since` column from detailed CF app instance
+  rows instead of storing later resource columns in the same field.
+
+### Improvements
+
+- Added `--timeout` and `--max-bytes` to persistent-session read commands,
+  matching the existing API and broker per-request limit support.
+
 ## 0.2.4
 
 ### Bug fixes

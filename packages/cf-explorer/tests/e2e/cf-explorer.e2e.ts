@@ -180,6 +180,10 @@ test("User can reuse a persistent session through the broker", async () => {
     "/workspace/app",
     "--text",
     "needle-api",
+    "--timeout",
+    "30",
+    "--max-bytes",
+    "1048576",
   ]);
   expect(grep.code).toBe(0);
   expect(JSON.parse(grep.stdout).matches[0].path).toContain("connect.js");
@@ -210,6 +214,10 @@ test("User can reuse a persistent session through the broker", async () => {
     "/workspace/app/src/connect.js",
     "--line",
     "2",
+    "--timeout",
+    "30",
+    "--max-bytes",
+    "1048576",
   ]);
   expect(view.code).toBe(0);
   expect(JSON.parse(view.stdout).lines.map((line: { text: string }) => line.text)).toContain(

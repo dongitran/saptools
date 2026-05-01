@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-explorer",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Explore files inside SAP BTP Cloud Foundry app containers with safe read-only SSH workflows.",
   "type": "module",
   "publishConfig": {

@@ -83,7 +83,7 @@ export async function roots(options: DiscoveryOptions): Promise<RootsResult> {
   const result = await execute(inputFor(options, processName, instance, script.script));
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    roots: parseRootsOutput(result.stdout),
+    roots: parseRootsOutput(protocolStdout(result)),
   };
 }
 
@@ -98,7 +98,7 @@ export async function findRemote(options: FindOptions): Promise<FindResult> {
   const result = await execute(inputFor(options, processName, instance, script.script));
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    matches: parseFindOutput(result.stdout, instance),
+    matches: parseFindOutput(protocolStdout(result), instance),
   };
 }
 
@@ -113,7 +113,7 @@ export async function grepRemote(options: GrepOptions): Promise<GrepResult> {
   const result = await execute(inputFor(options, processName, instance, script.script));
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    matches: parseGrepOutput(result.stdout, instance, options.preview === true),
+    matches: parseGrepOutput(protocolStdout(result), instance, options.preview === true),
   };
 }
 
@@ -126,7 +126,7 @@ export async function viewRemote(options: ViewOptions): Promise<ViewResult> {
   const instance = resolveInstance(selector.instance);
   const script = buildViewScript(options);
   const result = await execute(inputFor(options, processName, instance, script.script));
-  const lines = parseViewOutput(result.stdout);
+  const lines = parseViewOutput(protocolStdout(result));
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
     file: options.file,
@@ -147,7 +147,7 @@ export async function inspectCandidates(
   const instance = resolveInstance(selector.instance);
   const script = buildInspectCandidatesScript(options);
   const result = await execute(inputFor(options, processName, instance, script.script));
-  const parsed = parseInspectOutput(result.stdout, instance, false);
+  const parsed = parseInspectOutput(protocolStdout(result), instance, false);
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
     ...parsed,
@@ -178,7 +178,7 @@ async function rootsAllInstances(options: DiscoveryOptions): Promise<RootsResult
   const processName = resolveProcessName(options.process);
   const results = await runAcrossInstances(options, async (instance, context) => {
     const output = await executeWithContext(options, processName, instance, buildRootsScript(options.maxFiles).script, context);
-    return { value: { roots: parseRootsOutput(output.stdout) }, truncated: output.truncated };
+    return { value: { roots: parseRootsOutput(protocolStdout(output)) }, truncated: output.truncated };
   });
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, undefined, sumDurations(results), hasTruncated(results)),
@@ -191,7 +191,7 @@ async function findAllInstances(options: FindOptions): Promise<FindResult> {
   const processName = resolveProcessName(options.process);
   const results = await runAcrossInstances(options, async (instance, context) => {
     const output = await executeWithContext(options, processName, instance, buildFindScript(options).script, context);
-    return { value: { matches: parseFindOutput(output.stdout, instance) }, truncated: output.truncated };
+    return { value: { matches: parseFindOutput(protocolStdout(output), instance) }, truncated: output.truncated };
   });
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, undefined, sumDurations(results), hasTruncated(results)),
@@ -205,7 +205,7 @@ async function grepAllInstances(options: GrepOptions): Promise<GrepResult> {
   const results = await runAcrossInstances(options, async (instance, context) => {
     const output = await executeWithContext(options, processName, instance, buildGrepScript(options).script, context);
     return {
-      value: { matches: parseGrepOutput(output.stdout, instance, options.preview === true) },
+      value: { matches: parseGrepOutput(protocolStdout(output), instance, options.preview === true) },
       truncated: output.truncated,
     };
   });
@@ -220,7 +220,7 @@ async function inspectAllInstances(options: InspectCandidatesOptions): Promise<I
   const processName = resolveProcessName(options.process);
   const results = await runAcrossInstances(options, async (instance, context) => {
     const output = await executeWithContext(options, processName, instance, buildInspectCandidatesScript(options).script, context);
-    return { value: parseInspectOutput(output.stdout, instance, false), truncated: output.truncated };
+    return { value: parseInspectOutput(protocolStdout(output), instance, false), truncated: output.truncated };
   });
   return {
     meta: buildMeta(normalizeTarget(options.target), processName, undefined, sumDurations(results), hasTruncated(results)),
@@ -283,6 +283,14 @@ async function runInstance<T>(
 
 async function execute(input: ExecuteInput): Promise<RemoteExecutionResult> {
   return await executeRemoteScript(input);
+}
+
+function protocolStdout(result: RemoteExecutionResult): string {
+  if (!result.truncated || result.stdout.endsWith("\n") || result.stdout.endsWith("\r")) {
+    return result.stdout;
+  }
+  const lastLineBreak = Math.max(result.stdout.lastIndexOf("\n"), result.stdout.lastIndexOf("\r"));
+  return lastLineBreak < 0 ? "" : result.stdout.slice(0, lastLineBreak + 1);
 }
 
 async function executeWithContext(

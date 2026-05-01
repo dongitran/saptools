@@ -102,6 +102,18 @@ describe("output parsers", () => {
     expect(parseCfAppInstances("no instance information")).toEqual([]);
   });
 
+  it("keeps only the since column from detailed instance rows", () => {
+    const table = [
+      "instances: 1/1",
+      "     state     since                  cpu    memory",
+      "#0   running   2026-01-01T00:00:00Z   1.7%   282M of 768M",
+    ].join("\n");
+
+    expect(parseCfAppInstances(table)).toEqual([
+      { index: 0, state: "running", since: "2026-01-01T00:00:00Z" },
+    ]);
+  });
+
   it("combines inspect output and suggested breakpoints", () => {
     const parsed = parseInspectOutput(
       [

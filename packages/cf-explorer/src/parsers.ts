@@ -166,7 +166,7 @@ function toGrepMatch(
 }
 
 function parseInstanceRow(line: string): InstanceInfo | undefined {
-  const match = /^#?(\d+)\s+([a-zA-Z_-]+)(?:\s+(.+))?$/.exec(line);
+  const match = /^#?(\d+)\s+([a-zA-Z_-]+)(?:\s+(\S+))?(?:\s+.*)?$/.exec(line);
   if (match === null) {
     return undefined;
   }
