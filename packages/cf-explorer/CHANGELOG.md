@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.4
+
+### Bug fixes
+
+- Fixed `view` output on Cloud Foundry containers by emitting line protocol
+  rows directly from `awk` instead of relying on `nl` separator behavior.
+- Changed `session stop` to return structured JSON with a stopped-session
+  count instead of a primitive number.
+- Fixed a broker shutdown race that could leave a stale session lock after
+  `session stop`.
+
 ## 0.2.3
 
 ### Bug fixes

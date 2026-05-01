@@ -218,4 +218,5 @@ test("User can reuse a persistent session through the broker", async () => {
 
   const stopped = await runCli(env, ["session", "stop", "--session-id", sessionId]);
   expect(stopped.code).toBe(0);
+  expect(JSON.parse(stopped.stdout)).toEqual({ stopped: 1 });
 });

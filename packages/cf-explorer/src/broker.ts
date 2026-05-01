@@ -453,6 +453,9 @@ class ExplorerBroker {
   }
 
   private handleShellExit(reason: string): void {
+    if (this.shutdownStarted) {
+      return;
+    }
     void updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
       status: "stale",
       message: reason,

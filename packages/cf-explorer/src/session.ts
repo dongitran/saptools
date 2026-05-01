@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { CfExplorerError } from "./errors.js";
 import { sendIpcRequest, type IpcCommand, type IpcResponse } from "./ipc.js";
-import { explorerHome } from "./paths.js";
+import { explorerHome, sessionsLockPath } from "./paths.js";
 import {
   cleanupSessionFiles,
   isPidAlive,
@@ -30,11 +30,14 @@ import type {
   SessionStatusResult,
   StartSessionOptions,
   StopSessionOptions,
+  StopSessionResult,
   ViewResult,
 } from "./types.js";
 
 const STARTUP_TIMEOUT_MS = 20_000;
 const STARTUP_POLL_MS = 100;
+const STOP_GRACE_MS = 5_000;
+const STOP_POLL_MS = 50;
 
 interface BrokerBootstrap {
   readonly sessionId: string;
@@ -107,7 +110,7 @@ export async function getExplorerSessionStatus(
   return await toSessionStatus(session);
 }
 
-export async function stopExplorerSession(options: StopSessionOptions = {}): Promise<number> {
+export async function stopExplorerSession(options: StopSessionOptions = {}): Promise<StopSessionResult> {
   const runtime = options.runtime ?? {};
   const homeDir = runtime.homeDir ?? explorerHome(runtime.env);
   validateStopOptions(options);
@@ -118,7 +121,7 @@ export async function stopExplorerSession(options: StopSessionOptions = {}): Pro
   await Promise.all(selected.map(async (session) => {
     await stopOneSession(homeDir, session);
   }));
-  return selected.length;
+  return { stopped: selected.length };
 }
 
 export async function attachExplorerSession(
@@ -167,11 +170,45 @@ async function requestSession<T>(
 }
 
 async function stopOneSession(homeDir: string, session: ExplorerSessionRecord): Promise<void> {
-  if (await pathExists(session.socketPath)) {
-    await sendStopRequest(session).catch(() => Promise.resolve());
+  const brokerAcceptedStop = await requestBrokerStop(session);
+  const stoppedGracefully = brokerAcceptedStop
+    ? await waitForGracefulBrokerStop(homeDir, session)
+    : false;
+  if (!stoppedGracefully) {
+    terminateProcess(session.brokerPid);
   }
-  terminateProcess(session.brokerPid);
-  const removed = await removeExplorerSession(homeDir, session.sessionId);
+  await removeSessionStateAndFiles(homeDir, session.sessionId);
+}
+
+async function requestBrokerStop(session: ExplorerSessionRecord): Promise<boolean> {
+  if (!await pathExists(session.socketPath)) {
+    return false;
+  }
+  return await sendStopRequest(session)
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function waitForGracefulBrokerStop(
+  homeDir: string,
+  session: ExplorerSessionRecord,
+): Promise<boolean> {
+  const deadline = Date.now() + STOP_GRACE_MS;
+  for (;;) {
+    const lockPresent = await pathExists(sessionsLockPath(homeDir));
+    const socketPresent = await pathExists(session.socketPath);
+    if (!lockPresent && (!isPidAlive(session.brokerPid) || !socketPresent)) {
+      return true;
+    }
+    if (Date.now() > deadline) {
+      return false;
+    }
+    await sleep(STOP_POLL_MS);
+  }
+}
+
+async function removeSessionStateAndFiles(homeDir: string, sessionId: string): Promise<void> {
+  const removed = await removeExplorerSession(homeDir, sessionId);
   if (removed !== undefined) {
     await cleanupSessionFiles(removed, homeDir);
   }

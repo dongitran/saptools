@@ -145,7 +145,8 @@ function renderGrep(app, command) {
 
 function renderView(app, command) {
   const file = parseVar(command, "CFX_FILE") ?? "";
-  const range = /sed -n '(\d+),(\d+)p'/.exec(command);
+  const range = /CFX_VIEW_START=(\d+)[\s\S]*CFX_VIEW_END=(\d+)/.exec(command)
+    ?? /sed -n '(\d+),(\d+)p'/.exec(command);
   const start = Number.parseInt(range?.[1] ?? "1", 10);
   const end = Number.parseInt(range?.[2] ?? String(start), 10);
   const content = app.files[file] ?? "";

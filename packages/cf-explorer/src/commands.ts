@@ -149,7 +149,9 @@ export function buildViewScript(input: BuildViewScriptInput): RemoteScript {
     script: [
       "CFX_OP='view'",
       `CFX_FILE=${quoteRemoteShellArg(input.file)}`,
-      `sed -n '${start.toString()},${end.toString()}p' -- "$CFX_FILE" 2>/dev/null | nl -ba -v ${start.toString()} -w1 -s '\\t' | sed 's/^/CFX\\tLINE\\t/'`,
+      `CFX_VIEW_START=${start.toString()}`,
+      `CFX_VIEW_END=${end.toString()}`,
+      "awk -v cfx_start=\"$CFX_VIEW_START\" -v cfx_end=\"$CFX_VIEW_END\" 'NR >= cfx_start && NR <= cfx_end { printf \"CFX\\tLINE\\t%d\\t%s\\n\", NR, $0 }' \"$CFX_FILE\" 2>/dev/null",
     ].join("\n"),
   };
 }

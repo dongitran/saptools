@@ -104,10 +104,41 @@ describe("persistent session client", () => {
       args: { timeoutMs: 123, maxBytes: 456 },
     });
     await expect(attached.roots({ timeoutMs: -1 })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
-    await expect(stopExplorerSession({ sessionId: "missing", runtime: { homeDir } })).resolves.toBe(0);
+    await expect(stopExplorerSession({ sessionId: "missing", runtime: { homeDir } })).resolves.toEqual({
+      stopped: 0,
+    });
     await expect(stopExplorerSession({ runtime: { homeDir } })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(stopExplorerSession({ sessionId: "session-ok", all: true, runtime: { homeDir } }))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+  });
+
+  it("returns structured stop output and leaves storage readable", async () => {
+    const session = await registerExplorerSession({
+      sessionId: "session-stop",
+      brokerPid: process.pid,
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      process: "web",
+      instance: 0,
+      homeDir,
+      status: "ready",
+    });
+    server = await createIpcServer(session.socketPath, async (request) => ({
+      response: {
+        requestId: request.requestId,
+        ok: true,
+        durationMs: 1,
+        result: { stopped: true },
+      },
+      afterFlush: () => {
+        server?.close();
+        void rm(session.socketPath, { force: true });
+      },
+    }));
+
+    await expect(stopExplorerSession({ sessionId: session.sessionId, runtime: { homeDir } })).resolves.toEqual({
+      stopped: 1,
+    });
+    await expect(listExplorerSessions({ homeDir })).resolves.toEqual({ sessions: [] });
   });
 
   it("rejects stale sessions before sending more IPC requests", async () => {

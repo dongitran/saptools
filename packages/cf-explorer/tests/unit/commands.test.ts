@@ -62,7 +62,11 @@ describe("remote command builders", () => {
 
   it("builds view with bounded line context", () => {
     const script = buildViewScript({ file: "/workspace/app/src/server.js", line: 10, context: 2 });
-    expect(script.script).toContain("sed -n '8,12p'");
+    expect(script.script).toContain("CFX_VIEW_START=8");
+    expect(script.script).toContain("CFX_VIEW_END=12");
+    expect(script.script).toContain("awk -v cfx_start=\"$CFX_VIEW_START\" -v cfx_end=\"$CFX_VIEW_END\"");
+    expect(script.script).toContain("printf \"CFX\\tLINE\\t%d\\t%s\\n\", NR, $0");
+    expect(script.script).not.toContain("nl -ba");
     expect(script.script).toContain("CFX_FILE='/workspace/app/src/server.js'");
   });
 

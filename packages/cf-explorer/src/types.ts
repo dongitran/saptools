@@ -263,6 +263,10 @@ export interface StopSessionOptions {
   readonly runtime?: ExplorerRuntimeOptions;
 }
 
+export interface StopSessionResult {
+  readonly stopped: number;
+}
+
 export type AttachedDiscoveryOptions = Omit<
   DiscoveryOptions,
   "allInstances" | "instance" | "process" | "runtime" | "target"
