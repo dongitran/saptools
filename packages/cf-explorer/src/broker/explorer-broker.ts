@@ -1,0 +1,438 @@
+import { rm } from "node:fs/promises";
+import process from "node:process";
+
+import {
+  prepareCfCliSession,
+  spawnPersistentSshShell,
+  type CfCommandContext,
+} from "../cf/client.js";
+import { normalizeTarget } from "../cf/target.js";
+import { CfExplorerError } from "../core/errors.js";
+import type {
+  ExplorerMeta,
+  ExplorerRuntimeOptions,
+  ExplorerSessionRecord,
+  FindResult,
+  GrepResult,
+  InspectCandidatesResult,
+  LsResult,
+  RootsResult,
+  ViewResult,
+} from "../core/types.js";
+import {
+  buildFindScript,
+  buildGrepScript,
+  buildInspectCandidatesScript,
+  buildLsScript,
+  buildRootsScript,
+  buildViewScript,
+} from "../discovery/commands.js";
+import {
+  parseFindOutput,
+  parseGrepOutput,
+  parseInspectOutput,
+  parseLsOutput,
+  parseRootsOutput,
+  parseViewOutput,
+} from "../discovery/parsers.js";
+import { createIpcServer, errorResponse, type IpcHandlerResult, type IpcRequest, type IpcResponse } from "../session/ipc.js";
+import { cleanupSessionFiles, readExplorerSession, removeExplorerSession, updateExplorerSession } from "../session/storage.js";
+
+import { parseBrokerBootstrap, type BrokerBootstrap } from "./bootstrap.js";
+import { PersistentShell, type PersistentResult } from "./persistent-shell.js";
+
+const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_MAX_LIFETIME_MS = 60 * 60 * 1000;
+
+let activeBroker: ExplorerBroker | undefined;
+
+export async function runBrokerFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const bootstrap = parseBrokerBootstrap(env["CF_EXPLORER_BROKER_BOOTSTRAP"]);
+  const broker = new ExplorerBroker(bootstrap);
+  activeBroker = broker;
+  await broker.start();
+}
+
+export function shutdownActiveBroker(exitCode: number): void {
+  if (activeBroker === undefined) {
+    process.exit(exitCode);
+  }
+  void activeBroker.shutdown(exitCode);
+}
+
+class ExplorerBroker {
+  private shell: PersistentShell | undefined;
+  private session: ExplorerSessionRecord | undefined;
+  private idleTimer: NodeJS.Timeout | undefined;
+  private hardTimer: NodeJS.Timeout | undefined;
+  private shutdownStarted = false;
+
+  public constructor(private readonly bootstrap: BrokerBootstrap) {}
+
+  public async start(): Promise<void> {
+    try {
+      this.session = await this.requireSession();
+      const context = await this.prepareContext();
+      const child = spawnPersistentSshShell(this.bootstrap.target, context, this.bootstrap.process, this.bootstrap.instance);
+      this.shell = new PersistentShell(child, (reason) => {
+        this.handleShellExit(reason);
+      });
+      await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
+        status: "busy",
+        ...(child.pid === undefined ? {} : { sshPid: child.pid }),
+      });
+      await this.runHandshake();
+      await rm(this.session.socketPath, { force: true });
+      await createIpcServer(this.session.socketPath, async (request) => await this.handleIpcRequest(request));
+      await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, { status: "ready" });
+      this.armTimers();
+    } catch (error: unknown) {
+      await this.failStartup(error);
+      throw error;
+    }
+  }
+
+  private async runHandshake(): Promise<void> {
+    const shell = this.requireShell();
+    try {
+      const result = await shell.execute("printf 'CFX\\tHANDSHAKE\\tok\\n'");
+      if (!result.stdout.includes("CFX\tHANDSHAKE\tok")) {
+        throw new CfExplorerError(
+          "SESSION_HANDSHAKE_FAILED",
+          "Persistent shell handshake produced unexpected output.",
+        );
+      }
+    } catch (error: unknown) {
+      if (error instanceof CfExplorerError && error.code === "SESSION_HANDSHAKE_FAILED") {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new CfExplorerError("SESSION_HANDSHAKE_FAILED", `Persistent shell handshake failed: ${message}`);
+    }
+  }
+
+  private async handleIpcRequest(request: IpcRequest): Promise<IpcResponse | IpcHandlerResult> {
+    const response = await this.handleRequest(request);
+    if (request.sessionId === this.bootstrap.sessionId && request.command === "stop" && response.ok) {
+      return {
+        response,
+        afterFlush: () => {
+          void this.shutdown();
+        },
+      };
+    }
+    return response;
+  }
+
+  private async handleRequest(request: IpcRequest): Promise<IpcResponse> {
+    const startedAt = Date.now();
+    try {
+      this.resetIdleTimer();
+      const result = await this.dispatch(request);
+      return { requestId: request.requestId, ok: true, durationMs: Date.now() - startedAt, result };
+    } catch (error: unknown) {
+      const explorerError = error instanceof CfExplorerError
+        ? error
+        : new CfExplorerError("BROKER_UNAVAILABLE", error instanceof Error ? error.message : String(error));
+      return { ...errorResponse(request.requestId, explorerError), durationMs: Date.now() - startedAt };
+    } finally {
+      if (request.sessionId === this.bootstrap.sessionId) {
+        await this.touchLastUsed();
+      }
+    }
+  }
+
+  private async dispatch(request: IpcRequest): Promise<unknown> {
+    if (request.sessionId !== this.bootstrap.sessionId) {
+      throw new CfExplorerError("SESSION_NOT_FOUND", "Request targeted a different session.");
+    }
+    if (request.command === "status") {
+      return this.session;
+    }
+    if (request.command === "stop") {
+      return { stopped: true };
+    }
+    await this.ensureSessionCanRunCommand();
+    return await this.runExplorerCommand(request);
+  }
+
+  private async ensureSessionCanRunCommand(): Promise<void> {
+    const session = await readExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId);
+    if (session === undefined) {
+      throw new CfExplorerError("SESSION_STALE", "Persistent session state is no longer available.");
+    }
+    if (session.status === "stale" || session.status === "stopped") {
+      throw new CfExplorerError("SESSION_STALE", `Persistent session is ${session.status}.`);
+    }
+    if (session.status === "error") {
+      throw new CfExplorerError("BROKER_UNAVAILABLE", session.message ?? "Persistent session is in error state.");
+    }
+  }
+
+  private async runExplorerCommand(request: IpcRequest): Promise<unknown> {
+    const shell = this.requireShell();
+    const args = request.args;
+    const limits = requestLimits(request);
+    if (request.command === "roots") {
+      return this.buildRoots(await shell.execute(
+        buildRootsScript(readNumber(args, "maxFiles")).script,
+        limits.timeoutMs,
+        limits.maxBytes,
+      ));
+    }
+    if (request.command === "find") {
+      return this.buildFind(await shell.execute(buildFindScript({
+        root: readString(args, "root"),
+        name: readString(args, "name"),
+        ...numberField(args, "maxFiles"),
+      }).script, limits.timeoutMs, limits.maxBytes));
+    }
+    if (request.command === "ls") {
+      const path = readString(args, "path");
+      return this.buildLs(await shell.execute(buildLsScript({
+        path,
+        ...numberField(args, "maxFiles"),
+      }).script, limits.timeoutMs, limits.maxBytes), path);
+    }
+    if (request.command === "grep") {
+      return this.buildGrep(await shell.execute(buildGrepScript({
+        root: readString(args, "root"),
+        text: readString(args, "text"),
+        preview: readBoolean(args, "preview"),
+        ...numberField(args, "maxFiles"),
+      }).script, limits.timeoutMs, limits.maxBytes), readBoolean(args, "preview"));
+    }
+    if (request.command === "view") {
+      return this.buildView(await shell.execute(buildViewScript({
+        file: readString(args, "file"),
+        line: readRequiredNumber(args, "line"),
+        ...numberField(args, "context"),
+      }).script, limits.timeoutMs, limits.maxBytes), readString(args, "file"));
+    }
+    return this.buildInspect(await shell.execute(buildInspectCandidatesScript({
+      text: readString(args, "text"),
+      ...stringField(args, "root"),
+      ...stringField(args, "name"),
+      ...numberField(args, "maxFiles"),
+    }).script, limits.timeoutMs, limits.maxBytes));
+  }
+
+  private buildRoots(result: PersistentResult): RootsResult {
+    return {
+      meta: this.meta(result),
+      roots: parseRootsOutput(result.stdout),
+    };
+  }
+
+  private buildFind(result: PersistentResult): FindResult {
+    return {
+      meta: this.meta(result),
+      matches: parseFindOutput(result.stdout, this.bootstrap.instance),
+    };
+  }
+
+  private buildLs(result: PersistentResult, path: string): LsResult {
+    return {
+      meta: this.meta(result),
+      path,
+      entries: parseLsOutput(result.stdout, this.bootstrap.instance),
+    };
+  }
+
+  private buildGrep(result: PersistentResult, includePreview: boolean): GrepResult {
+    return {
+      meta: this.meta(result),
+      matches: parseGrepOutput(result.stdout, this.bootstrap.instance, includePreview),
+    };
+  }
+
+  private buildView(result: PersistentResult, file: string): ViewResult {
+    const lines = parseViewOutput(result.stdout);
+    return {
+      meta: this.meta(result),
+      file,
+      startLine: lines[0]?.line ?? 1,
+      endLine: lines.at(-1)?.line ?? 1,
+      lines,
+    };
+  }
+
+  private buildInspect(result: PersistentResult): InspectCandidatesResult {
+    return {
+      meta: this.meta(result),
+      ...parseInspectOutput(result.stdout, this.bootstrap.instance, false),
+    };
+  }
+
+  private meta(result: PersistentResult): ExplorerMeta {
+    return {
+      target: normalizeTarget(this.bootstrap.target),
+      process: this.bootstrap.process,
+      instance: this.bootstrap.instance,
+      durationMs: result.durationMs,
+      truncated: result.truncated,
+    };
+  }
+
+  private requireShell(): PersistentShell {
+    if (this.shell === undefined) {
+      throw new CfExplorerError("SESSION_STALE", "Persistent shell is not available.");
+    }
+    return this.shell;
+  }
+
+  private async requireSession(): Promise<ExplorerSessionRecord> {
+    const session = await readExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId);
+    if (session === undefined) {
+      throw new CfExplorerError("SESSION_NOT_FOUND", "Session metadata is missing.");
+    }
+    return session;
+  }
+
+  private async prepareContext(): Promise<CfCommandContext> {
+    const runtime: ExplorerRuntimeOptions = {
+      ...(this.bootstrap.cfBin === undefined ? {} : { cfBin: this.bootstrap.cfBin }),
+    };
+    const session = await this.requireSession();
+    const prepared = await prepareCfCliSession(this.bootstrap.target, session.cfHomeDir, runtime);
+    // Auth state is now stored in CF_HOME; clear inherited credentials from
+    // process.env so /proc/<pid>/environ does not leak them for the broker
+    // lifetime.
+    delete process.env["SAP_EMAIL"];
+    delete process.env["SAP_PASSWORD"];
+    delete process.env["CF_USERNAME"];
+    delete process.env["CF_PASSWORD"];
+    return prepared.context;
+  }
+
+  private async touchLastUsed(): Promise<void> {
+    let updated: ExplorerSessionRecord | undefined;
+    try {
+      updated = await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
+        lastUsedAt: new Date().toISOString(),
+      });
+    } catch {
+      return;
+    }
+    if (updated !== undefined) {
+      this.session = updated;
+    }
+  }
+
+  private armTimers(): void {
+    this.resetIdleTimer();
+    this.hardTimer = setTimeout(() => {
+      void this.shutdown();
+    }, this.bootstrap.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS);
+  }
+
+  private resetIdleTimer(): void {
+    if (this.idleTimer !== undefined) {
+      clearTimeout(this.idleTimer);
+    }
+    this.idleTimer = setTimeout(() => {
+      void this.shutdown();
+    }, this.bootstrap.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
+  }
+
+  private handleShellExit(reason: string): void {
+    if (this.shutdownStarted) {
+      return;
+    }
+    void updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
+      status: "stale",
+      message: reason,
+    }).catch(() => {
+      // Best-effort: persistence errors must not loop into shutdown.
+    }).finally(() => {
+      void this.shutdown(1);
+    });
+  }
+
+  public async shutdown(exitCode = 0): Promise<void> {
+    if (this.shutdownStarted) {
+      return;
+    }
+    this.shutdownStarted = true;
+    if (this.idleTimer !== undefined) {
+      clearTimeout(this.idleTimer);
+    }
+    if (this.hardTimer !== undefined) {
+      clearTimeout(this.hardTimer);
+    }
+    this.shell?.stop();
+    const removed = await removeExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId);
+    if (removed !== undefined) {
+      await cleanupSessionFiles(removed, this.bootstrap.homeDir);
+    }
+    process.exit(exitCode);
+  }
+
+  private async failStartup(error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateExplorerSession(this.bootstrap.homeDir, this.bootstrap.sessionId, {
+      status: "error",
+      message,
+    });
+  }
+}
+
+function readString(args: Record<string, unknown>, key: string): string {
+  const value = args[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${key} is required.`);
+  }
+  return value;
+}
+
+function readOptionalString(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readNumber(args: Record<string, unknown>, key: string): number | undefined {
+  const value = args[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function numberField(args: Record<string, unknown>, key: string): Record<string, number> {
+  const value = readNumber(args, key);
+  return value === undefined ? {} : { [key]: value };
+}
+
+function stringField(args: Record<string, unknown>, key: string): Record<string, string> {
+  const value = readOptionalString(args, key);
+  return value === undefined ? {} : { [key]: value };
+}
+
+function readRequiredNumber(args: Record<string, unknown>, key: string): number {
+  const value = readNumber(args, key);
+  if (value === undefined) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${key} is required.`);
+  }
+  return value;
+}
+
+function readBoolean(args: Record<string, unknown>, key: string): boolean {
+  return args[key] === true;
+}
+
+function requestLimits(request: IpcRequest): {
+  readonly timeoutMs?: number;
+  readonly maxBytes?: number;
+} {
+  return {
+    ...positiveIntegerField(request.timeoutMs, "timeoutMs"),
+    ...positiveIntegerField(request.args["maxBytes"], "maxBytes"),
+  };
+}
+
+function positiveIntegerField(value: unknown, key: string): Record<string, number> {
+  if (value === undefined) {
+    return {};
+  }
+  if (!Number.isInteger(value) || typeof value !== "number" || value <= 0) {
+    throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive integer.`);
+  }
+  return { [key]: value };
+}

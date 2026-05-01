@@ -10,13 +10,13 @@ const mocks = vi.hoisted(() => ({
   markSessionsStaleForTarget: vi.fn<() => Promise<readonly unknown[]>>(),
 }));
 
-vi.mock("../../src/cf.js", () => ({
+vi.mock("../../src/cf/client.js", () => ({
   cfEnableSsh: mocks.cfEnableSsh,
   cfRestartApp: mocks.cfRestartApp,
   cfSshEnabled: mocks.cfSshEnabled,
 }));
 
-vi.mock("../../src/runner.js", () => ({
+vi.mock("../../src/discovery/runner.js", () => ({
   withPreparedCfSession: async (
     _target: unknown,
     _runtime: unknown,
@@ -24,7 +24,7 @@ vi.mock("../../src/runner.js", () => ({
   ): Promise<unknown> => await work({ cfHomeDir: "/tmp/cf-home" }),
 }));
 
-vi.mock("../../src/storage.js", () => ({
+vi.mock("../../src/session/storage.js", () => ({
   markSessionsStaleForTarget: mocks.markSessionsStaleForTarget,
 }));
 

@@ -84,6 +84,9 @@ describe("CLI output rendering", () => {
       sessions: [{ sessionId: "session-a", status: "ready", target }],
     }, false)).toBe("session-a\tready\tdemo-app\n");
     expect(formatOutput({
+      sessions: [{ sessionId: "session-b", status: "ready" }],
+    }, false)).toBe("session-b\tready\t?\n");
+    expect(formatOutput({
       sessionId: "session-a",
       status: "ready",
       brokerAlive: true,
@@ -96,5 +99,29 @@ describe("CLI output rendering", () => {
       brokerPid: 123,
       socketPath: "/tmp/session.sock",
     }, false)).toContain("brokerPid: 123");
+  });
+
+  it("formats unusual session status cells without object stringification", () => {
+    const output = formatOutput({
+      sessionId: "session-a",
+      status: "ready",
+      brokerAlive: Symbol("unknown"),
+      sshAlive: () => undefined,
+      socketAlive: { ok: true },
+    }, false);
+
+    expect(output).toContain("brokerAlive: unknown");
+    expect(output).toContain("sshAlive: ");
+    expect(output).toContain("socketAlive: {\"ok\":true}");
+
+    const emptyCells = formatOutput({
+      sessionId: "session-b",
+      status: "ready",
+      brokerAlive: undefined,
+      sshAlive: null,
+      socketAlive: true,
+    }, false);
+    expect(emptyCells).toContain("brokerAlive: ");
+    expect(emptyCells).toContain("sshAlive: ");
   });
 });

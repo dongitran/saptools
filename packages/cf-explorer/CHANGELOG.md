@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.10
+
+### Maintenance
+
+- Reorganized source modules into focused CLI, CF, discovery, broker, session,
+  and core folders while preserving existing public imports and runtime
+  behavior.
+
 ## 0.2.9
 
 ### Maintenance

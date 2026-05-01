@@ -7,18 +7,23 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      // broker.ts: only exercised end-to-end through Playwright tests because
-      // it owns the live cf ssh child process and the IPC server.
-      // session.ts: startExplorerSession spawns the broker entry; the
+      // broker entry and explorer-broker: only exercised end-to-end through
+      // Playwright tests because they own the live cf ssh child process and
+      // the IPC server.
+      // session client: startExplorerSession spawns the broker entry; the
       // remaining client-side helpers (attach/list/status/stop) are covered
       // by tests/unit/session.test.ts.
-      // cli.ts/index.ts: thin Commander wiring and a re-export barrel.
-      // types.ts: type-only declarations and as-const literal unions.
+      // cli entry and program: thin executable wrapper and Commander wiring.
+      // index.ts: public re-export barrel.
+      // core/types.ts and types.ts: type declarations and as-const literals.
       exclude: [
+        "src/broker/explorer-broker.ts",
         "src/broker.ts",
+        "src/cli/program.ts",
         "src/cli.ts",
+        "src/core/types.ts",
         "src/index.ts",
-        "src/session.ts",
+        "src/session/client.ts",
         "src/types.ts",
       ],
       reporter: ["text", "html"],

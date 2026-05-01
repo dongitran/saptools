@@ -38,11 +38,11 @@ const mocks = vi.hoisted(() => ({
   >(),
 }));
 
-vi.mock("../../src/cf.js", () => ({
+vi.mock("../../src/cf/client.js", () => ({
   cfApp: mocks.cfApp,
 }));
 
-vi.mock("../../src/runner.js", () => ({
+vi.mock("../../src/discovery/runner.js", () => ({
   executeRemoteScript: mocks.executeRemoteScript,
   executeRemoteScriptWithContext: mocks.executeRemoteScriptWithContext,
   withPreparedCfSession: async (

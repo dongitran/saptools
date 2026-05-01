@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
   >(),
 }));
 
-vi.mock("../../src/cf.js", () => ({
+vi.mock("../../src/cf/client.js", () => ({
   cfSshOneShot: mocks.cfSshOneShot,
   prepareCfCliSession: mocks.prepareCfCliSession,
 }));
