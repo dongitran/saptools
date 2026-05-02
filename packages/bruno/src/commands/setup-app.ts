@@ -133,16 +133,16 @@ function pickApp(space: SpaceNode): readonly { value: string; name: string }[] {
   return space.apps.map((a) => ({ value: a.name, name: a.name }));
 }
 
-export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult> {
-  const deps = options.deps ?? defaultCfInfoDeps;
-  const log = options.log ?? ((): void => undefined);
-
+async function selectRegion(
+  prompts: SetupAppPrompts,
+  deps: CfInfoDeps,
+): Promise<{ readonly regionKey: RegionKey; readonly region: RegionNode }> {
   const regions = await listRegionsWithContent(deps);
   if (regions.length === 0) {
     throw new Error("No CF regions with orgs are cached. Run `cf-sync sync` first.");
   }
 
-  const regionKey = await options.prompts.selectRegion(pickRegion(regions));
+  const regionKey = await prompts.selectRegion(pickRegion(regions));
   const regionView = await deps.readRegionView(regionKey);
   if (!regionView) {
     throw new Error(`Region ${regionKey} is not cached. Run \`cf-sync region ${regionKey}\` or \`cf-sync sync\` first.`);
@@ -153,7 +153,15 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
     throw new Error(`Region ${regionKey} has no accessible orgs.`);
   }
 
-  const orgName = await options.prompts.selectOrg(pickOrg(region));
+  return { regionKey, region };
+}
+
+async function selectOrg(
+  prompts: SetupAppPrompts,
+  region: RegionNode,
+  regionKey: RegionKey,
+): Promise<{ readonly orgName: string; readonly org: OrgNode }> {
+  const orgName = await prompts.selectOrg(pickOrg(region));
   const org = region.orgs.find((o) => o.name === orgName);
   if (!org) {
     throw new Error(`Org ${orgName} not found in region ${regionKey}`);
@@ -162,7 +170,15 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
     throw new Error(`Org ${orgName} has no spaces.`);
   }
 
-  const spaceName = await options.prompts.selectSpace(pickSpace(org));
+  return { orgName, org };
+}
+
+async function selectSpace(
+  prompts: SetupAppPrompts,
+  org: OrgNode,
+  orgName: string,
+): Promise<{ readonly spaceName: string; readonly space: SpaceNode }> {
+  const spaceName = await prompts.selectSpace(pickSpace(org));
   const space = org.spaces.find((s) => s.name === spaceName);
   if (!space) {
     throw new Error(`Space ${spaceName} not found in org ${orgName}`);
@@ -171,28 +187,31 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
     throw new Error(`Space ${spaceName} has no apps.`);
   }
 
-  const appName = await options.prompts.selectApp(pickApp(space));
-  const ref: CfAppRef = { region: regionKey, org: orgName, space: spaceName, app: appName };
+  return { spaceName, space };
+}
 
-  const appPath = join(
-    options.root,
-    regionFolderName(regionKey),
-    orgFolderName(orgName),
-    spaceFolderName(spaceName),
-    appName,
+async function selectCfAppRef(
+  prompts: SetupAppPrompts,
+  deps: CfInfoDeps,
+): Promise<CfAppRef> {
+  const { regionKey, region } = await selectRegion(prompts, deps);
+  const { orgName, org } = await selectOrg(prompts, region, regionKey);
+  const { spaceName, space } = await selectSpace(prompts, org, orgName);
+  const appName = await prompts.selectApp(pickApp(space));
+  return { region: regionKey, org: orgName, space: spaceName, app: appName };
+}
+
+function appPathFor(root: string, ref: CfAppRef): string {
+  return join(
+    root,
+    regionFolderName(ref.region),
+    orgFolderName(ref.org),
+    spaceFolderName(ref.space),
+    ref.app,
   );
+}
 
-  const confirmed = await options.prompts.confirmCreate(appPath);
-  if (!confirmed) {
-    return { ref, appPath, environments: [], created: false };
-  }
-
-  await mkdir(appPath, { recursive: true });
-  await ensureCollectionConfig(appPath);
-
-  const existingEnvs = await listExistingEnvs(appPath);
-  const common = [...COMMON_ENVIRONMENTS];
-  const selected = await options.prompts.selectEnvironments({ common, existing: existingEnvs });
+function normalizeEnvironmentNames(selected: readonly string[]): readonly string[] {
   const merged: string[] = [];
   for (const name of selected) {
     const trimmed = name.trim();
@@ -205,14 +224,50 @@ export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult
   if (merged.length === 0) {
     throw new Error("At least one environment is required.");
   }
+  return merged;
+}
 
+async function selectEnvironmentNames(
+  appPath: string,
+  prompts: SetupAppPrompts,
+): Promise<readonly string[]> {
+  const existingEnvs = await listExistingEnvs(appPath);
+  const common = [...COMMON_ENVIRONMENTS];
+  const selected = await prompts.selectEnvironments({ common, existing: existingEnvs });
+  return normalizeEnvironmentNames(selected);
+}
+
+async function createEnvironmentFiles(
+  appPath: string,
+  envNames: readonly string[],
+  ref: CfAppRef,
+  log: (msg: string) => void,
+): Promise<readonly string[]> {
   const created: string[] = [];
-  for (const envName of merged) {
+  for (const envName of envNames) {
     const path = await ensureEnvFile(appPath, envName, ref);
     created.push(path);
     log(`• ${path}`);
   }
+  return created;
+}
 
+export async function setupApp(options: SetupAppOptions): Promise<SetupAppResult> {
+  const deps = options.deps ?? defaultCfInfoDeps;
+  const log = options.log ?? ((): void => undefined);
+  const ref = await selectCfAppRef(options.prompts, deps);
+  const appPath = appPathFor(options.root, ref);
+
+  const confirmed = await options.prompts.confirmCreate(appPath);
+  if (!confirmed) {
+    return { ref, appPath, environments: [], created: false };
+  }
+
+  await mkdir(appPath, { recursive: true });
+  await ensureCollectionConfig(appPath);
+
+  const envNames = await selectEnvironmentNames(appPath, options.prompts);
+  const created = await createEnvironmentFiles(appPath, envNames, ref, log);
   return { ref, appPath, environments: created, created: true };
 }
 

@@ -167,11 +167,17 @@ describe("navigators", () => {
   it("find org / space / app", () => {
     const org = findOrg(regionNode, "demo");
     expect(org?.name).toBe("demo");
-    const space = findSpace(org!, "dev");
+    if (!org) {
+      throw new Error("Expected org fixture to exist");
+    }
+    const space = findSpace(org, "dev");
     expect(space?.name).toBe("dev");
-    const app = findApp(space!, "api");
+    if (!space) {
+      throw new Error("Expected space fixture to exist");
+    }
+    const app = findApp(space, "api");
     expect(app?.name).toBe("api");
-    expect(findApp(space!, "missing")).toBeUndefined();
+    expect(findApp(space, "missing")).toBeUndefined();
   });
 });
 

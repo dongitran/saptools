@@ -26,25 +26,22 @@ function resolveCollectionDir(explicitCollection: string | undefined, explicitRo
   return process.cwd();
 }
 
-export async function main(argv: readonly string[]): Promise<void> {
-  const program = new Command();
+function resolveProgramCollectionDir(program: Command): string {
+  const opts = program.opts<{ collection?: string; root?: string }>();
+  return resolveCollectionDir(opts.collection, opts.root);
+}
 
-  program
-    .name("saptools-bruno")
-    .description("Smart runner for Bruno with CF-aware env metadata and automatic token injection")
-    .addOption(new Option("--collection <dir>", "Bruno collection directory (default: SAPTOOLS_BRUNO_COLLECTION or cwd)"))
-    .addOption(new Option("--root <dir>", "Legacy alias for --collection").hideHelp());
+function writeLine(message: string): void {
+  process.stdout.write(`${message}\n`);
+}
 
+function registerSetupAppCommand(program: Command): void {
   program
     .command("setup-app")
     .description("Interactively scaffold a bruno app folder and seed __cf_* variables")
     .action(async (): Promise<void> => {
-      const collectionDir = resolveCollectionDir(
-        program.opts<{ collection?: string; root?: string }>().collection,
-        program.opts<{ collection?: string; root?: string }>().root,
-      );
       const result = await setupApp({
-        root: collectionDir,
+        root: resolveProgramCollectionDir(program),
         prompts: {
           selectRegion: async (choices) => await select({ message: "Select region", choices: [...choices] }),
           selectOrg: async (choices) => await select({ message: "Select org", choices: [...choices] }),
@@ -53,17 +50,31 @@ export async function main(argv: readonly string[]): Promise<void> {
           confirmCreate: async (path) => await confirm({ message: `Create ${path}?`, default: true }),
           selectEnvironments: async (opts) => await promptForEnvironments(opts),
         },
-        log: (msg) => {
-          process.stdout.write(`${msg}\n`);
-        },
+        log: writeLine,
       });
       if (!result.created) {
-        process.stdout.write("Aborted.\n");
+        writeLine("Aborted.");
         return;
       }
-      process.stdout.write(`✔ App folder ready at ${result.appPath}\n`);
+      writeLine(`✔ App folder ready at ${result.appPath}`);
     });
+}
 
+async function resolveRunTarget(target: string | undefined): Promise<string> {
+  if (target) {
+    return target;
+  }
+
+  const ctx = await readContext();
+  if (!ctx) {
+    throw new Error(
+      "No target specified and no default context is set. Run `saptools-bruno use <region/org/space/app>` first.",
+    );
+  }
+  return `${ctx.region}/${ctx.org}/${ctx.space}/${ctx.app}`;
+}
+
+function registerRunCommand(program: Command): void {
   program
     .command("run")
     .description("Run a bruno request or folder, auto-injecting an XSUAA token")
@@ -74,34 +85,18 @@ export async function main(argv: readonly string[]): Promise<void> {
         target: string | undefined,
         opts: { env?: string },
       ): Promise<void> => {
-        const collectionDir = resolveCollectionDir(
-          program.opts<{ collection?: string; root?: string }>().collection,
-          program.opts<{ collection?: string; root?: string }>().root,
-        );
-        let effectiveTarget = target;
-
-        if (!effectiveTarget) {
-          const ctx = await readContext();
-          if (!ctx) {
-            throw new Error(
-              "No target specified and no default context is set. Run `saptools-bruno use <region/org/space/app>` first.",
-            );
-          }
-          effectiveTarget = `${ctx.region}/${ctx.org}/${ctx.space}/${ctx.app}`;
-        }
-
         const result = await runBruno({
-          root: collectionDir,
-          target: effectiveTarget,
+          root: resolveProgramCollectionDir(program),
+          target: await resolveRunTarget(target),
           ...(opts.env ? { environment: opts.env } : {}),
-          log: (msg) => {
-            process.stdout.write(`${msg}\n`);
-          },
+          log: writeLine,
         });
         process.exit(result.code);
       },
     );
+}
 
+function registerUseCommand(program: Command): void {
   program
     .command("use")
     .description("Set the default CF context (region/org/space/app) for future `run` calls")
@@ -114,6 +109,20 @@ export async function main(argv: readonly string[]): Promise<void> {
       });
       process.stdout.write(`✔ Default context set to ${ctx.region}/${ctx.org}/${ctx.space}/${ctx.app}\n`);
     });
+}
+
+export async function main(argv: readonly string[]): Promise<void> {
+  const program = new Command();
+
+  program
+    .name("saptools-bruno")
+    .description("Smart runner for Bruno with CF-aware env metadata and automatic token injection")
+    .addOption(new Option("--collection <dir>", "Bruno collection directory (default: SAPTOOLS_BRUNO_COLLECTION or cwd)"))
+    .addOption(new Option("--root <dir>", "Legacy alias for --collection").hideHelp());
+
+  registerSetupAppCommand(program);
+  registerRunCommand(program);
+  registerUseCommand(program);
 
   await program.parseAsync([...argv]);
 }
