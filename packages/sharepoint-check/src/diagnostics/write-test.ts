@@ -5,6 +5,8 @@ import { GraphHttpError } from "../graph/client.js";
 import { createFolder, deleteItem } from "../graph/drives.js";
 import type { WriteTestResult } from "../types.js";
 
+const MISSING_CREATED_ID_ERROR = "Write probe folder was created but Graph did not return an item id";
+
 export interface WriteTestOptions {
   readonly driveId: string;
   readonly rootPath?: string;
@@ -37,6 +39,14 @@ export async function runWriteTest(
   try {
     const created = await createFolder(client, options.driveId, rootPath, folderName);
     createdId = created.id;
+    if (createdId.length === 0) {
+      return {
+        created: true,
+        deleted: false,
+        probePath,
+        error: MISSING_CREATED_ID_ERROR,
+      };
+    }
   } catch (err) {
     const message = err instanceof GraphHttpError ? err.message : err instanceof Error ? err.message : String(err);
     return {

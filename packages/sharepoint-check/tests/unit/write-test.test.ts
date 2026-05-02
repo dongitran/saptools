@@ -67,6 +67,18 @@ describe("runWriteTest", () => {
     expect(calls[0]?.body).toMatchObject({ name: expect.stringMatching(/^custom-probe-/) });
   });
 
+  it("reports cleanup failure without deleting when Graph omits the created item id", async () => {
+    const calls: Call[] = [];
+    const c = writeClient([{ name: "probe", folder: { childCount: 0 } }], calls);
+    const result = await runWriteTest(c, { driveId: "d1", rootPath: "Apps" });
+    expect(result.created).toBe(true);
+    expect(result.deleted).toBe(false);
+    expect(result.itemId).toBeUndefined();
+    expect(result.error).toContain("item id");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+  });
+
   it("reports created=false when folder creation fails", async () => {
     const c = writeClient([new GraphHttpError(403, "accessDenied", "no write")], []);
     const result = await runWriteTest(c, { driveId: "d1", rootPath: "Apps" });
