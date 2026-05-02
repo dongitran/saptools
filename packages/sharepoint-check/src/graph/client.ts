@@ -172,7 +172,7 @@ export function createGraphClient(options: GraphClientOptions): GraphClient {
       return undefined as T;
     }
 
-    const contentType = response.headers.get("content-type") ?? "";
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.includes("application/json")) {
       return undefined as T;
     }

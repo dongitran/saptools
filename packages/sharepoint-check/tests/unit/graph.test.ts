@@ -118,6 +118,17 @@ describe("createGraphClient", () => {
     expect(result).toBeUndefined();
   });
 
+  it("parses JSON responses with mixed-case content types", async () => {
+    const fetchFn: FetchLike = async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "Application/JSON; charset=utf-8" },
+      });
+    const client = createGraphClient({ accessToken: "tok", baseUrl: "http://api/v1", fetchFn });
+    const result = await client.request<{ readonly ok: boolean }>("/thing");
+    expect(result).toEqual({ ok: true });
+  });
+
   it("throws GraphHttpError with parsed error code + message", async () => {
     const fetchFn: FetchLike = async () =>
       jsonResponse(404, { error: { code: "itemNotFound", message: "nope" } });

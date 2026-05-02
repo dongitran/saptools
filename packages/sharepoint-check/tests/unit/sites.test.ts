@@ -19,6 +19,27 @@ describe("parseSiteRef", () => {
     });
   });
 
+  it("strips URL query and hash fragments from copied full URLs", () => {
+    expect(parseSiteRef("https://contoso.sharepoint.com/sites/demo?view=all#section")).toEqual({
+      hostname: "contoso.sharepoint.com",
+      sitePath: "sites/demo",
+    });
+  });
+
+  it("strips query and hash fragments from host/path references", () => {
+    expect(parseSiteRef("contoso.sharepoint.com/sites/demo?view=all#section")).toEqual({
+      hostname: "contoso.sharepoint.com",
+      sitePath: "sites/demo",
+    });
+  });
+
+  it("decodes encoded full URL path segments before Graph encoding", () => {
+    expect(parseSiteRef("https://contoso.sharepoint.com/sites/space%20team")).toEqual({
+      hostname: "contoso.sharepoint.com",
+      sitePath: "sites/space team",
+    });
+  });
+
   it("trims surrounding whitespace", () => {
     expect(parseSiteRef("  https://contoso.sharepoint.com/sites/team  ")).toEqual({
       hostname: "contoso.sharepoint.com",
@@ -40,6 +61,13 @@ describe("parseSiteRef", () => {
 
   it("throws when host is empty", () => {
     expect(() => parseSiteRef("/sites/demo")).toThrow(/Missing hostname/);
+  });
+
+  it("throws when a full URL or path encoding is invalid", () => {
+    expect(() => parseSiteRef("https://")).toThrow(/valid SharePoint URL/);
+    expect(() => parseSiteRef("contoso.sharepoint.com/sites/%E0%A4%A")).toThrow(
+      /invalid URL encoding/i,
+    );
   });
 });
 

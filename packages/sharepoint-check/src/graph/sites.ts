@@ -14,28 +14,64 @@ function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-export function parseSiteRef(input: string): SharePointSiteRef {
-  const trimmed = input.trim();
-  if (trimmed.length === 0) {
-    throw new Error("Site reference is empty");
+function stripQueryAndHash(value: string): string {
+  const markerIndex = value.search(/[?#]/);
+  return markerIndex === -1 ? value : value.slice(0, markerIndex);
+}
+
+function decodeSitePath(sitePath: string, input: string): string {
+  return sitePath
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch (err) {
+        throw new Error(`Invalid site reference "${input}". Site path contains invalid URL encoding`, {
+          cause: err,
+        });
+      }
+    })
+    .join("/");
+}
+
+function parseSiteInput(trimmed: string): { readonly hostname: string; readonly rawPath: string } {
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return { hostname: url.hostname, rawPath: url.pathname };
+    } catch (err) {
+      throw new Error(`Invalid site reference "${trimmed}". Expected a valid SharePoint URL`, {
+        cause: err,
+      });
+    }
   }
 
-  const withoutScheme = trimmed.replace(/^https?:\/\//i, "");
-  const firstSlash = withoutScheme.indexOf("/");
+  const withoutQuery = stripQueryAndHash(trimmed);
+  const firstSlash = withoutQuery.indexOf("/");
   if (firstSlash === -1) {
     throw new Error(
       `Invalid site reference "${trimmed}". Expected host/sites/<name> or a full URL`,
     );
   }
 
-  const hostname = withoutScheme.slice(0, firstSlash);
-  const rest = withoutScheme.slice(firstSlash + 1);
+  return {
+    hostname: withoutQuery.slice(0, firstSlash),
+    rawPath: withoutQuery.slice(firstSlash + 1),
+  };
+}
 
+export function parseSiteRef(input: string): SharePointSiteRef {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) {
+    throw new Error("Site reference is empty");
+  }
+
+  const { hostname, rawPath } = parseSiteInput(trimmed);
   if (hostname.length === 0) {
     throw new Error(`Invalid site reference "${trimmed}". Missing hostname`);
   }
 
-  const sitePath = rest.replace(/^\/+|\/+$/g, "");
+  const sitePath = decodeSitePath(rawPath.replace(/^\/+|\/+$/g, ""), trimmed);
   if (sitePath.length === 0) {
     throw new Error(`Invalid site reference "${trimmed}". Missing site path (e.g. sites/demo)`);
   }

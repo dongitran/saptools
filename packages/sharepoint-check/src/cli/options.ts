@@ -50,13 +50,19 @@ export function toOverrides(flags: CommonFlags): ConfigOverrides {
 }
 
 export function parseDepth(rawDepth: string | undefined): number | undefined {
-  if (rawDepth === undefined || rawDepth.length === 0) {
+  const normalized = rawDepth?.trim();
+  if (normalized === undefined || normalized.length === 0) {
     return undefined;
   }
 
-  const parsed = Number.parseInt(rawDepth, 10);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid --depth "${rawDepth}"`);
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`Invalid --depth "${normalized}"`);
   }
+
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`Invalid --depth "${normalized}"`);
+  }
+
   return parsed;
 }

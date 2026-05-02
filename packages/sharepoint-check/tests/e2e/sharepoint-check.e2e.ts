@@ -126,6 +126,20 @@ test.describe("fake-graph CLI flow", () => {
     expect(parsed.claims.roles).toContain("Sites.Selected");
   });
 
+  test("User can resolve a copied full site URL with query and hash", async () => {
+    const result = await runCli({
+      args: ["test", "--json"],
+      env: {
+        ...baseEnv,
+        ...credsEnv,
+        SHAREPOINT_SITE: "https://demo.sharepoint.example/sites/demo?view=all#section",
+      },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { readonly site: { readonly id: string } };
+    expect(parsed.site.id).toBe("site-001");
+  });
+
   test("User can inspect auth in human-readable output", async () => {
     const result = await runCli({
       args: ["test"],
@@ -347,6 +361,15 @@ test.describe("fake-graph CLI flow", () => {
   test("invalid tree depth yields a helpful error", async () => {
     const result = await runCli({
       args: ["tree", "--json", "--drive", "Documents", "--root", "Apps", "--depth", "abc"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Invalid --depth");
+  });
+
+  test("partial tree depth yields a helpful error", async () => {
+    const result = await runCli({
+      args: ["tree", "--json", "--drive", "Documents", "--root", "Apps", "--depth", "1abc"],
       env: { ...baseEnv, ...credsEnv },
     });
     expect(result.code).not.toBe(0);
