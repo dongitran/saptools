@@ -17,7 +17,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  vi.doUnmock("../../src/cf.js");
+  vi.doUnmock("../../src/cf/index.js");
   vi.doUnmock("node:os");
   await rm(tempHome, { recursive: true, force: true });
 });
@@ -64,7 +64,7 @@ describe("runDbSync", () => {
       .mockResolvedValueOnce(HANA_ENV_OUTPUT)
       .mockResolvedValueOnce("VCAP_SERVICES: {}\nVCAP_APPLICATION: {}");
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi,
       cfAuth,
       cfTargetOrg,
@@ -122,7 +122,7 @@ describe("runDbSync", () => {
       .mockRejectedValueOnce(new Error("cf env failed: permission denied"))
       .mockResolvedValueOnce(HANA_ENV_OUTPUT);
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfTargetOrg: vi.fn().mockResolvedValue(void 0),
@@ -172,7 +172,7 @@ describe("runDbSync", () => {
     const cfTargetSpace = vi.fn();
     const cfEnv = vi.fn();
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockRejectedValue(new Error("auth denied")),
       cfTargetOrg,
@@ -222,7 +222,7 @@ describe("runDbSync", () => {
   });
 
   it("reuses a completed DB runtime snapshot when another process already holds the DB lock", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfTargetOrg: vi.fn(),
@@ -292,7 +292,7 @@ describe("runDbSync", () => {
   });
 
   it("rejects an empty DB target list", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfTargetOrg: vi.fn(),

@@ -5,17 +5,17 @@ import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 
+import { cfStructurePath } from "./config/paths.js";
 import {
   readDbAppView,
   readDbSnapshotView,
-} from "./db-store.js";
+} from "./db/store.js";
 import {
   resolveDbSyncTargetsFromCurrentTopology,
   runDbSync,
-} from "./db-sync.js";
-import { cfStructurePath } from "./paths.js";
-import { readRegionsView, readStructureView } from "./structure.js";
-import { getRegionView, runSync, syncSpace } from "./sync.js";
+} from "./db/sync.js";
+import { readRegionsView, readStructureView } from "./topology/structure.js";
+import { getRegionView, runSync, syncSpace } from "./topology/sync.js";
 import { REGION_KEYS } from "./types.js";
 
 function requireEnv(name: string): string {

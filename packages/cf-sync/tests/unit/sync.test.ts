@@ -17,7 +17,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  vi.doUnmock("../../src/cf.js");
+  vi.doUnmock("../../src/cf/index.js");
   vi.doUnmock("node:fs/promises");
   vi.doUnmock("node:os");
   await rm(tempHome, { recursive: true, force: true });
@@ -53,7 +53,7 @@ async function readHistoryEvents(): Promise<readonly Record<string, unknown>[]> 
 
 describe("runSync", () => {
   it("walks region → org → space → app for each region", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["org-a"]),
@@ -79,7 +79,7 @@ describe("runSync", () => {
   });
 
   it("marks region as inaccessible when auth fails", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockRejectedValue(new Error("403")),
       cfOrgs: vi.fn(),
@@ -108,7 +108,7 @@ describe("runSync", () => {
       .mockImplementationOnce(() => Promise.reject(new Error("no-access")))
       .mockResolvedValue(void 0);
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["bad-org", "good-org"]),
@@ -137,7 +137,7 @@ describe("runSync", () => {
       .mockImplementationOnce(() => Promise.reject(new Error("no-space")))
       .mockResolvedValue(void 0);
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["org-a"]),
@@ -161,7 +161,7 @@ describe("runSync", () => {
   });
 
   it("writes structure to configured path", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue([]),
@@ -183,7 +183,7 @@ describe("runSync", () => {
   });
 
   it("records completed runtime state after a successful sync", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue([]),
@@ -209,7 +209,7 @@ describe("runSync", () => {
   });
 
   it("writes traceable sync history milestones for a successful sync", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue(["org-a"]),
@@ -272,7 +272,7 @@ describe("runSync", () => {
 
   it("uses an isolated CF_HOME for a sync session", async () => {
     const contexts: { readonly env?: NodeJS.ProcessEnv }[] = [];
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockImplementation((_endpoint: string, context?: { readonly env?: NodeJS.ProcessEnv }) => {
         contexts.push(context ?? {});
       }),
@@ -304,7 +304,7 @@ describe("runSync", () => {
     const cfSpaces = vi.fn().mockResolvedValue(["dev"]);
     const cfAppDetails = vi.fn().mockResolvedValue([{ name: "app-eu10" }]);
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi,
       cfAuth,
       cfOrgs,
@@ -375,7 +375,7 @@ describe("runSync", () => {
   });
 
   it("returns a cached stable region when refresh credentials are missing", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfOrgs: vi.fn(),
@@ -409,7 +409,7 @@ describe("runSync", () => {
   });
 
   it("returns an inaccessible fresh region when authentication fails and no cache exists", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockRejectedValue(new Error("boom")),
       cfAuth: vi.fn(),
       cfOrgs: vi.fn(),
@@ -446,7 +446,7 @@ describe("runSync", () => {
         return [];
       });
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi,
       cfAuth,
       cfOrgs,
@@ -487,7 +487,7 @@ describe("runSync", () => {
   });
 
   it("reuses a completed runtime snapshot when another process already holds the sync lock", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfOrgs: vi.fn(),
@@ -546,7 +546,7 @@ describe("runSync", () => {
   });
 
   it("recovers from a legacy running lock file and completes a new sync", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockResolvedValue([]),
@@ -626,7 +626,7 @@ describe("runSync", () => {
   });
 
   it("fails when a lock-held sync has already settled into a failed runtime state", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfOrgs: vi.fn(),
@@ -681,7 +681,7 @@ describe("runSync", () => {
       };
     });
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfOrgs: vi.fn(),
@@ -721,7 +721,7 @@ describe("runSync", () => {
   });
 
   it("waits for a lock-held sync even when interactive output is enabled", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn(),
       cfAuth: vi.fn(),
       cfOrgs: vi.fn(),
@@ -798,7 +798,7 @@ describe("syncSpace", () => {
       },
     ]);
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn(),
@@ -857,7 +857,7 @@ describe("syncSpace", () => {
   });
 
   it("updates only the requested space while preserving sibling spaces", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn(),
@@ -915,7 +915,7 @@ describe("syncSpace", () => {
   });
 
   it("merges a running-state space refresh without marking the region completed", async () => {
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn(),
@@ -981,7 +981,7 @@ describe("syncSpace", () => {
     const fullSyncGate = createDeferred();
     let targetedSpace = "dev";
 
-    vi.doMock("../../src/cf.js", () => ({
+    vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
       cfAuth: vi.fn().mockResolvedValue(void 0),
       cfOrgs: vi.fn().mockImplementation(async () => {
