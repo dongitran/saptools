@@ -1,7 +1,7 @@
-import { listDriveChildren } from "./drives.js";
-import type { GraphClient } from "./graph.js";
-import { DEFAULT_TREE_LIMITS } from "./types.js";
-import type { DriveItemSummary, FolderTreeNode, TreeWalkLimits } from "./types.js";
+import type { GraphClient } from "../graph/client.js";
+import { listDriveChildren } from "../graph/drives.js";
+import { DEFAULT_TREE_LIMITS } from "../types.js";
+import type { DriveItemSummary, FolderTreeNode, TreeWalkLimits } from "../types.js";
 
 export interface WalkFolderTreeOptions {
   readonly driveId: string;

@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { DEFAULT_GRAPH_BASE, ENV_GRAPH_BASE } from "./types.js";
+import { DEFAULT_GRAPH_BASE, ENV_GRAPH_BASE } from "../types.js";
 
 export type FetchLike = typeof fetch;
 

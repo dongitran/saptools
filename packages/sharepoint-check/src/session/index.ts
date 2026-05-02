@@ -1,15 +1,15 @@
-import { acquireAppToken } from "./auth.js";
-import type { AcquireTokenOptions } from "./auth.js";
-import type { FetchLike, GraphClient } from "./graph.js";
-import { createGraphClient } from "./graph.js";
-import { decodeAccessToken } from "./jwt.js";
-import { resolveSite } from "./sites.js";
+import { decodeAccessToken } from "../auth/jwt.js";
+import { acquireAppToken } from "../auth/token.js";
+import type { AcquireTokenOptions } from "../auth/token.js";
+import type { FetchLike, GraphClient } from "../graph/client.js";
+import { createGraphClient } from "../graph/client.js";
+import { resolveSite } from "../graph/sites.js";
 import type {
   AccessTokenInfo,
   DecodedTokenClaims,
   SharePointSite,
   SharePointTarget,
-} from "./types.js";
+} from "../types.js";
 
 export interface SessionOptions {
   readonly fetchFn?: FetchLike;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { renderFolderTree, renderValidateResult, summarizeToken } from "../../src/format.js";
+import { renderFolderTree, renderValidateResult, summarizeToken } from "../../src/output/format.js";
 
 describe("summarizeToken", () => {
   it("joins app display + id + tenant + roles", () => {

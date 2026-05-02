@@ -2,8 +2,8 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, it } from "vitest";
 
-import type { FetchLike } from "../../src/graph.js";
-import { openSession } from "../../src/session.js";
+import type { FetchLike } from "../../src/graph/client.js";
+import { openSession } from "../../src/session/index.js";
 import type { SharePointTarget } from "../../src/types.js";
 
 function base64Url(value: string): string {

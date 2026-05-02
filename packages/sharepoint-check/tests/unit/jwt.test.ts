@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, it } from "vitest";
 
-import { decodeAccessToken } from "../../src/jwt.js";
+import { decodeAccessToken } from "../../src/auth/jwt.js";
 
 function base64Url(value: string): string {
   return Buffer.from(value, "utf8")

@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 
-import type { DecodedTokenClaims } from "./types.js";
+import type { DecodedTokenClaims } from "../types.js";
 
 interface RawClaims {
   readonly appid?: unknown;

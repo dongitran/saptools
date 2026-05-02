@@ -1,6 +1,7 @@
-import type { GraphClient } from "./graph.js";
-import { GraphHttpError } from "./graph.js";
-import type { DriveItemSummary, SharePointDrive } from "./types.js";
+import type { DriveItemSummary, SharePointDrive } from "../types.js";
+
+import type { GraphClient } from "./client.js";
+import { GraphHttpError } from "./client.js";
 
 interface RawDriveResponse {
   readonly id?: unknown;

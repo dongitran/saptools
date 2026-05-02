@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { GraphClient } from "../../src/graph.js";
-import { GraphHttpError } from "../../src/graph.js";
-import { parseSiteRef, resolveSite } from "../../src/sites.js";
+import type { GraphClient } from "../../src/graph/client.js";
+import { GraphHttpError } from "../../src/graph/client.js";
+import { parseSiteRef, resolveSite } from "../../src/graph/sites.js";
 
 describe("parseSiteRef", () => {
   it("parses host/sites/name", () => {

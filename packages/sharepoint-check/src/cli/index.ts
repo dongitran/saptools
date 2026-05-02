@@ -2,15 +2,15 @@ import process from "node:process";
 
 import { Command } from "commander";
 
-import type { ConfigOverrides } from "./config.js";
-import { resolveConfig } from "./config.js";
-import { listDrives } from "./drives.js";
-import { renderFolderTree, renderValidateResult, summarizeToken } from "./format.js";
-import { openSession } from "./session.js";
-import { walkFolderTree } from "./tree.js";
-import type { SharePointDrive, SharePointTarget } from "./types.js";
-import { validateLayout } from "./validate.js";
-import { runWriteTest } from "./write-test.js";
+import type { ConfigOverrides } from "../config/index.js";
+import { resolveConfig } from "../config/index.js";
+import { walkFolderTree } from "../diagnostics/tree.js";
+import { validateLayout } from "../diagnostics/validate.js";
+import { runWriteTest } from "../diagnostics/write-test.js";
+import { listDrives } from "../graph/drives.js";
+import { renderFolderTree, renderValidateResult, summarizeToken } from "../output/format.js";
+import { openSession } from "../session/index.js";
+import type { SharePointDrive, SharePointTarget } from "../types.js";
 
 interface CommonFlags extends ConfigOverrides {
   readonly json?: boolean;

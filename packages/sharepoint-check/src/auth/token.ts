@@ -1,8 +1,8 @@
 import process from "node:process";
 
-import type { FetchLike } from "./graph.js";
-import type { AccessTokenInfo, SharePointCredentials } from "./types.js";
-import { DEFAULT_AUTH_BASE, ENV_AUTH_BASE } from "./types.js";
+import type { FetchLike } from "../graph/client.js";
+import type { AccessTokenInfo, SharePointCredentials } from "../types.js";
+import { DEFAULT_AUTH_BASE, ENV_AUTH_BASE } from "../types.js";
 
 export interface AcquireTokenOptions {
   readonly authBase?: string;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveConfig } from "../../src/config.js";
+import { resolveConfig } from "../../src/config/index.js";
 
 function env(
   values: Readonly<Record<string, string | undefined>>,

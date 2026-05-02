@@ -1,6 +1,6 @@
 {
   "name": "@saptools/sharepoint-check",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Diagnose Microsoft SharePoint access via Microsoft Graph: verify app-only auth, list drives, walk folder trees, validate layout, and dry-run write permissions",
   "type": "module",
   "publishConfig": {

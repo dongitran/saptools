@@ -1,4 +1,4 @@
-import type { DecodedTokenClaims, FolderTreeNode, ValidateResult } from "./types.js";
+import type { DecodedTokenClaims, FolderTreeNode, ValidateResult } from "../types.js";
 
 function formatBytes(size: number): string {
   if (!Number.isFinite(size) || size <= 0) {

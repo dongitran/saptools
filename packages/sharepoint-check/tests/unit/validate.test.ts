@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { GraphHttpError } from "../../src/graph.js";
-import type { GraphClient } from "../../src/graph.js";
-import { validateLayout } from "../../src/validate.js";
+import { validateLayout } from "../../src/diagnostics/validate.js";
+import { GraphHttpError } from "../../src/graph/client.js";
+import type { GraphClient } from "../../src/graph/client.js";
 
 function client(mapping: Readonly<Record<string, unknown>>): GraphClient {
   return {

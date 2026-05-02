@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { GraphHttpError } from "../../src/graph/client.js";
+import type { GraphClient, GraphRequestOptions } from "../../src/graph/client.js";
 import {
   createFolder,
   deleteItem,
@@ -7,9 +9,7 @@ import {
   listDriveChildren,
   listDriveRoot,
   listDrives,
-} from "../../src/drives.js";
-import { GraphHttpError } from "../../src/graph.js";
-import type { GraphClient, GraphRequestOptions } from "../../src/graph.js";
+} from "../../src/graph/drives.js";
 
 interface Call {
   readonly path: string;

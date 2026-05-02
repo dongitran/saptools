@@ -1,7 +1,7 @@
 import process from "node:process";
 
-import { parseSiteRef } from "./sites.js";
-import type { SharePointCredentials, SharePointSiteRef, SharePointTarget } from "./types.js";
+import { parseSiteRef } from "../graph/sites.js";
+import type { SharePointCredentials, SharePointSiteRef, SharePointTarget } from "../types.js";
 import {
   ENV_CLIENT_ID,
   ENV_CLIENT_SECRET,
@@ -9,7 +9,7 @@ import {
   ENV_SITE,
   ENV_SUBDIRS,
   ENV_TENANT,
-} from "./types.js";
+} from "../types.js";
 
 export interface ConfigOverrides {
   readonly tenant?: string | undefined;

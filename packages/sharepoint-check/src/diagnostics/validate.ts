@@ -1,6 +1,6 @@
-import { getDriveItemByPath } from "./drives.js";
-import type { GraphClient } from "./graph.js";
-import type { ValidateExpectation, ValidateResult, ValidateResultEntry } from "./types.js";
+import type { GraphClient } from "../graph/client.js";
+import { getDriveItemByPath } from "../graph/drives.js";
+import type { ValidateExpectation, ValidateResult, ValidateResultEntry } from "../types.js";
 
 function joinPath(parent: string, child: string): string {
   const normalizedParent = parent.replace(/^\/+|\/+$/g, "");

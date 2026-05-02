@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { GraphHttpError } from "../../src/graph.js";
-import type { GraphClient, GraphRequestOptions } from "../../src/graph.js";
-import { runWriteTest } from "../../src/write-test.js";
+import { runWriteTest } from "../../src/diagnostics/write-test.js";
+import { GraphHttpError } from "../../src/graph/client.js";
+import type { GraphClient, GraphRequestOptions } from "../../src/graph/client.js";
 
 interface Call {
   readonly path: string;

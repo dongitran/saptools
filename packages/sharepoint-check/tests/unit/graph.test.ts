@@ -2,8 +2,8 @@ import process from "node:process";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createGraphClient, GraphHttpError } from "../../src/graph.js";
-import type { FetchLike } from "../../src/graph.js";
+import { createGraphClient, GraphHttpError } from "../../src/graph/client.js";
+import type { FetchLike } from "../../src/graph/client.js";
 
 function jsonResponse(status: number, body: unknown): Response {
   const text = typeof body === "string" ? body : JSON.stringify(body);

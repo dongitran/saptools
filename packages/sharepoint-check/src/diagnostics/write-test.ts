@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 
-import { createFolder, deleteItem } from "./drives.js";
-import type { GraphClient } from "./graph.js";
-import { GraphHttpError } from "./graph.js";
-import type { WriteTestResult } from "./types.js";
+import type { GraphClient } from "../graph/client.js";
+import { GraphHttpError } from "../graph/client.js";
+import { createFolder, deleteItem } from "../graph/drives.js";
+import type { WriteTestResult } from "../types.js";
 
 export interface WriteTestOptions {
   readonly driveId: string;

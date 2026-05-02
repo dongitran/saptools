@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { GraphClient, GraphRequestOptions } from "../../src/graph.js";
-import { walkFolderTree } from "../../src/tree.js";
+import { walkFolderTree } from "../../src/diagnostics/tree.js";
+import type { GraphClient, GraphRequestOptions } from "../../src/graph/client.js";
 
 interface Node {
   readonly name: string;
