@@ -151,7 +151,7 @@ function runCli(
   });
 }
 
-test("use → run: writes context, invokes bru with token", async () => {
+test("User can set a default context and run with an injected token", async () => {
   const ctx = await makeFixture();
   try {
     const useResult = await runCli(["use", "ap10/demo-org/dev-space/my-app"], ctx);
@@ -185,7 +185,7 @@ test("use → run: writes context, invokes bru with token", async () => {
   }
 });
 
-test("run with shorthand path resolves to fixture env", async () => {
+test("User can run with an explicit shorthand path", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx);
@@ -199,7 +199,33 @@ test("run with shorthand path resolves to fixture env", async () => {
   }
 });
 
-test("sync is not a Bruno command", async () => {
+test("User sees a clear error when no target or default context exists", async () => {
+  const ctx = await makeFixture();
+  try {
+    const result = await runCli(["run", "--env", "dev"], ctx);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("No target specified and no default context is set");
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("User sees a clear error when the requested environment is missing", async () => {
+  const ctx = await makeFixture();
+  try {
+    const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "missing"], ctx);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Environment file not found");
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("User sees sync rejected as an unknown Bruno command", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["sync"], ctx);
@@ -211,7 +237,7 @@ test("sync is not a Bruno command", async () => {
   }
 });
 
-test("run accepts --collection outside the collection cwd", async () => {
+test("User can run from outside the collection with --collection", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["--collection", ctx.root, "run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
@@ -227,7 +253,26 @@ test("run accepts --collection outside the collection cwd", async () => {
   }
 });
 
-test("run accepts SAPTOOLS_BRUNO_COLLECTION outside the collection cwd", async () => {
+test("User can let --collection override the legacy root environment", async () => {
+  const ctx = await makeFixture();
+  const otherRoot = await mkdtemp(join(tmpdir(), "saptools-bruno-other-root-"));
+  try {
+    const result = await runCli(["--collection", ctx.root, "run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
+      cwd: ctx.home,
+      legacyRootEnv: otherRoot,
+    });
+    expect(result.code).toBe(0);
+    const log = await readFile(ctx.bruLog, "utf8");
+    expect(log.length).toBeGreaterThan(0);
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+    await rm(otherRoot, { recursive: true, force: true });
+  }
+});
+
+test("User can run from outside the collection with SAPTOOLS_BRUNO_COLLECTION", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
@@ -244,7 +289,7 @@ test("run accepts SAPTOOLS_BRUNO_COLLECTION outside the collection cwd", async (
   }
 });
 
-test("run still accepts legacy SAPTOOLS_BRUNO_ROOT outside the collection cwd", async () => {
+test("User can run from outside the collection with the legacy root environment", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["run", "ap10/demo-org/dev-space/my-app", "--env", "dev"], ctx, {}, {
@@ -261,7 +306,7 @@ test("run still accepts legacy SAPTOOLS_BRUNO_ROOT outside the collection cwd", 
   }
 });
 
-test("use rejects an unknown region", async () => {
+test("User sees unknown regions rejected when setting context", async () => {
   const ctx = await makeFixture();
   try {
     const result = await runCli(["use", "zz99/a/b/c"], ctx);
@@ -274,7 +319,7 @@ test("use rejects an unknown region", async () => {
   }
 });
 
-test("run fails clearly when a pre-cached token does not exist (would reach out to live OAuth)", async () => {
+test("User sees a clear error when no pre-cached token exists", async () => {
   const ctx = await makeFixture();
   await rm(join(ctx.home, ".saptools", "xsuaa-data.json"));
   try {
@@ -292,7 +337,7 @@ test("run fails clearly when a pre-cached token does not exist (would reach out 
   }
 });
 
-test("use --no-verify accepts a known region without consulting the CF structure", async () => {
+test("User can skip structure verification for a known region", async () => {
   const ctx = await makeFixture();
   await rm(join(ctx.home, ".saptools", "cf-structure.json"));
   try {
@@ -315,7 +360,7 @@ test("use --no-verify accepts a known region without consulting the CF structure
   }
 });
 
-test("use points users to cf-sync when the CF cache is missing", async () => {
+test("User sees cf-sync guidance when the CF cache is missing", async () => {
   const ctx = await makeFixture();
   await rm(join(ctx.home, ".saptools", "cf-structure.json"));
   try {
@@ -329,7 +374,7 @@ test("use points users to cf-sync when the CF cache is missing", async () => {
   }
 });
 
-test("run with a specific .bru file shorthand passes the request path to bru", async () => {
+test("User can run a specific request file shorthand", async () => {
   const ctx = await makeFixture();
   const requestsDir = join(ctx.appDir, "requests");
   await mkdir(requestsDir, { recursive: true });
@@ -365,7 +410,34 @@ test("run with a specific .bru file shorthand passes the request path to bru", a
   }
 });
 
-test("run falls back to the bundled @usebruno/cli when bru is not on PATH", async () => {
+test("User can omit the request file extension in shorthand", async () => {
+  const ctx = await makeFixture();
+  const requestsDir = join(ctx.appDir, "requests");
+  await mkdir(requestsDir, { recursive: true });
+  await writeFile(
+    join(requestsDir, "status.bru"),
+    ["meta {", "  name: status", "  type: http", "  seq: 1", "}", "", "get {", "  url: {{baseUrl}}/status", "}", ""].join("\n"),
+    "utf8",
+  );
+
+  try {
+    const result = await runCli(
+      ["run", "ap10/demo-org/dev-space/my-app/requests/status", "--env", "dev"],
+      ctx,
+    );
+    expect(result.code).toBe(0);
+    const log = await readFile(ctx.bruLog, "utf8");
+    const firstLine = log.split("\n").find((line) => line.length > 0);
+    const invocation = JSON.parse(firstLine ?? "{}") as { readonly argv: readonly string[] };
+    expect(invocation.argv[1]).toBe(join("requests", "status.bru"));
+  } finally {
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.bruDir, { recursive: true, force: true });
+    await rm(ctx.root, { recursive: true, force: true });
+  }
+});
+
+test("User can run without PATH bru by using the bundled CLI fallback", async () => {
   const ctx = await makeFixture();
   await rm(ctx.bruDir, { recursive: true, force: true });
   const emptyPathDir = await mkdtemp(join(tmpdir(), "saptools-bruno-empty-path-"));
@@ -407,10 +479,10 @@ test("run falls back to the bundled @usebruno/cli when bru is not on PATH", asyn
   }
 });
 
-test("setup-app can narrow a large app list through the searchable app prompt", async () => {
+test("User can narrow a large app list through the searchable app prompt", async () => {
   const root = await mkdtemp(join(tmpdir(), "saptools-bruno-setup-root-"));
   const apps = Array.from({ length: 50 }, (_, index) => ({ name: `service-${index.toString().padStart(2, "0")}` }));
-  apps.push({ name: "config-main" }, { name: "config-system" }, { name: "config-admin" });
+  apps.push({ name: "alpha-main" }, { name: "alpha-system" }, { name: "alpha-admin" });
 
   const region: RegionNode = {
     key: "ap10",
@@ -466,9 +538,9 @@ test("setup-app can narrow a large app list through the searchable app prompt", 
         selectSpace: async () => "app",
         selectApp: async (choices) => await promptForAppSelection(choices, {
           searchPrompt: async (config) => {
-            const filtered = await config.source("config-ad", { signal: new AbortController().signal });
-            expect(filtered).toEqual([{ value: "config-admin", name: "config-admin" }]);
-            return "config-admin";
+            const filtered = await config.source("alpha-ad", { signal: new AbortController().signal });
+            expect(filtered).toEqual([{ value: "alpha-admin", name: "alpha-admin" }]);
+            return "alpha-admin";
           },
         }),
         confirmCreate: async () => true,
@@ -477,8 +549,8 @@ test("setup-app can narrow a large app list through the searchable app prompt", 
     });
 
     expect(result.created).toBe(true);
-    expect(result.ref.app).toBe("config-admin");
-    expect(result.appPath).toContain("config-admin");
+    expect(result.ref.app).toBe("alpha-admin");
+    expect(result.appPath).toContain("alpha-admin");
     expect(result.environments).toHaveLength(2);
     await expect(readFile(join(result.appPath, "bruno.json"), "utf8")).resolves.toContain('"type": "collection"');
     await expect(readFile(join(root, "bruno.json"), "utf8")).rejects.toBeDefined();

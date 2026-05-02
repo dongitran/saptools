@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,6 +59,35 @@ describe("run", () => {
     expect(plan.bruArgs[1]).toBe(join("requests", "ping.bru"));
   });
 
+  it("resolves a request-file shorthand without the .bru extension", async () => {
+    const plan = await buildRunPlan({
+      root,
+      target: "ap10/o/dev/app1/requests/ping",
+      environment: "local",
+      getTokenCached: async () => "t0k3n",
+    });
+    expect(plan.filePath.endsWith("ping.bru")).toBe(true);
+    expect(plan.bruArgs[1]).toBe(join("requests", "ping.bru"));
+  });
+
+  it("appends extra arguments after token injection", async () => {
+    const plan = await buildRunPlan({
+      root,
+      target: "ap10/o/dev/app1",
+      getTokenCached: async () => "t0k3n",
+      extraArgs: ["--reporter-json", "results.json"],
+    });
+    expect(plan.bruArgs).toEqual([
+      "run",
+      "--env",
+      "local",
+      "--env-var",
+      "accessToken=t0k3n",
+      "--reporter-json",
+      "results.json",
+    ]);
+  });
+
   it("runBruno calls spawnBru with plan args", async () => {
     const spawnBru = vi.fn(async (_args: readonly string[]) => ({ code: 0, stdout: "ok", stderr: "" }));
     const result = await runBruno({
@@ -70,6 +99,22 @@ describe("run", () => {
     expect(spawnBru).toHaveBeenCalledOnce();
     expect(result.code).toBe(0);
     expect(result.bruArgs).toEqual(["run", "--env", "local", "--env-var", "accessToken=t0k3n"]);
+  });
+
+  it("passes the fetched token through the spawned process environment", async () => {
+    const spawnBru = vi.fn(async (_args: readonly string[], env: NodeJS.ProcessEnv) => {
+      expect(env["SAPTOOLS_ACCESS_TOKEN"]).toBe("process-token");
+      return { code: 0, stdout: "ok", stderr: "" };
+    });
+
+    await runBruno({
+      root,
+      target: "ap10/o/dev/app1",
+      getTokenCached: async () => "process-token",
+      spawnBru,
+    });
+
+    expect(spawnBru).toHaveBeenCalledOnce();
   });
 
   it("persists the fetched access token into the selected env file", async () => {
@@ -133,6 +178,34 @@ describe("run", () => {
     });
   });
 
+  it("supports bundled Bruno packages with a string bin field", async () => {
+    const runtime = await resolveBruRuntime(
+      { PATH: "" },
+      {
+        findOnPath: async () => undefined,
+        resolvePackageJsonPath: () => "/opt/bruno/node_modules/@usebruno/cli/package.json",
+        readTextFile: async () => JSON.stringify({ bin: "bin/bru.js" }),
+      },
+    );
+    expect(runtime).toEqual({
+      command: process.execPath,
+      argsPrefix: ["/opt/bruno/node_modules/@usebruno/cli/bin/bru.js"],
+    });
+  });
+
+  it("finds bru from the provided PATH entries", async () => {
+    const binDir = await mkdtemp(join(tmpdir(), "saptools-bruno-path-"));
+    try {
+      const bruPath = join(binDir, "bru");
+      await writeFile(bruPath, "#!/usr/bin/env node\n", "utf8");
+      await chmod(bruPath, 0o755);
+      const runtime = await resolveBruRuntime({ PATH: binDir });
+      expect(runtime).toEqual({ command: bruPath, argsPrefix: [] });
+    } finally {
+      await rm(binDir, { recursive: true, force: true });
+    }
+  });
+
   it("throws a helpful error when no bru runtime can be resolved", async () => {
     await expect(
       resolveBruRuntime(
@@ -142,6 +215,32 @@ describe("run", () => {
           resolvePackageJsonPath: () => {
             throw new Error("missing");
           },
+        },
+      ),
+    ).rejects.toThrow(/Unable to find Bruno CLI/);
+  });
+
+  it("throws the same runtime error when bundled package metadata has no bru bin", async () => {
+    await expect(
+      resolveBruRuntime(
+        { PATH: "" },
+        {
+          findOnPath: async () => undefined,
+          resolvePackageJsonPath: () => "/opt/bruno/node_modules/@usebruno/cli/package.json",
+          readTextFile: async () => JSON.stringify({ bin: { other: "bin/other.js" } }),
+        },
+      ),
+    ).rejects.toThrow(/Unable to find Bruno CLI/);
+  });
+
+  it("throws the same runtime error when bundled package metadata is invalid", async () => {
+    await expect(
+      resolveBruRuntime(
+        { PATH: "" },
+        {
+          findOnPath: async () => undefined,
+          resolvePackageJsonPath: () => "/opt/bruno/node_modules/@usebruno/cli/package.json",
+          readTextFile: async () => "{",
         },
       ),
     ).rejects.toThrow(/Unable to find Bruno CLI/);
@@ -169,6 +268,21 @@ describe("run", () => {
     expect(plan.bruArgs[1]).toContain("ping.bru");
   });
 
+  it("resolves a direct relative path from the current working directory", async () => {
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(root);
+      const plan = await buildRunPlan({
+        root,
+        target: join("region__ap10", "org__o", "space__dev", "app1"),
+        getTokenCached: async () => "t",
+      });
+      expect(plan.cwd.endsWith(join("region__ap10", "org__o", "space__dev", "app1"))).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("throws when asked for a missing environment", async () => {
     await expect(
       buildRunPlan({
@@ -180,6 +294,17 @@ describe("run", () => {
     ).rejects.toThrow(/Environment file not found/);
   });
 
+  it("throws when an app folder has no environment files", async () => {
+    await mkdir(join(root, "region__ap10", "org__o", "space__dev", "empty-app"), { recursive: true });
+    await expect(
+      buildRunPlan({
+        root,
+        target: "ap10/o/dev/empty-app",
+        getTokenCached: async () => "t",
+      }),
+    ).rejects.toThrow(/No environment files found/);
+  });
+
   it("throws when shorthand points at a missing file", async () => {
     await expect(
       buildRunPlan({
@@ -188,6 +313,18 @@ describe("run", () => {
         getTokenCached: async () => "t",
       }),
     ).rejects.toThrow(/File not found/);
+  });
+
+  it("throws when a direct file is not inside a CF-structured collection", async () => {
+    const looseFile = join(root, "loose.bru");
+    await writeFile(looseFile, "meta {\n  name: Loose\n}\n", "utf8");
+    await expect(
+      buildRunPlan({
+        root,
+        target: looseFile,
+        getTokenCached: async () => "t",
+      }),
+    ).rejects.toThrow(/not inside a CF-structured bruno collection/);
   });
 
   it("throws when env file lacks cf meta", async () => {

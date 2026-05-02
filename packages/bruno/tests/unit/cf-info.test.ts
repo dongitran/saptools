@@ -100,6 +100,29 @@ describe("getStructureSnapshot", () => {
     expect(snap.message).toContain("partial data");
   });
 
+  it("does not mark completed runtime data as stale", async () => {
+    const snap = await getStructureSnapshot(
+      makeDeps({
+        readStructureView: async () => ({
+          source: "runtime",
+          structure,
+          metadata: {
+            syncId: "x",
+            status: "completed",
+            startedAt: "2026-04-18T00:00:00Z",
+            updatedAt: "2026-04-18T00:00:05Z",
+            requestedRegionKeys: ["ap10"],
+            completedRegionKeys: ["ap10"],
+            pendingRegionKeys: [],
+            finishedAt: "2026-04-18T00:00:06Z",
+          },
+        }),
+      }),
+    );
+    expect(snap.stale).toBe(false);
+    expect(snap.message).toBeUndefined();
+  });
+
   it("returns stable data as not-stale", async () => {
     const snap = await getStructureSnapshot(makeDeps());
     expect(snap.source).toBe("stable");
@@ -111,6 +134,25 @@ describe("listRegionsWithContent", () => {
   it("returns regions with orgs only", async () => {
     const regions = await listRegionsWithContent(makeDeps());
     expect(regions).toEqual([{ key: "ap10", label: "Singapore", orgCount: 1 }]);
+  });
+
+  it("filters inaccessible regions and regions without orgs", async () => {
+    const regions = await listRegionsWithContent(
+      makeDeps({
+        readStructureView: async () => ({
+          source: "stable",
+          structure: {
+            syncedAt: "2026-04-18T00:00:00Z",
+            regions: [
+              { ...regionNode, accessible: false },
+              { ...regionNode, key: "eu10", orgs: [] },
+            ],
+          },
+          metadata: undefined,
+        }),
+      }),
+    );
+    expect(regions).toEqual([]);
   });
 
   it("returns empty when no structure", async () => {
@@ -138,6 +180,11 @@ describe("getRegion", () => {
     const region = await getRegion("ap10", makeDeps());
     expect(region?.key).toBe("ap10");
   });
+
+  it("returns undefined when the region view is missing", async () => {
+    const region = await getRegion("ap10", makeDeps({ readRegionView: async () => undefined }));
+    expect(region).toBeUndefined();
+  });
 });
 
 describe("resolveRef", () => {
@@ -152,6 +199,12 @@ describe("resolveRef", () => {
   it("returns undefined when any level missing", async () => {
     expect(
       await resolveRef({ region: "ap10", org: "ghost", space: "dev", app: "api" }, makeDeps()),
+    ).toBeUndefined();
+    expect(
+      await resolveRef({ region: "ap10", org: "demo", space: "ghost", app: "api" }, makeDeps()),
+    ).toBeUndefined();
+    expect(
+      await resolveRef({ region: "ap10", org: "demo", space: "dev", app: "ghost" }, makeDeps()),
     ).toBeUndefined();
   });
 });

@@ -6,10 +6,10 @@ import {
 } from "../../src/app-search-prompt.js";
 
 const appChoices = [
-  { value: "config-main", name: "config-main" },
-  { value: "config-system", name: "config-system" },
-  { value: "config-admin", name: "config-admin" },
-  { value: "main-config-reports", name: "main-config-reports" },
+  { value: "alpha-main", name: "alpha-main" },
+  { value: "alpha-system", name: "alpha-system" },
+  { value: "alpha-admin", name: "alpha-admin" },
+  { value: "reports-alpha", name: "reports-alpha" },
 ] as const;
 
 describe("app-search-prompt", () => {
@@ -20,16 +20,30 @@ describe("app-search-prompt", () => {
 
   it("filters apps case-insensitively", () => {
     const result = appSearchPromptTestHelpers.buildAppSearchChoices(appChoices, "AdMiN");
-    expect(result).toEqual([{ value: "config-admin", name: "config-admin" }]);
+    expect(result).toEqual([{ value: "alpha-admin", name: "alpha-admin" }]);
   });
 
   it("ranks exact and prefix matches ahead of broad substring matches", () => {
-    const result = appSearchPromptTestHelpers.buildAppSearchChoices(appChoices, "config");
+    const result = appSearchPromptTestHelpers.buildAppSearchChoices(appChoices, "alpha");
     expect(result).toEqual([
-      { value: "config-main", name: "config-main" },
-      { value: "config-system", name: "config-system" },
-      { value: "config-admin", name: "config-admin" },
-      { value: "main-config-reports", name: "main-config-reports" },
+      { value: "alpha-main", name: "alpha-main" },
+      { value: "alpha-system", name: "alpha-system" },
+      { value: "alpha-admin", name: "alpha-admin" },
+      { value: "reports-alpha", name: "reports-alpha" },
+    ]);
+  });
+
+  it("ranks exact matches before prefix matches", () => {
+    const choices = [
+      { value: "alpha", name: "alpha" },
+      { value: "alpha-main", name: "alpha-main" },
+      { value: "beta-alpha", name: "beta-alpha" },
+    ] as const;
+
+    expect(appSearchPromptTestHelpers.buildAppSearchChoices(choices, "alpha")).toEqual([
+      { value: "alpha", name: "alpha" },
+      { value: "alpha-main", name: "alpha-main" },
+      { value: "beta-alpha", name: "beta-alpha" },
     ]);
   });
 
@@ -52,14 +66,16 @@ describe("app-search-prompt", () => {
     }) => {
       expect(config.message).toBe("Select app");
       expect(config.pageSize).toBe(12);
-      const result = await config.source("config-ad", { signal: new AbortController().signal });
-      expect(result).toEqual([{ value: "config-admin", name: "config-admin" }]);
-      return "config-admin";
+      const result = await config.source("alpha-ad", { signal: new AbortController().signal });
+      expect(result).toEqual([{ value: "alpha-admin", name: "alpha-admin" }]);
+      expect(config.validate?.("__saptools_no_matching_app__")).toBe("Select a real app.");
+      expect(config.validate?.("alpha-admin")).toBe(true);
+      return "alpha-admin";
     });
 
     const result = await promptForAppSelection(appChoices, { searchPrompt });
 
-    expect(result).toBe("config-admin");
+    expect(result).toBe("alpha-admin");
     expect(searchPrompt).toHaveBeenCalledOnce();
   });
 });

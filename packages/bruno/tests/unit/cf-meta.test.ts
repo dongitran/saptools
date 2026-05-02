@@ -86,6 +86,16 @@ describe("cf-meta file helpers", () => {
     expect(await readCfMetaFromFile(path)).toEqual({ region: "ap10", org: "o", space: "s", app: "a" });
   });
 
+  it("treats whitespace-only metadata values in files as missing", async () => {
+    const path = join(tmp, "env-whitespace.bru");
+    await writeFile(
+      path,
+      "vars {\n  __cf_region:   \n  __cf_org: o\n  __cf_space: s\n  __cf_app: a\n}\n",
+      "utf8",
+    );
+    expect(await readCfMetaFromFile(path)).toBeUndefined();
+  });
+
   it("writes meta to a file and is idempotent", async () => {
     const path = join(tmp, "env2.bru");
     await writeFile(path, "vars {\n  baseUrl: https://x\n}\n", "utf8");
@@ -101,5 +111,17 @@ describe("cf-meta file helpers", () => {
       { region: "ap10", org: "o", space: "s", app: "a" },
     );
     expect(second).toBe(false);
+  });
+
+  it("writes optional baseUrl when provided", async () => {
+    const path = join(tmp, "env-base-url.bru");
+    await writeFile(path, "vars {\n}\n", "utf8");
+    await writeCfMetaToFile(
+      path,
+      { region: "ap10", org: "o", space: "s", app: "a" },
+      "https://example.com/api",
+    );
+    const raw = await readFile(path, "utf8");
+    expect(raw).toContain("baseUrl: https://example.com/api");
   });
 });

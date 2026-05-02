@@ -16,6 +16,13 @@ describe("listBlocks", () => {
     expect(blocks[0]?.open).toBe("{");
   });
 
+  it("finds indented headers", () => {
+    const raw = "  vars {\n    a: 1\n  }\n";
+    const blocks = listBlocks(raw);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.header).toBe("vars");
+  });
+
   it("finds bracket list blocks", () => {
     const raw = "vars:secret [\n  accessToken\n  other\n]\n";
     const blocks = listBlocks(raw);
@@ -42,6 +49,12 @@ describe("listBlocks", () => {
     const blocks = listBlocks(raw);
     expect(blocks).toHaveLength(0);
   });
+
+  it("continues after an unterminated earlier block", () => {
+    const raw = "vars {\n  a: 1\n\nmeta {\n  name: Alpha\n}\n";
+    const blocks = listBlocks(raw);
+    expect(blocks.map((block) => block.header)).toEqual(["meta"]);
+  });
 });
 
 describe("parseKeyValueBody", () => {
@@ -58,6 +71,11 @@ describe("parseKeyValueBody", () => {
   it("allows colon in values", () => {
     const entries = parseKeyValueBody("  url: https://example.com:443/x\n");
     expect(entries.get("url")).toBe("https://example.com:443/x");
+  });
+
+  it("uses the last value when duplicate keys appear", () => {
+    const entries = parseKeyValueBody("  a: old\n  a: new\n");
+    expect(entries.get("a")).toBe("new");
   });
 });
 

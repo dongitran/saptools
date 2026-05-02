@@ -11,6 +11,7 @@ import type {
 } from "@saptools/cf-sync";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { parseBruEnvFile } from "../../src/bru-parser.js";
 import type { CfInfoDeps } from "../../src/cf-info.js";
 import { COMMON_ENVIRONMENTS, setupApp } from "../../src/setup-app.js";
 
@@ -291,6 +292,25 @@ describe("setupApp", () => {
     expect(result.environments).toHaveLength(1);
   });
 
+  it("trims environment names before validation and creation", async () => {
+    const result = await setupApp({
+      root,
+      deps: makeDeps(),
+      prompts: {
+        selectRegion: async () => "ap10",
+        selectOrg: async () => "demo",
+        selectSpace: async () => "dev",
+        selectApp: async () => "api",
+        confirmCreate: async () => true,
+        selectEnvironments: async () => [" dev ", "dev", " sandbox "],
+      },
+    });
+    expect(result.created).toBe(true);
+    expect(result.environments).toHaveLength(2);
+    expect(result.environments.some((path) => path.endsWith("dev.bru"))).toBe(true);
+    expect(result.environments.some((path) => path.endsWith("sandbox.bru"))).toBe(true);
+  });
+
   it("rejects an unsafe env name from the prompt", async () => {
     await expect(
       setupApp({
@@ -308,6 +328,36 @@ describe("setupApp", () => {
     ).rejects.toThrow(/Invalid environment name/);
   });
 
+  it("patches missing cf metadata into an existing env file", async () => {
+    const envDir = join(root, "region__ap10", "org__demo", "space__dev", "api", "environments");
+    await mkdir(envDir, { recursive: true });
+    const envFile = join(envDir, "local.bru");
+    await writeFile(
+      envFile,
+      "vars {\n  baseUrl: https://example.com\n}\n",
+      "utf8",
+    );
+
+    const result = await setupApp({
+      root,
+      deps: makeDeps(),
+      prompts: {
+        selectRegion: async () => "ap10",
+        selectOrg: async () => "demo",
+        selectSpace: async () => "dev",
+        selectApp: async () => "api",
+        confirmCreate: async () => true,
+        selectEnvironments: async () => ["local"],
+      },
+    });
+
+    expect(result.created).toBe(true);
+    const parsed = parseBruEnvFile(await readFile(envFile, "utf8"));
+    expect(parsed.vars.entries.get("baseUrl")).toBe("https://example.com");
+    expect(parsed.vars.entries.get("__cf_region")).toBe("ap10");
+    expect(parsed.vars.entries.get("__cf_org")).toBe("demo");
+  });
+
   it("throws when no regions cached", async () => {
     await expect(
       setupApp({
@@ -323,5 +373,160 @@ describe("setupApp", () => {
         },
       }),
     ).rejects.toThrow(/cf-sync sync/);
+  });
+
+  it("throws when all cached regions are inaccessible or empty", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps({
+          readStructureView: async () => ({
+            source: "stable",
+            structure: {
+              syncedAt: "2026-04-18T00:00:00Z",
+              regions: [
+                { ...regionNode, accessible: false },
+                { ...regionNode, key: "eu10", orgs: [] },
+              ],
+            },
+            metadata: undefined,
+          }),
+        }),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "demo",
+          selectSpace: async () => "dev",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/No CF regions with orgs/);
+  });
+
+  it("throws when the chosen region is missing from the region cache", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps({ readRegionView: async () => undefined }),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "demo",
+          selectSpace: async () => "dev",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/Region ap10 is not cached/);
+  });
+
+  it("throws when a freshly read region has no orgs", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps({
+          readRegionView: async () => ({
+            source: "stable",
+            region: { ...regionNode, orgs: [] },
+            metadata: undefined,
+          }),
+        }),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "demo",
+          selectSpace: async () => "dev",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/has no accessible orgs/);
+  });
+
+  it("throws when the prompt returns an unknown org", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps(),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "unknown",
+          selectSpace: async () => "dev",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/Org unknown not found/);
+  });
+
+  it("throws when the selected org has no spaces", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps({
+          readRegionView: async () => ({
+            source: "stable",
+            region: {
+              ...regionNode,
+              orgs: [{ name: "demo", spaces: [] }],
+            },
+            metadata: undefined,
+          }),
+        }),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "demo",
+          selectSpace: async () => "dev",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/has no spaces/);
+  });
+
+  it("throws when the prompt returns an unknown space", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps(),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "demo",
+          selectSpace: async () => "unknown",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/Space unknown not found/);
+  });
+
+  it("throws when the selected space has no apps", async () => {
+    await expect(
+      setupApp({
+        root,
+        deps: makeDeps({
+          readRegionView: async () => ({
+            source: "stable",
+            region: {
+              ...regionNode,
+              orgs: [{ name: "demo", spaces: [{ name: "dev", apps: [] }] }],
+            },
+            metadata: undefined,
+          }),
+        }),
+        prompts: {
+          selectRegion: async () => "ap10",
+          selectOrg: async () => "demo",
+          selectSpace: async () => "dev",
+          selectApp: async () => "api",
+          confirmCreate: async () => true,
+          selectEnvironments: async () => ["local"],
+        },
+      }),
+    ).rejects.toThrow(/has no apps/);
   });
 });

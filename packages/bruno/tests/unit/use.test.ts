@@ -48,6 +48,12 @@ describe("parseContextShorthand", () => {
   it("rejects short input", () => {
     expect(parseContextShorthand("ap10/o")).toBeUndefined();
   });
+  it("rejects extra segments", () => {
+    expect(parseContextShorthand("ap10/o/s/a/extra")).toBeUndefined();
+  });
+  it("ignores empty segments", () => {
+    expect(parseContextShorthand("ap10/o//s/a")).toEqual({ region: "ap10", org: "o", space: "s", app: "a" });
+  });
 });
 
 describe("useContext", () => {
@@ -84,6 +90,15 @@ describe("useContext", () => {
       verify: false,
     });
     expect(ctx.org).toBe("ghost");
+  });
+
+  it("still rejects unknown region when verification is disabled", async () => {
+    await expect(
+      useContext({
+        shorthand: "zz99/ghost/s/a",
+        verify: false,
+      }),
+    ).rejects.toThrow(/Unknown region/);
   });
 
   it("rejects when ref not found in structure", async () => {

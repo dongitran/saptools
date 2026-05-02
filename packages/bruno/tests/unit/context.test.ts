@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,5 +33,11 @@ describe("bruno context", () => {
     const read = await readContext();
     expect(read?.app).toBe("a");
     expect(read?.region).toBe("ap10");
+  });
+
+  it("surfaces invalid context JSON", async () => {
+    await mkdir(join(fakeHome, ".saptools"), { recursive: true });
+    await writeFile(join(fakeHome, ".saptools", "bruno-context.json"), "{", "utf8");
+    await expect(readContext()).rejects.toThrow();
   });
 });

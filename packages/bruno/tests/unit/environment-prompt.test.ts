@@ -29,6 +29,31 @@ describe("promptForEnvironments", () => {
     expect(checkboxPrompt).toHaveBeenCalledOnce();
   });
 
+  it("preselects existing environments in the menu choices", async () => {
+    const checkboxPrompt = vi.fn(async (config: { readonly choices: readonly unknown[] }) => {
+      const existingChoice = config.choices.find(
+        (choice: unknown) => typeof choice === "object" && choice !== null && "value" in choice && choice.value === "dev",
+      );
+      expect(existingChoice).toMatchObject({
+        value: "dev",
+        checked: true,
+      });
+      return ["dev"];
+    });
+
+    const result = await promptForEnvironments(
+      {
+        common: ["local", "dev", "staging", "prod"],
+        existing: ["dev"],
+      },
+      {
+        checkboxPrompt,
+      },
+    );
+
+    expect(result).toEqual(["dev"]);
+  });
+
   it("adds a custom environment, then returns to the same menu with it selected", async () => {
     const checkboxPrompt = vi
       .fn()
@@ -91,5 +116,58 @@ describe("promptForEnvironments", () => {
       value: "__saptools_add_custom_environment__",
       name: "Add custom environment",
     });
+  });
+
+  it("keeps the user in the menu when custom input is blank", async () => {
+    const checkboxPrompt = vi
+      .fn()
+      .mockImplementationOnce(async () => ["__saptools_add_custom_environment__"])
+      .mockImplementationOnce(async () => ["local"]);
+    const inputPrompt = vi.fn(async () => "   ");
+
+    const result = await promptForEnvironments(
+      {
+        common: ["local", "dev", "staging", "prod"],
+        existing: [],
+      },
+      {
+        checkboxPrompt,
+        inputPrompt,
+      },
+    );
+
+    expect(result).toEqual(["local"]);
+    expect(checkboxPrompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not duplicate an existing custom name", async () => {
+    const checkboxPrompt = vi
+      .fn()
+      .mockImplementationOnce(async () => ["__saptools_add_custom_environment__"])
+      .mockImplementationOnce(async () => ["sandbox", "__saptools_add_custom_environment__"])
+      .mockImplementationOnce(async () => ["sandbox"]);
+    const inputPrompt = vi.fn(async () => "sandbox");
+
+    const result = await promptForEnvironments(
+      {
+        common: ["local", "dev", "staging", "prod"],
+        existing: [],
+      },
+      {
+        checkboxPrompt,
+        inputPrompt,
+      },
+    );
+
+    const thirdCall = checkboxPrompt.mock.calls[2]?.[0];
+    const sandboxChoices = thirdCall?.choices.filter(
+      (choice: unknown) => typeof choice === "object" && choice !== null && "value" in choice && choice.value === "sandbox",
+    );
+    expect(result).toEqual(["sandbox"]);
+    expect(sandboxChoices).toHaveLength(1);
+  });
+
+  it("returns a validation message for unsafe custom environment names", () => {
+    expect(environmentPromptTestHelpers.validateCustomEnvironmentName("bad/name")).toMatch(/Invalid environment name/);
   });
 });
