@@ -62,6 +62,7 @@ type DbSyncHistoryDetails = Omit<
 >;
 
 let activeDbSyncPromise: Promise<DbSyncResult> | undefined;
+const APP_ENV_READ_CONCURRENCY = 4;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -259,6 +260,28 @@ async function collectAppEntry(
   }
 }
 
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const item = items[nextIndex];
+        nextIndex += 1;
+        if (item === undefined) {
+          return;
+        }
+        await work(item);
+      }
+    }),
+  );
+}
+
 async function collectSpaceTargets(
   orgName: string,
   spaceName: string,
@@ -274,9 +297,9 @@ async function collectSpaceTargets(
     return;
   }
 
-  for (const target of targets) {
+  await runWithConcurrency(targets, APP_ENV_READ_CONCURRENCY, async (target) => {
     await collectAppEntry(target, cfContext, requestedTargets, ctx);
-  }
+  });
 }
 
 async function collectOrgTargets(

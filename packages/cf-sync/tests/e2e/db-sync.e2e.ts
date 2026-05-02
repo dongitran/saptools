@@ -103,6 +103,33 @@ function createWorkerScenario(): Scenario {
   };
 }
 
+function createConcurrentScenario(): Scenario {
+  return {
+    regions: [
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "org-alpha",
+            spaces: [
+              {
+                name: "dev",
+                apps: [
+                  { name: "api-app", envDelayMs: 1_200 },
+                  { name: "job-app", envDelayMs: 1_200 },
+                  { name: "task-app", envDelayMs: 1_200 },
+                  { name: "web-app", envDelayMs: 1_200 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createAmbiguousScenario(): Scenario {
   return {
     regions: [
@@ -318,6 +345,54 @@ test.describe("DB sync commands", () => {
         "db_sync_lock_released",
       ]),
     );
+  });
+
+  test("User can sync app environment reads concurrently within one space", async () => {
+    const paths = await prepareCase(ROOT_NAME, "db-sync-concurrent-space", createConcurrentScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const topologySync = spawn("node", [CLI_PATH, "sync", "--only", "ap10"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const topologyResult = await waitForExit(topologySync);
+    expect(topologyResult.code, `stderr was: ${topologyResult.stderr}`).toBe(0);
+
+    const startedAt = Date.now();
+    const worker = spawn("node", [CLI_PATH, "db-sync-worker", "--sync-id", "concurrent-sync"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const workerResult = await waitForExit(worker);
+    const elapsedMs = Date.now() - startedAt;
+    expect(workerResult.code, `stderr was: ${workerResult.stderr}`).toBe(0);
+    expect(elapsedMs).toBeLessThan(3_500);
+
+    interface DbRuntimeStatePayload {
+      readonly status: string;
+      readonly requestedTargets: readonly string[];
+      readonly completedTargets: readonly string[];
+      readonly snapshot: {
+        readonly entries: readonly {
+          readonly appName: string;
+          readonly bindings: readonly unknown[];
+        }[];
+      };
+    }
+
+    const completedState = await waitForDbRuntimeState<DbRuntimeStatePayload>(
+      paths.dbRuntimeStatePath,
+      (state) => state.status === "completed",
+    );
+    expect(completedState.requestedTargets).toHaveLength(4);
+    expect(completedState.completedTargets).toHaveLength(4);
+    expect(completedState.snapshot.entries).toHaveLength(4);
+    expect(completedState.snapshot.entries.map((entry) => entry.appName).sort()).toEqual([
+      "api-app",
+      "job-app",
+      "task-app",
+      "web-app",
+    ]);
   });
 
   test("User gets a clear error when DB sync is requested before any topology snapshot exists", async () => {

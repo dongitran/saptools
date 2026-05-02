@@ -59,10 +59,12 @@ describe("runDbSync", () => {
     const cfAuth = vi.fn().mockResolvedValue(void 0);
     const cfTargetOrg = vi.fn().mockResolvedValue(void 0);
     const cfTargetSpace = vi.fn().mockResolvedValue(void 0);
-    const cfEnv = vi
-      .fn()
-      .mockResolvedValueOnce(HANA_ENV_OUTPUT)
-      .mockResolvedValueOnce("VCAP_SERVICES: {}\nVCAP_APPLICATION: {}");
+    const cfEnv = vi.fn(async (appName: string): Promise<string> => {
+      if (appName === "orders-srv") {
+        return HANA_ENV_OUTPUT;
+      }
+      return "VCAP_SERVICES: {}\nVCAP_APPLICATION: {}";
+    });
 
     vi.doMock("../../src/cf/index.js", () => ({
       cfApi,
@@ -117,10 +119,12 @@ describe("runDbSync", () => {
   });
 
   it("records an app-level error and continues with the remaining apps", async () => {
-    const cfEnv = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("cf env failed: permission denied"))
-      .mockResolvedValueOnce(HANA_ENV_OUTPUT);
+    const cfEnv = vi.fn(async (appName: string): Promise<string> => {
+      if (appName === "broken-srv") {
+        throw new Error("cf env failed: permission denied");
+      }
+      return HANA_ENV_OUTPUT;
+    });
 
     vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
