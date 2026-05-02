@@ -16,6 +16,13 @@ describe("decodeJwtPayload", () => {
     expect(decodeJwtPayload(jwt)).toMatchObject({ exp: 123, foo: "bar" });
   });
 
+  it("decodes a two-segment token", () => {
+    const encode = (obj: unknown): string => Buffer.from(JSON.stringify(obj)).toString("base64url");
+    expect(decodeJwtPayload(`${encode({ alg: "none" })}.${encode({ sub: "subject" })}`)).toEqual({
+      sub: "subject",
+    });
+  });
+
   it("handles base64url without padding", () => {
     const payload = Buffer.from(JSON.stringify({ sub: "x" })).toString("base64url");
     const jwt = `header.${payload}.sig`;
@@ -28,6 +35,11 @@ describe("decodeJwtPayload", () => {
 
   it("throws for empty payload segment", () => {
     expect(() => decodeJwtPayload("h..s")).toThrow(/empty payload/);
+  });
+
+  it("throws for invalid JSON payloads", () => {
+    const payload = Buffer.from("not-json").toString("base64url");
+    expect(() => decodeJwtPayload(`header.${payload}.signature`)).toThrow(SyntaxError);
   });
 });
 
@@ -46,6 +58,22 @@ describe("computeExpiryIso", () => {
     const expected = new Date(now.getTime() + (3600 - TOKEN_EXPIRY_BUFFER_SECONDS) * 1000).toISOString();
     expect(iso).toBe(expected);
   });
+
+  it("falls back when exp is not numeric", () => {
+    const now = new Date("2026-04-18T00:00:00.000Z");
+    const jwt = makeJwt({ exp: "not-a-number" });
+    const iso = computeExpiryIso(jwt, now);
+    const expected = new Date(now.getTime() + (3600 - TOKEN_EXPIRY_BUFFER_SECONDS) * 1000).toISOString();
+    expect(iso).toBe(expected);
+  });
+
+  it("can return an already-expired ISO for near-expiry tokens", () => {
+    const now = new Date("2026-04-18T00:00:00.000Z");
+    const exp = Math.floor(now.getTime() / 1000) + 10;
+    const jwt = makeJwt({ exp });
+    const iso = computeExpiryIso(jwt, now);
+    expect(Date.parse(iso)).toBeLessThan(now.getTime());
+  });
 });
 
 describe("isExpired", () => {
@@ -56,6 +84,11 @@ describe("isExpired", () => {
   it("returns false for future timestamps", () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     expect(isExpired(future)).toBe(false);
+  });
+
+  it("returns true when expiry equals now", () => {
+    const now = new Date("2026-04-18T00:00:00.000Z");
+    expect(isExpired(now.toISOString(), now)).toBe(true);
   });
 
   it("returns true for invalid strings", () => {

@@ -15,6 +15,7 @@ const execFileAsync = promisify(execFile);
 
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
+const RUN_LIVE_E2E = process.env["CF_XSUAA_LIVE_E2E"] === "1";
 
 interface CfStructureFile {
   readonly regions: readonly {
@@ -142,44 +143,64 @@ async function discoverTarget(): Promise<TestTarget> {
   );
 }
 
-test("fetch-secret stores XSUAA credentials", async () => {
-  expect(existsSync(CLI_PATH), `CLI must be built at ${CLI_PATH}`).toBe(true);
-  expect(process.env["SAP_EMAIL"]).toBeTruthy();
-  expect(process.env["SAP_PASSWORD"]).toBeTruthy();
+test.describe("live CF workflow", () => {
+  test.skip(!RUN_LIVE_E2E, "Set CF_XSUAA_LIVE_E2E=1 to run live read-only Cloud Foundry checks");
 
-  const target = await discoverTarget();
+  test("fetch-secret stores XSUAA credentials", async () => {
+    expect(existsSync(CLI_PATH), `CLI must be built at ${CLI_PATH}`).toBe(true);
+    expect(process.env["SAP_EMAIL"]).toBeTruthy();
+    expect(process.env["SAP_PASSWORD"]).toBeTruthy();
 
-  const raw = await readFile(xsuaaDataPath(), "utf8");
-  const store = JSON.parse(raw) as XsuaaStore;
-  const entry = store.entries.find(
-    (e) => e.region === target.region && e.org === target.org && e.space === target.space && e.app === target.app,
-  );
-  expect(entry?.credentials.clientId).toBeTruthy();
-  expect(entry?.credentials.url).toContain("https");
-});
+    const target = await discoverTarget();
 
-test("get-token returns a non-empty JWT", async () => {
-  const target = await discoverTarget();
-  const { stdout } = await execFileAsync("node", [CLI_PATH, "get-token",
-    "--region", target.region,
-    "--org", target.org,
-    "--space", target.space,
-    "--app", target.app,
-  ], { env: process.env, timeout: 2 * 60 * 1000 });
-  const token = stdout.trim();
-  expect(token.split(".").length).toBe(3);
-});
+    const raw = await readFile(xsuaaDataPath(), "utf8");
+    const store = JSON.parse(raw) as XsuaaStore;
+    const entry = store.entries.find(
+      (e) => e.region === target.region && e.org === target.org && e.space === target.space && e.app === target.app,
+    );
+    expect(entry?.credentials.clientId).toBeTruthy();
+    expect(entry?.credentials.url).toContain("https");
+  });
 
-test("get-token-cached returns the same token on second call", async () => {
-  const target = await discoverTarget();
-  const args = [CLI_PATH, "get-token-cached",
-    "--region", target.region,
-    "--org", target.org,
-    "--space", target.space,
-    "--app", target.app,
-  ];
-  const first = await execFileAsync("node", args, { env: process.env, timeout: 2 * 60 * 1000 });
-  const second = await execFileAsync("node", args, { env: process.env, timeout: 2 * 60 * 1000 });
-  expect(first.stdout.trim().length).toBeGreaterThan(0);
-  expect(second.stdout.trim()).toBe(first.stdout.trim());
+  test("get-token returns a non-empty JWT", async () => {
+    const target = await discoverTarget();
+    const { stdout } = await execFileAsync(
+      "node",
+      [
+        CLI_PATH,
+        "get-token",
+        "--region",
+        target.region,
+        "--org",
+        target.org,
+        "--space",
+        target.space,
+        "--app",
+        target.app,
+      ],
+      { env: process.env, timeout: 2 * 60 * 1000 },
+    );
+    const token = stdout.trim();
+    expect(token.split(".").length).toBe(3);
+  });
+
+  test("get-token-cached returns the same token on second call", async () => {
+    const target = await discoverTarget();
+    const args = [
+      CLI_PATH,
+      "get-token-cached",
+      "--region",
+      target.region,
+      "--org",
+      target.org,
+      "--space",
+      target.space,
+      "--app",
+      target.app,
+    ];
+    const first = await execFileAsync("node", args, { env: process.env, timeout: 2 * 60 * 1000 });
+    const second = await execFileAsync("node", args, { env: process.env, timeout: 2 * 60 * 1000 });
+    expect(first.stdout.trim().length).toBeGreaterThan(0);
+    expect(second.stdout.trim()).toBe(first.stdout.trim());
+  });
 });
