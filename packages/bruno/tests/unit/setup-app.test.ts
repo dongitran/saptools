@@ -11,9 +11,9 @@ import type {
 } from "@saptools/cf-sync";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { parseBruEnvFile } from "../../src/bru-parser.js";
-import type { CfInfoDeps } from "../../src/cf-info.js";
-import { COMMON_ENVIRONMENTS, setupApp } from "../../src/setup-app.js";
+import { parseBruEnvFile } from "../../src/bruno/parser.js";
+import type { CfInfoDeps } from "../../src/cf/info.js";
+import { COMMON_ENVIRONMENTS, setupApp } from "../../src/commands/setup-app.js";
 
 const regionNode: RegionNode = {
   key: "ap10",

@@ -3,16 +3,16 @@ import { basename, join } from "node:path";
 
 import type { OrgNode, RegionKey, RegionNode, SpaceNode } from "@saptools/cf-sync";
 
-import type { CfInfoDeps } from "./cf-info.js";
-import { defaultCfInfoDeps, listRegionsWithContent } from "./cf-info.js";
-import { writeCfMetaToFile } from "./cf-meta.js";
+import type { CfInfoDeps } from "../cf/info.js";
+import { defaultCfInfoDeps, listRegionsWithContent } from "../cf/info.js";
+import { writeCfMetaToFile } from "../cf/meta.js";
 import {
   ENVIRONMENTS_DIR,
   orgFolderName,
   regionFolderName,
   spaceFolderName,
-} from "./paths.js";
-import type { CfAppRef } from "./types.js";
+} from "../collection/paths.js";
+import type { CfAppRef } from "../types.js";
 
 export interface EnvironmentSelection {
   readonly common: readonly string[];

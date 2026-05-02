@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseBruEnvFile } from "../../src/bru-parser.js";
-import { buildRunPlan, resolveBruRuntime, runBruno } from "../../src/run.js";
+import { parseBruEnvFile } from "../../src/bruno/parser.js";
+import { buildRunPlan, resolveBruRuntime, runBruno } from "../../src/commands/run.js";
 
 describe("run", () => {
   let root: string;

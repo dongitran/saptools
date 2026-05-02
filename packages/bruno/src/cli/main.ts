@@ -3,12 +3,12 @@ import process from "node:process";
 import { confirm, select } from "@inquirer/prompts";
 import { Command, Option } from "commander";
 
-import { promptForAppSelection } from "./app-search-prompt.js";
-import { readContext } from "./context.js";
-import { promptForEnvironments } from "./environment-prompt.js";
-import { runBruno } from "./run.js";
-import { setupApp } from "./setup-app.js";
-import { useContext } from "./use.js";
+import { runBruno } from "../commands/run.js";
+import { setupApp } from "../commands/setup-app.js";
+import { useContext } from "../commands/use.js";
+import { promptForAppSelection } from "../prompts/app-search.js";
+import { promptForEnvironments } from "../prompts/environment.js";
+import { readContext } from "../state/context.js";
 
 function resolveCollectionDir(explicitCollection: string | undefined, explicitRoot: string | undefined): string {
   if (explicitCollection) {

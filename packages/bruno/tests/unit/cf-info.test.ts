@@ -7,7 +7,7 @@ import type {
 } from "@saptools/cf-sync";
 import { describe, expect, it } from "vitest";
 
-import type { CfInfoDeps } from "../../src/cf-info.js";
+import type { CfInfoDeps } from "../../src/cf/info.js";
 import {
   findApp,
   findOrg,
@@ -17,7 +17,7 @@ import {
   isValidRegionKey,
   listRegionsWithContent,
   resolveRef,
-} from "../../src/cf-info.js";
+} from "../../src/cf/info.js";
 
 const regionNode: RegionNode = {
   key: "ap10",

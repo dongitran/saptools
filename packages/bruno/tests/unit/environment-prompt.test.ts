@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   environmentPromptTestHelpers,
   promptForEnvironments,
-} from "../../src/environment-prompt.js";
+} from "../../src/prompts/environment.js";
 
 describe("promptForEnvironments", () => {
   it("returns an inline warning when nothing is selected", () => {

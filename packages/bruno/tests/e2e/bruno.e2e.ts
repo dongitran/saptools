@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { RegionNode } from "@saptools/cf-sync";
 
-import { promptForAppSelection } from "../../src/app-search-prompt.js";
-import type { CfInfoDeps } from "../../src/cf-info.js";
-import { setupApp } from "../../src/setup-app.js";
+import type { CfInfoDeps } from "../../src/cf/info.js";
+import { setupApp } from "../../src/commands/setup-app.js";
+import { promptForAppSelection } from "../../src/prompts/app-search.js";
 
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");

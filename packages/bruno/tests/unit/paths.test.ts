@@ -5,7 +5,7 @@ import {
   parsePrefixedName,
   regionFolderName,
   spaceFolderName,
-} from "../../src/paths.js";
+} from "../../src/collection/paths.js";
 
 describe("folder name helpers", () => {
   it("builds region/org/space folder names", () => {

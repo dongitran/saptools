@@ -5,7 +5,7 @@ import {
   parseBruEnvFile,
   parseKeyValueBody,
   parseListBody,
-} from "../../src/bru-parser.js";
+} from "../../src/bruno/parser.js";
 
 describe("listBlocks", () => {
   it("finds curly-brace blocks", () => {

@@ -6,16 +6,16 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "no
 import type { AppRef } from "@saptools/cf-xsuaa";
 import { getTokenCached as getTokenCachedApi } from "@saptools/cf-xsuaa";
 
-import { upsertVars } from "./bru-writer.js";
-import { readCfMetaFromFile } from "./cf-meta.js";
-import type { ShorthandRef } from "./folder-scan.js";
-import { parseShorthandPath, scanCollection } from "./folder-scan.js";
+import { upsertVars } from "../bruno/writer.js";
+import { readCfMetaFromFile } from "../cf/meta.js";
+import type { ShorthandRef } from "../collection/folder-scan.js";
+import { parseShorthandPath, scanCollection } from "../collection/folder-scan.js";
 import {
   ENVIRONMENTS_DIR,
   orgFolderName,
   regionFolderName,
   spaceFolderName,
-} from "./paths.js";
+} from "../collection/paths.js";
 
 export type GetTokenCachedFn = (ref: AppRef) => Promise<string>;
 

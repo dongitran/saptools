@@ -1,4 +1,4 @@
-import { listBlocks, parseKeyValueBody } from "./bru-parser.js";
+import { listBlocks, parseKeyValueBody } from "./parser.js";
 
 export interface UpsertResult {
   readonly content: string;

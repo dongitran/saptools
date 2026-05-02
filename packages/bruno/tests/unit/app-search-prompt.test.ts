@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   appSearchPromptTestHelpers,
   promptForAppSelection,
-} from "../../src/app-search-prompt.js";
+} from "../../src/prompts/app-search.js";
 
 const appChoices = [
   { value: "alpha-main", name: "alpha-main" },

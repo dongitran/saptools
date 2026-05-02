@@ -1,7 +1,7 @@
 import { Separator, checkbox, input } from "@inquirer/prompts";
 
-import type { EnvironmentSelection } from "./setup-app.js";
-import { assertValidEnvName } from "./setup-app.js";
+import type { EnvironmentSelection } from "../commands/setup-app.js";
+import { assertValidEnvName } from "../commands/setup-app.js";
 
 const ADD_CUSTOM_ENVIRONMENT = "__saptools_add_custom_environment__";
 

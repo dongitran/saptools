@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { parseBruEnvFile } from "../../src/bru-parser.js";
-import { ensureSecretEntry, upsertVars } from "../../src/bru-writer.js";
+import { parseBruEnvFile } from "../../src/bruno/parser.js";
+import { ensureSecretEntry, upsertVars } from "../../src/bruno/writer.js";
 
 describe("upsertVars", () => {
   it("creates a new vars block when none exists", () => {

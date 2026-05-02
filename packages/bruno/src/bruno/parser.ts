@@ -1,4 +1,4 @@
-import type { BruVarsBlock } from "./types.js";
+import type { BruVarsBlock } from "../types.js";
 
 interface BlockRange {
   readonly header: string;

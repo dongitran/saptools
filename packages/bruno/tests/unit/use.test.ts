@@ -11,9 +11,9 @@ import type {
 } from "@saptools/cf-sync";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { CfInfoDeps } from "../../src/cf-info.js";
-import { readContext } from "../../src/context.js";
-import { parseContextShorthand, useContext } from "../../src/use.js";
+import type { CfInfoDeps } from "../../src/cf/info.js";
+import { parseContextShorthand, useContext } from "../../src/commands/use.js";
+import { readContext } from "../../src/state/context.js";
 
 const regionNode: RegionNode = {
   key: "ap10",

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { parseShorthandPath, scanCollection } from "../../src/folder-scan.js";
+import { parseShorthandPath, scanCollection } from "../../src/collection/folder-scan.js";
 
 describe("parseShorthandPath", () => {
   it("parses app-level shorthand", () => {

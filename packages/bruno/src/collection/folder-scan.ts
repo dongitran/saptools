@@ -1,14 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { parseBruEnvFile } from "./bru-parser.js";
-import {
-  ENVIRONMENTS_DIR,
-  ORG_FOLDER_PREFIX,
-  parsePrefixedName,
-  REGION_FOLDER_PREFIX,
-  SPACE_FOLDER_PREFIX,
-} from "./paths.js";
+import { parseBruEnvFile } from "../bruno/parser.js";
 import type {
   AppFolder,
   BrunoCollection,
@@ -16,7 +9,15 @@ import type {
   OrgFolder,
   RegionFolder,
   SpaceFolder,
-} from "./types.js";
+} from "../types.js";
+
+import {
+  ENVIRONMENTS_DIR,
+  ORG_FOLDER_PREFIX,
+  parsePrefixedName,
+  REGION_FOLDER_PREFIX,
+  SPACE_FOLDER_PREFIX,
+} from "./paths.js";
 
 async function safeReaddir(path: string): Promise<readonly string[]> {
   try {

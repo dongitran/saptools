@@ -1,9 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-import { parseBruEnvFile } from "./bru-parser.js";
-import { upsertVars } from "./bru-writer.js";
-import { CF_META_KEYS } from "./types.js";
-import type { CfAppRef, CfMetaKey } from "./types.js";
+import { parseBruEnvFile } from "../bruno/parser.js";
+import { upsertVars } from "../bruno/writer.js";
+import { CF_META_KEYS } from "../types.js";
+import type { CfAppRef, CfMetaKey } from "../types.js";
 
 export interface CfMeta {
   readonly region: string;

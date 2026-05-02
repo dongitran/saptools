@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { brunoContextPath } from "./paths.js";
-import type { BrunoContext } from "./types.js";
+import { brunoContextPath } from "../collection/paths.js";
+import type { BrunoContext } from "../types.js";
 
 export async function readContext(): Promise<BrunoContext | undefined> {
   try {

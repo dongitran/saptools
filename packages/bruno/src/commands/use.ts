@@ -1,7 +1,7 @@
-import type { CfInfoDeps } from "./cf-info.js";
-import { isValidRegionKey, resolveRef } from "./cf-info.js";
-import { writeContext } from "./context.js";
-import type { BrunoContext } from "./types.js";
+import type { CfInfoDeps } from "../cf/info.js";
+import { isValidRegionKey, resolveRef } from "../cf/info.js";
+import { writeContext } from "../state/context.js";
+import type { BrunoContext } from "../types.js";
 
 export function parseContextShorthand(shorthand: string): {
   readonly region: string;

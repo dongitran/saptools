@@ -10,7 +10,7 @@ import {
   readCfMetaFromFile,
   readCfMetaFromVars,
   writeCfMetaToFile,
-} from "../../src/cf-meta.js";
+} from "../../src/cf/meta.js";
 
 describe("readCfMetaFromVars", () => {
   it("returns undefined when any key missing", () => {
