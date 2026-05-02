@@ -79,6 +79,40 @@ describe("renderFolderTree", () => {
     });
     expect(output).toMatch(/\bMB\b/);
   });
+
+  it("uses decimal precision for small KB values", () => {
+    const output = renderFolderTree({
+      name: "r",
+      path: "",
+      fileCount: 1,
+      folderCount: 0,
+      totalSize: 1536,
+      children: [],
+    });
+    expect(output).toContain("1.5 KB");
+  });
+
+  it("renders invalid or negative sizes as zero bytes", () => {
+    const output = renderFolderTree({
+      name: "r",
+      path: "",
+      fileCount: 1,
+      folderCount: 1,
+      totalSize: Number.NaN,
+      children: [
+        {
+          name: "child",
+          path: "child",
+          fileCount: 0,
+          folderCount: 0,
+          totalSize: -10,
+          children: [],
+        },
+      ],
+    });
+    expect(output).toContain("(1 files, 1 subfolders, 0 B)");
+    expect(output).toContain("(0 files, 0 subfolders, 0 B)");
+  });
 });
 
 describe("renderValidateResult", () => {

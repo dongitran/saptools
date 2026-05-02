@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import process from "node:process";
+
+import { describe, expect, it, vi } from "vitest";
 
 import { createGraphClient, GraphHttpError } from "../../src/graph.js";
 import type { FetchLike } from "../../src/graph.js";
@@ -68,6 +70,29 @@ describe("createGraphClient", () => {
     expect(headers?.["Content-Type"]).toBe("application/json");
   });
 
+  it("preserves string bodies and caller content-type", async () => {
+    let captured: RequestInit | undefined;
+    const fetchFn: FetchLike = async (_input, init) => {
+      captured = init;
+      return jsonResponse(200, { ok: true });
+    };
+    const client = createGraphClient({
+      accessToken: "tok",
+      baseUrl: "http://api/v1",
+      fetchFn,
+    });
+
+    await client.request("/thing", {
+      method: "POST",
+      body: "raw-body",
+      headers: { "Content-Type": "text/plain" },
+    });
+
+    expect(captured?.body).toBe("raw-body");
+    const headers = captured?.headers as Record<string, string> | undefined;
+    expect(headers?.["Content-Type"]).toBe("text/plain");
+  });
+
   it("returns undefined for 204 responses", async () => {
     const fetchFn: FetchLike = async () => new Response(null, { status: 204 });
     const client = createGraphClient({ accessToken: "tok", baseUrl: "http://api/v1", fetchFn });
@@ -75,6 +100,21 @@ describe("createGraphClient", () => {
       method: "DELETE",
       expectJson: false,
     });
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined when expectJson is false on a 200 response", async () => {
+    const fetchFn: FetchLike = async () => jsonResponse(200, { ok: true });
+    const client = createGraphClient({ accessToken: "tok", baseUrl: "http://api/v1", fetchFn });
+    const result = await client.request<unknown>("/thing", { expectJson: false });
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined for non-JSON successful responses", async () => {
+    const fetchFn: FetchLike = async () =>
+      new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+    const client = createGraphClient({ accessToken: "tok", baseUrl: "http://api/v1", fetchFn });
+    const result = await client.request<unknown>("/thing");
     expect(result).toBeUndefined();
   });
 
@@ -151,6 +191,47 @@ describe("createGraphClient", () => {
     expect(slept).toEqual([2000]);
   });
 
+  it("retries using Retry-After HTTP dates", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const slept: number[] = [];
+    let attempts = 0;
+    const fetchFn: FetchLike = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response("slow down", {
+          status: 429,
+          headers: {
+            "content-type": "text/plain",
+            "retry-after": "Thu, 01 Jan 2026 00:00:03 GMT",
+          },
+        });
+      }
+      return jsonResponse(200, { ok: true });
+    };
+    const client = createGraphClient({
+      accessToken: "tok",
+      baseUrl: "http://api/v1",
+      fetchFn,
+      retry: {
+        maxRetries: 2,
+        baseDelayMs: 10,
+        sleepFn: async (ms) => {
+          slept.push(ms);
+        },
+      },
+    });
+
+    try {
+      await client.request("/x");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(attempts).toBe(2);
+    expect(slept).toEqual([3000]);
+  });
+
   it("retries 503 with exponential backoff when Retry-After is absent", async () => {
     const slept: number[] = [];
     let attempts = 0;
@@ -205,5 +286,29 @@ describe("createGraphClient", () => {
       code: "tooManyRequests",
     });
     expect(attempts).toBe(2);
+  });
+
+  it("uses SHAREPOINT_GRAPH_BASE when no baseUrl override is passed", async () => {
+    const previous = process.env["SHAREPOINT_GRAPH_BASE"];
+    process.env["SHAREPOINT_GRAPH_BASE"] = "http://env-graph/v1.0///";
+    const calls: string[] = [];
+    const fetchFn: FetchLike = async (input) => {
+      calls.push(urlString(input));
+      return jsonResponse(200, {});
+    };
+
+    try {
+      const client = createGraphClient({ accessToken: "tok", fetchFn });
+      await client.request("ping");
+      expect(client.baseUrl).toBe("http://env-graph/v1.0");
+    } finally {
+      if (previous === undefined) {
+        delete process.env["SHAREPOINT_GRAPH_BASE"];
+      } else {
+        process.env["SHAREPOINT_GRAPH_BASE"] = previous;
+      }
+    }
+
+    expect(calls[0]).toBe("http://env-graph/v1.0/ping");
   });
 });

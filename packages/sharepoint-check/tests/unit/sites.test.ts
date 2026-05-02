@@ -19,6 +19,13 @@ describe("parseSiteRef", () => {
     });
   });
 
+  it("trims surrounding whitespace", () => {
+    expect(parseSiteRef("  https://contoso.sharepoint.com/sites/team  ")).toEqual({
+      hostname: "contoso.sharepoint.com",
+      sitePath: "sites/team",
+    });
+  });
+
   it("throws for empty input", () => {
     expect(() => parseSiteRef("  ")).toThrow(/empty/);
   });
@@ -57,6 +64,28 @@ describe("resolveSite", () => {
     expect(captured[0]).toBe("/sites/h.example:/sites/demo");
     expect(site.id).toBe("site-1");
     expect(site.displayName).toBe("Demo");
+  });
+
+  it("encodes each site path segment", async () => {
+    const captured: string[] = [];
+    const client = fakeClient({ id: "site-1", name: "space" }, captured);
+    await resolveSite(client, { hostname: "h.example", sitePath: "sites/space name" });
+    expect(captured[0]).toBe("/sites/h.example:/sites/space%20name");
+  });
+
+  it("falls back display names to name and then path", async () => {
+    const named = await resolveSite(fakeClient({ id: "site-1", name: "Team" }, []), {
+      hostname: "h.example",
+      sitePath: "sites/team",
+    });
+    expect(named.displayName).toBe("Team");
+
+    const pathNamed = await resolveSite(fakeClient({ id: "site-2" }, []), {
+      hostname: "h.example",
+      sitePath: "sites/path-only",
+    });
+    expect(pathNamed.name).toBe("sites/path-only");
+    expect(pathNamed.displayName).toBe("sites/path-only");
   });
 
   it("throws when the response lacks an id", async () => {

@@ -29,7 +29,12 @@ function treeClient(structure: Readonly<Record<string, readonly Node[]>>): Graph
 
   function mapNode(node: Node): unknown {
     return node.isFolder
-      ? { id: node.name, name: node.name, folder: { childCount: (node.children ?? []).length } }
+      ? {
+          id: node.name,
+          name: node.name,
+          size: node.size ?? 0,
+          folder: { childCount: (node.children ?? []).length },
+        }
       : { id: node.name, name: node.name, size: node.size ?? 0, file: { mimeType: "text/plain" } };
   }
 }
@@ -77,6 +82,19 @@ describe("walkFolderTree", () => {
     expect(deep?.children[0]?.children).toHaveLength(0);
   });
 
+  it("normalizes the root path and uses the final segment as the root name", async () => {
+    const client = treeClient({
+      "Apps/alpha": [{ name: "readme.md", isFolder: false, size: 1 }],
+    });
+    const tree = await walkFolderTree(client, {
+      driveId: "d1",
+      rootPath: "/Apps/alpha/",
+    });
+    expect(tree.name).toBe("alpha");
+    expect(tree.path).toBe("Apps/alpha");
+    expect(tree.fileCount).toBe(1);
+  });
+
   it("clamps maxEntriesPerFolder to the requested window", async () => {
     const many: Node[] = Array.from({ length: 10 }, (_, i) => ({
       name: `file-${i.toString()}.txt`,
@@ -105,5 +123,35 @@ describe("walkFolderTree", () => {
       limits: { maxTotalEntries: 5 },
     });
     expect(tree.fileCount).toBe(5);
+  });
+
+  it("clamps invalid limits to a safe minimum", async () => {
+    const client = treeClient({
+      "": [
+        { name: "folder-a", isFolder: true, children: [{ name: "nested.txt", isFolder: false }] },
+        { name: "folder-b", isFolder: true, children: [] },
+      ],
+      "folder-a": [{ name: "nested.txt", isFolder: false, size: 1 }],
+    });
+    const tree = await walkFolderTree(client, {
+      driveId: "d1",
+      rootPath: "",
+      limits: { maxDepth: -5, maxEntriesPerFolder: 0, maxTotalEntries: 0 },
+    });
+    expect(tree.folderCount).toBe(1);
+    expect(tree.children).toHaveLength(1);
+    expect(tree.children[0]?.children).toHaveLength(0);
+  });
+
+  it("adds folder entry sizes to parent totals", async () => {
+    const client = treeClient({
+      "": [{ name: "archive", isFolder: true, size: 99, children: [] }],
+    });
+    const tree = await walkFolderTree(client, {
+      driveId: "d1",
+      rootPath: "",
+      limits: { maxDepth: 0 },
+    });
+    expect(tree.totalSize).toBe(99);
   });
 });

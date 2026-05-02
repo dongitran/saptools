@@ -126,6 +126,17 @@ test.describe("fake-graph CLI flow", () => {
     expect(parsed.claims.roles).toContain("Sites.Selected");
   });
 
+  test("User can inspect auth in human-readable output", async () => {
+    const result = await runCli({
+      args: ["test"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Authenticated");
+    expect(result.stdout).toContain("Demo Site");
+    expect(result.stdout).toContain("Sites.Selected");
+  });
+
   test("`drives` lists all document libraries", async () => {
     const result = await runCli({
       args: ["drives", "--json"],
@@ -134,6 +145,16 @@ test.describe("fake-graph CLI flow", () => {
     expect(result.code, result.stderr).toBe(0);
     const drives = JSON.parse(result.stdout) as { readonly name: string }[];
     expect(drives.map((d) => d.name).sort()).toEqual(["Documents", "Shared"]);
+  });
+
+  test("User can list drives in human-readable output", async () => {
+    const result = await runCli({
+      args: ["drives"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("- Documents [documentLibrary] (drive-docs)");
+    expect(result.stdout).toContain("- Shared [documentLibrary] (drive-shared)");
   });
 
   test("`tree` walks the folder structure with file counts", async () => {
@@ -151,6 +172,51 @@ test.describe("fake-graph CLI flow", () => {
     expect(tree.folderCount).toBe(2);
     const sample = tree.children.find((c) => c.name === "sample-app");
     expect(sample?.fileCount).toBe(2);
+  });
+
+  test("User can walk the first drive when no drive is specified", async () => {
+    const result = await runCli({
+      args: ["tree", "--json", "--root", "Apps"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const tree = JSON.parse(result.stdout) as { readonly name: string; readonly folderCount: number };
+    expect(tree.name).toBe("Apps");
+    expect(tree.folderCount).toBe(2);
+  });
+
+  test("User can select a drive by ID", async () => {
+    const result = await runCli({
+      args: ["tree", "--json", "--drive", "drive-docs", "--root", "Apps"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const tree = JSON.parse(result.stdout) as { readonly name: string };
+    expect(tree.name).toBe("Apps");
+  });
+
+  test("User can limit tree depth from the CLI", async () => {
+    const result = await runCli({
+      args: ["tree", "--json", "--drive", "Documents", "--root", "Apps", "--depth", "0"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const tree = JSON.parse(result.stdout) as {
+      readonly children: readonly { readonly name: string; readonly fileCount: number }[];
+    };
+    const sample = tree.children.find((c) => c.name === "sample-app");
+    expect(sample?.fileCount).toBe(0);
+  });
+
+  test("User can inspect a tree in human-readable output", async () => {
+    const result = await runCli({
+      args: ["tree", "--drive", "Documents", "--root", "Apps"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Drive: Documents");
+    expect(result.stdout).toContain("- Apps");
+    expect(result.stdout).toContain("sample-app");
   });
 
   test("`validate` reports present vs missing subdirectories", async () => {
@@ -181,6 +247,24 @@ test.describe("fake-graph CLI flow", () => {
     expect(present?.exists).toBe(true);
   });
 
+  test("User can validate a complete layout successfully", async () => {
+    const result = await runCli({
+      args: [
+        "validate",
+        "--drive",
+        "Documents",
+        "--root",
+        "Apps",
+        "--subdirs",
+        "sample-app,demo-app",
+      ],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Drive: Documents");
+    expect(result.stdout).toContain("All expected folders present");
+  });
+
   test("`write-test` creates and deletes a probe folder", async () => {
     const result = await runCli({
       args: ["write-test", "--json", "--drive", "Documents", "--root", "Apps"],
@@ -195,6 +279,16 @@ test.describe("fake-graph CLI flow", () => {
     expect(parsed.created).toBe(true);
     expect(parsed.deleted).toBe(true);
     expect(parsed.probePath.startsWith("Apps/")).toBe(true);
+  });
+
+  test("User can run write-test in human-readable output", async () => {
+    const result = await runCli({
+      args: ["write-test", "--drive", "Documents", "--root", "Apps"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Write + delete succeeded");
+    expect(result.stdout).toContain("Apps/sharepoint-check-probe-");
   });
 
   test("invalid credentials fail with a redacted error", async () => {
@@ -230,6 +324,16 @@ test.describe("fake-graph CLI flow", () => {
     expect(result.stdout).toContain("Write probe passed");
   });
 
+  test("`check` stops before write-test when layout validation fails", async () => {
+    const result = await runCli({
+      args: ["check", "--drive", "Documents", "--root", "Apps", "--subdirs", "ghost-app"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("Some expected folders are missing");
+    expect(result.stdout).not.toContain("Write probe passed");
+  });
+
   test("unknown drive name yields a helpful error", async () => {
     const result = await runCli({
       args: ["tree", "--json", "--drive", "ghost-drive", "--root", "Apps"],
@@ -238,6 +342,15 @@ test.describe("fake-graph CLI flow", () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("ghost-drive");
     expect(result.stderr).toMatch(/not found/i);
+  });
+
+  test("invalid tree depth yields a helpful error", async () => {
+    const result = await runCli({
+      args: ["tree", "--json", "--drive", "Documents", "--root", "Apps", "--depth", "abc"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Invalid --depth");
   });
 
   test("unknown site path surfaces the 404 hint", async () => {
@@ -297,5 +410,54 @@ test.describe("fake-graph read-only tenant", () => {
     expect(parsed.created).toBe(false);
     expect(parsed.deleted).toBe(false);
     expect(parsed.error ?? "").toMatch(/accessDenied/i);
+  });
+
+  test("`check` reports write failure after layout validation succeeds", async () => {
+    const result = await runCli({
+      args: ["check", "--drive", "Documents", "--root", "Apps", "--subdirs", "sample-app,demo-app"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("All expected folders present");
+    expect(result.stdout).toContain("Write probe failed");
+    expect(result.stdout).toMatch(/accessDenied/i);
+  });
+});
+
+test.describe("fake-graph site without drives", () => {
+  let server: FakeGraphProcess | undefined;
+  let baseEnv: Readonly<Record<string, string>>;
+  let credsEnv: Readonly<Record<string, string>>;
+
+  test.beforeAll(async () => {
+    await execFileAsync("pnpm", ["--filter", "@saptools/sharepoint-check", "build"], {
+      cwd: PACKAGE_ROOT,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+
+    const { scenario, credentials, siteRef } = buildScenario();
+    server = await startFakeGraph({ scenario: { ...scenario, drives: [] } });
+    baseEnv = buildBaseEnv(server.port);
+    credsEnv = {
+      SHAREPOINT_TENANT_ID: credentials.tenantId,
+      SHAREPOINT_CLIENT_ID: credentials.clientId,
+      SHAREPOINT_CLIENT_SECRET: credentials.clientSecret,
+      SHAREPOINT_SITE: siteRef,
+    };
+  });
+
+  test.afterAll(async () => {
+    if (server) {
+      await server.stop();
+    }
+  });
+
+  test("tree reports when the site has no drives", async () => {
+    const result = await runCli({
+      args: ["tree", "--json", "--root", "Apps"],
+      env: { ...baseEnv, ...credsEnv },
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("has no drives");
   });
 });

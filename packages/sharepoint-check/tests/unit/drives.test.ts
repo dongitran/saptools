@@ -60,6 +60,30 @@ describe("listDrives", () => {
     const drives = await listDrives(client, "site-1");
     expect(drives).toEqual([]);
   });
+
+  it("filters non-object drive entries and falls back for malformed fields", async () => {
+    const client = scriptedClient(
+      [
+        {
+          value: [null, "skip-me", { id: 7, name: false, driveType: 9, webUrl: null }],
+        },
+      ],
+      [],
+    );
+
+    const drives = await listDrives(client, "site-1");
+
+    expect(drives).toEqual([
+      { id: "", name: "", driveType: "documentLibrary", webUrl: "" },
+    ]);
+  });
+
+  it("encodes site IDs when listing drives", async () => {
+    const calls: Call[] = [];
+    const client = scriptedClient([{ value: [] }], calls);
+    await listDrives(client, "site/a b");
+    expect(calls[0]?.path).toBe("/sites/site%2Fa%20b/drives");
+  });
 });
 
 describe("listDriveChildren / listDriveRoot", () => {
@@ -99,6 +123,34 @@ describe("listDriveChildren / listDriveRoot", () => {
     const entries = await listDriveRoot(client, "d1");
     expect(entries.map((e) => e.id)).toEqual(["1", "2"]);
     expect(calls[1]?.path).toBe("https://api/next");
+  });
+
+  it("falls back for malformed item fields", async () => {
+    const client = scriptedClient(
+      [
+        {
+          value: [{ id: 7, name: null, size: "large", webUrl: false, folder: { childCount: "many" } }],
+        },
+      ],
+      [],
+    );
+
+    const entries = await listDriveRoot(client, "d1");
+
+    expect(entries[0]).toEqual({
+      id: "",
+      name: "",
+      isFolder: true,
+      size: 0,
+      childCount: 0,
+    });
+  });
+
+  it("trims leading and trailing slashes before querying nested children", async () => {
+    const calls: Call[] = [];
+    const client = scriptedClient([{ value: [] }], calls);
+    await listDriveChildren(client, "d1", "/Apps/a/");
+    expect(calls[0]?.path).toBe("/drives/d1/root:/Apps/a:/children");
   });
 });
 
@@ -152,5 +204,20 @@ describe("createFolder / deleteItem", () => {
     expect(calls[0]?.path).toBe("/drives/d1/items/item-42");
     expect(calls[0]?.options?.method).toBe("DELETE");
     expect(calls[0]?.options?.expectJson).toBe(false);
+  });
+
+  it("encodes drive IDs, parent paths, folder names, and item IDs", async () => {
+    const createCalls: Call[] = [];
+    const createClient = scriptedClient(
+      [{ id: "new", name: "probe", folder: { childCount: 0 } }],
+      createCalls,
+    );
+    await createFolder(createClient, "drive/a", "Apps/a b", "probe");
+    expect(createCalls[0]?.path).toBe("/drives/drive%2Fa/root:/Apps/a%20b:/children");
+
+    const deleteCalls: Call[] = [];
+    const deleteClient = scriptedClient([undefined], deleteCalls);
+    await deleteItem(deleteClient, "drive/a", "item b/c");
+    expect(deleteCalls[0]?.path).toBe("/drives/drive%2Fa/items/item%20b%2Fc");
   });
 });

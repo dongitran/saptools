@@ -1,3 +1,5 @@
+import process from "node:process";
+
 import { describe, expect, it } from "vitest";
 
 import { acquireAppToken } from "../../src/auth.js";
@@ -50,6 +52,26 @@ describe("acquireAppToken", () => {
     expect(params.get("scope")).toBe("https://graph.microsoft.com/.default");
   });
 
+  it("uses a custom scope when requested", async () => {
+    let capturedBody = "";
+    const fetchFn: FetchLike = async (_input, init) => {
+      capturedBody = bodyString(init?.body);
+      return jsonResponse(200, {
+        access_token: "token-custom",
+        token_type: "Bearer",
+        expires_in: 600,
+      });
+    };
+
+    await acquireAppToken(creds, {
+      authBase: "http://fake-login",
+      scope: "https://graph.example/.default",
+      fetchFn,
+    });
+
+    expect(new URLSearchParams(capturedBody).get("scope")).toBe("https://graph.example/.default");
+  });
+
   it("omits scope when not returned", async () => {
     const fetchFn: FetchLike = async () =>
       jsonResponse(200, { access_token: "x", token_type: "Bearer", expires_in: 60 });
@@ -82,6 +104,44 @@ describe("acquireAppToken", () => {
     await expect(acquireAppToken(creds, { authBase: "http://fake", fetchFn })).rejects.toThrow(
       /access_token/,
     );
+  });
+
+  it("throws when token_type is missing", async () => {
+    const fetchFn: FetchLike = async () =>
+      jsonResponse(200, { access_token: "x", expires_in: 10 });
+    await expect(acquireAppToken(creds, { authBase: "http://fake", fetchFn })).rejects.toThrow(
+      /token_type/,
+    );
+  });
+
+  it("throws when expires_in is not numeric", async () => {
+    const fetchFn: FetchLike = async () =>
+      jsonResponse(200, { access_token: "x", token_type: "Bearer", expires_in: "soon" });
+    await expect(acquireAppToken(creds, { authBase: "http://fake", fetchFn })).rejects.toThrow(
+      /expires_in/,
+    );
+  });
+
+  it("uses SHAREPOINT_AUTH_BASE when no auth base override is passed", async () => {
+    const previous = process.env["SHAREPOINT_AUTH_BASE"];
+    process.env["SHAREPOINT_AUTH_BASE"] = "http://env-login///";
+    let capturedUrl = "";
+    const fetchFn: FetchLike = async (input) => {
+      capturedUrl = urlString(input);
+      return jsonResponse(200, { access_token: "x", token_type: "Bearer", expires_in: 10 });
+    };
+
+    try {
+      await acquireAppToken(creds, { fetchFn });
+    } finally {
+      if (previous === undefined) {
+        delete process.env["SHAREPOINT_AUTH_BASE"];
+      } else {
+        process.env["SHAREPOINT_AUTH_BASE"] = previous;
+      }
+    }
+
+    expect(capturedUrl).toBe("http://env-login/tid/oauth2/v2.0/token");
   });
 
   it("rejects empty credential values", async () => {
