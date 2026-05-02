@@ -329,6 +329,7 @@ export async function startDebugger(options: StartDebuggerOptions): Promise<Debu
       context,
       tunnelReadyTimeoutMs,
       (tunnelChild) => {
+        child = tunnelChild;
         attachTunnelEvents(tunnelChild, () => {
           tunnelClosed = true;
         }, exitResolve, emit);

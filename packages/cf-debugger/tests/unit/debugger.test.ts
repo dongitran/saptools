@@ -289,14 +289,21 @@ describe("startDebugger orchestration", () => {
 
   it("cleans up when the tunnel never becomes ready", async () => {
     mocks.probeTunnelReady.mockResolvedValue(false);
+    mocks.isPidAlive.mockReturnValueOnce(true).mockReturnValue(false);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 
-    await expect(
-      startDebugger(withCredentials({ tunnelReadyTimeoutMs: 1 })),
-    ).rejects.toMatchObject({
-      code: "TUNNEL_NOT_READY",
-    });
-    expect(mocks.spawnSshTunnel).toHaveBeenCalled();
-    expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
+    try {
+      await expect(
+        startDebugger(withCredentials({ tunnelReadyTimeoutMs: 1 })),
+      ).rejects.toMatchObject({
+        code: "TUNNEL_NOT_READY",
+      });
+      expect(mocks.spawnSshTunnel).toHaveBeenCalled();
+      expect(killSpy).toHaveBeenCalledWith(process.platform === "win32" ? 44_001 : -44_001, "SIGTERM");
+      expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it("aborts before creating a session when the caller signal is already aborted", async () => {

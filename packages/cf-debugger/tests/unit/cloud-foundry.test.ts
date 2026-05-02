@@ -173,6 +173,17 @@ describe("cloud-foundry command wrappers", () => {
     });
   });
 
+  it("redacts auth credentials from CF command failures", async () => {
+    process.env["CF_DEBUGGER_TEST_AUTH_FAILURES"] = "3";
+    const password = "phase2-sensitive-value";
+
+    await expect(cfAuth("user@example.com", password, context)).rejects.toMatchObject({
+      code: "CF_CLI_FAILED",
+      message: expect.not.stringContaining(password),
+      stderr: expect.not.stringContaining(password),
+    });
+  });
+
   it("maps app not-found output to false and rethrows unrelated app errors", async () => {
     await expect(cfAppExists("missing-app", context)).resolves.toBe(false);
     await expect(cfAppExists("broken-app", context)).rejects.toMatchObject({
