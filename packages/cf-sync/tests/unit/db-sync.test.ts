@@ -167,6 +167,60 @@ describe("runDbSync", () => {
     ]);
   });
 
+  it("records region authentication failures on every target in that region", async () => {
+    const cfTargetOrg = vi.fn();
+    const cfTargetSpace = vi.fn();
+    const cfEnv = vi.fn();
+
+    vi.doMock("../../src/cf.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockRejectedValue(new Error("auth denied")),
+      cfTargetOrg,
+      cfTargetSpace,
+      cfEnv,
+    }));
+
+    const { runDbSync } = await import("../../src/db-sync.js");
+    const result = await runDbSync({
+      email: "user@example.com",
+      password: "secret-password",
+      targets: [
+        {
+          selector: "ap10/org-alpha/dev/api-app",
+          regionKey: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          orgName: "org-alpha",
+          spaceName: "dev",
+          appName: "api-app",
+        },
+        {
+          selector: "ap10/org-alpha/jobs/job-app",
+          regionKey: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          orgName: "org-alpha",
+          spaceName: "jobs",
+          appName: "job-app",
+        },
+      ],
+    });
+
+    expect(cfTargetOrg).not.toHaveBeenCalled();
+    expect(cfTargetSpace).not.toHaveBeenCalled();
+    expect(cfEnv).not.toHaveBeenCalled();
+    expect(result.snapshot.entries).toEqual([
+      expect.objectContaining({
+        selector: "ap10/org-alpha/dev/api-app",
+        error: "auth denied",
+        bindings: [],
+      }),
+      expect.objectContaining({
+        selector: "ap10/org-alpha/jobs/job-app",
+        error: "auth denied",
+        bindings: [],
+      }),
+    ]);
+  });
+
   it("reuses a completed DB runtime snapshot when another process already holds the DB lock", async () => {
     vi.doMock("../../src/cf.js", () => ({
       cfApi: vi.fn(),

@@ -102,6 +102,46 @@ describe("structure file I/O", () => {
     expect(readBack).toEqual(fixture);
   });
 
+  it("replaces an existing stable region during on-demand persistence", async () => {
+    const { persistRegion, readStructure, writeStructure } = await import("../../src/structure.js");
+
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "eu10",
+          label: "stable-eu",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-eu", spaces: [] }],
+        },
+        {
+          key: "ap10",
+          label: "old-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "old-org", spaces: [] }],
+        },
+      ],
+    });
+
+    await persistRegion({
+      key: "ap10",
+      label: "fresh-ap",
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+      accessible: true,
+      orgs: [{ name: "fresh-org", spaces: [{ name: "dev", apps: [{ name: "api-app" }] }] }],
+    });
+
+    const readBack = await readStructure();
+    expect(readBack?.regions.map((region) => region.key)).toEqual(["eu10", "ap10"]);
+    expect(readBack?.regions.find((region) => region.key === "ap10")).toMatchObject({
+      label: "fresh-ap",
+      orgs: [{ name: "fresh-org" }],
+    });
+    expect(readBack?.regions.filter((region) => region.key === "ap10")).toHaveLength(1);
+  });
+
   it("creates parent directory when missing", async () => {
     const { writeStructure } = await import("../../src/structure.js");
     const fixture: CfStructure = { syncedAt: "2026-04-18T00:00:00.000Z", regions: [] };

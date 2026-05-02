@@ -8,6 +8,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    trace: "off",
+    trace: "on-first-retry",
+    screenshot: "only-on-failure",
   },
 });

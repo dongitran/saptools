@@ -124,6 +124,16 @@ test.describe("DB sync commands", () => {
     expect(existsSync(FAKE_CF_BIN), `Fake CF fixture must exist at ${FAKE_CF_BIN}`).toBe(true);
   });
 
+  test("User can read an empty DB view before any DB sync has run", async () => {
+    const paths = await prepareCase(ROOT_NAME, "db-read-empty", createDbScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    await expect(runJsonCommand(env, ["db-read"])).resolves.toBeNull();
+    await expect(runJsonCommand(env, ["db-read", "api-app"])).resolves.toBeNull();
+    expect(existsSync(paths.dbRuntimeStatePath)).toBe(false);
+    expect(existsSync(paths.dbSnapshotPath)).toBe(false);
+  });
+
   test("User can start a background DB sync for cached apps and inspect runtime progress", async () => {
     const paths = await prepareCase(ROOT_NAME, "db-sync-background", createDbScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);

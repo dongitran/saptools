@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  extractHanaBindingsFromCfEnv,
   extractVcapServicesSection,
   parseHanaBindings,
 } from "../../src/db-parser.js";
@@ -61,6 +62,49 @@ describe("db-parser", () => {
     expect(parseHanaBindings(raw)).toEqual([]);
   });
 
+  it("extracts multiple hana bindings and omits invalid optional metadata", () => {
+    const raw = JSON.stringify({
+      hana: [
+        {
+          name: "hana-primary",
+          label: "hana",
+          plan: "hdi-shared",
+          credentials: VALID_HANA_CREDENTIALS,
+        },
+        {
+          name: 123,
+          label: false,
+          plan: null,
+          credentials: {
+            ...VALID_HANA_CREDENTIALS,
+            schema: "SECOND_SCHEMA",
+          },
+        },
+      ],
+    });
+
+    expect(parseHanaBindings(raw)).toEqual([
+      {
+        kind: "hana",
+        name: "hana-primary",
+        label: "hana",
+        plan: "hdi-shared",
+        credentials: expect.objectContaining({
+          schema: VALID_HANA_CREDENTIALS.schema,
+          hdiUser: VALID_HANA_CREDENTIALS.hdi_user,
+          hdiPassword: VALID_HANA_CREDENTIALS.hdi_password,
+          databaseId: VALID_HANA_CREDENTIALS.database_id,
+        }),
+      },
+      {
+        kind: "hana",
+        credentials: expect.objectContaining({
+          schema: "SECOND_SCHEMA",
+        }),
+      },
+    ]);
+  });
+
   it("extracts the VCAP_SERVICES block from cf env output", () => {
     const stdout = [
       "Getting env variables for app orders-srv in org demo / space dev as user@example.com...",
@@ -76,6 +120,18 @@ describe("db-parser", () => {
     ].join("\n");
 
     expect(JSON.parse(extractVcapServicesSection(stdout))).toEqual({ hana: [] });
+  });
+
+  it("extracts hana bindings when VCAP_APPLICATION is absent", () => {
+    const stdout = [
+      "System-Provided:",
+      "VCAP_SERVICES: {",
+      '  "hana": []',
+      "}",
+      "",
+    ].join("\n");
+
+    expect(extractHanaBindingsFromCfEnv(stdout)).toEqual([]);
   });
 
   it("rejects malformed hana credential payloads", () => {
@@ -112,5 +168,11 @@ describe("db-parser", () => {
 
   it("rejects hana bindings that are not objects", () => {
     expect(() => parseHanaBindings(JSON.stringify({ hana: [null] }))).toThrow(/HANA binding must be an object/);
+  });
+
+  it("rejects hana bindings without credentials", () => {
+    expect(() => parseHanaBindings(JSON.stringify({ hana: [{ name: "hana-primary" }] }))).toThrow(
+      /HANA credentials must be an object/,
+    );
   });
 });

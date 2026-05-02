@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AppDbSnapshot, CfDbSnapshot, RuntimeDbSyncState } from "../../src/types.js";
+import type { AppDbBinding, AppDbSnapshot, CfDbSnapshot, RuntimeDbSyncState } from "../../src/types.js";
 
 let tempHome: string;
 
@@ -44,6 +44,25 @@ function createEntry(overrides: Partial<AppDbSnapshot> = {}): AppDbSnapshot {
     syncedAt: "2026-04-24T00:00:02.000Z",
     bindings: [],
     ...overrides,
+  };
+}
+
+function createBinding(): AppDbBinding {
+  return {
+    kind: "hana",
+    name: "hana-primary",
+    credentials: {
+      host: "hana.example.internal",
+      port: "443",
+      user: "DB_USER",
+      password: "db-password",
+      schema: "APP_SCHEMA",
+      hdiUser: "HDI_USER",
+      hdiPassword: "HDI_PASSWORD",
+      url: "jdbc:sap://hana.example.internal:443",
+      databaseId: "DB-123",
+      certificate: "certificate",
+    },
   };
 }
 
@@ -191,6 +210,53 @@ describe("db-store", () => {
     });
   });
 
+  it("falls back to one app view from the stable DB snapshot", async () => {
+    const { readDbAppView, writeDbSnapshot } = await import("../../src/db-store.js");
+
+    const entry = createEntry({ bindings: [createBinding()] });
+    await writeDbSnapshot({
+      version: 1,
+      syncedAt: "2026-04-24T00:00:03.000Z",
+      entries: [entry],
+    });
+
+    await expect(readDbAppView(entry.appName)).resolves.toEqual({
+      source: "stable",
+      entry,
+      metadata: undefined,
+    });
+  });
+
+  it("replaces duplicate DB runtime entries by selector", async () => {
+    const {
+      completeDbRuntimeState,
+      initializeDbRuntimeState,
+      mergeDbRuntimeEntry,
+    } = await import("../../src/db-store.js");
+
+    const requestedTargets = [createEntry().selector];
+    await initializeDbRuntimeState("replace-db-entry", requestedTargets);
+    await mergeDbRuntimeEntry(
+      "replace-db-entry",
+      requestedTargets,
+      createEntry({ syncedAt: "2026-04-24T00:00:01.000Z", bindings: [] }),
+    );
+    await mergeDbRuntimeEntry(
+      "replace-db-entry",
+      requestedTargets,
+      createEntry({ syncedAt: "2026-04-24T00:00:02.000Z", bindings: [createBinding()] }),
+    );
+
+    const completed = await completeDbRuntimeState("replace-db-entry");
+    expect(completed.completedTargets).toEqual(requestedTargets);
+    expect(completed.snapshot.entries).toEqual([
+      expect.objectContaining({
+        selector: createEntry().selector,
+        bindings: [createBinding()],
+      }),
+    ]);
+  });
+
   it("rejects ambiguous plain app names from the cached DB snapshot", async () => {
     const { readDbAppView, writeDbSnapshot } = await import("../../src/db-store.js");
 
@@ -290,6 +356,38 @@ describe("db-store", () => {
       })}\n`,
       "utf8",
     );
+
+    await expect(tryAcquireDbSyncLock("contender-db-sync")).resolves.toBeUndefined();
+  });
+
+  it("does not recover an invalid DB sync lock while runtime state is fresh", async () => {
+    const { cfDbRuntimeStatePath, cfDbSyncLockPath } = await import("../../src/paths.js");
+    const { tryAcquireDbSyncLock } = await import("../../src/db-store.js");
+
+    await mkdir(dirname(cfDbRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfDbRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "fresh-db-sync",
+          status: "running",
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          requestedTargets: [createEntry().selector],
+          completedTargets: [],
+          snapshot: {
+            version: 1,
+            syncedAt: new Date().toISOString(),
+            entries: [],
+          },
+        } satisfies RuntimeDbSyncState,
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await mkdir(dirname(cfDbSyncLockPath()), { recursive: true });
+    await writeFile(cfDbSyncLockPath(), "not-json\n", "utf8");
 
     await expect(tryAcquireDbSyncLock("contender-db-sync")).resolves.toBeUndefined();
   });

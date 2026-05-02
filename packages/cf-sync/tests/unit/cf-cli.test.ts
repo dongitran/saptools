@@ -4,17 +4,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockReturn = { stdout: string; stderr: string } | { error: Error & { stderr?: string } };
 
-let mockImpl: ((cmd: string, args: readonly string[]) => MockReturn) | undefined;
+interface ExecOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly maxBuffer?: number;
+}
+
+let mockImpl: ((cmd: string, args: readonly string[], opts: ExecOptions) => MockReturn) | undefined;
 
 beforeEach(() => {
   vi.resetModules();
   const execFileFn = (
     cmd: string,
     args: readonly string[],
-    _opts: unknown,
+    opts: ExecOptions,
     cb: (err: Error | null, stdout: string, stderr: string) => void,
   ): void => {
-    const result = mockImpl ? mockImpl(cmd, args) : { stdout: "", stderr: "" };
+    const result = mockImpl ? mockImpl(cmd, args, opts) : { stdout: "", stderr: "" };
     if ("error" in result) {
       cb(result.error, "", result.error.stderr ?? "");
     } else {
@@ -25,8 +30,9 @@ beforeEach(() => {
   (execFileFn as unknown as Record<symbol, unknown>)[promisify.custom] = (
     cmd: string,
     args: readonly string[],
+    opts: ExecOptions,
   ): Promise<{ stdout: string; stderr: string }> => {
-    const result = mockImpl ? mockImpl(cmd, args) : { stdout: "", stderr: "" };
+    const result = mockImpl ? mockImpl(cmd, args, opts) : { stdout: "", stderr: "" };
     if ("error" in result) {
       return Promise.reject(result.error);
     }
@@ -53,6 +59,47 @@ describe("cf CLI wrappers", () => {
     await cfApi("https://api.cf.ap10.hana.ondemand.com");
     expect(seen.cmd).toBe("cf");
     expect(seen.args).toEqual(["api", "https://api.cf.ap10.hana.ondemand.com"]);
+  });
+
+  it("uses a configured cf binary and merges context environment", async () => {
+    const previousCfBin = process.env["CF_SYNC_CF_BIN"];
+    process.env["CF_SYNC_CF_BIN"] = "/opt/tools/cf";
+    const seen: {
+      cmd?: string;
+      env: NodeJS.ProcessEnv | undefined;
+      maxBuffer: number | undefined;
+    } = {
+      env: undefined,
+      maxBuffer: undefined,
+    };
+    mockImpl = (cmd, _args, opts) => {
+      seen.cmd = cmd;
+      seen.env = opts.env;
+      seen.maxBuffer = opts.maxBuffer;
+      return { stdout: "", stderr: "" };
+    };
+
+    try {
+      const { cfApi } = await import("../../src/cf.js");
+      await cfApi("https://api.example.test", {
+        env: {
+          CF_HOME: "/tmp/cf-home",
+          CF_TRACE: "true",
+        },
+      });
+    } finally {
+      if (previousCfBin === undefined) {
+        delete process.env["CF_SYNC_CF_BIN"];
+      } else {
+        process.env["CF_SYNC_CF_BIN"] = previousCfBin;
+      }
+    }
+
+    expect(seen.cmd).toBe("/opt/tools/cf");
+    expect(seen.env?.["CF_HOME"]).toBe("/tmp/cf-home");
+    expect(seen.env?.["CF_TRACE"]).toBe("true");
+    expect(seen.env?.["PATH"]).toBe(process.env["PATH"]);
+    expect(seen.maxBuffer).toBe(16 * 1024 * 1024);
   });
 
   it("cfAuth passes email and password", async () => {

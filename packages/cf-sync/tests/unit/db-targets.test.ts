@@ -99,6 +99,26 @@ describe("db-targets", () => {
     });
   });
 
+  it("trims each explicit selector segment", () => {
+    expect(parseDbTargetSelector(" ap10 / org-alpha / dev / api-app ")).toEqual({
+      type: "explicit",
+      regionKey: "ap10",
+      orgName: "org-alpha",
+      spaceName: "dev",
+      appName: "api-app",
+      selector: "ap10/org-alpha/dev/api-app",
+    });
+  });
+
+  it("collects no DB targets from an empty topology snapshot", () => {
+    expect(
+      collectDbTargets({
+        syncedAt: "2026-04-24T00:00:00.000Z",
+        regions: [],
+      }),
+    ).toEqual([]);
+  });
+
   it("resolves a unique plain app name from topology", () => {
     expect(resolveDbTargetSelector(createStructure(), "billing-srv")).toEqual([
       {
@@ -124,6 +144,12 @@ describe("db-targets", () => {
 
   it("rejects malformed DB selectors", () => {
     expect(() => parseDbTargetSelector("ap10/org-alpha/orders-srv")).toThrow(
+      /region\/org\/space\/app/,
+    );
+  });
+
+  it("rejects DB selectors with too many segments", () => {
+    expect(() => parseDbTargetSelector("ap10/org-alpha/dev/api-app/extra")).toThrow(
       /region\/org\/space\/app/,
     );
   });

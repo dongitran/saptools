@@ -121,6 +121,38 @@ describe("parseAppDetails", () => {
     expect(parseAppDetails(stdout)[0]?.routes).toEqual(["sample-a.example.com", "sample-b.example.com"]);
   });
 
+  it("trims routes and sums all process instance counts", () => {
+    const stdout = [
+      "name                          requested state   processes                          routes",
+      "sample-api                    started           web:1/2, task:2/3, sidecar:0/1    sample-a.example.com, sample-b.example.com,",
+    ].join("\n");
+
+    expect(parseAppDetails(stdout)).toEqual([
+      {
+        name: "sample-api",
+        requestedState: "started",
+        runningInstances: 3,
+        totalInstances: 6,
+        routes: ["sample-a.example.com", "sample-b.example.com"],
+      },
+    ]);
+  });
+
+  it("keeps runtime state when a process column is not parseable", () => {
+    const stdout = [
+      "name                          requested state   processes   routes",
+      "sample-api                    started           pending     sample-a.example.com",
+    ].join("\n");
+
+    expect(parseAppDetails(stdout)).toEqual([
+      {
+        name: "sample-api",
+        requestedState: "started",
+        routes: ["sample-a.example.com"],
+      },
+    ]);
+  });
+
   it("returns name-only details when state columns are missing", () => {
     expect(parseAppDetails("name\nsample-api\n")).toEqual([{ name: "sample-api" }]);
   });
