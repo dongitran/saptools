@@ -1,0 +1,6 @@
+export const DEFAULT_TUNNEL_READY_TIMEOUT_MS = 30_000;
+export const POST_USR1_DELAY_MS = 300;
+export const PORT_CLEANUP_DELAY_MS = 600;
+export const CHILD_SIGTERM_GRACE_MS = 2_000;
+export const PORT_RECLAIM_DELAY_MS = 250;
+export const PID_TERMINATION_POLL_MS = 100;
