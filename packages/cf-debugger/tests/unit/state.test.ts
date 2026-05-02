@@ -103,6 +103,54 @@ describe("state management", () => {
     expect(a.session.localPort).not.toBe(b.session.localPort);
   });
 
+  it("uses a free preferred port when provided", async () => {
+    const result = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      preferredPort: 20_555,
+      portProbe: async () => true,
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+
+    expect(result.session.localPort).toBe(20_555);
+  });
+
+  it("skips an unavailable preferred port and selects the first free fallback", async () => {
+    const result = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      preferredPort: 20_555,
+      portProbe: async (port) => port !== 20_555,
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+
+    expect(result.session.localPort).toBe(20_000);
+  });
+
+  it("throws when no local port can be reserved", async () => {
+    await expect(
+      registerNewSession({
+        region: "eu10",
+        org: "org-a",
+        space: "dev",
+        app: "demo-app",
+        apiEndpoint: "https://example.com",
+        portProbe: async () => false,
+        cfHomeForSession: (id) => join(tempDir, id),
+        basePort: 30_000,
+        maxPort: 30_001,
+      }),
+    ).rejects.toMatchObject({
+      code: "PORT_UNAVAILABLE",
+    });
+  });
+
   it("updateSessionStatus writes the new status to disk", async () => {
     const result = await registerNewSession({
       region: "eu10",
@@ -116,6 +164,28 @@ describe("state management", () => {
     await updateSessionStatus(result.session.sessionId, "ready");
     const sessions = await readActiveSessions();
     expect(sessions[0]?.status).toBe("ready");
+  });
+
+  it("updateSessionStatus stores and clears optional status messages", async () => {
+    const result = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      portProbe: async () => true,
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+
+    await updateSessionStatus(result.session.sessionId, "ssh-enabling", "waiting");
+    expect((await readActiveSessions())[0]?.message).toBe("waiting");
+
+    await updateSessionStatus(result.session.sessionId, "ready");
+    expect((await readActiveSessions())[0]?.message).toBeUndefined();
+  });
+
+  it("updateSessionStatus returns undefined for a missing session", async () => {
+    await expect(updateSessionStatus("missing", "ready")).resolves.toBeUndefined();
   });
 
   it("updateSessionPid writes the new pid to disk", async () => {
@@ -133,6 +203,10 @@ describe("state management", () => {
     expect(sessions[0]?.pid).toBe(process.pid);
   });
 
+  it("updateSessionPid returns undefined for a missing session", async () => {
+    await expect(updateSessionPid("missing", process.pid)).resolves.toBeUndefined();
+  });
+
   it("removeSession deletes the entry", async () => {
     const result = await registerNewSession({
       region: "eu10",
@@ -145,6 +219,16 @@ describe("state management", () => {
     });
     await removeSession(result.session.sessionId);
     expect(await readActiveSessions()).toEqual([]);
+  });
+
+  it("removeSession returns undefined for a missing session", async () => {
+    await expect(removeSession("missing")).resolves.toBeUndefined();
+  });
+
+  it("resets invalid state files to an empty state", async () => {
+    await writeFile(join(tempDir, "state.json"), "{not json", "utf8");
+
+    await expect(readActiveSessions()).resolves.toEqual([]);
   });
 
   it("prunes sessions whose pid is dead on the current host", async () => {
@@ -183,5 +267,37 @@ describe("state management", () => {
 
     const sessions = await readActiveSessions();
     expect(sessions).toEqual([]);
+  });
+
+  it("keeps remote-host sessions even when their pid is not local", async () => {
+    const stateFile = join(tempDir, "state.json");
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        version: "1",
+        sessions: [
+          {
+            sessionId: "remote",
+            pid: 2_147_483_600,
+            hostname: "another-host",
+            region: "eu10",
+            org: "org-a",
+            space: "dev",
+            app: "demo-app",
+            apiEndpoint: "https://example.com",
+            localPort: 20_000,
+            remotePort: 9229,
+            cfHomeDir: join(tempDir, "home"),
+            startedAt: new Date().toISOString(),
+            status: "ready",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const sessions = await readActiveSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.sessionId).toBe("remote");
   });
 });

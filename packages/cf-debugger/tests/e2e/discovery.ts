@@ -55,6 +55,34 @@ function candidateRegions(): readonly string[] {
   return listKnownRegionKeys();
 }
 
+function configuredTargetInput(): {
+  readonly regionKey: string;
+  readonly org: string;
+  readonly space: string;
+  readonly apps: readonly string[];
+} | undefined {
+  const regionKey = process.env["CF_DEBUGGER_E2E_REGION"];
+  const org = process.env["CF_DEBUGGER_E2E_ORG"];
+  const space = process.env["CF_DEBUGGER_E2E_SPACE"];
+  const appsRaw = process.env["CF_DEBUGGER_E2E_APPS"];
+  if (
+    regionKey === undefined ||
+    org === undefined ||
+    space === undefined ||
+    appsRaw === undefined
+  ) {
+    return undefined;
+  }
+  const apps = appsRaw
+    .split(",")
+    .map((app) => app.trim())
+    .filter((app) => app.length > 0);
+  if (regionKey === "" || org === "" || space === "" || apps.length === 0) {
+    return undefined;
+  }
+  return { regionKey, org, space, apps };
+}
+
 async function loginTo(
   apiEndpoint: string,
   email: string,
@@ -118,11 +146,55 @@ async function discoverTargetsInRegion(
   });
 }
 
+async function discoverConfiguredTargets(
+  email: string,
+  password: string,
+  count: number,
+): Promise<readonly DebugTarget[]> {
+  const configured = configuredTargetInput();
+  if (configured === undefined) {
+    return [];
+  }
+
+  const apiEndpoint = resolveApiEndpoint(configured.regionKey);
+  return await withIsolatedCfHome(async ({ env }) => {
+    const authenticated = await loginTo(apiEndpoint, email, password, env);
+    if (!authenticated) {
+      return [];
+    }
+
+    try {
+      await cfExec(["target", "-o", configured.org, "-s", configured.space], env);
+      const { stdout } = await cfExec(["apps"], env);
+      const running = parseApps(stdout).filter(
+        (app) =>
+          configured.apps.includes(app.name) &&
+          app.state === "started" &&
+          app.runningInstances > 0,
+      );
+      return running.slice(0, count).map((app) => ({
+        regionKey: configured.regionKey,
+        apiEndpoint,
+        org: configured.org,
+        space: configured.space,
+        app: app.name,
+      }));
+    } catch {
+      return [];
+    }
+  });
+}
+
 export async function discoverDebugTargets(
   email: string,
   password: string,
   count: number,
 ): Promise<readonly DebugTarget[]> {
+  const configuredTargets = await discoverConfiguredTargets(email, password, count);
+  if (configuredTargets.length >= count) {
+    return configuredTargets;
+  }
+
   const regions = candidateRegions();
 
   for (const regionKey of regions) {

@@ -9,6 +9,9 @@ describe("isSshDisabledError", () => {
   it("detects the 'ssh support is disabled' variant", () => {
     expect(isSshDisabledError("SSH support is disabled for this app.")).toBe(true);
   });
+  it("detects disabled SSH errors regardless of casing", () => {
+    expect(isSshDisabledError("ssh SUPPORT is DISABLED for this application")).toBe(true);
+  });
   it("returns false for unrelated errors", () => {
     expect(isSshDisabledError("App my-demo not found")).toBe(false);
   });
@@ -30,6 +33,19 @@ describe("parseNameTable", () => {
   it("returns an empty array when the header is missing", () => {
     expect(parseNameTable("nope")).toEqual([]);
   });
+
+  it("ignores banner and blank lines around name rows", () => {
+    const stdout = [
+      "Getting spaces as user@example.com...",
+      "",
+      "  name  ",
+      "  dev  ",
+      "",
+      "  qa  ",
+      "",
+    ].join("\n");
+    expect(parseNameTable(stdout)).toEqual(["dev", "qa"]);
+  });
 });
 
 describe("parseAppNames", () => {
@@ -43,5 +59,20 @@ describe("parseAppNames", () => {
       "",
     ].join("\n");
     expect(parseAppNames(stdout)).toEqual(["demo-app", "demo-worker"]);
+  });
+
+  it("returns an empty array when the apps header is absent", () => {
+    expect(parseAppNames("No apps found")).toEqual([]);
+  });
+
+  it("ignores empty rows after the apps header", () => {
+    const stdout = [
+      "name               requested state   processes                      routes",
+      "",
+      "api-app            started           web:1/1                         api.example.com",
+      "",
+      "worker-app         stopped           web:0/1                         ",
+    ].join("\n");
+    expect(parseAppNames(stdout)).toEqual(["api-app", "worker-app"]);
   });
 });

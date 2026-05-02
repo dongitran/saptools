@@ -57,4 +57,33 @@ describe("withFileLock", () => {
     });
     expect(ran).toBe(42);
   });
+
+  it("times out when the lock remains held", async () => {
+    const lockPath = join(tempDir, "c.lock");
+    let releaseLock: () => void = () => undefined;
+    let holding: Promise<void> | undefined;
+    const entered = new Promise<void>((resolve) => {
+      const held = new Promise<void>((release) => {
+        releaseLock = release;
+      });
+      holding = withFileLock(lockPath, async (): Promise<void> => {
+        resolve();
+        await held;
+      });
+    });
+
+    await entered;
+    await expect(
+      withFileLock(
+        lockPath,
+        async (): Promise<number> => 1,
+        { timeoutMs: 50, pollMs: 5 },
+      ),
+    ).rejects.toThrow(/Timed out acquiring file lock/);
+
+    releaseLock();
+    await holding;
+    const recovered = await withFileLock(lockPath, async (): Promise<number> => 2);
+    expect(recovered).toBe(2);
+  });
 });

@@ -10,10 +10,7 @@ export default defineConfig({
       exclude: [
         "src/cli.ts",
         "src/index.ts",
-        "src/debugger.ts",
         "src/cf.ts",
-        "src/paths.ts",
-        "src/port.ts",
         "src/types.ts",
       ],
       reporter: ["text", "html"],

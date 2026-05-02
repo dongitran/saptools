@@ -15,6 +15,29 @@ export interface StartedSession {
   readonly stderr: () => string;
 }
 
+export interface CliCommandResult {
+  readonly code: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export async function runCliCommand(
+  env: NodeJS.ProcessEnv,
+  args: readonly string[],
+): Promise<CliCommandResult> {
+  const child = spawn("node", [CLI_PATH, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk.toString("utf8")));
+  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk.toString("utf8")));
+  const result = await waitForCliExit(child);
+  return {
+    code: result.code,
+    stdout: stdoutChunks.join(""),
+    stderr: stderrChunks.join(""),
+  };
+}
+
 export async function startCli(
   env: NodeJS.ProcessEnv,
   args: readonly string[],
