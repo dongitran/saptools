@@ -142,6 +142,75 @@ describe("structure file I/O", () => {
     expect(readBack?.regions.filter((region) => region.key === "ap10")).toHaveLength(1);
   });
 
+  it("keeps stable structure unchanged when on-demand persistence runs during active sync", async () => {
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    const {
+      persistRegion,
+      readRuntimeState,
+      readStructure,
+      writeStructure,
+    } = await import("../../src/structure.js");
+
+    const stableStructure: CfStructure = {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable-region",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-stable", spaces: [] }],
+        },
+      ],
+    };
+    await writeStructure(stableStructure);
+
+    const runtimeState: RuntimeSyncState = {
+      syncId: "active-sync",
+      status: "running",
+      startedAt: "2026-04-18T00:00:01.000Z",
+      updatedAt: "2026-04-18T00:00:01.000Z",
+      requestedRegionKeys: ["ap10", "eu10"],
+      completedRegionKeys: [],
+      structure: {
+        syncedAt: "2026-04-18T00:00:01.000Z",
+        regions: [],
+      },
+    };
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(cfRuntimeStatePath(), `${JSON.stringify(runtimeState, null, 2)}\n`, "utf8");
+
+    await expect(
+      persistRegion({
+        key: "ap10",
+        label: "runtime-region",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        accessible: true,
+        orgs: [{ name: "org-runtime", spaces: [{ name: "dev", apps: [{ name: "api-app" }] }] }],
+      }),
+    ).resolves.toMatchObject({
+      syncId: "active-sync",
+      status: "running",
+      completedRegionKeys: ["ap10"],
+      pendingRegionKeys: ["eu10"],
+    });
+
+    await expect(readStructure()).resolves.toEqual(stableStructure);
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      syncId: "active-sync",
+      status: "running",
+      structure: {
+        regions: [
+          expect.objectContaining({
+            key: "ap10",
+            label: "runtime-region",
+            orgs: [{ name: "org-runtime", spaces: [{ name: "dev", apps: [{ name: "api-app" }] }] }],
+          }),
+        ],
+      },
+    });
+  });
+
   it("creates parent directory when missing", async () => {
     const { writeStructure } = await import("../../src/structure.js");
     const fixture: CfStructure = { syncedAt: "2026-04-18T00:00:00.000Z", regions: [] };

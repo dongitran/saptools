@@ -227,6 +227,19 @@ describe("db-store", () => {
     });
   });
 
+  it("returns undefined when an explicit DB selector is absent from the stable snapshot", async () => {
+    const { readDbAppView, writeDbSnapshot } = await import("../../src/db-store.js");
+
+    const entry = createEntry();
+    await writeDbSnapshot({
+      version: 1,
+      syncedAt: "2026-04-24T00:00:03.000Z",
+      entries: [entry],
+    });
+
+    await expect(readDbAppView("ap10/org-alpha/dev/api-app")).resolves.toBeUndefined();
+  });
+
   it("replaces duplicate DB runtime entries by selector", async () => {
     const {
       completeDbRuntimeState,
@@ -255,6 +268,54 @@ describe("db-store", () => {
         bindings: [createBinding()],
       }),
     ]);
+  });
+
+  it("ignores DB runtime entry updates for a different sync id", async () => {
+    const {
+      initializeDbRuntimeState,
+      mergeDbRuntimeEntry,
+      readDbRuntimeState,
+    } = await import("../../src/db-store.js");
+
+    const requestedTargets = [createEntry().selector];
+    await initializeDbRuntimeState("current-db-sync", requestedTargets);
+
+    await expect(
+      mergeDbRuntimeEntry(
+        "other-db-sync",
+        requestedTargets,
+        createEntry({ bindings: [createBinding()] }),
+      ),
+    ).resolves.toBeUndefined();
+
+    await expect(readDbRuntimeState()).resolves.toMatchObject({
+      syncId: "current-db-sync",
+      status: "running",
+      completedTargets: [],
+      snapshot: {
+        entries: [],
+      },
+    });
+  });
+
+  it("ignores DB runtime failures for a different sync id", async () => {
+    const {
+      failDbRuntimeState,
+      initializeDbRuntimeState,
+      readDbRuntimeState,
+    } = await import("../../src/db-store.js");
+
+    await initializeDbRuntimeState("current-db-sync", [createEntry().selector]);
+    await failDbRuntimeState("other-db-sync", "ignored failure");
+
+    const state = await readDbRuntimeState();
+    expect(state).toMatchObject({
+      syncId: "current-db-sync",
+      status: "running",
+      completedTargets: [],
+    });
+    expect(state?.error).toBeUndefined();
+    expect(state?.finishedAt).toBeUndefined();
   });
 
   it("rejects ambiguous plain app names from the cached DB snapshot", async () => {

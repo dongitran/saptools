@@ -81,6 +81,28 @@ function createDbScenario(): Scenario {
   };
 }
 
+function createWorkerScenario(): Scenario {
+  return {
+    regions: [
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "org-alpha",
+            spaces: [
+              {
+                name: "dev",
+                apps: [{ name: "api-app" }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createAmbiguousScenario(): Scenario {
   return {
     regions: [
@@ -237,6 +259,65 @@ test.describe("DB sync commands", () => {
         bindings: [expect.objectContaining({ kind: "hana", name: "hana-primary" })],
       },
     });
+  });
+
+  test("User can run the internal DB sync worker for one explicit app", async () => {
+    const paths = await prepareCase(ROOT_NAME, "db-sync-worker-explicit", createWorkerScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+    const selector = "ap10/org-alpha/dev/api-app";
+
+    const worker = spawn("node", [CLI_PATH, "db-sync-worker", "--sync-id", "worker-sync", selector], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const workerResult = await waitForExit(worker);
+    expect(workerResult.code, `stderr was: ${workerResult.stderr}`).toBe(0);
+
+    const completedState = await waitForDbRuntimeState(
+      paths.dbRuntimeStatePath,
+      (state) => state["status"] === "completed",
+    );
+    expect(completedState).toMatchObject({
+      syncId: "worker-sync",
+      status: "completed",
+      requestedTargets: [selector],
+      completedTargets: [selector],
+      snapshot: {
+        entries: [
+          {
+            selector,
+            appName: "api-app",
+            bindings: [],
+          },
+        ],
+      },
+    });
+
+    const view = await runJsonCommand(env, ["db-read", selector]);
+    expect(view).toMatchObject({
+      source: "runtime",
+      entry: {
+        selector,
+        appName: "api-app",
+        bindings: [],
+      },
+      metadata: {
+        syncId: "worker-sync",
+        status: "completed",
+      },
+    });
+
+    const history = await readDbSyncHistory(paths.dbHistoryPath);
+    expect(history.map((entry) => entry.event)).toEqual(
+      expect.arrayContaining([
+        "db_sync_requested",
+        "db_sync_lock_acquired",
+        "db_runtime_initialized",
+        "db_app_loaded",
+        "db_sync_completed",
+        "db_sync_lock_released",
+      ]),
+    );
   });
 
   test("User gets a clear error when DB sync is requested before any topology snapshot exists", async () => {
