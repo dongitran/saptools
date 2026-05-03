@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractVcapServicesJson, parseXsuaaFromVcap } from "../../src/vcap.js";
+import { extractVcapServicesJson, parseXsuaaFromVcap } from "../../src/vcap/index.js";
 
 const sampleStdout = (vcap: unknown): string =>
   [

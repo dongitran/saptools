@@ -32,12 +32,12 @@ const creds: XsuaaCredentials = {
 
 describe("store", () => {
   it("readStore returns empty store when file missing", async () => {
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     expect(await readStore()).toEqual({ version: 1, entries: [] });
   });
 
   it("writeStore persists entries readable by readStore", async () => {
-    const { writeStore, readStore } = await import("../../src/store.js");
+    const { writeStore, readStore } = await import("../../src/store/index.js");
     const store: XsuaaStore = {
       version: 1,
       entries: [{ ...ref, credentials: creds, fetchedAt: "2026-04-18T00:00:00.000Z" }],
@@ -47,7 +47,7 @@ describe("store", () => {
   });
 
   it("writeStore creates the cache with owner-only permissions", async () => {
-    const { writeStore } = await import("../../src/store.js");
+    const { writeStore } = await import("../../src/store/index.js");
     const { xsuaaDataPath } = await import("../../src/paths.js");
     await writeStore({ version: 1, entries: [] });
     const mode = (await stat(xsuaaDataPath())).mode & 0o777;
@@ -55,7 +55,7 @@ describe("store", () => {
   });
 
   it("writeStore tightens permissions on an existing cache", async () => {
-    const { writeStore } = await import("../../src/store.js");
+    const { writeStore } = await import("../../src/store/index.js");
     const { xsuaaDataPath } = await import("../../src/paths.js");
     await mkdir(dirname(xsuaaDataPath()), { recursive: true });
     await writeFile(xsuaaDataPath(), JSON.stringify({ version: 1, entries: [] }), {
@@ -70,7 +70,7 @@ describe("store", () => {
   });
 
   it("readStore ignores malformed data gracefully", async () => {
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const { xsuaaDataPath } = await import("../../src/paths.js");
     await mkdir(dirname(xsuaaDataPath()), { recursive: true });
     await writeFile(xsuaaDataPath(), JSON.stringify({ version: 2 }), "utf8");
@@ -78,7 +78,7 @@ describe("store", () => {
   });
 
   it("readStore ignores stores whose entries are not an array", async () => {
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const { xsuaaDataPath } = await import("../../src/paths.js");
     await mkdir(dirname(xsuaaDataPath()), { recursive: true });
     await writeFile(xsuaaDataPath(), JSON.stringify({ version: 1, entries: {} }), "utf8");
@@ -86,7 +86,7 @@ describe("store", () => {
   });
 
   it("readStore propagates invalid JSON", async () => {
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const { xsuaaDataPath } = await import("../../src/paths.js");
     await mkdir(dirname(xsuaaDataPath()), { recursive: true });
     await writeFile(xsuaaDataPath(), "{not-json}", "utf8");
@@ -94,14 +94,14 @@ describe("store", () => {
   });
 
   it("writeStore writes a trailing newline", async () => {
-    const { writeStore } = await import("../../src/store.js");
+    const { writeStore } = await import("../../src/store/index.js");
     const { xsuaaDataPath } = await import("../../src/paths.js");
     await writeStore({ version: 1, entries: [] });
     await expect(readFile(xsuaaDataPath(), "utf8")).resolves.toMatch(/\n$/);
   });
 
   it("upsertSecret creates new entry", async () => {
-    const { upsertSecret } = await import("../../src/store.js");
+    const { upsertSecret } = await import("../../src/store/index.js");
     const now = new Date("2026-04-18T00:00:00.000Z");
     const next = upsertSecret({ version: 1, entries: [] }, ref, creds, now);
     expect(next.entries).toHaveLength(1);
@@ -109,7 +109,7 @@ describe("store", () => {
   });
 
   it("upsertSecret updates existing entry in place", async () => {
-    const { upsertSecret } = await import("../../src/store.js");
+    const { upsertSecret } = await import("../../src/store/index.js");
     const base = upsertSecret({ version: 1, entries: [] }, ref, creds, new Date(0));
     const next = upsertSecret(base, ref, { ...creds, clientSecret: "NEW" }, new Date(1000));
     expect(next.entries).toHaveLength(1);
@@ -117,7 +117,7 @@ describe("store", () => {
   });
 
   it("upsertSecret preserves an existing token when credentials rotate", async () => {
-    const { upsertSecret, upsertToken } = await import("../../src/store.js");
+    const { upsertSecret, upsertToken } = await import("../../src/store/index.js");
     const base = upsertSecret({ version: 1, entries: [] }, ref, creds, new Date(0));
     const withToken = upsertToken(base, ref, {
       accessToken: "cached-token",
@@ -131,7 +131,7 @@ describe("store", () => {
   });
 
   it("upsertSecret preserves unrelated entries and order", async () => {
-    const { upsertSecret } = await import("../../src/store.js");
+    const { upsertSecret } = await import("../../src/store/index.js");
     const otherRef: AppRef = { ...ref, app: "other" };
     const first = upsertSecret({ version: 1, entries: [] }, otherRef, creds, new Date(0));
     const second = upsertSecret(first, ref, creds, new Date(1000));
@@ -143,14 +143,14 @@ describe("store", () => {
   });
 
   it("findEntry matches by (region, org, space, app)", async () => {
-    const { findEntry, upsertSecret } = await import("../../src/store.js");
+    const { findEntry, upsertSecret } = await import("../../src/store/index.js");
     const store = upsertSecret({ version: 1, entries: [] }, ref, creds);
     expect(findEntry(store, ref)).toBeDefined();
     expect(findEntry(store, { ...ref, app: "other" })).toBeUndefined();
   });
 
   it("matchesRef checks every AppRef field", async () => {
-    const { matchesRef, upsertSecret } = await import("../../src/store.js");
+    const { matchesRef, upsertSecret } = await import("../../src/store/index.js");
     const store = upsertSecret({ version: 1, entries: [] }, ref, creds);
     const entry = store.entries[0];
 
@@ -166,14 +166,14 @@ describe("store", () => {
   });
 
   it("upsertToken adds token to existing entry", async () => {
-    const { upsertSecret, upsertToken, findEntry } = await import("../../src/store.js");
+    const { upsertSecret, upsertToken, findEntry } = await import("../../src/store/index.js");
     const store = upsertSecret({ version: 1, entries: [] }, ref, creds);
     const next = upsertToken(store, ref, { accessToken: "tok", expiresAt: "2026-04-18T01:00:00.000Z" });
     expect(findEntry(next, ref)?.token?.accessToken).toBe("tok");
   });
 
   it("upsertToken preserves credentials, fetchedAt, unrelated entries, and order", async () => {
-    const { upsertSecret, upsertToken } = await import("../../src/store.js");
+    const { upsertSecret, upsertToken } = await import("../../src/store/index.js");
     const otherRef: AppRef = { ...ref, app: "other" };
     const first = upsertSecret({ version: 1, entries: [] }, ref, creds, new Date(0));
     const second = upsertSecret(first, otherRef, { ...creds, clientId: "other-client" }, new Date(1000));
@@ -189,7 +189,7 @@ describe("store", () => {
   });
 
   it("upsertToken throws when entry missing", async () => {
-    const { upsertToken } = await import("../../src/store.js");
+    const { upsertToken } = await import("../../src/store/index.js");
     expect(() =>
       upsertToken({ version: 1, entries: [] }, ref, {
         accessToken: "t",

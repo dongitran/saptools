@@ -44,11 +44,3 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   await program.parseAsync([...argv]);
 }
-
-try {
-  await main(process.argv);
-} catch (err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`Error: ${msg}\n`);
-  process.exit(1);
-}

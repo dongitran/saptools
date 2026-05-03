@@ -1,7 +1,7 @@
 export type * from "./types.js";
 export * from "./paths.js";
-export * from "./store.js";
-export * from "./jwt.js";
-export * from "./vcap.js";
-export * from "./oauth.js";
-export * from "./commands.js";
+export * from "./store/index.js";
+export * from "./jwt/index.js";
+export * from "./vcap/index.js";
+export * from "./oauth/client-credentials.js";
+export * from "./commands/index.js";

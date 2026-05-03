@@ -74,7 +74,7 @@ beforeEach(() => {
 describe("fetchAppXsuaaCredentials", () => {
   it("rejects unknown regions before calling CF", async () => {
     const mocked = mockCfSync();
-    const { fetchAppXsuaaCredentials } = await import("../../src/cf-bridge.js");
+    const { fetchAppXsuaaCredentials } = await import("../../src/cloud-foundry/xsuaa.js");
 
     await expect(fetchAppXsuaaCredentials({ ...ref, region: "unknown" })).rejects.toThrow(/Unknown region/);
 
@@ -87,7 +87,7 @@ describe("fetchAppXsuaaCredentials", () => {
   it("requires SAP_EMAIL before CF authentication", async () => {
     delete process.env["SAP_EMAIL"];
     const mocked = mockCfSync();
-    const { fetchAppXsuaaCredentials } = await import("../../src/cf-bridge.js");
+    const { fetchAppXsuaaCredentials } = await import("../../src/cloud-foundry/xsuaa.js");
 
     await expect(fetchAppXsuaaCredentials(ref)).rejects.toThrow(/SAP_EMAIL/);
 
@@ -98,7 +98,7 @@ describe("fetchAppXsuaaCredentials", () => {
   it("requires SAP_PASSWORD before CF authentication", async () => {
     delete process.env["SAP_PASSWORD"];
     const mocked = mockCfSync();
-    const { fetchAppXsuaaCredentials } = await import("../../src/cf-bridge.js");
+    const { fetchAppXsuaaCredentials } = await import("../../src/cloud-foundry/xsuaa.js");
 
     await expect(fetchAppXsuaaCredentials(ref)).rejects.toThrow(/SAP_PASSWORD/);
 
@@ -108,7 +108,7 @@ describe("fetchAppXsuaaCredentials", () => {
 
   it("targets CF and parses credentials in order", async () => {
     const mocked = mockCfSync();
-    const { fetchAppXsuaaCredentials } = await import("../../src/cf-bridge.js");
+    const { fetchAppXsuaaCredentials } = await import("../../src/cloud-foundry/xsuaa.js");
 
     const credentials = await fetchAppXsuaaCredentials(ref);
 
@@ -128,14 +128,14 @@ describe("fetchAppXsuaaCredentials", () => {
 
   it("propagates parser failures from CF env output", async () => {
     mockCfSync({ envOutput: "System-Provided:\nVCAP_SERVICES: {}\nVCAP_APPLICATION: {}" });
-    const { fetchAppXsuaaCredentials } = await import("../../src/cf-bridge.js");
+    const { fetchAppXsuaaCredentials } = await import("../../src/cloud-foundry/xsuaa.js");
 
     await expect(fetchAppXsuaaCredentials(ref)).rejects.toThrow(/xsuaa/);
   });
 
   it("propagates sanitized auth failures without exposing the password", async () => {
     mockCfSync({ authError: new Error("cf auth failed: [REDACTED]") });
-    const { fetchAppXsuaaCredentials } = await import("../../src/cf-bridge.js");
+    const { fetchAppXsuaaCredentials } = await import("../../src/cloud-foundry/xsuaa.js");
 
     await expect(fetchAppXsuaaCredentials(ref)).rejects.not.toThrow(/password/);
     await expect(fetchAppXsuaaCredentials(ref)).rejects.toThrow(/\[REDACTED]/);

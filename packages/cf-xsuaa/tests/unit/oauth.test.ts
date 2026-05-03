@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchClientCredentialsToken } from "../../src/oauth.js";
+import { fetchClientCredentialsToken } from "../../src/oauth/client-credentials.js";
 import type { XsuaaCredentials } from "../../src/types.js";
 
 const creds: XsuaaCredentials = {

@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, it } from "vitest";
 
-import { computeExpiryIso, decodeJwtPayload, isExpired, TOKEN_EXPIRY_BUFFER_SECONDS } from "../../src/jwt.js";
+import { computeExpiryIso, decodeJwtPayload, isExpired, TOKEN_EXPIRY_BUFFER_SECONDS } from "../../src/jwt/index.js";
 
 function makeJwt(payload: Record<string, unknown>): string {
   const encode = (obj: unknown): string =>

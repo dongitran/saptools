@@ -39,32 +39,32 @@ afterEach(async () => {
 
 describe("fetchSecret", () => {
   it("writes credentials to store", async () => {
-    const { fetchSecret } = await import("../../src/commands.js");
+    const { fetchSecret } = await import("../../src/commands/index.js");
     const entry = await fetchSecret(ref, {
       fetchCredentials: async () => await Promise.resolve(creds),
     });
     expect(entry.credentials).toEqual(creds);
 
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const store = await readStore();
     expect(store.entries).toHaveLength(1);
   });
 
   it("updates existing entry instead of appending", async () => {
-    const { fetchSecret } = await import("../../src/commands.js");
+    const { fetchSecret } = await import("../../src/commands/index.js");
     await fetchSecret(ref, { fetchCredentials: async () => await Promise.resolve(creds) });
     await fetchSecret(ref, {
       fetchCredentials: async () => await Promise.resolve({ ...creds, clientSecret: "NEW" }),
     });
 
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const store = await readStore();
     expect(store.entries).toHaveLength(1);
     expect(store.entries[0]?.credentials.clientSecret).toBe("NEW");
   });
 
   it("uses injected now for fetchedAt", async () => {
-    const { fetchSecret } = await import("../../src/commands.js");
+    const { fetchSecret } = await import("../../src/commands/index.js");
     const now = new Date("2026-04-18T00:00:00.000Z");
 
     const entry = await fetchSecret(ref, {
@@ -76,7 +76,7 @@ describe("fetchSecret", () => {
   });
 
   it("propagates credential fetcher errors", async () => {
-    const { fetchSecret } = await import("../../src/commands.js");
+    const { fetchSecret } = await import("../../src/commands/index.js");
 
     await expect(
       fetchSecret(ref, {
@@ -89,7 +89,7 @@ describe("fetchSecret", () => {
 
   it("propagates store write errors", async () => {
     await writeFile(join(tempHome, ".saptools"), "not-a-directory", "utf8");
-    const { fetchSecret } = await import("../../src/commands.js");
+    const { fetchSecret } = await import("../../src/commands/index.js");
 
     await expect(
       fetchSecret(ref, {
@@ -101,7 +101,7 @@ describe("fetchSecret", () => {
 
 describe("getToken", () => {
   it("fetches secret automatically if not present, then returns token", async () => {
-    const { getToken } = await import("../../src/commands.js");
+    const { getToken } = await import("../../src/commands/index.js");
     const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
     const token = await getToken(ref, {
       fetchCredentials: async () => await Promise.resolve(creds),
@@ -109,14 +109,14 @@ describe("getToken", () => {
     });
     expect(token).toBe(jwt);
 
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const store = await readStore();
     expect(store.entries[0]?.token?.accessToken).toBe(jwt);
     expect(store.entries[0]?.token?.expiresAt).toMatch(/T/);
   });
 
   it("uses cached credentials without refetching the secret", async () => {
-    const { fetchSecret, getToken } = await import("../../src/commands.js");
+    const { fetchSecret, getToken } = await import("../../src/commands/index.js");
     await fetchSecret(ref, { fetchCredentials: async () => await Promise.resolve(creds) });
 
     const credentialFetcher = vi.fn(async () => await Promise.resolve({ ...creds, clientId: "unexpected" }));
@@ -135,7 +135,7 @@ describe("getToken", () => {
   });
 
   it("stores fallback expiry when token has no exp", async () => {
-    const { getToken } = await import("../../src/commands.js");
+    const { getToken } = await import("../../src/commands/index.js");
     const now = new Date("2026-04-18T00:00:00.000Z");
     const jwt = makeJwt({});
 
@@ -145,16 +145,16 @@ describe("getToken", () => {
       now,
     });
 
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const store = await readStore();
     expect(store.entries[0]?.token?.expiresAt).toBe("2026-04-18T00:59:15.000Z");
   });
 
   it("propagates token fetch errors without overwriting an existing token", async () => {
-    const { fetchSecret, getToken } = await import("../../src/commands.js");
+    const { fetchSecret, getToken } = await import("../../src/commands/index.js");
     await fetchSecret(ref, { fetchCredentials: async () => await Promise.resolve(creds) });
 
-    const { readStore, writeStore, upsertToken } = await import("../../src/store.js");
+    const { readStore, writeStore, upsertToken } = await import("../../src/store/index.js");
     const baseStore = await readStore();
     await writeStore(
       upsertToken(baseStore, ref, {
@@ -178,11 +178,11 @@ describe("getToken", () => {
 
 describe("getTokenCached", () => {
   it("returns cached token if still valid", async () => {
-    const { fetchSecret, getTokenCached } = await import("../../src/commands.js");
+    const { fetchSecret, getTokenCached } = await import("../../src/commands/index.js");
     const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
     await fetchSecret(ref, { fetchCredentials: async () => await Promise.resolve(creds) });
 
-    const { readStore, writeStore, upsertToken } = await import("../../src/store.js");
+    const { readStore, writeStore, upsertToken } = await import("../../src/store/index.js");
     const store = await readStore();
     const futureIso = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     await writeStore(upsertToken(store, ref, { accessToken: jwt, expiresAt: futureIso }));
@@ -194,12 +194,12 @@ describe("getTokenCached", () => {
   });
 
   it("refetches when cached token is expired", async () => {
-    const { fetchSecret, getTokenCached } = await import("../../src/commands.js");
+    const { fetchSecret, getTokenCached } = await import("../../src/commands/index.js");
     const oldJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) - 100 });
     const newJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
     await fetchSecret(ref, { fetchCredentials: async () => await Promise.resolve(creds) });
 
-    const { readStore, writeStore, upsertToken } = await import("../../src/store.js");
+    const { readStore, writeStore, upsertToken } = await import("../../src/store/index.js");
     const baseStore = await readStore();
     await writeStore(
       upsertToken(baseStore, ref, {
@@ -215,11 +215,11 @@ describe("getTokenCached", () => {
   });
 
   it("refetches when cached token expiry is invalid", async () => {
-    const { fetchSecret, getTokenCached } = await import("../../src/commands.js");
+    const { fetchSecret, getTokenCached } = await import("../../src/commands/index.js");
     const newJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
     await fetchSecret(ref, { fetchCredentials: async () => await Promise.resolve(creds) });
 
-    const { readStore, writeStore, upsertToken } = await import("../../src/store.js");
+    const { readStore, writeStore, upsertToken } = await import("../../src/store/index.js");
     const baseStore = await readStore();
     await writeStore(
       upsertToken(baseStore, ref, {
@@ -235,7 +235,7 @@ describe("getTokenCached", () => {
   });
 
   it("fetches secret and token when neither is cached", async () => {
-    const { getTokenCached } = await import("../../src/commands.js");
+    const { getTokenCached } = await import("../../src/commands/index.js");
     const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
     const token = await getTokenCached(ref, {
       fetchCredentials: async () => await Promise.resolve(creds),
@@ -245,7 +245,7 @@ describe("getTokenCached", () => {
   });
 
   it("forwards injected fetchers and now when cache is cold", async () => {
-    const { getTokenCached } = await import("../../src/commands.js");
+    const { getTokenCached } = await import("../../src/commands/index.js");
     const now = new Date("2026-04-18T00:00:00.000Z");
     const jwt = makeJwt({});
     const credentialFetcher = vi.fn(async () => await Promise.resolve(creds));
@@ -257,7 +257,7 @@ describe("getTokenCached", () => {
       now,
     });
 
-    const { readStore } = await import("../../src/store.js");
+    const { readStore } = await import("../../src/store/index.js");
     const store = await readStore();
     expect(credentialFetcher).toHaveBeenCalledOnce();
     expect(tokenFetcher).toHaveBeenCalledOnce();
