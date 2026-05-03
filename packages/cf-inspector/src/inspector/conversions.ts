@@ -2,6 +2,7 @@ import type {
   CallFrameInfo,
   PauseEvent,
   ResolvedLocation,
+  ScriptInfo,
   ScopeInfo,
 } from "../types.js";
 
@@ -18,6 +19,10 @@ export function asString(value: unknown, fallback = ""): string {
 
 export function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function toResolvedLocations(value: unknown): readonly ResolvedLocation[] {
@@ -64,7 +69,25 @@ function toScopeChain(value: unknown): readonly ScopeInfo[] {
   });
 }
 
-function toCallFrames(value: unknown): readonly CallFrameInfo[] {
+function resolveCallFrameUrl(
+  frame: CdpCallFrame,
+  scripts: ReadonlyMap<string, ScriptInfo> | undefined,
+): string | undefined {
+  const direct = nonEmptyString(frame.url);
+  if (direct !== undefined) {
+    return direct;
+  }
+  const scriptId = nonEmptyString(frame.location?.scriptId);
+  if (scriptId === undefined) {
+    return undefined;
+  }
+  return nonEmptyString(scripts?.get(scriptId)?.url);
+}
+
+function toCallFrames(
+  value: unknown,
+  scripts: ReadonlyMap<string, ScriptInfo> | undefined,
+): readonly CallFrameInfo[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -77,7 +100,7 @@ function toCallFrames(value: unknown): readonly CallFrameInfo[] {
     if (callFrameId.length === 0) {
       return [];
     }
-    const url = typeof candidate.url === "string" ? candidate.url : undefined;
+    const url = resolveCallFrameUrl(candidate, scripts);
     const base: CallFrameInfo = {
       callFrameId,
       functionName: asString(candidate.functionName),
@@ -89,13 +112,17 @@ function toCallFrames(value: unknown): readonly CallFrameInfo[] {
   });
 }
 
-export function toPauseEvent(params: CdpPauseParams, receivedAtMs: number): PauseEvent {
+export function toPauseEvent(
+  params: CdpPauseParams,
+  receivedAtMs: number,
+  scripts?: ReadonlyMap<string, ScriptInfo>,
+): PauseEvent {
   return {
     reason: asString(params.reason),
     hitBreakpoints: Array.isArray(params.hitBreakpoints)
       ? params.hitBreakpoints.filter((id): id is string => typeof id === "string")
       : [],
-    callFrames: toCallFrames(params.callFrames),
+    callFrames: toCallFrames(params.callFrames, scripts),
     receivedAtMs,
   };
 }

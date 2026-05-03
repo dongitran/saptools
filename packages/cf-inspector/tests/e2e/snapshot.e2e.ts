@@ -33,6 +33,7 @@ test("snapshot captures the paused frame on the marker line", async () => {
     expect("captureDurationMs" in parsed).toBe(false);
     expect(parsed.hitBreakpoints.length).toBeGreaterThan(0);
     expect(parsed.topFrame).toBeDefined();
+    expect(parsed.topFrame?.url).toContain("sample-app.mjs");
     expect(parsed.topFrame?.line).toBe(14);
     expect(parsed.topFrame === undefined ? false : "scopes" in parsed.topFrame).toBe(false);
 

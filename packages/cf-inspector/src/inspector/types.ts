@@ -35,7 +35,7 @@ export interface InspectorSession {
 export interface CdpCallFrame {
   callFrameId?: unknown;
   functionName?: unknown;
-  location?: { lineNumber?: unknown; columnNumber?: unknown };
+  location?: { scriptId?: unknown; lineNumber?: unknown; columnNumber?: unknown };
   url?: unknown;
   scopeChain?: unknown;
 }

@@ -42,7 +42,7 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
       return;
     }
     const params = raw as CdpPauseParams;
-    const event = toPauseEvent(params, performance.now());
+    const event = toPauseEvent(params, performance.now(), scripts);
     if (pauseBuffer.length >= PAUSE_BUFFER_LIMIT) {
       pauseBuffer.shift();
     }

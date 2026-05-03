@@ -131,5 +131,5 @@ async function waitForLivePause(
   } finally {
     session.pauseWaitGate.active = false;
   }
-  return toPauseEvent(params, receivedAtMs ?? performance.now());
+  return toPauseEvent(params, receivedAtMs ?? performance.now(), session.scripts);
 }

@@ -15,9 +15,12 @@ import {
   waitForPause,
 } from "../../src/inspector/index.js";
 import { CfInspectorError } from "../../src/types.js";
-import type { PauseEvent } from "../../src/types.js";
+import type { PauseEvent, ScriptInfo } from "../../src/types.js";
 
-function makeSession(buffer: PauseEvent[] = []): {
+function makeSession(
+  buffer: PauseEvent[] = [],
+  scripts: ReadonlyMap<string, ScriptInfo> = new Map(),
+): {
   session: InspectorSession;
   fireEvent: (params: unknown) => void;
   fireResumed: () => void;
@@ -68,7 +71,7 @@ function makeSession(buffer: PauseEvent[] = []): {
   const session: InspectorSession = {
     client,
     target: { id: "t", type: "node" } as never,
-    scripts: new Map(),
+    scripts,
     pauseBuffer: [...buffer],
     pauseWaitGate: { active: false },
     debuggerState: {},
@@ -145,6 +148,33 @@ describe("waitForPause", () => {
     const receivedAtMs = result.receivedAtMs ?? 0;
     expect(receivedAtMs).toBeGreaterThanOrEqual(before);
     expect(receivedAtMs).toBeLessThanOrEqual(performance.now());
+  });
+
+  it("fills a missing frame URL from the script map when CDP only reports a scriptId", async () => {
+    const scripts = new Map<string, ScriptInfo>([
+      ["script-1", { scriptId: "script-1", url: "file:///workspace/app/src/handler.js" }],
+    ]);
+    const { session, fireEvent } = makeSession([], scripts);
+    const promise = waitForPause(session, { timeoutMs: 200, breakpointIds: ["bp-url"] });
+
+    setTimeout(() => {
+      fireEvent({
+        reason: "other",
+        hitBreakpoints: ["bp-url"],
+        callFrames: [
+          {
+            callFrameId: "frame-url",
+            functionName: "handler",
+            url: "",
+            location: { scriptId: "script-1", lineNumber: 4, columnNumber: 2 },
+            scopeChain: [],
+          },
+        ],
+      });
+    }, 5);
+
+    const result = await promise;
+    expect(result.callFrames[0]?.url).toBe("file:///workspace/app/src/handler.js");
   });
 
   it("ignores live events whose breakpointId is not in the filter", async () => {
