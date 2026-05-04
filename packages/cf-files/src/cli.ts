@@ -2,8 +2,8 @@ import process from "node:process";
 
 import { Command } from "commander";
 
-import { downloadFile } from "./download.js";
 import { downloadFolder } from "./download-folder.js";
+import { downloadFile } from "./download.js";
 import { genEnv } from "./gen-env.js";
 import { listFiles, resolveRemotePath } from "./list.js";
 import { DEFAULT_APP_PATH, type CfTarget } from "./types.js";

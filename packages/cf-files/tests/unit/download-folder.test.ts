@@ -20,9 +20,11 @@ afterEach(async () => {
 const sessionContext = { env: { CF_HOME: "/tmp/cf-files-test-home" } };
 
 function makeLsOutput(entries: { name: string; isDir: boolean; size: number }[]): string {
-  const lines = [`total ${String(entries.length * 4)}`];
-  lines.push("drwxr-xr-x  2 vcap vcap 4096 Apr 20 10:00 .");
-  lines.push("drwxr-xr-x  3 vcap vcap 4096 Apr 20 10:00 ..");
+  const lines = [
+    `total ${String(entries.length * 4)}`,
+    "drwxr-xr-x  2 vcap vcap 4096 Apr 20 10:00 .",
+    "drwxr-xr-x  3 vcap vcap 4096 Apr 20 10:00 ..",
+  ];
   for (const e of entries) {
     const perms = e.isDir ? "drwxr-xr-x" : "-rw-r--r--";
     const links = e.isDir ? " 2" : " 1";
