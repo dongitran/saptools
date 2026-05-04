@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-files",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Export Cloud Foundry app env to default-env.json and pull files from running SAP BTP Cloud Foundry containers",
   "type": "module",
   "publishConfig": {
