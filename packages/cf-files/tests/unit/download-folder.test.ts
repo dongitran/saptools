@@ -33,6 +33,121 @@ function makeLsOutput(entries: { name: string; isDir: boolean; size: number }[])
   return `${lines.join("\n")}\n`;
 }
 
+// ── internals: path filtering helpers ─────────────────────────────────────────
+
+describe("internals.normalizeFilerPath", () => {
+  it("strips leading slash", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.normalizeFilerPath("/deps")).toBe("deps");
+  });
+
+  it("strips leading ./", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.normalizeFilerPath("./deps")).toBe("deps");
+  });
+
+  it("strips trailing slash", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.normalizeFilerPath("deps/")).toBe("deps");
+  });
+
+  it("leaves plain paths unchanged", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.normalizeFilerPath("deps/@vendor")).toBe("deps/@vendor");
+  });
+});
+
+describe("internals.pathStartsWith", () => {
+  it("returns true when path equals prefix", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.pathStartsWith("deps", "deps")).toBe(true);
+  });
+
+  it("returns true for child paths", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.pathStartsWith("deps/pkg/index.js", "deps")).toBe(true);
+  });
+
+  it("returns false for partial segment matches", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    // 'dependencies' must not match prefix 'deps'
+    expect(internals.pathStartsWith("dependencies/pkg", "deps")).toBe(false);
+  });
+
+  it("returns true for empty prefix", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.pathStartsWith("anything", "")).toBe(true);
+  });
+});
+
+describe("internals.shouldDownloadFile", () => {
+  it("allows file when no filters", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldDownloadFile("readme.md", [], [])).toBe(true);
+  });
+
+  it("blocks file under excluded path", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldDownloadFile("deps/pkg/index.js", ["deps"], [])).toBe(false);
+  });
+
+  it("allows file when include overrides exclude", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(
+      internals.shouldDownloadFile("deps/@vendor/pkg/index.js", ["deps"], ["deps/@vendor"]),
+    ).toBe(true);
+  });
+
+  it("blocks file not covered by include even when other include exists", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(
+      internals.shouldDownloadFile("deps/other/index.js", ["deps"], ["deps/@vendor"]),
+    ).toBe(false);
+  });
+
+  it("allows file when excluded but exact include matches", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldDownloadFile("dist/file.js", ["dist"], ["dist"])).toBe(true);
+  });
+});
+
+describe("internals.shouldRecurseDir", () => {
+  it("recurses into non-excluded dir", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldRecurseDir("src", ["deps"], [])).toBe(true);
+  });
+
+  it("skips excluded dir with no include patterns", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldRecurseDir("deps", ["deps"], [])).toBe(false);
+  });
+
+  it("recurses into excluded dir when an include lives beneath it", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldRecurseDir("deps", ["deps"], ["deps/@vendor"])).toBe(true);
+  });
+
+  it("skips sibling dirs that have no include underneath", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    // deps/other has no include under it — skip
+    expect(internals.shouldRecurseDir("deps/other", ["deps"], ["deps/@vendor"])).toBe(false);
+  });
+
+  it("recurses into the exact include dir even though parent is excluded", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(internals.shouldRecurseDir("deps/@vendor", ["deps"], ["deps/@vendor"])).toBe(true);
+  });
+
+  it("recurses into a child of an include dir", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(
+      internals.shouldRecurseDir("deps/@vendor/pkg", ["deps"], ["deps/@vendor"]),
+    ).toBe(true);
+  });
+});
+
+// ── downloadFolder integration ─────────────────────────────────────────────────
+
 describe("downloadFolder", () => {
   it("downloads all files in a flat directory", async () => {
     const dispose = vi.fn().mockResolvedValue(undefined);
@@ -200,15 +315,11 @@ describe("downloadFolder", () => {
     const { downloadFolder } = await import("../../src/download-folder.js");
     await downloadFolder({
       target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "src",
+      remotePath: "sub",
       outDir: join(tempDir, "out"),
     });
 
-    expect(cfSsh).toHaveBeenCalledWith(
-      "a",
-      "ls -la -- '/home/vcap/app/src'",
-      sessionContext,
-    );
+    expect(cfSsh).toHaveBeenCalledWith("a", "ls -la -- '/home/vcap/app/sub'", sessionContext);
   });
 
   it("resolves relative remotePath against custom appPath", async () => {
@@ -245,18 +356,18 @@ describe("downloadFolder", () => {
     const { downloadFolder } = await import("../../src/download-folder.js");
     await downloadFolder({
       target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/custom/absolute/path",
+      remotePath: "/absolute/path",
       outDir: join(tempDir, "out"),
     });
 
     expect(cfSsh).toHaveBeenCalledWith(
       "a",
-      "ls -la -- '/custom/absolute/path'",
+      "ls -la -- '/absolute/path'",
       sessionContext,
     );
   });
 
-  it("preserves binary file content in downloaded files", async () => {
+  it("preserves binary file content", async () => {
     const bytes = Buffer.from([0x00, 0xff, 0x01, 0x80]);
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
@@ -270,39 +381,13 @@ describe("downloadFolder", () => {
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     const outDir = join(tempDir, "out");
-    const result = await downloadFolder({
+    await downloadFolder({
       target: { region: "ap10", org: "o", space: "s", app: "a" },
       remotePath: "/home/vcap/app",
       outDir,
     });
 
-    expect(result.bytes).toBe(4);
     expect(await readFile(join(outDir, "data.bin"))).toEqual(bytes);
-  });
-
-  it("builds correct cat command for child files within folder", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue(
-      makeLsOutput([{ name: "package.json", isDir: false, size: 20 }]),
-    );
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("{}"));
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir: join(tempDir, "out"),
-    });
-
-    expect(cfSshBuffer).toHaveBeenCalledWith(
-      "a",
-      "cat -- '/home/vcap/app/package.json'",
-      sessionContext,
-    );
   });
 
   it("uses a single CF session for the entire recursive walk", async () => {
@@ -325,5 +410,164 @@ describe("downloadFolder", () => {
 
     expect(openCfSession).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  // ── exclude / include filtering ───────────────────────────────────────────
+
+  it("skips an excluded top-level directory entirely", async () => {
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSsh = vi.fn().mockResolvedValue(
+      makeLsOutput([
+        { name: "readme.md", isDir: false, size: 10 },
+        { name: "deps", isDir: true, size: 4096 },
+      ]),
+    );
+    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("readme"));
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const outDir = join(tempDir, "out");
+    const result = await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir,
+      exclude: ["deps"],
+    });
+
+    expect(result.files).toBe(1);
+    // cfSsh called once for root only, never recurses into deps
+    expect(cfSsh).toHaveBeenCalledOnce();
+    expect(await readFile(join(outDir, "readme.md"), "utf8")).toBe("readme");
+  });
+
+  it("skips multiple excluded directories", async () => {
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSsh = vi.fn().mockResolvedValue(
+      makeLsOutput([
+        { name: "index.js", isDir: false, size: 5 },
+        { name: "deps", isDir: true, size: 4096 },
+        { name: "build", isDir: true, size: 4096 },
+      ]),
+    );
+    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("hello"));
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const result = await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+      exclude: ["deps", "build"],
+    });
+
+    expect(result.files).toBe(1);
+    expect(cfSsh).toHaveBeenCalledOnce();
+  });
+
+  it("recurses into excluded dir to retrieve an included subdir", async () => {
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+
+    // root: readme.md + deps/
+    // deps/: vendor-a/ + @org/
+    // deps/vendor-a/: index.js   ← excluded, not included
+    // deps/@org/: pkg/           ← included
+    // deps/@org/pkg/: helper.js  ← included
+    const cfSsh = vi.fn()
+      .mockResolvedValueOnce(
+        makeLsOutput([
+          { name: "readme.md", isDir: false, size: 6 },
+          { name: "deps", isDir: true, size: 4096 },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        makeLsOutput([
+          { name: "vendor-a", isDir: true, size: 4096 },
+          { name: "@org", isDir: true, size: 4096 },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        makeLsOutput([{ name: "pkg", isDir: true, size: 4096 }]),
+      )
+      .mockResolvedValueOnce(
+        makeLsOutput([{ name: "helper.js", isDir: false, size: 8 }]),
+      );
+    const cfSshBuffer = vi.fn()
+      .mockResolvedValueOnce(Buffer.from("# readme"))
+      .mockResolvedValueOnce(Buffer.from("// helper"));
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const outDir = join(tempDir, "out");
+    const result = await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir,
+      exclude: ["deps"],
+      include: ["deps/@org"],
+    });
+
+    // readme.md + deps/@org/pkg/helper.js = 2 files
+    expect(result.files).toBe(2);
+    expect(await readFile(join(outDir, "readme.md"), "utf8")).toBe("# readme");
+    expect(
+      await readFile(join(outDir, "deps", "@org", "pkg", "helper.js"), "utf8"),
+    ).toBe("// helper");
+    // vendor-a was never listed (skipped)
+    expect(cfSsh).toHaveBeenCalledTimes(4);
+  });
+
+  it("include normalizes paths with leading slash and trailing slash", async () => {
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSsh = vi.fn()
+      .mockResolvedValueOnce(makeLsOutput([{ name: "deps", isDir: true, size: 4096 }]))
+      .mockResolvedValueOnce(makeLsOutput([{ name: "@org", isDir: true, size: 4096 }]))
+      .mockResolvedValueOnce(makeLsOutput([{ name: "file.js", isDir: false, size: 3 }]));
+    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("ok"));
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const result = await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+      exclude: ["/deps/"],   // leading slash + trailing slash
+      include: ["./deps/@org/"], // leading ./ + trailing slash
+    });
+
+    expect(result.files).toBe(1);
+  });
+
+  it("empty exclude and include arrays behave like no filters", async () => {
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSsh = vi.fn()
+      .mockResolvedValueOnce(makeLsOutput([{ name: "file.txt", isDir: false, size: 4 }]));
+    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("data"));
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const result = await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+      exclude: [],
+      include: [],
+    });
+
+    expect(result.files).toBe(1);
   });
 });

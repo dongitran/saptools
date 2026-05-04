@@ -131,12 +131,26 @@ export async function main(argv: readonly string[]): Promise<void> {
     .requiredOption("--remote <path>", "Remote folder path (absolute or relative to --app-path)")
     .requiredOption("--out <dir>", "Local output directory")
     .option("--app-path <path>", "Container base path for relative --remote", DEFAULT_APP_PATH)
+    .option(
+      "--exclude <path>",
+      "Relative path to exclude (repeat for multiple: --exclude deps --exclude dist)",
+      (v: string, acc: string[]) => [...acc, v],
+      [] as string[],
+    )
+    .option(
+      "--include <path>",
+      "Relative path to include even if excluded (repeat for multiple: --include deps/@vendor)",
+      (v: string, acc: string[]) => [...acc, v],
+      [] as string[],
+    )
     .action(
       async (
         opts: TargetFlags & {
           readonly remote: string;
           readonly out: string;
           readonly appPath: string;
+          readonly exclude: string[];
+          readonly include: string[];
         },
       ): Promise<void> => {
         const target = buildTarget(opts);
@@ -145,6 +159,8 @@ export async function main(argv: readonly string[]): Promise<void> {
           remotePath: opts.remote,
           outDir: opts.out,
           appPath: opts.appPath,
+          exclude: opts.exclude,
+          include: opts.include,
         });
         process.stdout.write(
           `✔ Downloaded ${result.files.toString()} file(s) (${result.bytes.toString()} bytes) to ${result.outDir}\n`,

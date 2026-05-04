@@ -14,6 +14,40 @@ import {
 
 const ROOT_NAME = "cf-files-e2e";
 
+function createFilterScenario(): Scenario {
+  return {
+    regions: [
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "demo-org",
+            spaces: [
+              {
+                name: "dev",
+                apps: [
+                  {
+                    name: "demo-app",
+                    vcapServices: {},
+                    files: {
+                      "/home/vcap/app/index.js": "module.exports = {};\n",
+                      "/home/vcap/app/lib/helper.js": "exports.help = true;\n",
+                      "/home/vcap/app/node_modules/@vendor/lib/index.js": "// vendor lib\n",
+                      "/home/vcap/app/node_modules/@vendor/lib/utils.js": "// vendor utils\n",
+                      "/home/vcap/app/node_modules/other-pkg/index.js": "// other\n",
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createScenario(): Scenario {
   return {
     regions: [
@@ -624,4 +658,82 @@ test("download fails with a clear message for missing file", async () => {
 
   expect(result.code).not.toBe(0);
   expect(result.stderr).toContain("No such file or directory");
+});
+
+test("download-folder --exclude skips the excluded directory entirely", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-exclude", createFilterScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region", "ap10",
+    "--org", "demo-org",
+    "--space", "dev",
+    "--app", "demo-app",
+    "--remote", "/home/vcap/app",
+    "--out", outDir,
+    "--exclude", "node_modules",
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("✔ Downloaded");
+
+  expect(await readFile(join(outDir, "index.js"), "utf8")).toBe("module.exports = {};\n");
+  expect(await readFile(join(outDir, "lib", "helper.js"), "utf8")).toBe("exports.help = true;\n");
+
+  await expect(readFile(join(outDir, "node_modules", "other-pkg", "index.js"), "utf8")).rejects.toThrow();
+  await expect(readFile(join(outDir, "node_modules", "@vendor", "lib", "index.js"), "utf8")).rejects.toThrow();
+});
+
+test("download-folder --exclude with --include retrieves only the included subtree", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-exclude-include", createFilterScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region", "ap10",
+    "--org", "demo-org",
+    "--space", "dev",
+    "--app", "demo-app",
+    "--remote", "/home/vcap/app",
+    "--out", outDir,
+    "--exclude", "node_modules",
+    "--include", "node_modules/@vendor",
+  ]);
+
+  expect(result.code).toBe(0);
+
+  expect(await readFile(join(outDir, "index.js"), "utf8")).toBe("module.exports = {};\n");
+  expect(await readFile(join(outDir, "lib", "helper.js"), "utf8")).toBe("exports.help = true;\n");
+
+  expect(await readFile(join(outDir, "node_modules", "@vendor", "lib", "index.js"), "utf8")).toBe("// vendor lib\n");
+  expect(await readFile(join(outDir, "node_modules", "@vendor", "lib", "utils.js"), "utf8")).toBe("// vendor utils\n");
+
+  await expect(readFile(join(outDir, "node_modules", "other-pkg", "index.js"), "utf8")).rejects.toThrow();
+});
+
+test("download-folder --exclude accepts multiple flags", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-multi-exclude", createFilterScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region", "ap10",
+    "--org", "demo-org",
+    "--space", "dev",
+    "--app", "demo-app",
+    "--remote", "/home/vcap/app",
+    "--out", outDir,
+    "--exclude", "node_modules",
+    "--exclude", "lib",
+  ]);
+
+  expect(result.code).toBe(0);
+
+  expect(await readFile(join(outDir, "index.js"), "utf8")).toBe("module.exports = {};\n");
+  await expect(readFile(join(outDir, "lib", "helper.js"), "utf8")).rejects.toThrow();
+  await expect(readFile(join(outDir, "node_modules", "other-pkg", "index.js"), "utf8")).rejects.toThrow();
 });

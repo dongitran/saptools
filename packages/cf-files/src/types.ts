@@ -33,6 +33,8 @@ export interface DownloadFolderOptions {
   readonly remotePath: string;
   readonly outDir: string;
   readonly appPath?: string;
+  readonly exclude?: readonly string[];
+  readonly include?: readonly string[];
 }
 
 export interface DownloadFolderResult {
