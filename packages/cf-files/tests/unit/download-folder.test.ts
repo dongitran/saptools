@@ -475,10 +475,10 @@ describe("downloadFolder", () => {
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
 
     // root: readme.md + deps/
-    // deps/: vendor-a/ + @org/
-    // deps/vendor-a/: index.js   ← excluded, not included
-    // deps/@org/: pkg/           ← included
-    // deps/@org/pkg/: helper.js  ← included
+    // deps/: other/ + @scope/
+    // deps/other/: index.js   ← excluded, not included
+    // deps/@scope/: pkg/      ← included
+    // deps/@scope/pkg/: helper.js  ← included
     const cfSsh = vi.fn()
       .mockResolvedValueOnce(
         makeLsOutput([
@@ -488,8 +488,8 @@ describe("downloadFolder", () => {
       )
       .mockResolvedValueOnce(
         makeLsOutput([
-          { name: "vendor-a", isDir: true, size: 4096 },
-          { name: "@org", isDir: true, size: 4096 },
+          { name: "other", isDir: true, size: 4096 },
+          { name: "@scope", isDir: true, size: 4096 },
         ]),
       )
       .mockResolvedValueOnce(
@@ -512,16 +512,16 @@ describe("downloadFolder", () => {
       remotePath: "/home/vcap/app",
       outDir,
       exclude: ["deps"],
-      include: ["deps/@org"],
+      include: ["deps/@scope"],
     });
 
-    // readme.md + deps/@org/pkg/helper.js = 2 files
+    // readme.md + deps/@scope/pkg/helper.js = 2 files
     expect(result.files).toBe(2);
     expect(await readFile(join(outDir, "readme.md"), "utf8")).toBe("# readme");
     expect(
-      await readFile(join(outDir, "deps", "@org", "pkg", "helper.js"), "utf8"),
+      await readFile(join(outDir, "deps", "@scope", "pkg", "helper.js"), "utf8"),
     ).toBe("// helper");
-    // vendor-a was never listed (skipped)
+    // other/ was never listed (skipped)
     expect(cfSsh).toHaveBeenCalledTimes(4);
   });
 
@@ -530,7 +530,7 @@ describe("downloadFolder", () => {
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
     const cfSsh = vi.fn()
       .mockResolvedValueOnce(makeLsOutput([{ name: "deps", isDir: true, size: 4096 }]))
-      .mockResolvedValueOnce(makeLsOutput([{ name: "@org", isDir: true, size: 4096 }]))
+      .mockResolvedValueOnce(makeLsOutput([{ name: "@scope", isDir: true, size: 4096 }]))
       .mockResolvedValueOnce(makeLsOutput([{ name: "file.js", isDir: false, size: 3 }]));
     const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("ok"));
 
@@ -542,8 +542,8 @@ describe("downloadFolder", () => {
       target: { region: "ap10", org: "o", space: "s", app: "a" },
       remotePath: "/home/vcap/app",
       outDir: join(tempDir, "out"),
-      exclude: ["/deps/"],   // leading slash + trailing slash
-      include: ["./deps/@org/"], // leading ./ + trailing slash
+      exclude: ["/deps/"],      // leading slash + trailing slash
+      include: ["./deps/@scope/"], // leading ./ + trailing slash
     });
 
     expect(result.files).toBe(1);
