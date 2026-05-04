@@ -21,7 +21,7 @@ Built for teams that need to move a whole MR from one related repository to anot
 
 - 🔁 **Whole-MR porting** — fetches every commit from a source GitLab MR and replays them into a destination repo in order
 - 🧬 **Real Git history** — uses actual `git cherry-pick -x` per commit, preserving the original author while recording source traceability
-- 📝 **Draft MR by default** — always opens the destination MR as Draft, whether the port is clean or had incoming auto-resolved conflicts
+- 📝 **Draft MR by default** — opens a Draft MR for new port branches and only updates the branch when the port branch already exists
 - ⚖️ **Incoming conflict strategy** — when a cherry-pick conflicts, captures the old destination-side code, chooses incoming, and records the conflict in the Draft MR
 
 ---
@@ -59,9 +59,9 @@ gitport \
   --title "JIR-112 carry feature"
 ```
 
-Gitport will clone the destination repo into an isolated run folder, fetch the source MR commits, replay them one by one with `git cherry-pick -x`, push the destination branch, and create a Draft GitLab MR assigned to the token account.
+Gitport will clone the destination repo into an isolated run folder, fetch the source MR commits, replay them one by one with `git cherry-pick -x`, push the destination branch, and create a Draft GitLab MR assigned to the token account. If `--port-branch` already exists in the destination repo, Gitport checks out that branch, cherry-picks onto it, pushes it, and skips Draft MR creation.
 
-If a conflict happens, Gitport captures the destination-side and incoming-side conflict hunks, resolves the file with incoming by default, completes the cherry-pick automatically, and records the conflict details in the Draft MR description. The MR diff also keeps the overwritten destination lines visible during review.
+If a conflict happens, Gitport captures the destination-side and incoming-side conflict hunks, resolves the file with incoming by default, completes the cherry-pick automatically, and records the conflict details in the run report plus the Draft MR description when a new MR is created. The MR diff also keeps the overwritten destination lines visible during review.
 
 ---
 
@@ -85,7 +85,7 @@ gitport \
 | `--source-mr-url <url>` | **Required.** GitLab source merge request URL, such as `https://gitlab.example.com/repo-a/-/merge_requests/123` |
 | `--destination-repo-url <url>` | **Required.** GitLab repo URL that receives the ported commits. The `.git` suffix is optional |
 | `--base-branch <name>` | **Required.** Destination branch to create the port branch from |
-| `--port-branch <name>` | **Required.** New destination branch that receives the cherry-picks |
+| `--port-branch <name>` | **Required.** Destination branch that receives the cherry-picks. Existing branches are reused |
 | `--title <title>` | **Required.** Destination Draft MR title |
 | `--token <token>` | GitLab token. Falls back to `GITPORT_GITLAB_TOKEN` |
 | `--keep-workdir` | Keep the isolated run folder after a successful port |
@@ -111,7 +111,11 @@ const result = await portGitLabMergeRequest({
   token: process.env.GITPORT_GITLAB_TOKEN,
 });
 
-console.log(result.mergeRequestUrl);
+if (result.mergeRequestCreated) {
+  console.log(result.mergeRequestUrl);
+} else {
+  console.log(`Updated ${result.portBranch}`);
+}
 ```
 
 The CLI and library use the same porting engine. Library consumers can build custom review flows, batch jobs, internal dashboards, or agent workflows without shelling out to the CLI.
@@ -131,12 +135,12 @@ The CLI and library use the same porting engine. Library consumers can build cus
   2. Read source MR metadata and commits from GitLab
   3. Clone destination repo into ~/.saptools/gitport/runs/<run-id>/dest
   4. Fetch the source repo as a temporary remote
-  5. Create the port branch from --base-branch
+  5. Check out --port-branch from its existing remote branch or from --base-branch
   6. Run git cherry-pick -x <sha> once per source MR commit
   7. On conflict, capture ours/theirs hunks, choose incoming, and complete the cherry-pick
   8. Push the destination branch
-  9. Assign the destination Draft MR to the token user and print its URL
- 10. Write every auto-resolved conflict into the Draft MR description
+  9. Create a Draft MR unless --port-branch already existed
+ 10. Write every auto-resolved conflict into the run report and Draft MR description when an MR is created
 ```
 
 ### Commit identity
@@ -153,7 +157,7 @@ GitLab commit lists are read with pagination, so large MRs are not truncated at 
 ## 🛡️ Safety model
 
 - Never modifies the current working repository
-- Always creates the destination MR as Draft by default
+- Creates the destination MR as Draft by default for new port branches
 - Skips patch-equivalent commits that already exist in the destination history
 - Never writes GitLab tokens to reports, config files, command previews, or errors
 - Auto-resolves cherry-pick conflicts with incoming by default, after capturing the old destination-side code for review

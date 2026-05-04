@@ -43,7 +43,11 @@ async function runPort(flags: PortFlags): Promise<void> {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
-  process.stdout.write(`Draft MR created: ${result.mergeRequestUrl}\n`);
+  if (result.mergeRequestCreated && result.mergeRequestUrl !== undefined) {
+    process.stdout.write(`Draft MR created: ${result.mergeRequestUrl}\n`);
+  } else {
+    process.stdout.write(`Port branch updated: ${result.portBranch}\n`);
+  }
   process.stdout.write(`Commits: ${result.commits.length.toString()}\n`);
   process.stdout.write(`Auto-resolved conflicts: ${result.conflicts.length.toString()}\n`);
 }

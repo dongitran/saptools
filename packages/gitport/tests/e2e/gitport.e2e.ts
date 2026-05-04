@@ -16,7 +16,9 @@ import type { FakeGitLab, Fixture } from "./helpers.js";
 interface GitportJsonResult {
   readonly runId: string;
   readonly runDir: string;
-  readonly mergeRequestUrl: string;
+  readonly portBranchExisted: boolean;
+  readonly mergeRequestCreated: boolean;
+  readonly mergeRequestUrl?: string | undefined;
   readonly commits: readonly { readonly status: string; readonly title: string }[];
   readonly conflicts: readonly unknown[];
 }
@@ -431,7 +433,7 @@ test.describe("GitLab MR porting", () => {
     }
   });
 
-  test("User gets a helpful error when the destination port branch already exists", async () => {
+  test("User can update a destination port branch that already exists", async () => {
     const fixture = await createFixture({ existingPortBranch: "gitport/repo-a-mr-123" });
     const fakeGitLab = await startFakeGitLab(fixture);
     try {
@@ -445,15 +447,25 @@ test.describe("GitLab MR porting", () => {
           "main",
           "--port-branch",
           "gitport/repo-a-mr-123",
+          "--json",
           "--title",
           "JIR-112 existing branch",
         ],
         buildEnv(fixture, fakeGitLab),
       );
 
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain("Port branch already exists in destination");
+      expect(result.code, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as GitportJsonResult;
+      expect(parsed.portBranchExisted).toBe(true);
+      expect(parsed.mergeRequestCreated).toBe(false);
+      expect(parsed.mergeRequestUrl).toBeUndefined();
       expect(fakeGitLab.createdMergeRequests).toHaveLength(0);
+      await expect(readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "existing-port.txt")).resolves.toBe(
+        "existing\n",
+      );
+      await expect(readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt")).resolves.toBe(
+        "ported feature\n",
+      );
     } finally {
       await fakeGitLab.stop();
       await cleanupFixture(fixture);

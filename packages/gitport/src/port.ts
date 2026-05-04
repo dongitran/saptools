@@ -11,6 +11,7 @@ import {
 } from "./git.js";
 import type { GitRunOptions } from "./git.js";
 import { createGitLabClient } from "./gitlab.js";
+import type { GitLabClient } from "./gitlab.js";
 import { maskAll } from "./mask.js";
 import { writeRunMetadata } from "./metadata.js";
 import { createRunId, runPaths } from "./paths.js";
@@ -18,6 +19,7 @@ import { cherryPickCommits } from "./port-cherry-pick.js";
 import { parseRepoRef } from "./repo-url.js";
 import { buildDraftMergeRequestDescription, buildReportMarkdown } from "./report.js";
 import type {
+  CreatedMergeRequest,
   PortGitLabMergeRequestOptions,
   PortGitLabMergeRequestResult,
   RunMetadata,
@@ -35,6 +37,14 @@ interface PreparedRun {
   readonly destRemote: string;
   readonly gitEnv?: NodeJS.ProcessEnv | undefined;
   readonly gitlabApiBase: string;
+}
+
+interface PreparedDestination {
+  readonly portBranchExisted: boolean;
+}
+
+interface FetchedSourceRef {
+  readonly ref: string;
 }
 
 function resolveToken(options: PortGitLabMergeRequestOptions): string {
@@ -106,49 +116,51 @@ async function writeMetadata(
   await writeRunMetadata({ workRoot: options.workRoot, metadata });
 }
 
-async function cloneAndPrepare(options: PortGitLabMergeRequestOptions, run: PreparedRun): Promise<void> {
-  await mkdir(run.paths.runDir, { recursive: true });
-  await runGit(["clone", run.destRemote, run.paths.destDir], gitOptions(run));
-  await ensurePortBranchDoesNotExist(options, run);
-  await runGit(["fetch", "origin", options.baseBranch], gitOptions(run, run.paths.destDir));
-  await runGit(["checkout", "-B", options.portBranch, `origin/${options.baseBranch}`], {
-    ...gitOptions(run, run.paths.destDir),
-  });
-}
-
-async function ensurePortBranchDoesNotExist(
+async function cloneAndPrepare(
   options: PortGitLabMergeRequestOptions,
   run: PreparedRun,
-): Promise<void> {
+): Promise<PreparedDestination> {
+  await mkdir(run.paths.runDir, { recursive: true });
+  await runGit(["clone", run.destRemote, run.paths.destDir], gitOptions(run));
+  await runGit(["fetch", "origin", options.baseBranch], gitOptions(run, run.paths.destDir));
+  const portBranchExisted = await fetchExistingDestinationBranch(options, run);
+  await runGit(["checkout", "-B", options.portBranch, destinationStartRef(options, portBranchExisted)], {
+    ...gitOptions(run, run.paths.destDir),
+  });
+  return { portBranchExisted };
+}
+
+async function fetchExistingDestinationBranch(
+  options: PortGitLabMergeRequestOptions,
+  run: PreparedRun,
+): Promise<boolean> {
   try {
     await runGit(
-      ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${options.portBranch}`],
+      ["fetch", "origin", `refs/heads/${options.portBranch}:refs/remotes/origin/${options.portBranch}`],
       gitOptions(run, run.paths.destDir),
     );
+    return true;
   } catch (error: unknown) {
     if (error instanceof GitCommandError) {
-      return;
+      return false;
     }
     throw error;
   }
-  throw new GitportError(
-    GITPORT_ERROR_CODE.InvalidInput,
-    `Port branch already exists in destination: ${options.portBranch}`,
-  );
+}
+
+function destinationStartRef(options: PortGitLabMergeRequestOptions, portBranchExisted: boolean): string {
+  return portBranchExisted ? `origin/${options.portBranch}` : `origin/${options.baseBranch}`;
 }
 
 async function fetchSourceBranch(
   options: PortGitLabMergeRequestOptions,
   run: PreparedRun,
   sourceBranch: string,
-): Promise<void> {
+): Promise<FetchedSourceRef> {
   await runGit(["remote", "add", "gitport-source", run.sourceRemote], {
     ...gitOptions(run, run.paths.destDir),
   });
-  await runGit(
-    ["fetch", "gitport-source", `${sourceBranch}:refs/remotes/gitport-source/${sourceBranch}`],
-    gitOptions(run, run.paths.destDir),
-  );
+  const sourceRef = await fetchSourceBranchRef(options, run, sourceBranch);
   await writeMetadata(options, run, {
     runId: run.runId,
     runDir: run.paths.runDir,
@@ -160,6 +172,37 @@ async function fetchSourceBranch(
     baseBranch: options.baseBranch,
     portBranch: options.portBranch,
   });
+  return { ref: sourceRef };
+}
+
+async function fetchSourceBranchRef(
+  options: PortGitLabMergeRequestOptions,
+  run: PreparedRun,
+  sourceBranch: string,
+): Promise<string> {
+  const branchRef = `refs/remotes/gitport-source/${sourceBranch}`;
+  try {
+    await runGit(
+      ["fetch", "gitport-source", `refs/heads/${sourceBranch}:${branchRef}`],
+      gitOptions(run, run.paths.destDir),
+    );
+    return branchRef;
+  } catch (error: unknown) {
+    if (!(error instanceof GitCommandError)) {
+      throw error;
+    }
+  }
+
+  const mergeRequestHeadRef = `refs/remotes/gitport-source/merge-requests/${options.sourceMergeRequestIid.toString()}/head`;
+  await runGit(
+    [
+      "fetch",
+      "gitport-source",
+      `refs/merge-requests/${options.sourceMergeRequestIid.toString()}/head:${mergeRequestHeadRef}`,
+    ],
+    gitOptions(run, run.paths.destDir),
+  );
+  return mergeRequestHeadRef;
 }
 
 async function writeReports(
@@ -180,26 +223,24 @@ export async function portGitLabMergeRequest(
     token: run.token,
     fetchFn: options.fetchFn,
   });
-  const [sourceMr, commits, currentUser] = await Promise.all([
+  const [sourceMr, commits] = await Promise.all([
     client.getMergeRequest(run.source.projectPath, options.sourceMergeRequestIid),
     client.listMergeRequestCommits(run.source.projectPath, options.sourceMergeRequestIid),
-    client.getCurrentUser(),
   ]);
 
-  await cloneAndPrepare(options, run);
-  await fetchSourceBranch(options, run, sourceMr.sourceBranch);
-  const sourceRef = `refs/remotes/gitport-source/${sourceMr.sourceBranch}`;
+  const destination = await cloneAndPrepare(options, run);
+  const sourceRef = await fetchSourceBranch(options, run, sourceMr.sourceBranch);
   const orderedCommits = await orderCommitsBySourceHistory(
     run.paths.destDir,
     commits,
     "HEAD",
-    sourceRef,
+    sourceRef.ref,
     run.secrets,
   );
   const duplicateShas = await listPatchEquivalentCommits(
     run.paths.destDir,
     "HEAD",
-    sourceRef,
+    sourceRef.ref,
     run.secrets,
   );
   const { results, conflicts } = await cherryPickCommits(
@@ -215,13 +256,9 @@ export async function portGitLabMergeRequest(
     sourceMergeRequestUrl: sourceMr.webUrl,
     conflicts,
   };
-  const mergeRequest = await client.createDraftMergeRequest(run.dest.projectPath, {
-    sourceBranch: options.portBranch,
-    targetBranch: options.baseBranch,
-    title: options.title,
-    description: buildDraftMergeRequestDescription(descriptionInput),
-    assigneeId: currentUser.id,
-  });
+  const mergeRequest = destination.portBranchExisted
+    ? undefined
+    : await createDraftMergeRequest(options, run, client, descriptionInput);
   await writeReports(run, descriptionInput);
   await writeMetadata(options, run, {
     runId: run.runId,
@@ -233,8 +270,12 @@ export async function portGitLabMergeRequest(
     sourceMergeRequestIid: options.sourceMergeRequestIid,
     baseBranch: options.baseBranch,
     portBranch: options.portBranch,
-    mergeRequestUrl: mergeRequest.webUrl,
-    mergeRequestIid: mergeRequest.iid,
+    ...(mergeRequest === undefined
+      ? {}
+      : {
+        mergeRequestUrl: mergeRequest.webUrl,
+        mergeRequestIid: mergeRequest.iid,
+      }),
   });
   if (options.keepWorkdir !== true) {
     await rm(run.paths.runDir, { recursive: true, force: true });
@@ -243,11 +284,35 @@ export async function portGitLabMergeRequest(
     runId: run.runId,
     runDir: run.paths.runDir,
     destDir: run.paths.destDir,
-    mergeRequestUrl: mergeRequest.webUrl,
-    mergeRequestIid: mergeRequest.iid,
+    baseBranch: options.baseBranch,
+    portBranch: options.portBranch,
+    portBranchExisted: destination.portBranchExisted,
+    mergeRequestCreated: mergeRequest !== undefined,
+    ...(mergeRequest === undefined
+      ? {}
+      : {
+        mergeRequestUrl: mergeRequest.webUrl,
+        mergeRequestIid: mergeRequest.iid,
+      }),
     commits: results,
     conflicts,
   };
+}
+
+async function createDraftMergeRequest(
+  options: PortGitLabMergeRequestOptions,
+  run: PreparedRun,
+  client: GitLabClient,
+  descriptionInput: Parameters<typeof buildDraftMergeRequestDescription>[0],
+): Promise<CreatedMergeRequest> {
+  const currentUser = await client.getCurrentUser();
+  return await client.createDraftMergeRequest(run.dest.projectPath, {
+    sourceBranch: options.portBranch,
+    targetBranch: options.baseBranch,
+    title: options.title,
+    description: buildDraftMergeRequestDescription(descriptionInput),
+    assigneeId: currentUser.id,
+  });
 }
 
 export function maskGitportError(error: unknown, secrets: readonly string[]): string {

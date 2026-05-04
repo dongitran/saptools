@@ -129,6 +129,27 @@ async function createDestinationBranch(fixture: PortFixture, branch: string): Pr
   await git(work, ["push", "origin", branch]);
 }
 
+async function deleteSourceBranchKeepMergeRequestRef(fixture: PortFixture): Promise<void> {
+  const headSha = fixture.commits.at(-1);
+  if (headSha === undefined) {
+    throw new Error("Expected fixture to include source commits");
+  }
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "update-ref",
+    "refs/merge-requests/123/head",
+    headSha,
+  ]);
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "update-ref",
+    "-d",
+    "refs/heads/feature/gitport",
+  ]);
+}
+
 async function readBranchFile(
   bareRepo: string,
   branch: string,
@@ -341,28 +362,70 @@ describe("portGitLabMergeRequest", () => {
     }
   });
 
-  it("rejects destination port branches that already exist", async () => {
+  it("continues from a destination port branch that already exists", async () => {
     const fixture = await createFixture();
     const fakeGitLab = createFakeFetch(fixture);
     try {
       await createDestinationBranch(fixture, "gitport/repo-a-mr-123");
 
+      const result = await portGitLabMergeRequest({
+        sourceRepo: fixture.sourceBare,
+        destRepo: fixture.destBare,
+        sourceMergeRequestIid: 123,
+        baseBranch: "main",
+        portBranch: "gitport/repo-a-mr-123",
+        title: "JIR-112 carry feature",
+        token: "super-token",
+        gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
+        workRoot: fixture.workRoot,
+        runId: "run-1",
+        fetchFn: fakeGitLab.fetchFn,
+      });
+
+      expect(result.commits.map((commit) => commit.status)).toEqual(["applied", "applied"]);
+      expect(result.portBranchExisted).toBe(true);
+      expect(result.mergeRequestCreated).toBe(false);
+      expect(result.mergeRequestUrl).toBeUndefined();
+      expect(result.mergeRequestIid).toBeUndefined();
+      expect(fakeGitLab.createdBodies).toHaveLength(0);
       await expect(
-        portGitLabMergeRequest({
-          sourceRepo: fixture.sourceBare,
-          destRepo: fixture.destBare,
-          sourceMergeRequestIid: 123,
-          baseBranch: "main",
-          portBranch: "gitport/repo-a-mr-123",
-          title: "JIR-112 carry feature",
-          token: "super-token",
-          gitlabApiBase: "http://gitlab.test/api/v4",
-          env: gitportTestEnv(),
-          workRoot: fixture.workRoot,
-          runId: "run-1",
-          fetchFn: fakeGitLab.fetchFn,
-        }),
-      ).rejects.toThrow(/Port branch already exists in destination/);
+        readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "existing.txt"),
+      ).resolves.toBe("existing\n");
+      await expect(
+        readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt"),
+      ).resolves.toBe("one\ntwo\n");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("ports when the source branch was deleted but the GitLab MR head ref remains", async () => {
+    const fixture = await createFixture();
+    const fakeGitLab = createFakeFetch(fixture);
+    try {
+      await deleteSourceBranchKeepMergeRequestRef(fixture);
+
+      const result = await portGitLabMergeRequest({
+        sourceRepo: fixture.sourceBare,
+        destRepo: fixture.destBare,
+        sourceMergeRequestIid: 123,
+        baseBranch: "main",
+        portBranch: "gitport/repo-a-mr-123",
+        title: "JIR-112 carry feature",
+        token: "super-token",
+        gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
+        workRoot: fixture.workRoot,
+        runId: "run-1",
+        fetchFn: fakeGitLab.fetchFn,
+      });
+
+      expect(result.commits.map((commit) => commit.status)).toEqual(["applied", "applied"]);
+      expect(result.mergeRequestCreated).toBe(true);
+      await expect(
+        readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt"),
+      ).resolves.toBe("one\ntwo\n");
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }

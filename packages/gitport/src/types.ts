@@ -66,8 +66,12 @@ export interface PortGitLabMergeRequestResult {
   readonly runId: string;
   readonly runDir: string;
   readonly destDir: string;
-  readonly mergeRequestUrl: string;
-  readonly mergeRequestIid: number;
+  readonly baseBranch: string;
+  readonly portBranch: string;
+  readonly portBranchExisted: boolean;
+  readonly mergeRequestCreated: boolean;
+  readonly mergeRequestUrl?: string | undefined;
+  readonly mergeRequestIid?: number | undefined;
   readonly commits: readonly CommitPortResult[];
   readonly conflicts: readonly ConflictReport[];
 }
