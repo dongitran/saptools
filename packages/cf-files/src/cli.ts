@@ -126,7 +126,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addTargetOptions(
     program
       .command("download-folder")
-      .description("Download an entire folder from the running CF container recursively"),
+      .description("Download a folder from the running CF container in one tar transfer"),
   )
     .requiredOption("--remote <path>", "Remote folder path (absolute or relative to --app-path)")
     .requiredOption("--out <dir>", "Local output directory")
@@ -139,7 +139,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     )
     .option(
       "--include <path>",
-      "Relative path to include even if excluded (repeat for multiple: --include deps/@vendor)",
+      "Relative path to include below an excluded parent (repeat for multiple)",
       (v: string, acc: string[]) => [...acc, v],
       [] as string[],
     )

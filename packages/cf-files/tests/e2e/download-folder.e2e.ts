@@ -402,6 +402,8 @@ test("User can download dereferenced package symlinks under an excluded folder",
     outDir,
     "--exclude",
     "node_modules",
+    "--exclude",
+    ".store",
     "--include",
     "node_modules/@scope",
   ]);
