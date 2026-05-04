@@ -16,6 +16,40 @@ describe("GitLab response parsing", () => {
       parseMergeRequest({
         iid: 123,
         title: "Source MR",
+        sha: "abc123",
+        source_branch: "feature/gitport",
+        web_url: "https://gitlab.example.com/repo-a/-/merge_requests/123",
+      }),
+    ).toEqual({
+      iid: 123,
+      title: "Source MR",
+      headSha: "abc123",
+      sourceBranch: "feature/gitport",
+      webUrl: "https://gitlab.example.com/repo-a/-/merge_requests/123",
+    });
+  });
+
+  it("parses merge request head SHA from diff refs when sha is absent", () => {
+    expect(
+      parseMergeRequest({
+        iid: 123,
+        title: "Source MR",
+        diff_refs: {
+          head_sha: "def456",
+        },
+        source_branch: "feature/gitport",
+        web_url: "https://gitlab.example.com/repo-a/-/merge_requests/123",
+      }),
+    ).toMatchObject({
+      headSha: "def456",
+    });
+  });
+
+  it("keeps merge request head SHA optional", () => {
+    expect(
+      parseMergeRequest({
+        iid: 123,
+        title: "Source MR",
         source_branch: "feature/gitport",
         web_url: "https://gitlab.example.com/repo-a/-/merge_requests/123",
       }),

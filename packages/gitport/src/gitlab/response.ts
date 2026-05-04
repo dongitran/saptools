@@ -31,6 +31,10 @@ export function parseMergeRequest(value: unknown): GitLabMergeRequestInfo {
   }
   const iid = numberField(value, "iid");
   const title = stringField(value, "title");
+  const directHeadSha = stringField(value, "sha");
+  const diffRefs = value["diff_refs"];
+  const diffHeadSha = isRecord(diffRefs) ? stringField(diffRefs, "head_sha") : undefined;
+  const headSha = directHeadSha ?? diffHeadSha;
   const sourceBranch = stringField(value, "source_branch");
   const webUrl = stringField(value, "web_url");
   if (
@@ -41,7 +45,13 @@ export function parseMergeRequest(value: unknown): GitLabMergeRequestInfo {
   ) {
     throw new GitportError(GITPORT_ERROR_CODE.GitLabFailed, "GitLab MR response is missing fields");
   }
-  return { iid, title, sourceBranch, webUrl };
+  return {
+    iid,
+    title,
+    ...(headSha === undefined ? {} : { headSha }),
+    sourceBranch,
+    webUrl,
+  };
 }
 
 export function parseCurrentUser(value: unknown): GitLabCurrentUser {

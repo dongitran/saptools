@@ -150,6 +150,54 @@ async function deleteSourceBranchKeepMergeRequestRef(fixture: PortFixture): Prom
   ]);
 }
 
+async function deleteSourceBranchKeepKeepAroundRef(fixture: PortFixture): Promise<void> {
+  const headSha = fixture.commits.at(-1);
+  if (headSha === undefined) {
+    throw new Error("Expected fixture to include source commits");
+  }
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "update-ref",
+    `refs/keep-around/${headSha}`,
+    headSha,
+  ]);
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "update-ref",
+    "-d",
+    "refs/heads/feature/gitport",
+  ]);
+}
+
+async function deleteSourceBranchAllowRawShaFetch(fixture: PortFixture): Promise<void> {
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "config",
+    "uploadpack.allowAnySHA1InWant",
+    "true",
+  ]);
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "update-ref",
+    "-d",
+    "refs/heads/feature/gitport",
+  ]);
+}
+
+async function deleteSourceBranchWithoutFetchableRefs(fixture: PortFixture): Promise<void> {
+  await gitNoCwd([
+    "--git-dir",
+    fixture.sourceBare,
+    "update-ref",
+    "-d",
+    "refs/heads/feature/gitport",
+  ]);
+}
+
 async function readBranchFile(
   bareRepo: string,
   branch: string,
@@ -200,6 +248,7 @@ function createFakeFetch(
       return jsonResponse({
         iid: 123,
         title: "Source MR",
+        sha: fixture.commits.at(-1),
         source_branch: "feature/gitport",
         web_url: "http://gitlab.test/repo-a/-/merge_requests/123",
       });
@@ -426,6 +475,107 @@ describe("portGitLabMergeRequest", () => {
       await expect(
         readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt"),
       ).resolves.toBe("one\ntwo\n");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("ports when source branch and MR head ref are gone but GitLab keep-around ref remains", async () => {
+    const fixture = await createFixture();
+    const fakeGitLab = createFakeFetch(fixture);
+    try {
+      await deleteSourceBranchKeepKeepAroundRef(fixture);
+
+      const result = await portGitLabMergeRequest({
+        sourceRepo: fixture.sourceBare,
+        destRepo: fixture.destBare,
+        sourceMergeRequestIid: 123,
+        baseBranch: "main",
+        portBranch: "gitport/repo-a-mr-123",
+        title: "JIR-112 carry feature",
+        token: "super-token",
+        gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
+        workRoot: fixture.workRoot,
+        runId: "run-1",
+        fetchFn: fakeGitLab.fetchFn,
+      });
+
+      expect(result.commits.map((commit) => commit.status)).toEqual(["applied", "applied"]);
+      await expect(
+        readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt"),
+      ).resolves.toBe("one\ntwo\n");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("ports when only the source MR head SHA can be fetched", async () => {
+    const fixture = await createFixture();
+    const fakeGitLab = createFakeFetch(fixture);
+    try {
+      await deleteSourceBranchAllowRawShaFetch(fixture);
+
+      const result = await portGitLabMergeRequest({
+        sourceRepo: fixture.sourceBare,
+        destRepo: fixture.destBare,
+        sourceMergeRequestIid: 123,
+        baseBranch: "main",
+        portBranch: "gitport/repo-a-mr-123",
+        title: "JIR-112 carry feature",
+        token: "super-token",
+        gitlabApiBase: "http://gitlab.test/api/v4",
+        env: gitportTestEnv(),
+        workRoot: fixture.workRoot,
+        runId: "run-1",
+        fetchFn: fakeGitLab.fetchFn,
+      });
+
+      expect(result.commits.map((commit) => commit.status)).toEqual(["applied", "applied"]);
+      await expect(
+        readBranchFile(fixture.destBare, "gitport/repo-a-mr-123", "feature.txt"),
+      ).resolves.toBe("one\ntwo\n");
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a source fetch failure when all source refs are missing", async () => {
+    const fixture = await createFixture();
+    const fetchFn: typeof fetch = async (input) => {
+      const url = fetchUrl(input);
+      if (url.pathname === "/api/v4/projects/repo-a/merge_requests/123") {
+        return jsonResponse({
+          iid: 123,
+          title: "Source MR",
+          source_branch: "feature/gitport",
+          web_url: "http://gitlab.test/repo-a/-/merge_requests/123",
+        });
+      }
+      if (url.pathname === "/api/v4/projects/repo-a/merge_requests/123/commits") {
+        return jsonResponse([], { headers: { "x-next-page": "" } });
+      }
+      return jsonResponse({ message: `Unhandled ${url.pathname}` }, { status: 404 });
+    };
+    try {
+      await deleteSourceBranchWithoutFetchableRefs(fixture);
+
+      await expect(
+        portGitLabMergeRequest({
+          sourceRepo: fixture.sourceBare,
+          destRepo: fixture.destBare,
+          sourceMergeRequestIid: 123,
+          baseBranch: "main",
+          portBranch: "gitport/repo-a-mr-123",
+          title: "JIR-112 carry feature",
+          token: "super-token",
+          gitlabApiBase: "http://gitlab.test/api/v4",
+          env: gitportTestEnv(),
+          workRoot: fixture.workRoot,
+          runId: "run-1",
+          fetchFn,
+        }),
+      ).rejects.toThrow(/could not fetch the source MR branch/);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }

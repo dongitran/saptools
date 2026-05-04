@@ -13,6 +13,7 @@ export interface SourceCommit {
 export interface GitLabMergeRequestInfo {
   readonly iid: number;
   readonly title: string;
+  readonly headSha?: string | undefined;
   readonly sourceBranch: string;
   readonly webUrl: string;
 }

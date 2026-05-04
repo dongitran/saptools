@@ -27,6 +27,7 @@ describe("GitLab client", () => {
         return jsonResponse({
           iid: 123,
           title: "Fix bug",
+          sha: "abc123",
           source_branch: "feature/fix",
           web_url: "https://gitlab.example.com/repo-a/-/merge_requests/123",
         });
@@ -34,6 +35,7 @@ describe("GitLab client", () => {
     });
 
     await expect(client.getMergeRequest("repo-a", 123)).resolves.toMatchObject({
+      headSha: "abc123",
       iid: 123,
       sourceBranch: "feature/fix",
     });

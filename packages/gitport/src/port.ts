@@ -20,9 +20,11 @@ import { parseRepoRef } from "./repo-url.js";
 import { buildDraftMergeRequestDescription, buildReportMarkdown } from "./report.js";
 import type {
   CreatedMergeRequest,
+  GitLabMergeRequestInfo,
   PortGitLabMergeRequestOptions,
   PortGitLabMergeRequestResult,
   RunMetadata,
+  SourceCommit,
 } from "./types.js";
 import { GITPORT_GITLAB_API_BASE_ENV, GITPORT_GITLAB_TOKEN_ENV } from "./types.js";
 
@@ -45,6 +47,11 @@ interface PreparedDestination {
 
 interface FetchedSourceRef {
   readonly ref: string;
+}
+
+interface SourceFetchCandidate {
+  readonly localRef: string;
+  readonly sourceRef: string;
 }
 
 function resolveToken(options: PortGitLabMergeRequestOptions): string {
@@ -155,12 +162,13 @@ function destinationStartRef(options: PortGitLabMergeRequestOptions, portBranchE
 async function fetchSourceBranch(
   options: PortGitLabMergeRequestOptions,
   run: PreparedRun,
-  sourceBranch: string,
+  sourceMr: GitLabMergeRequestInfo,
+  commits: readonly SourceCommit[],
 ): Promise<FetchedSourceRef> {
   await runGit(["remote", "add", "gitport-source", run.sourceRemote], {
     ...gitOptions(run, run.paths.destDir),
   });
-  const sourceRef = await fetchSourceBranchRef(options, run, sourceBranch);
+  const sourceRef = await fetchSourceRef(options, run, sourceMr, commits);
   await writeMetadata(options, run, {
     runId: run.runId,
     runDir: run.paths.runDir,
@@ -175,34 +183,64 @@ async function fetchSourceBranch(
   return { ref: sourceRef };
 }
 
-async function fetchSourceBranchRef(
+async function fetchSourceRef(
   options: PortGitLabMergeRequestOptions,
   run: PreparedRun,
-  sourceBranch: string,
+  sourceMr: GitLabMergeRequestInfo,
+  commits: readonly SourceCommit[],
 ): Promise<string> {
-  const branchRef = `refs/remotes/gitport-source/${sourceBranch}`;
-  try {
-    await runGit(
-      ["fetch", "gitport-source", `refs/heads/${sourceBranch}:${branchRef}`],
-      gitOptions(run, run.paths.destDir),
-    );
-    return branchRef;
-  } catch (error: unknown) {
-    if (!(error instanceof GitCommandError)) {
-      throw error;
+  let lastGitError: GitCommandError | undefined;
+  for (const candidate of sourceFetchCandidates(options, sourceMr, commits)) {
+    try {
+      await runGit(
+        ["fetch", "gitport-source", `${candidate.sourceRef}:${candidate.localRef}`],
+        gitOptions(run, run.paths.destDir),
+      );
+      return candidate.localRef;
+    } catch (error: unknown) {
+      if (!(error instanceof GitCommandError)) {
+        throw error;
+      }
+      lastGitError = error;
     }
   }
 
-  const mergeRequestHeadRef = `refs/remotes/gitport-source/merge-requests/${options.sourceMergeRequestIid.toString()}/head`;
-  await runGit(
-    [
-      "fetch",
-      "gitport-source",
-      `refs/merge-requests/${options.sourceMergeRequestIid.toString()}/head:${mergeRequestHeadRef}`,
-    ],
-    gitOptions(run, run.paths.destDir),
+  throw new GitportError(
+    GITPORT_ERROR_CODE.GitFailed,
+    "Gitport could not fetch the source MR branch, MR head ref, keep-around ref, or head SHA.",
+    lastGitError === undefined ? undefined : { cause: lastGitError },
   );
-  return mergeRequestHeadRef;
+}
+
+function sourceFetchCandidates(
+  options: PortGitLabMergeRequestOptions,
+  sourceMr: GitLabMergeRequestInfo,
+  commits: readonly SourceCommit[],
+): readonly SourceFetchCandidate[] {
+  const mergeRequestPrefix = `refs/remotes/gitport-source/merge-requests/${options.sourceMergeRequestIid.toString()}`;
+  const headSha = sourceMr.headSha ?? commits[0]?.sha;
+  return [
+    {
+      sourceRef: `refs/heads/${sourceMr.sourceBranch}`,
+      localRef: `refs/remotes/gitport-source/${sourceMr.sourceBranch}`,
+    },
+    {
+      sourceRef: `refs/merge-requests/${options.sourceMergeRequestIid.toString()}/head`,
+      localRef: `${mergeRequestPrefix}/head`,
+    },
+    ...(headSha === undefined
+      ? []
+      : [
+        {
+          sourceRef: `refs/keep-around/${headSha}`,
+          localRef: `${mergeRequestPrefix}/keep-around`,
+        },
+        {
+          sourceRef: headSha,
+          localRef: `${mergeRequestPrefix}/head-sha`,
+        },
+      ]),
+  ];
 }
 
 async function writeReports(
@@ -229,7 +267,7 @@ export async function portGitLabMergeRequest(
   ]);
 
   const destination = await cloneAndPrepare(options, run);
-  const sourceRef = await fetchSourceBranch(options, run, sourceMr.sourceBranch);
+  const sourceRef = await fetchSourceBranch(options, run, sourceMr, commits);
   const orderedCommits = await orderCommitsBySourceHistory(
     run.paths.destDir,
     commits,
