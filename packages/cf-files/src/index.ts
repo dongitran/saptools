@@ -9,3 +9,4 @@ export type { GenEnvResult } from "./gen-env.js";
 export { buildListCommand, listFiles, parseListOutput, quoteRemoteShellArg, resolveRemotePath } from "./list.js";
 export { buildDownloadCommand, downloadFile } from "./download.js";
 export type { DownloadResult } from "./download.js";
+export { downloadFolder } from "./download-folder.js";

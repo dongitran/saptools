@@ -3,6 +3,7 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { downloadFile } from "./download.js";
+import { downloadFolder } from "./download-folder.js";
 import { genEnv } from "./gen-env.js";
 import { listFiles, resolveRemotePath } from "./list.js";
 import { DEFAULT_APP_PATH, type CfTarget } from "./types.js";
@@ -119,6 +120,35 @@ export async function main(argv: readonly string[]): Promise<void> {
         const remotePath = resolveRemotePath(opts.remote, opts.appPath);
         const result = await downloadFile({ target, remotePath, outPath: opts.out });
         process.stdout.write(`✔ Wrote ${result.outPath} (${result.bytes.toString()} bytes)\n`);
+      },
+    );
+
+  addTargetOptions(
+    program
+      .command("download-folder")
+      .description("Download an entire folder from the running CF container recursively"),
+  )
+    .requiredOption("--remote <path>", "Remote folder path (absolute or relative to --app-path)")
+    .requiredOption("--out <dir>", "Local output directory")
+    .option("--app-path <path>", "Container base path for relative --remote", DEFAULT_APP_PATH)
+    .action(
+      async (
+        opts: TargetFlags & {
+          readonly remote: string;
+          readonly out: string;
+          readonly appPath: string;
+        },
+      ): Promise<void> => {
+        const target = buildTarget(opts);
+        const result = await downloadFolder({
+          target,
+          remotePath: opts.remote,
+          outDir: opts.out,
+          appPath: opts.appPath,
+        });
+        process.stdout.write(
+          `✔ Downloaded ${result.files.toString()} file(s) (${result.bytes.toString()} bytes) to ${result.outDir}\n`,
+        );
       },
     );
 

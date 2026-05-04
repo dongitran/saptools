@@ -28,6 +28,19 @@ export interface ListEntry {
   readonly size: number;
 }
 
+export interface DownloadFolderOptions {
+  readonly target: CfTarget;
+  readonly remotePath: string;
+  readonly outDir: string;
+  readonly appPath?: string;
+}
+
+export interface DownloadFolderResult {
+  readonly outDir: string;
+  readonly files: number;
+  readonly bytes: number;
+}
+
 export type DefaultEnv = Readonly<Record<string, unknown>>;
 
 export const DEFAULT_APP_PATH = "/home/vcap/app";

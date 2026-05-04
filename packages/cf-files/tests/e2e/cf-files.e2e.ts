@@ -387,6 +387,221 @@ test("download preserves binary bytes", async () => {
   expect(await readFile(outPath)).toEqual(Buffer.from([0x00, 0xff, 0x01, 0x80]));
 });
 
+test("download-folder copies a flat directory from the container", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-flat", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "app");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "/home/vcap/app",
+    "--out",
+    outDir,
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("✔ Downloaded");
+  expect(result.stdout).toContain("file(s)");
+  expect(result.stdout).toContain(outDir);
+
+  const pkgContent = await readFile(join(outDir, "package.json"), "utf8");
+  const pkg = JSON.parse(pkgContent) as { readonly name: string };
+  expect(pkg.name).toBe("demo-app");
+});
+
+test("download-folder recursively downloads nested subdirectories", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-recursive", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "src");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "/home/vcap/app/src",
+    "--out",
+    outDir,
+  ]);
+
+  expect(result.code).toBe(0);
+
+  const mainJs = await readFile(join(outDir, "main.js"), "utf8");
+  expect(mainJs).toBe("module.exports = {};\n");
+
+  const pingJs = await readFile(join(outDir, "handlers", "ping.js"), "utf8");
+  expect(pingJs).toBe("module.exports = () => {};\n");
+});
+
+test("download-folder uses relative --remote resolved against default --app-path", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-relative", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "src-out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "src",
+    "--out",
+    outDir,
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(await readFile(join(outDir, "main.js"), "utf8")).toBe("module.exports = {};\n");
+});
+
+test("download-folder uses a custom --app-path", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-custom-app-path", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "custom-out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "root",
+    "--out",
+    outDir,
+    "--app-path",
+    "/custom",
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(await readFile(join(outDir, "readme.txt"), "utf8")).toBe("custom root file\n");
+});
+
+test("download-folder handles directory names with spaces and special characters", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-special-chars", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "weird-out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "/home/vcap/app/weird files",
+    "--out",
+    outDir,
+  ]);
+
+  expect(result.code).toBe(0);
+  const content = await readFile(join(outDir, "it's $(safe); name.txt"), "utf8");
+  expect(content).toBe("quoted path\n");
+});
+
+test("download-folder preserves binary file content", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-binary", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "app-out");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "/home/vcap/app",
+    "--out",
+    outDir,
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(await readFile(join(outDir, "binary.dat"))).toEqual(
+    Buffer.from([0x00, 0xff, 0x01, 0x80]),
+  );
+});
+
+test("download-folder creates the output directory if it does not exist", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-mkdir", createScenario());
+  const env = createEnv(paths);
+  const outDir = join(paths.workDir, "nested", "new", "dir");
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "/home/vcap/app/src",
+    "--out",
+    outDir,
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(await readFile(join(outDir, "main.js"), "utf8")).toBe("module.exports = {};\n");
+});
+
+test("download-folder fails with a clear message for a missing remote path", async () => {
+  const paths = await prepareCase(ROOT_NAME, "download-folder-missing", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "download-folder",
+    "--region",
+    "ap10",
+    "--org",
+    "demo-org",
+    "--space",
+    "dev",
+    "--app",
+    "demo-app",
+    "--remote",
+    "/does/not/exist",
+    "--out",
+    join(paths.workDir, "out"),
+  ]);
+
+  expect(result.code).not.toBe(0);
+  expect(result.stderr).toContain("No such file or directory");
+});
+
 test("download fails with a clear message for missing file", async () => {
   const paths = await prepareCase(ROOT_NAME, "download-missing", createScenario());
   const env = createEnv(paths);
