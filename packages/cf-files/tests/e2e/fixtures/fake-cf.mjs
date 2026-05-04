@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -285,7 +287,86 @@ function renderLsOutput(children) {
   return `${lines.join("\n")}\n`;
 }
 
-function handleSshCommand(app, command) {
+function quoteShellArg(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function isTarCommand(command) {
+  const trimmed = command.trim();
+  return (
+    trimmed.startsWith("tar ") ||
+    (trimmed.startsWith("cd ") && trimmed.includes(" tar "))
+  );
+}
+
+function extractBasePathFromTarCommand(command) {
+  const words = splitShellWords(command);
+  if (words[0] === "cd" && words[1]) {
+    return words[1];
+  }
+
+  const cFlag = words.indexOf("-C");
+  return cFlag === -1 ? null : words[cFlag + 1] ?? null;
+}
+
+async function materializeAppFiles(app, baseDir) {
+  const files = app.files ?? {};
+  const appSymlinks = app.symlinks ?? {};
+
+  for (const [filePath, content] of Object.entries(files)) {
+    const fullPath = join(baseDir, filePath);
+    await mkdir(dirname(fullPath), { recursive: true });
+    await writeFile(fullPath, fileBuffer(content));
+  }
+
+  for (const [linkPath, target] of Object.entries(appSymlinks)) {
+    const fullLinkPath = join(baseDir, linkPath);
+    await mkdir(dirname(fullLinkPath), { recursive: true });
+    const resolvedTarget = target.startsWith("/") ? join(baseDir, target) : target;
+    try {
+      await symlink(resolvedTarget, fullLinkPath);
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+    }
+  }
+}
+
+async function handleTarSshCommand(app, command) {
+  const basePath = extractBasePathFromTarCommand(command);
+  if (!basePath) {
+    fail(`fake-cf: cannot extract base path from tar command: ${command}`);
+  }
+
+  const tmpDir = join(tmpdir(), `fake-cf-tar-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(tmpDir, { recursive: true });
+
+  try {
+    await materializeAppFiles(app, tmpDir);
+
+    const actualBasePath = join(tmpDir, basePath);
+    const adjustedCommand = command
+      .split(quoteShellArg(basePath))
+      .join(quoteShellArg(actualBasePath));
+
+    const result = spawnSync("bash", ["-c", adjustedCommand], {
+      encoding: "buffer",
+      env: { ...process.env, LC_ALL: "C" },
+      maxBuffer: 256 * 1024 * 1024,
+    });
+
+    if (result.status !== 0) {
+      const errMsg = result.stderr?.toString() ?? "tar failed";
+      process.stderr.write(errMsg);
+      process.exit(1);
+    }
+
+    return result.stdout ?? Buffer.alloc(0);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function handleSshCommand(app, command) {
   const lsPath = parseRemotePathCommand(command, "ls", ["-la"]);
   if (lsPath) {
     const path = lsPath;
@@ -315,6 +396,10 @@ function handleSshCommand(app, command) {
       process.exit(1);
     }
     return fileBuffer(files[path]);
+  }
+
+  if (isTarCommand(command)) {
+    return await handleTarSshCommand(app, command);
   }
 
   process.stderr.write(`fake-cf: unsupported ssh command: ${command}\n`);
@@ -412,7 +497,7 @@ async function main() {
     const org = requireOrg(region, state);
     const space = requireSpace(org, state);
     const app = requireApp(space, appName);
-    const output = handleSshCommand(app, shellCommand);
+    const output = await handleSshCommand(app, shellCommand);
     process.stdout.write(output);
     return;
   }

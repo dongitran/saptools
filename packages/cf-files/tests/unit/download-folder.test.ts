@@ -1,8 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const execFileAsync = promisify(execFile);
 
 let tempDir: string;
 
@@ -19,21 +23,45 @@ afterEach(async () => {
 
 const sessionContext = { env: { CF_HOME: "/tmp/cf-files-test-home" } };
 
-function makeLsOutput(entries: { name: string; isDir: boolean; size: number }[]): string {
-  const lines = [
-    `total ${String(entries.length * 4)}`,
-    "drwxr-xr-x  2 vcap vcap 4096 Apr 20 10:00 .",
-    "drwxr-xr-x  3 vcap vcap 4096 Apr 20 10:00 ..",
-  ];
-  for (const e of entries) {
-    const perms = e.isDir ? "drwxr-xr-x" : "-rw-r--r--";
-    const links = e.isDir ? " 2" : " 1";
-    lines.push(`${perms}${links} vcap vcap ${String(e.size).padStart(5)} Apr 20 10:00 ${e.name}`);
+/** Create a real .tar.gz buffer from a flat list of path → content entries. */
+async function makeTarGz(
+  files: { readonly path: string; readonly content: Buffer | string }[],
+  options: {
+    readonly symlinks?: { readonly path: string; readonly target: string }[];
+    readonly dereference?: boolean;
+  } = {},
+): Promise<Buffer> {
+  const srcDir = await mkdtemp(join(tmpdir(), "cf-files-makeTar-"));
+  try {
+    for (const { path: p, content } of files) {
+      const full = join(srcDir, p);
+      await mkdir(dirname(full), { recursive: true });
+      await writeFile(full, typeof content === "string" ? Buffer.from(content) : content);
+    }
+    for (const link of options.symlinks ?? []) {
+      const full = join(srcDir, link.path);
+      await mkdir(dirname(full), { recursive: true });
+      await symlink(link.target, full);
+    }
+    const args = [
+      ...(options.dereference === true ? ["--dereference"] : []),
+      "-czf",
+      "-",
+      "-C",
+      srcDir,
+      ".",
+    ];
+    const { stdout } = await execFileAsync("tar", args, {
+      encoding: "buffer",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  } finally {
+    await rm(srcDir, { recursive: true, force: true });
   }
-  return `${lines.join("\n")}\n`;
 }
 
-// ── internals: path filtering helpers ─────────────────────────────────────────
+// internals: path helpers
 
 describe("internals.normalizeFilerPath", () => {
   it("strips leading slash", async () => {
@@ -55,6 +83,12 @@ describe("internals.normalizeFilerPath", () => {
     const { internals } = await import("../../src/download-folder.js");
     expect(internals.normalizeFilerPath("deps/@vendor")).toBe("deps/@vendor");
   });
+
+  it("rejects parent traversal segments", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    expect(() => internals.normalizeFilerPath("../secret")).toThrow(/Filter paths/);
+    expect(() => internals.normalizeFilerPath("deps/../secret")).toThrow(/Filter paths/);
+  });
 });
 
 describe("internals.pathStartsWith", () => {
@@ -70,7 +104,6 @@ describe("internals.pathStartsWith", () => {
 
   it("returns false for partial segment matches", async () => {
     const { internals } = await import("../../src/download-folder.js");
-    // 'dependencies' must not match prefix 'deps'
     expect(internals.pathStartsWith("dependencies/pkg", "deps")).toBe(false);
   });
 
@@ -80,90 +113,90 @@ describe("internals.pathStartsWith", () => {
   });
 });
 
-describe("internals.shouldDownloadFile", () => {
-  it("allows file when no filters", async () => {
+// internals: buildTarCommand
+
+describe("internals.buildTarCommand", () => {
+  it("returns simple tar when no filters", async () => {
     const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldDownloadFile("readme.md", [], [])).toBe(true);
+    const cmd = internals.buildTarCommand("/home/vcap/app", [], []);
+    expect(cmd).toBe("tar --dereference -czf - -C '/home/vcap/app' .");
   });
 
-  it("blocks file under excluded path", async () => {
+  it("adds --exclude flags for excludes-only case", async () => {
     const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldDownloadFile("deps/pkg/index.js", ["deps"], [])).toBe(false);
+    const cmd = internals.buildTarCommand("/home/vcap/app", ["deps", "build"], []);
+    expect(cmd).toContain("--exclude='./deps'");
+    expect(cmd).toContain("--exclude='./build'");
+    expect(cmd).not.toContain("find");
   });
 
-  it("allows file when include overrides exclude", async () => {
+  it("uses find+tar when include overrides an exclude", async () => {
     const { internals } = await import("../../src/download-folder.js");
-    expect(
-      internals.shouldDownloadFile("deps/@vendor/pkg/index.js", ["deps"], ["deps/@vendor"]),
-    ).toBe(true);
+    const cmd = internals.buildTarCommand("/home/vcap/app", ["deps"], ["deps/@vendor"]);
+    expect(cmd).toContain("find");
+    expect(cmd).toContain("find -L");
+    expect(cmd).toContain("prune");
+    expect(cmd).toContain("-print0");
+    expect(cmd).toContain("deps/@vendor");
+    expect(cmd).toContain("tar --null --dereference --no-recursion");
+    expect(cmd).not.toContain("sort -u");
   });
 
-  it("blocks file not covered by include even when other include exists", async () => {
+  it("cancels out exclude when include exactly matches it", async () => {
     const { internals } = await import("../../src/download-folder.js");
-    expect(
-      internals.shouldDownloadFile("deps/other/index.js", ["deps"], ["deps/@vendor"]),
-    ).toBe(false);
+    const cmd = internals.buildTarCommand("/app", ["dist"], ["dist"]);
+    expect(cmd).toBe("tar --dereference -czf - -C '/app' .");
   });
 
-  it("allows file when excluded but exact include matches", async () => {
+  it("cancels out child excludes when a parent include covers them", async () => {
     const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldDownloadFile("dist/file.js", ["dist"], ["dist"])).toBe(true);
+    const cmd = internals.buildTarCommand("/app", ["dist/cache"], ["dist"]);
+    expect(cmd).toBe("tar --dereference -czf - -C '/app' .");
+  });
+
+  it("handles multiple include overrides", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    const cmd = internals.buildTarCommand("/app", ["deps"], ["deps/@a", "deps/@b"]);
+    expect(cmd).toContain("deps/@a");
+    expect(cmd).toContain("deps/@b");
+  });
+
+  it("single-quotes a path containing a single quote", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    const cmd = internals.buildTarCommand("/path/it's here", [], []);
+    expect(cmd).toContain("'\\''");
+  });
+
+  it("single-quotes include and exclude paths containing a single quote", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    const cmd = internals.buildTarCommand("/app", ["deps"], ["deps/@vendor/it's"]);
+    expect(cmd).toContain("./deps/@vendor/it'\\''s");
+  });
+
+  it("includes only non-override excludes as --exclude flags in mixed case", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    const cmd = internals.buildTarCommand("/app", ["deps", "build"], ["deps/@vendor"]);
+    expect(cmd).toContain("find");
+    expect(cmd).toContain("./build");
+    expect(cmd).toContain("./deps");
   });
 });
 
-describe("internals.shouldRecurseDir", () => {
-  it("recurses into non-excluded dir", async () => {
-    const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldRecurseDir("src", ["deps"], [])).toBe(true);
-  });
-
-  it("skips excluded dir with no include patterns", async () => {
-    const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldRecurseDir("deps", ["deps"], [])).toBe(false);
-  });
-
-  it("recurses into excluded dir when an include lives beneath it", async () => {
-    const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldRecurseDir("deps", ["deps"], ["deps/@vendor"])).toBe(true);
-  });
-
-  it("skips sibling dirs that have no include underneath", async () => {
-    const { internals } = await import("../../src/download-folder.js");
-    // deps/other has no include under it — skip
-    expect(internals.shouldRecurseDir("deps/other", ["deps"], ["deps/@vendor"])).toBe(false);
-  });
-
-  it("recurses into the exact include dir even though parent is excluded", async () => {
-    const { internals } = await import("../../src/download-folder.js");
-    expect(internals.shouldRecurseDir("deps/@vendor", ["deps"], ["deps/@vendor"])).toBe(true);
-  });
-
-  it("recurses into a child of an include dir", async () => {
-    const { internals } = await import("../../src/download-folder.js");
-    expect(
-      internals.shouldRecurseDir("deps/@vendor/pkg", ["deps"], ["deps/@vendor"]),
-    ).toBe(true);
-  });
-});
-
-// ── downloadFolder integration ─────────────────────────────────────────────────
+// downloadFolder integration
 
 describe("downloadFolder", () => {
-  it("downloads all files in a flat directory", async () => {
+  it("downloads all files via tar and returns correct stats", async () => {
+    const tarBuffer = await makeTarGz([
+      { path: "a.txt", content: "hello" },
+      { path: "b.txt", content: "bye" },
+    ]);
+
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue(
-      makeLsOutput([
-        { name: "a.txt", isDir: false, size: 5 },
-        { name: "b.txt", isDir: false, size: 3 },
-      ]),
-    );
-    const cfSshBuffer = vi.fn()
-      .mockResolvedValueOnce(Buffer.from("hello"))
-      .mockResolvedValueOnce(Buffer.from("bye"));
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     const outDir = join(tempDir, "out");
@@ -181,25 +214,18 @@ describe("downloadFolder", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("recursively downloads nested directories", async () => {
+  it("downloads nested directory structure via tar", async () => {
+    const tarBuffer = await makeTarGz([
+      { path: "root.txt", content: "root" },
+      { path: "sub/child.txt", content: "child" },
+    ]);
+
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn()
-      .mockResolvedValueOnce(
-        makeLsOutput([
-          { name: "root.txt", isDir: false, size: 4 },
-          { name: "sub", isDir: true, size: 4096 },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        makeLsOutput([{ name: "child.txt", isDir: false, size: 5 }]),
-      );
-    const cfSshBuffer = vi.fn()
-      .mockResolvedValueOnce(Buffer.from("root"))
-      .mockResolvedValueOnce(Buffer.from("child"));
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     const outDir = join(tempDir, "out");
@@ -210,44 +236,19 @@ describe("downloadFolder", () => {
     });
 
     expect(result.files).toBe(2);
-    expect(result.bytes).toBe(9);
     expect(await readFile(join(outDir, "root.txt"), "utf8")).toBe("root");
     expect(await readFile(join(outDir, "sub", "child.txt"), "utf8")).toBe("child");
-    expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("handles deeply nested three-level directory tree", async () => {
+  it("handles empty tar archive — returns zero files", async () => {
+    const tarBuffer = await makeTarGz([]);
+
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn()
-      .mockResolvedValueOnce(makeLsOutput([{ name: "level1", isDir: true, size: 4096 }]))
-      .mockResolvedValueOnce(makeLsOutput([{ name: "level2", isDir: true, size: 4096 }]))
-      .mockResolvedValueOnce(makeLsOutput([{ name: "deep.txt", isDir: false, size: 4 }]));
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("deep"));
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    const outDir = join(tempDir, "out");
-    const result = await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir,
-    });
-
-    expect(result.files).toBe(1);
-    expect(await readFile(join(outDir, "level1", "level2", "deep.txt"), "utf8")).toBe("deep");
-  });
-
-  it("handles empty directory — returns zero files", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue("total 0\n");
-    const cfSshBuffer = vi.fn();
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     const outDir = join(tempDir, "out");
@@ -259,17 +260,71 @@ describe("downloadFolder", () => {
 
     expect(result.files).toBe(0);
     expect(result.bytes).toBe(0);
-    expect(cfSshBuffer).not.toHaveBeenCalled();
-    expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("disposes session even when cf ssh fails", async () => {
+  it("preserves binary file content", async () => {
+    const binaryData = Buffer.from([0x00, 0xff, 0x01, 0x80]);
+    const tarBuffer = await makeTarGz([{ path: "data.bin", content: binaryData }]);
+
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockRejectedValue(new Error("ssh failure"));
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer: vi.fn() }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const outDir = join(tempDir, "out");
+    await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir,
+    });
+
+    expect(await readFile(join(outDir, "data.bin"))).toEqual(binaryData);
+  });
+
+  it("extracts symlinked package directories as regular files", async () => {
+    const tarBuffer = await makeTarGz(
+      [
+        { path: "store/pkg/lib/index.js", content: "module.exports = {};\n" },
+      ],
+      {
+        dereference: true,
+        symlinks: [{ path: "node_modules/@scope/pkg", target: "../../store/pkg" }],
+      },
+    );
+
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    const outDir = join(tempDir, "out");
+    const result = await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir,
+    });
+
+    expect(result.files).toBe(2);
+    const linkedContent = await readFile(
+      join(outDir, "node_modules", "@scope", "pkg", "lib", "index.js"),
+      "utf8",
+    );
+    expect(linkedContent).toBe("module.exports = {};\n");
+  });
+
+  it("disposes session even when cfSshBuffer fails", async () => {
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSshBuffer = vi.fn().mockRejectedValue(new Error("ssh failure"));
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     await expect(
@@ -282,16 +337,13 @@ describe("downloadFolder", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("disposes session even when file download fails mid-walk", async () => {
+  it("disposes session when local tar extraction fails", async () => {
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue(
-      makeLsOutput([{ name: "file.txt", isDir: false, size: 5 }]),
-    );
-    const cfSshBuffer = vi.fn().mockRejectedValue(new Error("download error"));
+    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("not a tar archive"));
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     await expect(
@@ -300,17 +352,88 @@ describe("downloadFolder", () => {
         remotePath: "/home/vcap/app",
         outDir: join(tempDir, "out"),
       }),
-    ).rejects.toThrow("download error");
+    ).rejects.toThrow(/tar extraction failed/);
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("resolves relative remotePath against DEFAULT_APP_PATH", async () => {
+  it("sends a simple tar command when no filters are specified", async () => {
+    const tarBuffer = await makeTarGz([]);
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue("total 0\n");
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer: vi.fn() }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+    });
+
+    const [appName, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(appName).toBe("a");
+    expect(command).toContain("tar --dereference -czf -");
+    expect(command).toContain("'/home/vcap/app'");
+    expect(command).not.toContain("find");
+  });
+
+  it("sends tar command with --exclude flags when only excludes are given", async () => {
+    const tarBuffer = await makeTarGz([]);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+      exclude: ["deps", "build"],
+    });
+
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toContain("--exclude='./deps'");
+    expect(command).toContain("--exclude='./build'");
+    expect(command).not.toContain("find");
+  });
+
+  it("sends find+tar command when include overrides an exclude", async () => {
+    const tarBuffer = await makeTarGz([]);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+      exclude: ["deps"],
+      include: ["deps/@vendor"],
+    });
+
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toContain("find");
+    expect(command).toContain("deps/@vendor");
+    expect(command).toContain("tar --null --dereference --no-recursion");
+  });
+
+  it("resolves relative remotePath against DEFAULT_APP_PATH", async () => {
+    const tarBuffer = await makeTarGz([]);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     await downloadFolder({
@@ -319,16 +442,18 @@ describe("downloadFolder", () => {
       outDir: join(tempDir, "out"),
     });
 
-    expect(cfSsh).toHaveBeenCalledWith("a", "ls -la -- '/home/vcap/app/sub'", sessionContext);
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toContain("'/home/vcap/app/sub'");
   });
 
   it("resolves relative remotePath against custom appPath", async () => {
+    const tarBuffer = await makeTarGz([]);
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue("total 0\n");
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer: vi.fn() }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     await downloadFolder({
@@ -338,20 +463,18 @@ describe("downloadFolder", () => {
       appPath: "/custom/root",
     });
 
-    expect(cfSsh).toHaveBeenCalledWith(
-      "a",
-      "ls -la -- '/custom/root/code'",
-      sessionContext,
-    );
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toContain("'/custom/root/code'");
   });
 
   it("uses absolute remotePath as-is", async () => {
+    const tarBuffer = await makeTarGz([]);
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue("total 0\n");
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer: vi.fn() }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     await downloadFolder({
@@ -360,46 +483,18 @@ describe("downloadFolder", () => {
       outDir: join(tempDir, "out"),
     });
 
-    expect(cfSsh).toHaveBeenCalledWith(
-      "a",
-      "ls -la -- '/absolute/path'",
-      sessionContext,
-    );
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toContain("'/absolute/path'");
   });
 
-  it("preserves binary file content", async () => {
-    const bytes = Buffer.from([0x00, 0xff, 0x01, 0x80]);
+  it("uses a single CF session for the entire operation", async () => {
+    const tarBuffer = await makeTarGz([{ path: "file.txt", content: "hi!" }]);
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue(
-      makeLsOutput([{ name: "data.bin", isDir: false, size: 4 }]),
-    );
-    const cfSshBuffer = vi.fn().mockResolvedValue(bytes);
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    const outDir = join(tempDir, "out");
-    await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir,
-    });
-
-    expect(await readFile(join(outDir, "data.bin"))).toEqual(bytes);
-  });
-
-  it("uses a single CF session for the entire recursive walk", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn()
-      .mockResolvedValueOnce(makeLsOutput([{ name: "sub", isDir: true, size: 4096 }]))
-      .mockResolvedValueOnce(makeLsOutput([{ name: "file.txt", isDir: false, size: 3 }]));
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("hi!"));
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     await downloadFolder({
@@ -409,155 +504,18 @@ describe("downloadFolder", () => {
     });
 
     expect(openCfSession).toHaveBeenCalledOnce();
+    expect(cfSshBuffer).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  // ── exclude / include filtering ───────────────────────────────────────────
-
-  it("skips an excluded top-level directory entirely", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue(
-      makeLsOutput([
-        { name: "readme.md", isDir: false, size: 10 },
-        { name: "deps", isDir: true, size: 4096 },
-      ]),
-    );
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("readme"));
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    const outDir = join(tempDir, "out");
-    const result = await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir,
-      exclude: ["deps"],
-    });
-
-    expect(result.files).toBe(1);
-    // cfSsh called once for root only, never recurses into deps
-    expect(cfSsh).toHaveBeenCalledOnce();
-    expect(await readFile(join(outDir, "readme.md"), "utf8")).toBe("readme");
-  });
-
-  it("skips multiple excluded directories", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn().mockResolvedValue(
-      makeLsOutput([
-        { name: "index.js", isDir: false, size: 5 },
-        { name: "deps", isDir: true, size: 4096 },
-        { name: "build", isDir: true, size: 4096 },
-      ]),
-    );
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("hello"));
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    const result = await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir: join(tempDir, "out"),
-      exclude: ["deps", "build"],
-    });
-
-    expect(result.files).toBe(1);
-    expect(cfSsh).toHaveBeenCalledOnce();
-  });
-
-  it("recurses into excluded dir to retrieve an included subdir", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-
-    // root: readme.md + deps/
-    // deps/: other/ + @scope/
-    // deps/other/: index.js   ← excluded, not included
-    // deps/@scope/: pkg/      ← included
-    // deps/@scope/pkg/: helper.js  ← included
-    const cfSsh = vi.fn()
-      .mockResolvedValueOnce(
-        makeLsOutput([
-          { name: "readme.md", isDir: false, size: 6 },
-          { name: "deps", isDir: true, size: 4096 },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        makeLsOutput([
-          { name: "other", isDir: true, size: 4096 },
-          { name: "@scope", isDir: true, size: 4096 },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        makeLsOutput([{ name: "pkg", isDir: true, size: 4096 }]),
-      )
-      .mockResolvedValueOnce(
-        makeLsOutput([{ name: "helper.js", isDir: false, size: 8 }]),
-      );
-    const cfSshBuffer = vi.fn()
-      .mockResolvedValueOnce(Buffer.from("# readme"))
-      .mockResolvedValueOnce(Buffer.from("// helper"));
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    const outDir = join(tempDir, "out");
-    const result = await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir,
-      exclude: ["deps"],
-      include: ["deps/@scope"],
-    });
-
-    // readme.md + deps/@scope/pkg/helper.js = 2 files
-    expect(result.files).toBe(2);
-    expect(await readFile(join(outDir, "readme.md"), "utf8")).toBe("# readme");
-    expect(
-      await readFile(join(outDir, "deps", "@scope", "pkg", "helper.js"), "utf8"),
-    ).toBe("// helper");
-    // other/ was never listed (skipped)
-    expect(cfSsh).toHaveBeenCalledTimes(4);
-  });
-
-  it("include normalizes paths with leading slash and trailing slash", async () => {
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn()
-      .mockResolvedValueOnce(makeLsOutput([{ name: "deps", isDir: true, size: 4096 }]))
-      .mockResolvedValueOnce(makeLsOutput([{ name: "@scope", isDir: true, size: 4096 }]))
-      .mockResolvedValueOnce(makeLsOutput([{ name: "file.js", isDir: false, size: 3 }]));
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("ok"));
-
-    vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
-
-    const { downloadFolder } = await import("../../src/download-folder.js");
-    const result = await downloadFolder({
-      target: { region: "ap10", org: "o", space: "s", app: "a" },
-      remotePath: "/home/vcap/app",
-      outDir: join(tempDir, "out"),
-      exclude: ["/deps/"],      // leading slash + trailing slash
-      include: ["./deps/@scope/"], // leading ./ + trailing slash
-    });
-
-    expect(result.files).toBe(1);
-  });
-
   it("empty exclude and include arrays behave like no filters", async () => {
+    const tarBuffer = await makeTarGz([{ path: "file.txt", content: "data" }]);
     const dispose = vi.fn().mockResolvedValue(undefined);
     const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
-    const cfSsh = vi.fn()
-      .mockResolvedValueOnce(makeLsOutput([{ name: "file.txt", isDir: false, size: 4 }]));
-    const cfSshBuffer = vi.fn().mockResolvedValue(Buffer.from("data"));
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
 
     vi.doMock("../../src/session.js", () => ({ openCfSession }));
-    vi.doMock("../../src/cf.js", () => ({ cfSsh, cfSshBuffer }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
 
     const { downloadFolder } = await import("../../src/download-folder.js");
     const result = await downloadFolder({
@@ -569,5 +527,30 @@ describe("downloadFolder", () => {
     });
 
     expect(result.files).toBe(1);
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toBe("tar --dereference -czf - -C '/home/vcap/app' .");
+  });
+
+  it("normalizes leading slash and trailing slash in exclude/include paths", async () => {
+    const tarBuffer = await makeTarGz([]);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const openCfSession = vi.fn().mockResolvedValue({ context: sessionContext, dispose });
+    const cfSshBuffer = vi.fn().mockResolvedValue(tarBuffer);
+
+    vi.doMock("../../src/session.js", () => ({ openCfSession }));
+    vi.doMock("../../src/cf.js", () => ({ cfSshBuffer }));
+
+    const { downloadFolder } = await import("../../src/download-folder.js");
+    await downloadFolder({
+      target: { region: "ap10", org: "o", space: "s", app: "a" },
+      remotePath: "/home/vcap/app",
+      outDir: join(tempDir, "out"),
+      exclude: ["/deps/"],
+      include: ["./deps/@vendor/"],
+    });
+
+    const [, command] = cfSshBuffer.mock.calls[0] ?? [];
+    expect(command).toContain("deps");
+    expect(command).toContain("deps/@vendor");
   });
 });

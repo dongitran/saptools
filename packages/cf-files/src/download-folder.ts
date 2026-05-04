@@ -1,106 +1,131 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { CfExecContext } from "./cf.js";
-import { cfSsh, cfSshBuffer } from "./cf.js";
-import { buildDownloadCommand } from "./download.js";
-import { buildListCommand, parseListOutput, resolveRemotePath } from "./list.js";
+import { cfSshBuffer } from "./cf.js";
+import { quoteRemoteShellArg, resolveRemotePath } from "./list.js";
 import { openCfSession } from "./session.js";
 import { DEFAULT_APP_PATH, type DownloadFolderOptions, type DownloadFolderResult } from "./types.js";
 
-interface WalkStats {
-  files: number;
-  bytes: number;
+const TAR_MAX_BUFFER = 256 * 1024 * 1024;
+
+export function normalizeFilerPath(p: string): string {
+  const normalized = p.replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const segments = normalized.split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("Filter paths must not contain . or .. segments");
+  }
+  return normalized;
 }
 
-function normalizeFilerPath(p: string): string {
-  return p.replace(/^\.?\/+/, "").replace(/\/+$/, "");
-}
-
-function pathStartsWith(path: string, prefix: string): boolean {
+export function pathStartsWith(path: string, prefix: string): boolean {
   if (prefix === "") { return true; }
   if (path === prefix) { return true; }
   return path.startsWith(`${prefix}/`);
 }
 
-function isExcluded(relativePath: string, excludes: readonly string[]): boolean {
-  return excludes.some((p) => pathStartsWith(relativePath, p));
+function uniquePaths(paths: readonly string[]): readonly string[] {
+  return [...new Set(paths)];
 }
 
-function isIncluded(relativePath: string, includes: readonly string[]): boolean {
-  return includes.some((p) => pathStartsWith(relativePath, p));
-}
-
-function hasIncludeUnder(relativePath: string, includes: readonly string[]): boolean {
-  return includes.some((p) => pathStartsWith(p, relativePath));
-}
-
-function shouldDownloadFile(
-  relativePath: string,
+function removePathsCoveredByIncludes(
   excludes: readonly string[],
   includes: readonly string[],
-): boolean {
-  if (!isExcluded(relativePath, excludes)) { return true; }
-  return isIncluded(relativePath, includes);
+): readonly string[] {
+  return excludes.filter((exclude) => !includes.some((include) => pathStartsWith(exclude, include)));
 }
 
-function shouldRecurseDir(
-  relativePath: string,
-  excludes: readonly string[],
-  includes: readonly string[],
-): boolean {
-  if (!isExcluded(relativePath, excludes)) { return true; }
-  // Recurse if this dir is inside an include, or an include lives beneath it
-  return isIncluded(relativePath, includes) || hasIncludeUnder(relativePath, includes);
+function removeNestedPaths(paths: readonly string[]): readonly string[] {
+  return paths.filter(
+    (path) => !paths.some((candidate) => candidate !== path && pathStartsWith(path, candidate)),
+  );
 }
 
-async function walkAndDownload(
-  appName: string,
+function buildFindPrintCommand(path: string): string {
+  return `find -L ${quoteRemoteShellArg(path)} \\( -type d -o -type f \\) -print0`;
+}
+
+function buildPrunedFindCommand(excludes: readonly string[]): string {
+  const pruneParts = excludes
+    .map((exclude) => `-path ${quoteRemoteShellArg(`./${exclude}`)}`)
+    .join(" -o ");
+  return `find -L . \\( ${pruneParts} \\) -prune -o \\( -type d -o -type f \\) -print0`;
+}
+
+export function buildTarCommand(
   remotePath: string,
-  localDir: string,
-  relativePath: string,
   excludes: readonly string[],
   includes: readonly string[],
-  context: CfExecContext,
-  stats: WalkStats,
-): Promise<void> {
-  await mkdir(localDir, { recursive: true });
+): string {
+  const base = quoteRemoteShellArg(remotePath);
+  const uniqueExcludes = removeNestedPaths(uniquePaths(excludes));
+  const uniqueIncludes = removeNestedPaths(uniquePaths(includes));
+  const activeExcludes = removePathsCoveredByIncludes(uniqueExcludes, uniqueIncludes);
+  const overrideIncludes = uniqueIncludes.filter((include) =>
+    activeExcludes.some((exclude) => pathStartsWith(include, exclude) && include !== exclude),
+  );
 
-  const raw = await cfSsh(appName, buildListCommand(remotePath), context);
-  const entries = parseListOutput(raw);
+  if (activeExcludes.length === 0) {
+    return `tar --dereference -czf - -C ${base} .`;
+  }
 
-  for (const entry of entries) {
-    const entryRelative =
-      relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
-    const childRemotePath = `${remotePath}/${entry.name}`;
-    const childLocalPath = join(localDir, entry.name);
+  if (overrideIncludes.length === 0) {
+    const excFlags = activeExcludes
+      .map((exclude) => `--exclude=${quoteRemoteShellArg(`./${exclude}`)}`)
+      .join(" ");
+    return `tar --dereference -czf - -C ${base} ${excFlags} .`;
+  }
 
-    if (entry.isDirectory) {
-      if (shouldRecurseDir(entryRelative, excludes, includes)) {
-        await walkAndDownload(
-          appName,
-          childRemotePath,
-          childLocalPath,
-          entryRelative,
-          excludes,
-          includes,
-          context,
-          stats,
-        );
+  const mainFind = buildPrunedFindCommand(activeExcludes);
+  const overrideFinds = overrideIncludes
+    .map((include) => `${buildFindPrintCommand(`./${include}`)} 2>/dev/null`)
+    .join("; ");
+  const fileList = `{ ${mainFind}; ${overrideFinds}; }`;
+
+  return `cd ${base} && ${fileList} | tar --null --dereference --no-recursion -czf - -T -`;
+}
+
+function extractTarBuffer(buffer: Buffer, outDir: string): Promise<void> {
+  return new Promise<void>((res, rej) => {
+    const proc = spawn("tar", ["-xzf", "-", "-C", outDir]);
+    let stderr = "";
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", rej);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        res();
+      } else {
+        rej(new Error(`tar extraction failed (exit ${String(code ?? "?")}): ${stderr.trim()}`));
       }
-    } else {
-      if (shouldDownloadFile(entryRelative, excludes, includes)) {
-        const content = await cfSshBuffer(
-          appName,
-          buildDownloadCommand(childRemotePath),
-          context,
-        );
-        await writeFile(childLocalPath, content);
-        stats.files++;
-        stats.bytes += content.byteLength;
+    });
+    proc.stdin.write(buffer);
+    proc.stdin.end();
+  });
+}
+
+async function countExtracted(dir: string): Promise<{ files: number; bytes: number }> {
+  let files = 0;
+  let bytes = 0;
+
+  async function walk(d: string): Promise<void> {
+    const entries = await readdir(d, { withFileTypes: true });
+    for (const entry of entries) {
+      const p = join(d, entry.name);
+      if (entry.isDirectory()) {
+        await walk(p);
+      } else if (entry.isFile()) {
+        const s = await stat(p);
+        files++;
+        bytes += s.size;
       }
     }
   }
+
+  await walk(dir);
+  return { files, bytes };
 }
 
 export async function downloadFolder(
@@ -113,20 +138,21 @@ export async function downloadFolder(
   const excludes = (options.exclude ?? []).map(normalizeFilerPath).filter(Boolean);
   const includes = (options.include ?? []).map(normalizeFilerPath).filter(Boolean);
 
+  const tarCmd = buildTarCommand(remotePath, excludes, includes);
+
+  await mkdir(outDir, { recursive: true });
+
   const session = await openCfSession(options.target, context);
   try {
-    const stats: WalkStats = { files: 0, bytes: 0 };
-    await walkAndDownload(
+    const tarBuffer = await cfSshBuffer(
       options.target.app,
-      remotePath,
-      outDir,
-      "",
-      excludes,
-      includes,
+      tarCmd,
       session.context,
-      stats,
+      TAR_MAX_BUFFER,
     );
-    return { outDir, files: stats.files, bytes: stats.bytes };
+    await extractTarBuffer(tarBuffer, outDir);
+    const { files, bytes } = await countExtracted(outDir);
+    return { outDir, files, bytes };
   } finally {
     await session.dispose();
   }
@@ -135,6 +161,5 @@ export async function downloadFolder(
 export const internals = {
   normalizeFilerPath,
   pathStartsWith,
-  shouldDownloadFile,
-  shouldRecurseDir,
+  buildTarCommand,
 };

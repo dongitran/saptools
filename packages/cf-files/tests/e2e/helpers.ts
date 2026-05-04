@@ -17,6 +17,7 @@ export interface ScenarioApp {
   readonly vcapApplication?: Record<string, unknown>;
   readonly userProvidedEnv?: Record<string, unknown>;
   readonly files?: Record<string, string | { readonly base64: string }>;
+  readonly symlinks?: Record<string, string>;
 }
 
 export interface ScenarioSpace {

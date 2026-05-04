@@ -18,6 +18,7 @@
 - **`gen-env`** — read the app's `cf env` output and write a local `default-env.json`, including `VCAP_SERVICES`, `VCAP_APPLICATION`, and user-provided env vars such as `destinations`.
 - **`list`** — list files inside the running container using `cf ssh <app> -c "ls -la ..."`.
 - **`download`** — download a single file from the container using `cf ssh <app> -c "cat ..."`, preserving raw bytes.
+- **`download-folder`** — download a whole folder with one compressed `tar` stream over `cf ssh`, with optional include/exclude filters.
 
 Authentication is handled transparently via the Cloud Foundry CLI (`cf api` → `cf auth` → `cf target`), and region keys are resolved through [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync). The package passes credentials to `cf auth` through `CF_USERNAME` / `CF_PASSWORD` in the child process environment instead of command-line password arguments.
 
@@ -119,12 +120,35 @@ saptools-cf-files download \
 
 `--remote` may be absolute (`/etc/foo.conf`) or relative to `--app-path`. Remote paths are shell-quoted before being sent to `cf ssh`, so spaces, quotes, semicolons, and `$` characters are treated as path text rather than extra shell syntax.
 
+### `download-folder`
+
+Download a directory tree from the container in one compressed transfer.
+
+```bash
+saptools-cf-files download-folder \
+  --region ap10 --org my-org --space dev --app my-app \
+  --remote /home/vcap/app \
+  --out ./app-copy \
+  --exclude node_modules \
+  --include node_modules/@vendor
+```
+
+`download-folder` creates a remote `tar.gz` stream and extracts it locally. This avoids one `cf ssh` round trip per file, which is much faster for large trees.
+
+Filter paths are relative to the copied folder:
+
+- `--exclude <path>` skips that relative subtree.
+- `--include <path>` restores a subtree below an excluded parent.
+- Both flags can be repeated.
+
+Symlinks are dereferenced in the archive. For example, a linked package under `node_modules/@vendor/*` is copied as regular files under that path instead of as a local symlink that points back to the container layout.
+
 ---
 
 ## Library usage
 
 ```ts
-import { genEnv, listFiles, downloadFile } from "@saptools/cf-files";
+import { genEnv, listFiles, downloadFile, downloadFolder } from "@saptools/cf-files";
 
 await genEnv({
   target: { region: "ap10", org: "my-org", space: "dev", app: "my-app" },
@@ -140,6 +164,14 @@ await downloadFile({
   target: { region: "ap10", org: "my-org", space: "dev", app: "my-app" },
   remotePath: "/home/vcap/app/package.json",
   outPath: "./package.json",
+});
+
+await downloadFolder({
+  target: { region: "ap10", org: "my-org", space: "dev", app: "my-app" },
+  remotePath: "/home/vcap/app",
+  outDir: "./app-copy",
+  exclude: ["node_modules"],
+  include: ["node_modules/@vendor"],
 });
 ```
 
@@ -160,9 +192,10 @@ Under the hood every command runs the same boilerplate:
 3. `cf target -o <org> -s <space>`
 4. Then either:
    - `cf env <app>` (for `gen-env`), parsed into a `default-env.json` payload containing `VCAP_SERVICES`, `VCAP_APPLICATION`, and user-provided env vars, or
-   - `cf ssh <app> --disable-pseudo-tty -c "ls -la -- '<path>'"` / `cf ssh <app> --disable-pseudo-tty -c "cat -- '<path>'"` (for `list` / `download`).
+   - `cf ssh <app> --disable-pseudo-tty -c "ls -la -- '<path>'"` / `cf ssh <app> --disable-pseudo-tty -c "cat -- '<path>'"` (for `list` / `download`), or
+   - `cf ssh <app> --disable-pseudo-tty -c "tar --dereference -czf - -C '<path>' ..."` (for `download-folder`).
 
-The container side only ever runs `ls` and `cat`, so this package works against any CF buildpack (Node.js, Java, Python, etc.) — there is no runtime assumption about what is installed inside the container. Normal CLI runs use an isolated temporary `CF_HOME` so they do not change your default local CF CLI target; set `CF_FILES_CF_HOME` if you intentionally want a persistent CF home for this tool.
+The container side runs standard Unix tools (`ls`, `cat`, `tar`, and `find` only when include filters need to override excludes). Normal CLI runs use an isolated temporary `CF_HOME` so they do not change your default local CF CLI target; set `CF_FILES_CF_HOME` if you intentionally want a persistent CF home for this tool.
 
 ---
 

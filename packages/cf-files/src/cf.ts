@@ -92,10 +92,14 @@ async function cf(args: readonly string[], context?: CfExecContext): Promise<str
   }
 }
 
-async function cfBuffer(args: readonly string[], context?: CfExecContext): Promise<Buffer> {
+async function cfBuffer(
+  args: readonly string[],
+  context?: CfExecContext,
+  maxBuffer?: number,
+): Promise<Buffer> {
   const options: ExecFileOptionsWithBufferEncoding = {
     env: resolveCfEnv(context),
-    maxBuffer: MAX_BUFFER,
+    maxBuffer: maxBuffer ?? MAX_BUFFER,
     encoding: "buffer",
   };
 
@@ -154,8 +158,13 @@ export async function cfSshBuffer(
   appName: string,
   command: string,
   context?: CfExecContext,
+  maxBuffer?: number,
 ): Promise<Buffer> {
-  return await cfBuffer(["ssh", appName, "--disable-pseudo-tty", "-c", command], context);
+  return await cfBuffer(
+    ["ssh", appName, "--disable-pseudo-tty", "-c", command],
+    context,
+    maxBuffer,
+  );
 }
 
 export const internals = {
