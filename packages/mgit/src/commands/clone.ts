@@ -7,6 +7,8 @@ import { readRepos, writeRepos } from "../config/storage.js";
 
 const execFileAsync = promisify(execFile);
 
+const MAX_BUFFER = 16 * 1024 * 1024;
+
 interface CloneEntry {
   readonly name: string;
   readonly url: string;
@@ -26,7 +28,11 @@ export async function cloneFromConfig(configFile: string): Promise<void> {
   const updatedRepos = { ...repos.repos };
 
   for (const entry of entries) {
-    if (typeof entry.name !== "string" || typeof entry.url !== "string" || typeof entry.path !== "string") {
+    if (
+      typeof entry.name !== "string" ||
+      typeof entry.url !== "string" ||
+      typeof entry.path !== "string"
+    ) {
       throw new Error(`Invalid entry: ${JSON.stringify(entry)}`);
     }
 
@@ -34,12 +40,12 @@ export async function cloneFromConfig(configFile: string): Promise<void> {
     process.stdout.write(`Cloning ${entry.name} from ${entry.url} → ${absPath}\n`);
 
     await mkdir(dirname(absPath), { recursive: true });
-    await execFileAsync("git", ["clone", entry.url, absPath], { maxBuffer: 16 * 1024 * 1024 });
+    await execFileAsync("git", ["clone", entry.url, absPath], { maxBuffer: MAX_BUFFER });
 
     updatedRepos[entry.name] = absPath;
+    await writeRepos({ repos: updatedRepos });
     process.stdout.write(`  ✓ ${entry.name}\n`);
   }
 
-  await writeRepos({ repos: updatedRepos });
   process.stdout.write(`\nCloned and registered ${String(entries.length)} repository(ies).\n`);
 }

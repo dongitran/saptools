@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import process from "node:process";
 
 import { readContext, readGroups, readRepos, writeContext } from "../config/storage.js";
@@ -31,7 +31,11 @@ async function setContextAuto(): Promise<void> {
   const matchingGroup = Object.entries(groups.groups).find(([, members]) =>
     members.some((name) => {
       const path = repos.repos[name];
-      return path !== undefined && cwdResolved.startsWith(resolve(path));
+      if (path === undefined) {
+        return false;
+      }
+      const r = resolve(path);
+      return cwdResolved === r || cwdResolved.startsWith(`${r}${sep}`);
     }),
   );
 

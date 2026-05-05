@@ -23,11 +23,12 @@ export async function listLong(namesOrGroups: readonly string[] = []): Promise<v
       return r.value;
     }
     const repo = repos[i];
+    const reason: unknown = r.reason;
     return {
       name: repo?.name ?? `repo-${String(i)}`,
       path: repo?.path ?? "",
       status: null,
-      error: String(r.reason),
+      error: reason instanceof Error ? reason.message : String(reason),
     };
   });
 
