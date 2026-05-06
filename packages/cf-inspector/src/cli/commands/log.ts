@@ -14,10 +14,15 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const location = parseBreakpointSpec(opts.at);
   const remoteRoot = parseRemoteRoot(opts.remoteRoot);
   const durationSec = parsePositiveInt(opts.duration, "--duration");
+  const maxEvents = parsePositiveInt(opts.maxEvents, "--max-events");
+  const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
   const expression = opts.expr.trim();
   if (expression.length === 0) {
-    throw new CfInspectorError("INVALID_BREAKPOINT", "--expr must not be empty");
+    throw new CfInspectorError("INVALID_EXPRESSION", "--expr must not be empty");
   }
+  const condition = opts.condition !== undefined && opts.condition.trim().length > 0
+    ? opts.condition.trim()
+    : undefined;
   const abort = new AbortController();
   const onSig = (): void => {
     abort.abort();
@@ -28,11 +33,17 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   try {
     await withSession(target, async (session) => {
       await validateExpression(session, expression);
+      if (condition !== undefined) {
+        await validateExpression(session, condition);
+      }
       const result = await streamLogpoint(session, {
         location,
         expression,
         remoteRoot,
         ...(durationSec === undefined ? {} : { durationMs: durationSec * 1000 }),
+        ...(maxEvents === undefined ? {} : { maxEvents }),
+        ...(hitCount === undefined ? {} : { hitCount }),
+        ...(condition === undefined ? {} : { condition }),
         signal: abort.signal,
         onEvent: (event) => {
           writeLogEvent(event, opts.json);

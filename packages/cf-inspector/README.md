@@ -20,8 +20,12 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 
 - 🎯 **One-shot snapshot** — `cf-inspector snapshot --bp src/handler.ts:42` sets the breakpoint, waits for it to hit, captures requested expressions, auto-resumes, prints JSON, exits
 - ✅ **Conditional breakpoints** — `--condition 'req.userId === "abc"'` only pauses when the predicate is truthy
+- 🔢 **Hit-count breakpoints** — `--hit-count 5` skips the first N − 1 hits and pauses on the Nth, on every command (snapshot, log, watch)
 - 🎭 **Multi-breakpoint** — repeat `--bp` to race several locations; first hit wins
-- 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes, **without ever pausing the inspectee** (safe for production traffic)
+- 🪜 **Stack capture** — `--stack-depth N --stack-captures 'this, args'` walks call frames and evaluates expressions per frame
+- 🔁 **Watch streaming** — `cf-inspector watch --bp file:line --capture user.id --duration 30` re-captures on every hit and emits JSON Lines (the streaming counterpart of `snapshot`)
+- 💥 **Exception breakpoints** — `cf-inspector exception --type uncaught --capture err.message` pauses on the next thrown error and materializes the exception value
+- 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes, **without ever pausing the inspectee** (safe for production traffic), with optional `--condition`, `--hit-count`, `--max-events`
 - 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shape, bounded value previews for large debugger payloads
 - 🧭 **Path mapping** — local `src/handler.ts:42` is matched against the remote URL via a `urlRegex`, with optional `--remote-root` literal or regex (same DSL as `cds-debug`)
 - 🔁 **Composes with `cf-debugger`** — pass `--app/--region/--org/--space` and the tunnel is opened automatically; pass `--port` to attach to anything CDP-speaking
@@ -88,7 +92,10 @@ cf-inspector snapshot --port 9229 \
 | `--port <number>` | Local port the inspector or tunnel listens on. **Required** unless `--app/--region/--org/--space` are all set |
 | `--bp <file:line>` | **Required.** Source location to break at. Pass multiple times to race several locations — the first one to hit wins |
 | `--condition <expr>` | Only pause when this JS expression evaluates truthy in the paused frame. Errors in the condition are silently treated as `false` by V8 |
+| `--hit-count <n>` | Skip the first N − 1 hits and only pause on the Nth (combines with `--condition` via logical AND) |
 | `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved. Object results are materialized to JSON strings when serializable, with fallback to CDP descriptions for non-serializable values |
+| `--stack-depth <n>` | Walk this many call frames per hit (default: `1`, top frame only). When `> 1`, the result includes a `stack` array |
+| `--stack-captures <expr,…>` | Expressions to evaluate on each call frame in the captured stack |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
 | `--max-value-length <chars>` | Maximum characters per captured value before truncation (default: `4096`) |
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
@@ -148,8 +155,94 @@ When the user expression throws, the event is emitted with `error` instead of `v
 | `--at <file:line>` | **Required.** Source location to log at |
 | `--expr <expression>` | **Required.** JS expression to evaluate at each hit (wrapped in try/catch on the inspectee side) |
 | `--duration <seconds>` | Stop streaming after N seconds (default: run until SIGINT) |
+| `--max-events <n>` | Stop streaming after emitting N log events. The trailer reports `stopped: "max-events"` |
+| `--hit-count <n>` | Start emitting once the line has been hit N or more times |
+| `--condition <expr>` | Only log when this JS expression evaluates truthy on the inspectee. Composes with `--hit-count` via logical AND |
 | `--remote-root <value>` | Optional path-mapping anchor (same DSL as `snapshot`) |
 | `--no-json` | Print human-readable lines instead of JSON Lines |
+
+### 🔁 `cf-inspector watch`
+
+Stream a snapshot per breakpoint hit. The inspectee is paused briefly while
+captures are evaluated, then resumed automatically; output is JSON Lines on
+stdout with a trailer on stderr (same shape as `log`).
+
+```bash
+cf-inspector watch --port 9229 \
+  --bp src/handler.ts:42 \
+  --capture 'user.id, payload' \
+  --condition 'user.id !== "system"' \
+  --duration 30 \
+  --max-events 50
+```
+
+Each event is a `WatchEvent`:
+
+```jsonc
+{"ts":"2026-04-29T...","at":"file:///app/src/handler.ts:42","hit":1,"reason":"other","hitBreakpoints":["..."],"captures":[{"expression":"user.id","value":"\"alice\""}]}
+{"ts":"2026-04-29T...","at":"file:///app/src/handler.ts:42","hit":2,"reason":"other","hitBreakpoints":["..."],"captures":[{"expression":"user.id","value":"\"bob\""}]}
+// stderr trailer:
+{"stopped":"max-events","emitted":50}
+```
+
+| Flag | Description |
+| --- | --- |
+| `--port <number>` | Local port the inspector or tunnel listens on |
+| `--bp <file:line>` | **Required.** Source location to capture on (repeatable) |
+| `--capture <expr,…>` | Top-level comma-separated expressions to evaluate per hit |
+| `--condition <expr>` | Only emit hits where this expression evaluates truthy |
+| `--hit-count <n>` | Start emitting once the line has been hit N or more times |
+| `--remote-root <value>` | Path-mapping anchor (same DSL as `snapshot`) |
+| `--duration <seconds>` | Stop streaming after N seconds (default: until SIGINT) |
+| `--max-events <n>` | Stop streaming after emitting N events |
+| `--timeout <seconds>` | How long to wait for the next hit before giving up (default: `30`) |
+| `--max-value-length <chars>` | Maximum characters per captured value before truncation |
+| `--stack-depth <n>` | Walk this many call frames per hit (default: `1`) |
+| `--stack-captures <expr,…>` | Expressions to evaluate on each call frame |
+| `--include-scopes` | Include expanded paused-frame scopes per hit |
+| `--no-json` | Print human-readable lines instead of JSON Lines |
+
+### 💥 `cf-inspector exception`
+
+Pause on a thrown exception, capture the exception value plus the paused
+frame, then resume.
+
+```bash
+cf-inspector exception --port 9229 \
+  --type uncaught \
+  --capture 'this' \
+  --stack-depth 4 \
+  --stack-captures 'arguments[0]' \
+  --timeout 30
+```
+
+Result is a `SnapshotResult` with an extra `exception` field:
+
+```jsonc
+{
+  "reason": "exception",
+  "hitBreakpoints": [],
+  "capturedAt": "2026-04-29T...",
+  "pausedDurationMs": 0.5,
+  "topFrame": {"functionName": "validate", "url": "...", "line": 42, "column": 5},
+  "exception": {"value": "{\"message\":\"missing field\",\"name\":\"Error\"}", "type": "object", "description": "missing field"},
+  "captures": [],
+  "stack": [...]
+}
+```
+
+| Flag | Description |
+| --- | --- |
+| `--type <state>` | Pause on which exceptions: `uncaught` (default), `caught`, or `all` |
+| `--capture <expr,…>` | Top-level expressions to evaluate in the paused frame |
+| `--stack-depth <n>` | Walk this many call frames (default: `1`) |
+| `--stack-captures <expr,…>` | Expressions to evaluate on each frame |
+| `--include-scopes` | Include paused-frame scopes |
+| `--remote-root <value>` | Path-mapping anchor (only used if you also wire snapshot helpers) |
+| `--timeout <seconds>` | How long to wait for an exception (default: `30`) |
+| `--max-value-length <chars>` | Maximum characters per captured value before truncation |
+| `--keep-paused` | Skip `Debugger.resume` after capture |
+| `--no-json` | Print a human-readable summary instead of JSON |
 
 ### 🧮 `cf-inspector eval`
 
@@ -216,16 +309,20 @@ console.log({ bp, snapshot, customValue });
 | Export | Description |
 | --- | --- |
 | `connectInspector(options)` | Open a CDP WebSocket session against a port |
-| `setBreakpoint(session, location)` | Set a breakpoint by file/line + optional remote root |
+| `setBreakpoint(session, location)` | Set a breakpoint by file/line + optional remote root and `hitCount` |
 | `removeBreakpoint(session, id)` | Remove a breakpoint by id |
-| `waitForPause(session, options)` | Resolve when the next `Debugger.paused` event fires |
-| `captureSnapshot(session, pause, options)` | Build a structured snapshot of the paused frame. Pass `includeScopes: true` to expand scopes or `maxValueLength` to override the default captured value limit |
+| `setPauseOnExceptions(session, state)` | Configure exception pause state: `none / uncaught / caught / all` |
+| `waitForPause(session, options)` | Resolve when the next `Debugger.paused` event fires; supports `pauseReasons` allow-list |
+| `captureSnapshot(session, pause, options)` | Build a structured snapshot of the paused frame. Pass `includeScopes: true` to expand scopes, `stackDepth` + `stackCaptures` for multi-frame walks, or `maxValueLength` to override the default captured value limit |
+| `captureException(session, pause, maxValueLength)` | Materialize the exception attached to a `Debugger.paused` event |
+| `walkStack(session, frames, options)` | Walk a call stack and evaluate per-frame expressions |
 | `evaluateOnFrame(session, frameId, expression)` | Evaluate in a paused frame |
 | `evaluateGlobal(session, expression)` | Evaluate against the global Runtime |
 | `listScripts(session)` | Return the scripts the V8 instance knows about |
 | `resume(session)` | Resume execution |
-| `streamLogpoint(session, options)` | Stream a non-pausing logpoint until duration / signal / transport-close |
-| `buildLogpointCondition(sentinel, expression)` | Build the CDP `condition` string for a logpoint (low-level helper) |
+| `streamLogpoint(session, options)` | Stream a non-pausing logpoint until duration / signal / max-events / transport-close |
+| `buildLogpointCondition(sentinel, expression, options?)` | Build the CDP `condition` string for a logpoint with optional predicate / hit-count gates |
+| `buildHitCountedCondition(hitCount, key, userCondition?)` | Build the hit-count gate used by `setBreakpoint({ hitCount })` |
 | `parseRemoteRoot(value)` | Parse a literal/regex remote-root setting |
 | `buildBreakpointUrlRegex(input)` | Build a CDP `urlRegex` for a file path |
 | `CfInspectorError` | Rich error class with typed `code` |
@@ -241,6 +338,8 @@ console.log({ bp, snapshot, customValue });
 | `INVALID_BREAKPOINT` | `--bp` / `--at` is not in `file:line` form, or line is not a positive integer |
 | `INVALID_REMOTE_ROOT` | `--remote-root` regex did not compile |
 | `INVALID_EXPRESSION` | `--condition` or `--expr` failed to parse on V8 (`Runtime.compileScript` reported a SyntaxError) — fast-fail before the breakpoint is set |
+| `INVALID_HIT_COUNT` | `--hit-count` is not a positive integer |
+| `INVALID_PAUSE_TYPE` | `cf-inspector exception --type` is not one of `uncaught / caught / all` |
 | `BREAKPOINT_DID_NOT_BIND` | Reserved: a breakpoint resolved to no scripts. Currently surfaced as a stderr warning only — see `BreakpointHandle.resolvedLocations` for programmatic detection |
 | `INSPECTOR_DISCOVERY_FAILED` | `/json/list` did not return a usable WebSocket URL |
 | `INSPECTOR_CONNECTION_FAILED` | WebSocket handshake failed, or the connection closed mid-request |
@@ -292,23 +391,6 @@ cf-inspector snapshot \
   --bp src/handler.ts:42 \
   --capture 'req.url, this.user'
 ```
-
----
-
-## 🛠️ Development
-
-From the monorepo root:
-
-```bash
-pnpm install
-pnpm --filter @saptools/cf-inspector build
-pnpm --filter @saptools/cf-inspector typecheck
-pnpm --filter @saptools/cf-inspector lint
-pnpm --filter @saptools/cf-inspector test:unit
-pnpm --filter @saptools/cf-inspector test:e2e
-```
-
-The e2e suite is fully self-contained: it spawns a small Node fixture under `--inspect=0`, drives the CLI against it, and asserts the JSON output. No CF / live network required.
 
 ---
 

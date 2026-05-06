@@ -2,15 +2,18 @@ import { evaluateOnFrame } from "../inspector/runtime.js";
 import type { InspectorSession } from "../inspector/types.js";
 import type {
   CapturedExpression,
+  ExceptionSnapshot,
   FrameSnapshot,
   PauseEvent,
   SnapshotCaptureResult,
 } from "../types.js";
 
 import { evalResultToCaptured } from "./evaluation.js";
+import { captureException } from "./exception.js";
 import { withSerializedObjectCapture } from "./objects.js";
 import { describeProperty } from "./properties.js";
 import { captureScopes, selectScopes } from "./scopes.js";
+import { DEFAULT_STACK_DEPTH, walkStack } from "./stack.js";
 import {
   DEFAULT_MAX_VALUE_LENGTH,
   limitValueLength,
@@ -21,6 +24,8 @@ export interface CaptureSnapshotOptions {
   readonly captures?: readonly string[];
   readonly includeScopes?: boolean;
   readonly maxValueLength?: number;
+  readonly stackDepth?: number;
+  readonly stackCaptures?: readonly string[];
 }
 
 export async function captureSnapshot(
@@ -32,6 +37,7 @@ export async function captureSnapshot(
   const top = pause.callFrames[0];
   let topFrame: FrameSnapshot | undefined;
   let captures: CapturedExpression[] = [];
+  let stack: readonly FrameSnapshot[] = [];
   if (top) {
     topFrame = {
       functionName: top.functionName,
@@ -44,14 +50,40 @@ export async function captureSnapshot(
       topFrame = { ...topFrame, scopes };
     }
     captures = await captureExpressions(session, top.callFrameId, options.captures, maxValueLength);
+    stack = await walkStack(session, pause.callFrames, {
+      stackDepth: options.stackDepth ?? DEFAULT_STACK_DEPTH,
+      stackCaptures: options.stackCaptures ?? [],
+      maxValueLength,
+    });
   }
-  return {
-    reason: pause.reason,
-    hitBreakpoints: pause.hitBreakpoints,
-    capturedAt: new Date().toISOString(),
-    ...(topFrame === undefined ? {} : { topFrame }),
+  const exception = await captureException(session, pause, maxValueLength);
+  return buildResult({
+    pause,
+    topFrame,
     captures,
+    stack,
+    exception,
+  });
+}
+
+interface BuildResultInput {
+  readonly pause: PauseEvent;
+  readonly topFrame: FrameSnapshot | undefined;
+  readonly captures: readonly CapturedExpression[];
+  readonly stack: readonly FrameSnapshot[];
+  readonly exception: ExceptionSnapshot | undefined;
+}
+
+function buildResult(input: BuildResultInput): SnapshotCaptureResult {
+  const base: SnapshotCaptureResult = {
+    reason: input.pause.reason,
+    hitBreakpoints: input.pause.hitBreakpoints,
+    capturedAt: new Date().toISOString(),
+    captures: input.captures,
   };
+  const withFrame = input.topFrame === undefined ? base : { ...base, topFrame: input.topFrame };
+  const withStack = input.stack.length > 0 ? { ...withFrame, stack: input.stack } : withFrame;
+  return input.exception === undefined ? withStack : { ...withStack, exception: input.exception };
 }
 
 async function captureExpressions(

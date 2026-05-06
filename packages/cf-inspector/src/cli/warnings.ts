@@ -30,14 +30,16 @@ export function withPausedDuration(
   snapshot: SnapshotCaptureResult,
   pausedDurationMs: number | null,
 ): SnapshotResult {
-  return {
+  const base: SnapshotResult = {
     reason: snapshot.reason,
     hitBreakpoints: snapshot.hitBreakpoints,
     capturedAt: snapshot.capturedAt,
     pausedDurationMs,
-    ...(snapshot.topFrame === undefined ? {} : { topFrame: snapshot.topFrame }),
     captures: snapshot.captures,
   };
+  const withFrame = snapshot.topFrame === undefined ? base : { ...base, topFrame: snapshot.topFrame };
+  const withStack = snapshot.stack === undefined ? withFrame : { ...withFrame, stack: snapshot.stack };
+  return snapshot.exception === undefined ? withStack : { ...withStack, exception: snapshot.exception };
 }
 
 function formatPauseLocation(pause: PauseEvent): string {

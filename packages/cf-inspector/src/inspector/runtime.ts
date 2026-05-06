@@ -3,8 +3,17 @@ import type { ScriptInfo } from "../types.js";
 
 import type { CdpEvalResult, CdpProperty, InspectorSession } from "./types.js";
 
+export type PauseOnExceptionsState = "none" | "uncaught" | "caught" | "all";
+
 export async function resume(session: InspectorSession): Promise<void> {
   await session.client.send("Debugger.resume");
+}
+
+export async function setPauseOnExceptions(
+  session: InspectorSession,
+  state: PauseOnExceptionsState,
+): Promise<void> {
+  await session.client.send("Debugger.setPauseOnExceptions", { state });
 }
 
 export async function evaluateOnFrame(

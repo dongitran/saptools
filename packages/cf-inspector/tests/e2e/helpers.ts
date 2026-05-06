@@ -9,6 +9,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
 
 export const FIXTURE_PATH = resolve(HERE, "fixtures", "sample-app.mjs");
+export const STACK_FIXTURE_PATH = resolve(HERE, "fixtures", "sample-stack.mjs");
 export const CLI_PATH = resolve(PACKAGE_ROOT, "dist", "cli.js");
 
 export function ensureCliBuilt(): void {
@@ -27,6 +28,7 @@ export interface SpawnedFixture {
 
 export interface SpawnFixtureOptions {
   readonly env?: Readonly<Record<string, string>>;
+  readonly fixturePath?: string;
 }
 
 interface InspectorList {
@@ -85,7 +87,8 @@ function parseDebuggerListening(stderr: string): number | undefined {
 }
 
 export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<SpawnedFixture> {
-  const child = spawn(process.execPath, ["--inspect=0", FIXTURE_PATH], {
+  const fixture = options.fixturePath ?? FIXTURE_PATH;
+  const child = spawn(process.execPath, ["--inspect=0", fixture], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...options.env },
   });

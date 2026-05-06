@@ -31,6 +31,9 @@ interface PreparedSnapshotCommand {
   readonly timeoutMs: number;
   readonly maxValueLength?: number;
   readonly condition?: string;
+  readonly hitCount?: number;
+  readonly stackDepth?: number;
+  readonly stackCaptures: readonly string[];
 }
 
 export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
@@ -56,6 +59,8 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions): PreparedSnapshotC
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
+  const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
+  const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
   return {
     target,
     breakpoints: opts.bp.map((spec) => parseBreakpointSpec(spec)),
@@ -64,6 +69,9 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions): PreparedSnapshotC
     timeoutMs: timeoutSec * 1000,
     ...(condition === undefined ? {} : { condition }),
     ...(maxValueLength === undefined ? {} : { maxValueLength }),
+    ...(hitCount === undefined ? {} : { hitCount }),
+    ...(stackDepth === undefined ? {} : { stackDepth }),
+    stackCaptures: parseCaptureList(opts.stackCaptures),
   };
 }
 
@@ -82,6 +90,7 @@ async function runSnapshotCommand(
           line: bp.line,
           remoteRoot: command.remoteRoot,
           ...(command.condition === undefined ? {} : { condition: command.condition }),
+          ...(command.hitCount === undefined ? {} : { hitCount: command.hitCount }),
         }),
       ),
     );
@@ -92,6 +101,8 @@ async function runSnapshotCommand(
       captures: command.captures,
       includeScopes: opts.includeScopes === true,
       ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+      ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
+      stackCaptures: command.stackCaptures,
     });
     if (opts.keepPaused === true) {
       return withPausedDuration(snapshot, null);

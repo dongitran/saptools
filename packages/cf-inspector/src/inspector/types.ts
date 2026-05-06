@@ -50,6 +50,7 @@ export interface CdpPauseParams {
   reason?: unknown;
   hitBreakpoints?: unknown;
   callFrames?: unknown;
+  data?: unknown;
 }
 
 export interface CdpSetBreakpointResult {
@@ -82,11 +83,13 @@ export interface ScriptParsedParams {
 export interface SetBreakpointInput extends BreakpointLocation {
   readonly remoteRoot?: RemoteRootSetting;
   readonly condition?: string;
+  readonly hitCount?: number;
 }
 
 export interface WaitForPauseOptions {
   readonly timeoutMs: number;
   readonly breakpointIds?: readonly string[];
+  readonly pauseReasons?: readonly string[];
   readonly unmatchedPausePolicy?: "wait-for-resume" | "fail";
   readonly onUnmatchedPause?: (pause: PauseEvent) => void;
 }

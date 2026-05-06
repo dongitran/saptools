@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import type { SnapshotResult } from "../../src/types.js";
 
-import { ensureCliBuilt, runCli, spawnFixture } from "./helpers.js";
+import { ensureCliBuilt, runCli, spawnFixture, STACK_FIXTURE_PATH } from "./helpers.js";
 
 test("snapshot captures the paused frame on the marker line", async () => {
   ensureCliBuilt();
@@ -409,6 +409,104 @@ test("snapshot warns to stderr when the breakpoint did not bind to any loaded sc
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("did not bind to any loaded script");
     expect(result.stderr).toContain("BREAKPOINT_NOT_HIT");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --hit-count waits until the breakpoint has been hit N times", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--hit-count",
+        "5",
+        "--capture",
+        "counter",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    const counter = parsed.captures.find((c) => c.expression === "counter");
+    expect(counter?.value).toBeDefined();
+    const counterValue = Number.parseInt(counter?.value ?? "0", 10);
+    // The counter is incremented one line before the BP marker, so the first
+    // pause that satisfies hit-count=5 has counter >= 5.
+    expect(counterValue).toBeGreaterThanOrEqual(5);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --hit-count rejects a non-positive value", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--hit-count",
+        "0",
+      ],
+      15_000,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("INVALID_ARGUMENT");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --stack-depth captures multiple frames and runs --stack-captures per frame", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: STACK_FIXTURE_PATH });
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-stack.mjs:13",
+        "--stack-depth",
+        "3",
+        "--stack-captures",
+        "tagged.id, payload.id, session.traceId",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    expect(parsed.stack).toBeDefined();
+    expect(parsed.stack?.length).toBeGreaterThanOrEqual(3);
+    const fnNames = parsed.stack?.map((frame) => frame.functionName) ?? [];
+    expect(fnNames[0]).toBe("deeperHelper");
+    expect(fnNames[1]).toBe("helper");
+    expect(fnNames[2]).toBe("entry");
+    const deepCaptures = parsed.stack?.[0]?.captures ?? [];
+    const deeperTaggedId = deepCaptures.find((c) => c.expression === "tagged.id");
+    expect(deeperTaggedId?.value).toBeDefined();
+    const helperCaptures = parsed.stack?.[1]?.captures ?? [];
+    const helperPayloadId = helperCaptures.find((c) => c.expression === "payload.id");
+    expect(helperPayloadId?.value).toBeDefined();
+    const entryCaptures = parsed.stack?.[2]?.captures ?? [];
+    const entryTraceId = entryCaptures.find((c) => c.expression === "session.traceId");
+    expect(entryTraceId?.value).toBeDefined();
   } finally {
     await fixture.close();
   }

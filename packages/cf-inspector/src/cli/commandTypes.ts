@@ -1,5 +1,6 @@
 export const DEFAULT_BREAKPOINT_TIMEOUT_SEC = 30;
 export const DEFAULT_CF_TIMEOUT_SEC = 60;
+export const DEFAULT_EXCEPTION_TIMEOUT_SEC = 30;
 
 export interface PortTarget {
   readonly kind: "port";
@@ -34,6 +35,9 @@ export interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly timeout?: string;
   readonly remoteRoot?: string;
   readonly condition?: string;
+  readonly hitCount?: string;
+  readonly stackDepth?: string;
+  readonly stackCaptures?: string;
   readonly maxValueLength?: string;
   readonly json: boolean;
   readonly keepPaused?: boolean;
@@ -55,9 +59,41 @@ export interface LogCommandOptions extends SharedTargetOptions {
   readonly expr: string;
   readonly remoteRoot?: string;
   readonly duration?: string;
+  readonly maxEvents?: string;
+  readonly hitCount?: string;
+  readonly condition?: string;
   readonly json: boolean;
 }
 
 export interface AttachCommandOptions extends SharedTargetOptions {
+  readonly json: boolean;
+}
+
+export interface WatchCommandOptions extends SharedTargetOptions {
+  readonly bp: readonly string[];
+  readonly capture?: string;
+  readonly condition?: string;
+  readonly hitCount?: string;
+  readonly remoteRoot?: string;
+  readonly duration?: string;
+  readonly maxEvents?: string;
+  readonly timeout?: string;
+  readonly maxValueLength?: string;
+  readonly stackDepth?: string;
+  readonly stackCaptures?: string;
+  readonly includeScopes?: boolean;
+  readonly json: boolean;
+}
+
+export interface ExceptionCommandOptions extends SharedTargetOptions {
+  readonly type?: string;
+  readonly capture?: string;
+  readonly stackDepth?: string;
+  readonly stackCaptures?: string;
+  readonly remoteRoot?: string;
+  readonly timeout?: string;
+  readonly maxValueLength?: string;
+  readonly includeScopes?: boolean;
+  readonly keepPaused?: boolean;
   readonly json: boolean;
 }

@@ -3,6 +3,8 @@ export type CfInspectorErrorCode =
   | "INVALID_BREAKPOINT"
   | "INVALID_REMOTE_ROOT"
   | "INVALID_EXPRESSION"
+  | "INVALID_HIT_COUNT"
+  | "INVALID_PAUSE_TYPE"
   | "BREAKPOINT_DID_NOT_BIND"
   | "INSPECTOR_DISCOVERY_FAILED"
   | "INSPECTOR_CONNECTION_FAILED"
@@ -86,6 +88,7 @@ export interface PauseEvent {
   readonly hitBreakpoints: readonly string[];
   readonly callFrames: readonly CallFrameInfo[];
   readonly receivedAtMs?: number;
+  readonly data?: unknown;
 }
 
 export interface VariableSnapshot {
@@ -106,6 +109,7 @@ export interface FrameSnapshot {
   readonly line: number;
   readonly column: number;
   readonly scopes?: readonly ScopeSnapshot[];
+  readonly captures?: readonly CapturedExpression[];
 }
 
 export interface CapturedExpression {
@@ -115,16 +119,37 @@ export interface CapturedExpression {
   readonly error?: string;
 }
 
+export interface ExceptionSnapshot {
+  readonly value?: string;
+  readonly type?: string;
+  readonly description?: string;
+  readonly error?: string;
+}
+
 export interface SnapshotCaptureResult {
   readonly reason: string;
   readonly hitBreakpoints: readonly string[];
   readonly capturedAt: string;
   readonly topFrame?: FrameSnapshot;
   readonly captures: readonly CapturedExpression[];
+  readonly stack?: readonly FrameSnapshot[];
+  readonly exception?: ExceptionSnapshot;
 }
 
 export interface SnapshotResult extends SnapshotCaptureResult {
   readonly pausedDurationMs: number | null;
+}
+
+export interface WatchEvent {
+  readonly ts: string;
+  readonly at: string;
+  readonly hit: number;
+  readonly reason: string;
+  readonly hitBreakpoints: readonly string[];
+  readonly topFrame?: FrameSnapshot;
+  readonly captures: readonly CapturedExpression[];
+  readonly stack?: readonly FrameSnapshot[];
+  readonly exception?: ExceptionSnapshot;
 }
 
 export interface ScriptInfo {

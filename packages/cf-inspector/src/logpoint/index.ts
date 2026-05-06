@@ -2,9 +2,14 @@ import { buildLogpointCondition, generateSentinel, SENTINEL_PREFIX } from "./con
 import { parseLogEvent } from "./events.js";
 
 export { buildLogpointCondition } from "./condition.js";
+export type { LogpointConditionOptions } from "./condition.js";
 export { streamLogpoint } from "./stream.js";
 export type { LogpointEvent } from "./events.js";
-export type { LogpointStreamOptions, LogpointStreamResult } from "./stream.js";
+export type {
+  LogpointStopReason,
+  LogpointStreamOptions,
+  LogpointStreamResult,
+} from "./stream.js";
 
 export const internalsForTesting = {
   buildLogpointCondition,

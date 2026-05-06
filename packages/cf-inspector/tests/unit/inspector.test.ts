@@ -5,12 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { CdpClient } from "../../src/cdp/client.js";
 import type { InspectorSession } from "../../src/inspector/index.js";
 import {
+  buildHitCountedCondition,
   evaluateGlobal,
   evaluateOnFrame,
   getProperties,
   removeBreakpoint,
   resume,
   setBreakpoint,
+  setPauseOnExceptions,
   validateExpression,
   waitForPause,
 } from "../../src/inspector/index.js";
@@ -344,6 +346,96 @@ describe("setBreakpoint", () => {
     await expect(setBreakpoint(session, { file: "x.ts", line: 1 })).rejects.toThrowError(
       CfInspectorError,
     );
+  });
+});
+
+describe("buildHitCountedCondition", () => {
+  it("returns an IIFE that increments a global counter and gates by N when no user condition is given", () => {
+    const out = buildHitCountedCondition(3, "src/handler.ts:1:1", undefined);
+    expect(out.startsWith("(function(){")).toBe(true);
+    expect(out.endsWith("})()")).toBe(true);
+    expect(out).toContain("globalThis.__CFI_HITS");
+    expect(out).toContain("\"src/handler.ts:1:1\"");
+    expect(out).toContain("if(m[k]<3)return false;");
+    expect(out).toContain("return true;");
+  });
+
+  it("composes the user condition inside the gate so both must be truthy", () => {
+    const out = buildHitCountedCondition(2, "k", "req.userId === 'foo'");
+    expect(out).toContain("if(m[k]<2)return false;");
+    expect(out).toContain("return (req.userId === 'foo');");
+  });
+});
+
+describe("setBreakpoint hit-count", () => {
+  it("rejects a non-positive hit count synchronously", async () => {
+    const { session } = makeSendSession(() => ({ breakpointId: "bp-1", locations: [] }));
+    await expect(
+      setBreakpoint(session, { file: "x.ts", line: 1, hitCount: 0 }),
+    ).rejects.toMatchObject({ code: "INVALID_HIT_COUNT" });
+    await expect(
+      setBreakpoint(session, { file: "x.ts", line: 1, hitCount: 1.5 }),
+    ).rejects.toMatchObject({ code: "INVALID_HIT_COUNT" });
+  });
+
+  it("forwards a hit-count gate as the CDP condition string", async () => {
+    const { session, calls } = makeSendSession(() => ({ breakpointId: "bp-1", locations: [] }));
+    await setBreakpoint(session, { file: "x.ts", line: 5, hitCount: 7 });
+    const cond = calls[0]?.params["condition"];
+    expect(typeof cond).toBe("string");
+    expect(cond as string).toContain("globalThis.__CFI_HITS");
+    expect(cond as string).toContain("if(m[k]<7)return false;");
+  });
+});
+
+describe("setPauseOnExceptions", () => {
+  it("forwards the state to Debugger.setPauseOnExceptions", async () => {
+    const { session, calls } = makeSendSession(() => ({}));
+    await setPauseOnExceptions(session, "uncaught");
+    expect(calls[0]?.method).toBe("Debugger.setPauseOnExceptions");
+    expect(calls[0]?.params["state"]).toBe("uncaught");
+  });
+
+  it("supports each documented state", async () => {
+    const { session, calls } = makeSendSession(() => ({}));
+    await setPauseOnExceptions(session, "all");
+    await setPauseOnExceptions(session, "caught");
+    await setPauseOnExceptions(session, "none");
+    expect(calls.map((c) => c.params["state"])).toEqual(["all", "caught", "none"]);
+  });
+});
+
+describe("waitForPause pauseReasons filter", () => {
+  it("returns a buffered pause whose reason matches the allow-list and forwards data", async () => {
+    const { session } = makeSession([
+      { reason: "exception", hitBreakpoints: [], callFrames: [], data: { type: "object", description: "boom" } },
+    ]);
+    const result = await waitForPause(session, {
+      timeoutMs: 50,
+      pauseReasons: ["exception"],
+    });
+    expect(result.reason).toBe("exception");
+    expect(result.data).toEqual({ type: "object", description: "boom" });
+  });
+
+  it("treats reasons outside the allow-list as unmatched and times out cooperatively", async () => {
+    const { session } = makeSession([
+      { reason: "other", hitBreakpoints: ["bp-1"], callFrames: [] },
+    ]);
+    await expect(
+      waitForPause(session, { timeoutMs: 30, pauseReasons: ["exception"] }),
+    ).rejects.toMatchObject({ code: "UNRELATED_PAUSE_TIMEOUT" });
+  });
+
+  it("waits for live exception pauses when buffer is empty", async () => {
+    const { session, fireEvent } = makeSession([]);
+    const promise = waitForPause(session, { timeoutMs: 200, pauseReasons: ["exception"] });
+    setTimeout(() => {
+      fireEvent({ reason: "exception", hitBreakpoints: [], callFrames: [], data: { type: "string", value: "boom" } });
+    }, 5);
+    const result = await promise;
+    expect(result.reason).toBe("exception");
+    expect(result.data).toEqual({ type: "string", value: "boom" });
   });
 });
 

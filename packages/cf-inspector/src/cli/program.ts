@@ -3,15 +3,19 @@ import { Command } from "commander";
 import type {
   AttachCommandOptions,
   EvalCommandOptions,
+  ExceptionCommandOptions,
   ListScriptsCommandOptions,
   LogCommandOptions,
   SnapshotCommandOptions,
+  WatchCommandOptions,
 } from "./commandTypes.js";
 import { handleAttach } from "./commands/attach.js";
 import { handleEval } from "./commands/eval.js";
+import { handleException } from "./commands/exception.js";
 import { handleListScripts } from "./commands/listScripts.js";
 import { handleLog } from "./commands/log.js";
 import { handleSnapshot } from "./commands/snapshot.js";
+import { handleWatch } from "./commands/watch.js";
 
 function applyTargetOptions(cmd: Command): Command {
   return cmd
@@ -24,6 +28,11 @@ function applyTargetOptions(cmd: Command): Command {
     .option("--cf-timeout <seconds>", "Timeout for CF tunnel readiness in seconds");
 }
 
+const collectStrings = (value: string, prev: readonly string[] = []): readonly string[] => [
+  ...prev,
+  value,
+];
+
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   program
@@ -32,6 +41,8 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   registerSnapshot(program);
   registerLog(program);
+  registerWatch(program);
+  registerException(program);
   registerEval(program);
   registerListScripts(program);
   registerAttach(program);
@@ -40,10 +51,6 @@ export async function main(argv: readonly string[]): Promise<void> {
 }
 
 function registerSnapshot(program: Command): void {
-  const collectStrings = (value: string, prev: readonly string[] = []): readonly string[] => [
-    ...prev,
-    value,
-  ];
   applyTargetOptions(
     program.command("snapshot").description("Set a breakpoint, wait for it to hit, capture expressions, and resume"),
   )
@@ -53,6 +60,9 @@ function registerSnapshot(program: Command): void {
     .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option("--condition <expr>", "Only pause when this JS expression evaluates truthy in the paused frame")
+    .option("--hit-count <n>", "Only pause after the breakpoint has been hit N or more times")
+    .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1, only top frame)")
+    .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--no-json", "Print a human-readable summary instead of JSON")
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
@@ -70,9 +80,53 @@ function registerLog(program: Command): void {
     .requiredOption("--expr <expression>", "JavaScript expression to log on each hit")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option("--duration <seconds>", "Stop streaming after N seconds (default: run until SIGINT)")
+    .option("--max-events <n>", "Stop streaming after emitting N log events")
+    .option("--hit-count <n>", "Start logging once the line has been hit N or more times")
+    .option("--condition <expr>", "Only log when this JS expression evaluates truthy on the inspectee")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
     .action(async (opts: LogCommandOptions): Promise<void> => {
       await handleLog(opts);
+    });
+}
+
+function registerWatch(program: Command): void {
+  applyTargetOptions(
+    program.command("watch").description("Stream a snapshot per breakpoint hit (multi-shot watch); resume between hits"),
+  )
+    .option("--bp <file:line>", "Breakpoint location (repeatable), e.g. src/handler.ts:42", collectStrings, [] as readonly string[])
+    .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate per hit")
+    .option("--condition <expr>", "Only emit hits where this JS expression evaluates truthy")
+    .option("--hit-count <n>", "Start emitting after the line has been hit N or more times")
+    .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
+    .option("--duration <seconds>", "Stop streaming after N seconds (default: run until SIGINT)")
+    .option("--max-events <n>", "Stop streaming after emitting N watch events")
+    .option("--timeout <seconds>", "How long to wait for the next hit before giving up (default: 30)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
+    .option("--stack-depth <n>", "Walk this many call frames per hit (default: 1)")
+    .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame")
+    .option("--include-scopes", "Include expanded paused-frame scopes per hit")
+    .option("--no-json", "Print human-readable lines instead of JSON Lines")
+    .action(async (opts: WatchCommandOptions): Promise<void> => {
+      await handleWatch(opts);
+    });
+}
+
+function registerException(program: Command): void {
+  applyTargetOptions(
+    program.command("exception").description("Pause on a thrown exception, capture the value and frame, then resume"),
+  )
+    .option("--type <state>", "Pause type: uncaught (default), caught, or all")
+    .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
+    .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
+    .option("--timeout <seconds>", "How long to wait for an exception (default: 30)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
+    .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1)")
+    .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
+    .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
+    .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
+    .option("--no-json", "Print a human-readable summary instead of JSON")
+    .action(async (opts: ExceptionCommandOptions): Promise<void> => {
+      await handleException(opts);
     });
 }
 

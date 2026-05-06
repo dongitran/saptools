@@ -117,7 +117,7 @@ export function toPauseEvent(
   receivedAtMs: number,
   scripts?: ReadonlyMap<string, ScriptInfo>,
 ): PauseEvent {
-  return {
+  const base: PauseEvent = {
     reason: asString(params.reason),
     hitBreakpoints: Array.isArray(params.hitBreakpoints)
       ? params.hitBreakpoints.filter((id): id is string => typeof id === "string")
@@ -125,6 +125,7 @@ export function toPauseEvent(
     callFrames: toCallFrames(params.callFrames, scripts),
     receivedAtMs,
   };
+  return params.data === undefined ? base : { ...base, data: params.data };
 }
 
 function topFrameLocation(pause: PauseEvent): string {

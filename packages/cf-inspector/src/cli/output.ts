@@ -1,7 +1,7 @@
 import process from "node:process";
 
 import type { LogpointEvent } from "../logpoint/events.js";
-import type { SnapshotResult } from "../types.js";
+import type { ExceptionSnapshot, FrameSnapshot, SnapshotResult, WatchEvent } from "../types.js";
 
 export function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -17,8 +17,11 @@ export function writeHumanSnapshot(snapshot: SnapshotResult): void {
     `  reason:  ${snapshot.reason}`,
     `  paused:  ${pausedDuration}`,
   );
+  if (snapshot.exception !== undefined) {
+    appendExceptionLines(lines, snapshot.exception);
+  }
   if (snapshot.topFrame) {
-    appendFrameLines(lines, snapshot);
+    appendFrameLines(lines, snapshot.topFrame);
   }
   if (snapshot.captures.length > 0) {
     lines.push("  captures:");
@@ -27,14 +30,16 @@ export function writeHumanSnapshot(snapshot: SnapshotResult): void {
       lines.push(`    ${capture.expression} = ${detail}`);
     }
   }
+  if (snapshot.stack !== undefined && snapshot.stack.length > 0) {
+    lines.push("  stack:");
+    for (const frame of snapshot.stack) {
+      appendStackFrameLine(lines, frame);
+    }
+  }
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-function appendFrameLines(lines: string[], snapshot: SnapshotResult): void {
-  const frame = snapshot.topFrame;
-  if (frame === undefined) {
-    return;
-  }
+function appendFrameLines(lines: string[], frame: FrameSnapshot): void {
   const fnName = frame.functionName.length === 0 ? "(anonymous)" : frame.functionName;
   const sourceUrl = frame.url !== undefined && frame.url.length > 0 ? frame.url : "(unknown)";
   lines.push(
@@ -51,6 +56,27 @@ function appendFrameLines(lines: string[], snapshot: SnapshotResult): void {
   }
 }
 
+function appendStackFrameLine(lines: string[], frame: FrameSnapshot): void {
+  const fnName = frame.functionName.length === 0 ? "(anonymous)" : frame.functionName;
+  const sourceUrl = frame.url !== undefined && frame.url.length > 0 ? frame.url : "(unknown)";
+  lines.push(`    ${fnName} ${sourceUrl}:${frame.line.toString()}:${frame.column.toString()}`);
+  if (frame.captures !== undefined) {
+    for (const capture of frame.captures) {
+      const detail = capture.error ?? capture.value ?? "undefined";
+      lines.push(`      ${capture.expression} = ${detail}`);
+    }
+  }
+}
+
+function appendExceptionLines(lines: string[], exception: ExceptionSnapshot): void {
+  if (exception.error !== undefined) {
+    lines.push(`  exception: !err ${exception.error}`);
+    return;
+  }
+  const detail = exception.description ?? exception.value ?? "(unknown)";
+  lines.push(`  exception: ${detail}`);
+}
+
 export function writeLogEvent(event: LogpointEvent, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -61,4 +87,20 @@ export function writeLogEvent(event: LogpointEvent, json: boolean): void {
     return;
   }
   process.stdout.write(`[${event.ts}] ${event.at} ${event.value ?? ""}\n`);
+}
+
+export function writeWatchEvent(event: WatchEvent, json: boolean): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(event)}\n`);
+    return;
+  }
+  process.stdout.write(`[${event.ts}] hit#${event.hit.toString()} ${event.at}\n`);
+  if (event.exception !== undefined) {
+    const detail = event.exception.description ?? event.exception.value ?? event.exception.error ?? "(unknown)";
+    process.stdout.write(`  exception: ${detail}\n`);
+  }
+  for (const capture of event.captures) {
+    const detail = capture.error ?? capture.value ?? "undefined";
+    process.stdout.write(`  ${capture.expression} = ${detail}\n`);
+  }
 }

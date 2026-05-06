@@ -496,6 +496,71 @@ describe("captureSnapshot", () => {
       type: "object",
     });
   });
+
+  it("does not include a stack field by default (only top-frame is captured)", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id"],
+    });
+    expect("stack" in snapshot).toBe(false);
+  });
+
+  it("emits a stack array with --stack-depth > 1 and per-frame captures when requested", async () => {
+    const session = makeSession();
+    const pause: PauseEvent = {
+      reason: "other",
+      hitBreakpoints: ["bp:1"],
+      callFrames: [
+        {
+          callFrameId: "f1",
+          functionName: "deepest",
+          url: "file:///app/a.js",
+          lineNumber: 0,
+          columnNumber: 0,
+          scopeChain: [{ type: "local", objectId: localScopeId }],
+        },
+        {
+          callFrameId: "f2",
+          functionName: "outer",
+          url: "file:///app/a.js",
+          lineNumber: 4,
+          columnNumber: 2,
+          scopeChain: [],
+        },
+      ],
+    };
+    const snapshot = await captureSnapshot(session, pause, {
+      stackDepth: 2,
+      stackCaptures: ["user.id"],
+    });
+    expect(snapshot.stack?.length).toBe(2);
+    expect(snapshot.stack?.[0]?.functionName).toBe("deepest");
+    expect(snapshot.stack?.[1]?.functionName).toBe("outer");
+    expect(snapshot.stack?.[0]?.captures?.[0]?.value).toBe("7");
+    expect(snapshot.stack?.[1]?.captures?.[0]?.value).toBe("7");
+  });
+
+  it("attaches an exception field for exception pauses with a string exception", async () => {
+    const session = makeSession();
+    const pause: PauseEvent = {
+      reason: "exception",
+      hitBreakpoints: [],
+      callFrames: [
+        {
+          callFrameId: "f1",
+          functionName: "throwAt",
+          url: "file:///app/a.js",
+          lineNumber: 0,
+          columnNumber: 0,
+          scopeChain: [],
+        },
+      ],
+      data: { type: "string", value: "boom" },
+    };
+    const snapshot = await captureSnapshot(session, pause);
+    expect(snapshot.exception?.value).toBe("\"boom\"");
+    expect(snapshot.exception?.type).toBe("string");
+    expect(snapshot.reason).toBe("exception");
+  });
 });
 
 describe("evalResultToCaptured", () => {

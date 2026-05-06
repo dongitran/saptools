@@ -5,5 +5,10 @@
     "noEmit": true
   },
   "include": ["src/**/*", "tests/**/*", "*.ts"],
-  "exclude": ["dist", "node_modules", "tests/e2e/fixtures/sample-app.mjs"]
+  "exclude": [
+    "dist",
+    "node_modules",
+    "tests/e2e/fixtures/sample-app.mjs",
+    "tests/e2e/fixtures/sample-stack.mjs"
+  ]
 }

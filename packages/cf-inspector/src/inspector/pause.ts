@@ -6,7 +6,14 @@ import type { PauseEvent } from "../types.js";
 import { pauseDetail, toPauseEvent } from "./conversions.js";
 import type { CdpPauseParams, InspectorSession, WaitForPauseOptions } from "./types.js";
 
-function pauseMatches(pause: PauseEvent, breakpointIds: readonly string[] | undefined): boolean {
+function pauseMatches(
+  pause: PauseEvent,
+  breakpointIds: readonly string[] | undefined,
+  pauseReasons: readonly string[] | undefined,
+): boolean {
+  if (pauseReasons !== undefined && pauseReasons.length > 0) {
+    return pauseReasons.includes(pause.reason);
+  }
   if (breakpointIds === undefined || breakpointIds.length === 0) {
     return true;
   }
@@ -94,13 +101,13 @@ export async function waitForPause(
       if (buffered === undefined) {
         continue;
       }
-      if (pauseMatches(buffered, options.breakpointIds)) {
+      if (pauseMatches(buffered, options.breakpointIds, options.pauseReasons)) {
         return buffered;
       }
       await handleUnmatchedPause(session, buffered, options, deadlineMs);
     }
     const pause = await waitForLivePause(session, options, deadlineMs);
-    if (pauseMatches(pause, options.breakpointIds)) {
+    if (pauseMatches(pause, options.breakpointIds, options.pauseReasons)) {
       return pause;
     }
     await handleUnmatchedPause(session, pause, options, deadlineMs);

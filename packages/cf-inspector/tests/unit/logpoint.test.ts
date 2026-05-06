@@ -25,6 +25,38 @@ describe("buildLogpointCondition", () => {
     const cond = buildLogpointCondition("S", "1 + 2");
     expect(cond).toContain("(1 + 2)");
   });
+
+  it("wraps the IIFE in a predicate gate when a condition is supplied", () => {
+    const cond = buildLogpointCondition("__CFI_LOG_abc__", "user.id", { predicate: "userId === 7" });
+    expect(cond.startsWith("(")).toBe(true);
+    expect(cond).toContain("(userId === 7)");
+    expect(cond).toContain("(function(){");
+    expect(cond.endsWith(":false")).toBe(true);
+  });
+
+  it("wraps the IIFE in a hit-count gate when a hit count is supplied", () => {
+    const cond = buildLogpointCondition("__CFI_LOG_abc__", "user.id", { hitCount: 4, counterKey: "k1" });
+    expect(cond).toContain("globalThis.__CFI_LOG_HITS");
+    expect(cond).toContain("\"k1\"");
+    expect(cond).toContain("return m[k]>=4;");
+    expect(cond).toContain(":false");
+  });
+
+  it("composes hit count and predicate gates with logical AND", () => {
+    const cond = buildLogpointCondition("__CFI_LOG_abc__", "user.id", {
+      hitCount: 2,
+      counterKey: "k1",
+      predicate: "shouldLog",
+    });
+    expect(cond).toContain("&&");
+    expect(cond).toContain("(shouldLog)");
+    expect(cond).toContain("globalThis.__CFI_LOG_HITS");
+  });
+
+  it("ignores an empty predicate string and produces the same IIFE as no options", () => {
+    const cond = buildLogpointCondition("__CFI_LOG_abc__", "user.id", { predicate: "   " });
+    expect(cond).toBe(buildLogpointCondition("__CFI_LOG_abc__", "user.id"));
+  });
 });
 
 describe("generateSentinel", () => {
@@ -261,6 +293,53 @@ describe("streamLogpoint", () => {
     ac.abort();
     await promise;
     expect(seen).toEqual(["bp-1"]);
+  });
+
+  it("stops with stoppedReason='max-events' once the cap is reached", async () => {
+    const { session, fire, sendCalls } = makeSession();
+    const events: unknown[] = [];
+    const stream = streamLogpoint(session, {
+      location,
+      expression: "user.id",
+      maxEvents: 2,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    await new Promise<void>((r) => setImmediate(r));
+    const setCall = sendCalls.find((c) => c.method === "Debugger.setBreakpointByUrl");
+    const sentinel = /__CFI_LOG_[0-9a-f]+__/.exec(setCall?.params["condition"] as string)![0];
+    fire([{ type: "string", value: sentinel }, { type: "string", value: "1" }]);
+    fire([{ type: "string", value: sentinel }, { type: "string", value: "2" }]);
+    fire([{ type: "string", value: sentinel }, { type: "string", value: "3" }]);
+    const result = await stream;
+    expect(result.stoppedReason).toBe("max-events");
+    expect(result.emitted).toBe(2);
+    expect(events).toHaveLength(2);
+  });
+
+  it("rejects an invalid maxEvents value synchronously", async () => {
+    const { session } = makeSession();
+    await expect(
+      streamLogpoint(session, {
+        location,
+        expression: "x",
+        maxEvents: 0,
+        onEvent: (): void => undefined,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
+  it("rejects an invalid hitCount value synchronously", async () => {
+    const { session } = makeSession();
+    await expect(
+      streamLogpoint(session, {
+        location,
+        expression: "x",
+        hitCount: -1,
+        onEvent: (): void => undefined,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_HIT_COUNT" });
   });
 
   it("returns immediately with stoppedReason='signal' if the signal is already aborted", async () => {
