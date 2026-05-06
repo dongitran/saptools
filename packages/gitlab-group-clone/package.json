@@ -1,0 +1,62 @@
+{
+  "name": "@saptools/gitlab-group-clone",
+  "version": "0.1.0",
+  "description": "Clone an entire GitLab group while preserving the subgroup folder structure",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "gitlab-group-clone": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "test:unit": "vitest run --coverage"
+  },
+  "keywords": [
+    "gitlab",
+    "clone",
+    "group",
+    "repository",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/gitlab-group-clone"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/gitlab-group-clone#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "ora": "^9.3.0"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
