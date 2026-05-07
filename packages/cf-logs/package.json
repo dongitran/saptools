@@ -1,0 +1,66 @@
+{
+  "name": "@saptools/cf-logs",
+  "version": "0.1.0",
+  "description": "Fetch, stream, parse, and cache SAP BTP Cloud Foundry application logs",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "cf-logs": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
+    "cspell": "cspell --config ../../.cspell.json \"src/**/*.ts\" \"tests/**/*.ts\" README.md package.json implementation_plan.md",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "check": "pnpm cspell && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test:e2e"
+  },
+  "keywords": [
+    "sap",
+    "cloud-foundry",
+    "btp",
+    "logs",
+    "stream",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-logs"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-logs#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "@saptools/cf-sync": "^0.3.5",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
