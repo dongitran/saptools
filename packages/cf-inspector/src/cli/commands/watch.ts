@@ -16,6 +16,7 @@ import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { Target, WatchCommandOptions } from "../commandTypes.js";
 import { writeJson, writeWatchEvent } from "../output.js";
+import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
 import { warnOnUnboundBreakpoints } from "../warnings.js";
 
@@ -38,24 +39,15 @@ type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed"
 
 export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
   const prepared = prepareWatchCommand(opts);
-  const abort = new AbortController();
-  const onSig = (): void => {
-    abort.abort();
-  };
-  process.once("SIGINT", onSig);
-  process.once("SIGTERM", onSig);
   let stoppedReason: WatchStopReason = "signal";
   let emitted = 0;
-  try {
+  await withTerminationSignal(async (signal) => {
     await withSession(prepared.target, async (session) => {
-      const result = await runWatchLoop(session, prepared, opts, abort.signal);
+      const result = await runWatchLoop(session, prepared, opts, signal);
       stoppedReason = result.stoppedReason;
       emitted = result.emitted;
     });
-  } finally {
-    process.off("SIGINT", onSig);
-    process.off("SIGTERM", onSig);
-  }
+  });
   writeWatchSummary(stoppedReason, emitted, opts.json);
 }
 

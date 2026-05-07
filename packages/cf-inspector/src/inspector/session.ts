@@ -27,6 +27,21 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
     url: target.webSocketDebuggerUrl,
     connectTimeoutMs,
   });
+  try {
+    return await initSession(client, target);
+  } catch (err: unknown) {
+    // The CdpClient is alive (its WS is open) but the inspector handshake
+    // failed before we could hand the session to the caller. Dispose so the
+    // underlying WS does not leak.
+    client.dispose();
+    throw err;
+  }
+}
+
+async function initSession(
+  client: CdpClient,
+  target: InspectorSession["target"],
+): Promise<InspectorSession> {
   const scripts = new Map<string, ScriptInfo>();
   client.on("Debugger.scriptParsed", (raw) => {
     const params = raw as ScriptParsedParams;

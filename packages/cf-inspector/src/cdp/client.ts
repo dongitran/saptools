@@ -84,10 +84,28 @@ export class CdpClient {
       return;
     }
     if (typeof parsed.method === "string") {
-      this.emitter.emit(parsed.method, parsed.params);
-      this.emitter.emit("event", { method: parsed.method, params: parsed.params });
+      // A throwing listener must not crash the WS message pipeline. Without
+      // this guard, EventEmitter rethrows on the first uncaught listener
+      // exception and the rest of the dispatch stops — including downstream
+      // listeners that need to settle pending requests.
+      this.safeEmit(parsed.method, parsed.params);
+      this.safeEmit("event", { method: parsed.method, params: parsed.params });
     }
   };
+
+  private safeEmit(event: string, payload: unknown): void {
+    // EventEmitter.emit re-throws on the first listener's exception and skips
+    // the rest. Iterate explicitly so one bad listener does not deny later
+    // listeners (e.g. the pause buffer pusher) from observing the event.
+    const listeners = this.emitter.listeners(event);
+    for (const listener of listeners) {
+      try {
+        (listener as (payload: unknown) => void)(payload);
+      } catch {
+        // Listener exceptions are caller bugs; swallow to keep the pipeline alive.
+      }
+    }
+  }
 
   private readonly handleClose = (): void => {
     this.markClosed(new CfInspectorError("INSPECTOR_CONNECTION_FAILED", "Inspector connection closed"));
@@ -172,8 +190,20 @@ export class CdpClient {
           return;
         }
         const params = raw as T;
-        if (options.predicate && !options.predicate(params)) {
-          return;
+        if (options.predicate) {
+          // A throwing predicate must not propagate up through emitter.emit
+          // (which would crash the message handler and the WS pipeline).
+          // Treat a throw as a predicate rejection so the caller times out
+          // instead of bringing the process down.
+          let accepted: boolean;
+          try {
+            accepted = options.predicate(params);
+          } catch {
+            return;
+          }
+          if (!accepted) {
+            return;
+          }
         }
         finish(params);
       });

@@ -194,4 +194,46 @@ describe("CdpClient", () => {
     });
     expect(factoryArgs[0]?.options).toEqual({});
   });
+
+  it("treats a throwing predicate as a rejection so the message pipeline keeps running", async () => {
+    const { client, transport } = await connect();
+    let predicateCalls = 0;
+    const promise = client.waitFor<{ reason: string }>("Debugger.paused", {
+      timeoutMs: 200,
+      predicate: (params) => {
+        predicateCalls += 1;
+        if (params.reason === "boom") {
+          throw new Error("predicate exploded");
+        }
+        return params.reason === "ok";
+      },
+    });
+    transport.receive({ method: "Debugger.paused", params: { reason: "boom" } });
+    transport.receive({ method: "Debugger.paused", params: { reason: "ok" } });
+    await expect(promise).resolves.toEqual({ reason: "ok" });
+    expect(predicateCalls).toBe(2);
+    client.dispose();
+  });
+
+  it("does not crash the message pipeline when a subscribed listener throws", async () => {
+    const { client, transport } = await connect();
+    const settled: unknown[] = [];
+    client.on("Debugger.paused", () => {
+      throw new Error("listener exploded");
+    });
+    client.on("Debugger.paused", (params) => {
+      settled.push(params);
+    });
+    // Without safeEmit, the first listener's throw would prevent later
+    // listeners (and, more importantly, response correlation on subsequent
+    // messages) from running.
+    transport.receive({ method: "Debugger.paused", params: { reason: "x" } });
+    expect(settled).toEqual([{ reason: "x" }]);
+    // Subsequent request/response must still complete.
+    const sendPromise = client.send("Debugger.enable");
+    const parsed = JSON.parse(transport.sent[0] ?? "{}") as { id: number };
+    transport.receive({ id: parsed.id, result: { ok: true } });
+    await expect(sendPromise).resolves.toEqual({ ok: true });
+    client.dispose();
+  });
 });

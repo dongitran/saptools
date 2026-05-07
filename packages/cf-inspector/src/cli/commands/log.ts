@@ -6,6 +6,7 @@ import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { CfInspectorError } from "../../types.js";
 import type { LogCommandOptions } from "../commandTypes.js";
 import { writeLogEvent } from "../output.js";
+import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
 import { warnOnUnboundBreakpoints } from "../warnings.js";
 
@@ -23,14 +24,8 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
-  const abort = new AbortController();
-  const onSig = (): void => {
-    abort.abort();
-  };
-  process.once("SIGINT", onSig);
-  process.once("SIGTERM", onSig);
 
-  try {
+  await withTerminationSignal(async (signal) => {
     await withSession(target, async (session) => {
       await validateExpression(session, expression);
       if (condition !== undefined) {
@@ -44,7 +39,7 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
         ...(maxEvents === undefined ? {} : { maxEvents }),
         ...(hitCount === undefined ? {} : { hitCount }),
         ...(condition === undefined ? {} : { condition }),
-        signal: abort.signal,
+        signal,
         onEvent: (event) => {
           writeLogEvent(event, opts.json);
         },
@@ -54,10 +49,7 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
       });
       writeLogSummary(result.stoppedReason, result.emitted, opts.json);
     });
-  } finally {
-    process.off("SIGINT", onSig);
-    process.off("SIGTERM", onSig);
-  }
+  });
 }
 
 function writeLogSummary(stoppedReason: string, emitted: number, json: boolean): void {

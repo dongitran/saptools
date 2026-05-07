@@ -82,7 +82,12 @@ export async function streamLogpoint(
       return;
     }
     emitted += 1;
-    options.onEvent(event);
+    try {
+      options.onEvent(event);
+    } catch {
+      // A throwing onEvent must not stop the stream or skip the max-events
+      // check below — that would cause us to overshoot the cap on every throw.
+    }
     if (maxEvents !== undefined && emitted >= maxEvents) {
       maxEventsReached = true;
       stopMaxEvents?.();
