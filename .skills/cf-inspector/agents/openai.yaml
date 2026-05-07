@@ -1,0 +1,4 @@
+interface:
+  display_name: "CF Inspector"
+  short_description: "Use and maintain the @saptools/cf-inspector CLI/API."
+  default_prompt: "Use the cf-inspector skill for this task."
