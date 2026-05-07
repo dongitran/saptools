@@ -18,6 +18,20 @@ const branchStatusSymbol: Record<BranchStatus, string> = {
   no_remote: "∅",
 };
 
+function formatSyncInfo(branchStatus: BranchStatus, ahead: number, behind: number): string {
+  const symbol = branchStatusSymbol[branchStatus];
+  if (branchStatus === "ahead") {
+    return `${symbol}${String(ahead)}`;
+  }
+  if (branchStatus === "behind") {
+    return `${symbol}${String(behind)}`;
+  }
+  if (branchStatus === "diverged") {
+    return `${symbol}${String(ahead)}/${String(behind)}`;
+  }
+  return symbol;
+}
+
 export function formatRepoTable(statuses: readonly RepoStatus[]): string {
   if (statuses.length === 0) {
     return chalk.dim("No repositories tracked.");
@@ -25,22 +39,34 @@ export function formatRepoTable(statuses: readonly RepoStatus[]): string {
 
   const nameWidth = Math.max(4, ...statuses.map((s) => s.name.length));
   const branchWidth = Math.max(6, ...statuses.map((s) => s.status?.branch.length ?? 0));
+  const syncWidth = Math.max(
+    6,
+    ...statuses.map((s) =>
+      s.status ? formatSyncInfo(s.status.branchStatus, s.status.ahead, s.status.behind).length : 0,
+    ),
+  );
 
   const header = [
     chalk.bold.cyan("name".padEnd(nameWidth)),
     chalk.bold.cyan("branch".padEnd(branchWidth)),
-    chalk.bold.cyan("sync  "),
+    chalk.bold.cyan("sync".padEnd(syncWidth)),
     chalk.bold.cyan("flags"),
   ].join("  ");
 
-  const separator = chalk.dim("─".repeat(nameWidth + branchWidth + 20));
+  const separatorLen = nameWidth + 2 + branchWidth + 2 + syncWidth + 2 + 5;
+  const separator = chalk.dim("─".repeat(separatorLen));
 
-  const rows = statuses.map((s) => formatRepoRow(s, nameWidth, branchWidth));
+  const rows = statuses.map((s) => formatRepoRow(s, nameWidth, branchWidth, syncWidth));
 
   return [header, separator, ...rows].join("\n");
 }
 
-function formatRepoRow(s: RepoStatus, nameWidth: number, branchWidth: number): string {
+function formatRepoRow(
+  s: RepoStatus,
+  nameWidth: number,
+  branchWidth: number,
+  syncWidth: number,
+): string {
   if (s.error !== null) {
     const name = chalk.red(s.name.padEnd(nameWidth));
     const err = chalk.red.dim(`error: ${s.error}`);
@@ -53,20 +79,7 @@ function formatRepoRow(s: RepoStatus, nameWidth: number, branchWidth: number): s
 
   const { branch, branchStatus, staged, unstaged, untracked, stashed, ahead, behind } = s.status;
   const colorFn = branchStatusColor[branchStatus];
-  const symbol = branchStatusSymbol[branchStatus];
-
-  const syncInfo = (() => {
-    if (branchStatus === "ahead") {
-      return `${symbol}${String(ahead)}`;
-    }
-    if (branchStatus === "behind") {
-      return `${symbol}${String(behind)}`;
-    }
-    if (branchStatus === "diverged") {
-      return `${symbol}${String(ahead)}/${String(behind)}`;
-    }
-    return symbol;
-  })();
+  const syncInfo = formatSyncInfo(branchStatus, ahead, behind);
 
   const flags = [staged ? "+" : "", unstaged ? "*" : "", untracked ? "?" : "", stashed ? "$" : ""]
     .filter(Boolean)
@@ -75,7 +88,7 @@ function formatRepoRow(s: RepoStatus, nameWidth: number, branchWidth: number): s
   return [
     chalk.bold(s.name.padEnd(nameWidth)),
     chalk.dim(branch.padEnd(branchWidth)),
-    colorFn(syncInfo.padEnd(6)),
+    colorFn(syncInfo.padEnd(syncWidth)),
     chalk.yellow(flags),
   ].join("  ");
 }

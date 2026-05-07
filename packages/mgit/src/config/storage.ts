@@ -8,13 +8,21 @@ async function ensureConfigDir(): Promise<void> {
   await mkdir(CONFIG_DIR, { recursive: true });
 }
 
-export async function readRepos(): Promise<ReposConfig> {
+async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
+  let raw: string;
   try {
-    const raw = await readFile(REPOS_FILE, "utf8");
-    return JSON.parse(raw) as ReposConfig;
-  } catch {
-    return { repos: {} };
+    raw = await readFile(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return fallback;
+    }
+    throw err;
   }
+  return JSON.parse(raw) as T;
+}
+
+export async function readRepos(): Promise<ReposConfig> {
+  return await readJsonFile(REPOS_FILE, { repos: {} });
 }
 
 export async function writeRepos(config: ReposConfig): Promise<void> {
@@ -23,12 +31,7 @@ export async function writeRepos(config: ReposConfig): Promise<void> {
 }
 
 export async function readGroups(): Promise<GroupsConfig> {
-  try {
-    const raw = await readFile(GROUPS_FILE, "utf8");
-    return JSON.parse(raw) as GroupsConfig;
-  } catch {
-    return { groups: {} };
-  }
+  return await readJsonFile(GROUPS_FILE, { groups: {} });
 }
 
 export async function writeGroups(config: GroupsConfig): Promise<void> {
@@ -37,12 +40,7 @@ export async function writeGroups(config: GroupsConfig): Promise<void> {
 }
 
 export async function readContext(): Promise<ContextConfig> {
-  try {
-    const raw = await readFile(CONTEXT_FILE, "utf8");
-    return JSON.parse(raw) as ContextConfig;
-  } catch {
-    return { context: null };
-  }
+  return await readJsonFile(CONTEXT_FILE, { context: null });
 }
 
 export async function writeContext(config: ContextConfig): Promise<void> {

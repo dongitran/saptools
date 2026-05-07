@@ -88,4 +88,22 @@ describe("storage", () => {
     expect(config.repos).toEqual({ new: "/new/path" });
     expect(config.repos["old"]).toBeUndefined();
   });
+
+  it("readRepos throws on corrupted JSON", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const { REPOS_FILE } = await import("../../src/config/paths.js");
+    await writeFile(REPOS_FILE, "{ invalid json }", "utf8");
+
+    const { readRepos } = await import("../../src/config/storage.js");
+    await expect(readRepos()).rejects.toThrow(SyntaxError);
+  });
+
+  it("readGroups throws on corrupted JSON", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const { GROUPS_FILE } = await import("../../src/config/paths.js");
+    await writeFile(GROUPS_FILE, "not json at all", "utf8");
+
+    const { readGroups } = await import("../../src/config/storage.js");
+    await expect(readGroups()).rejects.toThrow(SyntaxError);
+  });
 });

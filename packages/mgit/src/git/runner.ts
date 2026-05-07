@@ -35,13 +35,13 @@ export async function runGitInteractive(repoPath: string, args: readonly string[
   });
 }
 
-export async function runGitAcrossRepos(
+async function runAcrossRepos(
   repos: readonly Repo[],
-  args: readonly string[],
+  exec: (path: string) => Promise<{ stdout: string; stderr: string }>,
 ): Promise<CommandResult[]> {
   const settled = await Promise.allSettled(
     repos.map(async ({ name, path }) => {
-      const { stdout, stderr } = await runGit(path, args);
+      const { stdout, stderr } = await exec(path);
       return { name, output: (stdout + stderr).trim(), error: null } satisfies CommandResult;
     }),
   );
@@ -51,34 +51,25 @@ export async function runGitAcrossRepos(
       return result.value;
     }
     const repo = repos[i];
+    const reason: unknown = result.reason;
     return {
       name: repo?.name ?? `repo-${String(i)}`,
       output: "",
-      error: String(result.reason),
+      error: reason instanceof Error ? reason.message : String(reason),
     } satisfies CommandResult;
   });
+}
+
+export async function runGitAcrossRepos(
+  repos: readonly Repo[],
+  args: readonly string[],
+): Promise<CommandResult[]> {
+  return await runAcrossRepos(repos, (path) => runGit(path, args));
 }
 
 export async function runShellAcrossRepos(
   repos: readonly Repo[],
   command: string,
 ): Promise<CommandResult[]> {
-  const settled = await Promise.allSettled(
-    repos.map(async ({ name, path }) => {
-      const { stdout, stderr } = await runShellCmd(path, command);
-      return { name, output: (stdout + stderr).trim(), error: null } satisfies CommandResult;
-    }),
-  );
-
-  return settled.map((result, i) => {
-    if (result.status === "fulfilled") {
-      return result.value;
-    }
-    const repo = repos[i];
-    return {
-      name: repo?.name ?? `repo-${String(i)}`,
-      output: "",
-      error: String(result.reason),
-    } satisfies CommandResult;
-  });
+  return await runAcrossRepos(repos, (path) => runShellCmd(path, command));
 }

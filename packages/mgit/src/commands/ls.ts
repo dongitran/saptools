@@ -11,7 +11,8 @@ export async function listRepos(groupFilter?: string): Promise<void> {
     if (members === undefined) {
       throw new Error(`Group not found: "${activeGroup}"`);
     }
-    names = names.filter((n) => members.includes(n));
+    const memberSet = new Set(members);
+    names = names.filter((n) => memberSet.has(n));
   }
 
   if (names.length === 0) {

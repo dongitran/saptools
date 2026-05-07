@@ -8,11 +8,13 @@ export async function groupAdd(groupName: string, repoNames: readonly string[]):
     throw new Error(`Unknown repositories: ${unknownRepos.join(", ")}`);
   }
 
+  const isNew = groups.groups[groupName] === undefined;
   const existing = groups.groups[groupName] ?? [];
   const merged = [...new Set([...existing, ...repoNames])];
 
   await writeGroups({ groups: { ...groups.groups, [groupName]: merged } });
-  process.stdout.write(`Group "${groupName}" updated with: ${repoNames.join(", ")}\n`);
+  const action = isNew ? "created" : "updated";
+  process.stdout.write(`Group "${groupName}" ${action} with: ${repoNames.join(", ")}\n`);
 }
 
 export async function groupRemove(groupName: string): Promise<void> {

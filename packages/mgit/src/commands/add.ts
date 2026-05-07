@@ -1,8 +1,12 @@
+import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import { readRepos, writeRepos } from "../config/storage.js";
 import { runGit } from "../git/runner.js";
+
+const execFileAsync = promisify(execFile);
 
 export async function addRepo(inputPath: string, name?: string): Promise<void> {
   const absPath = resolve(inputPath);
@@ -39,10 +43,6 @@ export async function addRepo(inputPath: string, name?: string): Promise<void> {
 }
 
 export async function addRepoRecursive(rootPath: string): Promise<void> {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
-
   const absRoot = resolve(rootPath);
 
   const { stdout } = await execFileAsync("find", [absRoot, "-name", ".git", "-type", "d"], {
