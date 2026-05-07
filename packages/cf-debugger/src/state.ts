@@ -3,6 +3,7 @@ export {
   matchesKey,
   readActiveSessions,
   readAndPruneActiveSessions,
+  readSessionSnapshot,
   registerNewSession,
   removeSession,
   sessionKeyString,

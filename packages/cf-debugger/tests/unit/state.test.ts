@@ -8,6 +8,7 @@ import * as paths from "../../src/paths.js";
 import {
   matchesKey,
   readActiveSessions,
+  readSessionSnapshot,
   registerNewSession,
   removeSession,
   sessionKeyString,
@@ -267,6 +268,39 @@ describe("state management", () => {
 
     const sessions = await readActiveSessions();
     expect(sessions).toEqual([]);
+  });
+
+  it("reads a snapshot without pruning sessions whose pid is dead on the current host", async () => {
+    const stateFile = join(tempDir, "state.json");
+    const definitelyDead = 2_147_483_600;
+    await writeFile(
+      stateFile,
+      JSON.stringify({
+        version: "1",
+        sessions: [
+          {
+            sessionId: "stale",
+            pid: definitelyDead,
+            hostname: (await import("node:os")).hostname(),
+            region: "eu10",
+            org: "org-a",
+            space: "dev",
+            app: "demo-app",
+            apiEndpoint: "https://example.com",
+            localPort: 20_000,
+            remotePort: 9229,
+            cfHomeDir: join(tempDir, "home"),
+            startedAt: new Date().toISOString(),
+            status: "ready",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const sessions = await readSessionSnapshot();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.sessionId).toBe("stale");
   });
 
   it("keeps remote-host sessions even when their pid is not local", async () => {

@@ -108,6 +108,13 @@ export async function readActiveSessions(): Promise<readonly ActiveSession[]> {
   return result.sessions;
 }
 
+export async function readSessionSnapshot(): Promise<readonly ActiveSession[]> {
+  return await withFileLock(stateLockPath(), async (): Promise<readonly ActiveSession[]> => {
+    const raw = await readStateRaw();
+    return raw.sessions;
+  });
+}
+
 export async function readAndPruneActiveSessions(): Promise<StateReaderResult> {
   return await withFileLock(stateLockPath(), readAndPruneLocked);
 }

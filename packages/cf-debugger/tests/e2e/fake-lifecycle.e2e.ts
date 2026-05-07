@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +8,8 @@ import { expect, test } from "@playwright/test";
 import {
   readState,
   runCliCommand,
+  CF_DEBUGGER_STATE_FILENAME,
+  SAPTOOLS_DIR_NAME,
   startCli,
   stopCli,
   type StartedSession,
@@ -16,6 +18,17 @@ import {
 import { CLI_PATH, buildEnv, canConnect, cleanupHome, createIsolatedHome } from "./helpers.js";
 
 const FAKE_CF_PATH = join(dirname(fileURLToPath(import.meta.url)), "fake-cf.mjs");
+
+interface DebuggerStateForTest {
+  readonly version: "1";
+  readonly sessions: readonly {
+    readonly sessionId: string;
+    readonly pid: number;
+    readonly app: string;
+    readonly status: string;
+  }[];
+}
+
 function targetArgs(app = "demo-app"): readonly string[] {
   return [
     "--region",
@@ -52,6 +65,14 @@ async function readFakeCommands(homeDir: string): Promise<readonly string[]> {
       const entry = JSON.parse(line) as { args: readonly string[] };
       return entry.args.join(" ");
     });
+}
+
+async function writeState(homeDir: string, state: DebuggerStateForTest): Promise<void> {
+  await writeFile(
+    join(homeDir, SAPTOOLS_DIR_NAME, CF_DEBUGGER_STATE_FILENAME),
+    `${JSON.stringify(state, null, 2)}\n`,
+    "utf8",
+  );
 }
 
 test("User can start, inspect, and stop a fake-backed session", async () => {
@@ -135,6 +156,50 @@ test("User can stop a fake-backed session by session id", async () => {
 
     const finalState = (await readState(homeDir)) as { sessions?: readonly unknown[] } | undefined;
     expect(finalState?.sessions ?? []).toEqual([]);
+  } finally {
+    if (session !== undefined) {
+      await stopCli(session.child);
+    }
+    await cleanupHome(homeDir);
+  }
+});
+
+test("User can inspect session state without closing a live tunnel when the stored pid is stale", async () => {
+  expect(existsSync(CLI_PATH)).toBe(true);
+  expect(existsSync(FAKE_CF_PATH)).toBe(true);
+
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir);
+  let session: StartedSession | undefined;
+
+  try {
+    session = await startCli(env, ["start", ...TARGET_ARGS], 10_000);
+    await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
+
+    const state = (await readState(homeDir)) as DebuggerStateForTest | undefined;
+    const storedSession = state?.sessions[0];
+    expect(storedSession).toBeDefined();
+    if (state === undefined || storedSession === undefined) {
+      return;
+    }
+
+    const stalePid = 2_147_483_600;
+    await writeState(homeDir, {
+      ...state,
+      sessions: [{ ...storedSession, pid: stalePid }],
+    });
+
+    const list = await runCliCommand(env, ["list"]);
+    expect(list.code, list.stderr).toBe(0);
+    const listed = JSON.parse(list.stdout) as readonly { readonly pid: number }[];
+    expect(listed[0]?.pid).toBe(stalePid);
+    await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
+
+    const status = await runCliCommand(env, ["status", ...TARGET_ARGS]);
+    expect(status.code, status.stderr).toBe(0);
+    const statusJson = JSON.parse(status.stdout) as { readonly pid?: number } | null;
+    expect(statusJson?.pid).toBe(stalePid);
+    await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
   } finally {
     if (session !== undefined) {
       await stopCli(session.child);

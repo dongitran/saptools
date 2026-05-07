@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   killProcessOnPort: vi.fn(),
   probeTunnelReady: vi.fn(),
   readAndPruneActiveSessions: vi.fn(),
+  readSessionSnapshot: vi.fn(),
   registerNewSession: vi.fn(),
   removeSession: vi.fn(),
   resolveApiEndpoint: vi.fn(),
@@ -71,6 +72,7 @@ vi.mock("../../src/state.js", () => ({
     session.space === key.space &&
     session.app === key.app,
   readAndPruneActiveSessions: mocks.readAndPruneActiveSessions,
+  readSessionSnapshot: mocks.readSessionSnapshot,
   registerNewSession: mocks.registerNewSession,
   removeSession: mocks.removeSession,
   sessionKeyString: (key: SessionKey): string =>
@@ -79,7 +81,7 @@ vi.mock("../../src/state.js", () => ({
   updateSessionStatus: mocks.updateSessionStatus,
 }));
 
-const { startDebugger, stopDebugger } = await import("../../src/debugger.js");
+const { getSession, listSessions, startDebugger, stopDebugger } = await import("../../src/debugger.js");
 
 const key: SessionKey = {
   region: "eu10",
@@ -146,6 +148,7 @@ describe("startDebugger orchestration", () => {
 
     mocks.resolveApiEndpoint.mockReturnValue("https://api.example.com");
     mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [] });
+    mocks.readSessionSnapshot.mockResolvedValue([]);
     mocks.registerNewSession.mockResolvedValue({ session });
     mocks.cfLogin.mockResolvedValue(undefined);
     mocks.cfTarget.mockResolvedValue(undefined);
@@ -347,5 +350,39 @@ describe("stopDebugger", () => {
 
     expect(removed?.sessionId).toBe("session-a");
     expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
+  });
+});
+
+describe("session readers", () => {
+  let tempDir: string;
+  let session: ActiveSession;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-readers-"));
+    session = createSession(tempDir, { pid: 77_001, status: "ready" });
+    mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [session] });
+    mocks.readSessionSnapshot.mockResolvedValue([session]);
+    mocks.killProcessOnPort.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("lists stored sessions without orphan cleanup side effects", async () => {
+    await expect(listSessions()).resolves.toEqual([session]);
+
+    expect(mocks.readSessionSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.readAndPruneActiveSessions).not.toHaveBeenCalled();
+    expect(mocks.killProcessOnPort).not.toHaveBeenCalled();
+  });
+
+  it("gets a stored session without orphan cleanup side effects", async () => {
+    await expect(getSession(key)).resolves.toEqual(session);
+
+    expect(mocks.readSessionSnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.readAndPruneActiveSessions).not.toHaveBeenCalled();
+    expect(mocks.killProcessOnPort).not.toHaveBeenCalled();
   });
 });

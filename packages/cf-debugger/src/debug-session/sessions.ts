@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 import process from "node:process";
 
 import { killProcessOnPort } from "../port.js";
-import { matchesKey, removeSession } from "../state.js";
+import { matchesKey, readSessionSnapshot, removeSession } from "../state.js";
 import type { ActiveSession, SessionKey } from "../types.js";
 
 import { PORT_CLEANUP_DELAY_MS } from "./constants.js";
@@ -58,10 +58,10 @@ export async function stopAllDebuggers(): Promise<number> {
 }
 
 export async function listSessions(): Promise<readonly ActiveSession[]> {
-  return await pruneAndCleanupOrphans();
+  return await readSessionSnapshot();
 }
 
 export async function getSession(key: SessionKey): Promise<ActiveSession | undefined> {
-  const sessions = await pruneAndCleanupOrphans();
+  const sessions = await readSessionSnapshot();
   return sessions.find((s) => matchesKey(s, key));
 }

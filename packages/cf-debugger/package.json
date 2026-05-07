@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-debugger",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Open an SSH debug tunnel to a SAP BTP Cloud Foundry app's Node.js inspector — from any terminal, no IDE required.",
   "type": "module",
   "publishConfig": {
