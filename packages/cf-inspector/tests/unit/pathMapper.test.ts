@@ -144,10 +144,27 @@ describe("buildBreakpointUrlRegex", () => {
       remoteRoot: setting,
     });
     const r = new RegExp(regex);
-    expect(regex).toBe("^file:///(home/vcap/app|example-root-.*)/src/handler\\.(?:ts|js|mts|mjs|cts|cjs)$");
+    expect(regex).toBe("^file://(?:/(home/vcap/app|example-root-.*))/src/handler\\.(?:ts|js|mts|mjs|cts|cjs)$");
     expect(r.test("file:///home/vcap/app/src/handler.ts")).toBe(true);
     expect(r.test("file:///example-root-alpha/src/handler.js")).toBe(true);
     expect(r.test("file:///other/src/handler.ts")).toBe(false);
+  });
+
+  it("wraps unparenthesized alternation in the user pattern so it cannot escape the file-url anchors", () => {
+    // Without the non-capturing-group wrap, `^file://${pattern}/.../$` parses
+    // `pattern = "/foo|/bar"` as `(^file:///foo)|(/bar/.../$)`, matching
+    // unrelated URLs like `ws://other/bar/src/handler.ts`. The wrap binds the
+    // `|` to the user pattern only.
+    const setting = parseRemoteRoot("regex:/foo|/bar");
+    const regex = buildBreakpointUrlRegex({
+      file: "src/handler.ts",
+      remoteRoot: setting,
+    });
+    const r = new RegExp(regex);
+    expect(r.test("file:///foo/src/handler.ts")).toBe(true);
+    expect(r.test("file:///bar/src/handler.ts")).toBe(true);
+    expect(r.test("ws://other/bar/src/handler.ts")).toBe(false);
+    expect(r.test("file:///foo-something/src/handler.ts")).toBe(false);
   });
 
   it("normalizes anchored slash-delimited regex remote-roots before embedding them", () => {

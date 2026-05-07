@@ -18,12 +18,20 @@ export interface CdpTransport {
   off<E extends keyof CdpTransportEventMap>(event: E, listener: CdpTransportEventMap[E]): void;
 }
 
-export type CdpTransportFactory = (url: string) => Promise<CdpTransport>;
+export interface CdpTransportFactoryOptions {
+  readonly connectTimeoutMs?: number;
+}
+
+export type CdpTransportFactory = (
+  url: string,
+  options?: CdpTransportFactoryOptions,
+) => Promise<CdpTransport>;
 
 export interface CdpClientOptions {
   readonly url: string;
   readonly transportFactory?: CdpTransportFactory;
   readonly requestTimeoutMs?: number;
+  readonly connectTimeoutMs?: number;
 }
 
 interface PendingRequest {
@@ -103,7 +111,9 @@ export class CdpClient {
 
   public static async connect(options: CdpClientOptions): Promise<CdpClient> {
     const factory = options.transportFactory ?? (await loadDefaultFactory());
-    const transport = await factory(options.url);
+    const factoryOptions: CdpTransportFactoryOptions =
+      options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs };
+    const transport = await factory(options.url, factoryOptions);
     return new CdpClient(transport, options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   }
 

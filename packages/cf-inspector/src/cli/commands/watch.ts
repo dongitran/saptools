@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import {
@@ -154,7 +155,7 @@ async function runWatchLoop(
         break;
       }
       if (pause === "timeout") {
-        if (deadline !== undefined && Date.now() >= deadline) {
+        if (deadline !== undefined && performance.now() >= deadline) {
           setStop("duration");
           break;
         }
@@ -186,14 +187,14 @@ function computeDeadline(durationMs: number | undefined): number | undefined {
   if (durationMs === undefined) {
     return undefined;
   }
-  return Date.now() + durationMs;
+  return performance.now() + durationMs;
 }
 
 function remainingForLoop(deadline: number | undefined, perHitTimeoutMs: number): number {
   if (deadline === undefined) {
     return perHitTimeoutMs;
   }
-  const remaining = deadline - Date.now();
+  const remaining = deadline - performance.now();
   if (remaining <= 0) {
     return 0;
   }

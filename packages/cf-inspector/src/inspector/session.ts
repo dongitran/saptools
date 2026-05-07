@@ -23,7 +23,10 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
       `No inspector targets available on ${host}:${options.port.toString()}`,
     );
   }
-  const client = await CdpClient.connect({ url: target.webSocketDebuggerUrl });
+  const client = await CdpClient.connect({
+    url: target.webSocketDebuggerUrl,
+    connectTimeoutMs,
+  });
   const scripts = new Map<string, ScriptInfo>();
   client.on("Debugger.scriptParsed", (raw) => {
     const params = raw as ScriptParsedParams;

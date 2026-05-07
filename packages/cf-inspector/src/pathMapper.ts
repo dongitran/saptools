@@ -115,9 +115,12 @@ function normalizeRegexRootPattern(pattern: string): string {
   return stripTrailingSlash(withoutEndAnchor);
 }
 
-function buildFileUrlRegex(rootPattern: string, tail: string): string {
-  const separator = rootPattern.endsWith("/") ? "" : "/";
-  return `^file://${rootPattern}${separator}${tail}$`;
+function buildFileUrlRegex(embeddedRoot: string, tail: string, separator: "" | "/"): string {
+  return `^file://${embeddedRoot}${separator}${tail}$`;
+}
+
+function rootSeparator(rawPattern: string): "" | "/" {
+  return rawPattern.endsWith("/") ? "" : "/";
 }
 
 function escapeRegExp(value: string): string {
@@ -155,12 +158,16 @@ export function buildBreakpointUrlRegex(input: BuildUrlRegexInput): string {
       return `(?:^|/)${tail}$`;
     }
     case "literal": {
-      const escapedRoot = escapeRegExp(input.remoteRoot.value);
-      return buildFileUrlRegex(escapedRoot, tail);
+      const root = input.remoteRoot.value;
+      return buildFileUrlRegex(escapeRegExp(root), tail, rootSeparator(root));
     }
     case "regex": {
-      const rootPattern = normalizeRegexRootPattern(input.remoteRoot.pattern);
-      return buildFileUrlRegex(rootPattern, tail);
+      const root = normalizeRegexRootPattern(input.remoteRoot.pattern);
+      // Wrap the user pattern in a non-capturing group so alternation in the
+      // user's regex (e.g. `regex:a|b`) does not bind to the surrounding
+      // `^file://` / tail. Without this, the engine would parse the result as
+      // `(^file://a)|(b/.../src/...$)`.
+      return buildFileUrlRegex(`(?:${root})`, tail, rootSeparator(root));
     }
   }
 }

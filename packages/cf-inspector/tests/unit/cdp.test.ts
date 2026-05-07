@@ -166,4 +166,32 @@ describe("CdpClient", () => {
     expect(handler).toHaveBeenCalled();
     off();
   });
+
+  it("forwards connectTimeoutMs to the transport factory so the WS handshake cannot hang forever", async () => {
+    const factoryArgs: { url: string; options: unknown }[] = [];
+    const transport = new MockTransport();
+    await CdpClient.connect({
+      url: "ws://test",
+      transportFactory: async (url, options): Promise<CdpTransport> => {
+        factoryArgs.push({ url, options });
+        return transport as unknown as CdpTransport;
+      },
+      connectTimeoutMs: 1234,
+    });
+    expect(factoryArgs).toHaveLength(1);
+    expect(factoryArgs[0]?.options).toEqual({ connectTimeoutMs: 1234 });
+  });
+
+  it("omits connectTimeoutMs from factory options when not provided", async () => {
+    const factoryArgs: { url: string; options: unknown }[] = [];
+    const transport = new MockTransport();
+    await CdpClient.connect({
+      url: "ws://test",
+      transportFactory: async (url, options): Promise<CdpTransport> => {
+        factoryArgs.push({ url, options });
+        return transport as unknown as CdpTransport;
+      },
+    });
+    expect(factoryArgs[0]?.options).toEqual({});
+  });
 });
