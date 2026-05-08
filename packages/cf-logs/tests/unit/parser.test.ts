@@ -13,7 +13,7 @@ const routerLine =
   '[2026-04-12T02:14:48.200Z] "GET /health HTTP/1.1" 200 42 10 "-" "probe/1.0" ' +
   '"10.0.1.1:1001" "10.0.2.1:2001" x_forwarded_for:"1.2.3.4, 10.0.1.1" ' +
   'vcap_request_id:"req-001" response_time:0.001 tenantid:"sample-tenant" ' +
-  'x_cf_true_client_ip:"13.251.40.148"';
+  'x_cf_true_client_ip:"203.0.113.10"';
 
 describe("parser", () => {
   it("drops CF system messages and parses JSON and router access rows", () => {
@@ -45,7 +45,7 @@ describe("parser", () => {
       status: "200",
       latency: "1 ms",
       tenant: "sample-tenant",
-      clientIp: "13.251.40.148",
+      clientIp: "203.0.113.10",
       requestId: "req-001",
     });
   });
@@ -111,13 +111,13 @@ describe("parser", () => {
     const rows = parseRecentLogs(
       [
         '2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT {"level":"warning","logger":"samplelogger","timestamp":"2026-04-12T02:14:40.000Z","msg":"sample warning","type":"log"}',
-        '2026-04-12T09:14:41.00+0700 [RTR/0] OUT demo-app.cfapps.ap10.hana.ondemand.com - [2026-04-12T02:14:41.000Z] "GET /missing HTTP/1.1" 404 42 10 "-" "probe/1.0" "10.0.1.1:1001" "10.0.2.1:2001" x_forwarded_for:"1.2.3.4, 10.0.1.1" response_time:1.234 true_client_ip:"7.7.7.7"',
+        '2026-04-12T09:14:41.00+0700 [RTR/0] OUT demo-app.cfapps.ap10.hana.ondemand.com - [2026-04-12T02:14:41.000Z] "GET /missing HTTP/1.1" 404 42 10 "-" "probe/1.0" "10.0.1.1:1001" "10.0.2.1:2001" x_forwarded_for:"1.2.3.4, 10.0.1.1" response_time:1.234 true_client_ip:"198.51.100.7"',
       ].join("\n"),
     );
 
     expect(rows.map((row) => row.level)).toEqual(["warn", "warn"]);
     expect(rows[1]?.latency).toBe("1.234 s");
-    expect(rows[1]?.clientIp).toBe("7.7.7.7");
+    expect(rows[1]?.clientIp).toBe("198.51.100.7");
     expect(filterRows(rows, { newestFirst: false }).map((row) => row.id)).toEqual([1, 2]);
   });
 
