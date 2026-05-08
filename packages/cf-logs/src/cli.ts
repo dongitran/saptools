@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -9,7 +10,7 @@ import { fetchStartedAppsViaCfCli } from "./cf.js";
 import { appendRawLogText, parseRecentLogs } from "./parser.js";
 import { cfLogsStorePath } from "./paths.js";
 import { CfLogsRuntime } from "./runtime.js";
-import { readStore } from "./store.js";
+import { clearStore, readStore } from "./store.js";
 import type {
   CfLogsRuntimeEvent,
   CfLogsRuntimeOptions,
@@ -383,11 +384,34 @@ function addRetryOptions(command: Command): Command {
     );
 }
 
+function readPackageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const raw = readFileSync(join(here, "..", "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { readonly version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+function suppressBrokenPipe(): void {
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", (error: NodeJS.ErrnoException): void => {
+      if (error.code === "EPIPE") {
+        process.exit(0);
+      }
+      throw error;
+    });
+  }
+}
+
 function buildProgram(): Command {
   const program = new Command();
   program
     .name("cf-logs")
-    .description(`Manage Cloud Foundry logs and log snapshots in ${cfLogsStorePath()}`);
+    .description(`Manage Cloud Foundry logs and log snapshots in ${cfLogsStorePath()}`)
+    .version(readPackageVersion(), "-V, --version", "Print the cf-logs package version");
 
   addLogLimitOption(
     addAppOptions(
@@ -459,6 +483,14 @@ function buildProgram(): Command {
       await runStoreList(flags);
     });
 
+  store
+    .command("clear")
+    .description("Remove every cached entry from the package-managed log store")
+    .action(async (): Promise<void> => {
+      await clearStore();
+      process.stdout.write(`Cleared ${cfLogsStorePath()}\n`);
+    });
+
   return program;
 }
 
@@ -473,6 +505,7 @@ function isMainModule(): boolean {
 }
 
 async function runCli(): Promise<void> {
+  suppressBrokenPipe();
   try {
     await main(process.argv);
   } catch (error: unknown) {

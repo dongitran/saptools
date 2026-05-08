@@ -101,15 +101,15 @@ export function spawnLogStreamFromTarget(
   input: LogStreamStartInput,
 ): LogStreamHandle {
   const command = resolveCommand(input.command);
-  const process = spawn(command.bin, [...command.argsPrefix, "logs", input.appName], {
+  const child = spawn(command.bin, [...command.argsPrefix, "logs", input.appName], {
     env: buildCfCliEnv(input.cfHomeDir),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return {
-    process: process as unknown as LogStreamProcess,
+    process: child as unknown as LogStreamProcess,
     stop(): void {
-      if (!process.killed) {
-        process.kill();
+      if (!child.killed) {
+        child.kill();
       }
     },
   };
@@ -157,6 +157,8 @@ function isNodeScriptCommand(command: string): boolean {
 
 function buildCfCliEnv(cfHomeDir?: string, envOverrides?: Record<string, string>): NodeJS.ProcessEnv {
   const env = { ...process.env };
+  delete env["SAP_EMAIL"];
+  delete env["SAP_PASSWORD"];
   if (typeof cfHomeDir === "string" && cfHomeDir.length > 0) {
     env["CF_HOME"] = cfHomeDir;
   }

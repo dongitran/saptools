@@ -64,6 +64,30 @@ describe("store", () => {
     await expect(readStore()).resolves.toEqual({ version: 1, entries: [] });
   });
 
+  it("clearStore replaces existing entries with an empty store", async () => {
+    const { clearStore, persistSnapshot, readStore } = await import("../../src/store.js");
+
+    await persistSnapshot({
+      key: {
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        org: "sample-org",
+        space: "sample",
+        app: "demo-app",
+      },
+      rawText: "sample-line",
+      rows: [],
+      logLimit: 300,
+      fetchedAt: "2026-04-18T00:00:00.000Z",
+    });
+
+    await expect(readStore()).resolves.toMatchObject({ entries: expect.arrayContaining([]) });
+    expect((await readStore()).entries.length).toBeGreaterThan(0);
+
+    await clearStore();
+
+    await expect(readStore()).resolves.toEqual({ version: 1, entries: [] });
+  });
+
   it("persistSnapshot upserts by scope key and bounds oversized raw text", async () => {
     const { findStoreEntry, persistSnapshot, readStore } = await import("../../src/store.js");
     const rows = [

@@ -43,4 +43,15 @@ describe("withFileLock", () => {
 
     expect(result).toBe("after-wait");
   });
+
+  it("throws after the configured timeout when the lock never releases", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "cf-logs-lock-"));
+    tempDirs.push(tempDir);
+    const lockPath = join(tempDir, "stuck.lock");
+    await writeFile(lockPath, "stuck", "utf8");
+
+    await expect(
+      withFileLock(lockPath, async () => "never", { timeoutMs: 150, pollMs: 25 }),
+    ).rejects.toThrow(/Timed out acquiring file lock/);
+  });
 });

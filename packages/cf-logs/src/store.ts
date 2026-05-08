@@ -27,6 +27,13 @@ export async function writeStore(store: LogStore, storePath?: string): Promise<v
   });
 }
 
+export async function clearStore(storePath?: string): Promise<void> {
+  const targetPath = resolveStorePath(storePath);
+  await withFileLock(resolveLockPath(targetPath), async () => {
+    await writeStoreUnlocked(emptyStore(), targetPath);
+  });
+}
+
 export function findStoreEntry(
   store: LogStore,
   key: LogStoreKey,

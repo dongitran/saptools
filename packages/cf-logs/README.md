@@ -92,6 +92,9 @@ Most commands use the same target shape:
 
 `--region` or `--api-endpoint` is required. Credentials default to `SAP_EMAIL` and `SAP_PASSWORD`.
 
+> [!WARNING]
+> Prefer the environment variables over `--password <value>`. Process arguments are visible to other users on the machine via tools like `ps`, so passing credentials inline can leak them. The `--password` flag is kept as an explicit override for one-off scripts only.
+
 ### `cf-logs snapshot`
 
 Fetch recent logs for one app. By default the command prints bounded redacted raw text. Use `--json` for structured rows and `--save` to persist the snapshot.
@@ -181,6 +184,22 @@ Inspect cached store entries.
 ```bash
 cf-logs store list
 cf-logs store list --json
+```
+
+### `cf-logs store clear`
+
+Remove every cached entry from the package-managed log store. The store file remains in place but is rewritten with an empty entries list.
+
+```bash
+cf-logs store clear
+```
+
+### `cf-logs --version`
+
+Print the installed `@saptools/cf-logs` semantic version.
+
+```bash
+cf-logs --version
 ```
 
 ---
