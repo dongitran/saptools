@@ -110,6 +110,19 @@ describe("db-targets", () => {
     });
   });
 
+  it("resolves explicit selectors for scale-out sub-regions", () => {
+    expect(resolveDbTargetSelector(createStructure(), "eu10-002/org-beta/prod/api-app")).toEqual([
+      {
+        selector: "eu10-002/org-beta/prod/api-app",
+        regionKey: "eu10-002",
+        apiEndpoint: "https://api.cf.eu10-002.hana.ondemand.com",
+        orgName: "org-beta",
+        spaceName: "prod",
+        appName: "api-app",
+      },
+    ]);
+  });
+
   it("collects no DB targets from an empty topology snapshot", () => {
     expect(
       collectDbTargets({

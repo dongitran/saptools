@@ -12,6 +12,7 @@ import {
   type Scenario,
   createEnv,
   prepareCase,
+  readJsonLines,
   runJsonCommand,
   waitForExit,
   waitForRuntimeState,
@@ -20,6 +21,40 @@ import {
 
 const ROOT_NAME = "cf-sync-regions-e2e";
 const CATALOG_REGIONS = getAllRegions();
+const SCALE_OUT_REGION_FIXTURES = [
+  {
+    key: "eu10-002",
+    apiEndpoint: "https://api.cf.eu10-002.hana.ondemand.com",
+  },
+  {
+    key: "eu10-003",
+    apiEndpoint: "https://api.cf.eu10-003.hana.ondemand.com",
+  },
+  {
+    key: "eu10-004",
+    apiEndpoint: "https://api.cf.eu10-004.hana.ondemand.com",
+  },
+  {
+    key: "eu10-005",
+    apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+  },
+  {
+    key: "eu20-001",
+    apiEndpoint: "https://api.cf.eu20-001.hana.ondemand.com",
+  },
+  {
+    key: "eu20-002",
+    apiEndpoint: "https://api.cf.eu20-002.hana.ondemand.com",
+  },
+  {
+    key: "us10-001",
+    apiEndpoint: "https://api.cf.us10-001.hana.ondemand.com",
+  },
+  {
+    key: "us10-002",
+    apiEndpoint: "https://api.cf.us10-002.hana.ondemand.com",
+  },
+] as const;
 
 interface RegionsViewPayload {
   readonly source: "catalog" | "stable";
@@ -82,6 +117,21 @@ function createMixedRegionsScenario(): Scenario {
   };
 }
 
+function createScaleOutScenario(): Scenario {
+  return {
+    regions: SCALE_OUT_REGION_FIXTURES.map((region) => ({
+      key: region.key,
+      apiEndpoint: region.apiEndpoint,
+      orgs: [
+        {
+          name: `org-${region.key}`,
+          spaces: [{ name: "dev", apps: [`app-${region.key}`] }],
+        },
+      ],
+    })),
+  };
+}
+
 function regionKeys(view: RegionsViewPayload): readonly string[] {
   return view.regions.map((region) => region.key);
 }
@@ -105,6 +155,64 @@ test.describe("Regions command", () => {
     expect(existsSync(paths.runtimeStatePath)).toBe(false);
     expect(existsSync(paths.structurePath)).toBe(false);
     expect(existsSync(paths.logPath)).toBe(false);
+  });
+
+  test("User can see scale-out sub-regions in parent catalog order", async () => {
+    const paths = await prepareCase(ROOT_NAME, "regions-fresh-install-scale-out", createRunningScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
+    const keys = regionKeys(view);
+
+    expect(keys.slice(keys.indexOf("eu10"), keys.indexOf("eu10") + 5)).toEqual([
+      "eu10",
+      "eu10-002",
+      "eu10-003",
+      "eu10-004",
+      "eu10-005",
+    ]);
+    expect(keys.slice(keys.indexOf("eu20"), keys.indexOf("eu20") + 3)).toEqual([
+      "eu20",
+      "eu20-001",
+      "eu20-002",
+    ]);
+    expect(keys.slice(keys.indexOf("us10"), keys.indexOf("us10") + 3)).toEqual([
+      "us10",
+      "us10-001",
+      "us10-002",
+    ]);
+  });
+
+  test("User can sync every scale-out sub-region from the catalog", async () => {
+    const paths = await prepareCase(ROOT_NAME, "regions-scale-out-sync", createScaleOutScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+    const keys = SCALE_OUT_REGION_FIXTURES.map((region) => region.key);
+
+    const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", keys.join(",")], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const syncResult = await waitForExit(syncProcess);
+    expect(syncResult.code).toBe(0);
+    expect(syncResult.stderr).toBe("");
+
+    const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
+    expect(view).toMatchObject({
+      source: "stable",
+      metadata: {
+        status: "completed",
+        completedRegionKeys: keys,
+        pendingRegionKeys: [],
+      },
+    });
+    expect(regionKeys(view)).toEqual(keys);
+
+    const fakeLog = await readJsonLines(paths.logPath);
+    const apiEndpoints = fakeLog
+      .filter((entry) => entry.command === "api")
+      .map((entry) => entry.args?.[0]);
+    expect(apiEndpoints).toEqual(SCALE_OUT_REGION_FIXTURES.map((region) => region.apiEndpoint));
   });
 
   test("returns the full SAP catalog while sync is still running", async () => {

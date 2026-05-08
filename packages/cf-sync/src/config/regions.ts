@@ -96,6 +96,26 @@ export const REGIONS: Readonly<Record<RegionKey, Region>> = {
     label: "Europe (Frankfurt) - AWS (eu10)",
     apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
   },
+  "eu10-002": {
+    key: "eu10-002",
+    label: "Europe (Frankfurt) - AWS (eu10-002)",
+    apiEndpoint: "https://api.cf.eu10-002.hana.ondemand.com",
+  },
+  "eu10-003": {
+    key: "eu10-003",
+    label: "Europe (Frankfurt) - AWS (eu10-003)",
+    apiEndpoint: "https://api.cf.eu10-003.hana.ondemand.com",
+  },
+  "eu10-004": {
+    key: "eu10-004",
+    label: "Europe (Frankfurt) - AWS (eu10-004)",
+    apiEndpoint: "https://api.cf.eu10-004.hana.ondemand.com",
+  },
+  "eu10-005": {
+    key: "eu10-005",
+    label: "Europe (Frankfurt) - AWS (eu10-005)",
+    apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+  },
   eu11: {
     key: "eu11",
     label: "Europe (Frankfurt) - AWS (eu11)",
@@ -110,6 +130,16 @@ export const REGIONS: Readonly<Record<RegionKey, Region>> = {
     key: "eu20",
     label: "Europe (Netherlands) - Azure (eu20)",
     apiEndpoint: "https://api.cf.eu20.hana.ondemand.com",
+  },
+  "eu20-001": {
+    key: "eu20-001",
+    label: "Europe (Netherlands) - Azure (eu20-001)",
+    apiEndpoint: "https://api.cf.eu20-001.hana.ondemand.com",
+  },
+  "eu20-002": {
+    key: "eu20-002",
+    label: "Europe (Netherlands) - Azure (eu20-002)",
+    apiEndpoint: "https://api.cf.eu20-002.hana.ondemand.com",
   },
   eu22: {
     key: "eu22",
@@ -185,6 +215,16 @@ export const REGIONS: Readonly<Record<RegionKey, Region>> = {
     key: "us10",
     label: "US East (VA) - AWS (us10)",
     apiEndpoint: "https://api.cf.us10.hana.ondemand.com",
+  },
+  "us10-001": {
+    key: "us10-001",
+    label: "US East (VA) - AWS (us10-001)",
+    apiEndpoint: "https://api.cf.us10-001.hana.ondemand.com",
+  },
+  "us10-002": {
+    key: "us10-002",
+    label: "US East (VA) - AWS (us10-002)",
+    apiEndpoint: "https://api.cf.us10-002.hana.ondemand.com",
   },
   us11: {
     key: "us11",
