@@ -26,6 +26,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-debugger`](./packages/cf-debugger) | Open an SSH debug tunnel to any CF Node.js app from your terminal | [![npm](https://img.shields.io/npm/v/@saptools/cf-debugger.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-debugger) |
 | [`@saptools/cf-explorer`](./packages/cf-explorer) | Explore deployed CF app files with safe, read-only SSH workflows | [![npm](https://img.shields.io/npm/v/@saptools/cf-explorer.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-explorer) |
 | [`@saptools/cf-inspector`](./packages/cf-inspector) | Capture breakpoints, logpoints, and expression results from CF Node.js apps via CDP | [![npm](https://img.shields.io/npm/v/@saptools/cf-inspector.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-inspector) |
+| [`@saptools/cf-logs`](./packages/cf-logs) | Fetch, stream, parse, and redact SAP BTP CF app logs from one CLI and typed Node.js API | [![npm](https://img.shields.io/npm/v/@saptools/cf-logs.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-logs) |
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
 | [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
@@ -85,6 +86,16 @@ Drive Node.js inspector sessions over the Chrome DevTools Protocol from CLI or T
 - 🔁 automatic CF tunnel composition via `@saptools/cf-debugger`
 
 Docs → [`packages/cf-inspector/README.md`](./packages/cf-inspector/README.md)
+
+### 📜 `@saptools/cf-logs`
+
+Turn raw CF logs into a reusable engine — snapshot, stream, parse, and persist without coupling to any IDE.
+
+- 📥 recent snapshots and live streams with batched reconnect
+- 🧠 normalized rows from JSON, plain text, and router access logs
+- 🔐 credential redaction plus a bounded, atomic local store
+
+Docs → [`packages/cf-logs/README.md`](./packages/cf-logs/README.md)
 
 ### 🎯 `@saptools/bruno`
 
@@ -157,6 +168,7 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-debugger/
 │   ├── cf-explorer/
 │   ├── cf-inspector/
+│   ├── cf-logs/
 │   ├── bruno/
 │   ├── sqltools/
 │   └── gitport/
