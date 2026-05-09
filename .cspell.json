@@ -3,6 +3,7 @@
   "language": "en",
   "words": [
     "saptools",
+    "unredacted",
     "xsuaa",
     "bruno",
     "usebruno",
@@ -99,7 +100,10 @@
     "Gitport",
     "rerere",
     "unmatch",
-    "ENOENT"
+    "ENOENT",
+    "lookback",
+    "millis",
+    "headerless"
   ],
   "ignorePaths": [
     "node_modules/**",
