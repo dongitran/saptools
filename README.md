@@ -27,6 +27,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-explorer`](./packages/cf-explorer) | Explore deployed CF app files with safe, read-only SSH workflows | [![npm](https://img.shields.io/npm/v/@saptools/cf-explorer.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-explorer) |
 | [`@saptools/cf-inspector`](./packages/cf-inspector) | Capture breakpoints, logpoints, and expression results from CF Node.js apps via CDP | [![npm](https://img.shields.io/npm/v/@saptools/cf-inspector.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-inspector) |
 | [`@saptools/cf-logs`](./packages/cf-logs) | Fetch, stream, parse, and redact SAP BTP CF app logs from one CLI and typed Node.js API | [![npm](https://img.shields.io/npm/v/@saptools/cf-logs.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-logs) |
+| [`@saptools/cf-tail`](./packages/cf-tail) | Tail every CF app in a space at once: parallel snapshots, multiplexed live stream, chronological merge, and cross-app filters | [![npm](https://img.shields.io/npm/v/@saptools/cf-tail.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-tail) |
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
 | [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
@@ -96,6 +97,18 @@ Turn raw CF logs into a reusable engine — snapshot, stream, parse, and persist
 - 🔐 credential redaction plus a bounded, atomic local store
 
 Docs → [`packages/cf-logs/README.md`](./packages/cf-logs/README.md)
+
+### 🛰️ `@saptools/cf-tail`
+
+Tail every started app in a CF space at once. A higher-level orchestrator built on top of `cf-logs`.
+
+- 🚀 parallel snapshots and a multiplexed live stream across every matching app
+- 🧬 chronological row merge with `appName` tagging and per-app coloring
+- 🎯 strong selection (`--apps`, `--include-regex`, `--exclude-regex`) and row filters (level, search, source, tenant, status, time)
+- 🔁 auto-rediscovery of new/stopped apps for long-running streams
+- 📊 `summary` and `errors` shortcuts for whole-space triage
+
+Docs → [`packages/cf-tail/README.md`](./packages/cf-tail/README.md)
 
 ### 🎯 `@saptools/bruno`
 
@@ -169,6 +182,7 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-explorer/
 │   ├── cf-inspector/
 │   ├── cf-logs/
+│   ├── cf-tail/
 │   ├── bruno/
 │   ├── sqltools/
 │   └── gitport/
