@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -501,7 +501,14 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 function isMainModule(): boolean {
   const executedPath = process.argv[1];
-  return executedPath !== undefined && resolve(executedPath) === fileURLToPath(import.meta.url);
+  if (executedPath === undefined) {
+    return false;
+  }
+  try {
+    return realpathSync(executedPath) === fileURLToPath(import.meta.url);
+  } catch {
+    return resolve(executedPath) === fileURLToPath(import.meta.url);
+  }
 }
 
 async function runCli(): Promise<void> {

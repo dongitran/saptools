@@ -157,6 +157,19 @@ async function main() {
     return;
   }
 
+  if (command === "apps") {
+    const region = requireRegion(state, regionsByEndpoint);
+    const org = requireOrg(region, state);
+    const space = requireSpace(org, state);
+    const lines = ["name  requested state  processes  routes"];
+    for (const app of space.apps ?? []) {
+      const instances = typeof app.runningInstances === "number" ? app.runningInstances : 1;
+      lines.push(`${app.name}  started  web:${instances}/${instances}  -`);
+    }
+    process.stdout.write(lines.join("\n") + "\n");
+    return;
+  }
+
   if (command === "logs") {
     const appName = args[1];
     if (!appName) {

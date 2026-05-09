@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ export interface ScenarioStreamChunk {
 
 export interface ScenarioApp {
   readonly name: string;
+  readonly runningInstances?: number;
   readonly recentLogs?: string;
   readonly stream?: readonly ScenarioStreamChunk[];
 }
@@ -163,6 +164,41 @@ export async function runStreamCli(
     stdout: Buffer.concat(stdout).toString("utf8"),
     stderr: Buffer.concat(stderr).toString("utf8"),
   };
+}
+
+export async function runCliAt(
+  cliPath: string,
+  env: NodeJS.ProcessEnv,
+  args: readonly string[],
+): Promise<RunResult> {
+  try {
+    const { stdout, stderr } = await execFileAsync("node", [cliPath, ...args], {
+      env,
+      cwd: process.cwd(),
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 60_000,
+    });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const typed = error as {
+      readonly code?: number;
+      readonly stdout?: string;
+      readonly stderr?: string;
+      readonly message: string;
+    };
+    return {
+      code: typeof typed.code === "number" ? typed.code : 1,
+      stdout: typed.stdout ?? "",
+      stderr: typed.stderr ?? typed.message,
+    };
+  }
+}
+
+export async function makeSymlink(target: string, linkDir: string, name: string): Promise<string> {
+  await mkdir(linkDir, { recursive: true });
+  const linkPath = join(linkDir, name);
+  await symlink(target, linkPath);
+  return linkPath;
 }
 
 export async function readJsonFile<T>(path: string): Promise<T> {

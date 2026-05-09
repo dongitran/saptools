@@ -3,10 +3,13 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import {
+  CLI_PATH,
   createEnv,
+  makeSymlink,
   prepareCase,
   readJsonFile,
   runCli,
+  runCliAt,
   type Scenario,
 } from "./helpers.js";
 
@@ -80,4 +83,56 @@ test("--version prints the package semantic version", async () => {
 
   expect(result.code).toBe(0);
   expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+});
+
+test("CLI works correctly when invoked through a symlink (isMainModule symlink resolution)", async () => {
+  const paths = await prepareCase(ROOT_NAME, "symlink-invoke", { regions: [] });
+  const env = createEnv(paths);
+  const symlinkPath = await makeSymlink(CLI_PATH, paths.workDir, "cf-logs-link");
+
+  const result = await runCliAt(symlinkPath, env, ["--version"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+});
+
+test("store list shows entries after snapshot --save and prints empty when clear", async () => {
+  const paths = await prepareCase(ROOT_NAME, "store-list", createScenario());
+  const env = createEnv(paths);
+
+  const listEmpty = await runCli(env, ["store", "list"]);
+  expect(listEmpty.code).toBe(0);
+  expect(listEmpty.stdout.trim()).toBe("(empty)");
+
+  await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--save",
+  ]);
+
+  const listText = await runCli(env, ["store", "list"]);
+  expect(listText.code).toBe(0);
+  expect(listText.stdout).toContain("sample-org/sample/demo-app");
+
+  const listJson = await runCli(env, ["store", "list", "--json"]);
+  expect(listJson.code).toBe(0);
+  const store = JSON.parse(listJson.stdout) as { readonly entries: readonly unknown[] };
+  expect(store.entries).toHaveLength(1);
+});
+
+test("store path prints the log store file path", async () => {
+  const paths = await prepareCase(ROOT_NAME, "store-path", { regions: [] });
+  const env = createEnv(paths);
+
+  const result = await runCli(env, ["store", "path"]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout.trim()).toContain("cf-logs-store.json");
 });
