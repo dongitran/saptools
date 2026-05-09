@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-tail",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Aggregate, stream, parse, and filter SAP BTP Cloud Foundry logs across every app in a space",
   "type": "module",
   "publishConfig": {
