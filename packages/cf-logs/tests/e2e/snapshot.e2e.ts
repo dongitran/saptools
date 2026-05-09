@@ -81,3 +81,47 @@ test("snapshot fetches parsed rows, persists a redacted store entry, and uses cf
   const logs = await readFakeLog(paths.logPath);
   expect(logs.map((entry) => entry.command)).toEqual(["api", "auth", "target", "logs"]);
 });
+
+test("snapshot redacts credentials by default", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-redact-default", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout).not.toContain("sample@example.com");
+  expect(result.stdout).not.toContain("sample-password");
+  expect(result.stdout).toContain("***");
+});
+
+test("snapshot --no-redact emits credentials in plain text", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-no-redact", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--no-redact",
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("sample@example.com");
+  expect(result.stdout).toContain("sample-password");
+});

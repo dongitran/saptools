@@ -431,6 +431,9 @@ export class CfLogsRuntime {
   }
 
   private sanitizeText(text: string): string {
+    if (this.options.skipRedaction === true) {
+      return text;
+    }
     return redactText(text, this.buildRuntimeRedactionRules());
   }
 

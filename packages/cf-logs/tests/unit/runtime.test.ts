@@ -370,6 +370,32 @@ describe("CfLogsRuntime", () => {
     );
   });
 
+  it("skipRedaction passes credentials through unredacted in snapshot output", async () => {
+    const runtime = new CfLogsRuntime(
+      { skipRedaction: true },
+      {
+        prepareSession: vi.fn().mockResolvedValue(undefined),
+        fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(
+          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample-password sample@example.com",
+        ),
+      },
+    );
+    runtime.setSession({
+      region: "ap10",
+      email: "sample@example.com",
+      password: "sample-password",
+      org: "sample-org",
+      space: "sample",
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+    });
+    runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
+
+    const snapshot = await runtime.fetchSnapshot("demo-app");
+
+    expect(snapshot.rawText).toContain("sample-password");
+    expect(snapshot.rawText).toContain("sample@example.com");
+  });
+
   it("re-prepares the session and retries when the CF target has drifted (stale-target recovery)", async () => {
     const prepareSession = vi.fn().mockResolvedValue(undefined);
     const fetchRecentLogsFromTarget = vi

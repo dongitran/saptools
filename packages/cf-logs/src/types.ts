@@ -219,6 +219,7 @@ export interface RuntimeDependencies {
 export interface CfLogsRuntimeOptions {
   readonly logLimit?: number;
   readonly redactionRules?: readonly RedactionRule[];
+  readonly skipRedaction?: boolean;
   readonly persistSnapshots?: boolean;
   readonly persistStreamAppends?: boolean;
   readonly retryInitialMs?: number;

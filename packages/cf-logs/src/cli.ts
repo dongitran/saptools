@@ -37,6 +37,7 @@ interface SnapshotFlags extends AppFlags {
   readonly json?: boolean;
   readonly save?: boolean;
   readonly logLimit?: number;
+  readonly redact?: boolean;
 }
 
 interface StreamFlags extends AppFlags {
@@ -47,6 +48,7 @@ interface StreamFlags extends AppFlags {
   readonly flushIntervalMs?: number;
   readonly retryInitialMs?: number;
   readonly retryMaxMs?: number;
+  readonly redact?: boolean;
 }
 
 interface AppsFlags extends SessionFlags {
@@ -124,6 +126,7 @@ function buildSnapshotRuntimeOptions(flags: SnapshotFlags): CfLogsRuntimeOptions
   return {
     ...buildParseOptions(flags.logLimit),
     ...(flags.save === true ? { persistSnapshots: true } : {}),
+    ...(flags.redact === false ? { skipRedaction: true } : {}),
   };
 }
 
@@ -134,6 +137,7 @@ function buildStreamRuntimeOptions(flags: StreamFlags): CfLogsRuntimeOptions {
     ...(flags.flushIntervalMs === undefined ? {} : { flushIntervalMs: flags.flushIntervalMs }),
     ...(flags.retryInitialMs === undefined ? {} : { retryInitialMs: flags.retryInitialMs }),
     ...(flags.retryMaxMs === undefined ? {} : { retryMaxMs: flags.retryMaxMs }),
+    ...(flags.redact === false ? { skipRedaction: true } : {}),
   };
 }
 
@@ -417,11 +421,12 @@ function buildProgram(): Command {
     addAppOptions(
       program
         .command("snapshot")
-        .description("Fetch recent CF logs for one app and optionally persist a redacted snapshot"),
+        .description("Fetch recent CF logs for one app and optionally persist a snapshot"),
     ),
   )
     .option("--json", "Emit structured JSON instead of raw text", false)
     .option("--save", "Persist the redacted snapshot to the package store", false)
+    .option("--no-redact", "Disable credential redaction in output")
     .action(async (flags: SnapshotFlags): Promise<void> => {
       await runSnapshot(flags);
     });
@@ -436,7 +441,8 @@ function buildProgram(): Command {
     ),
   )
     .option("--json", "Emit line-delimited JSON events", false)
-    .option("--save", "Persist bounded redacted stream appends to the package store", false)
+    .option("--save", "Persist bounded stream appends to the package store", false)
+    .option("--no-redact", "Disable credential redaction in output")
     .option(
       "--max-lines <count>",
       "Stop after emitting the given number of streamed lines",

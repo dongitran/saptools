@@ -79,3 +79,26 @@ test("stream outputs redacted JSON line batches and stops after the configured l
   const logs = await readFakeLog(paths.logPath);
   expect(logs.map((entry) => entry.command)).toEqual(["api", "auth", "target", "logs"]);
 });
+
+test("stream --no-redact emits credentials in plain text", async () => {
+  const paths = await prepareCase(ROOT_NAME, "stream-no-redact", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runStreamCli(env, [
+    "stream",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--max-lines",
+    "1",
+    "--no-redact",
+  ]);
+
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("sample-password");
+});
