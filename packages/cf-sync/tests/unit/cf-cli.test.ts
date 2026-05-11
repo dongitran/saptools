@@ -7,6 +7,7 @@ type MockReturn = { stdout: string; stderr: string } | { error: Error & { stderr
 interface ExecOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly maxBuffer?: number;
+  readonly timeout?: number;
 }
 
 let mockImpl: ((cmd: string, args: readonly string[], opts: ExecOptions) => MockReturn) | undefined;
@@ -100,6 +101,32 @@ describe("cf CLI wrappers", () => {
     expect(seen.env?.["CF_TRACE"]).toBe("true");
     expect(seen.env?.["PATH"]).toBe(process.env["PATH"]);
     expect(seen.maxBuffer).toBe(16 * 1024 * 1024);
+  });
+
+  it("uses a default cf command timeout", async () => {
+    const seen: { timeout: number | undefined } = { timeout: undefined };
+    mockImpl = (_cmd, _args, opts) => {
+      seen.timeout = opts.timeout;
+      return { stdout: "", stderr: "" };
+    };
+
+    const { cfApi } = await import("../../src/cf.js");
+    await cfApi("https://api.example.test");
+
+    expect(seen.timeout).toBe(30_000);
+  });
+
+  it("allows callers to override the cf command timeout", async () => {
+    const seen: { timeout: number | undefined } = { timeout: undefined };
+    mockImpl = (_cmd, _args, opts) => {
+      seen.timeout = opts.timeout;
+      return { stdout: "", stderr: "" };
+    };
+
+    const { cfApi } = await import("../../src/cf.js");
+    await cfApi("https://api.example.test", { timeoutMs: 120_000 });
+
+    expect(seen.timeout).toBe(120_000);
   });
 
   it("cfAuth passes email and password", async () => {

@@ -15,18 +15,18 @@ import {
 import { getAllRegions } from "../config/regions.js";
 import type {
   CfStructure,
-  OrgNode,
   Region,
   RegionKey,
   RegionNode,
   RegionView,
   RegionsView,
   RuntimeSyncState,
-  SpaceNode,
   StructureView,
   SyncHistoryEntry,
   SyncMetadata,
 } from "../types.js";
+
+import { findRegion } from "./find.js";
 
 const FILE_LOCK_POLL_MS = 50;
 const FILE_LOCK_TIMEOUT_MS = 10_000;
@@ -518,13 +518,6 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-function isSyncLockStale(lock: SyncLockContent): boolean {
-  if (lock.hostname !== getHostname()) {
-    return false;
-  }
-  return !isPidAlive(lock.pid);
-}
-
 function parseIsoTimestamp(value: string): number | undefined {
   const timestamp = Date.parse(value);
   return Number.isNaN(timestamp) ? undefined : timestamp;
@@ -541,6 +534,11 @@ function isRuntimeStateFresh(state: RuntimeSyncState | undefined): boolean {
   }
 
   return Date.now() - updatedAt <= FULL_SYNC_WAIT_TIMEOUT_MS;
+}
+
+function isIsoTimestampStale(value: string): boolean {
+  const timestamp = parseIsoTimestamp(value);
+  return timestamp === undefined || Date.now() - timestamp > FULL_SYNC_WAIT_TIMEOUT_MS;
 }
 
 async function markStaleRuntimeAsFailed(staleSyncId: string): Promise<void> {
@@ -561,9 +559,7 @@ async function markStaleRuntimeAsFailed(staleSyncId: string): Promise<void> {
   });
 }
 
-async function writeLockHandle(handle: FileHandle, content: SyncLockContent): Promise<void> {
-  await handle.writeFile(`${JSON.stringify(content)}\n`, "utf8");
-}
+async function writeLockHandle(handle: FileHandle, content: SyncLockContent): Promise<void> { await handle.writeFile(`${JSON.stringify(content)}\n`, "utf8"); }
 
 async function openSyncLockExclusive(content: SyncLockContent): Promise<FileHandle | undefined> {
   await mkdir(dirname(cfSyncLockPath()), { recursive: true });
@@ -587,17 +583,37 @@ async function removeSyncLockFile(): Promise<void> {
   });
 }
 
-async function recordRecoveredLock(
-  syncId: string,
-  reason: string,
-  lockSyncId: string | undefined,
-): Promise<void> {
+async function recordRecoveredLock(syncId: string, reason: string, lockSyncId: string | undefined): Promise<void> {
   await appendSyncHistory({
     syncId,
     event: "sync_lock_recovered",
     reason,
     ...(lockSyncId ? { lockSyncId } : {}),
   });
+}
+
+async function getValidSyncLockRecoveryReason(content: SyncLockContent): Promise<string | undefined> {
+  if (content.hostname !== getHostname()) {
+    return undefined;
+  }
+
+  if (!isPidAlive(content.pid)) {
+    return "dead-pid";
+  }
+
+  const runtimeState = await readRuntimeState();
+  if (!runtimeState) {
+    return isIsoTimestampStale(content.startedAt) ? "missing-runtime" : undefined;
+  }
+  if (runtimeState.syncId !== content.syncId) {
+    return !isRuntimeStateFresh(runtimeState) && isIsoTimestampStale(content.startedAt)
+      ? "stale-runtime"
+      : undefined;
+  }
+  if (runtimeState.status !== "running") {
+    return "settled-runtime";
+  }
+  return isRuntimeStateFresh(runtimeState) ? undefined : "stale-runtime";
 }
 
 export async function tryAcquireSyncLock(syncId: string): Promise<FileHandle | undefined> {
@@ -615,12 +631,15 @@ export async function tryAcquireSyncLock(syncId: string): Promise<FileHandle | u
 
   const existing = await readSyncLockContent();
   if (existing.kind === "valid") {
-    if (!isSyncLockStale(existing.content)) {
+    const reason = await getValidSyncLockRecoveryReason(existing.content);
+    if (!reason) {
       return undefined;
     }
     await removeSyncLockFile();
-    await markStaleRuntimeAsFailed(existing.content.syncId);
-    await recordRecoveredLock(syncId, "dead-pid", existing.content.syncId);
+    if (reason !== "settled-runtime") {
+      await markStaleRuntimeAsFailed(existing.content.syncId);
+    }
+    await recordRecoveredLock(syncId, reason, existing.content.syncId);
     return await openSyncLockExclusive(content);
   }
 
@@ -677,18 +696,4 @@ export async function waitForRuntimeStateToSettle(): Promise<RuntimeSyncState | 
   }
 }
 
-export function findRegion(structure: CfStructure, key: RegionKey): RegionNode | undefined {
-  return structure.regions.find((r) => r.key === key);
-}
-
-export function findOrg(region: RegionNode, orgName: string): OrgNode | undefined {
-  return region.orgs.find((o) => o.name === orgName);
-}
-
-export function findSpace(org: OrgNode, spaceName: string): SpaceNode | undefined {
-  return org.spaces.find((s) => s.name === spaceName);
-}
-
-export function findApp(space: SpaceNode, appName: string): { readonly name: string } | undefined {
-  return space.apps.find((a) => a.name === appName);
-}
+export { findApp, findOrg, findRegion, findSpace } from "./find.js";

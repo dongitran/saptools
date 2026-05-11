@@ -6,6 +6,7 @@ import type { AppNode } from "../types.js";
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 16 * 1024 * 1024;
+const DEFAULT_CF_COMMAND_TIMEOUT_MS = 30_000;
 
 export interface CfExecError extends Error {
   readonly stderr?: string;
@@ -16,6 +17,7 @@ export interface CfExecError extends Error {
 export interface CfExecContext {
   readonly command?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly timeoutMs?: number;
 }
 
 function resolveCfCommand(context?: CfExecContext): string {
@@ -24,6 +26,10 @@ function resolveCfCommand(context?: CfExecContext): string {
 
 function resolveCfEnv(context?: CfExecContext): NodeJS.ProcessEnv {
   return context?.env ? { ...process.env, ...context.env } : process.env;
+}
+
+function resolveCfTimeout(context?: CfExecContext): number {
+  return context?.timeoutMs ?? DEFAULT_CF_COMMAND_TIMEOUT_MS;
 }
 
 function describeCfCommand(args: readonly string[]): string {
@@ -60,6 +66,7 @@ async function cf(args: readonly string[], context?: CfExecContext): Promise<str
     const { stdout } = await execFileAsync(resolveCfCommand(context), [...args], {
       env: resolveCfEnv(context),
       maxBuffer: MAX_BUFFER,
+      timeout: resolveCfTimeout(context),
     });
     return stdout;
   } catch (err) {

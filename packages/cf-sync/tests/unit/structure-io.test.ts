@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import type * as NodeOs from "node:os";
-import { tmpdir } from "node:os";
+import { hostname as getHostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -247,6 +247,114 @@ describe("structure file I/O", () => {
 
     const { readRuntimeState } = await import("../../src/structure.js");
     await expect(readRuntimeState()).resolves.toEqual(fixture);
+  });
+
+  it("recovers a same-host live-process sync lock when runtime state is stale", async () => {
+    const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
+    const {
+      readRuntimeState,
+      readSyncHistory,
+      releaseSyncLock,
+      tryAcquireSyncLock,
+    } = await import("../../src/structure.js");
+    const staleAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "stale-live-sync",
+          status: "running",
+          startedAt: staleAt,
+          updatedAt: staleAt,
+          requestedRegionKeys: ["ap10"],
+          completedRegionKeys: [],
+          structure: {
+            syncedAt: staleAt,
+            regions: [],
+          },
+        } satisfies RuntimeSyncState,
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      cfSyncLockPath(),
+      `${JSON.stringify({
+        syncId: "stale-live-sync",
+        pid: process.pid,
+        hostname: getHostname(),
+        startedAt: staleAt,
+      })}\n`,
+      "utf8",
+    );
+
+    const handle = await tryAcquireSyncLock("fresh-sync");
+    expect(handle).toBeDefined();
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      syncId: "stale-live-sync",
+      status: "failed",
+      error: "sync process exited without finishing",
+    });
+    await expect(readSyncHistory()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "sync_lock_recovered",
+          lockSyncId: "stale-live-sync",
+          reason: "stale-runtime",
+        }),
+      ]),
+    );
+
+    if (handle) {
+      await releaseSyncLock(handle);
+    }
+  });
+
+  it("does not recover a same-host live-process sync lock while runtime state is fresh", async () => {
+    const { cfRuntimeStatePath, cfSyncLockPath } = await import("../../src/paths.js");
+    const { readRuntimeState, tryAcquireSyncLock } = await import("../../src/structure.js");
+    const now = new Date().toISOString();
+
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "fresh-live-sync",
+          status: "running",
+          startedAt: now,
+          updatedAt: now,
+          requestedRegionKeys: ["ap10"],
+          completedRegionKeys: [],
+          structure: {
+            syncedAt: now,
+            regions: [],
+          },
+        } satisfies RuntimeSyncState,
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      cfSyncLockPath(),
+      `${JSON.stringify({
+        syncId: "fresh-live-sync",
+        pid: process.pid,
+        hostname: getHostname(),
+        startedAt: now,
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(tryAcquireSyncLock("contender-sync")).resolves.toBeUndefined();
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      syncId: "fresh-live-sync",
+      status: "running",
+    });
   });
 
   it("prefers runtime structure view over stable structure while sync is running", async () => {
