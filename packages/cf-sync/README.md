@@ -74,7 +74,7 @@ After the first topology sync, `~/.saptools/cf-structure.json` is ready for the 
 
 ### 🔄 `cf-sync sync`
 
-Run a live sync and write a new full snapshot. Use `--only` to limit which regions get walked.
+Run a live sync and write a topology snapshot. A full sync replaces the snapshot; `--only` refreshes the listed regions and merges them into the existing snapshot without removing other cached regions.
 
 ```bash
 cf-sync sync
@@ -126,6 +126,20 @@ cf-sync region eu10 --no-refresh
 
 > [!TIP]
 > `cf-sync region <key>` is the fastest way to answer *"what's in just this region right now?"* without walking everything.
+
+### 🧭 `cf-sync org <region> <org>`
+
+Refresh exactly one Cloud Foundry org and merge every refreshed space/app in that org back into the shared topology snapshot.
+
+- Updates only the requested `region/org`
+- Preserves sibling orgs and regions already present in the snapshot
+- Fails without changing the stable snapshot when the requested org cannot be targeted
+- Uses an isolated `CF_HOME`, so it does not clobber your interactive CF CLI target
+
+```bash
+cf-sync org ap10 my-org
+cf-sync org eu10 my-org --verbose
+```
 
 ### 🔁 `cf-sync space <region> <org> <space>`
 
@@ -187,6 +201,7 @@ import {
   readStructure,
   readStructureView,
   runSync,
+  syncOrg,
   syncSpace,
 } from "@saptools/cf-sync";
 
@@ -213,6 +228,15 @@ const eu10 = await getRegionView({                // one region, auto-fetch if m
   password: process.env["SAP_PASSWORD"],
 });
 console.log(eu10?.source); // "runtime" | "stable" | "fresh"
+
+// Targeted org refresh
+const refreshedOrg = await syncOrg({
+  regionKey: "ap10",
+  orgName: "my-org",
+  email: process.env["SAP_EMAIL"] ?? "",
+  password: process.env["SAP_PASSWORD"] ?? "",
+});
+console.log(refreshedOrg.org.spaces.map((space) => space.name));
 
 // Targeted space refresh
 const refreshedSpace = await syncSpace({
@@ -245,6 +269,7 @@ console.log(dbView?.metadata?.status, ordersDb?.entry.bindings.length);
 | Export | Description |
 | --- | --- |
 | `runSync(options)` | Drive a full/partial sync |
+| `syncOrg({ regionKey, orgName, ... })` | Refresh one CF org and merge it into runtime/stable topology |
 | `syncSpace({ regionKey, orgName, spaceName, ... })` | Refresh one CF space and merge it into runtime/stable topology |
 | `readStructure()` | Last stable snapshot, or `undefined` |
 | `readStructureView()` | Best-available full view with metadata |

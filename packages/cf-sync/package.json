@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-sync",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Sync SAP BTP Cloud Foundry topology and HANA DB bindings to local package-managed JSON files",
   "type": "module",
   "publishConfig": {
@@ -19,6 +19,7 @@
     }
   },
   "files": [
+    "CHANGELOG.md",
     "dist"
   ],
   "engines": {

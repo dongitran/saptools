@@ -11,5 +11,13 @@ export {
 } from "./db/sync.js";
 export type { DbSyncOptions, DbSyncResult } from "./db/sync.js";
 export * from "./topology/structure.js";
-export { getRegionView, runSync, syncSpace } from "./topology/sync.js";
-export type { GetRegionOptions, SyncOptions, SyncResult, SyncSpaceOptions, SyncSpaceResult } from "./topology/sync.js";
+export { getRegionView, runSync, syncOrg, syncSpace } from "./topology/sync.js";
+export type {
+  GetRegionOptions,
+  SyncOptions,
+  SyncOrgOptions,
+  SyncOrgResult,
+  SyncResult,
+  SyncSpaceOptions,
+  SyncSpaceResult,
+} from "./topology/sync.js";

@@ -27,6 +27,13 @@ import type {
 } from "../types.js";
 
 import { findRegion } from "./find.js";
+import {
+  mergeCompletedStructureIntoStableStructure,
+  mergeRegionIntoRuntimeState,
+  mergeRegionIntoStableStructure,
+  orderRegionKeys,
+  orderRegions,
+} from "./structure-merge.js";
 
 const FILE_LOCK_POLL_MS = 50;
 const FILE_LOCK_TIMEOUT_MS = 10_000;
@@ -102,79 +109,6 @@ async function withStateLock<T>(work: () => Promise<T>): Promise<T> {
   } finally {
     await releaseFileLock(cfStateLockPath(), handle);
   }
-}
-
-function orderRegionKeys(
-  keys: readonly RegionKey[],
-  requestedRegionKeys: readonly RegionKey[],
-): readonly RegionKey[] {
-  const requested = new Map(requestedRegionKeys.map((key, index) => [key, index]));
-  return [...new Set(keys)].sort((left, right) => {
-    const leftIndex = requested.get(left) ?? Number.MAX_SAFE_INTEGER;
-    const rightIndex = requested.get(right) ?? Number.MAX_SAFE_INTEGER;
-    return leftIndex - rightIndex;
-  });
-}
-
-function orderRegions(
-  regions: readonly RegionNode[],
-  requestedRegionKeys: readonly RegionKey[],
-): readonly RegionNode[] {
-  const requested = new Map(requestedRegionKeys.map((key, index) => [key, index]));
-  return [...regions].sort((left, right) => {
-    const leftIndex = requested.get(left.key) ?? Number.MAX_SAFE_INTEGER;
-    const rightIndex = requested.get(right.key) ?? Number.MAX_SAFE_INTEGER;
-    return leftIndex - rightIndex;
-  });
-}
-
-function upsertRegion(
-  structure: CfStructure,
-  region: RegionNode,
-  requestedRegionKeys: readonly RegionKey[],
-  syncedAt: string,
-): CfStructure {
-  const regions = structure.regions.filter((candidate) => candidate.key !== region.key);
-  return {
-    syncedAt,
-    regions: orderRegions([...regions, region], requestedRegionKeys),
-  };
-}
-
-function stableRegionOrder(structure: CfStructure | undefined): readonly RegionKey[] {
-  const existingKeys = structure?.regions.map((region) => region.key) ?? [];
-  const catalogKeys = getAllRegions().map((region) => region.key);
-  return [...new Set([...existingKeys, ...catalogKeys])];
-}
-
-function mergeRegionIntoRuntimeState(
-  current: RuntimeSyncState,
-  region: RegionNode,
-  requestedRegionKeys: readonly RegionKey[],
-  updatedAt: string,
-): RuntimeSyncState {
-  return {
-    ...current,
-    updatedAt,
-    completedRegionKeys: orderRegionKeys([...current.completedRegionKeys, region.key], requestedRegionKeys),
-    structure: upsertRegion(current.structure, region, requestedRegionKeys, updatedAt),
-  };
-}
-
-function mergeRegionIntoStableStructure(
-  current: CfStructure | undefined,
-  region: RegionNode,
-  updatedAt: string,
-): CfStructure {
-  return upsertRegion(
-    current ?? {
-      syncedAt: updatedAt,
-      regions: [],
-    },
-    region,
-    stableRegionOrder(current),
-    updatedAt,
-  );
 }
 
 export function toSyncMetadata(state: RuntimeSyncState): SyncMetadata {
@@ -347,7 +281,15 @@ export async function persistRegion(region: RegionNode): Promise<SyncMetadata | 
   });
 }
 
-export async function completeRuntimeState(syncId: string): Promise<RuntimeSyncState> {
+interface CompleteRuntimeStateOptions {
+  readonly mergeWithStableStructure?: boolean;
+  readonly writeStableStructure?: boolean;
+}
+
+export async function completeRuntimeState(
+  syncId: string,
+  options: CompleteRuntimeStateOptions = {},
+): Promise<RuntimeSyncState> {
   return await withStateLock(async () => {
     const current = await readRuntimeState();
     if (current?.syncId !== syncId) {
@@ -355,18 +297,25 @@ export async function completeRuntimeState(syncId: string): Promise<RuntimeSyncS
     }
 
     const finishedAt = new Date().toISOString();
+    const completedStructure: CfStructure = {
+      syncedAt: finishedAt,
+      regions: orderRegions(current.structure.regions, current.requestedRegionKeys),
+    };
+    const finalStructure = options.mergeWithStableStructure
+      ? mergeCompletedStructureIntoStableStructure(await readStructure(), completedStructure, finishedAt)
+      : completedStructure;
     const next: RuntimeSyncState = {
       ...current,
       status: "completed",
       updatedAt: finishedAt,
       finishedAt,
       completedRegionKeys: orderRegionKeys(current.completedRegionKeys, current.requestedRegionKeys),
-      structure: {
-        syncedAt: finishedAt,
-        regions: orderRegions(current.structure.regions, current.requestedRegionKeys),
-      },
+      structure: finalStructure,
     };
     await writeJsonFileAtomic(cfRuntimeStatePath(), next);
+    if (options.writeStableStructure) {
+      await writeJsonFileAtomic(cfStructurePath(), finalStructure);
+    }
     return next;
   });
 }

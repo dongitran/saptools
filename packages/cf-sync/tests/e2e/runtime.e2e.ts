@@ -76,6 +76,33 @@ function createScenario(): Scenario {
   };
 }
 
+function createRegionMergeScenario(): Scenario {
+  return {
+    regions: [
+      {
+        key: "br10",
+        apiEndpoint: "https://api.cf.br10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "org-br",
+            spaces: [{ name: "dev", apps: ["fresh-br-app"] }],
+          },
+        ],
+      },
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "org-ap10",
+            spaces: [{ name: "dev", apps: ["app-ap10"] }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createLongScenario(): Scenario {
   return {
     regions: [
@@ -114,6 +141,30 @@ function createLongScenario(): Scenario {
         apiEndpoint: "https://api.cf.us20.hana.ondemand.com",
         orgsDelayMs: 0,
         orgs: [{ name: "org-us20", spaces: [{ name: "dev", apps: ["app-us20"] }] }],
+      },
+    ],
+  };
+}
+
+function createOrgRefreshScenario(): Scenario {
+  return {
+    regions: [
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "org-alpha",
+            spaces: [
+              { name: "dev", apps: ["fresh-dev-app"] },
+              { name: "qa", apps: ["fresh-qa-app"] },
+            ],
+          },
+          {
+            name: "org-beta",
+            spaces: [{ name: "dev", apps: ["keep-beta-live-app"] }],
+          },
+        ],
       },
     ],
   };
@@ -291,6 +342,85 @@ test.describe("Runtime reads", () => {
     );
   });
 
+  test("sync --only merges one selected region into an existing stable structure", async () => {
+    const paths = await prepareCase(ROOT_NAME, "region-only-stable-merge", createRegionMergeScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    await writeJson(paths.structurePath, {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "keep-ap", spaces: [{ name: "dev", apps: [{ name: "keep-ap-app" }] }] }],
+        },
+        {
+          key: "br10",
+          label: "old-br",
+          apiEndpoint: "https://api.cf.br10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "old-br", spaces: [{ name: "dev", apps: [{ name: "old-br-app" }] }] }],
+        },
+        {
+          key: "eu10",
+          label: "stable-eu",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "keep-eu", spaces: [] }],
+        },
+      ],
+    });
+
+    const syncProcess = spawn("node", [CLI_PATH, "sync", "--only", "br10"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const syncResult = await waitForExit(syncProcess);
+    expect(syncResult.code).toBe(0);
+    expect(syncResult.stderr).toBe("");
+
+    const stableStructure = await readJson<{
+      readonly regions: readonly {
+        readonly key: string;
+        readonly orgs: readonly {
+          readonly name: string;
+          readonly spaces: readonly { readonly name: string; readonly apps: readonly { readonly name: string }[] }[];
+        }[];
+      }[];
+    }>(paths.structurePath);
+    expect(stableStructure.regions.map((region) => region.key)).toEqual(["ap10", "br10", "eu10"]);
+    expect(stableStructure.regions.find((region) => region.key === "ap10")?.orgs[0]?.name).toBe("keep-ap");
+    expect(stableStructure.regions.find((region) => region.key === "eu10")?.orgs[0]?.name).toBe("keep-eu");
+    expect(stableStructure.regions.find((region) => region.key === "br10")?.orgs).toEqual([
+      {
+        name: "org-br",
+        spaces: [
+          {
+            name: "dev",
+            apps: [
+              {
+                name: "fresh-br-app",
+                requestedState: "started",
+                runningInstances: 1,
+                totalInstances: 1,
+                routes: [],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const structureView = await runJsonCommand(env, ["read"]);
+    expect(
+      (structureView?.["structure"] as { readonly regions: readonly { readonly key: string }[] }).regions.map(
+        (region) => region.key,
+      ),
+    ).toEqual(["ap10", "br10", "eu10"]);
+  });
+
   test("fresh region fetch updates the package-managed view after a completed sync", async () => {
     const paths = await prepareCase(ROOT_NAME, "post-sync-region-persistence", createScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
@@ -400,6 +530,131 @@ test.describe("Runtime reads", () => {
 
     const fakeLog = await readJsonLines(paths.logPath);
     expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth", "target", "apps"]);
+  });
+
+  test("org command refreshes one selected org and preserves sibling topology", async () => {
+    const paths = await prepareCase(ROOT_NAME, "org-refresh-preserves-siblings", createOrgRefreshScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    await writeJson(paths.structurePath, {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [
+            {
+              name: "org-alpha",
+              spaces: [{ name: "dev", apps: [{ name: "old-dev-app" }] }],
+            },
+            {
+              name: "org-beta",
+              spaces: [{ name: "dev", apps: [{ name: "keep-beta-app" }] }],
+            },
+          ],
+        },
+        {
+          key: "eu10",
+          label: "eu10",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-eu", spaces: [] }],
+        },
+      ],
+    });
+
+    const orgView = await runJsonCommand(env, ["org", "ap10", "org-alpha"]);
+    expect(orgView).toMatchObject({
+      region: { key: "ap10" },
+      org: {
+        name: "org-alpha",
+        spaces: [
+          { name: "dev", apps: [{ name: "fresh-dev-app" }] },
+          { name: "qa", apps: [{ name: "fresh-qa-app" }] },
+        ],
+      },
+    });
+
+    const stableStructure = await readJson<{
+      readonly regions: readonly {
+        readonly key: string;
+        readonly orgs: readonly {
+          readonly name: string;
+          readonly spaces: readonly { readonly name: string; readonly apps: readonly { readonly name: string }[] }[];
+        }[];
+      }[];
+    }>(paths.structurePath);
+    expect(stableStructure.regions.map((region) => region.key)).toEqual(["ap10", "eu10"]);
+    expect(stableStructure.regions.find((region) => region.key === "eu10")?.orgs[0]?.name).toBe("org-eu");
+    expect(stableStructure.regions.find((region) => region.key === "ap10")?.orgs).toEqual([
+      {
+        name: "org-alpha",
+        spaces: [
+          {
+            name: "dev",
+            apps: [
+              {
+                name: "fresh-dev-app",
+                requestedState: "started",
+                runningInstances: 1,
+                totalInstances: 1,
+                routes: [],
+              },
+            ],
+          },
+          {
+            name: "qa",
+            apps: [
+              {
+                name: "fresh-qa-app",
+                requestedState: "started",
+                runningInstances: 1,
+                totalInstances: 1,
+                routes: [],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "org-beta",
+        spaces: [{ name: "dev", apps: [{ name: "keep-beta-app" }] }],
+      },
+    ]);
+
+    const fakeLog = await readJsonLines(paths.logPath);
+    expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth", "target", "spaces", "target", "apps", "target", "apps"]);
+  });
+
+  test("org command leaves the stable structure unchanged when the selected org is unavailable", async () => {
+    const paths = await prepareCase(ROOT_NAME, "org-refresh-target-failure", createOrgRefreshScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+    const stableStructure = {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-alpha", spaces: [{ name: "dev", apps: [{ name: "keep-app" }] }] }],
+        },
+      ],
+    };
+    await writeJson(paths.structurePath, stableStructure);
+
+    const orgProcess = spawn("node", [CLI_PATH, "org", "ap10", "missing-org"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const orgResult = await waitForExit(orgProcess);
+    expect(orgResult.code).toBe(1);
+    expect(orgResult.stdout).toBe("");
+    expect(orgResult.stderr).toContain("Failed to refresh org ap10/missing-org");
+
+    await expect(readJson(paths.structurePath)).resolves.toEqual(stableStructure);
   });
 
   test("service can inspect partial structure while sync is still running", async () => {

@@ -26,6 +26,12 @@ export interface PersistedSpaceResult {
   readonly metadata?: SyncMetadata;
 }
 
+export interface PersistedOrgResult {
+  readonly region: RegionNode;
+  readonly org: OrgNode;
+  readonly metadata?: SyncMetadata;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -108,6 +114,13 @@ function upsertOrgSpace(orgs: readonly OrgNode[], orgName: string, space: SpaceN
   return [...orgs, nextOrg];
 }
 
+function upsertOrg(orgs: readonly OrgNode[], org: OrgNode): readonly OrgNode[] {
+  if (orgs.some((candidate) => candidate.name === org.name)) {
+    return orgs.map((candidate) => (candidate.name === org.name ? org : candidate));
+  }
+  return [...orgs, org];
+}
+
 function mergeSpaceIntoRegion(
   existing: RegionNode | undefined,
   region: Region,
@@ -123,6 +136,20 @@ function mergeSpaceIntoRegion(
   };
 }
 
+function mergeOrgIntoRegion(
+  existing: RegionNode | undefined,
+  region: Region,
+  org: OrgNode,
+): RegionNode {
+  return {
+    key: region.key,
+    label: existing?.label ?? region.label,
+    apiEndpoint: existing?.apiEndpoint ?? region.apiEndpoint,
+    accessible: true,
+    orgs: upsertOrg(existing?.orgs ?? [], org),
+  };
+}
+
 function mergeSpaceIntoStructure(
   current: CfStructure | undefined,
   region: Region,
@@ -132,6 +159,24 @@ function mergeSpaceIntoStructure(
 ): CfStructure {
   const existingRegion = current?.regions.find((candidate) => candidate.key === region.key);
   const mergedRegion = mergeSpaceIntoRegion(existingRegion, region, orgName, space);
+  const currentRegions = current?.regions ?? [];
+  const regions = existingRegion
+    ? currentRegions.map((candidate) => (candidate.key === region.key ? mergedRegion : candidate))
+    : [...currentRegions, mergedRegion];
+  return {
+    syncedAt,
+    regions,
+  };
+}
+
+function mergeOrgIntoStructure(
+  current: CfStructure | undefined,
+  region: Region,
+  org: OrgNode,
+  syncedAt: string,
+): CfStructure {
+  const existingRegion = current?.regions.find((candidate) => candidate.key === region.key);
+  const mergedRegion = mergeOrgIntoRegion(existingRegion, region, org);
   const currentRegions = current?.regions ?? [];
   const regions = existingRegion
     ? currentRegions.map((candidate) => (candidate.key === region.key ? mergedRegion : candidate))
@@ -156,6 +201,19 @@ function mergeSpaceIntoRuntimeState(
   };
 }
 
+function mergeOrgIntoRuntimeState(
+  current: RuntimeSyncState,
+  region: Region,
+  org: OrgNode,
+  updatedAt: string,
+): RuntimeSyncState {
+  return {
+    ...current,
+    updatedAt,
+    structure: mergeOrgIntoStructure(current.structure, region, org, updatedAt),
+  };
+}
+
 function readPersistedSpace(structure: CfStructure, region: Region, orgName: string, spaceName: string): PersistedSpaceResult {
   const persistedRegion = structure.regions.find((candidate) => candidate.key === region.key);
   const persistedOrg = persistedRegion?.orgs.find((candidate) => candidate.name === orgName);
@@ -169,6 +227,20 @@ function readPersistedSpace(structure: CfStructure, region: Region, orgName: str
     region: persistedRegion,
     org: persistedOrg,
     space: persistedSpace,
+  };
+}
+
+function readPersistedOrg(structure: CfStructure, region: Region, orgName: string): PersistedOrgResult {
+  const persistedRegion = structure.regions.find((candidate) => candidate.key === region.key);
+  const persistedOrg = persistedRegion?.orgs.find((candidate) => candidate.name === orgName);
+
+  if (!persistedRegion || !persistedOrg) {
+    throw new Error(`Failed to persist org ${region.key}/${orgName}`);
+  }
+
+  return {
+    region: persistedRegion,
+    org: persistedOrg,
   };
 }
 
@@ -199,5 +271,41 @@ export async function persistSpace(
     const nextStable = mergeSpaceIntoStructure(await readJsonFile<CfStructure>(cfStructurePath()), region, orgName, space, updatedAt);
     await writeJsonFileAtomic(cfStructurePath(), nextStable);
     return readPersistedSpace(nextStable, region, orgName, space.name);
+  });
+}
+
+export async function persistOrg(region: Region, org: OrgNode): Promise<PersistedOrgResult> {
+  return await withStateLock(async () => {
+    const updatedAt = new Date().toISOString();
+    const runtimeState = await readJsonFile<RuntimeSyncState>(cfRuntimeStatePath());
+
+    if (runtimeState) {
+      const nextRuntime = mergeOrgIntoRuntimeState(runtimeState, region, org, updatedAt);
+      await writeJsonFileAtomic(cfRuntimeStatePath(), nextRuntime);
+
+      if (runtimeState.status !== "running") {
+        const nextStable = mergeOrgIntoStructure(
+          await readJsonFile<CfStructure>(cfStructurePath()),
+          region,
+          org,
+          updatedAt,
+        );
+        await writeJsonFileAtomic(cfStructurePath(), nextStable);
+      }
+
+      return {
+        ...readPersistedOrg(nextRuntime.structure, region, org.name),
+        metadata: toSyncMetadata(nextRuntime),
+      };
+    }
+
+    const nextStable = mergeOrgIntoStructure(
+      await readJsonFile<CfStructure>(cfStructurePath()),
+      region,
+      org,
+      updatedAt,
+    );
+    await writeJsonFileAtomic(cfStructurePath(), nextStable);
+    return readPersistedOrg(nextStable, region, org.name);
   });
 }

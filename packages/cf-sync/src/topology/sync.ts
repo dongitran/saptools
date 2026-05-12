@@ -22,7 +22,7 @@ import type {
   SyncMetadata,
 } from "../types.js";
 
-import { persistSpace } from "./space-sync-store.js";
+import { persistOrg, persistSpace } from "./space-sync-store.js";
 import {
   appendSyncHistory,
   completeRuntimeState,
@@ -37,7 +37,6 @@ import {
   releaseSyncLock,
   tryAcquireSyncLock,
   waitForRuntimeStateToSettle,
-  writeStructure,
 } from "./structure.js";
 
 export interface SyncOptions {
@@ -64,6 +63,14 @@ export interface SyncSpaceOptions {
   readonly verbose?: boolean;
 }
 
+export interface SyncOrgOptions {
+  readonly regionKey: RegionKey;
+  readonly orgName: string;
+  readonly email: string;
+  readonly password: string;
+  readonly verbose?: boolean;
+}
+
 export interface SyncResult {
   readonly structure: CfStructure;
   readonly accessibleRegions: readonly string[];
@@ -74,6 +81,12 @@ export interface SyncSpaceResult {
   readonly region: RegionNode;
   readonly org: OrgNode;
   readonly space: SpaceNode;
+  readonly metadata?: SyncMetadata;
+}
+
+export interface SyncOrgResult {
+  readonly region: RegionNode;
+  readonly org: OrgNode;
   readonly metadata?: SyncMetadata;
 }
 
@@ -256,6 +269,36 @@ async function collectOrg(
   }
 }
 
+async function collectTargetedOrg(
+  regionKey: RegionKey,
+  orgName: string,
+  ctx: LogCtx,
+  cfContext: CfExecContext,
+): Promise<OrgNode> {
+  await recordHistory(ctx, "org_started", { regionKey, orgName });
+
+  try {
+    await cfTargetOrg(orgName, cfContext);
+    const spaces = await cfSpaces(cfContext);
+    const collectedSpaces: SpaceNode[] = [];
+
+    for (const spaceName of spaces) {
+      collectedSpaces.push(await collectSpace(regionKey, orgName, spaceName, ctx, cfContext));
+    }
+
+    return { name: orgName, spaces: collectedSpaces };
+  } catch (error) {
+    const message = errorMessage(error);
+    log(ctx, `${regionKey} • ${orgName}: failed (${message})`);
+    await recordHistory(ctx, "org_failed", {
+      regionKey,
+      orgName,
+      error: message,
+    });
+    throw new Error(`Failed to refresh org ${regionKey}/${orgName}: ${message}`, { cause: error });
+  }
+}
+
 async function collectRegion(
   region: Region,
   email: string,
@@ -395,8 +438,10 @@ async function runOwnedSync(
       });
     }
 
-    const completedState = await completeRuntimeState(syncId);
-    await writeStructure(completedState.structure);
+    const completedState = await completeRuntimeState(syncId, {
+      mergeWithStableStructure: options.onlyRegions !== undefined,
+      writeStableStructure: true,
+    });
     await recordHistory(ctx, "sync_completed", {
       status: "completed",
       completedRegionKeys: completedState.completedRegionKeys,
@@ -510,6 +555,63 @@ export async function syncSpace(options: SyncSpaceOptions): Promise<SyncSpaceRes
       regionKey: options.regionKey,
       orgName: options.orgName,
       spaceName: options.spaceName,
+      error: errorMessage(error),
+    });
+    throw error;
+  }
+}
+
+async function collectSingleOrgWithIsolatedSession(
+  region: Region,
+  orgName: string,
+  email: string,
+  password: string,
+  ctx: LogCtx,
+): Promise<OrgNode> {
+  return await withCfSession(async (cfContext) => {
+    await recordHistory(ctx, "org_sync_auth_started", { regionKey: region.key, orgName });
+    log(ctx, `Refreshing ${region.key} • ${orgName}...`);
+    await cfApi(region.apiEndpoint, cfContext);
+    await cfAuth(email, password, cfContext);
+    return await collectTargetedOrg(region.key, orgName, ctx, cfContext);
+  });
+}
+
+export async function syncOrg(options: SyncOrgOptions): Promise<SyncOrgResult> {
+  const region = getRegionDefinition(options.regionKey);
+  const syncId = randomUUID();
+  const ctx = createLogContext(
+    {
+      email: options.email,
+      password: options.password,
+      verbose: options.verbose ?? false,
+      interactive: false,
+    },
+    syncId,
+  );
+
+  try {
+    await recordHistory(ctx, "org_sync_requested", {
+      regionKey: options.regionKey,
+      orgName: options.orgName,
+    });
+    const org = await collectSingleOrgWithIsolatedSession(
+      region,
+      options.orgName,
+      options.email,
+      options.password,
+      ctx,
+    );
+    const result = await persistOrg(region, org);
+    await recordHistory(ctx, "org_sync_completed", {
+      regionKey: options.regionKey,
+      orgName: options.orgName,
+    });
+    return result;
+  } catch (error) {
+    await recordHistory(ctx, "org_sync_failed", {
+      regionKey: options.regionKey,
+      orgName: options.orgName,
       error: errorMessage(error),
     });
     throw error;

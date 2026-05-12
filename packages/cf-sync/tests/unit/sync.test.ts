@@ -182,6 +182,152 @@ describe("runSync", () => {
     expect(saved?.regions).toHaveLength(1);
   });
 
+  it("merges a region-limited sync into the stable structure without removing sibling regions", async () => {
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn().mockResolvedValue(["org-br"]),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn().mockResolvedValue(["dev"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "fresh-app" }]),
+    }));
+
+    const { readStructure, writeStructure } = await import("../../src/structure.js");
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "keep-ap", spaces: [{ name: "dev", apps: [{ name: "keep-ap-app" }] }] }],
+        },
+        {
+          key: "br10",
+          label: "old-br",
+          apiEndpoint: "https://api.cf.br10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "old-br", spaces: [{ name: "dev", apps: [{ name: "old-app" }] }] }],
+        },
+        {
+          key: "eu10",
+          label: "stable-eu",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "keep-eu", spaces: [] }],
+        },
+      ],
+    });
+
+    const { runSync } = await import("../../src/sync.js");
+    const result = await runSync({
+      email: "e",
+      password: "p",
+      onlyRegions: ["br10"],
+    });
+
+    const saved = await readStructure();
+    expect(saved?.regions.map((region) => region.key)).toEqual(["ap10", "br10", "eu10"]);
+    expect(result.structure.regions.map((region) => region.key)).toEqual(["ap10", "br10", "eu10"]);
+    expect(saved?.regions.find((region) => region.key === "ap10")?.orgs[0]?.name).toBe("keep-ap");
+    expect(saved?.regions.find((region) => region.key === "eu10")?.orgs[0]?.name).toBe("keep-eu");
+    expect(saved?.regions.find((region) => region.key === "br10")).toMatchObject({
+      key: "br10",
+      accessible: true,
+      orgs: [
+        {
+          name: "org-br",
+          spaces: [{ name: "dev", apps: [{ name: "fresh-app" }] }],
+        },
+      ],
+    });
+  });
+
+  it("appends a missing region during a region-limited sync", async () => {
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn().mockResolvedValue(["org-br"]),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn().mockResolvedValue(["dev"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "new-region-app" }]),
+    }));
+
+    const { readStructure, writeStructure } = await import("../../src/structure.js");
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [],
+        },
+        {
+          key: "eu10",
+          label: "stable-eu",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [],
+        },
+      ],
+    });
+
+    const { runSync } = await import("../../src/sync.js");
+    await runSync({
+      email: "e",
+      password: "p",
+      onlyRegions: ["br10"],
+    });
+
+    const saved = await readStructure();
+    expect(saved?.regions.map((region) => region.key)).toEqual(["ap10", "eu10", "br10"]);
+    expect(saved?.regions.find((region) => region.key === "br10")).toMatchObject({
+      orgs: [{ name: "org-br", spaces: [{ name: "dev", apps: [{ name: "new-region-app" }] }] }],
+    });
+  });
+
+  it("keeps full sync as a complete replacement of the stable structure", async () => {
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn().mockResolvedValue([]),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn(),
+      cfSpaces: vi.fn(),
+      cfAppDetails: vi.fn(),
+    }));
+
+    const { REGION_KEYS } = await import("../../src/types.js");
+    const { readStructure, writeStructure } = await import("../../src/structure.js");
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stale-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "stale-org", spaces: [{ name: "dev", apps: [{ name: "stale-app" }] }] }],
+        },
+      ],
+    });
+
+    const { runSync } = await import("../../src/sync.js");
+    await runSync({
+      email: "e",
+      password: "p",
+    });
+
+    const saved = await readStructure();
+    expect(saved?.regions.map((region) => region.key)).toEqual(REGION_KEYS);
+    expect(saved?.regions.find((region) => region.key === "ap10")?.orgs).toEqual([]);
+  });
+
   it("records completed runtime state after a successful sync", async () => {
     vi.doMock("../../src/cf/index.js", () => ({
       cfApi: vi.fn().mockResolvedValue(void 0),
@@ -1034,5 +1180,214 @@ describe("syncSpace", () => {
     await expect(readRuntimeState()).resolves.toMatchObject({
       completedRegionKeys: ["ap10"],
     });
+  });
+});
+
+describe("syncOrg", () => {
+  it("refreshes one org and preserves sibling orgs and regions", async () => {
+    let targetedSpace = "dev";
+    const cfTargetOrg = vi.fn().mockResolvedValue(void 0);
+    const cfTargetSpace = vi.fn().mockImplementation((_orgName: string, spaceName: string) => {
+      targetedSpace = spaceName;
+      return Promise.resolve();
+    });
+
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg,
+      cfTargetSpace,
+      cfSpaces: vi.fn().mockResolvedValue(["dev", "qa"]),
+      cfAppDetails: vi.fn().mockImplementation(() => Promise.resolve([{ name: `fresh-${targetedSpace}-app` }])),
+    }));
+
+    const { writeStructure, readStructure } = await import("../../src/structure.js");
+    await writeStructure({
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [
+            {
+              name: "org-alpha",
+              spaces: [{ name: "dev", apps: [{ name: "old-app" }] }],
+            },
+            {
+              name: "org-beta",
+              spaces: [{ name: "dev", apps: [{ name: "keep-beta-app" }] }],
+            },
+          ],
+        },
+        {
+          key: "eu10",
+          label: "stable-eu",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-eu", spaces: [] }],
+        },
+      ],
+    });
+
+    const { syncOrg } = await import("../../src/sync.js");
+    const result = await syncOrg({
+      regionKey: "ap10",
+      orgName: "org-alpha",
+      email: "e",
+      password: "p",
+    });
+
+    expect(cfTargetOrg).toHaveBeenCalledWith("org-alpha", expect.any(Object));
+    expect(result.org.spaces.map((space) => [space.name, space.apps.map((app) => app.name)])).toEqual([
+      ["dev", ["fresh-dev-app"]],
+      ["qa", ["fresh-qa-app"]],
+    ]);
+
+    const saved = await readStructure();
+    expect(saved?.regions.map((region) => region.key)).toEqual(["ap10", "eu10"]);
+    expect(saved?.regions.find((region) => region.key === "eu10")?.orgs[0]?.name).toBe("org-eu");
+    expect(saved?.regions.find((region) => region.key === "ap10")?.orgs).toEqual([
+      {
+        name: "org-alpha",
+        spaces: [
+          { name: "dev", apps: [{ name: "fresh-dev-app" }] },
+          { name: "qa", apps: [{ name: "fresh-qa-app" }] },
+        ],
+      },
+      {
+        name: "org-beta",
+        spaces: [{ name: "dev", apps: [{ name: "keep-beta-app" }] }],
+      },
+    ]);
+  });
+
+  it("creates the region and org when no stable structure exists", async () => {
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn().mockResolvedValue(["dev"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "created-app" }]),
+    }));
+
+    const { syncOrg } = await import("../../src/sync.js");
+    await syncOrg({
+      regionKey: "br10",
+      orgName: "org-br",
+      email: "e",
+      password: "p",
+    });
+
+    const { readStructure } = await import("../../src/structure.js");
+    await expect(readStructure()).resolves.toMatchObject({
+      regions: [
+        {
+          key: "br10",
+          orgs: [{ name: "org-br", spaces: [{ name: "dev", apps: [{ name: "created-app" }] }] }],
+        },
+      ],
+    });
+  });
+
+  it("merges an org refresh into running state without completing the region", async () => {
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn().mockResolvedValue(void 0),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn().mockResolvedValue(["dev"]),
+      cfAppDetails: vi.fn().mockResolvedValue([{ name: "runtime-app" }]),
+    }));
+
+    const { cfRuntimeStatePath } = await import("../../src/paths.js");
+    await mkdir(dirname(cfRuntimeStatePath()), { recursive: true });
+    await writeFile(
+      cfRuntimeStatePath(),
+      `${JSON.stringify(
+        {
+          syncId: "running-org-sync",
+          status: "running",
+          startedAt: "2026-04-18T00:00:00.000Z",
+          updatedAt: "2026-04-18T00:00:01.000Z",
+          requestedRegionKeys: ["ap10", "eu10"],
+          completedRegionKeys: [],
+          structure: {
+            syncedAt: "2026-04-18T00:00:01.000Z",
+            regions: [],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const { syncOrg } = await import("../../src/sync.js");
+    await syncOrg({
+      regionKey: "ap10",
+      orgName: "org-alpha",
+      email: "e",
+      password: "p",
+    });
+
+    const { readRuntimeState, readStructure } = await import("../../src/structure.js");
+    await expect(readRuntimeState()).resolves.toMatchObject({
+      status: "running",
+      completedRegionKeys: [],
+      structure: {
+        regions: [
+          {
+            key: "ap10",
+            orgs: [{ name: "org-alpha", spaces: [{ name: "dev", apps: [{ name: "runtime-app" }] }] }],
+          },
+        ],
+      },
+    });
+    await expect(readStructure()).resolves.toBeUndefined();
+  });
+
+  it("leaves the stable structure unchanged when the requested org cannot be targeted", async () => {
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn().mockRejectedValue(new Error("org not found")),
+      cfTargetSpace: vi.fn(),
+      cfSpaces: vi.fn(),
+      cfAppDetails: vi.fn(),
+    }));
+
+    const { writeStructure, readStructure } = await import("../../src/structure.js");
+    const stableStructure = {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "stable-ap",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-alpha", spaces: [{ name: "dev", apps: [{ name: "keep-app" }] }] }],
+        },
+      ],
+    } as const;
+    await writeStructure(stableStructure);
+
+    const { syncOrg } = await import("../../src/sync.js");
+    await expect(
+      syncOrg({
+        regionKey: "ap10",
+        orgName: "org-alpha",
+        email: "e",
+        password: "p",
+      }),
+    ).rejects.toThrow("Failed to refresh org ap10/org-alpha");
+
+    await expect(readStructure()).resolves.toEqual(stableStructure);
   });
 });

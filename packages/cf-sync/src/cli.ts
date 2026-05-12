@@ -15,7 +15,7 @@ import {
   runDbSync,
 } from "./db/sync.js";
 import { readRegionsView, readStructureView } from "./topology/structure.js";
-import { getRegionView, runSync, syncSpace } from "./topology/sync.js";
+import { getRegionView, runSync, syncOrg, syncSpace } from "./topology/sync.js";
 import { REGION_KEYS } from "./types.js";
 
 function requireEnv(name: string): string {
@@ -147,6 +147,27 @@ export async function main(argv: readonly string[]): Promise<void> {
         regionKey: key as (typeof REGION_KEYS)[number],
         orgName,
         spaceName,
+        email: requireEnv("SAP_EMAIL"),
+        password: requireEnv("SAP_PASSWORD"),
+        verbose: opts.verbose ?? false,
+      });
+      process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+    });
+
+  program
+    .command("org")
+    .description("Refresh one region/org and print the refreshed org view as JSON")
+    .argument("<region>", "Region key")
+    .argument("<org>", "Cloud Foundry org name")
+    .option("--verbose", "Print progress lines to stdout", false)
+    .action(async (key: string, orgName: string, opts: { verbose?: boolean }): Promise<void> => {
+      if (!(REGION_KEYS as readonly string[]).includes(key)) {
+        throw new Error(`Unknown region key: ${key}`);
+      }
+
+      const view = await syncOrg({
+        regionKey: key as (typeof REGION_KEYS)[number],
+        orgName,
         email: requireEnv("SAP_EMAIL"),
         password: requireEnv("SAP_PASSWORD"),
         verbose: opts.verbose ?? false,
