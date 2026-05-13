@@ -628,6 +628,71 @@ test.describe("Runtime reads", () => {
     expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth", "target", "spaces", "target", "apps", "target", "apps"]);
   });
 
+  test("orgs command refreshes one region org list without loading spaces or apps", async () => {
+    const paths = await prepareCase(ROOT_NAME, "region-org-list-refresh", createOrgRefreshScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    await writeJson(paths.structurePath, {
+      syncedAt: "2026-04-18T00:00:00.000Z",
+      regions: [
+        {
+          key: "ap10",
+          label: "ap10",
+          apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+          accessible: true,
+          orgs: [
+            {
+              name: "org-alpha",
+              spaces: [{ name: "dev", apps: [{ name: "old-dev-app" }] }],
+            },
+            {
+              name: "org-stale",
+              spaces: [{ name: "dev", apps: [{ name: "stale-app" }] }],
+            },
+          ],
+        },
+        {
+          key: "eu10",
+          label: "eu10",
+          apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+          accessible: true,
+          orgs: [{ name: "org-eu", spaces: [{ name: "dev", apps: [{ name: "eu-app" }] }] }],
+        },
+      ],
+    });
+
+    const orgsView = await runJsonCommand(env, ["orgs", "ap10"]);
+    expect(orgsView).toMatchObject({
+      region: { key: "ap10" },
+      orgNames: ["org-alpha", "org-beta"],
+    });
+
+    const stableStructure = await readJson<{
+      readonly regions: readonly {
+        readonly key: string;
+        readonly orgs: readonly {
+          readonly name: string;
+          readonly spaces: readonly { readonly name: string; readonly apps: readonly { readonly name: string }[] }[];
+        }[];
+      }[];
+    }>(paths.structurePath);
+    expect(stableStructure.regions.map((region) => region.key)).toEqual(["ap10", "eu10"]);
+    expect(stableStructure.regions.find((region) => region.key === "eu10")?.orgs[0]?.name).toBe("org-eu");
+    expect(stableStructure.regions.find((region) => region.key === "ap10")?.orgs).toEqual([
+      {
+        name: "org-alpha",
+        spaces: [{ name: "dev", apps: [{ name: "old-dev-app" }] }],
+      },
+      {
+        name: "org-beta",
+        spaces: [],
+      },
+    ]);
+
+    const fakeLog = await readJsonLines(paths.logPath);
+    expect(fakeLog.map((entry) => entry.command)).toEqual(["api", "auth", "orgs"]);
+  });
+
   test("org command leaves the stable structure unchanged when the selected org is unavailable", async () => {
     const paths = await prepareCase(ROOT_NAME, "org-refresh-target-failure", createOrgRefreshScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);

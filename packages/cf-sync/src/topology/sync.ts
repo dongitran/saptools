@@ -39,6 +39,9 @@ import {
   waitForRuntimeStateToSettle,
 } from "./structure.js";
 
+export { syncRegionOrgs } from "./region-org-sync.js";
+export type { SyncRegionOrgsOptions, SyncRegionOrgsResult } from "./region-org-sync.js";
+
 export interface SyncOptions {
   readonly email: string;
   readonly password: string;

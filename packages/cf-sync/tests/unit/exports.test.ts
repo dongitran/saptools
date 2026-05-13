@@ -7,11 +7,12 @@ import {
   parseHanaBindings as parseHanaBindingsFromIndex,
   readStructureView as readStructureViewFromIndex,
   runSync as runSyncFromIndex,
+  syncRegionOrgs as syncRegionOrgsFromIndex,
 } from "../../src/index.js";
 import { cfStructurePath as cfStructurePathFromShim } from "../../src/paths.js";
 import { getRegion as getRegionFromShim } from "../../src/regions.js";
 import { readStructureView as readStructureViewFromShim } from "../../src/structure.js";
-import { runSync as runSyncFromShim } from "../../src/sync.js";
+import { runSync as runSyncFromShim, syncRegionOrgs as syncRegionOrgsFromShim } from "../../src/sync.js";
 
 describe("public exports", () => {
   it("keeps index and compatibility shims aligned after source folder moves", () => {
@@ -20,5 +21,6 @@ describe("public exports", () => {
     expect(parseHanaBindingsFromIndex).toBe(parseHanaBindingsFromShim);
     expect(readStructureViewFromIndex).toBe(readStructureViewFromShim);
     expect(runSyncFromIndex).toBe(runSyncFromShim);
+    expect(syncRegionOrgsFromIndex).toBe(syncRegionOrgsFromShim);
   });
 });

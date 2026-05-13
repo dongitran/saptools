@@ -23,6 +23,7 @@ Walk every region, org, space, and app you have access to, cache the topology, t
 - 🌍 **Full-landscape sync** — logs into CF once, walks **region → org → space → app** across every region you can reach
 - 🟢 **App runtime metadata** — snapshots include requested state, instance counts, and routes from `cf apps`
 - ⚡ **Partial + streaming reads** — `read` / `regions` / `region` commands return whatever is already known, even while a long sync is in progress
+- 🧭 **Region org refresh** — `orgs` refreshes one region's org list without walking spaces or apps
 - 🗄️ **Background DB binding sync** — `db-sync` can collect `VCAP_SERVICES.hana` credentials for every cached app or one app selector in the background
 - 🧠 **Smart fallbacks** — runtime state first, last stable snapshot next, on-demand fetch as a last resort
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent with full TypeScript definitions
@@ -127,6 +128,21 @@ cf-sync region eu10 --no-refresh
 > [!TIP]
 > `cf-sync region <key>` is the fastest way to answer *"what's in just this region right now?"* without walking everything.
 
+### 🧭 `cf-sync orgs <region>`
+
+Refresh only the Cloud Foundry org names for one region and merge that list back into the shared topology snapshot.
+
+- Updates only the requested region
+- Preserves cached spaces/apps for orgs that still exist
+- Removes stale org entries from that region only
+- Adds newly discovered orgs with empty `spaces` until a targeted org, space, or full sync fills them in
+- Uses an isolated `CF_HOME`, so it does not clobber your interactive CF CLI target
+
+```bash
+cf-sync orgs ap10
+cf-sync orgs eu10 --verbose
+```
+
 ### 🧭 `cf-sync org <region> <org>`
 
 Refresh exactly one Cloud Foundry org and merge every refreshed space/app in that org back into the shared topology snapshot.
@@ -202,6 +218,7 @@ import {
   readStructureView,
   runSync,
   syncOrg,
+  syncRegionOrgs,
   syncSpace,
 } from "@saptools/cf-sync";
 
@@ -218,6 +235,14 @@ console.log(`${result.accessibleRegions.length} regions reachable`);
 const structure = await readStructure();
 const ap10 = structure ? findRegion(structure, "ap10") : undefined;
 console.log(`${ap10?.orgs.length ?? 0} orgs in ap10`);
+
+// Refresh only one region's org names without loading spaces/apps
+const ap10Orgs = await syncRegionOrgs({
+  regionKey: "ap10",
+  email: process.env["SAP_EMAIL"] ?? "",
+  password: process.env["SAP_PASSWORD"] ?? "",
+});
+console.log(ap10Orgs.orgNames.join(", "));
 
 // Partial / on-demand reads
 const view = await readStructureView();           // best-available full view

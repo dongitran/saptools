@@ -32,6 +32,12 @@ export interface PersistedOrgResult {
   readonly metadata?: SyncMetadata;
 }
 
+export interface PersistedRegionOrgsResult {
+  readonly region: RegionNode;
+  readonly orgNames: readonly string[];
+  readonly metadata?: SyncMetadata;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -121,6 +127,23 @@ function upsertOrg(orgs: readonly OrgNode[], org: OrgNode): readonly OrgNode[] {
   return [...orgs, org];
 }
 
+function mergeOrgListIntoRegion(
+  existing: RegionNode | undefined,
+  region: Region,
+  orgNames: readonly string[],
+): RegionNode {
+  const existingByName = new Map((existing?.orgs ?? []).map((org) => [org.name, org]));
+  const orgs = orgNames.map((orgName) => existingByName.get(orgName) ?? { name: orgName, spaces: [] });
+
+  return {
+    key: region.key,
+    label: existing?.label ?? region.label,
+    apiEndpoint: existing?.apiEndpoint ?? region.apiEndpoint,
+    accessible: true,
+    orgs,
+  };
+}
+
 function mergeSpaceIntoRegion(
   existing: RegionNode | undefined,
   region: Region,
@@ -187,6 +210,24 @@ function mergeOrgIntoStructure(
   };
 }
 
+function mergeOrgListIntoStructure(
+  current: CfStructure | undefined,
+  region: Region,
+  orgNames: readonly string[],
+  syncedAt: string,
+): CfStructure {
+  const existingRegion = current?.regions.find((candidate) => candidate.key === region.key);
+  const mergedRegion = mergeOrgListIntoRegion(existingRegion, region, orgNames);
+  const currentRegions = current?.regions ?? [];
+  const regions = existingRegion
+    ? currentRegions.map((candidate) => (candidate.key === region.key ? mergedRegion : candidate))
+    : [...currentRegions, mergedRegion];
+  return {
+    syncedAt,
+    regions,
+  };
+}
+
 function mergeSpaceIntoRuntimeState(
   current: RuntimeSyncState,
   region: Region,
@@ -211,6 +252,19 @@ function mergeOrgIntoRuntimeState(
     ...current,
     updatedAt,
     structure: mergeOrgIntoStructure(current.structure, region, org, updatedAt),
+  };
+}
+
+function mergeOrgListIntoRuntimeState(
+  current: RuntimeSyncState,
+  region: Region,
+  orgNames: readonly string[],
+  updatedAt: string,
+): RuntimeSyncState {
+  return {
+    ...current,
+    updatedAt,
+    structure: mergeOrgListIntoStructure(current.structure, region, orgNames, updatedAt),
   };
 }
 
@@ -241,6 +295,23 @@ function readPersistedOrg(structure: CfStructure, region: Region, orgName: strin
   return {
     region: persistedRegion,
     org: persistedOrg,
+  };
+}
+
+function readPersistedRegionOrgs(
+  structure: CfStructure,
+  region: Region,
+  orgNames: readonly string[],
+): PersistedRegionOrgsResult {
+  const persistedRegion = structure.regions.find((candidate) => candidate.key === region.key);
+
+  if (!persistedRegion) {
+    throw new Error(`Failed to persist org list for ${region.key}`);
+  }
+
+  return {
+    region: persistedRegion,
+    orgNames,
   };
 }
 
@@ -307,5 +378,44 @@ export async function persistOrg(region: Region, org: OrgNode): Promise<Persiste
     );
     await writeJsonFileAtomic(cfStructurePath(), nextStable);
     return readPersistedOrg(nextStable, region, org.name);
+  });
+}
+
+export async function persistRegionOrgs(
+  region: Region,
+  orgNames: readonly string[],
+): Promise<PersistedRegionOrgsResult> {
+  return await withStateLock(async () => {
+    const updatedAt = new Date().toISOString();
+    const runtimeState = await readJsonFile<RuntimeSyncState>(cfRuntimeStatePath());
+
+    if (runtimeState) {
+      const nextRuntime = mergeOrgListIntoRuntimeState(runtimeState, region, orgNames, updatedAt);
+      await writeJsonFileAtomic(cfRuntimeStatePath(), nextRuntime);
+
+      if (runtimeState.status !== "running") {
+        const nextStable = mergeOrgListIntoStructure(
+          await readJsonFile<CfStructure>(cfStructurePath()),
+          region,
+          orgNames,
+          updatedAt,
+        );
+        await writeJsonFileAtomic(cfStructurePath(), nextStable);
+      }
+
+      return {
+        ...readPersistedRegionOrgs(nextRuntime.structure, region, orgNames),
+        metadata: toSyncMetadata(nextRuntime),
+      };
+    }
+
+    const nextStable = mergeOrgListIntoStructure(
+      await readJsonFile<CfStructure>(cfStructurePath()),
+      region,
+      orgNames,
+      updatedAt,
+    );
+    await writeJsonFileAtomic(cfStructurePath(), nextStable);
+    return readPersistedRegionOrgs(nextStable, region, orgNames);
   });
 }
