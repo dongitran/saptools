@@ -30,6 +30,12 @@ const SCALE_OUT_REGIONS = [
     apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
   },
   {
+    key: "eu10-006",
+    parentKey: "eu10",
+    label: "Europe (Frankfurt) - AWS (eu10-006)",
+    apiEndpoint: "https://api.cf.eu10-006.hana.ondemand.com",
+  },
+  {
     key: "eu20-001",
     parentKey: "eu20",
     label: "Europe (Netherlands) - Azure (eu20-001)",
@@ -92,12 +98,13 @@ describe("regions", () => {
   it("keeps scale-out sub-regions immediately after their parent region", () => {
     const keys = getAllRegions().map((region) => region.key);
 
-    expect(keys.slice(keys.indexOf("eu10"), keys.indexOf("eu10") + 5)).toEqual([
+    expect(keys.slice(keys.indexOf("eu10"), keys.indexOf("eu10") + 6)).toEqual([
       "eu10",
       "eu10-002",
       "eu10-003",
       "eu10-004",
       "eu10-005",
+      "eu10-006",
     ]);
     expect(keys.slice(keys.indexOf("eu20"), keys.indexOf("eu20") + 3)).toEqual([
       "eu20",

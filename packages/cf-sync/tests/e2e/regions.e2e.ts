@@ -39,6 +39,10 @@ const SCALE_OUT_REGION_FIXTURES = [
     apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
   },
   {
+    key: "eu10-006",
+    apiEndpoint: "https://api.cf.eu10-006.hana.ondemand.com",
+  },
+  {
     key: "eu20-001",
     apiEndpoint: "https://api.cf.eu20-001.hana.ondemand.com",
   },
@@ -164,12 +168,13 @@ test.describe("Regions command", () => {
     const view = await runJsonCommand<RegionsViewPayload>(env, ["regions"]);
     const keys = regionKeys(view);
 
-    expect(keys.slice(keys.indexOf("eu10"), keys.indexOf("eu10") + 5)).toEqual([
+    expect(keys.slice(keys.indexOf("eu10"), keys.indexOf("eu10") + 6)).toEqual([
       "eu10",
       "eu10-002",
       "eu10-003",
       "eu10-004",
       "eu10-005",
+      "eu10-006",
     ]);
     expect(keys.slice(keys.indexOf("eu20"), keys.indexOf("eu20") + 3)).toEqual([
       "eu20",

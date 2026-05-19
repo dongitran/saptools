@@ -22,6 +22,7 @@ export const REGION_KEYS = [
   "eu10-003",
   "eu10-004",
   "eu10-005",
+  "eu10-006",
   "eu11",
   "eu13",
   "eu20",

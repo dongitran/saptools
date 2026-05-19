@@ -116,6 +116,11 @@ export const REGIONS: Readonly<Record<RegionKey, Region>> = {
     label: "Europe (Frankfurt) - AWS (eu10-005)",
     apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
   },
+  "eu10-006": {
+    key: "eu10-006",
+    label: "Europe (Frankfurt) - AWS (eu10-006)",
+    apiEndpoint: "https://api.cf.eu10-006.hana.ondemand.com",
+  },
   eu11: {
     key: "eu11",
     label: "Europe (Frankfurt) - AWS (eu11)",
