@@ -1,13 +1,14 @@
 {
   "name": "@saptools/bruno",
   "version": "0.3.4",
-  "description": "Smart runner for Bruno — CF-aware env metadata, automatic token injection, and shorthand paths",
+  "description": "Smart runner for Bruno \u2014 CF-aware env metadata, automatic token injection, and shorthand paths",
   "type": "module",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "bin": {
+    "bruno": "dist/cli.js",
     "saptools-bruno": "dist/cli.js"
   },
   "main": "./dist/index.js",

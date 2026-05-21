@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 export const SAPTOOLS_DIR_NAME = ".saptools";
 export const BRUNO_CONTEXT_FILENAME = "bruno-context.json";
+export const BRUNO_DIR_NAME = "bruno";
+export const BRUNO_CLI_STATE_FILENAME = "cli-state.json";
 
 export const REGION_FOLDER_PREFIX = "region__";
 export const ORG_FOLDER_PREFIX = "org__";
@@ -37,4 +39,12 @@ export function parsePrefixedName(
     return undefined;
   }
   return dirName.slice(prefix.length);
+}
+
+export function brunoDir(): string {
+  return join(saptoolsDir(), BRUNO_DIR_NAME);
+}
+
+export function brunoCliStatePath(): string {
+  return join(brunoDir(), BRUNO_CLI_STATE_FILENAME);
 }

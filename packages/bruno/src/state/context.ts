@@ -1,8 +1,13 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { brunoContextPath } from "../collection/paths.js";
+import { brunoCliStatePath, brunoContextPath } from "../collection/paths.js";
 import type { BrunoContext } from "../types.js";
+
+export interface BrunoCliState {
+  readonly rootDir: string;
+  readonly updatedAt: string;
+}
 
 export async function readContext(): Promise<BrunoContext | undefined> {
   try {
@@ -22,4 +27,27 @@ export async function writeContext(ctx: Omit<BrunoContext, "updatedAt">): Promis
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(updated, null, 2)}\n`, "utf8");
   return updated;
+}
+
+export async function readBrunoCliState(): Promise<BrunoCliState | undefined> {
+  try {
+    const raw = await readFile(brunoCliStatePath(), "utf8");
+    return JSON.parse(raw) as BrunoCliState;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+export async function writeBrunoCliState(input: { rootDir: string }): Promise<BrunoCliState> {
+  const next: BrunoCliState = {
+    rootDir: input.rootDir,
+    updatedAt: new Date().toISOString(),
+  };
+  const path = brunoCliStatePath();
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  return next;
 }

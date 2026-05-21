@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { readContext, writeContext } from "../../src/state/context.js";
+import { readBrunoCliState, readContext, writeBrunoCliState, writeContext } from "../../src/state/context.js";
 
 describe("bruno context", () => {
   let fakeHome: string;
@@ -39,5 +39,12 @@ describe("bruno context", () => {
     await mkdir(join(fakeHome, ".saptools"), { recursive: true });
     await writeFile(join(fakeHome, ".saptools", "bruno-context.json"), "{", "utf8");
     await expect(readContext()).rejects.toThrow();
+  });
+
+  it("round-trips cli root state", async () => {
+    const written = await writeBrunoCliState({ rootDir: "/tmp/bruno-root" });
+    expect(written.updatedAt).toMatch(/T/);
+    const read = await readBrunoCliState();
+    expect(read?.rootDir).toBe("/tmp/bruno-root");
   });
 });
