@@ -1,0 +1,71 @@
+{
+  "name": "@saptools/cf-hana",
+  "version": "0.1.0",
+  "description": "Run SQL against SAP HANA Cloud databases bound to a Cloud Foundry app by region/org/space/app selector",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "cf-hana": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "CHANGELOG.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:fake": "playwright test tests/e2e/cli.e2e.ts",
+    "test:e2e:live": "playwright test tests/e2e/live.e2e.ts"
+  },
+  "keywords": [
+    "sap",
+    "hana",
+    "s4hana",
+    "hana-cloud",
+    "sql",
+    "cloud-foundry",
+    "btp",
+    "database",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-hana"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-hana#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "@saptools/cf-sync": "^0.4.11",
+    "commander": "^13.0.0",
+    "hdb": "^0.19.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}

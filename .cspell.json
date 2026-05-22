@@ -103,7 +103,21 @@
     "ENOENT",
     "lookback",
     "millis",
-    "headerless"
+    "headerless",
+    "hdb",
+    "autocommit",
+    "hdi",
+    "saphana",
+    "hanacloud",
+    "nvarchar",
+    "varbinary",
+    "tinyint",
+    "shorttext",
+    "nstring",
+    "nclob",
+    "clob",
+    "unstub",
+    "scriptable"
   ],
   "ignorePaths": [
     "node_modules/**",

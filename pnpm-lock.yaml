@@ -142,6 +142,31 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@25.6.0)(yaml@2.8.3)
 
+  packages/cf-hana:
+    dependencies:
+      '@saptools/cf-sync':
+        specifier: ^0.4.11
+        version: link:../cf-sync
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+      hdb:
+        specifier: ^0.19.0
+        version: 0.19.12
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.59.1
+      '@vitest/coverage-v8':
+        specifier: ^3.0.0
+        version: 3.2.4(vitest@3.2.4(@types/node@25.6.0)(yaml@2.8.3))
+      tsup:
+        specifier: ^8.3.0
+        version: 8.5.1(postcss@8.5.10)(typescript@5.9.3)(yaml@2.8.3)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.6.0)(yaml@2.8.3)
+
   packages/cf-inspector:
     dependencies:
       '@saptools/cf-debugger':
@@ -218,28 +243,6 @@ importers:
     dependencies:
       '@saptools/cf-logs':
         specifier: ^0.1.1
-        version: link:../cf-logs
-      commander:
-        specifier: ^13.0.0
-        version: 13.1.0
-    devDependencies:
-      '@playwright/test':
-        specifier: ^1.50.0
-        version: 1.59.1
-      '@vitest/coverage-v8':
-        specifier: ^3.0.0
-        version: 3.2.4(vitest@3.2.4(@types/node@25.6.0)(yaml@2.8.3))
-      tsup:
-        specifier: ^8.3.0
-        version: 8.5.1(postcss@8.5.10)(typescript@5.9.3)(yaml@2.8.3)
-      vitest:
-        specifier: ^3.0.0
-        version: 3.2.4(@types/node@25.6.0)(yaml@2.8.3)
-
-  packages/cf-watch:
-    dependencies:
-      '@saptools/cf-logs':
-        specifier: workspace:*
         version: link:../cf-logs
       commander:
         specifier: ^13.0.0
@@ -2910,6 +2913,10 @@ packages:
     resolution: {integrity: sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==}
     engines: {node: '>= 0.4'}
 
+  hdb@0.19.12:
+    resolution: {integrity: sha512-vv+cjmvr6fNH/s0Q2zOZc4sEjMpSC0KuacFn8dp3L38qM3RA2LLeX70wWhZLESpwvwUf1pQkRfUhZeooFSmv3A==}
+    engines: {node: '>= 0.12'}
+
   hosted-git-info@7.0.2:
     resolution: {integrity: sha512-puUZAUKT5m8Zzvs72XWy3HtvVbTWljRE66cP60bxJzAqf2DgICo7lYTY2IHUmLnNpjYvw5bvmoHvPc0QO2a62w==}
     engines: {node: ^16.14.0 || >=18.0.0}
@@ -2936,6 +2943,10 @@ packages:
     resolution: {integrity: sha512-5gs5ytaNjBrh5Ow3zrvdUUY+0VxIuWVL4i9irt6friV+BqdCfmV11CQTWMiBYWHbXhco+J1kHfTOUkePhCDvMA==}
     engines: {node: '>=18'}
     hasBin: true
+
+  iconv-lite@0.4.24:
+    resolution: {integrity: sha512-v3MXnZAcvnywkTUEZomIActle7RXXeedOR31wwl7VlyoXO4Qi9arvSenNQWne1TcRwhCL1HwLI21bEqdpj8/rA==}
+    engines: {node: '>=0.10.0'}
 
   iconv-lite@0.6.3:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
@@ -7509,6 +7520,10 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
+  hdb@0.19.12:
+    dependencies:
+      iconv-lite: 0.4.24
+
   hosted-git-info@7.0.2:
     dependencies:
       lru-cache: 10.4.3
@@ -7539,6 +7554,10 @@ snapshots:
   human-signals@2.1.0: {}
 
   husky@9.1.7: {}
+
+  iconv-lite@0.4.24:
+    dependencies:
+      safer-buffer: 2.1.2
 
   iconv-lite@0.6.3:
     dependencies:
