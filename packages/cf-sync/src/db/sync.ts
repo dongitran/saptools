@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { CfExecContext } from "../cf/index.js";
 import { cfApi, cfAuth, cfEnv, cfTargetOrg, cfTargetSpace } from "../cf/index.js";
+import { withCfSession } from "../cf/session.js";
 import { getRegion } from "../config/regions.js";
 import { readRuntimeState, readStructure } from "../topology/structure.js";
 import type {
@@ -101,19 +99,6 @@ function groupTargetsBy<T extends string>(
     groups.set(key, [target]);
   }
   return [...groups.entries()].map(([key, groupedTargets]) => [key, groupedTargets] as const);
-}
-
-async function withCfSession<T>(work: (context: CfExecContext) => Promise<T>): Promise<T> {
-  const cfHome = await mkdtemp(join(tmpdir(), "saptools-db-sync-session-"));
-  const context: CfExecContext = {
-    env: { CF_HOME: cfHome },
-  };
-
-  try {
-    return await work(context);
-  } finally {
-    await rm(cfHome, { recursive: true, force: true });
-  }
 }
 
 function createDbEntry(

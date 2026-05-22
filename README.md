@@ -30,6 +30,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-tail`](./packages/cf-tail) | Tail every CF app in a space at once: parallel snapshots, multiplexed live stream, chronological merge, and cross-app filters | [![npm](https://img.shields.io/npm/v/@saptools/cf-tail.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-tail) |
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
 | [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
+| [`@saptools/cf-hana`](./packages/cf-hana) | Run SQL (SELECT/DML/DDL) against SAP HANA Cloud databases bound to a CF app by region/org/space/app selector | [![npm](https://img.shields.io/npm/v/@saptools/cf-hana.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-hana) |
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
 
 ---
@@ -132,6 +133,17 @@ Exports SAP HANA service bindings from VCAP_SERVICES into VS Code SQLTools conne
 
 Docs → [`packages/sqltools/README.md`](./packages/sqltools/README.md)
 
+### 🗄️ `@saptools/cf-hana`
+
+Runs SQL straight against the SAP HANA Cloud database bound to a CF app — pass only a `region/org/space/app` selector and query.
+
+- 🎯 selector-based connect; credentials resolved automatically via `@saptools/cf-sync`
+- ⚡ pooled connections and cache-first credentials for fast repeat queries
+- 🛡️ parameterized queries, transactions, read-only mode, and a destructive-statement guard
+- 🧭 table/column introspection, query-builder shorthands, and a `cf-hana` CLI
+
+Docs → [`packages/cf-hana/README.md`](./packages/cf-hana/README.md)
+
 ### 🔁 `@saptools/gitport`
 
 Ports one GitLab source MR into another repository as a Draft MR, preserving review context for clean ports and incoming auto-resolved conflicts.
@@ -185,6 +197,7 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-tail/
 │   ├── bruno/
 │   ├── sqltools/
+│   ├── cf-hana/
 │   └── gitport/
 ├── package.json
 ├── pnpm-workspace.yaml

@@ -1,14 +1,14 @@
 {
-  "name": "@saptools/cf-sync",
-  "version": "0.4.11",
-  "description": "Sync SAP BTP Cloud Foundry topology and HANA DB bindings to local package-managed JSON files",
+  "name": "@saptools/cf-hana",
+  "version": "0.1.0",
+  "description": "Run SQL against SAP HANA Cloud databases bound to a Cloud Foundry app by region/org/space/app selector",
   "type": "module",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "bin": {
-    "cf-sync": "dist/cli.js"
+    "cf-hana": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -28,16 +28,21 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
+    "lint": "eslint src tests",
     "test:unit": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:fake": "playwright test tests/e2e/db-sync.e2e.ts tests/e2e/runtime.e2e.ts tests/e2e/regions.e2e.ts tests/e2e/failures.e2e.ts",
-    "test:e2e:live": "playwright test tests/e2e/sync.e2e.ts"
+    "test:e2e:fake": "playwright test tests/e2e/cli.e2e.ts",
+    "test:e2e:live": "playwright test tests/e2e/live.e2e.ts"
   },
   "keywords": [
     "sap",
+    "hana",
+    "s4hana",
+    "hana-cloud",
+    "sql",
     "cloud-foundry",
     "btp",
+    "database",
     "cli",
     "saptools"
   ],
@@ -46,15 +51,16 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dongitran/saptools.git",
-    "directory": "packages/cf-sync"
+    "directory": "packages/cf-hana"
   },
-  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-sync#readme",
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-hana#readme",
   "bugs": {
     "url": "https://github.com/dongitran/saptools/issues"
   },
   "dependencies": {
+    "@saptools/cf-sync": "^0.4.11",
     "commander": "^13.0.0",
-    "ora": "^9.3.0"
+    "hdb": "^0.19.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
