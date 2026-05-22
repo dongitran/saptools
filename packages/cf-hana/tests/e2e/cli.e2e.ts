@@ -33,7 +33,7 @@ test("prints help that lists the commands", async () => {
 test("prints the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.1.0");
+  expect(result.stdout).toContain("0.1.1");
 });
 
 test("info prints resolved metadata without a database connection", async () => {
