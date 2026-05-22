@@ -117,7 +117,8 @@
     "nclob",
     "clob",
     "unstub",
-    "scriptable"
+    "scriptable",
+    "guids"
   ],
   "ignorePaths": [
     "node_modules/**",
