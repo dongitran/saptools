@@ -10,6 +10,8 @@ export {
   runDbSync,
 } from "./db/sync.js";
 export type { DbSyncOptions, DbSyncResult } from "./db/sync.js";
+export { fetchAppDbBindings } from "./db/fetch.js";
+export type { FetchAppDbBindingsOptions, FetchAppDbBindingsResult } from "./db/fetch.js";
 export * from "./topology/structure.js";
 export { getRegionView, runSync, syncOrg, syncRegionOrgs, syncSpace } from "./topology/sync.js";
 export type {

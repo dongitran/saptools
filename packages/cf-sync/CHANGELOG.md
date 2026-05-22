@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.11 - 2026-05-22
+
+- Added `fetchAppDbBindings()` to fetch a single app's HANA service bindings on demand, without persisting anything under `~/.saptools/` (no snapshot, lock, or history writes).
+- Extracted the ephemeral `CF_HOME` session helper into a shared `cf/session` module reused by both `runDbSync()` and `fetchAppDbBindings()`.
+- Added unit coverage for non-persisting DB binding fetches.
+
 ## 0.4.9 - 2026-05-13
 
 - Added `cf-sync orgs <region>` and `syncRegionOrgs()` to refresh only a region's org list without walking spaces or apps.
