@@ -6,6 +6,7 @@ export const CF_STRUCTURE_FILENAME = "cf-structure.json";
 export const CF_RUNTIME_STATE_FILENAME = "cf-sync-state.json";
 export const CF_SYNC_LOCK_FILENAME = "cf-sync.lock";
 export const CF_STATE_LOCK_FILENAME = "cf-sync-state.lock";
+export const CF_TARGETED_REFRESH_LOCK_FILENAME = "cf-targeted-refresh.lock";
 export const CF_SYNC_HISTORY_FILENAME = "cf-sync-history.jsonl";
 export const CF_DB_SNAPSHOT_FILENAME = "cf-db-bindings.json";
 export const CF_DB_RUNTIME_STATE_FILENAME = "cf-db-sync-state.json";
@@ -31,6 +32,10 @@ export function cfSyncLockPath(): string {
 
 export function cfStateLockPath(): string {
   return join(saptoolsDir(), CF_STATE_LOCK_FILENAME);
+}
+
+export function cfTargetedRefreshLockPath(): string {
+  return join(saptoolsDir(), CF_TARGETED_REFRESH_LOCK_FILENAME);
 }
 
 export function cfSyncHistoryPath(): string {

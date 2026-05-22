@@ -3,7 +3,12 @@ import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promis
 import type { FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { cfRuntimeStatePath, cfStateLockPath, cfStructurePath } from "../config/paths.js";
+import {
+  cfRuntimeStatePath,
+  cfStateLockPath,
+  cfStructurePath,
+  cfTargetedRefreshLockPath,
+} from "../config/paths.js";
 import type {
   CfStructure,
   OrgNode,
@@ -18,6 +23,7 @@ import { toSyncMetadata } from "./structure.js";
 
 const FILE_LOCK_POLL_MS = 50;
 const FILE_LOCK_TIMEOUT_MS = 10_000;
+const TARGETED_REFRESH_LOCK_TIMEOUT_MS = 15 * 60 * 1000;
 
 export interface PersistedSpaceResult {
   readonly region: RegionNode;
@@ -61,8 +67,8 @@ async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> 
   await rename(tempPath, path);
 }
 
-async function acquireFileLock(path: string): Promise<FileHandle> {
-  const deadline = Date.now() + FILE_LOCK_TIMEOUT_MS;
+async function acquireFileLock(path: string, timeoutMs: number): Promise<FileHandle> {
+  const deadline = Date.now() + timeoutMs;
   await mkdir(dirname(path), { recursive: true });
 
   for (;;) {
@@ -92,12 +98,26 @@ async function releaseFileLock(path: string, handle: FileHandle): Promise<void> 
 }
 
 async function withStateLock<T>(work: () => Promise<T>): Promise<T> {
-  const handle = await acquireFileLock(cfStateLockPath());
+  const handle = await acquireFileLock(cfStateLockPath(), FILE_LOCK_TIMEOUT_MS);
 
   try {
     return await work();
   } finally {
     await releaseFileLock(cfStateLockPath(), handle);
+  }
+}
+
+// Serializes targeted refreshes (cf-sync space/org/orgs) end to end so two
+// overlapping refreshes cannot each collect against a stale snapshot and then
+// overwrite one another's freshly persisted subtree.
+export async function withTargetedRefreshLock<T>(work: () => Promise<T>): Promise<T> {
+  const lockPath = cfTargetedRefreshLockPath();
+  const handle = await acquireFileLock(lockPath, TARGETED_REFRESH_LOCK_TIMEOUT_MS);
+
+  try {
+    return await work();
+  } finally {
+    await releaseFileLock(lockPath, handle);
   }
 }
 

@@ -8,7 +8,7 @@ import { cfApi, cfAuth, cfOrgs } from "../cf/index.js";
 import { getAllRegions } from "../config/regions.js";
 import type { Region, RegionKey, RegionNode, SyncHistoryEntry, SyncMetadata } from "../types.js";
 
-import { persistRegionOrgs } from "./space-sync-store.js";
+import { persistRegionOrgs, withTargetedRefreshLock } from "./space-sync-store.js";
 import { appendSyncHistory } from "./structure.js";
 
 export interface SyncRegionOrgsOptions {
@@ -101,8 +101,10 @@ export async function syncRegionOrgs(
 
   try {
     await recordHistory(ctx, "region_orgs_sync_requested", { regionKey: options.regionKey });
-    const orgNames = await collectRegionOrgNames(region, options.email, options.password, ctx);
-    const result = await persistRegionOrgs(region, orgNames);
+    const result = await withTargetedRefreshLock(async () => {
+      const orgNames = await collectRegionOrgNames(region, options.email, options.password, ctx);
+      return await persistRegionOrgs(region, orgNames);
+    });
     await recordHistory(ctx, "region_orgs_sync_completed", {
       regionKey: options.regionKey,
       orgCount: result.orgNames.length,

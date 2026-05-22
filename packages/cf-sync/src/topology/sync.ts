@@ -22,7 +22,7 @@ import type {
   SyncMetadata,
 } from "../types.js";
 
-import { persistOrg, persistSpace } from "./space-sync-store.js";
+import { persistOrg, persistSpace, withTargetedRefreshLock } from "./space-sync-store.js";
 import {
   appendSyncHistory,
   completeRuntimeState,
@@ -537,15 +537,17 @@ export async function syncSpace(options: SyncSpaceOptions): Promise<SyncSpaceRes
       orgName: options.orgName,
       spaceName: options.spaceName,
     });
-    const space = await collectSingleSpaceWithIsolatedSession(
-      region,
-      options.orgName,
-      options.spaceName,
-      options.email,
-      options.password,
-      ctx,
-    );
-    const result = await persistSpace(region, options.orgName, space);
+    const result = await withTargetedRefreshLock(async () => {
+      const space = await collectSingleSpaceWithIsolatedSession(
+        region,
+        options.orgName,
+        options.spaceName,
+        options.email,
+        options.password,
+        ctx,
+      );
+      return await persistSpace(region, options.orgName, space);
+    });
     await recordHistory(ctx, "space_sync_completed", {
       regionKey: options.regionKey,
       orgName: options.orgName,
@@ -598,14 +600,16 @@ export async function syncOrg(options: SyncOrgOptions): Promise<SyncOrgResult> {
       regionKey: options.regionKey,
       orgName: options.orgName,
     });
-    const org = await collectSingleOrgWithIsolatedSession(
-      region,
-      options.orgName,
-      options.email,
-      options.password,
-      ctx,
-    );
-    const result = await persistOrg(region, org);
+    const result = await withTargetedRefreshLock(async () => {
+      const org = await collectSingleOrgWithIsolatedSession(
+        region,
+        options.orgName,
+        options.email,
+        options.password,
+        ctx,
+      );
+      return await persistOrg(region, org);
+    });
     await recordHistory(ctx, "org_sync_completed", {
       regionKey: options.regionKey,
       orgName: options.orgName,

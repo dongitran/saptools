@@ -1405,6 +1405,64 @@ describe("syncSpace", () => {
       completedRegionKeys: ["ap10"],
     });
   });
+
+  it("serializes concurrent targeted space refreshes so the later refresh wins", async () => {
+    const firstCollectGate = createDeferred();
+    let appDetailsCalls = 0;
+    const cfAppDetails = vi.fn().mockImplementation(async () => {
+      appDetailsCalls += 1;
+      if (appDetailsCalls === 1) {
+        await firstCollectGate.promise;
+        return [{ name: "first-refresh-app" }];
+      }
+      return [{ name: "second-refresh-app" }];
+    });
+
+    vi.doMock("../../src/cf/index.js", () => ({
+      cfApi: vi.fn().mockResolvedValue(void 0),
+      cfAuth: vi.fn().mockResolvedValue(void 0),
+      cfOrgs: vi.fn(),
+      cfTargetOrg: vi.fn(),
+      cfTargetSpace: vi.fn().mockResolvedValue(void 0),
+      cfSpaces: vi.fn(),
+      cfAppDetails,
+    }));
+
+    const { syncSpace } = await import("../../src/sync.js");
+    const target = {
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+      email: "e",
+      password: "p",
+    } as const;
+
+    const firstRefresh = syncSpace(target);
+
+    for (;;) {
+      if (appDetailsCalls >= 1) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const secondRefresh = syncSpace(target);
+
+    // The second refresh must block on the targeted-refresh lock while the
+    // first is still collecting, so it cannot have collected anything yet.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(appDetailsCalls).toBe(1);
+
+    firstCollectGate.resolve();
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    expect(appDetailsCalls).toBe(2);
+
+    const { readStructure } = await import("../../src/structure.js");
+    const saved = await readStructure();
+    const apps = saved?.regions[0]?.orgs[0]?.spaces[0]?.apps.map((app) => app.name);
+    expect(apps).toEqual(["second-refresh-app"]);
+  });
 });
 
 describe("syncOrg", () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.12 - 2026-05-22
+
+- Fixed a lost-update race where two concurrent targeted refreshes (`cf-sync space`/`org`/`orgs`) could each collect against a stale topology snapshot and overwrite one another's freshly persisted subtree.
+- Added a dedicated targeted-refresh lock so `syncSpace()`, `syncOrg()`, and `syncRegionOrgs()` serialize collect-and-persist end to end without blocking full syncs or topology reads.
+- Added unit coverage proving concurrent targeted space refreshes are serialized.
+
 ## 0.4.11 - 2026-05-22
 
 - Added `fetchAppDbBindings()` to fetch a single app's HANA service bindings on demand, without persisting anything under `~/.saptools/` (no snapshot, lock, or history writes).
