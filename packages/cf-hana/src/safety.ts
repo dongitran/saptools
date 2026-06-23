@@ -28,12 +28,106 @@ export interface AutoLimitResult {
   readonly applied: boolean;
 }
 
-function stripStringLiterals(sql: string): string {
-  return sql.replace(/'(?:[^']|'')*'/g, "''");
+function skipQuotedText(sql: string, start: number): number {
+  const quote = sql[start];
+  let index = start + 1;
+  while (index < sql.length) {
+    if (sql[index] === quote) {
+      if (sql[index + 1] === quote) {
+        index += 2;
+        continue;
+      }
+      index += 1;
+      break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function skipLineComment(sql: string, start: number): number {
+  let index = start + 2;
+  while (index < sql.length && sql[index] !== "\n") {
+    index += 1;
+  }
+  return index;
+}
+
+function skipBlockComment(sql: string, start: number): number {
+  let index = start + 2;
+  while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) {
+    index += 1;
+  }
+  return Math.min(index + 2, sql.length);
+}
+
+function maskIgnoredSqlText(sql: string): string {
+  let masked = "";
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql[index];
+    if (char === "'" || char === '"') {
+      const end = skipQuotedText(sql, index);
+      masked += " ".repeat(end - index);
+      index = end;
+      continue;
+    }
+    if (char === "-" && sql[index + 1] === "-") {
+      const end = skipLineComment(sql, index);
+      masked += " ".repeat(end - index);
+      index = end;
+      continue;
+    }
+    if (char === "/" && sql[index + 1] === "*") {
+      const end = skipBlockComment(sql, index);
+      masked += " ".repeat(end - index);
+      index = end;
+      continue;
+    }
+    masked += char ?? "";
+    index += 1;
+  }
+  return masked;
 }
 
 function hasWhereClause(sql: string): boolean {
-  return /\bwhere\b/i.test(stripStringLiterals(sql));
+  return /\bwhere\b/i.test(maskIgnoredSqlText(sql));
+}
+
+function trailingLineCommentIndex(sql: string): number | undefined {
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql[index];
+    if (char === "'" || char === '"') {
+      index = skipQuotedText(sql, index);
+      continue;
+    }
+    if (char === "/" && sql[index + 1] === "*") {
+      index = skipBlockComment(sql, index);
+      continue;
+    }
+    if (char === "-" && sql[index + 1] === "-") {
+      const lineEnd = sql.indexOf("\n", index + 2);
+      if (lineEnd === -1 || sql.slice(lineEnd + 1).trim().length === 0) {
+        return index;
+      }
+      index = lineEnd + 1;
+      continue;
+    }
+    index += 1;
+  }
+  return undefined;
+}
+
+function appendLimit(sql: string, limit: number): string {
+  const trimmed = sql.replace(/[\s;]+$/, "");
+  const commentIndex = trailingLineCommentIndex(trimmed);
+  if (commentIndex === undefined) {
+    return `${trimmed} LIMIT ${String(limit)}`;
+  }
+  const beforeComment = trimmed.slice(0, commentIndex).replace(/[\s;]+$/, "");
+  const comment = trimmed.slice(commentIndex);
+  return `${beforeComment} LIMIT ${String(limit)} ${comment}`;
 }
 
 /** Inspect a statement's kind and whether it is destructive. */
@@ -56,12 +150,15 @@ export function inspectStatement(sql: string): StatementInspection {
 export function evaluateGuard(sql: string, config: GuardConfig): GuardDecision {
   const inspection = inspectStatement(sql);
 
-  if (config.readOnly && (inspection.kind === "dml" || inspection.kind === "ddl")) {
+  if (config.readOnly && inspection.kind !== "select") {
     return {
       allowed: false,
       destructive: inspection.destructive,
       violation: "read-only",
-      reason: `read-only mode blocks ${inspection.kind.toUpperCase()} statements`,
+      reason:
+        inspection.kind === "unknown"
+          ? "read-only mode only permits SELECT/WITH statements"
+          : `read-only mode blocks ${inspection.kind.toUpperCase()} statements`,
     };
   }
 
@@ -90,11 +187,10 @@ export function applyAutoLimit(sql: string, limit: number | false): AutoLimitRes
     return { sql, applied: false };
   }
 
-  const stripped = stripStringLiterals(sql);
+  const stripped = maskIgnoredSqlText(sql);
   if (/\blimit\b/i.test(stripped) || /\btop\s+\d/i.test(stripped)) {
     return { sql, applied: false };
   }
 
-  const trimmed = sql.replace(/[\s;]+$/, "");
-  return { sql: `${trimmed} LIMIT ${String(limit)}`, applied: true };
+  return { sql: appendLimit(sql, limit), applied: true };
 }

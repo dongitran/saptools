@@ -17,6 +17,12 @@ function flushMicrotasks(): Promise<void> {
   return Promise.resolve();
 }
 
+function waitForMicrotasks(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
 describe("ConnectionPool", () => {
   it("opens a connection on acquire and reuses it after release", async () => {
     const { driver, pool } = makePool();
@@ -90,6 +96,28 @@ describe("ConnectionPool", () => {
     driver.connectError = new Error("connect failed");
     await expect(pool.acquire()).rejects.toThrow("connect failed");
     expect(pool.size).toBe(0);
+  });
+
+  it("continues serving queued waiters after a replacement connection fails", async () => {
+    const { driver, pool } = makePool(undefined, { max: 1 });
+    const first = await pool.acquire();
+    const failed = pool.acquire();
+    const failedResult = failed.catch((error: unknown) => error);
+    const next = pool.acquire();
+
+    driver.connectErrors.push(new Error("connect failed"));
+    driver.connections[0]?.markClosed();
+    pool.release(first);
+
+    const error = await failedResult;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ message: "connect failed" });
+    await waitForMicrotasks();
+
+    const replacement = await next;
+    expect(replacement).not.toBe(first);
+    expect(driver.connectCount).toBe(3);
+    pool.release(replacement);
   });
 
   it("retires idle connections past the idle timeout", async () => {

@@ -37,11 +37,27 @@ function fail(message: string): never {
 }
 
 function parseIntOption(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed)) {
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) {
     throw new CfHanaError("CONFIG", `Expected an integer but received "${value}"`);
   }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new CfHanaError("CONFIG", `Expected a safe integer but received "${value}"`);
+  }
   return parsed;
+}
+
+function assertPositiveOption(name: string, value: number | undefined): void {
+  if (value !== undefined && value <= 0) {
+    throw new CfHanaError("CONFIG", `${name} must be a positive integer`);
+  }
+}
+
+function assertNonNegativeOption(name: string, value: number | undefined): void {
+  if (value !== undefined && value < 0) {
+    throw new CfHanaError("CONFIG", `${name} must be a non-negative integer`);
+  }
 }
 
 function collectParam(value: string, previous: readonly string[]): readonly string[] {
@@ -71,6 +87,10 @@ function parseQualifiedName(value: string): { readonly schema: string; readonly 
 }
 
 function toConnectOptions(opts: CliOptions): ConnectOptions {
+  assertPositiveOption("--limit", opts.limit);
+  assertPositiveOption("--timeout", opts.timeout);
+  assertNonNegativeOption("--binding-index", opts.bindingIndex);
+
   return {
     refresh: opts.refresh,
     role: parseRole(opts.role),

@@ -43,11 +43,11 @@ export async function seedCredentialsCache(home: string): Promise<void> {
     syncedAt: "2026-05-22T00:00:00.000Z",
     entries: [
       {
-        selector: "eu10/acme/dev/orders-srv",
+        selector: "eu10/acme/dev/orders-api",
         regionKey: "eu10",
         orgName: "acme",
         spaceName: "dev",
-        appName: "orders-srv",
+        appName: "orders-api",
         syncedAt: "2026-05-22T00:00:00.000Z",
         bindings: [
           {

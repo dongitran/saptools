@@ -2,6 +2,7 @@ import { readDbAppView } from "@saptools/cf-sync";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HanaClient } from "../../src/client.js";
+import type { ConnectionConfig } from "../../src/connection.js";
 import { ConnectionPool } from "../../src/pool.js";
 import { classifyStatement } from "../../src/statements.js";
 import type { HanaClientInfo } from "../../src/types.js";
@@ -16,8 +17,8 @@ vi.mock("@saptools/cf-sync", () => ({
 }));
 
 const SAMPLE_INFO: HanaClientInfo = {
-  selector: "eu10/acme/dev/orders-srv",
-  appName: "orders-srv",
+  selector: "eu10/acme/dev/orders-api",
+  appName: "orders-api",
   host: "hana.example.internal",
   schema: "APP_SCHEMA",
   role: "runtime",
@@ -41,9 +42,12 @@ const clientResponder: FakeResponder = (sql) => {
   return { affectedRows: 2 };
 };
 
-function makeClient(responder: FakeResponder = clientResponder) {
+function makeClient(
+  responder: FakeResponder = clientResponder,
+  overrides?: Partial<ConnectionConfig>,
+) {
   const driver = new FakeHanaDriver(responder);
-  const pool = new ConnectionPool(driver, sampleConnectionConfig());
+  const pool = new ConnectionPool(driver, sampleConnectionConfig(overrides));
   return { driver, client: new HanaClient(pool, SAMPLE_INFO) };
 }
 
@@ -96,6 +100,48 @@ describe("HanaClient", () => {
     ]);
   });
 
+  it("uses distinct statement names for concurrent explain calls", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(123);
+    const { driver, client } = makeClient();
+    await Promise.all([
+      client.explain("SELECT * FROM ORDERS"),
+      client.explain("SELECT * FROM ORDERS"),
+    ]);
+
+    const explainStatements = driver.connections
+      .flatMap((connection) => connection.execCalls)
+      .map((call) => call.sql)
+      .filter((sql) => sql.startsWith("EXPLAIN PLAN"));
+    const names = explainStatements.map((sql) => {
+      const match = /STATEMENT_NAME = '([^']+)'/.exec(sql);
+      return match?.[1] ?? "";
+    });
+
+    expect(new Set(names).size).toBe(2);
+    now.mockRestore();
+  });
+
+  it("explains a SELECT on a read-only client and still cleans up", async () => {
+    const { driver, client } = makeClient(clientResponder, { readOnly: true });
+    await expect(client.explain("SELECT * FROM ORDERS")).resolves.toMatchObject({
+      statement: "select",
+    });
+
+    const statements = driver.connections[0]?.execCalls.map((call) => call.sql) ?? [];
+    expect(statements.some((sql) => sql.startsWith("EXPLAIN PLAN"))).toBe(true);
+    expect(
+      statements.some((sql) => sql.startsWith("DELETE FROM EXPLAIN_PLAN_TABLE")),
+    ).toBe(true);
+  });
+
+  it("does not explain DML on a read-only client", async () => {
+    const { driver, client } = makeClient(clientResponder, { readOnly: true });
+    await expect(client.explain("DELETE FROM ORDERS WHERE ID = ?", [1])).rejects.toThrow(
+      /read-only/,
+    );
+    expect(driver.connections[0]?.execCalls).toHaveLength(0);
+  });
+
   it("commits a transaction on success", async () => {
     const { driver, client } = makeClient();
     const result = await client.transaction(async (tx) => {
@@ -117,7 +163,7 @@ describe("HanaClient", () => {
   it("connect() resolves credentials and builds a client", async () => {
     vi.mocked(readDbAppView).mockResolvedValue(sampleDbAppView([sampleBinding()]));
     vi.stubEnv("CF_HANA_DRIVER", "fake");
-    const client = await HanaClient.connect("orders-srv");
+    const client = await HanaClient.connect("orders-api");
     expect(client.info.driver).toBe("fake");
     expect(client.info.schema).toBe("APP_SCHEMA");
     expect(client.info.role).toBe("runtime");

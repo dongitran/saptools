@@ -95,7 +95,7 @@ class HdbConnection implements DriverConnection {
       const raw = await this.executeStatement(statement, params);
       return toExecResult(statement, raw);
     } finally {
-      statement.drop();
+      dropStatementQuietly(statement);
     }
   }
 
@@ -177,6 +177,14 @@ class HdbConnection implements DriverConnection {
   }
 }
 
+function dropStatementQuietly(statement: HdbStatement): void {
+  try {
+    statement.drop();
+  } catch {
+    // Best-effort cleanup; preserve the query result or original query error.
+  }
+}
+
 function openClient(client: HdbClient, timeoutMs: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -213,6 +221,23 @@ function openClient(client: HdbClient, timeoutMs: number): Promise<void> {
   });
 }
 
+async function closeClientQuietly(client: HdbClient): Promise<void> {
+  try {
+    await new Promise<void>((resolve) => {
+      client.disconnect(() => {
+        resolve();
+      });
+    });
+  } catch {
+    // Best-effort cleanup after a partially opened connection.
+  }
+  try {
+    client.close();
+  } catch {
+    // Best-effort cleanup after a partially opened connection.
+  }
+}
+
 function setCurrentSchema(client: HdbClient, schema: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     client.exec(`SET SCHEMA ${quoteIdentifier(schema)}`, (error) => {
@@ -235,7 +260,12 @@ async function connectHdb(params: DriverConnectParams): Promise<DriverConnection
     useTLS: true,
   });
   await openClient(client, params.connectTimeoutMs);
-  await setCurrentSchema(client, params.schema);
+  try {
+    await setCurrentSchema(client, params.schema);
+  } catch (error) {
+    await closeClientQuietly(client);
+    throw error;
+  }
   return new HdbConnection(client);
 }
 

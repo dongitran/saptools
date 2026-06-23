@@ -15,11 +15,11 @@ const mockReadDbAppView = vi.mocked(readDbAppView);
 const mockFetchAppDbBindings = vi.mocked(fetchAppDbBindings);
 
 const FETCHED = {
-  selector: "eu10/acme/dev/orders-srv",
+  selector: "eu10/acme/dev/orders-api",
   regionKey: "eu10",
   orgName: "acme",
   spaceName: "dev",
-  appName: "orders-srv",
+  appName: "orders-api",
 } as const;
 
 afterEach(() => {
@@ -30,7 +30,7 @@ afterEach(() => {
 describe("resolveAppBindings", () => {
   it("returns cached bindings on a cache hit", async () => {
     mockReadDbAppView.mockResolvedValue(sampleDbAppView([sampleBinding()]));
-    const resolved = await resolveAppBindings("orders-srv", {});
+    const resolved = await resolveAppBindings("orders-api", {});
     expect(resolved.source).toBe("cache");
     expect(resolved.bindings).toHaveLength(1);
     expect(mockFetchAppDbBindings).not.toHaveBeenCalled();
@@ -41,7 +41,7 @@ describe("resolveAppBindings", () => {
     mockFetchAppDbBindings.mockResolvedValue({ ...FETCHED, bindings: [sampleBinding()] });
     vi.stubEnv("SAP_EMAIL", "user@example.com");
     vi.stubEnv("SAP_PASSWORD", "secret");
-    const resolved = await resolveAppBindings("orders-srv", {});
+    const resolved = await resolveAppBindings("orders-api", {});
     expect(resolved.source).toBe("fresh");
     expect(mockFetchAppDbBindings).toHaveBeenCalledOnce();
   });
@@ -50,14 +50,14 @@ describe("resolveAppBindings", () => {
     mockReadDbAppView.mockResolvedValue(undefined);
     vi.stubEnv("SAP_EMAIL", " ");
     vi.stubEnv("SAP_PASSWORD", " ");
-    await expect(resolveAppBindings("orders-srv", {})).rejects.toBeInstanceOf(
+    await expect(resolveAppBindings("orders-api", {})).rejects.toBeInstanceOf(
       CredentialsNotFoundError,
     );
   });
 
   it("bypasses the cache when refresh is requested", async () => {
     mockFetchAppDbBindings.mockResolvedValue({ ...FETCHED, bindings: [sampleBinding()] });
-    const resolved = await resolveAppBindings("orders-srv", {
+    const resolved = await resolveAppBindings("orders-api", {
       refresh: true,
       email: "user@example.com",
       password: "secret",
@@ -70,7 +70,7 @@ describe("resolveAppBindings", () => {
     mockReadDbAppView.mockResolvedValue(undefined);
     mockFetchAppDbBindings.mockResolvedValue({ ...FETCHED, bindings: [] });
     await expect(
-      resolveAppBindings("orders-srv", { email: "user@example.com", password: "secret" }),
+      resolveAppBindings("orders-api", { email: "user@example.com", password: "secret" }),
     ).rejects.toBeInstanceOf(CredentialsNotFoundError);
   });
 });

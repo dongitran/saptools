@@ -44,7 +44,7 @@ driver is bundled as a dependency — there is no native build step.
 import { connect, query } from "@saptools/cf-hana";
 
 // Open a reusable, pooled client for one CF app's HANA database.
-const db = await connect("eu10/acme/dev/orders-srv");
+const db = await connect("eu10/acme/dev/orders-api");
 
 const open = await db.query("SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?", ["OPEN"]);
 console.log(open.rows);
@@ -58,16 +58,16 @@ await db.transaction(async (tx) => {
 await db.close();
 
 // One-shot: connect, run one query, close.
-const rows = await query("orders-srv", "SELECT COUNT(*) AS N FROM ORDERS");
+const rows = await query("orders-api", "SELECT COUNT(*) AS N FROM ORDERS");
 ```
 
 ## The selector
 
 Every entry point takes a selector as its first argument:
 
-- **Explicit** — `region/org/space/app` (e.g. `eu10/acme/dev/orders-srv`). Works
+- **Explicit** — `region/org/space/app` (e.g. `eu10/acme/dev/orders-api`). Works
   without any cached topology.
-- **Bare app name** — `orders-srv`. Resolved against the topology cached by
+- **Bare app name** — `orders-api`. Resolved against the topology cached by
   `cf-sync sync`; throws if the name is ambiguous across spaces.
 
 ## CLI
@@ -87,11 +87,11 @@ Common options: `--format <table|json|csv>`, `--refresh`, `--role <runtime|hdi>`
 accepts `--param <value>` (repeatable) to bind `?` placeholders.
 
 ```bash
-cf-hana query eu10/acme/dev/orders-srv "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
+cf-hana query eu10/acme/dev/orders-api "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
   --param OPEN --format json
-cf-hana tables orders-srv
-cf-hana columns orders-srv ORDERS_APP.ORDERS
-cf-hana ping eu10/acme/dev/orders-srv
+cf-hana tables orders-api
+cf-hana columns orders-api ORDERS_APP.ORDERS
+cf-hana ping eu10/acme/dev/orders-api
 ```
 
 ## Programmatic API

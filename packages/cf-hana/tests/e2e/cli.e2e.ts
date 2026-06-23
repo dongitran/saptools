@@ -6,7 +6,7 @@ import { expect, test } from "@playwright/test";
 
 import { runCli, seedCredentialsCache } from "./helpers.js";
 
-const SELECTOR = "eu10/acme/dev/orders-srv";
+const SELECTOR = "eu10/acme/dev/orders-api";
 
 let home: string;
 
@@ -23,33 +23,33 @@ function fakeEnv(): Record<string, string> {
   return { HOME: home, CF_HANA_DRIVER: "fake" };
 }
 
-test("prints help that lists the commands", async () => {
+test("User can view help that lists the commands", async () => {
   const result = await runCli(["--help"], fakeEnv());
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toContain("query");
   expect(result.stdout).toContain("tables");
 });
 
-test("prints the version", async () => {
+test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.1.1");
+  expect(result.stdout).toContain("0.1.2");
 });
 
-test("info prints resolved metadata without a database connection", async () => {
+test("User can inspect resolved connection metadata", async () => {
   const result = await runCli(["info", SELECTOR], fakeEnv());
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toContain("APP_SCHEMA");
-  expect(result.stdout).toContain("orders-srv");
+  expect(result.stdout).toContain("orders-api");
 });
 
-test("query runs a statement and prints a table", async () => {
+test("User can run a query and print a table", async () => {
   const result = await runCli(["query", SELECTOR, "SELECT 1 FROM DUMMY"], fakeEnv());
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toContain("1");
 });
 
-test("query supports JSON output", async () => {
+test("User can request JSON output", async () => {
   const result = await runCli(
     ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--format", "json"],
     fakeEnv(),
@@ -58,14 +58,32 @@ test("query supports JSON output", async () => {
   expect(JSON.parse(result.stdout)).toEqual([{ "1": 1 }]);
 });
 
-test("ping reports connectivity", async () => {
+test("User can ping the database", async () => {
   const result = await runCli(["ping", SELECTOR], fakeEnv());
   expect(result.exitCode).toBe(0);
   expect(result.stdout).toContain("OK");
 });
 
-test("fails with a non-zero exit code for an uncached app", async () => {
+test("User can see a clear failure for an uncached app", async () => {
   const result = await runCli(["info", "definitely-missing-app"], fakeEnv());
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("cf-hana");
+});
+
+test("User can see a clear failure for a non-integer limit", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--limit", "10abc"],
+    fakeEnv(),
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("Expected an integer");
+});
+
+test("User can see a clear failure for a non-positive timeout", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--timeout", "0"],
+    fakeEnv(),
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("positive integer");
 });

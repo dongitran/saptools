@@ -18,6 +18,10 @@ export interface ConnectionConfig {
   readonly autoLimit: number | false;
 }
 
+interface RunOptions {
+  readonly bypassSafety?: boolean;
+}
+
 async function withTimeout<T>(
   work: Promise<T>,
   timeoutMs: number,
@@ -81,6 +85,18 @@ export class Connection {
     return await this.run(sql, params ?? [], options ?? {});
   }
 
+  assertAllowed(sql: string, options?: QueryOptions): void {
+    this.evaluateSafety(sql, options ?? {});
+  }
+
+  async executeInternal(
+    sql: string,
+    params?: readonly SqlParam[],
+    options?: QueryOptions,
+  ): Promise<QueryResult> {
+    return await this.run(sql, params ?? [], options ?? {}, { bypassSafety: true });
+  }
+
   async setAutoCommit(enabled: boolean): Promise<void> {
     await this.driverConnection.setAutoCommit(enabled);
   }
@@ -105,22 +121,11 @@ export class Connection {
     sql: string,
     params: readonly SqlParam[],
     options: QueryOptions,
+    runOptions: RunOptions = {},
   ): Promise<QueryResult> {
     assertParamArity(sql, params);
-
-    const decision = evaluateGuard(sql, {
-      readOnly: this.config.readOnly,
-      allowDestructive: options.allowDestructive ?? this.config.allowDestructive,
-    });
-    if (!decision.allowed) {
-      if (decision.violation === "read-only") {
-        throw new ReadOnlyViolationError(
-          decision.reason ?? "read-only mode blocks this statement",
-        );
-      }
-      throw new DestructiveStatementError(
-        decision.reason ?? "destructive statement blocked",
-      );
+    if (runOptions.bypassSafety !== true) {
+      this.evaluateSafety(sql, options);
     }
 
     const kind = classifyStatement(sql);
@@ -155,5 +160,23 @@ export class Connection {
     } catch {
       // Best-effort close after a timeout; the connection is already unusable.
     }
+  }
+
+  private evaluateSafety(sql: string, options: QueryOptions): void {
+    const decision = evaluateGuard(sql, {
+      readOnly: this.config.readOnly,
+      allowDestructive: options.allowDestructive ?? this.config.allowDestructive,
+    });
+    if (decision.allowed) {
+      return;
+    }
+    if (decision.violation === "read-only") {
+      throw new ReadOnlyViolationError(
+        decision.reason ?? "read-only mode blocks this statement",
+      );
+    }
+    throw new DestructiveStatementError(
+      decision.reason ?? "destructive statement blocked",
+    );
   }
 }

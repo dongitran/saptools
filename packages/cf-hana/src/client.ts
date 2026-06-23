@@ -24,6 +24,13 @@ import type {
   TableInfo,
 } from "./types.js";
 
+let explainStatementCounter = 0;
+
+function nextExplainStatementName(): string {
+  explainStatementCounter = (explainStatementCounter + 1) % Number.MAX_SAFE_INTEGER;
+  return `cf_hana_${String(process.pid)}_${String(Date.now())}_${String(explainStatementCounter)}`;
+}
+
 /**
  * The high-level entry point: a pooled, reusable client for the HANA database
  * bound to a single Cloud Foundry app.
@@ -182,22 +189,37 @@ export class HanaClient {
   /** Return the HANA execution plan for a statement. */
   async explain(sql: string, params?: readonly SqlParam[]): Promise<QueryResult> {
     return await this.pool.withConnection(async (connection) => {
-      const statementName = `cf_hana_${String(Date.now())}`;
-      await connection.execute(
+      connection.assertAllowed(sql);
+      const statementName = nextExplainStatementName();
+      await connection.executeInternal(
         `EXPLAIN PLAN SET STATEMENT_NAME = '${statementName}' FOR ${sql}`,
         params,
       );
+      const cleanup = async (): Promise<void> => {
+        await connection.executeInternal(
+          "DELETE FROM EXPLAIN_PLAN_TABLE WHERE STATEMENT_NAME = ?",
+          [statementName],
+        );
+      };
+      let queryCompleted = false;
       try {
-        return await connection.query(
+        const result = await connection.query(
           "SELECT OPERATOR_NAME, TABLE_NAME, TABLE_TYPE, EXECUTION_ENGINE " +
             "FROM EXPLAIN_PLAN_TABLE WHERE STATEMENT_NAME = ? ORDER BY OPERATOR_ID",
           [statementName],
         );
-      } finally {
-        await connection.execute(
-          "DELETE FROM EXPLAIN_PLAN_TABLE WHERE STATEMENT_NAME = ?",
-          [statementName],
-        );
+        queryCompleted = true;
+        await cleanup();
+        return result;
+      } catch (error) {
+        if (!queryCompleted) {
+          try {
+            await cleanup();
+          } catch {
+            // Preserve the original explain-plan read error.
+          }
+        }
+        throw error;
       }
     });
   }

@@ -25,6 +25,13 @@ describe("inspectStatement", () => {
     expect(inspectStatement("DELETE FROM T WHERE ID = 2").destructive).toBe(false);
   });
 
+  it("ignores WHERE-like text in comments and quoted identifiers", () => {
+    expect(inspectStatement("DELETE FROM T -- where ID = 1").destructive).toBe(true);
+    expect(inspectStatement('UPDATE T SET X = 1 WHERE "where" = ?').destructive).toBe(false);
+    expect(inspectStatement('DELETE FROM T WHERE "not where" = ?').destructive).toBe(false);
+    expect(inspectStatement('DELETE FROM T "where"').destructive).toBe(true);
+  });
+
   it("treats SELECT as non-destructive", () => {
     expect(inspectStatement("SELECT * FROM T").destructive).toBe(false);
   });
@@ -43,6 +50,15 @@ describe("evaluateGuard", () => {
     const decision = evaluateGuard("INSERT INTO T VALUES (1)", {
       readOnly: true,
       allowDestructive: false,
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.violation).toBe("read-only");
+  });
+
+  it("blocks unknown statements in read-only mode", () => {
+    const decision = evaluateGuard("EXPLAIN PLAN FOR SELECT 1 FROM DUMMY", {
+      readOnly: true,
+      allowDestructive: true,
     });
     expect(decision.allowed).toBe(false);
     expect(decision.violation).toBe("read-only");
@@ -80,6 +96,20 @@ describe("applyAutoLimit", () => {
 
   it("does not touch a SELECT that already has a LIMIT", () => {
     expect(applyAutoLimit("SELECT * FROM T LIMIT 5", 100).applied).toBe(false);
+  });
+
+  it("ignores LIMIT-like text in comments and quoted identifiers", () => {
+    expect(applyAutoLimit('SELECT "limit" FROM T -- limit 5', 100)).toEqual({
+      sql: 'SELECT "limit" FROM T LIMIT 100 -- limit 5',
+      applied: true,
+    });
+  });
+
+  it("inserts LIMIT before a trailing line comment and removes a preceding semicolon", () => {
+    expect(applyAutoLimit("SELECT * FROM T; -- note", 100)).toEqual({
+      sql: "SELECT * FROM T LIMIT 100 -- note",
+      applied: true,
+    });
   });
 
   it("does not limit non-SELECT statements", () => {

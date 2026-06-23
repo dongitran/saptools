@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 - 2026-06-23
+
+- Harden connection pooling so queued callers continue after transient reconnect failures.
+- Preserve query results when HANA statement cleanup fails and close partially opened clients on schema setup errors.
+- Strengthen read-only and destructive-statement checks around comments, quoted identifiers, and unknown statements.
+- Improve `explain()` statement isolation, cleanup, and read-only behavior.
+- Validate CLI numeric options strictly and align E2E diagnostics with project defaults.
+
 ## 0.1.1 - 2026-05-22
 
 - Patch release to publish via npm trusted publishing after the manual `0.1.0` bootstrap.

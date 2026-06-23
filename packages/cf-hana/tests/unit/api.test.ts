@@ -22,18 +22,18 @@ afterEach(() => {
 
 describe("api", () => {
   it("connect() opens a reusable client", async () => {
-    const client = await connect("orders-srv");
-    expect(client.info.appName).toBe("orders-srv");
+    const client = await connect("orders-api");
+    expect(client.info.appName).toBe("orders-api");
     await client.close();
   });
 
   it("query() runs a one-shot query and closes the client", async () => {
-    const result = await query("orders-srv", "SELECT 1 FROM DUMMY");
+    const result = await query("orders-api", "SELECT 1 FROM DUMMY");
     expect(result.rows).toEqual([{ "1": 1 }]);
   });
 
   it("withConnection() runs work and closes the client afterwards", async () => {
-    const schema = await withConnection("orders-srv", (client) =>
+    const schema = await withConnection("orders-api", (client) =>
       Promise.resolve(client.info.schema),
     );
     expect(schema).toBe("APP_SCHEMA");

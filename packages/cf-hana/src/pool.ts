@@ -177,6 +177,7 @@ export class ConnectionPool {
         (error: unknown) => {
           this.created -= 1;
           waiter.reject(error);
+          this.servePendingWaiters();
         },
       );
     }
