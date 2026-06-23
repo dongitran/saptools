@@ -1,3 +1,5 @@
+import { buildWriteBackupPlan, writeSqlBackup } from "./backup.js";
+import type { SqlBackupRecord } from "./backup.js";
 import { buildCount, buildDelete, buildInsert, buildSelect, buildUpdate } from "./builder.js";
 import { listColumns, listSchemas, listTables } from "./catalog.js";
 import {
@@ -102,6 +104,33 @@ export class HanaClient {
     const result = await this.runExecute(sql, resolvedParams, options);
     await this.recordSqlHistory("execute", sql, resolvedParams, result);
     return result;
+  }
+
+  /** Back up rows matched by an UPDATE or DELETE before the caller runs it. */
+  async backupWriteStatement(
+    sql: string,
+    params?: readonly SqlParam[],
+    options?: QueryOptions,
+  ): Promise<SqlBackupRecord | undefined> {
+    const resolvedParams = params ?? [];
+    const plan = buildWriteBackupPlan(sql, resolvedParams);
+    if (plan === undefined) {
+      return undefined;
+    }
+
+    return await this.pool.withConnection(async (connection) => {
+      connection.assertAllowed(plan.statementSql, options);
+      const backupQueryOptions: QueryOptions = {
+        autoLimit: false,
+        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      };
+      const result = await connection.query(plan.selectSql, plan.selectParams, backupQueryOptions);
+      return await writeSqlBackup({
+        operation: plan.operation,
+        statementSql: plan.statementSql,
+        result,
+      });
+    });
   }
 
   /** Run a typed `SELECT` built from a spec. */

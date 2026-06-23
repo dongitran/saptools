@@ -8,6 +8,14 @@ export {
   buildSelect,
   buildUpdate,
 } from "./builder.js";
+export { buildWriteBackupPlan, cfHanaBackupRoot, writeSqlBackup } from "./backup.js";
+export type {
+  SqlBackupRecord,
+  SqlBackupWriteInput,
+  SqlBackupWriteOptions,
+  WriteBackupOperation,
+  WriteBackupPlan,
+} from "./backup.js";
 export { createDriver } from "./driver/index.js";
 export type {
   DriverConnectParams,

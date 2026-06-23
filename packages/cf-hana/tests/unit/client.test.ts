@@ -81,6 +81,23 @@ async function readHistoryEntries(): Promise<readonly Record<string, unknown>[]>
   }
 }
 
+async function readBackupCsvFiles(): Promise<readonly string[]> {
+  const backupRoot = join(tempHome, ".saptools", "cf-hana", "backups");
+  try {
+    const directories = await readdir(backupRoot);
+    const files: string[] = [];
+    for (const directory of directories) {
+      files.push(await readFile(join(backupRoot, directory, "backup.csv"), "utf8"));
+    }
+    return files;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
 beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), "cf-hana-client-"));
   vi.stubEnv("HOME", tempHome);
@@ -142,6 +159,59 @@ describe("HanaClient", () => {
         rowCount: 2,
       }),
     ]);
+  });
+
+  it("backs up rows for a write statement before callers execute it", async () => {
+    const { driver, client } = makeClient((sql, params) => {
+      if (sql === "SELECT * FROM ORDERS WHERE ID = ?") {
+        return {
+          rows: [{ ID: params[0] as number, STATUS: "OPEN" }],
+          columns: [
+            { name: "ID", typeName: "INTEGER" },
+            { name: "STATUS", typeName: "NVARCHAR" },
+          ],
+        };
+      }
+      return { affectedRows: 1 };
+    });
+
+    const backup = await client.backupWriteStatement(
+      "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+      ["DONE", 7],
+    );
+    await client.query("UPDATE ORDERS SET STATUS = ? WHERE ID = ?", ["DONE", 7]);
+
+    expect(backup?.rowCount).toBe(1);
+    expect(driver.connections[0]?.execCalls.map((call) => call.sql)).toEqual([
+      "SELECT * FROM ORDERS WHERE ID = ?",
+      "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+    ]);
+    await expect(readBackupCsvFiles()).resolves.toEqual(["ID,STATUS\r\n7,OPEN"]);
+  });
+
+  it("does not create a backup for non-write statements", async () => {
+    const { client } = makeClient();
+    await expect(client.backupWriteStatement("SELECT * FROM ORDERS")).resolves.toBeUndefined();
+    await expect(readBackupCsvFiles()).resolves.toEqual([]);
+  });
+
+  it("does not run the write when the backup SELECT fails", async () => {
+    const failure = new Error("backup read failed");
+    const { driver, client } = makeClient((sql) => {
+      if (sql === "SELECT * FROM ORDERS WHERE ID = ?") {
+        return { error: failure };
+      }
+      return { affectedRows: 1 };
+    });
+
+    await expect(
+      client.backupWriteStatement("DELETE FROM ORDERS WHERE ID = ?", [7]),
+    ).rejects.toThrow("backup read failed");
+
+    expect(driver.connections[0]?.execCalls.map((call) => call.sql)).toEqual([
+      "SELECT * FROM ORDERS WHERE ID = ?",
+    ]);
+    await expect(readBackupCsvFiles()).resolves.toEqual([]);
   });
 
   it("builds a SELECT via selectFrom", async () => {

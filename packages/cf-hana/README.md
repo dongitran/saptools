@@ -24,6 +24,8 @@ login on the hot path) and connections are pooled and reused within a process.
 - **Schema introspection** — list schemas, tables, and columns.
 - **Local SQL history** — direct SQL calls are appended to dated JSONL files
   under `~/.saptools/cf-hana/histories/` with five-day retention.
+- **Write backups** — CLI `UPDATE` and `DELETE` statements create a local CSV
+  backup of matching rows before the write runs.
 - **Safety guard** — opt-in read-only mode and a destructive-statement guard
   (blocks `DROP`/`TRUNCATE`/`ALTER` and unscoped `UPDATE`/`DELETE`).
 - **Typed results** — `query<TRow>()` returns typed rows.
@@ -86,11 +88,14 @@ cf-hana info    <selector>                  Print the resolved connection metada
 Common options: `--format <table|json|csv>`, `--refresh`, `--role <runtime|hdi>`,
 `--binding <name>` / `--binding-index <n>`, `--timeout <ms>`, `--read-only`,
 `--allow-destructive`, `--limit <n>`, `--no-auto-limit`. The `query` command also
-accepts `--param <value>` (repeatable) to bind `?` placeholders.
+accepts `--param <value>` (repeatable) to bind `?` placeholders and
+`--no-backup` to skip the default write backup.
 
 ```bash
 cf-hana query eu10/example-org/space-demo/app-demo "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
   --param OPEN --format json
+cf-hana query app-demo "UPDATE ORDERS SET STATUS = ? WHERE ID = ?" \
+  --param DONE --param 42 --format json
 cf-hana tables app-demo
 cf-hana columns app-demo ORDERS_APP.ORDERS
 cf-hana ping eu10/example-org/space-demo/app-demo
@@ -103,7 +108,7 @@ cf-hana ping eu10/example-org/space-demo/app-demo
 | `connect(selector, options?)` | Open a reusable, pooled `HanaClient`. |
 | `query(selector, sql, params?, options?)` | One-shot: connect, query, close. |
 | `withConnection(selector, work, options?)` | Run `work` with a client that auto-closes. |
-| `HanaClient` | `query`, `execute`, `selectFrom`, `count`, `insertInto`, `update`, `deleteFrom`, `transaction`, `listSchemas`, `listTables`, `listColumns`, `explain`, `close`. |
+| `HanaClient` | `query`, `execute`, `backupWriteStatement`, `selectFrom`, `count`, `insertInto`, `update`, `deleteFrom`, `transaction`, `listSchemas`, `listTables`, `listColumns`, `explain`, `close`. |
 | `createDriver`, `formatResult`, `build*` | Lower-level building blocks. |
 
 `ConnectOptions` highlights: `role` (`runtime` | `hdi`), `bindingName` /
@@ -140,6 +145,36 @@ credentials, certificates, and result rows are not stored.
 History retention runs opportunistically after each append and deletes dated
 history files older than five days. Helper-driven catalog SQL such as `tables`
 and `columns` is not recorded as user SQL history.
+
+## Write backups
+
+When `cf-hana query` receives an `UPDATE` or `DELETE`, it first builds and runs a
+matching `SELECT`:
+
+- `UPDATE <target> SET ... WHERE ...` becomes
+  `SELECT * FROM <target> WHERE ...`.
+- `DELETE FROM <target> WHERE ...` becomes
+  `SELECT * FROM <target> WHERE ...`.
+
+The backup is saved before the write runs:
+
+```text
+~/.saptools/cf-hana/backups/<timestamp>-<operation>-<hash>/
+  statement.sql
+  backup.csv
+```
+
+`statement.sql` contains the original write statement. `backup.csv` contains the
+rows returned by the derived `SELECT`. Backup folders are not deleted by
+`cf-hana`; clean them up manually when they are no longer needed. The backup path
+is printed to stderr so JSON and CSV stdout remain parseable.
+
+Use `--no-backup` when an external backup or transaction workflow already covers
+the write:
+
+```bash
+cf-hana query app-demo "DELETE FROM ORDERS WHERE ID = ?" --param 42 --no-backup
+```
 
 ## Safety
 

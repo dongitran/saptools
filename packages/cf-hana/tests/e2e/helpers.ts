@@ -95,3 +95,26 @@ export async function readHistoryEntries(
   }
   return entries;
 }
+
+export async function readBackupFiles(
+  home: string,
+): Promise<readonly { statement: string; csv: string }[]> {
+  const backupRoot = join(home, ".saptools", "cf-hana", "backups");
+  let directories: readonly string[];
+  try {
+    directories = await readdir(backupRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const backups: { statement: string; csv: string }[] = [];
+  for (const directory of [...directories].sort()) {
+    backups.push({
+      statement: await readFile(join(backupRoot, directory, "statement.sql"), "utf8"),
+      csv: await readFile(join(backupRoot, directory, "backup.csv"), "utf8"),
+    });
+  }
+  return backups;
+}

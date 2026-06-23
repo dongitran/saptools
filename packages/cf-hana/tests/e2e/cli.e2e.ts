@@ -4,7 +4,12 @@ import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
 
-import { readHistoryEntries, runCli, seedCredentialsCache } from "./helpers.js";
+import {
+  readBackupFiles,
+  readHistoryEntries,
+  runCli,
+  seedCredentialsCache,
+} from "./helpers.js";
 
 const SELECTOR = "eu10/example-org/space-demo/app-demo";
 
@@ -33,7 +38,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.1.3");
+  expect(result.stdout).toContain("0.1.4");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -86,6 +91,46 @@ test("User can run a query and keep local SQL history", async () => {
     }),
   ]);
   expect(JSON.stringify(history)).not.toContain("hidden-parameter-value");
+});
+
+test("User can back up rows before an UPDATE runs", async () => {
+  const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
+  const result = await runCli(
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    fakeEnv(),
+  );
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stderr).toContain("backup saved to");
+
+  await expect(readBackupFiles(home)).resolves.toEqual([
+    {
+      statement: `${sql}\n`,
+      csv: "ID,NAME\r\n1,sample-row\r\n2,second-row",
+    },
+  ]);
+});
+
+test("User can skip UPDATE backup explicitly", async () => {
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+      "--param",
+      "DONE",
+      "--param",
+      "7",
+      "--format",
+      "json",
+      "--no-backup",
+    ],
+    fakeEnv(),
+  );
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stderr).not.toContain("backup saved to");
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
 });
 
 test("User can ping the database", async () => {

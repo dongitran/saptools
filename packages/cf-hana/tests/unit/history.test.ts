@@ -19,7 +19,7 @@ function fixedNow(): Date {
 
 function sampleEntry(overrides: Partial<SqlHistoryEntryInput> = {}): SqlHistoryEntryInput {
   return {
-    version: "0.1.3",
+    version: "0.1.4",
     operation: "query",
     selector: "eu10/example-org/space-demo/app-demo",
     appName: "app-demo",

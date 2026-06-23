@@ -24,6 +24,7 @@ interface CliOptions {
   readonly timeout?: number;
   readonly limit?: number;
   readonly autoLimit: boolean;
+  readonly backup: boolean;
   readonly param?: readonly string[];
 }
 
@@ -151,7 +152,12 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
   const opts = command.opts<CliOptions>();
   const client = await connect(selector, toConnectOptions(opts));
   try {
-    const result = await client.query(sql, opts.param ?? []);
+    const params = opts.param ?? [];
+    const backup = opts.backup ? await client.backupWriteStatement(sql, params) : undefined;
+    if (backup !== undefined) {
+      process.stderr.write(`${CLI_NAME}: backup saved to ${backup.directory}\n`);
+    }
+    const result = await client.query(sql, params);
     print(formatResult(result, parseFormat(opts.format)));
   } finally {
     await client.close();
@@ -245,7 +251,8 @@ function buildProgram(): Command {
     program
       .command("query <selector> <sql>")
       .description("run a single SQL statement")
-      .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, []),
+      .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, [])
+      .option("--no-backup", "skip the local CSV backup before UPDATE or DELETE"),
   ).action(async (selector: string, sql: string, _options: unknown, command: Command) => {
     await runQuery(selector, sql, command);
   });
