@@ -9,6 +9,8 @@ description: Use when a task involves debugging a Node.js app on SAP BTP Cloud F
 
 Use the `cf-inspector` CLI to drive a Node.js V8 inspector over the Chrome DevTools Protocol without an IDE. Prefer it when a task needs runtime evidence from a SAP BTP Cloud Foundry Node.js app, such as breakpoint hits, variable values, scopes, stack frames, exceptions, or loaded script paths.
 
+If `cf-inspector` is missing, install it from `@saptools/cf-inspector`: `npm install -g @saptools/cf-inspector`.
+
 Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, exception values, and app environment data can contain tokens, user data, credentials, or business payloads. Redact before sharing outside the local task.
 
 ## First Steps

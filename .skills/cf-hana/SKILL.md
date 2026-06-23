@@ -9,6 +9,8 @@ description: Use when a task involves running SQL statements or inspecting schem
 
 Use the `cf-hana` CLI for SQL access to SAP HANA Cloud databases bound to SAP BTP Cloud Foundry apps, including S/4HANA extension workloads, through a `region/org/space/app` selector. Prefer cache-backed, read-only workflows when gathering evidence; run writes such as `UPDATE` only when the user explicitly asks for them.
 
+If `cf-hana` is missing, install it from `@saptools/cf-hana`: `npm install -g @saptools/cf-hana`.
+
 ## First Steps
 
 1. Identify whether the user wants to run SQL, inspect data, discover schemas/tables/columns, perform an explicit update, or debug access/connectivity.
