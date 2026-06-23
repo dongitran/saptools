@@ -1,23 +1,23 @@
 ---
 name: cf-inspector
-description: Use when working with @saptools/cf-inspector, the cf-inspector CLI, or Cloud Foundry Node.js inspector debugging. Helps agents choose snapshot, watch, log, exception, eval, list-scripts, or attach commands; use local inspector ports or CF auto-tunnel targets; capture runtime variables safely; troubleshoot path mapping; and modify or test packages/cf-inspector in this monorepo.
+description: Use when a task involves debugging a Node.js app on SAP BTP Cloud Foundry through remote inspector access, including setting breakpoints or logpoints, capturing variables/scopes/stacks, watching exceptions, evaluating runtime state, listing loaded scripts, opening CF tunnels, or troubleshooting breakpoint path mapping with the cf-inspector CLI.
 ---
 
 # CF Inspector
 
 ## Purpose
 
-Use `@saptools/cf-inspector` to drive a Node.js V8 inspector over the Chrome DevTools Protocol without an IDE. Prefer it when a task needs runtime evidence from a local `--inspect` process or a SAP BTP Cloud Foundry Node.js app reachable through `@saptools/cf-debugger`.
+Use the `cf-inspector` CLI to drive a Node.js V8 inspector over the Chrome DevTools Protocol without an IDE. Prefer it when a task needs runtime evidence from a SAP BTP Cloud Foundry Node.js app, such as breakpoint hits, variable values, scopes, stack frames, exceptions, or loaded script paths.
 
 Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, exception values, and app environment data can contain tokens, user data, credentials, or business payloads. Redact before sharing outside the local task.
 
 ## First Steps
 
-1. Identify whether the user wants to run the tool, explain usage, debug an app, or modify `packages/cf-inspector`.
-2. For code changes in this repo, follow repository AGENTS rules first: inspect files with `rg` and direct reads, update `implementation_plan.md` before edits, keep TypeScript strict, and run focused checks.
-3. Confirm the target:
+1. Identify whether the user wants a one-shot snapshot, continuous breakpoint watch, logpoint stream, exception capture, runtime evaluation, script listing, or connectivity check.
+2. Confirm the target:
    - Use `--port <number>` and optional `--host <host>` for an existing local inspector or tunnel.
    - Use all of `--region --org --space --app` for Cloud Foundry auto-tunnel.
+3. Use live inspector access when the task needs current runtime evidence and the target plus credentials are available. Ask only when the target, credentials, or side effects of pausing the app are unclear.
 4. Choose the narrowest command that answers the question.
 5. Prefer JSON output for agent workflows. Use `--no-json` only when the user asks for human-readable output.
 
@@ -94,12 +94,12 @@ For Cloud Foundry, provide the complete target and let `cf-inspector` open and d
 
 ```bash
 cf-inspector snapshot \
-  --region eu10 --org my-org --space dev --app my-srv \
+  --region eu10 --org example-org --space space-demo --app app-demo \
   --bp src/handler.ts:42 \
   --capture 'req.url, this.user'
 ```
 
-Do not run live CF commands unless the user requested it and required credentials such as `SAP_EMAIL` and `SAP_PASSWORD` are present. Never echo or persist credential values.
+Run live CF tunnel/debug commands directly when the task needs current runtime evidence and required credentials such as `SAP_EMAIL` and `SAP_PASSWORD` are already available. Never echo or persist credential values.
 
 ## Breakpoints And Mapping
 
@@ -178,52 +178,3 @@ Common `CfInspectorError.code` values:
 - `BREAKPOINT_NOT_HIT`: timeout while waiting for a matching pause.
 - `UNRELATED_PAUSE`: target paused elsewhere and strict mode was enabled.
 - `UNRELATED_PAUSE_TIMEOUT`: target stayed paused elsewhere until timeout.
-
-## Programmatic API
-
-Import from `@saptools/cf-inspector` for typed usage:
-
-```ts
-import {
-  captureSnapshot,
-  connectInspector,
-  evaluateOnFrame,
-  resume,
-  setBreakpoint,
-  waitForPause,
-} from "@saptools/cf-inspector";
-
-const session = await connectInspector({ port: 9229 });
-const bp = await setBreakpoint(session, { file: "src/handler.ts", line: 42 });
-const pause = await waitForPause(session, {
-  timeoutMs: 30_000,
-  breakpointIds: [bp.breakpointId],
-});
-const snapshot = await captureSnapshot(session, pause, {
-  captures: ["this.user"],
-  maxValueLength: 4096,
-});
-const topFrame = pause.callFrames[0];
-if (topFrame !== undefined) {
-  await evaluateOnFrame(session, topFrame.callFrameId, "this.user");
-}
-await resume(session);
-await session.dispose();
-```
-
-Use `evaluateGlobal` for runtime-global expressions, `listScripts` for loaded script URLs, `streamLogpoint` for non-pausing streams, `setPauseOnExceptions` plus `captureException` for exception workflows, and `openCfTunnel` when composing CF tunnel setup manually.
-
-## Package Map
-
-Read these files before modifying behavior:
-
-- `packages/cf-inspector/README.md`: user-facing CLI/API contract.
-- `packages/cf-inspector/src/cli/program.ts`: command registration and flags.
-- `packages/cf-inspector/src/cli/commands/*.ts`: per-command parsing and orchestration.
-- `packages/cf-inspector/src/cli/target.ts`: target resolution and CF tunnel lifecycle.
-- `packages/cf-inspector/src/pathMapper.ts`: breakpoint specs and URL regex mapping.
-- `packages/cf-inspector/src/inspector/*.ts`: CDP session, runtime, breakpoint, pause, and discovery primitives.
-- `packages/cf-inspector/src/snapshot/*.ts`: capture, object materialization, scopes, stack, values, and exceptions.
-- `packages/cf-inspector/src/logpoint/*.ts`: non-pausing logpoint condition and event stream handling.
-- `packages/cf-inspector/tests/unit/*.test.ts`: parser, CDP, path, snapshot, exception, and output coverage.
-- `packages/cf-inspector/tests/e2e/*.e2e.ts`: real local Node inspector behavior against fixture apps.
