@@ -5,13 +5,42 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import {
+  fakeTracePath,
   readBackupFiles,
+  readFakeTraceEntries,
   readHistoryEntries,
   runCli,
   seedCredentialsCache,
 } from "./helpers.js";
 
 const SELECTOR = "eu10/example-org/space-demo/app-demo";
+const BACKUP_CSV = "ID,NAME\r\n1,sample-row\r\n2,second-row";
+const COMPLEX_UPDATE_SQL = [
+  "/* complex update coverage */",
+  'UPDATE "ORDER SET" AS O',
+  "SET NOTE = ?,",
+  '    TOTAL = (SELECT COUNT(*) FROM "ITEM WHERE" I WHERE I.ORDER_ID = O.ID AND I.STATE = ?),',
+  "    LABEL = 'where SET' /* WHERE ignored */",
+  'WHERE O."ID" = ? AND O.STATUS IN (?, ?);',
+].join("\n");
+const COMPLEX_UPDATE_SELECT =
+  'SELECT * FROM "ORDER SET" AS O WHERE O."ID" = ? AND O.STATUS IN (?, ?)';
+const COMPLEX_DELETE_SQL = [
+  "/* complex delete coverage */",
+  'DELETE FROM "APP_SCHEMA"."ORDER WHERE"',
+  'WHERE "STATUS" = ?',
+  '  AND "ID" IN (',
+  '    SELECT "ORDER_ID" FROM "ORDER ITEMS" WHERE "TYPE" = ?',
+  "  )",
+  "  AND \"NOTE\" <> 'delete from where' /* WHERE ignored */;",
+].join("\n");
+const COMPLEX_DELETE_SELECT = [
+  'SELECT * FROM "APP_SCHEMA"."ORDER WHERE" WHERE "STATUS" = ?',
+  '  AND "ID" IN (',
+  '    SELECT "ORDER_ID" FROM "ORDER ITEMS" WHERE "TYPE" = ?',
+  "  )",
+  "  AND \"NOTE\" <> 'delete from where' /* WHERE ignored */",
+].join("\n");
 
 let home: string;
 
@@ -24,8 +53,12 @@ test.afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-function fakeEnv(): Record<string, string> {
-  return { HOME: home, CF_HANA_DRIVER: "fake" };
+function fakeEnv(trace = false): Record<string, string> {
+  return {
+    HOME: home,
+    CF_HANA_DRIVER: "fake",
+    ...(trace ? { CF_HANA_FAKE_TRACE_FILE: fakeTracePath(home) } : {}),
+  };
 }
 
 test("User can view help that lists the commands", async () => {
@@ -106,8 +139,138 @@ test("User can back up rows before an UPDATE runs", async () => {
   await expect(readBackupFiles(home)).resolves.toEqual([
     {
       statement: `${sql}\n`,
-      csv: "ID,NAME\r\n1,sample-row\r\n2,second-row",
+      csv: BACKUP_CSV,
     },
+  ]);
+});
+
+test("User can back up rows for a complex UPDATE before the write runs", async () => {
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      COMPLEX_UPDATE_SQL,
+      "--param",
+      "updated-note",
+      "--param",
+      "OPEN",
+      "--param",
+      "7",
+      "--param",
+      "READY",
+      "--param",
+      "PENDING",
+      "--format",
+      "json",
+    ],
+    fakeEnv(true),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stderr).toContain("backup saved to");
+  const trace = await readFakeTraceEntries(home);
+  expect(trace).toEqual([
+    { sql: COMPLEX_UPDATE_SELECT, paramCount: 3 },
+    { sql: COMPLEX_UPDATE_SQL, paramCount: 5 },
+  ]);
+  expect(JSON.stringify(trace)).not.toContain("updated-note");
+  await expect(readBackupFiles(home)).resolves.toEqual([
+    { statement: `${COMPLEX_UPDATE_SQL.slice(0, -1)}\n`, csv: BACKUP_CSV },
+  ]);
+});
+
+test("User can back up rows for a complex DELETE before the write runs", async () => {
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      COMPLEX_DELETE_SQL,
+      "--param",
+      "OPEN",
+      "--param",
+      "STANDARD",
+      "--format",
+      "json",
+    ],
+    fakeEnv(true),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stderr).toContain("backup saved to");
+  expect(await readFakeTraceEntries(home)).toEqual([
+    { sql: COMPLEX_DELETE_SELECT, paramCount: 2 },
+    { sql: COMPLEX_DELETE_SQL, paramCount: 2 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([
+    { statement: `${COMPLEX_DELETE_SQL.slice(0, -1)}\n`, csv: BACKUP_CSV },
+  ]);
+});
+
+test("User can back up all rows before an explicitly allowed unscoped UPDATE", async () => {
+  const sql = "UPDATE ORDERS SET STATUS = ?";
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      sql,
+      "--param",
+      "ARCHIVED",
+      "--allow-destructive",
+      "--format",
+      "json",
+    ],
+    fakeEnv(true),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stderr).toContain("backup saved to");
+  expect(await readFakeTraceEntries(home)).toEqual([
+    { sql: "SELECT * FROM ORDERS", paramCount: 0 },
+    { sql, paramCount: 1 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([
+    { statement: `${sql}\n`, csv: BACKUP_CSV },
+  ]);
+});
+
+test("User cannot run an unscoped DELETE before explicit approval", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "DELETE FROM ORDERS", "--format", "json"],
+    fakeEnv(true),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("destructive statement blocked");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User can back up all rows before an explicitly allowed unscoped DELETE", async () => {
+  const sql = "DELETE FROM ORDERS";
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      sql,
+      "--allow-destructive",
+      "--format",
+      "json",
+    ],
+    fakeEnv(true),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stderr).toContain("backup saved to");
+  expect(await readFakeTraceEntries(home)).toEqual([
+    { sql: "SELECT * FROM ORDERS", paramCount: 0 },
+    { sql, paramCount: 0 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([
+    { statement: `${sql}\n`, csv: BACKUP_CSV },
   ]);
 });
 

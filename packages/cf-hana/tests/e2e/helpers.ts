@@ -13,6 +13,54 @@ export interface CliResult {
   readonly exitCode: number;
 }
 
+export interface FakeTraceEntry {
+  readonly sql: string;
+  readonly paramCount: number;
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
+}
+
+export function fakeTracePath(home: string): string {
+  return join(home, "cf-hana-fake-trace.jsonl");
+}
+
+function isFakeTraceEntry(value: unknown): value is FakeTraceEntry {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return (
+    typeof Reflect.get(value, "sql") === "string" &&
+    Number.isInteger(Reflect.get(value, "paramCount"))
+  );
+}
+
+export async function readFakeTraceEntries(
+  home: string,
+): Promise<readonly FakeTraceEntry[]> {
+  let raw: string;
+  try {
+    raw = await readFile(fakeTracePath(home), "utf8");
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  }
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const parsed: unknown = JSON.parse(line);
+      if (!isFakeTraceEntry(parsed)) {
+        throw new Error("Invalid fake driver trace entry");
+      }
+      return parsed;
+    });
+}
+
 /** Spawn the built CLI and capture its output. */
 export function runCli(
   args: readonly string[],
@@ -104,7 +152,7 @@ export async function readBackupFiles(
   try {
     directories = await readdir(backupRoot);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (hasErrorCode(error, "ENOENT")) {
       return [];
     }
     throw error;

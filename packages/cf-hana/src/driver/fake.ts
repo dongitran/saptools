@@ -1,3 +1,6 @@
+import { appendFile } from "node:fs/promises";
+
+import { envName, readEnv } from "../config.js";
 import { classifyStatement } from "../statements.js";
 import type { SqlParam } from "../types.js";
 
@@ -41,11 +44,25 @@ function fakeExec(sql: string): DriverExecResult {
   return { rows: [], columns: [], affectedRows: 0 };
 }
 
+/** Opt-in fake-driver trace; parameter values stay out of test artifacts. */
+async function traceFakeExec(sql: string, params: readonly SqlParam[]): Promise<void> {
+  const tracePath = readEnv(envName("FAKE_TRACE_FILE"));
+  if (tracePath === undefined) {
+    return;
+  }
+  const entry = { sql, paramCount: params.length };
+  await appendFile(tracePath, `${JSON.stringify(entry)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
 class FakeConnection implements DriverConnection {
   private closed = false;
 
-  exec(sql: string, _params: readonly SqlParam[]): Promise<DriverExecResult> {
-    return Promise.resolve(fakeExec(sql));
+  async exec(sql: string, params: readonly SqlParam[]): Promise<DriverExecResult> {
+    await traceFakeExec(sql, params);
+    return fakeExec(sql);
   }
 
   setAutoCommit(_enabled: boolean): Promise<void> {
