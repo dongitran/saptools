@@ -152,7 +152,7 @@ export async function readBackupFiles(
   try {
     directories = await readdir(backupRoot);
   } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
+    if (hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ENOTDIR")) {
       return [];
     }
     throw error;

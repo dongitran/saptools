@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.6 - 2026-06-23
+
+- Expand fake-backed E2E coverage for complex `UPDATE` and `DELETE` backups,
+  including mixed-case keywords, comments, quoted identifiers, nested queries,
+  placeholder filtering, and unscoped writes.
+- Verify backup SELECT failures, write failures, filesystem failures, read-only
+  mode, malformed SQL, and parameter mismatches cannot bypass backup safety.
+- Add opt-in fake-driver statement tracing and deterministic failure injection
+  without recording parameter values.
+
 ## 0.1.5 - 2026-06-23
 
 - Remove the CLI `--no-backup` opt-out so `cf-hana query` always attempts a

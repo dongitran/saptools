@@ -16,6 +16,12 @@ import type {
  * smoke checks. Selected via `CF_HANA_DRIVER=fake`. It never opens a socket.
  */
 function fakeExec(sql: string): DriverExecResult {
+  const kind = classifyStatement(sql);
+  const forcedFailure = readEnv(envName("FAKE_FAIL_STATEMENT"))?.toLowerCase();
+  if (forcedFailure === kind) {
+    throw new Error(`fake driver forced ${kind.toUpperCase()} failure`);
+  }
+
   if (sql.toUpperCase().includes("DUMMY")) {
     return {
       rows: [{ "1": 1 }],
@@ -24,7 +30,6 @@ function fakeExec(sql: string): DriverExecResult {
     };
   }
 
-  const kind = classifyStatement(sql);
   if (kind === "select") {
     return {
       rows: [

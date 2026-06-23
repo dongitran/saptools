@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,31 +16,36 @@ import {
 const SELECTOR = "eu10/example-org/space-demo/app-demo";
 const BACKUP_CSV = "ID,NAME\r\n1,sample-row\r\n2,second-row";
 const COMPLEX_UPDATE_SQL = [
-  "/* complex update coverage */",
-  'UPDATE "ORDER SET" AS O',
-  "SET NOTE = ?,",
-  '    TOTAL = (SELECT COUNT(*) FROM "ITEM WHERE" I WHERE I.ORDER_ID = O.ID AND I.STATE = ?),',
-  "    LABEL = 'where SET' /* WHERE ignored */",
-  'WHERE O."ID" = ? AND O.STATUS IN (?, ?);',
+  "/* complex update coverage ? */",
+  'UpDaTe "ORDER? SET" AS O',
+  "SeT NOTE = ?, -- ignored ? WHERE SET",
+  '    TOTAL = (SELECT COUNT(*) FROM "ITEM? WHERE" I WHERE I.ORDER_ID = O.ID AND I.STATE = ?),',
+  "    LABEL = 'literal ? where SET' /* ignored ? WHERE */",
+  'wHeRe O."ID?" = ? AND O.STATUS IN (?, ?);',
 ].join("\n");
 const COMPLEX_UPDATE_SELECT =
-  'SELECT * FROM "ORDER SET" AS O WHERE O."ID" = ? AND O.STATUS IN (?, ?)';
+  'SELECT * FROM "ORDER? SET" AS O WHERE O."ID?" = ? AND O.STATUS IN (?, ?)';
 const COMPLEX_DELETE_SQL = [
-  "/* complex delete coverage */",
-  'DELETE FROM "APP_SCHEMA"."ORDER WHERE"',
-  'WHERE "STATUS" = ?',
+  "/* complex delete coverage ? */",
+  'DeLeTe FrOm "APP_SCHEMA"."ORDER? WHERE"',
+  'wHeRe "STATUS?" = ?',
   '  AND "ID" IN (',
-  '    SELECT "ORDER_ID" FROM "ORDER ITEMS" WHERE "TYPE" = ?',
-  "  )",
-  "  AND \"NOTE\" <> 'delete from where' /* WHERE ignored */;",
+  '    SeLeCt "ORDER_ID" FrOm "ORDER? ITEMS" WhErE "TYPE?" = ?',
+  "  ) -- ignored ? WHERE DELETE",
+  "  AND \"NOTE?\" <> 'literal ? delete from where' /* ignored ? WHERE */;",
 ].join("\n");
 const COMPLEX_DELETE_SELECT = [
-  'SELECT * FROM "APP_SCHEMA"."ORDER WHERE" WHERE "STATUS" = ?',
+  'SELECT * FROM "APP_SCHEMA"."ORDER? WHERE" WHERE "STATUS?" = ?',
   '  AND "ID" IN (',
-  '    SELECT "ORDER_ID" FROM "ORDER ITEMS" WHERE "TYPE" = ?',
-  "  )",
-  "  AND \"NOTE\" <> 'delete from where' /* WHERE ignored */",
+  '    SeLeCt "ORDER_ID" FrOm "ORDER? ITEMS" WhErE "TYPE?" = ?',
+  "  ) -- ignored ? WHERE DELETE",
+  "  AND \"NOTE?\" <> 'literal ? delete from where' /* ignored ? WHERE */",
 ].join("\n");
+
+interface FakeEnvOptions {
+  readonly trace?: boolean;
+  readonly failStatement?: "select" | "dml";
+}
 
 let home: string;
 
@@ -53,11 +58,14 @@ test.afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-function fakeEnv(trace = false): Record<string, string> {
+function fakeEnv(options: FakeEnvOptions = {}): Record<string, string> {
   return {
     HOME: home,
     CF_HANA_DRIVER: "fake",
-    ...(trace ? { CF_HANA_FAKE_TRACE_FILE: fakeTracePath(home) } : {}),
+    ...(options.trace ? { CF_HANA_FAKE_TRACE_FILE: fakeTracePath(home) } : {}),
+    ...(options.failStatement === undefined
+      ? {}
+      : { CF_HANA_FAKE_FAIL_STATEMENT: options.failStatement }),
   };
 }
 
@@ -71,7 +79,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.1.5");
+  expect(result.stdout).toContain("0.1.6");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -163,7 +171,7 @@ test("User can back up rows for a complex UPDATE before the write runs", async (
       "--format",
       "json",
     ],
-    fakeEnv(true),
+    fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
@@ -193,7 +201,7 @@ test("User can back up rows for a complex DELETE before the write runs", async (
       "--format",
       "json",
     ],
-    fakeEnv(true),
+    fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
@@ -221,7 +229,7 @@ test("User can back up all rows before an explicitly allowed unscoped UPDATE", a
       "--format",
       "json",
     ],
-    fakeEnv(true),
+    fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
@@ -239,7 +247,7 @@ test("User can back up all rows before an explicitly allowed unscoped UPDATE", a
 test("User cannot run an unscoped DELETE before explicit approval", async () => {
   const result = await runCli(
     ["query", SELECTOR, "DELETE FROM ORDERS", "--format", "json"],
-    fakeEnv(true),
+    fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(1);
@@ -259,7 +267,7 @@ test("User can back up all rows before an explicitly allowed unscoped DELETE", a
       "--format",
       "json",
     ],
-    fakeEnv(true),
+    fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
@@ -272,6 +280,118 @@ test("User can back up all rows before an explicitly allowed unscoped DELETE", a
   await expect(readBackupFiles(home)).resolves.toEqual([
     { statement: `${sql}\n`, csv: BACKUP_CSV },
   ]);
+});
+
+test("User cannot run an UPDATE when the backup SELECT fails", async () => {
+  const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
+  const result = await runCli(
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    fakeEnv({ trace: true, failStatement: "select" }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("fake driver forced SELECT failure");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([
+    { sql: "SELECT * FROM ORDERS WHERE ID = ?", paramCount: 1 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User keeps the backup when the UPDATE itself fails", async () => {
+  const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
+  const result = await runCli(
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    fakeEnv({ trace: true, failStatement: "dml" }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("fake driver forced DML failure");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([
+    { sql: "SELECT * FROM ORDERS WHERE ID = ?", paramCount: 1 },
+    { sql, paramCount: 2 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([
+    { statement: `${sql}\n`, csv: BACKUP_CSV },
+  ]);
+});
+
+test("User cannot run an UPDATE when the local backup cannot be written", async () => {
+  await writeFile(join(home, ".saptools", "cf-hana"), "blocked", "utf8");
+  const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
+  const result = await runCli(
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).not.toContain("backup saved to");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([
+    { sql: "SELECT * FROM ORDERS WHERE ID = ?", paramCount: 1 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User cannot run a scoped UPDATE in read-only mode", async () => {
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+      "--param",
+      "DONE",
+      "--param",
+      "7",
+      "--read-only",
+    ],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("read-only mode blocks DML");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User cannot run an UPDATE with a parameter-count mismatch", async () => {
+  const result = await runCli(
+    [
+      "query",
+      SELECTOR,
+      "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+      "--param",
+      "DONE",
+    ],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("expects 2 bound parameter");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User cannot run an UPDATE with an empty WHERE clause", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "UPDATE ORDERS SET STATUS = ? WHERE", "--param", "DONE"],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("non-empty WHERE clause");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User cannot run unsupported DELETE syntax", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "DELETE ORDERS WHERE ID = ?", "--param", "7"],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("DELETE FROM");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
 });
 
 test("User can see a clear failure for the removed backup opt-out", async () => {
