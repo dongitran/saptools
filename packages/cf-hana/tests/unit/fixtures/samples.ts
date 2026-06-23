@@ -52,11 +52,11 @@ export function sampleDbAppView(bindings: readonly AppDbBinding[]): DbAppView {
   return {
     source: "stable",
     entry: {
-      selector: "eu10/acme/dev/orders-api",
+      selector: "eu10/example-org/space-demo/app-demo",
       regionKey: "eu10",
-      orgName: "acme",
-      spaceName: "dev",
-      appName: "orders-api",
+      orgName: "example-org",
+      spaceName: "space-demo",
+      appName: "app-demo",
       syncedAt: "2026-05-22T00:00:00.000Z",
       bindings,
     },

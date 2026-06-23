@@ -1,5 +1,9 @@
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { readDbAppView } from "@saptools/cf-sync";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HanaClient } from "../../src/client.js";
 import type { ConnectionConfig } from "../../src/connection.js";
@@ -17,14 +21,16 @@ vi.mock("@saptools/cf-sync", () => ({
 }));
 
 const SAMPLE_INFO: HanaClientInfo = {
-  selector: "eu10/acme/dev/orders-api",
-  appName: "orders-api",
+  selector: "eu10/example-org/space-demo/app-demo",
+  appName: "app-demo",
   host: "hana.example.internal",
   schema: "APP_SCHEMA",
   role: "runtime",
   driver: "fake",
   credentialSource: "cache",
 };
+
+let tempHome: string;
 
 const clientResponder: FakeResponder = (sql) => {
   if (sql.includes("COUNT(*)")) {
@@ -51,9 +57,40 @@ function makeClient(
   return { driver, client: new HanaClient(pool, SAMPLE_INFO) };
 }
 
-afterEach(() => {
+async function readHistoryEntries(): Promise<readonly Record<string, unknown>[]> {
+  const historyDir = join(tempHome, ".saptools", "cf-hana", "histories");
+  try {
+    const files = await readdir(historyDir);
+    const entries: Record<string, unknown>[] = [];
+    for (const file of files) {
+      const raw = await readFile(join(historyDir, file), "utf8");
+      entries.push(
+        ...raw
+          .trim()
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as Record<string, unknown>),
+      );
+    }
+    return entries;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+beforeEach(async () => {
+  tempHome = await mkdtemp(join(tmpdir(), "cf-hana-client-"));
+  vi.stubEnv("HOME", tempHome);
+  vi.stubEnv("USERPROFILE", tempHome);
+});
+
+afterEach(async () => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
+  await rm(tempHome, { recursive: true, force: true });
 });
 
 describe("HanaClient", () => {
@@ -64,11 +101,47 @@ describe("HanaClient", () => {
     });
   });
 
+  it("records direct query history without parameter values", async () => {
+    const { client } = makeClient();
+    await client.query("SELECT * FROM ORDERS WHERE TOKEN = ?", [
+      "hidden-parameter-value",
+    ]);
+
+    const entries = await readHistoryEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      selector: "eu10/example-org/space-demo/app-demo",
+      appName: "app-demo",
+      schema: "APP_SCHEMA",
+      operation: "query",
+      statement: "select",
+      sql: "SELECT * FROM ORDERS WHERE TOKEN = ?",
+      paramCount: 1,
+      rowCount: 1,
+    });
+    expect(JSON.stringify(entries)).not.toContain("hidden-parameter-value");
+  });
+
   it("runs an execute statement", async () => {
     const { client } = makeClient();
     await expect(client.execute("INSERT INTO ORDERS VALUES (1)")).resolves.toMatchObject({
       rowCount: 2,
     });
+  });
+
+  it("records direct execute history", async () => {
+    const { client } = makeClient();
+    await client.execute("UPDATE ORDERS SET STATUS = ? WHERE ID = ?", ["DONE", 1]);
+
+    await expect(readHistoryEntries()).resolves.toEqual([
+      expect.objectContaining({
+        operation: "execute",
+        statement: "dml",
+        sql: "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+        paramCount: 2,
+        rowCount: 2,
+      }),
+    ]);
   });
 
   it("builds a SELECT via selectFrom", async () => {
@@ -98,6 +171,12 @@ describe("HanaClient", () => {
     await expect(client.listTables("APP_SCHEMA")).resolves.toEqual([
       { schema: "APP_SCHEMA", name: "ORDERS", type: "COLUMN TABLE", rowCount: undefined },
     ]);
+  });
+
+  it("does not record catalog helper SQL as user history", async () => {
+    const { client } = makeClient();
+    await client.listTables("APP_SCHEMA");
+    await expect(readHistoryEntries()).resolves.toEqual([]);
   });
 
   it("uses distinct statement names for concurrent explain calls", async () => {
@@ -163,7 +242,7 @@ describe("HanaClient", () => {
   it("connect() resolves credentials and builds a client", async () => {
     vi.mocked(readDbAppView).mockResolvedValue(sampleDbAppView([sampleBinding()]));
     vi.stubEnv("CF_HANA_DRIVER", "fake");
-    const client = await HanaClient.connect("orders-api");
+    const client = await HanaClient.connect("app-demo");
     expect(client.info.driver).toBe("fake");
     expect(client.info.schema).toBe("APP_SCHEMA");
     expect(client.info.role).toBe("runtime");

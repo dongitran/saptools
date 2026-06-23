@@ -1,5 +1,5 @@
 export const CLI_NAME = "cf-hana";
-export const CLI_VERSION = "0.1.2";
+export const CLI_VERSION = "0.1.3";
 export const ENV_PREFIX = "CF_HANA";
 
 export const DEFAULT_QUERY_TIMEOUT_MS = 30_000;

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,11 +43,11 @@ export async function seedCredentialsCache(home: string): Promise<void> {
     syncedAt: "2026-05-22T00:00:00.000Z",
     entries: [
       {
-        selector: "eu10/acme/dev/orders-api",
+        selector: "eu10/example-org/space-demo/app-demo",
         regionKey: "eu10",
-        orgName: "acme",
-        spaceName: "dev",
-        appName: "orders-api",
+        orgName: "example-org",
+        spaceName: "space-demo",
+        appName: "app-demo",
         syncedAt: "2026-05-22T00:00:00.000Z",
         bindings: [
           {
@@ -75,4 +75,23 @@ export async function seedCredentialsCache(home: string): Promise<void> {
     `${JSON.stringify(snapshot, null, 2)}\n`,
     "utf8",
   );
+}
+
+export async function readHistoryEntries(
+  home: string,
+): Promise<readonly Record<string, unknown>[]> {
+  const historyDir = join(home, ".saptools", "cf-hana", "histories");
+  const files = await readdir(historyDir);
+  const entries: Record<string, unknown>[] = [];
+  for (const file of files) {
+    const raw = await readFile(join(historyDir, file), "utf8");
+    entries.push(
+      ...raw
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+    );
+  }
+  return entries;
 }

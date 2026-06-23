@@ -2,12 +2,15 @@ import { buildCount, buildDelete, buildInsert, buildSelect, buildUpdate } from "
 import { listColumns, listSchemas, listTables } from "./catalog.js";
 import {
   DEFAULT_AUTO_LIMIT,
+  CLI_VERSION,
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_QUERY_TIMEOUT_MS,
 } from "./config.js";
 import type { ConnectionConfig } from "./connection.js";
 import { resolveAppBindings, selectBinding, toConnectionTarget } from "./credentials.js";
 import { createDriver } from "./driver/index.js";
+import { appendSqlHistory } from "./history.js";
+import type { SqlHistoryOperation } from "./history.js";
 import { ConnectionPool } from "./pool.js";
 import { Transaction } from "./transaction.js";
 import type {
@@ -83,9 +86,10 @@ export class HanaClient {
     params?: readonly SqlParam[],
     options?: QueryOptions,
   ): Promise<QueryResult<TRow>> {
-    return await this.pool.withConnection((connection) =>
-      connection.query<TRow>(sql, params, options),
-    );
+    const resolvedParams = params ?? [];
+    const result = await this.runQuery<TRow>(sql, resolvedParams, options);
+    await this.recordSqlHistory("query", sql, resolvedParams, result);
+    return result;
   }
 
   /** Run a DML/DDL statement and return its affected-row count. */
@@ -94,21 +98,22 @@ export class HanaClient {
     params?: readonly SqlParam[],
     options?: QueryOptions,
   ): Promise<QueryResult> {
-    return await this.pool.withConnection((connection) =>
-      connection.execute(sql, params, options),
-    );
+    const resolvedParams = params ?? [];
+    const result = await this.runExecute(sql, resolvedParams, options);
+    await this.recordSqlHistory("execute", sql, resolvedParams, result);
+    return result;
   }
 
   /** Run a typed `SELECT` built from a spec. */
   async selectFrom<TRow = QueryRow>(spec: SelectSpec): Promise<QueryResult<TRow>> {
     const built = buildSelect(spec);
-    return await this.query<TRow>(built.sql, built.params);
+    return await this.runQuery<TRow>(built.sql, built.params);
   }
 
   /** Count rows in a table, optionally filtered. */
   async count(spec: Pick<SelectSpec, "schema" | "table" | "where">): Promise<number> {
     const built = buildCount(spec);
-    const result = await this.query<{ COUNT: number }>(built.sql, built.params);
+    const result = await this.runQuery<{ COUNT: number }>(built.sql, built.params);
     return result.rows[0]?.COUNT ?? 0;
   }
 
@@ -119,7 +124,7 @@ export class HanaClient {
     values: Readonly<Record<string, SqlParam>>,
   ): Promise<QueryResult> {
     const built = buildInsert(schema, table, values);
-    return await this.execute(built.sql, built.params);
+    return await this.runExecute(built.sql, built.params);
   }
 
   /** Update rows matching a non-empty `where` filter. */
@@ -130,7 +135,7 @@ export class HanaClient {
     where: Readonly<Record<string, SqlParam>>,
   ): Promise<QueryResult> {
     const built = buildUpdate(schema, table, values, where);
-    return await this.execute(built.sql, built.params);
+    return await this.runExecute(built.sql, built.params);
   }
 
   /** Delete rows matching a non-empty `where` filter. */
@@ -140,7 +145,7 @@ export class HanaClient {
     where: Readonly<Record<string, SqlParam>>,
   ): Promise<QueryResult> {
     const built = buildDelete(schema, table, where);
-    return await this.execute(built.sql, built.params);
+    return await this.runExecute(built.sql, built.params);
   }
 
   /** Run `work` inside a transaction, auto-committing on success. */
@@ -227,5 +232,51 @@ export class HanaClient {
   /** Close every pooled connection. The client must not be used afterwards. */
   async close(): Promise<void> {
     await this.pool.drain();
+  }
+
+  private async runQuery<TRow = QueryRow>(
+    sql: string,
+    params: readonly SqlParam[],
+    options?: QueryOptions,
+  ): Promise<QueryResult<TRow>> {
+    return await this.pool.withConnection((connection) =>
+      connection.query<TRow>(sql, params, options),
+    );
+  }
+
+  private async runExecute(
+    sql: string,
+    params: readonly SqlParam[],
+    options?: QueryOptions,
+  ): Promise<QueryResult> {
+    return await this.pool.withConnection((connection) =>
+      connection.execute(sql, params, options),
+    );
+  }
+
+  private async recordSqlHistory<TRow>(
+    operation: SqlHistoryOperation,
+    sql: string,
+    params: readonly SqlParam[],
+    result: QueryResult<TRow>,
+  ): Promise<void> {
+    try {
+      await appendSqlHistory({
+        version: CLI_VERSION,
+        operation,
+        selector: this.info.selector,
+        appName: this.info.appName,
+        schema: this.info.schema,
+        role: this.info.role,
+        statement: result.statement,
+        sql,
+        paramCount: params.length,
+        rowCount: result.rowCount,
+        truncated: result.truncated,
+        elapsedMs: result.elapsedMs,
+      });
+    } catch {
+      // History is diagnostic local state; never fail a successful SQL statement.
+    }
   }
 }

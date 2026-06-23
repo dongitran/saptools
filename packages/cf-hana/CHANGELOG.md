@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 - 2026-06-23
+
+- Add local SQL history for successful direct `query` and `execute` calls under
+  `~/.saptools/cf-hana/histories/YYYY-MM-DD.jsonl`.
+- Rotate SQL history with five-day retention and keep parameter values,
+  credentials, certificates, and result rows out of the history file.
+- Keep helper-driven catalog SQL out of user SQL history and document the new
+  local state behavior.
+
 ## 0.1.2 - 2026-06-23
 
 - Harden connection pooling so queued callers continue after transient reconnect failures.

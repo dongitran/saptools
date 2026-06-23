@@ -22,6 +22,8 @@ login on the hot path) and connections are pooled and reused within a process.
 - **Query-builder shorthands** — `selectFrom`, `count`, `insertInto`, `update`,
   `deleteFrom` — query a table by name without writing SQL.
 - **Schema introspection** — list schemas, tables, and columns.
+- **Local SQL history** — direct SQL calls are appended to dated JSONL files
+  under `~/.saptools/cf-hana/histories/` with five-day retention.
 - **Safety guard** — opt-in read-only mode and a destructive-statement guard
   (blocks `DROP`/`TRUNCATE`/`ALTER` and unscoped `UPDATE`/`DELETE`).
 - **Typed results** — `query<TRow>()` returns typed rows.
@@ -44,7 +46,7 @@ driver is bundled as a dependency — there is no native build step.
 import { connect, query } from "@saptools/cf-hana";
 
 // Open a reusable, pooled client for one CF app's HANA database.
-const db = await connect("eu10/acme/dev/orders-api");
+const db = await connect("eu10/example-org/space-demo/app-demo");
 
 const open = await db.query("SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?", ["OPEN"]);
 console.log(open.rows);
@@ -58,16 +60,16 @@ await db.transaction(async (tx) => {
 await db.close();
 
 // One-shot: connect, run one query, close.
-const rows = await query("orders-api", "SELECT COUNT(*) AS N FROM ORDERS");
+const rows = await query("app-demo", "SELECT COUNT(*) AS N FROM ORDERS");
 ```
 
 ## The selector
 
 Every entry point takes a selector as its first argument:
 
-- **Explicit** — `region/org/space/app` (e.g. `eu10/acme/dev/orders-api`). Works
-  without any cached topology.
-- **Bare app name** — `orders-api`. Resolved against the topology cached by
+- **Explicit** — `region/org/space/app` (e.g.
+  `eu10/example-org/space-demo/app-demo`). Works without any cached topology.
+- **Bare app name** — `app-demo`. Resolved against the topology cached by
   `cf-sync sync`; throws if the name is ambiguous across spaces.
 
 ## CLI
@@ -87,11 +89,11 @@ Common options: `--format <table|json|csv>`, `--refresh`, `--role <runtime|hdi>`
 accepts `--param <value>` (repeatable) to bind `?` placeholders.
 
 ```bash
-cf-hana query eu10/acme/dev/orders-api "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
+cf-hana query eu10/example-org/space-demo/app-demo "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
   --param OPEN --format json
-cf-hana tables orders-api
-cf-hana columns orders-api ORDERS_APP.ORDERS
-cf-hana ping eu10/acme/dev/orders-api
+cf-hana tables app-demo
+cf-hana columns app-demo ORDERS_APP.ORDERS
+cf-hana ping eu10/example-org/space-demo/app-demo
 ```
 
 ## Programmatic API
@@ -117,10 +119,27 @@ Credentials are resolved **cache-first**:
    live from Cloud Foundry. The live fetch needs `SAP_EMAIL` and `SAP_PASSWORD`
    (or the `email` / `password` options) and never persists anything to disk.
 
-`cf-hana` itself writes nothing under `~/.saptools/` — it only reads what
+Credential resolution writes nothing under `~/.saptools/` — it only reads what
 `cf-sync` cached. The connection pool is in-process and in-memory only, so it is
 safe to run many `cf-hana` processes in parallel and alongside any `cf-sync`
 command.
+
+## SQL history
+
+Successful direct SQL calls are appended to daily JSONL files:
+
+```text
+~/.saptools/cf-hana/histories/YYYY-MM-DD.jsonl
+```
+
+Each entry includes the timestamp, package version, selector, app name, schema,
+role, operation (`query` or `execute`), statement kind, SQL text, parameter
+count, row count, truncation flag, and elapsed time. Parameter values,
+credentials, certificates, and result rows are not stored.
+
+History retention runs opportunistically after each append and deletes dated
+history files older than five days. Helper-driven catalog SQL such as `tables`
+and `columns` is not recorded as user SQL history.
 
 ## Safety
 
