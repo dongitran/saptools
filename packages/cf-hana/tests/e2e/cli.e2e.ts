@@ -38,7 +38,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.1.4");
+  expect(result.stdout).toContain("0.1.5");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -111,7 +111,7 @@ test("User can back up rows before an UPDATE runs", async () => {
   ]);
 });
 
-test("User can skip UPDATE backup explicitly", async () => {
+test("User can see a clear failure for the removed backup opt-out", async () => {
   const result = await runCli(
     [
       "query",
@@ -127,9 +127,8 @@ test("User can skip UPDATE backup explicitly", async () => {
     ],
     fakeEnv(),
   );
-  expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([]);
-  expect(result.stderr).not.toContain("backup saved to");
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("unknown option '--no-backup'");
   await expect(readBackupFiles(home)).resolves.toEqual([]);
 });
 

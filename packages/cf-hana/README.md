@@ -88,8 +88,8 @@ cf-hana info    <selector>                  Print the resolved connection metada
 Common options: `--format <table|json|csv>`, `--refresh`, `--role <runtime|hdi>`,
 `--binding <name>` / `--binding-index <n>`, `--timeout <ms>`, `--read-only`,
 `--allow-destructive`, `--limit <n>`, `--no-auto-limit`. The `query` command also
-accepts `--param <value>` (repeatable) to bind `?` placeholders and
-`--no-backup` to skip the default write backup.
+accepts `--param <value>` (repeatable) to bind `?` placeholders. CLI `UPDATE`
+and `DELETE` statements are backed up automatically before the write runs.
 
 ```bash
 cf-hana query eu10/example-org/space-demo/app-demo "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
@@ -168,13 +168,6 @@ The backup is saved before the write runs:
 rows returned by the derived `SELECT`. Backup folders are not deleted by
 `cf-hana`; clean them up manually when they are no longer needed. The backup path
 is printed to stderr so JSON and CSV stdout remain parseable.
-
-Use `--no-backup` when an external backup or transaction workflow already covers
-the write:
-
-```bash
-cf-hana query app-demo "DELETE FROM ORDERS WHERE ID = ?" --param 42 --no-backup
-```
 
 ## Safety
 

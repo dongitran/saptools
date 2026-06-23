@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 - 2026-06-23
+
+- Remove the CLI `--no-backup` opt-out so `cf-hana query` always attempts a
+  local backup before running `UPDATE` or `DELETE`.
+- Keep backup paths on stderr and keep stdout parseable for table, JSON, and CSV
+  output.
+
 ## 0.1.4 - 2026-06-23
 
 - Add automatic local CSV backups before CLI `query` runs an `UPDATE` or
@@ -7,7 +14,7 @@
 - Derive the backup `SELECT` from the write target and top-level `WHERE`
   clause, preserving only the WHERE parameters for `UPDATE` statements.
 - Save each backup in its own non-expiring folder with `statement.sql` and
-  `backup.csv`, and add `--no-backup` for explicit CLI opt-out.
+  `backup.csv`.
 
 ## 0.1.3 - 2026-06-23
 
