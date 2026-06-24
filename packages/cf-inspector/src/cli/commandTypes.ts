@@ -43,6 +43,7 @@ export interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly keepPaused?: boolean;
   readonly failOnUnmatchedPause?: boolean;
   readonly includeScopes?: boolean;
+  readonly quiet?: boolean;
 }
 
 export interface EvalCommandOptions extends SharedTargetOptions {

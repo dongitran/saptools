@@ -1,3 +1,5 @@
+import type { SessionStatus } from "@saptools/cf-debugger";
+
 import { openCfTunnel } from "../cf/tunnel.js";
 import { connectInspector } from "../inspector/session.js";
 import type { InspectorSession } from "../inspector/types.js";
@@ -5,6 +7,26 @@ import { CfInspectorError } from "../types.js";
 
 import { DEFAULT_CF_TIMEOUT_SEC } from "./commandTypes.js";
 import type { SharedTargetOptions, Target } from "./commandTypes.js";
+
+export type ProgressReporter = (message: string) => void;
+
+const CF_TUNNEL_STATUS_MESSAGES = {
+  starting: "Preparing the Cloud Foundry debugger...",
+  "logging-in": "Logging in to Cloud Foundry...",
+  targeting: "Targeting the Cloud Foundry org and space...",
+  "ssh-enabling": "Enabling SSH for the Cloud Foundry app...",
+  "ssh-restarting": "Restarting the Cloud Foundry app to activate SSH...",
+  signaling: "Starting the remote Node.js inspector...",
+  tunneling: "Opening the SSH inspector tunnel...",
+  ready: "Cloud Foundry inspector tunnel is ready.",
+  stopping: "Closing the Cloud Foundry inspector tunnel...",
+  stopped: "Cloud Foundry inspector tunnel closed.",
+  error: "Cloud Foundry inspector tunnel failed.",
+} as const satisfies Readonly<Record<SessionStatus, string>>;
+
+export function formatCfTunnelStatus(status: SessionStatus): string {
+  return CF_TUNNEL_STATUS_MESSAGES[status];
+}
 
 export function parsePositiveInt(raw: string | undefined, label: string): number | undefined {
   if (raw === undefined) {
@@ -62,21 +84,31 @@ interface ResolvedTunnel {
 export async function withSession<T>(
   target: Target,
   fn: (session: InspectorSession, port: number) => Promise<T>,
+  reportProgress?: ProgressReporter,
 ): Promise<T> {
-  const tunnel = await openTarget(target);
+  const tunnel = await openTarget(target, reportProgress);
   let session: InspectorSession | undefined;
   try {
+    reportProgress?.(
+      `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
+    );
     session = await connectInspector({ port: tunnel.port, host: tunnel.host });
+    reportProgress?.("Inspector session is ready.");
     return await fn(session, tunnel.port);
   } finally {
     if (session) {
+      reportProgress?.("Closing the inspector session...");
       await session.dispose();
+      reportProgress?.("Inspector session closed.");
     }
     await tunnel.dispose();
   }
 }
 
-export async function openTarget(target: Target): Promise<ResolvedTunnel> {
+export async function openTarget(
+  target: Target,
+  reportProgress?: ProgressReporter,
+): Promise<ResolvedTunnel> {
   if (target.kind === "port") {
     return {
       port: target.port,
@@ -84,12 +116,20 @@ export async function openTarget(target: Target): Promise<ResolvedTunnel> {
       dispose: (): Promise<void> => Promise.resolve(),
     };
   }
+  reportProgress?.(formatCfTunnelStatus("starting"));
   const tunnel = await openCfTunnel({
     region: target.region,
     org: target.org,
     space: target.space,
     app: target.app,
     tunnelReadyTimeoutMs: target.cfTimeoutMs,
+    ...(reportProgress === undefined
+      ? {}
+      : {
+          onStatus: (status: SessionStatus): void => {
+            reportProgress(formatCfTunnelStatus(status));
+          },
+        }),
   });
   return {
     port: tunnel.localPort,

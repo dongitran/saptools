@@ -3,6 +3,10 @@ import process from "node:process";
 import type { LogpointEvent } from "../logpoint/events.js";
 import type { ExceptionSnapshot, FrameSnapshot, SnapshotResult, WatchEvent } from "../types.js";
 
+export function writeProgress(message: string): void {
+  process.stderr.write(`[cf-inspector] ${message}\n`);
+}
+
 export function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }

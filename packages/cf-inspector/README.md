@@ -101,8 +101,16 @@ cf-inspector snapshot --port 9229 \
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
 | `--include-scopes` | Include expanded paused-frame scopes under `topFrame.scopes`. Omitted by default to keep targeted captures concise |
 | `--no-json` | Print a human-readable summary instead of JSON |
+| `--quiet` | Suppress snapshot progress messages on stderr |
 | `--keep-paused` | Skip `Debugger.resume` after capture |
 | `--fail-on-unmatched-pause` | Fail immediately if the target pauses somewhere else instead of waiting cooperatively |
+
+Snapshot progress is printed to `stderr` by default, including Cloud Foundry
+login/tunnel setup, inspector connection, breakpoint binding, the breakpoint
+wait, capture, resume, and cleanup phases. The final JSON document remains the
+only content written to `stdout`, so piping it to `jq` or another parser stays
+safe. Pass `--quiet` to suppress these progress lines; warnings and errors still
+use `stderr`.
 
 Snapshot JSON includes frame metadata and `captures` by default. `topFrame.scopes`
 is only present with `--include-scopes` because scope objects can be large and

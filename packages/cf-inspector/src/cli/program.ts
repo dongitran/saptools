@@ -65,6 +65,7 @@ function registerSnapshot(program: Command): void {
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--no-json", "Print a human-readable summary instead of JSON")
+    .option("--quiet", "Suppress progress messages on stderr")
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
     .option("--fail-on-unmatched-pause", "Fail immediately if the target pauses somewhere else")
     .action(async (opts: SnapshotCommandOptions): Promise<void> => {

@@ -4,7 +4,7 @@ import type { SnapshotResult } from "../../src/types.js";
 
 import { ensureCliBuilt, runCli, spawnFixture, STACK_FIXTURE_PATH } from "./helpers.js";
 
-test("snapshot captures the paused frame on the marker line", async () => {
+test("User can capture a snapshot and see ordered progress", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();
   try {
@@ -42,6 +42,52 @@ test("snapshot captures the paused frame on the marker line", async () => {
     );
     expect(captures["user.id"]).toBeDefined();
     expect(captures["accumulator.length"]).toBe("4");
+
+    const expectedProgress = [
+      `Connecting to the Node.js inspector at 127.0.0.1:${fixture.port.toString()}...`,
+      "Inspector session is ready.",
+      "Setting 1 breakpoint...",
+      "Breakpoint setup complete: 1 resolved location.",
+      "Waiting up to 10s for a breakpoint hit...",
+      "Breakpoint hit; capturing 2 expressions...",
+      "Snapshot captured; resuming the target...",
+      "Target resumed.",
+      "Closing the inspector session...",
+      "Inspector session closed.",
+      "Snapshot complete.",
+    ];
+    let previousIndex = -1;
+    for (const message of expectedProgress) {
+      const currentIndex = result.stderr.indexOf(`[cf-inspector] ${message}`);
+      expect(currentIndex, `missing or out-of-order progress: ${message}`).toBeGreaterThan(previousIndex);
+      previousIndex = currentIndex;
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("User can suppress snapshot progress with --quiet", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--timeout",
+        "10",
+        "--quiet",
+      ],
+      45_000,
+    );
+
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect(() => JSON.parse(result.stdout) as SnapshotResult).not.toThrow();
+    expect(result.stderr).not.toContain("[cf-inspector]");
   } finally {
     await fixture.close();
   }

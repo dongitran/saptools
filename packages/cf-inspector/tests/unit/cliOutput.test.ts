@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { writeHumanSnapshot, writeJson, writeLogEvent, writeWatchEvent } from "../../src/cli/output.js";
+import {
+  writeHumanSnapshot,
+  writeJson,
+  writeLogEvent,
+  writeProgress,
+  writeWatchEvent,
+} from "../../src/cli/output.js";
 import type { LogpointEvent } from "../../src/logpoint/events.js";
 import type { SnapshotResult, WatchEvent } from "../../src/types.js";
 
 const writeSpy = vi.spyOn(process.stdout, "write");
+const writeErrorSpy = vi.spyOn(process.stderr, "write");
 
 afterEach(() => {
   writeSpy.mockReset();
+  writeErrorSpy.mockReset();
 });
 
 function captureStdout(fn: () => void): string {
@@ -20,7 +28,26 @@ function captureStdout(fn: () => void): string {
   return output;
 }
 
+function captureStderr(fn: () => void): string {
+  let output = "";
+  writeErrorSpy.mockImplementation((chunk: string | Uint8Array): boolean => {
+    output += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  });
+  fn();
+  return output;
+}
+
 describe("CLI output helpers", () => {
+  it("writes prefixed progress to stderr without touching stdout", () => {
+    const output = captureStderr(() => {
+      writeProgress("Waiting up to 30s for a breakpoint hit...");
+    });
+
+    expect(output).toBe("[cf-inspector] Waiting up to 30s for a breakpoint hit...\n");
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
   it("writes formatted JSON with a trailing newline", () => {
     const output = captureStdout(() => {
       writeJson({ ok: true });

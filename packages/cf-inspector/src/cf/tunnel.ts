@@ -1,5 +1,5 @@
 import { startDebugger } from "@saptools/cf-debugger";
-import type { DebuggerHandle, StartDebuggerOptions } from "@saptools/cf-debugger";
+import type { DebuggerHandle, SessionStatus, StartDebuggerOptions } from "@saptools/cf-debugger";
 
 export interface TunnelTarget {
   readonly region: string;
@@ -10,6 +10,7 @@ export interface TunnelTarget {
   readonly preferredPort?: number;
   readonly verbose?: boolean;
   readonly signal?: AbortSignal;
+  readonly onStatus?: (status: SessionStatus, message?: string) => void;
 }
 
 export interface OpenedTunnel {
@@ -28,6 +29,7 @@ export async function openCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> 
     ...(target.preferredPort === undefined ? {} : { preferredPort: target.preferredPort }),
     ...(target.verbose === undefined ? {} : { verbose: target.verbose }),
     ...(target.signal === undefined ? {} : { signal: target.signal }),
+    ...(target.onStatus === undefined ? {} : { onStatus: target.onStatus }),
   };
   const handle = await startDebugger(opts);
   return {

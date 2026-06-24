@@ -14,8 +14,9 @@ import type { BreakpointLocation, RemoteRootSetting, SnapshotResult } from "../.
 import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { SnapshotCommandOptions, Target } from "../commandTypes.js";
-import { writeHumanSnapshot, writeJson } from "../output.js";
+import { writeHumanSnapshot, writeJson, writeProgress } from "../output.js";
 import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
+import type { ProgressReporter } from "../target.js";
 import {
   roundDurationMs,
   warnOnUnboundBreakpoints,
@@ -38,12 +39,14 @@ interface PreparedSnapshotCommand {
 
 export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
   const prepared = prepareSnapshotCommand(opts);
-  const result = await runSnapshotCommand(prepared, opts);
+  const reportProgress = opts.quiet === true ? undefined : writeProgress;
+  const result = await runSnapshotCommand(prepared, opts, reportProgress);
   if (opts.json) {
     writeJson(result);
   } else {
     writeHumanSnapshot(result);
   }
+  reportProgress?.("Snapshot complete.");
 }
 
 function prepareSnapshotCommand(opts: SnapshotCommandOptions): PreparedSnapshotCommand {
@@ -78,24 +81,35 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions): PreparedSnapshotC
 async function runSnapshotCommand(
   command: PreparedSnapshotCommand,
   opts: SnapshotCommandOptions,
+  reportProgress?: ProgressReporter,
 ): Promise<SnapshotResult> {
   return await withSession(command.target, async (session): Promise<SnapshotResult> => {
     if (command.condition !== undefined) {
+      reportProgress?.("Validating the breakpoint condition...");
       await validateExpression(session, command.condition);
+      reportProgress?.("Breakpoint condition is valid.");
     }
-    const handles = await Promise.all(
-      command.breakpoints.map((bp) =>
-        setBreakpoint(session, {
-          file: bp.file,
-          line: bp.line,
-          remoteRoot: command.remoteRoot,
-          ...(command.condition === undefined ? {} : { condition: command.condition }),
-          ...(command.hitCount === undefined ? {} : { hitCount: command.hitCount }),
-        }),
-      ),
+    const breakpointCount = command.breakpoints.length;
+    reportProgress?.(
+      `Setting ${breakpointCount.toString()} ${breakpointCount === 1 ? "breakpoint" : "breakpoints"}...`,
+    );
+    const handles = await setCommandBreakpoints(session, command);
+    const resolvedCount = handles.reduce(
+      (total, handle) => total + handle.resolvedLocations.length,
+      0,
+    );
+    reportProgress?.(
+      `Breakpoint setup complete: ${resolvedCount.toString()} resolved ${resolvedCount === 1 ? "location" : "locations"}.`,
     );
     warnOnUnboundBreakpoints(handles);
+    reportProgress?.(
+      `Waiting up to ${(command.timeoutMs / 1000).toString()}s for a breakpoint hit...`,
+    );
     const pause = await waitForCommandPause(session, opts, handles, command.timeoutMs);
+    const captureCount = command.captures.length;
+    reportProgress?.(
+      `Breakpoint hit; capturing ${captureCount.toString()} ${captureCount === 1 ? "expression" : "expressions"}...`,
+    );
     const pausedStartedAt = pause.receivedAtMs ?? performance.now();
     const snapshot = await captureSnapshot(session, pause, {
       captures: command.captures,
@@ -105,10 +119,29 @@ async function runSnapshotCommand(
       stackCaptures: command.stackCaptures,
     });
     if (opts.keepPaused === true) {
+      reportProgress?.("Snapshot captured; leaving the target paused as requested.");
       return withPausedDuration(snapshot, null);
     }
-    return await resumeAfterSnapshot(session, snapshot, pausedStartedAt);
-  });
+    reportProgress?.("Snapshot captured; resuming the target...");
+    return await resumeAfterSnapshot(session, snapshot, pausedStartedAt, reportProgress);
+  }, reportProgress);
+}
+
+async function setCommandBreakpoints(
+  session: Parameters<typeof setBreakpoint>[0],
+  command: PreparedSnapshotCommand,
+): Promise<readonly Awaited<ReturnType<typeof setBreakpoint>>[]> {
+  return await Promise.all(
+    command.breakpoints.map((bp) =>
+      setBreakpoint(session, {
+        file: bp.file,
+        line: bp.line,
+        remoteRoot: command.remoteRoot,
+        ...(command.condition === undefined ? {} : { condition: command.condition }),
+        ...(command.hitCount === undefined ? {} : { hitCount: command.hitCount }),
+      }),
+    ),
+  );
 }
 
 async function waitForCommandPause(
@@ -136,9 +169,11 @@ async function resumeAfterSnapshot(
   session: Parameters<typeof resume>[0],
   snapshot: Awaited<ReturnType<typeof captureSnapshot>>,
   pausedStartedAt: number,
+  reportProgress?: ProgressReporter,
 ): Promise<SnapshotResult> {
   try {
     await resume(session);
+    reportProgress?.("Target resumed.");
     return withPausedDuration(snapshot, roundDurationMs(performance.now() - pausedStartedAt));
   } catch {
     process.stderr.write(
