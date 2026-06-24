@@ -226,6 +226,7 @@ describe("startDebugger orchestration", () => {
     expect(mocks.spawnSshTunnel).toHaveBeenCalledWith("demo-app", 20_123, 9229, {
       cfHome: session.cfHomeDir,
     });
+    expect(mocks.probeTunnelReady).toHaveBeenCalledWith(20_123, 180_000);
     expect(handle.session.status).toBe("ready");
     expect(handle.session.pid).toBe(55_001);
     expect(statuses).toEqual(["logging-in", "targeting", "signaling", "tunneling", "ready"]);
@@ -288,6 +289,35 @@ describe("startDebugger orchestration", () => {
     });
     expect(mocks.spawnSshTunnel).not.toHaveBeenCalled();
     expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
+  });
+
+  it("reports a timed-out SIGUSR1 command with its three-minute limit", async () => {
+    mocks.cfSshOneShot.mockResolvedValue({
+      exitCode: null,
+      stderr: "",
+      timedOutAfterMs: 180_000,
+    });
+    mocks.isSshDisabledError.mockReturnValue(false);
+
+    await expect(startDebugger(withCredentials())).rejects.toMatchObject({
+      code: "USR1_SIGNAL_FAILED",
+      message: expect.stringContaining("timed out after 180s"),
+    });
+    expect(mocks.spawnSshTunnel).not.toHaveBeenCalled();
+  });
+
+  it("reports the signal that terminated the SIGUSR1 command", async () => {
+    mocks.cfSshOneShot.mockResolvedValue({
+      exitCode: null,
+      signal: "SIGTERM",
+      stderr: "",
+    });
+    mocks.isSshDisabledError.mockReturnValue(false);
+
+    await expect(startDebugger(withCredentials())).rejects.toMatchObject({
+      code: "USR1_SIGNAL_FAILED",
+      message: expect.stringContaining("terminated by signal SIGTERM"),
+    });
   });
 
   it("cleans up when the tunnel never becomes ready", async () => {

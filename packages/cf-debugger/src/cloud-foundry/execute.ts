@@ -6,7 +6,7 @@ import { CfDebuggerError } from "../types.js";
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 16 * 1024 * 1024;
-const CF_CLI_TIMEOUT_MS = 30_000;
+export const DEFAULT_CF_COMMAND_TIMEOUT_MS = 180_000;
 const REDACTED_ARG = "<redacted>";
 
 export interface CfExecContext {
@@ -43,7 +43,7 @@ function formatArgsForError(args: readonly string[]): string {
 export async function runCf(
   args: readonly string[],
   context: CfExecContext,
-  timeoutMs: number = CF_CLI_TIMEOUT_MS,
+  timeoutMs: number = DEFAULT_CF_COMMAND_TIMEOUT_MS,
 ): Promise<string> {
   try {
     const { stdout } = await execFileAsync(resolveBin(context), [...args], {

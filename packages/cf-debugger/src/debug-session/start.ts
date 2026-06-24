@@ -42,6 +42,22 @@ interface TunnelResult {
   readonly activePid: number;
 }
 
+type SignalResult = Awaited<ReturnType<typeof cfSshOneShot>>;
+
+function signalFailureDetail(result: SignalResult): string {
+  if (result.timedOutAfterMs !== undefined) {
+    return `timed out after ${(result.timedOutAfterMs / 1000).toString()}s`;
+  }
+  const stderr = result.stderr.trim();
+  if (stderr.length > 0) {
+    return stderr;
+  }
+  if (result.signal !== undefined) {
+    return `terminated by signal ${result.signal}`;
+  }
+  return `exit code ${String(result.exitCode)}`;
+}
+
 function checkAbort(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new CfDebuggerError("ABORTED", "Operation aborted by caller");
@@ -130,12 +146,9 @@ async function signalRemoteNode(
     if (signalResult.exitCode === 0) {
       return;
     }
-    const detail = signalResult.stderr.trim().length > 0
-      ? signalResult.stderr.trim()
-      : `exit code ${String(signalResult.exitCode)}`;
     throw new CfDebuggerError(
       "USR1_SIGNAL_FAILED",
-      `Failed to send SIGUSR1 to the Node.js process on ${options.app}: ${detail}`,
+      `Failed to send SIGUSR1 to the Node.js process on ${options.app}: ${signalFailureDetail(signalResult)}`,
       signalResult.stderr,
     );
   }
@@ -170,12 +183,11 @@ async function retryRemoteSignal(
   if (retrySignalResult.exitCode === 0) {
     return;
   }
-  const detail = retrySignalResult.stderr.trim().length > 0
-    ? retrySignalResult.stderr.trim()
-    : `exit code ${String(retrySignalResult.exitCode)}`;
   throw new CfDebuggerError(
     "USR1_SIGNAL_FAILED",
-    `Failed to send SIGUSR1 to the Node.js process on ${options.app} after enabling SSH: ${detail}`,
+    `Failed to send SIGUSR1 to the Node.js process on ${options.app} after enabling SSH: ${
+      signalFailureDetail(retrySignalResult)
+    }`,
     retrySignalResult.stderr,
   );
 }

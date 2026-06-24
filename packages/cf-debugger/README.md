@@ -85,7 +85,7 @@ Open a tunnel for one app and keep running until interrupted.
 ```bash
 cf-debugger start --region eu10 --org my-org --space dev --app my-app
 cf-debugger start --region eu10 --org my-org --space dev --app my-app --port 9230
-cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 60 --verbose
+cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 180 --verbose
 ```
 
 | Flag | Description |
@@ -95,8 +95,12 @@ cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 
 | `--space <name>` | **Required.** CF space name |
 | `--app <name>` | **Required.** CF app name |
 | `--port <number>` | Preferred local port (auto-assigned in `20000–20999` if omitted) |
-| `--timeout <seconds>` | Tunnel-ready timeout (default: `30`) |
+| `--timeout <seconds>` | Tunnel-ready timeout (default: `180`) |
 | `--verbose` | Print every status transition |
+
+Cloud Foundry startup commands (`api`, `auth`, `target`, SSH checks, app
+restart, and the one-shot SIGUSR1 SSH command) each allow up to 180 seconds.
+`--timeout` controls the subsequent local tunnel-readiness probe separately.
 
 ### ⏹️ `cf-debugger stop`
 
@@ -188,7 +192,7 @@ await handle.dispose();
 | `CF_LOGIN_FAILED` | `cf api` / `cf auth` rejected the credentials |
 | `CF_TARGET_FAILED` | Org or space not reachable |
 | `SSH_NOT_ENABLED` | SSH disabled at space or app level and could not be enabled |
-| `USR1_SIGNAL_FAILED` | Remote `kill -s USR1` could not find the node PID |
+| `USR1_SIGNAL_FAILED` | Remote `kill -s USR1` failed, timed out, or was terminated by a signal |
 | `TUNNEL_NOT_READY` | Inspector didn't respond on port 9229 before timeout |
 | `PORT_UNAVAILABLE` | Preferred local port is taken and could not be freed |
 

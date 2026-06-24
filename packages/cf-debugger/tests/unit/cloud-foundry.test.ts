@@ -12,7 +12,10 @@ import {
   cfTarget,
 } from "../../src/cloud-foundry/commands.js";
 import type { CfExecContext } from "../../src/cloud-foundry/execute.js";
-import { runCf } from "../../src/cloud-foundry/execute.js";
+import {
+  DEFAULT_CF_COMMAND_TIMEOUT_MS,
+  runCf,
+} from "../../src/cloud-foundry/execute.js";
 
 interface LoggedCommand {
   readonly args: readonly string[];
@@ -141,6 +144,10 @@ describe("cloud-foundry command wrappers", () => {
 
     const commands = await readLog(logPath);
     expect(commands).toEqual([{ args: ["apps"], cfHome: context.cfHome }]);
+  });
+
+  it("allows three minutes for Cloud Foundry commands by default", () => {
+    expect(DEFAULT_CF_COMMAND_TIMEOUT_MS).toBe(180_000);
   });
 
   it("passes api and target arguments through the wrapper", async () => {

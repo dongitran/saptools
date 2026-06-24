@@ -226,7 +226,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     .requiredOption("--space <name>", "CF space name")
     .requiredOption("--app <name>", "CF app name")
     .option("--port <number>", "Preferred local port (auto-assigned if omitted)")
-    .option("--timeout <seconds>", "Tunnel-ready timeout in seconds (default: 30)")
+    .option("--timeout <seconds>", "Tunnel-ready timeout in seconds (default: 180)")
     .option("--verbose", "Print status transitions", false)
     .action(async (opts: StartCommandOptions): Promise<void> => {
       await handleStart(opts);

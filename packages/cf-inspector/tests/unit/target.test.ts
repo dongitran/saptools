@@ -1,7 +1,7 @@
 import type { SessionStatus } from "@saptools/cf-debugger";
 import { describe, expect, it } from "vitest";
 
-import { formatCfTunnelStatus } from "../../src/cli/target.js";
+import { formatCfTunnelStatus, resolveTarget } from "../../src/cli/target.js";
 
 describe("Cloud Foundry tunnel progress", () => {
   it.each<readonly [SessionStatus, string]>([
@@ -18,5 +18,28 @@ describe("Cloud Foundry tunnel progress", () => {
     ["error", "Cloud Foundry inspector tunnel failed."],
   ])("maps %s without exposing raw status detail", (status, expected) => {
     expect(formatCfTunnelStatus(status)).toBe(expected);
+  });
+});
+
+describe("Cloud Foundry target timeout", () => {
+  const cfOptions = {
+    region: "eu10",
+    org: "org-a",
+    space: "dev",
+    app: "demo-app",
+  };
+
+  it("allows three minutes for tunnel readiness by default", () => {
+    expect(resolveTarget(cfOptions)).toMatchObject({
+      kind: "cf",
+      cfTimeoutMs: 180_000,
+    });
+  });
+
+  it("preserves an explicit --cf-timeout override", () => {
+    expect(resolveTarget({ ...cfOptions, cfTimeout: "45" })).toMatchObject({
+      kind: "cf",
+      cfTimeoutMs: 45_000,
+    });
   });
 });

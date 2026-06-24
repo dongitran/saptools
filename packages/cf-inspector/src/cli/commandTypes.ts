@@ -1,5 +1,5 @@
 export const DEFAULT_BREAKPOINT_TIMEOUT_SEC = 30;
-export const DEFAULT_CF_TIMEOUT_SEC = 60;
+export const DEFAULT_CF_TIMEOUT_SEC = 180;
 export const DEFAULT_EXCEPTION_TIMEOUT_SEC = 30;
 
 export interface PortTarget {

@@ -127,7 +127,11 @@ It warns once, waits for `Debugger.resumed`, then continues waiting for its own
 breakpoint within the remaining timeout. Use `--fail-on-unmatched-pause` when a
 strict immediate error is preferred.
 
-For Cloud Foundry targets, replace `--port` with `--region/--org/--space/--app` (and optionally `--cf-timeout <seconds>` for the tunnel).
+For Cloud Foundry targets, replace `--port` with
+`--region/--org/--space/--app`. Cloud Foundry commands and tunnel readiness
+allow up to 180 seconds by default. `--cf-timeout <seconds>` overrides only the
+tunnel-readiness phase; snapshot `--timeout` separately controls how long to
+wait for a breakpoint hit.
 
 ### 📡 `cf-inspector log`
 

@@ -1,18 +1,24 @@
 import { spawn } from "node:child_process";
 
-import { buildEnv, resolveBin, type CfExecContext } from "./execute.js";
-
-const CF_SSH_SIGNAL_TIMEOUT_MS = 15_000;
+import {
+  buildEnv,
+  DEFAULT_CF_COMMAND_TIMEOUT_MS,
+  resolveBin,
+  type CfExecContext,
+} from "./execute.js";
 
 export interface CfSshSignalResult {
   readonly exitCode: number | null;
   readonly stderr: string;
+  readonly signal?: NodeJS.Signals;
+  readonly timedOutAfterMs?: number;
 }
 
 export async function cfSshOneShot(
   appName: string,
   command: string,
   context: CfExecContext,
+  timeoutMs: number = DEFAULT_CF_COMMAND_TIMEOUT_MS,
 ): Promise<CfSshSignalResult> {
   return await new Promise<CfSshSignalResult>((resolve) => {
     const child = spawn(resolveBin(context), ["ssh", appName, "-c", command], {
@@ -32,20 +38,24 @@ export async function cfSshOneShot(
       } catch {
         // already gone
       }
-      resolve({ exitCode: null, stderr: stderrBuf });
-    }, CF_SSH_SIGNAL_TIMEOUT_MS);
+      resolve({ exitCode: null, stderr: stderrBuf, timedOutAfterMs: timeoutMs });
+    }, timeoutMs);
 
     child.stderr.on("data", (data: Buffer | string) => {
       stderrBuf += data.toString();
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
-      resolve({ exitCode: code, stderr: stderrBuf });
+      resolve(
+        signal === null
+          ? { exitCode: code, stderr: stderrBuf }
+          : { exitCode: code, stderr: stderrBuf, signal },
+      );
     });
 
     child.on("error", (err: Error) => {

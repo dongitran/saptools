@@ -25,7 +25,7 @@ function applyTargetOptions(cmd: Command): Command {
     .option("--org <name>", "CF org name")
     .option("--space <name>", "CF space name")
     .option("--app <name>", "CF app name")
-    .option("--cf-timeout <seconds>", "Timeout for CF tunnel readiness in seconds");
+    .option("--cf-timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
 }
 
 const collectStrings = (value: string, prev: readonly string[] = []): readonly string[] => [

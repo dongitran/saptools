@@ -3,7 +3,6 @@ import { CfDebuggerError } from "../types.js";
 import { type CfExecContext, runCf } from "./execute.js";
 import { parseAppNames, parseNameTable } from "./parsers.js";
 
-const CF_RESTART_TIMEOUT_MS = 120_000;
 const CF_AUTH_MAX_ATTEMPTS = 3;
 
 export async function cfApi(apiEndpoint: string, context: CfExecContext): Promise<void> {
@@ -101,7 +100,7 @@ export async function cfEnableSsh(appName: string, context: CfExecContext): Prom
 }
 
 export async function cfRestartApp(appName: string, context: CfExecContext): Promise<void> {
-  await runCf(["restart", appName], context, CF_RESTART_TIMEOUT_MS);
+  await runCf(["restart", appName], context);
 }
 
 export async function cfApps(context: CfExecContext): Promise<readonly string[]> {
