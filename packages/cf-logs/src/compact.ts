@@ -171,7 +171,7 @@ function trimText(value: string, limit: number): string {
 }
 
 function escapeInline(value: string): string {
-  return value.replaceAll(/\s*\r?\n\s*/g, "\\n").trim();
+  return value.replaceAll(/\s+/g, " ").trim();
 }
 
 function formatCounts(counts: Readonly<Record<string, number>>): string {

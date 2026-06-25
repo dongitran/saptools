@@ -109,7 +109,8 @@ describe("compact logs", () => {
     );
 
     expect(rowsText).toContain("#1 09:00:00 info APP");
-    expect(rowsText).toContain("first line\\nsecond line");
+    expect(rowsText).toContain("first line second line");
+    expect(rowsText).not.toContain("\\n");
     expect(rowsText).toContain("#2 09:00:01 info RTR");
     expect(rowsText).toContain("request=GET /health");
     expect(documentText.split("\n")[0]).toContain("summary rows=2");
