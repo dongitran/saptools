@@ -118,7 +118,10 @@
     "clob",
     "unstub",
     "scriptable",
-    "guids"
+    "guids",
+    "inspectable",
+    "cmdline",
+    "idempotently"
   ],
   "ignorePaths": [
     "node_modules/**",

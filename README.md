@@ -26,6 +26,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-debugger`](./packages/cf-debugger) | Open an SSH debug tunnel to any CF Node.js app from your terminal | [![npm](https://img.shields.io/npm/v/@saptools/cf-debugger.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-debugger) |
 | [`@saptools/cf-explorer`](./packages/cf-explorer) | Explore deployed CF app files with safe, read-only SSH workflows | [![npm](https://img.shields.io/npm/v/@saptools/cf-explorer.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-explorer) |
 | [`@saptools/cf-inspector`](./packages/cf-inspector) | Capture breakpoints, logpoints, and expression results from CF Node.js apps via CDP | [![npm](https://img.shields.io/npm/v/@saptools/cf-inspector.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-inspector) |
+| [`@saptools/cf-live-trace`](./packages/cf-live-trace) | Inject a runtime HTTP trace hook into CF Node.js apps and stream request/response events from the CLI | [![npm](https://img.shields.io/npm/v/@saptools/cf-live-trace.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-live-trace) |
 | [`@saptools/cf-logs`](./packages/cf-logs) | Fetch, stream, parse, and redact SAP BTP CF app logs from one CLI and typed Node.js API | [![npm](https://img.shields.io/npm/v/@saptools/cf-logs.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-logs) |
 | [`@saptools/cf-tail`](./packages/cf-tail) | Tail every CF app in a space at once: parallel snapshots, multiplexed live stream, chronological merge, and cross-app filters | [![npm](https://img.shields.io/npm/v/@saptools/cf-tail.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-tail) |
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
@@ -88,6 +89,16 @@ Drive Node.js inspector sessions over the Chrome DevTools Protocol from CLI or T
 - 🔁 automatic CF tunnel composition via `@saptools/cf-debugger`
 
 Docs → [`packages/cf-inspector/README.md`](./packages/cf-inspector/README.md)
+
+### 🧪 `@saptools/cf-live-trace`
+
+Injects a bounded HTTP trace hook into a running CF Node.js app, then streams request/response events from a plain CLI.
+
+- 🚇 robust CF SSH tunnel setup for a selected app instance
+- 🧠 Node inspector startup via `/proc` process discovery and `SIGUSR1`
+- 📡 runtime `http`/`https` request capture with body preview limits and NDJSON output
+
+Docs → [`packages/cf-live-trace/README.md`](./packages/cf-live-trace/README.md)
 
 ### 📜 `@saptools/cf-logs`
 
@@ -193,6 +204,7 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-debugger/
 │   ├── cf-explorer/
 │   ├── cf-inspector/
+│   ├── cf-live-trace/
 │   ├── cf-logs/
 │   ├── cf-tail/
 │   ├── bruno/
