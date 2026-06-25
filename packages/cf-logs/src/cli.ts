@@ -7,6 +7,22 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 
 import { fetchStartedAppsViaCfCli } from "./cf.js";
+import {
+  buildSnapshotCompactDocument,
+  createCompactStreamSession,
+  printCompactAppendRows,
+} from "./cli-compact.js";
+import type { SessionListFlags, ShowFlags } from "./cli-sessions.js";
+import {
+  runSessionClear,
+  runSessionList,
+  runSessionPrune,
+  runShow,
+} from "./cli-sessions.js";
+import {
+  buildCompactLogDocument,
+  formatCompactLogDocument,
+} from "./compact.js";
 import { appendRawLogText, parseRecentLogs } from "./parser.js";
 import { cfLogsStorePath } from "./paths.js";
 import { CfLogsRuntime } from "./runtime.js";
@@ -37,7 +53,9 @@ interface SnapshotFlags extends AppFlags {
   readonly json?: boolean;
   readonly save?: boolean;
   readonly logLimit?: number;
-  readonly redact?: boolean;
+  readonly compact?: boolean;
+  readonly compactMessageLimit?: number;
+  readonly compactTtlMinutes?: number;
 }
 
 interface StreamFlags extends AppFlags {
@@ -48,7 +66,9 @@ interface StreamFlags extends AppFlags {
   readonly flushIntervalMs?: number;
   readonly retryInitialMs?: number;
   readonly retryMaxMs?: number;
-  readonly redact?: boolean;
+  readonly compact?: boolean;
+  readonly compactMessageLimit?: number;
+  readonly compactTtlMinutes?: number;
 }
 
 interface AppsFlags extends SessionFlags {
@@ -59,6 +79,9 @@ interface ParseFlags {
   readonly input?: string;
   readonly logLimit?: number;
   readonly raw?: boolean;
+  readonly json?: boolean;
+  readonly compact?: boolean;
+  readonly compactMessageLimit?: number;
 }
 
 interface StoreListFlags {
@@ -125,19 +148,17 @@ function buildParseOptions(logLimit: number | undefined): ParseLogsOptions {
 function buildSnapshotRuntimeOptions(flags: SnapshotFlags): CfLogsRuntimeOptions {
   return {
     ...buildParseOptions(flags.logLimit),
-    ...(flags.save === true ? { persistSnapshots: true } : {}),
-    ...(flags.redact === false ? { skipRedaction: true } : {}),
+    ...(flags.save === true && flags.compact !== true ? { persistSnapshots: true } : {}),
   };
 }
 
 function buildStreamRuntimeOptions(flags: StreamFlags): CfLogsRuntimeOptions {
   return {
     ...buildParseOptions(flags.logLimit),
-    ...(flags.save === true ? { persistStreamAppends: true } : {}),
+    ...(flags.save === true && flags.compact !== true ? { persistStreamAppends: true } : {}),
     ...(flags.flushIntervalMs === undefined ? {} : { flushIntervalMs: flags.flushIntervalMs }),
     ...(flags.retryInitialMs === undefined ? {} : { retryInitialMs: flags.retryInitialMs }),
     ...(flags.retryMaxMs === undefined ? {} : { retryMaxMs: flags.retryMaxMs }),
-    ...(flags.redact === false ? { skipRedaction: true } : {}),
   };
 }
 
@@ -197,14 +218,15 @@ function printState(appName: string, streamState: RuntimeStreamState, asJson: bo
   process.stderr.write(`[${appName}] ${streamState.status}${message}\n`);
 }
 
-function printLines(appName: string, lines: readonly string[], asJson: boolean): void {
+function printLines(appName: string, lines: readonly string[], asJson: boolean): number {
   if (asJson) {
     writeJsonLine({ type: "lines", appName, lines });
-    return;
+    return lines.length;
   }
   for (const line of lines) {
     process.stdout.write(`${line}\n`);
   }
+  return lines.length;
 }
 
 function addSessionOptions(command: Command): Command {
@@ -228,6 +250,15 @@ async function runSnapshot(flags: SnapshotFlags): Promise<void> {
   runtime.setAvailableApps([{ name: appName, runningInstances: 1 }]);
   try {
     const snapshot = await runtime.fetchSnapshot(appName);
+    if (flags.compact === true) {
+      const compactDocument = await buildSnapshotCompactDocument(session, snapshot, flags);
+      if (flags.json === true) {
+        writeJson(compactDocument);
+        return;
+      }
+      writeRaw(formatCompactLogDocument(compactDocument));
+      return;
+    }
     if (flags.json === true) {
       writeJson(snapshot);
       return;
@@ -242,6 +273,22 @@ async function runParse(flags: ParseFlags): Promise<void> {
   const input = await readInputText(flags.input);
   const parseOptions = buildParseOptions(flags.logLimit);
   const boundedText = appendRawLogText("", input, parseOptions);
+  if (flags.compact === true && flags.raw === true) {
+    throw new Error("--compact cannot be combined with --raw.");
+  }
+  if (flags.compact === true) {
+    const rows = parseRecentLogs(boundedText, parseOptions);
+    const document = buildCompactLogDocument(
+      { rows, truncated: input.length > boundedText.length },
+      { ...(flags.compactMessageLimit === undefined ? {} : { messageLimit: flags.compactMessageLimit }) },
+    );
+    if (flags.json === true) {
+      writeJson(document);
+      return;
+    }
+    writeRaw(formatCompactLogDocument(document));
+    return;
+  }
   if (flags.raw === true) {
     writeRaw(boundedText);
     return;
@@ -289,7 +336,11 @@ async function runStoreList(flags: StoreListFlags): Promise<void> {
 async function runStream(flags: StreamFlags): Promise<void> {
   const { session, appName } = buildAppRef(flags);
   const runtime = new CfLogsRuntime(buildStreamRuntimeOptions(flags));
+  const compactSession = flags.compact === true
+    ? await createCompactStreamSession(session, appName, flags)
+    : undefined;
   let emittedLineCount = 0;
+  let lastEmittedRowId = 0;
   let finished = false;
   runtime.setSession(session);
   runtime.setAvailableApps([{ name: appName, runningInstances: 1 }]);
@@ -317,8 +368,13 @@ async function runStream(flags: StreamFlags): Promise<void> {
       if (event.type !== "append") {
         return;
       }
-      printLines(currentAppName, event.lines, currentFlags.json === true);
-      emittedLineCount += event.lines.length;
+      const emittedCount = currentFlags.compact === true
+        ? await printCompactAppendRows(event, currentFlags, compactSession, lastEmittedRowId)
+        : printLines(currentAppName, event.lines, currentFlags.json === true);
+      if (currentFlags.compact === true && emittedCount > 0) {
+        lastEmittedRowId = event.state.rows.at(-1)?.id ?? lastEmittedRowId;
+      }
+      emittedLineCount += emittedCount;
       if (currentFlags.maxLines !== undefined && emittedLineCount >= currentFlags.maxLines) {
         await shutdown(resolvePromise);
       }
@@ -388,6 +444,24 @@ function addRetryOptions(command: Command): Command {
     );
 }
 
+function addCompactOptions(command: Command): Command {
+  return command
+    .option("--compact", "Emit compact AI-oriented output", false)
+    .option(
+      "--compact-message-limit <count>",
+      "Maximum characters per compact message/body",
+      (value: string) => parsePositiveInteger(value, "--compact-message-limit"),
+    );
+}
+
+function addCompactSessionOptions(command: Command): Command {
+  return addCompactOptions(command).option(
+    "--compact-ttl-minutes <count>",
+    "Minutes before compact drill-down sessions expire",
+    (value: string) => parsePositiveInteger(value, "--compact-ttl-minutes"),
+  );
+}
+
 function readPackageVersion(): string {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
@@ -417,32 +491,34 @@ function buildProgram(): Command {
     .description(`Manage Cloud Foundry logs and log snapshots in ${cfLogsStorePath()}`)
     .version(readPackageVersion(), "-V, --version", "Print the cf-logs package version");
 
-  addLogLimitOption(
-    addAppOptions(
-      program
-        .command("snapshot")
-        .description("Fetch recent CF logs for one app and optionally persist a snapshot"),
+  addCompactSessionOptions(
+    addLogLimitOption(
+      addAppOptions(
+        program
+          .command("snapshot")
+          .description("Fetch recent CF logs for one app and optionally persist a snapshot"),
+      ),
     ),
   )
     .option("--json", "Emit structured JSON instead of raw text", false)
-    .option("--save", "Persist the redacted snapshot to the package store", false)
-    .option("--no-redact", "Disable credential redaction in output")
+    .option("--save", "Persist output for later inspection")
     .action(async (flags: SnapshotFlags): Promise<void> => {
       await runSnapshot(flags);
     });
 
   addRetryOptions(
-    addLogLimitOption(
-      addAppOptions(
-        program
-          .command("stream")
-          .description("Start a live CF log stream for one app"),
+    addCompactSessionOptions(
+      addLogLimitOption(
+        addAppOptions(
+          program
+            .command("stream")
+            .description("Start a live CF log stream for one app"),
+        ),
       ),
     ),
   )
     .option("--json", "Emit line-delimited JSON events", false)
-    .option("--save", "Persist bounded stream appends to the package store", false)
-    .option("--no-redact", "Disable credential redaction in output")
+    .option("--save", "Persist output for later inspection")
     .option(
       "--max-lines <count>",
       "Stop after emitting the given number of streamed lines",
@@ -452,15 +528,50 @@ function buildProgram(): Command {
       await runStream(flags);
     });
 
-  addLogLimitOption(
-    program
-      .command("parse")
-      .description("Parse a local log file or stdin into structured rows"),
+  addCompactOptions(
+    addLogLimitOption(
+      program
+        .command("parse")
+        .description("Parse a local log file or stdin into structured rows"),
+    ),
   )
     .option("--input <path>", "Read from a local file instead of stdin")
+    .option("--json", "Emit JSON when combined with compact output", false)
     .option("--raw", "Print bounded raw input instead of structured rows", false)
     .action(async (flags: ParseFlags): Promise<void> => {
       await runParse(flags);
+    });
+
+  program
+    .command("show")
+    .description("Show a full saved compact log row by ref")
+    .argument("<ref>", "Compact row ref in the form <session-id>:<row-id>")
+    .option("--json", "Emit JSON instead of text", false)
+    .action(async (ref: string, flags: ShowFlags): Promise<void> => {
+      await runShow(ref, flags);
+    });
+
+  const session = program.command("session").description("Inspect compact drill-down sessions");
+  session
+    .command("list")
+    .description("List active compact drill-down sessions")
+    .option("--json", "Emit JSON instead of text", false)
+    .action(async (flags: SessionListFlags): Promise<void> => {
+      await runSessionList(flags);
+    });
+
+  session
+    .command("prune")
+    .description("Remove expired compact drill-down sessions")
+    .action(async (): Promise<void> => {
+      await runSessionPrune();
+    });
+
+  session
+    .command("clear")
+    .description("Remove every compact drill-down session")
+    .action(async (): Promise<void> => {
+      await runSessionClear();
     });
 
   addSessionOptions(

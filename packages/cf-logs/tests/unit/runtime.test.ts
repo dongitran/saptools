@@ -175,7 +175,7 @@ describe("CfLogsRuntime", () => {
     expect(runtime.getState("demo-app")?.streamState?.status).toBe("stopped");
   });
 
-  it("redacts credentials before persisting snapshots", async () => {
+  it("keeps full-fidelity text before persisting snapshots", async () => {
     const persistSnapshot = vi.fn().mockResolvedValue({
       key: {
         apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -183,7 +183,7 @@ describe("CfLogsRuntime", () => {
         space: "sample",
         app: "demo-app",
       },
-      rawText: "***",
+      rawText: "sample-password sample@example.com",
       fetchedAt: "2026-04-18T00:00:00.000Z",
       updatedAt: "2026-04-18T00:00:00.000Z",
       rowCount: 1,
@@ -215,12 +215,7 @@ describe("CfLogsRuntime", () => {
 
     expect(persistSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({
-        rawText: expect.not.stringContaining("sample-password"),
-      }),
-    );
-    expect(persistSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rawText: expect.not.stringContaining("sample@example.com"),
+        rawText: expect.stringContaining("sample-password sample@example.com"),
       }),
     );
   });
@@ -324,55 +319,9 @@ describe("CfLogsRuntime", () => {
     expect(persistSnapshot).toHaveBeenCalled();
   });
 
-  it("applies custom runtime redaction rules during snapshot persistence", async () => {
-    const persistSnapshot = vi.fn().mockResolvedValue({
-      key: {
-        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
-        org: "sample-org",
-        space: "sample",
-        app: "demo-app",
-      },
-      rawText: "***",
-      fetchedAt: "2026-04-18T00:00:00.000Z",
-      updatedAt: "2026-04-18T00:00:00.000Z",
-      rowCount: 1,
-      truncated: false,
-    });
+  it("fetchSnapshot keeps credential-like log text unchanged", async () => {
     const runtime = new CfLogsRuntime(
-      {
-        persistSnapshots: true,
-        redactionRules: [{ value: "sample-secret", replacement: "[secure]" }],
-      },
-      {
-        prepareSession: vi.fn().mockResolvedValue(undefined),
-        fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(
-          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample-secret",
-        ),
-        persistSnapshot,
-      },
-    );
-    runtime.setSession({
-      region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
-      org: "sample-org",
-      space: "sample",
-      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
-    });
-    runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
-
-    await runtime.fetchSnapshot("demo-app");
-
-    expect(persistSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rawText: expect.not.stringContaining("sample-secret"),
-      }),
-    );
-  });
-
-  it("skipRedaction passes credentials through unredacted in snapshot output", async () => {
-    const runtime = new CfLogsRuntime(
-      { skipRedaction: true },
+      {},
       {
         prepareSession: vi.fn().mockResolvedValue(undefined),
         fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(

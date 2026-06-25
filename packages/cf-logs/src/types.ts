@@ -72,17 +72,6 @@ export interface FilterRowsOptions {
   readonly newestFirst?: boolean;
 }
 
-export interface RedactionRule {
-  readonly value: string;
-  readonly replacement?: string;
-}
-
-export interface RedactionSource {
-  readonly email?: string;
-  readonly password?: string;
-  readonly secrets?: readonly string[];
-}
-
 export interface LogSnapshot {
   readonly appName: string;
   readonly rawText: string;
@@ -144,6 +133,97 @@ export interface FetchRecentLogsFromTargetInput {
   readonly appName: string;
   readonly cfHomeDir?: string;
   readonly command?: string;
+}
+
+export interface CompactLogRowRef {
+  readonly rowId: number;
+  readonly ref: string;
+}
+
+export interface CompactLogOptions {
+  readonly messageLimit?: number;
+  readonly refs?: readonly CompactLogRowRef[];
+}
+
+export interface CompactLogRow {
+  readonly id: number;
+  readonly time: string;
+  readonly level: LogLevel;
+  readonly source: string;
+  readonly stream?: "OUT" | "ERR";
+  readonly logger?: string;
+  readonly message?: string;
+  readonly request?: string;
+  readonly status?: string;
+  readonly latency?: string;
+  readonly tenant?: string;
+  readonly clientIp?: string;
+  readonly requestId?: string;
+  readonly ref?: string;
+}
+
+export interface CompactLogSummary {
+  readonly firstTimestamp: string;
+  readonly lastTimestamp: string;
+  readonly levels: Readonly<Record<string, number>>;
+  readonly sources: Readonly<Record<string, number>>;
+  readonly formats: Readonly<Record<string, number>>;
+}
+
+export interface CompactLogDocumentInput {
+  readonly appName?: string;
+  readonly generatedAt?: string;
+  readonly truncated?: boolean;
+  readonly rows: readonly ParsedLogRow[];
+  readonly refs?: readonly CompactLogRowRef[];
+}
+
+export interface CompactLogDocument {
+  readonly appName?: string;
+  readonly generatedAt?: string;
+  readonly truncated: boolean;
+  readonly rowCount: number;
+  readonly summary: CompactLogSummary;
+  readonly rows: readonly CompactLogRow[];
+}
+
+export interface CompactSessionTarget {
+  readonly apiEndpoint: string;
+  readonly org: string;
+  readonly space: string;
+  readonly app: string;
+}
+
+export interface CompactSession {
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt: string;
+  readonly ttlMinutes: number;
+  readonly target?: CompactSessionTarget;
+  readonly rows: readonly ParsedLogRow[];
+}
+
+export interface CompactSessionSummary {
+  readonly sessionId: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt: string;
+  readonly ttlMinutes: number;
+  readonly rowCount: number;
+  readonly target?: CompactSessionTarget;
+}
+
+export interface CompactSessionRef {
+  readonly sessionId: string;
+  readonly rowId: number;
+}
+
+export interface CompactSessionRowLookup {
+  readonly ref: string;
+  readonly session: CompactSession;
+  readonly row: ParsedLogRow;
 }
 
 export type PrepareCfCliSessionInput = CfSessionInput;
@@ -218,8 +298,6 @@ export interface RuntimeDependencies {
 
 export interface CfLogsRuntimeOptions {
   readonly logLimit?: number;
-  readonly redactionRules?: readonly RedactionRule[];
-  readonly skipRedaction?: boolean;
   readonly persistSnapshots?: boolean;
   readonly persistStreamAppends?: boolean;
   readonly retryInitialMs?: number;

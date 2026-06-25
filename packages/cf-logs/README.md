@@ -4,7 +4,7 @@
 
 **Turn SAP BTP Cloud Foundry logs into a reusable engine, not a one-off UI feature.**
 
-Fetch snapshots, stream live output, parse plain-text and JSON logs, normalize router access rows, redact credentials, and persist bounded log state to disk through one CLI and one typed Node.js API.
+Fetch snapshots, stream live output, parse plain-text and JSON logs, normalize router access rows, emit compact AI-oriented context, and persist bounded log state to disk through one CLI and one typed Node.js API.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/cf-logs.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/cf-logs)
 [![license](https://img.shields.io/npm/l/@saptools/cf-logs.svg?style=flat&color=blue)](./LICENSE)
@@ -20,10 +20,11 @@ Fetch snapshots, stream live output, parse plain-text and JSON logs, normalize r
 
 ## ✨ Features
 
-- 📥 **Recent snapshots** — run `cf logs --recent`, redact sensitive values, parse the result, and optionally persist it
+- 📥 **Recent snapshots** — run `cf logs --recent`, parse the result, and optionally persist it
 - 📡 **Live streams** — wrap `cf logs <app>` with batching, reconnection, bounded in-memory state, and typed events
 - 🧠 **Real log parsing** — handle plain text, JSON logs, multiline continuations, and router access metadata such as method, request, status, latency, tenant, client IP, and request ID
-- 🗃️ **Bounded local store** — write redacted snapshots to `~/.saptools/cf-logs-store.json` with atomic file updates and locking
+- 🪶 **Compact output** — project logs into concise rows for AI-model context, with optional refs back to full saved rows
+- 🗃️ **Bounded local store** — write snapshots to `~/.saptools/cf-logs-store.json` with atomic file updates and locking
 - 🧩 **CLI and typed API** — use the package from shell scripts, VSCode extensions, Node services, or test runners
 - 🧪 **Fake-backed E2E coverage** — snapshot, parse, and stream flows are verified without live SAP access
 
@@ -68,6 +69,15 @@ cf-logs stream \
   --space sample \
   --app demo-app \
   --json
+
+# 4. Stream compact AI-oriented rows and keep refs for drill-down
+cf-logs stream \
+  --region ap10 \
+  --org sample-org \
+  --space sample \
+  --app demo-app \
+  --compact \
+  --save
 ```
 
 If you already know the CF API endpoint, replace `--region ap10` with `--api-endpoint https://api.cf.ap10.hana.ondemand.com`.
@@ -97,7 +107,7 @@ Most commands use the same target shape:
 
 ### `cf-logs snapshot`
 
-Fetch recent logs for one app. By default the command prints bounded redacted raw text. Use `--json` for structured rows and `--save` to persist the snapshot.
+Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed AI-oriented output, and `--save` to persist.
 
 ```bash
 cf-logs snapshot \
@@ -112,7 +122,10 @@ cf-logs snapshot \
 | Flag | Description |
 | --- | --- |
 | `--json` | Emit a full JSON snapshot object |
-| `--save` | Persist the redacted snapshot to the local store |
+| `--compact` | Emit compact rows instead of raw text or a full snapshot |
+| `--compact-message-limit <count>` | Maximum characters per compact message/body (default: 500) |
+| `--compact-ttl-minutes <count>` | Minutes before compact drill-down refs expire (default: 60) |
+| `--save` | Persist to the local store; with `--compact`, create temporary full-row refs instead |
 | `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
 
 ### `cf-logs stream`
@@ -136,7 +149,10 @@ Useful stream options:
 | Flag | Description |
 | --- | --- |
 | `--json` | Emit line-delimited JSON events |
-| `--save` | Persist bounded redacted stream appends to the local store |
+| `--compact` | Emit compact parsed rows instead of raw CF lines |
+| `--compact-message-limit <count>` | Maximum characters per compact message/body (default: 500) |
+| `--compact-ttl-minutes <count>` | Minutes before compact drill-down refs expire (default: 60) |
+| `--save` | Persist to the local store; with `--compact`, create temporary full-row refs instead |
 | `--max-lines <count>` | Stop after emitting N streamed lines |
 | `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
 | `--flush-interval-ms <ms>` | Batch window before append events are emitted |
@@ -158,8 +174,31 @@ cat ./sample.log | cf-logs parse
 | Flag | Description |
 | --- | --- |
 | `--input <path>` | Read from a file instead of stdin |
+| `--compact` | Emit compact rows instead of full parsed rows |
+| `--compact-message-limit <count>` | Maximum characters per compact message/body (default: 500) |
+| `--json` | Emit a compact JSON document when combined with `--compact` |
 | `--raw` | Print bounded raw input instead of structured rows |
 | `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
+
+### `cf-logs show`
+
+Retrieve a full saved compact row by ref. Refs are emitted only when `--compact --save` is used.
+
+```bash
+cf-logs show 7f3a9c2b:42
+cf-logs show 7f3a9c2b:42 --json
+```
+
+### `cf-logs session`
+
+Inspect or clear temporary compact drill-down sessions. Sessions expire after 60 minutes by default.
+
+```bash
+cf-logs session list
+cf-logs session list --json
+cf-logs session prune
+cf-logs session clear
+```
 
 ### `cf-logs apps`
 
@@ -296,7 +335,7 @@ The package-managed store lives here:
 ~/.saptools/cf-logs-store.json
 ```
 
-It contains redacted, bounded entries keyed by:
+It contains bounded full-fidelity entries keyed by:
 
 - `apiEndpoint`
 - `org`
@@ -315,12 +354,14 @@ The store is an implementation detail. Prefer `readStore()`, `persistSnapshot()`
 
 ---
 
-## 🔐 Security Notes
+## 🔐 Data Notes
 
-- The CLI and runtime redact the current SAP email and password before emitting or persisting logs.
+- The CLI and runtime do not redact log content.
 - Persisted snapshots are bounded and written with file locking plus atomic replace semantics.
-- The store file is not safe for public repositories. Even after redaction, it still reveals app names, org names, spaces, endpoints, and log content.
-- If your application logs contain additional secrets beyond SAP credentials, add custom runtime redaction rules before persisting or forwarding log output.
+- Store and session files can contain credentials, tokens, personal data, or business data if the application logs them.
+- The store file and compact session files are not safe for public repositories.
+- Compact mode reduces token volume only; it is not a privacy feature.
+- Temporary compact sessions live under `~/.saptools/cf-logs-sessions/` and are pruned after their TTL.
 
 ---
 
@@ -336,7 +377,7 @@ No. The package is intentionally UI-agnostic. It exposes a CLI, a parser, a runt
 <details>
 <summary><b>Why separate this from an extension?</b></summary>
 
-Because parsing, streaming, redaction, and store management are reusable engine concerns. Keeping them in a package makes the IDE layer smaller, easier to test, and easier to evolve.
+Because parsing, streaming, compact projection, and store management are reusable engine concerns. Keeping them in a package makes the IDE layer smaller, easier to test, and easier to evolve.
 
 </details>
 

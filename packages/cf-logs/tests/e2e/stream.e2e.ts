@@ -4,6 +4,7 @@ import {
   createEnv,
   prepareCase,
   readFakeLog,
+  runCli,
   runStreamCli,
   type Scenario,
 } from "./helpers.js";
@@ -47,7 +48,7 @@ function createScenario(): Scenario {
   };
 }
 
-test("stream outputs redacted JSON line batches and stops after the configured line cap", async () => {
+test("stream outputs full-fidelity JSON line batches and stops after the configured line cap", async () => {
   const paths = await prepareCase(ROOT_NAME, "stream-json", createScenario());
   const env = createEnv(paths);
 
@@ -67,7 +68,7 @@ test("stream outputs redacted JSON line batches and stops after the configured l
   ]);
 
   expect(result.code).toBe(0);
-  expect(result.stdout).not.toContain("sample-password");
+  expect(result.stdout).toContain("sample-password");
   const events = result.stdout
     .trim()
     .split("\n")
@@ -80,8 +81,8 @@ test("stream outputs redacted JSON line batches and stops after the configured l
   expect(logs.map((entry) => entry.command)).toEqual(["api", "auth", "target", "logs"]);
 });
 
-test("stream --no-redact emits credentials in plain text", async () => {
-  const paths = await prepareCase(ROOT_NAME, "stream-no-redact", createScenario());
+test("stream compact save emits row refs for full drill-down", async () => {
+  const paths = await prepareCase(ROOT_NAME, "stream-compact-show", createScenario());
   const env = createEnv(paths);
 
   const result = await runStreamCli(env, [
@@ -94,11 +95,28 @@ test("stream --no-redact emits credentials in plain text", async () => {
     "sample",
     "--app",
     "demo-app",
+    "--compact",
+    "--json",
+    "--save",
     "--max-lines",
-    "1",
-    "--no-redact",
+    "2",
   ]);
 
   expect(result.code).toBe(0);
-  expect(result.stdout).toContain("sample-password");
+  const rowEvents = result.stdout
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as {
+      readonly type: string;
+      readonly rows?: readonly { readonly ref?: string; readonly message?: string }[];
+    })
+    .filter((event) => event.type === "rows");
+  const firstRef = rowEvents.flatMap((event) => event.rows ?? [])[0]?.ref;
+  expect(firstRef).toBeDefined();
+
+  const show = await runCli(env, ["show", firstRef ?? "", "--json"]);
+  expect(show.code).toBe(0);
+  const full = JSON.parse(show.stdout) as { readonly row: { readonly rawBody: string } };
+  expect(full.row.rawBody).toContain("sample-password");
 });

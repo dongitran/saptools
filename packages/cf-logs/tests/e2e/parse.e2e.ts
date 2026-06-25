@@ -35,3 +35,34 @@ test("parse reads a local file and returns structured rows", async () => {
   expect(rows[0]?.level).toBe("error");
   expect(rows[1]?.message).toContain("Request started\nError: sample failure");
 });
+
+test("parse compact emits condensed text and compact JSON", async () => {
+  const paths = await prepareCase(ROOT_NAME, "parse-compact", EMPTY_SCENARIO);
+  const env = createEnv(paths);
+  const inputPath = join(paths.workDir, "compact.log");
+  await writeFile(
+    inputPath,
+    [
+      "2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT accepted",
+      '2026-04-12T09:14:42.00+0700 [APP/PROC/WEB/0] OUT {"level":"warn","logger":"unit.service","timestamp":"2026-04-12T02:14:42.000Z","msg":"retry scheduled","type":"log"}',
+    ].join("\n"),
+    "utf8",
+  );
+
+  const text = await runCli(env, ["parse", "--input", inputPath, "--compact"]);
+  expect(text.code).toBe(0);
+  expect(text.stdout).toContain("summary rows=2");
+  expect(text.stdout).toContain("message=retry scheduled");
+  expect(text.stdout).not.toContain("jsonPayload");
+  expect(text.stdout).not.toContain("searchableText");
+
+  const json = await runCli(env, ["parse", "--input", inputPath, "--compact", "--json"]);
+  expect(json.code).toBe(0);
+  const payload = JSON.parse(json.stdout) as {
+    readonly rowCount: number;
+    readonly rows: readonly { readonly message?: string; readonly rawBody?: string }[];
+  };
+  expect(payload.rowCount).toBe(2);
+  expect(payload.rows[1]?.message).toBe("retry scheduled");
+  expect(payload.rows[1]?.rawBody).toBeUndefined();
+});

@@ -44,7 +44,7 @@ function createScenario(): Scenario {
   };
 }
 
-test("snapshot fetches parsed rows, persists a redacted store entry, and uses cf command sequence", async () => {
+test("snapshot fetches parsed rows, persists full-fidelity store entry, and uses cf command sequence", async () => {
   const paths = await prepareCase(ROOT_NAME, "snapshot-json", createScenario());
   const env = createEnv(paths);
 
@@ -75,15 +75,15 @@ test("snapshot fetches parsed rows, persists a redacted store entry, and uses cf
     readonly entries: readonly { readonly rawText: string }[];
   }>(join(paths.homeDir, ".saptools", "cf-logs-store.json"));
   expect(store.entries).toHaveLength(1);
-  expect(store.entries[0]?.rawText).not.toContain("sample-password");
-  expect(store.entries[0]?.rawText).not.toContain("sample@example.com");
+  expect(store.entries[0]?.rawText).toContain("sample-password");
+  expect(store.entries[0]?.rawText).toContain("sample@example.com");
 
   const logs = await readFakeLog(paths.logPath);
   expect(logs.map((entry) => entry.command)).toEqual(["api", "auth", "target", "logs"]);
 });
 
-test("snapshot redacts credentials by default", async () => {
-  const paths = await prepareCase(ROOT_NAME, "snapshot-redact-default", createScenario());
+test("snapshot emits full-fidelity text by default", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-full-fidelity-default", createScenario());
   const env = createEnv(paths);
 
   const result = await runCli(env, [
@@ -96,32 +96,44 @@ test("snapshot redacts credentials by default", async () => {
     "sample",
     "--app",
     "demo-app",
-  ]);
-
-  expect(result.code).toBe(0);
-  expect(result.stdout).not.toContain("sample@example.com");
-  expect(result.stdout).not.toContain("sample-password");
-  expect(result.stdout).toContain("***");
-});
-
-test("snapshot --no-redact emits credentials in plain text", async () => {
-  const paths = await prepareCase(ROOT_NAME, "snapshot-no-redact", createScenario());
-  const env = createEnv(paths);
-
-  const result = await runCli(env, [
-    "snapshot",
-    "--region",
-    "ap10",
-    "--org",
-    "sample-org",
-    "--space",
-    "sample",
-    "--app",
-    "demo-app",
-    "--no-redact",
   ]);
 
   expect(result.code).toBe(0);
   expect(result.stdout).toContain("sample@example.com");
   expect(result.stdout).toContain("sample-password");
+});
+
+test("snapshot compact save emits refs and show returns the full row", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-compact-show", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--compact",
+    "--json",
+    "--save",
+  ]);
+
+  expect(result.code).toBe(0);
+  const payload = JSON.parse(result.stdout) as {
+    readonly rows: readonly { readonly ref?: string; readonly message?: string }[];
+  };
+  const ref = payload.rows[0]?.ref;
+  expect(ref).toBeDefined();
+  expect(payload.rows[0]?.message).toContain("sample-password");
+
+  const show = await runCli(env, ["show", ref ?? "", "--json"]);
+  expect(show.code).toBe(0);
+  const full = JSON.parse(show.stdout) as {
+    readonly row: { readonly rawBody: string; readonly message: string };
+  };
+  expect(full.row.rawBody).toContain("sample-password");
 });

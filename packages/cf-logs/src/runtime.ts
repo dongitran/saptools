@@ -1,6 +1,5 @@
 import { fetchRecentLogsFromTarget, prepareCfCliSession, resolveApiEndpoint, spawnLogStreamFromTarget } from "./cf.js";
 import { appendParsedLines, appendRawLogText, DEFAULT_LOG_LIMIT, parseRecentLogs } from "./parser.js";
-import { buildRedactionRules, redactText } from "./redact.js";
 import { persistSnapshot } from "./store.js";
 import type {
   AppCatalogEntry,
@@ -9,7 +8,6 @@ import type {
   CfSessionInput,
   LogStreamHandle,
   LogSnapshot,
-  RedactionRule,
   RuntimeAppState,
   RuntimeDependencies,
   RuntimeStreamState,
@@ -140,15 +138,14 @@ export class CfLogsRuntime {
     await this.ensurePrepared(expectedVersion);
     const fetchedAt = this.now().toISOString();
     const rawLogs = await this.fetchRecentLogsWithRecovery(session, appName, expectedVersion);
-    const safeRawLogs = this.sanitizeText(rawLogs);
-    const boundedRawLogs = appendRawLogText("", safeRawLogs, { logLimit: this.logLimit });
+    const boundedRawLogs = appendRawLogText("", rawLogs, { logLimit: this.logLimit });
     const rows = parseRecentLogs(boundedRawLogs, { logLimit: this.logLimit });
     const snapshot = {
       appName,
       rawText: boundedRawLogs,
       rows,
       fetchedAt,
-      truncated: safeRawLogs.length > boundedRawLogs.length,
+      truncated: rawLogs.length > boundedRawLogs.length,
     } satisfies LogSnapshot;
     this.states.set(appName, this.mergeState(appName, { rawText: boundedRawLogs, rows, updatedAt: fetchedAt }));
     await this.persistIfEnabled(snapshot, false);
@@ -302,7 +299,7 @@ export class CfLogsRuntime {
   }
 
   private handleStreamChunk(stream: RunningStream, chunkText: string): void {
-    const { lines, remainder } = splitLines(stream.lineRemainder, this.sanitizeText(chunkText));
+    const { lines, remainder } = splitLines(stream.lineRemainder, chunkText);
     stream.lineRemainder = remainder;
     if (lines.length === 0) {
       return;
@@ -428,30 +425,6 @@ export class CfLogsRuntime {
     if (notify) {
       this.postStreamState(appName, { status: "stopped", updatedAt: this.now().toISOString() });
     }
-  }
-
-  private sanitizeText(text: string): string {
-    if (this.options.skipRedaction === true) {
-      return text;
-    }
-    return redactText(text, this.buildRuntimeRedactionRules());
-  }
-
-  private buildRuntimeRedactionRules(): readonly RedactionRule[] {
-    const base = buildRedactionRules({
-      ...(this.session?.email === undefined ? {} : { email: this.session.email }),
-      ...(this.session?.password === undefined ? {} : { password: this.session.password }),
-    });
-    const seen = new Set(base.map((rule) => rule.value));
-    const rules = [...base];
-    for (const rule of this.options.redactionRules ?? []) {
-      if (rule.value.length === 0 || seen.has(rule.value)) {
-        continue;
-      }
-      seen.add(rule.value);
-      rules.push({ value: rule.value, replacement: rule.replacement ?? "***" });
-    }
-    return rules;
   }
 
   private async persistIfEnabled(snapshot: LogSnapshot, isAppend: boolean): Promise<void> {
