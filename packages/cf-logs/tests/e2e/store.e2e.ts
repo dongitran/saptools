@@ -85,6 +85,30 @@ test("--version prints the package semantic version", async () => {
   expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
 });
 
+test("help output is concise and explains compact filters", async () => {
+  const paths = await prepareCase(ROOT_NAME, "help-output", { regions: [] });
+  const env = createEnv(paths);
+
+  const root = await runCli(env, ["--help"]);
+  const snapshot = await runCli(env, ["snapshot", "--help"]);
+  const stream = await runCli(env, ["stream", "--help"]);
+
+  expect(root.code).toBe(0);
+  expect(root.stdout).toContain("Manage Cloud Foundry application logs");
+  expect(root.stdout).not.toContain("cf-logs-store.json");
+
+  expect(snapshot.code).toBe(0);
+  expect(snapshot.stdout).toContain("--search <text>");
+  expect(snapshot.stdout).toContain("case-insensitive");
+  expect(snapshot.stdout).toContain("trace/debug/info/warn/error/fatal");
+  expect(snapshot.stdout).toContain("emit refs");
+
+  expect(stream.code).toBe(0);
+  expect(stream.stdout).toContain("--max-lines <count>");
+  expect(stream.stdout).toContain("lines/rows");
+  expect(`${root.stdout}${snapshot.stdout}${stream.stdout}`).not.toContain("(default: false)");
+});
+
 test("CLI works correctly when invoked through a symlink (isMainModule symlink resolution)", async () => {
   const paths = await prepareCase(ROOT_NAME, "symlink-invoke", { regions: [] });
   const env = createEnv(paths);

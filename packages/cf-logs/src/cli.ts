@@ -415,17 +415,17 @@ function bindTerminationSignals(stop: () => Promise<void>): () => void {
 function addLogLimitOption(command: Command): Command {
   return command.option(
     "--log-limit <count>",
-    "Maximum number of parsed rows and bounded raw-text size",
+    "Max parsed rows and raw-text budget",
     (value: string) => parsePositiveInteger(value, "--log-limit"),
   );
 }
 
 function addRowFilterOptions(command: Command): Command {
   return command
-    .option("--search <text>", "Filter rows by case-insensitive text", parseSearchTerm)
+    .option("--search <text>", "Keep rows containing text, case-insensitive", parseSearchTerm)
     .option(
       "--min-level <level>",
-      "Keep rows at or above the given level",
+      `Keep level >= ${LOG_LEVELS.join("/")}`,
       (value: string) => parseLogLevel(value, "--min-level"),
     );
 }
@@ -451,10 +451,10 @@ function addRetryOptions(command: Command): Command {
 
 function addCompactOptions(command: Command): Command {
   return command
-    .option("--compact", "Emit compact log output", false)
+    .option("--compact", "Emit compact rows")
     .option(
       "--compact-message-limit <count>",
-      "Maximum characters per compact message/body",
+      "Max compact message/body chars",
       (value: string) => parsePositiveInteger(value, "--compact-message-limit"),
     );
 }
@@ -462,7 +462,7 @@ function addCompactOptions(command: Command): Command {
 function addCompactSessionOptions(command: Command): Command {
   return addCompactOptions(command).option(
     "--compact-ttl-minutes <count>",
-    "Minutes before compact drill-down sessions expire",
+    "Minutes compact refs stay valid",
     (value: string) => parsePositiveInteger(value, "--compact-ttl-minutes"),
   );
 }
@@ -493,7 +493,7 @@ function buildProgram(): Command {
   const program = new Command();
   program
     .name("cf-logs")
-    .description(`Manage Cloud Foundry logs and log snapshots in ${cfLogsStorePath()}`)
+    .description("Manage Cloud Foundry application logs")
     .version(readPackageVersion(), "-V, --version", "Print the cf-logs package version");
 
   addCompactSessionOptions(
@@ -502,14 +502,14 @@ function buildProgram(): Command {
         addAppOptions(
           program
             .command("snapshot")
-            .description("Fetch recent CF logs for one app and optionally persist a snapshot"),
+            .description("Fetch recent logs for one app"),
         ),
       ),
     ),
   )
-    .option("--json", "Emit structured JSON instead of raw text", false)
-    .option("--save", "Persist output for later inspection")
-    .option("--since <duration>", "Filter recent snapshot rows by age, e.g. 15m, 45m, 1h", parseSinceDurationMs)
+    .option("--json", "Emit JSON")
+    .option("--save", "Save output; with --compact, emit refs")
+    .option("--since <duration>", "Keep rows newer than duration, e.g. 15m, 1h", parseSinceDurationMs)
     .action(async (flags: SnapshotFlags): Promise<void> => {
       await runSnapshot(flags);
     });
@@ -521,17 +521,17 @@ function buildProgram(): Command {
           addAppOptions(
             program
               .command("stream")
-              .description("Start a live CF log stream for one app"),
+              .description("Stream live logs for one app"),
           ),
         ),
       ),
     ),
   )
-    .option("--json", "Emit line-delimited JSON events", false)
-    .option("--save", "Persist output for later inspection")
+    .option("--json", "Emit JSON Lines")
+    .option("--save", "Save output; with --compact, emit refs")
     .option(
       "--max-lines <count>",
-      "Stop after emitting the given number of streamed lines",
+      "Stop after N emitted lines/rows",
       (value: string) => parsePositiveInteger(value, "--max-lines"),
     )
     .action(async (flags: StreamFlags): Promise<void> => {
@@ -540,32 +540,32 @@ function buildProgram(): Command {
 
   program
     .command("show")
-    .description("Show a full saved compact log row by ref")
-    .argument("<ref>", "Compact row ref in the form <session-id>:<row-id>")
-    .option("--json", "Emit JSON instead of text", false)
+    .description("Show a full row for a compact ref")
+    .argument("<ref>", "Compact ref: <session-id>:<row-id>")
+    .option("--json", "Emit JSON")
     .action(async (ref: string, flags: ShowFlags): Promise<void> => {
       await runShow(ref, flags);
     });
 
-  const session = program.command("session").description("Inspect compact drill-down sessions");
+  const session = program.command("session").description("List or clear compact ref sessions");
   session
     .command("list")
-    .description("List active compact drill-down sessions")
-    .option("--json", "Emit JSON instead of text", false)
+    .description("List active compact ref sessions")
+    .option("--json", "Emit JSON")
     .action(async (flags: SessionListFlags): Promise<void> => {
       await runSessionList(flags);
     });
 
   session
     .command("prune")
-    .description("Remove expired compact drill-down sessions")
+    .description("Remove expired compact ref sessions")
     .action(async (): Promise<void> => {
       await runSessionPrune();
     });
 
   session
     .command("clear")
-    .description("Remove every compact drill-down session")
+    .description("Remove all compact ref sessions")
     .action(async (): Promise<void> => {
       await runSessionClear();
     });
@@ -573,32 +573,32 @@ function buildProgram(): Command {
   addSessionOptions(
     program
       .command("apps")
-      .description("List started apps with running instances for a CF org/space"),
+      .description("List started apps in a CF org/space"),
   )
-    .option("--json", "Emit JSON instead of tab-separated output", false)
+    .option("--json", "Emit JSON")
     .action(async (flags: AppsFlags): Promise<void> => {
       await runApps(flags);
     });
 
-  const store = program.command("store").description("Inspect the package-managed log store");
+  const store = program.command("store").description("Inspect the persistent snapshot store");
   store
     .command("path")
-    .description("Print the local log-store path")
+    .description("Print the store path")
     .action((): void => {
       process.stdout.write(`${cfLogsStorePath()}\n`);
     });
 
   store
     .command("list")
-    .description("List cached log-store entries")
-    .option("--json", "Emit the full store as JSON", false)
+    .description("List cached store entries")
+    .option("--json", "Emit JSON")
     .action(async (flags: StoreListFlags): Promise<void> => {
       await runStoreList(flags);
     });
 
   store
     .command("clear")
-    .description("Remove every cached entry from the package-managed log store")
+    .description("Remove all cached store entries")
     .action(async (): Promise<void> => {
       await clearStore();
       process.stdout.write(`Cleared ${cfLogsStorePath()}\n`);
