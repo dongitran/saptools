@@ -33,6 +33,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
 | [`@saptools/cf-hana`](./packages/cf-hana) | Run SQL (SELECT/DML/DDL) against SAP HANA Cloud databases bound to a CF app by region/org/space/app selector | [![npm](https://img.shields.io/npm/v/@saptools/cf-hana.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-hana) |
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
+| [`@saptools/jira`](./packages/jira) | Jira Cloud CLI and typed API that reuse the JiraOps OAuth token store | [![npm](https://img.shields.io/npm/v/@saptools/jira.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/jira) |
 
 ---
 
@@ -165,6 +166,16 @@ Ports one GitLab source MR into another repository as a Draft MR, preserving rev
 
 Docs → [`packages/gitport/README.md`](./packages/gitport/README.md)
 
+### 🧭 `@saptools/jira`
+
+Turns the JiraOps OAuth session into a scriptable Jira Cloud CLI and TypeScript API.
+
+- 🔁 shared `~/.jira-oauth/tokens.json` token store with JiraOps and `jira-oauth-client`
+- 🎫 assigned issue reads, issue details, remote links, transitions, and worklogs
+- 🧪 fake-backed E2E tests that avoid real Atlassian network calls
+
+Docs → [`packages/jira/README.md`](./packages/jira/README.md)
+
 ---
 
 ## 🧱 Monorepo Tooling
@@ -210,7 +221,8 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── bruno/
 │   ├── sqltools/
 │   ├── cf-hana/
-│   └── gitport/
+│   ├── gitport/
+│   └── jira/
 ├── package.json
 ├── pnpm-workspace.yaml
 └── turbo.json

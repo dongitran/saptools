@@ -62,6 +62,15 @@ if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^pack
   run_package_checks '@saptools/cf-events' 'packages/cf-events'
 fi
 
+if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/jira/'; then
+  run_package_checks '@saptools/jira' 'packages/jira'
+  if git ls-files --error-unmatch "packages/jira/package.json" >/dev/null 2>&1; then
+    echo "pre-commit: cspell for @saptools/jira"
+    pnpm --filter '@saptools/jira' cspell
+    ran_checks=1
+  fi
+fi
+
 if [ "$ran_checks" -eq 0 ]; then
   echo "pre-commit: no tracked package changes detected, skipping package checks"
 fi
