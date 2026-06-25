@@ -16,7 +16,7 @@ const routerLine =
   'x_cf_true_client_ip:"203.0.113.7"';
 
 describe("compact logs", () => {
-  it("projects parsed rows into concise AI-oriented fields", () => {
+  it("projects parsed rows into concise compact fields", () => {
     const rows = parseRecentLogs(
       [
         '2026-04-12T09:00:00.00+0700 [APP/PROC/WEB/0] OUT {"level":"info","logger":"unit.service","timestamp":"2026-04-12T02:00:00.000Z","msg":"operation accepted","type":"log","correlation_id":"corr-000"}',

@@ -1,5 +1,4 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -19,11 +18,7 @@ import {
   runSessionPrune,
   runShow,
 } from "./cli-sessions.js";
-import {
-  buildCompactLogDocument,
-  formatCompactLogDocument,
-} from "./compact.js";
-import { appendRawLogText, parseRecentLogs } from "./parser.js";
+import { formatCompactLogDocument } from "./compact.js";
 import { cfLogsStorePath } from "./paths.js";
 import { CfLogsRuntime } from "./runtime.js";
 import { clearStore, readStore } from "./store.js";
@@ -73,15 +68,6 @@ interface StreamFlags extends AppFlags {
 
 interface AppsFlags extends SessionFlags {
   readonly json?: boolean;
-}
-
-interface ParseFlags {
-  readonly input?: string;
-  readonly logLimit?: number;
-  readonly raw?: boolean;
-  readonly json?: boolean;
-  readonly compact?: boolean;
-  readonly compactMessageLimit?: number;
 }
 
 interface StoreListFlags {
@@ -174,22 +160,6 @@ function writeRaw(text: string): void {
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 }
 
-async function readInputText(inputPath: string | undefined): Promise<string> {
-  if (inputPath !== undefined) {
-    return await readFile(inputPath, "utf8");
-  }
-  return await readStdin();
-}
-
-async function readStdin(): Promise<string> {
-  const chunks: string[] = [];
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) {
-    chunks.push(String(chunk));
-  }
-  return chunks.join("");
-}
-
 function toStatePayload(
   appName: string,
   streamState: RuntimeStreamState,
@@ -267,33 +237,6 @@ async function runSnapshot(flags: SnapshotFlags): Promise<void> {
   } finally {
     await runtime.dispose();
   }
-}
-
-async function runParse(flags: ParseFlags): Promise<void> {
-  if (flags.compact === true && flags.raw === true) {
-    throw new Error("--compact cannot be combined with --raw.");
-  }
-  const input = await readInputText(flags.input);
-  const parseOptions = buildParseOptions(flags.logLimit);
-  const boundedText = appendRawLogText("", input, parseOptions);
-  if (flags.compact === true) {
-    const rows = parseRecentLogs(boundedText, parseOptions);
-    const document = buildCompactLogDocument(
-      { rows, truncated: input.length > boundedText.length },
-      { ...(flags.compactMessageLimit === undefined ? {} : { messageLimit: flags.compactMessageLimit }) },
-    );
-    if (flags.json === true) {
-      writeJson(document);
-      return;
-    }
-    writeRaw(formatCompactLogDocument(document));
-    return;
-  }
-  if (flags.raw === true) {
-    writeRaw(boundedText);
-    return;
-  }
-  writeJson(parseRecentLogs(boundedText, parseOptions));
 }
 
 async function runApps(flags: AppsFlags): Promise<void> {
@@ -457,7 +400,7 @@ function addRetryOptions(command: Command): Command {
 
 function addCompactOptions(command: Command): Command {
   return command
-    .option("--compact", "Emit compact AI-oriented output", false)
+    .option("--compact", "Emit compact log output", false)
     .option(
       "--compact-message-limit <count>",
       "Maximum characters per compact message/body",
@@ -537,20 +480,6 @@ function buildProgram(): Command {
     )
     .action(async (flags: StreamFlags): Promise<void> => {
       await runStream(flags);
-    });
-
-  addCompactOptions(
-    addLogLimitOption(
-      program
-        .command("parse")
-        .description("Parse a local log file or stdin into structured rows"),
-    ),
-  )
-    .option("--input <path>", "Read from a local file instead of stdin")
-    .option("--json", "Emit JSON when combined with compact output", false)
-    .option("--raw", "Print bounded raw input instead of structured rows", false)
-    .action(async (flags: ParseFlags): Promise<void> => {
-      await runParse(flags);
     });
 
   program

@@ -1,7 +1,7 @@
 {
   "name": "@saptools/cf-logs",
-  "version": "0.2.2",
-  "description": "Fetch, stream, parse, and cache SAP BTP Cloud Foundry application logs",
+  "version": "0.3.0",
+  "description": "Fetch, stream, compact, and cache SAP BTP Cloud Foundry application logs",
   "type": "module",
   "publishConfig": {
     "access": "public",

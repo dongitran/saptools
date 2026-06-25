@@ -4,7 +4,7 @@
 
 **Turn SAP BTP Cloud Foundry logs into a reusable engine, not a one-off UI feature.**
 
-Fetch snapshots, stream live output, parse plain-text and JSON logs, normalize router access rows, emit compact AI-oriented context, and persist bounded log state to disk through one CLI and one typed Node.js API.
+Fetch snapshots, stream live output, normalize plain-text and JSON rows, emit compact high-signal context, and persist bounded log state to disk through one CLI and one typed Node.js API.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/cf-logs.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/cf-logs)
 [![license](https://img.shields.io/npm/l/@saptools/cf-logs.svg?style=flat&color=blue)](./LICENSE)
@@ -20,13 +20,13 @@ Fetch snapshots, stream live output, parse plain-text and JSON logs, normalize r
 
 ## ✨ Features
 
-- 📥 **Recent snapshots** — run `cf logs --recent`, parse the result, and optionally persist it
+- 📥 **Recent snapshots** — run `cf logs --recent`, normalize the result, and optionally persist it
 - 📡 **Live streams** — wrap `cf logs <app>` with batching, reconnection, bounded in-memory state, and typed events
-- 🧠 **Real log parsing** — handle plain text, JSON logs, multiline continuations, and router access metadata such as method, request, status, latency, tenant, client IP, and request ID
-- 🪶 **Compact output** — project logs into concise rows for AI-model context, with optional refs back to full saved rows
+- 🧠 **Log normalization** — handle plain text, JSON logs, multiline continuations, and router access metadata such as method, request, status, latency, tenant, client IP, and request ID
+- 🪶 **Compact output** — project logs into concise rows with optional refs back to full saved rows
 - 🗃️ **Bounded local store** — write snapshots to `~/.saptools/cf-logs-store.json` with atomic file updates and locking
 - 🧩 **CLI and typed API** — use the package from shell scripts, VSCode extensions, Node services, or test runners
-- 🧪 **Fake-backed E2E coverage** — snapshot, parse, and stream flows are verified without live SAP access
+- 🧪 **Fake-backed E2E coverage** — snapshot and stream flows are verified without live SAP access
 
 ---
 
@@ -70,7 +70,7 @@ cf-logs stream \
   --app demo-app \
   --json
 
-# 4. Stream compact AI-oriented rows and keep refs for drill-down
+# 4. Stream compact rows and keep refs for drill-down
 cf-logs stream \
   --region ap10 \
   --org sample-org \
@@ -107,7 +107,7 @@ Most commands use the same target shape:
 
 ### `cf-logs snapshot`
 
-Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed AI-oriented output, and `--save` to persist.
+Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed output, and `--save` to persist.
 
 ```bash
 cf-logs snapshot \
@@ -158,27 +158,6 @@ Useful stream options:
 | `--flush-interval-ms <ms>` | Batch window before append events are emitted |
 | `--retry-initial-ms <ms>` | Initial reconnect delay after unexpected stream exits |
 | `--retry-max-ms <ms>` | Maximum reconnect delay |
-
-### `cf-logs parse`
-
-Parse a local file or stdin into structured rows.
-
-```bash
-# Parse a file
-cf-logs parse --input ./sample.log
-
-# Parse stdin
-cat ./sample.log | cf-logs parse
-```
-
-| Flag | Description |
-| --- | --- |
-| `--input <path>` | Read from a file instead of stdin |
-| `--compact` | Emit compact rows instead of full parsed rows |
-| `--compact-message-limit <count>` | Maximum characters per compact message/body (default: 500) |
-| `--json` | Emit a compact JSON document when combined with `--compact` |
-| `--raw` | Print bounded raw input instead of structured rows |
-| `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
 
 ### `cf-logs show`
 
@@ -244,20 +223,6 @@ cf-logs --version
 ---
 
 ## 🧑‍💻 Programmatic Usage
-
-### Parse logs directly
-
-```ts
-import { filterRows, parseRecentLogs } from "@saptools/cf-logs";
-
-const rows = parseRecentLogs(`
-2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT ready
-2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT {"level":"error","logger":"samplelogger","timestamp":"2026-04-12T02:14:41.000Z","msg":"save failed","type":"log"}
-`);
-
-const errors = filterRows(rows, { level: "error" });
-console.log(errors[0]?.message);
-```
 
 ### Drive snapshots and streams from code
 
@@ -370,14 +335,14 @@ The store is an implementation detail. Prefer `readStore()`, `persistSnapshot()`
 <details>
 <summary><b>Does this package depend on VSCode?</b></summary>
 
-No. The package is intentionally UI-agnostic. It exposes a CLI, a parser, a runtime engine, and store helpers that can be used by VSCode, terminal tools, tests, or backend processes.
+No. The package is intentionally UI-agnostic. It exposes a CLI, a runtime engine, normalization helpers, and store helpers that can be used by VSCode, terminal tools, tests, or backend processes.
 
 </details>
 
 <details>
 <summary><b>Why separate this from an extension?</b></summary>
 
-Because parsing, streaming, compact projection, and store management are reusable engine concerns. Keeping them in a package makes the IDE layer smaller, easier to test, and easier to evolve.
+Because log normalization, streaming, compact projection, and store management are reusable engine concerns. Keeping them in a package makes the IDE layer smaller, easier to test, and easier to evolve.
 
 </details>
 
