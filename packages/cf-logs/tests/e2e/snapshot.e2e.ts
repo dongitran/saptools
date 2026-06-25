@@ -12,6 +12,11 @@ import {
 } from "./helpers.js";
 
 const ROOT_NAME = "cf-logs-e2e";
+const MINUTE_MS = 60_000;
+
+function formatCfTimestamp(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, ".00+0000");
+}
 
 function createScenario(): Scenario {
   return {
@@ -32,6 +37,39 @@ function createScenario(): Scenario {
                       "Retrieving logs for app demo-app in org sample-org / space sample as operator@example.test...",
                       "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT credential-placeholder",
                       '2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT {"level":"error","logger":"samplelogger","timestamp":"2026-04-12T02:14:41.000Z","msg":"save failed","type":"log"}',
+                    ].join("\n"),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function createTimeWindowScenario(): Scenario {
+  const nowMs = Date.now();
+  const olderTimestamp = formatCfTimestamp(new Date(nowMs - 90 * MINUTE_MS));
+  const recentTimestamp = formatCfTimestamp(new Date(nowMs - 20 * MINUTE_MS));
+  return {
+    regions: [
+      {
+        key: "ap10",
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        orgs: [
+          {
+            name: "sample-org",
+            spaces: [
+              {
+                name: "sample",
+                apps: [
+                  {
+                    name: "demo-app",
+                    recentLogs: [
+                      `${olderTimestamp} [APP/PROC/WEB/0] OUT before window`,
+                      `${recentTimestamp} [APP/PROC/WEB/0] OUT inside window`,
                     ].join("\n"),
                   },
                 ],
@@ -101,6 +139,63 @@ test("snapshot emits full-fidelity text by default", async () => {
   expect(result.code).toBe(0);
   expect(result.stdout).toContain("operator@example.test");
   expect(result.stdout).toContain("credential-placeholder");
+});
+
+test("snapshot --since filters recent rows after cf returns recent logs", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-since", createTimeWindowScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--since",
+    "45m",
+    "--json",
+  ]);
+
+  expect(result.code).toBe(0);
+  const payload = JSON.parse(result.stdout) as {
+    readonly rawText: string;
+    readonly rows: readonly { readonly id: number; readonly message: string }[];
+  };
+  expect(payload.rows).toHaveLength(1);
+  expect(payload.rows[0]?.id).toBe(1);
+  expect(payload.rows[0]?.message).toBe("inside window");
+  expect(payload.rawText).toContain("inside window");
+  expect(payload.rawText).not.toContain("before window");
+
+  const logs = await readFakeLog(paths.logPath);
+  expect(logs.map((entry) => entry.command)).toEqual(["api", "auth", "target", "logs"]);
+});
+
+test("snapshot --since rejects invalid durations before running cf commands", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-since-invalid", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--since",
+    "1x",
+  ]);
+
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("--since");
+  expect(await readFakeLog(paths.logPath)).toEqual([]);
 });
 
 test("snapshot compact save emits refs and show returns the full row", async () => {

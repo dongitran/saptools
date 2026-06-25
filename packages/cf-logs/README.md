@@ -107,7 +107,7 @@ Most commands use the same target shape:
 
 ### `cf-logs snapshot`
 
-Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed output, and `--save` to persist.
+Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed output, and `--save` to persist. Cloud Foundry controls the `--recent` window; `--since` filters rows after those logs are returned.
 
 ```bash
 cf-logs snapshot \
@@ -126,6 +126,7 @@ cf-logs snapshot \
 | `--compact-message-limit <count>` | Maximum characters per compact message/body (default: 500) |
 | `--compact-ttl-minutes <count>` | Minutes before compact drill-down refs expire (default: 60) |
 | `--save` | Persist to the local store; with `--compact`, create temporary full-row refs instead |
+| `--since <duration>` | Filter rows after CF returns recent logs; accepts `15m`, `45m`, `1h`, or `1d` |
 | `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
 
 ### `cf-logs stream`

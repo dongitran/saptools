@@ -1,6 +1,7 @@
 import { fetchRecentLogsFromTarget, prepareCfCliSession, resolveApiEndpoint, spawnLogStreamFromTarget } from "./cf.js";
 import { appendParsedLines, appendRawLogText, DEFAULT_LOG_LIMIT, parseRecentLogs } from "./parser.js";
 import { persistSnapshot } from "./store.js";
+import { filterRowsSince, formatRowsAsRawText } from "./time-window.js";
 import type {
   AppCatalogEntry,
   CfLogsRuntimeEvent,
@@ -36,6 +37,7 @@ export class CfLogsRuntime {
   private readonly flushIntervalMs: number;
   private readonly retryInitialMs: number;
   private readonly retryMaxMs: number;
+  private readonly snapshotSinceMs: number | undefined;
   private readonly now: () => Date;
   private session: CfSessionInput | null = null;
   private sessionVersion = 0;
@@ -65,6 +67,7 @@ export class CfLogsRuntime {
     this.flushIntervalMs = resolvePositiveNumber(options.flushIntervalMs, DEFAULT_FLUSH_INTERVAL_MS);
     this.retryInitialMs = resolvePositiveNumber(options.retryInitialMs, DEFAULT_RETRY_INITIAL_MS);
     this.retryMaxMs = resolvePositiveNumber(options.retryMaxMs, DEFAULT_RETRY_MAX_MS);
+    this.snapshotSinceMs = resolveOptionalPositiveNumber(options.sinceMs);
     this.now = options.now ?? (() => new Date());
   }
 
@@ -136,13 +139,18 @@ export class CfLogsRuntime {
     this.requireAvailableApp(appName);
     const expectedVersion = this.sessionVersion;
     await this.ensurePrepared(expectedVersion);
-    const fetchedAt = this.now().toISOString();
+    const fetchedAtDate = this.now();
+    const fetchedAt = fetchedAtDate.toISOString();
     const rawLogs = await this.fetchRecentLogsWithRecovery(session, appName, expectedVersion);
     const boundedRawLogs = appendRawLogText("", rawLogs, { logLimit: this.logLimit });
-    const rows = parseRecentLogs(boundedRawLogs, { logLimit: this.logLimit });
+    const parsedRows = parseRecentLogs(boundedRawLogs, { logLimit: this.logLimit });
+    const rows = this.snapshotSinceMs === undefined
+      ? parsedRows
+      : filterRowsSince(parsedRows, this.snapshotSinceMs, fetchedAtDate);
+    const rawText = this.snapshotSinceMs === undefined ? boundedRawLogs : formatRowsAsRawText(rows);
     const snapshot = {
       appName,
-      rawText: boundedRawLogs,
+      rawText,
       rows,
       fetchedAt,
       truncated: rawLogs.length > boundedRawLogs.length,
@@ -461,6 +469,10 @@ function shouldRetryPreparedSession(error: unknown): boolean {
 
 function resolvePositiveNumber(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function resolveOptionalPositiveNumber(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function splitLines(

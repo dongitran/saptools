@@ -298,6 +298,7 @@ export interface RuntimeDependencies {
 
 export interface CfLogsRuntimeOptions {
   readonly logLimit?: number;
+  readonly sinceMs?: number;
   readonly persistSnapshots?: boolean;
   readonly persistStreamAppends?: boolean;
   readonly retryInitialMs?: number;

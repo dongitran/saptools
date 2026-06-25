@@ -220,6 +220,63 @@ describe("CfLogsRuntime", () => {
     );
   });
 
+  it("filters snapshots by a relative time window before persisting", async () => {
+    const persistSnapshot = vi.fn().mockResolvedValue({
+      key: {
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        org: "sample-org",
+        space: "sample",
+        app: "demo-app",
+      },
+      rawText: "2026-04-12T10:00:00.00+0700 [APP/PROC/WEB/0] OUT inside window",
+      fetchedAt: "2026-04-12T03:00:00.000Z",
+      updatedAt: "2026-04-12T03:00:00.000Z",
+      rowCount: 1,
+      truncated: false,
+    });
+    const runtime = new CfLogsRuntime(
+      {
+        persistSnapshots: true,
+        sinceMs: 60 * 60_000,
+        now: () => new Date("2026-04-12T03:00:00.000Z"),
+      },
+      {
+        prepareSession: vi.fn().mockResolvedValue(undefined),
+        fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(
+          [
+            "2026-04-12T08:30:00.00+0700 [APP/PROC/WEB/0] OUT before window",
+            "2026-04-12T10:00:00.00+0700 [APP/PROC/WEB/0] OUT inside window",
+          ].join("\n"),
+        ),
+        persistSnapshot,
+      },
+    );
+    runtime.setSession({
+      region: "ap10",
+      email: "operator@example.test",
+      password: "credential-placeholder",
+      org: "sample-org",
+      space: "sample",
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+    });
+    runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
+
+    const snapshot = await runtime.fetchSnapshot("demo-app");
+
+    expect(snapshot.rows).toHaveLength(1);
+    expect(snapshot.rows[0]?.id).toBe(1);
+    expect(snapshot.rows[0]?.message).toBe("inside window");
+    expect(snapshot.rawText).not.toContain("before window");
+    expect(persistSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rawText: expect.stringContaining("inside window"),
+        rows: expect.arrayContaining([
+          expect.objectContaining({ id: 1, message: "inside window" }),
+        ]),
+      }),
+    );
+  });
+
   it("throws when fetching a snapshot without a session or with an unknown app", async () => {
     const runtime = new CfLogsRuntime();
     runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);

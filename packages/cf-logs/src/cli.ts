@@ -22,6 +22,7 @@ import { formatCompactLogDocument } from "./compact.js";
 import { cfLogsStorePath } from "./paths.js";
 import { CfLogsRuntime } from "./runtime.js";
 import { clearStore, readStore } from "./store.js";
+import { parseSinceDurationMs } from "./time-window.js";
 import type {
   CfLogsRuntimeEvent,
   CfLogsRuntimeOptions,
@@ -48,6 +49,7 @@ interface SnapshotFlags extends AppFlags {
   readonly json?: boolean;
   readonly save?: boolean;
   readonly logLimit?: number;
+  readonly since?: number;
   readonly compact?: boolean;
   readonly compactMessageLimit?: number;
   readonly compactTtlMinutes?: number;
@@ -134,6 +136,7 @@ function buildParseOptions(logLimit: number | undefined): ParseLogsOptions {
 function buildSnapshotRuntimeOptions(flags: SnapshotFlags): CfLogsRuntimeOptions {
   return {
     ...buildParseOptions(flags.logLimit),
+    ...(flags.since === undefined ? {} : { sinceMs: flags.since }),
     ...(flags.save === true && flags.compact !== true ? { persistSnapshots: true } : {}),
   };
 }
@@ -456,6 +459,7 @@ function buildProgram(): Command {
   )
     .option("--json", "Emit structured JSON instead of raw text", false)
     .option("--save", "Persist output for later inspection")
+    .option("--since <duration>", "Filter recent snapshot rows by age, e.g. 15m, 45m, 1h", parseSinceDurationMs)
     .action(async (flags: SnapshotFlags): Promise<void> => {
       await runSnapshot(flags);
     });
