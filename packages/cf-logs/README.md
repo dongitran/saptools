@@ -107,7 +107,7 @@ Most commands use the same target shape:
 
 ### `cf-logs snapshot`
 
-Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed output, and `--save` to persist. Cloud Foundry controls the `--recent` window; `--since` filters rows after those logs are returned.
+Fetch recent logs for one app. By default the command prints bounded raw text. Use `--json` for structured rows, `--compact` for condensed output, and `--save` to persist. Cloud Foundry controls the `--recent` window; `--since`, `--search`, and `--min-level` filter rows after those logs are returned.
 
 ```bash
 cf-logs snapshot \
@@ -127,6 +127,8 @@ cf-logs snapshot \
 | `--compact-ttl-minutes <count>` | Minutes before compact drill-down refs expire (default: 60) |
 | `--save` | Persist to the local store; with `--compact`, create temporary full-row refs instead |
 | `--since <duration>` | Filter rows after CF returns recent logs; accepts `15m`, `45m`, `1h`, or `1d` |
+| `--search <text>` | Keep rows matching text case-insensitively |
+| `--min-level <level>` | Keep rows at or above `trace`, `debug`, `info`, `warn`, `error`, or `fatal` |
 | `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
 
 ### `cf-logs stream`
@@ -155,6 +157,8 @@ Useful stream options:
 | `--compact-ttl-minutes <count>` | Minutes before compact drill-down refs expire (default: 60) |
 | `--save` | Persist to the local store; with `--compact`, create temporary full-row refs instead |
 | `--max-lines <count>` | Stop after emitting N streamed lines |
+| `--search <text>` | Keep rows matching text case-insensitively |
+| `--min-level <level>` | Keep rows at or above `trace`, `debug`, `info`, `warn`, `error`, or `fatal` |
 | `--log-limit <count>` | Maximum parsed rows and bounded raw-text budget |
 | `--flush-interval-ms <ms>` | Batch window before append events are emitted |
 | `--retry-initial-ms <ms>` | Initial reconnect delay after unexpected stream exits |
@@ -233,6 +237,7 @@ import { CfLogsRuntime } from "@saptools/cf-logs";
 const runtime = new CfLogsRuntime({
   persistSnapshots: true,
   persistStreamAppends: true,
+  rowFilter: { searchTerm: "failed", minLevel: "warn" },
   retryInitialMs: 1_000,
   retryMaxMs: 20_000,
 });

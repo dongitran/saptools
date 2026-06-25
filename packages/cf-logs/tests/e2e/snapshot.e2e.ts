@@ -198,6 +198,59 @@ test("snapshot --since rejects invalid durations before running cf commands", as
   expect(await readFakeLog(paths.logPath)).toEqual([]);
 });
 
+test("snapshot --search matches rows case-insensitively", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-search", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--search",
+    "SAVE",
+    "--json",
+  ]);
+
+  expect(result.code).toBe(0);
+  const payload = JSON.parse(result.stdout) as {
+    readonly rawText: string;
+    readonly rows: readonly { readonly message: string }[];
+  };
+  expect(payload.rows).toHaveLength(1);
+  expect(payload.rows[0]?.message).toBe("save failed");
+  expect(payload.rawText).toContain("save failed");
+  expect(payload.rawText).not.toContain("credential-placeholder");
+});
+
+test("snapshot --min-level rejects unknown levels before running cf commands", async () => {
+  const paths = await prepareCase(ROOT_NAME, "snapshot-min-level-invalid", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runCli(env, [
+    "snapshot",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--min-level",
+    "notice",
+  ]);
+
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("--min-level");
+  expect(await readFakeLog(paths.logPath)).toEqual([]);
+});
+
 test("snapshot compact save emits refs and show returns the full row", async () => {
   const paths = await prepareCase(ROOT_NAME, "snapshot-compact-show", createScenario());
   const env = createEnv(paths);

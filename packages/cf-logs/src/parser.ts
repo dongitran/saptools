@@ -1,4 +1,4 @@
-import type { FilterRowsOptions, ParseLogsOptions, ParsedLogRow } from "./types.js";
+import { LOG_LEVELS, type FilterRowsOptions, type LogLevel, type ParseLogsOptions, type ParsedLogRow } from "./types.js";
 
 export const DEFAULT_LOG_LIMIT = 300;
 const MAX_PARSED_LOG_ROWS = 5_000;
@@ -24,6 +24,15 @@ const RTR_VCAP_REQUEST_ID_PATTERN = /\bvcap_request_id:"(?<vcapRequestId>[^"]*)"
 const RTR_TRUE_CLIENT_IP_PATTERN = /\bx_cf_true_client_ip:"(?<clientIp>[^"]*)"/;
 const RTR_LEGACY_TRUE_CLIENT_IP_PATTERN = /\btrue_client_ip:"(?<clientIp>[^"]*)"/;
 const RTR_X_FORWARDED_FOR_PATTERN = /\bx_forwarded_for:"(?<forwardedFor>[^"]*)"/;
+const LOG_LEVEL_SEVERITY = {
+  trace: 0,
+  debug: 1,
+  info: 2,
+  warn: 3,
+  error: 4,
+  fatal: 5,
+} satisfies Readonly<Record<LogLevel, number>>;
+const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
 
 export function parseRecentLogs(
   rawText: string,
@@ -83,14 +92,10 @@ export function filterRows(
   const level = options.level ?? "all";
   const searchTerm = (options.searchTerm ?? "").trim().toLowerCase();
   const newestFirst = options.newestFirst ?? true;
-  const matching = rows.filter((row) => {
-    if (level !== "all" && row.level !== level) {
-      return false;
-    }
-    return searchTerm.length === 0 || row.searchableText.includes(searchTerm);
-  });
+  const matching = rows.filter((row) => rowMatchesFilters(row, level, options.minLevel, searchTerm));
+  const ordered = newestFirst ? matching.slice().reverse() : matching;
 
-  return newestFirst ? matching.slice().reverse() : matching;
+  return options.renumber === true ? renumberRows(ordered) : ordered;
 }
 
 function resolveLogLimit(options: ParseLogsOptions): number {
@@ -104,6 +109,32 @@ function resolveNextRowId(rows: readonly ParsedLogRow[]): number {
 
 function isCfCliSystemMessage(line: string): boolean {
   return CF_CLI_SYSTEM_MESSAGE_PREFIXES.some((prefix) => line.startsWith(prefix));
+}
+
+function rowMatchesFilters(
+  row: ParsedLogRow,
+  level: LogLevel | "all",
+  minLevel: LogLevel | undefined,
+  searchTerm: string,
+): boolean {
+  if (level !== "all" && row.level !== level) {
+    return false;
+  }
+  if (minLevel !== undefined && LOG_LEVEL_SEVERITY[row.level] < LOG_LEVEL_SEVERITY[minLevel]) {
+    return false;
+  }
+  return rowMatchesSearch(row, searchTerm);
+}
+
+function rowMatchesSearch(row: ParsedLogRow, searchTerm: string): boolean {
+  if (searchTerm.length === 0) {
+    return true;
+  }
+  return row.searchableText.includes(searchTerm) || row.rawBody.toLowerCase().includes(searchTerm);
+}
+
+function renumberRows(rows: readonly ParsedLogRow[]): readonly ParsedLogRow[] {
+  return rows.map((row, index) => ({ ...row, id: index + 1 }));
 }
 
 function execPattern(pattern: RegExp, value: string): RegExpExecArray | null {
@@ -273,7 +304,7 @@ function normalizeLevel(
 }
 
 function isKnownLevel(value: string): value is ParsedLogRow["level"] {
-  return value === "trace" || value === "debug" || value === "info" || value === "warn" || value === "error" || value === "fatal";
+  return LOG_LEVEL_SET.has(value);
 }
 
 function classifyRtrLog(message: string, statusCodeCandidate = ""): ParsedLogRow["level"] {
@@ -434,6 +465,23 @@ function buildSearchableText(row: Omit<ParsedLogRow, "searchableText">): string 
     row.clientIp,
     row.requestId,
     row.message,
+    `time=${row.timestamp}`,
+    `timestamp=${row.timestampRaw}`,
+    `source=${row.source}`,
+    `stream=${row.stream}`,
+    `format=${row.format}`,
+    `level=${row.level}`,
+    `logger=${row.logger}`,
+    `component=${row.component}`,
+    `org=${row.org}`,
+    `space=${row.space}`,
+    `host=${row.host}`,
+    `method=${row.method}`,
+    `request=${row.request}`,
+    `status=${row.status}`,
+    `latency=${row.latency}`,
+    `tenant=${row.tenant}`,
+    `requestId=${row.requestId}`,
   ].join(" ").toLowerCase();
 }
 

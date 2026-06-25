@@ -122,3 +122,49 @@ test("stream compact save emits row refs for full drill-down", async () => {
   const full = JSON.parse(show.stdout) as { readonly row: { readonly rawBody: string } };
   expect(full.row.rawBody).toContain("credential-placeholder");
 });
+
+test("stream compact search emits refs only for matching rows", async () => {
+  const paths = await prepareCase(ROOT_NAME, "stream-compact-search", createScenario());
+  const env = createEnv(paths);
+
+  const result = await runStreamCli(env, [
+    "stream",
+    "--region",
+    "ap10",
+    "--org",
+    "sample-org",
+    "--space",
+    "sample",
+    "--app",
+    "demo-app",
+    "--compact",
+    "--json",
+    "--save",
+    "--search",
+    "SAVE",
+    "--max-lines",
+    "1",
+  ]);
+
+  expect(result.code).toBe(0);
+  const rowEvents = result.stdout
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as {
+      readonly type: string;
+      readonly rows?: readonly { readonly ref?: string; readonly message?: string }[];
+    })
+    .filter((event) => event.type === "rows");
+  const compactRows = rowEvents.flatMap((event) => event.rows ?? []);
+  expect(compactRows).toHaveLength(1);
+  expect(compactRows[0]?.message).toBe("save failed");
+  expect(result.stdout).not.toContain("credential-placeholder");
+
+  const ref = compactRows[0]?.ref;
+  expect(ref).toBeDefined();
+  const show = await runCli(env, ["show", ref ?? "", "--json"]);
+  expect(show.code).toBe(0);
+  const full = JSON.parse(show.stdout) as { readonly row: { readonly rawBody: string } };
+  expect(full.row.rawBody).toContain("save failed");
+});

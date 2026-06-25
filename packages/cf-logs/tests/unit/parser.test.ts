@@ -96,6 +96,27 @@ describe("parser", () => {
     expect(filtered[0]?.message).toBe("save failed");
   });
 
+  it("filters rows by case-insensitive search and minimum level", () => {
+    const rows = parseRecentLogs(
+      [
+        '2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT {"level":"info","logger":"neutral","timestamp":"2026-04-12T02:14:40.000Z","msg":"Alpha Ready","type":"log"}',
+        '2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT {"level":"warn","logger":"neutral","timestamp":"2026-04-12T02:14:41.000Z","msg":"Beta Recover","type":"log"}',
+        '2026-04-12T09:14:42.00+0700 [APP/PROC/WEB/0] OUT {"level":"error","logger":"neutral","timestamp":"2026-04-12T02:14:42.000Z","msg":"Gamma Failed","type":"log"}',
+        '2026-04-12T09:14:43.00+0700 [RTR/0] OUT neutral.example.test - [2026-04-12T02:14:43.000Z] "GET /health HTTP/1.1" 404 42 10 "-" "probe/1.0" "10.0.1.1:1001" "10.0.2.1:2001" response_time:0.001',
+      ].join("\n"),
+    );
+
+    const searched = filterRows(rows, { searchTerm: "alpha ready", newestFirst: false, renumber: true });
+    const minimumLevel = filterRows(rows, { minLevel: "warn", newestFirst: false, renumber: true });
+    const statusSearch = filterRows(rows, { searchTerm: "STATUS=404", newestFirst: false, renumber: true });
+
+    expect(searched.map((row) => row.message)).toEqual(["Alpha Ready"]);
+    expect(searched.map((row) => row.id)).toEqual([1]);
+    expect(minimumLevel.map((row) => row.level)).toEqual(["warn", "error", "warn"]);
+    expect(minimumLevel.map((row) => row.id)).toEqual([1, 2, 3]);
+    expect(statusSearch.map((row) => row.status)).toEqual(["404"]);
+  });
+
   it("creates a fallback SYSTEM row for an unparsable leading line", () => {
     const rows = parseRecentLogs("plain leading line");
 

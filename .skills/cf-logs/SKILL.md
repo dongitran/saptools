@@ -46,6 +46,7 @@ cf-logs show <session-id>:<row-id> --json
 For smaller compact rows, add `--compact-message-limit <count>` to the same command.
 Snapshot and stream keep up to 300 rows by default; add `--log-limit <count>` to change it.
 For snapshot time windows, add `--since <duration>` such as `15m`, `45m`, or `1h`.
+For content or severity filters, add `--search <text>` or `--min-level <level>`; search ignores case.
 
 ## Command Choice
 

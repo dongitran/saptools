@@ -1,5 +1,5 @@
 import { fetchRecentLogsFromTarget, prepareCfCliSession, resolveApiEndpoint, spawnLogStreamFromTarget } from "./cf.js";
-import { appendParsedLines, appendRawLogText, DEFAULT_LOG_LIMIT, parseRecentLogs } from "./parser.js";
+import { appendParsedLines, appendRawLogText, DEFAULT_LOG_LIMIT, filterRows, parseRecentLogs } from "./parser.js";
 import { persistSnapshot } from "./store.js";
 import { filterRowsSince, formatRowsAsRawText } from "./time-window.js";
 import type {
@@ -7,8 +7,10 @@ import type {
   CfLogsRuntimeEvent,
   CfLogsRuntimeOptions,
   CfSessionInput,
+  FilterRowsOptions,
   LogStreamHandle,
   LogSnapshot,
+  ParsedLogRow,
   RuntimeAppState,
   RuntimeDependencies,
   RuntimeStreamState,
@@ -19,6 +21,11 @@ const DEFAULT_RETRY_INITIAL_MS = 1_000;
 const DEFAULT_RETRY_MAX_MS = 20_000;
 
 type InternalAppState = RuntimeAppState;
+
+interface StreamSourceState {
+  readonly rawText: string;
+  readonly rows: readonly ParsedLogRow[];
+}
 
 interface RunningStream {
   readonly appName: string;
@@ -38,6 +45,7 @@ export class CfLogsRuntime {
   private readonly retryInitialMs: number;
   private readonly retryMaxMs: number;
   private readonly snapshotSinceMs: number | undefined;
+  private readonly rowFilter: FilterRowsOptions | undefined;
   private readonly now: () => Date;
   private session: CfSessionInput | null = null;
   private sessionVersion = 0;
@@ -46,6 +54,7 @@ export class CfLogsRuntime {
   private preparingVersion = -1;
   private readonly availableApps = new Map<string, AppCatalogEntry>();
   private readonly states = new Map<string, InternalAppState>();
+  private readonly streamSourceStates = new Map<string, StreamSourceState>();
   private readonly activeAppNames = new Set<string>();
   private readonly runningStreams = new Map<string, RunningStream>();
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
@@ -68,6 +77,7 @@ export class CfLogsRuntime {
     this.retryInitialMs = resolvePositiveNumber(options.retryInitialMs, DEFAULT_RETRY_INITIAL_MS);
     this.retryMaxMs = resolvePositiveNumber(options.retryMaxMs, DEFAULT_RETRY_MAX_MS);
     this.snapshotSinceMs = resolveOptionalPositiveNumber(options.sinceMs);
+    this.rowFilter = normalizeRuntimeRowFilter(options.rowFilter);
     this.now = options.now ?? (() => new Date());
   }
 
@@ -84,6 +94,7 @@ export class CfLogsRuntime {
     this.preparedVersion = -1;
     this.prepareSessionPromise = null;
     this.preparingVersion = -1;
+    this.streamSourceStates.clear();
     this.stopAllStreams(true);
   }
 
@@ -101,6 +112,7 @@ export class CfLogsRuntime {
       if (!nextApps.has(appName)) {
         this.stopStream(appName, true);
         this.states.delete(appName);
+        this.streamSourceStates.delete(appName);
       }
     }
     this.availableApps.clear();
@@ -144,10 +156,13 @@ export class CfLogsRuntime {
     const rawLogs = await this.fetchRecentLogsWithRecovery(session, appName, expectedVersion);
     const boundedRawLogs = appendRawLogText("", rawLogs, { logLimit: this.logLimit });
     const parsedRows = parseRecentLogs(boundedRawLogs, { logLimit: this.logLimit });
-    const rows = this.snapshotSinceMs === undefined
+    const rowsSince = this.snapshotSinceMs === undefined
       ? parsedRows
       : filterRowsSince(parsedRows, this.snapshotSinceMs, fetchedAtDate);
-    const rawText = this.snapshotSinceMs === undefined ? boundedRawLogs : formatRowsAsRawText(rows);
+    const rows = this.applyRowFilter(rowsSince, true);
+    const rawText = this.snapshotSinceMs === undefined && this.rowFilter === undefined
+      ? boundedRawLogs
+      : formatRowsAsRawText(rows);
     const snapshot = {
       appName,
       rawText,
@@ -155,7 +170,7 @@ export class CfLogsRuntime {
       fetchedAt,
       truncated: rawLogs.length > boundedRawLogs.length,
     } satisfies LogSnapshot;
-    this.states.set(appName, this.mergeState(appName, { rawText: boundedRawLogs, rows, updatedAt: fetchedAt }));
+    this.states.set(appName, this.mergeState(appName, { rawText, rows, updatedAt: fetchedAt }));
     await this.persistIfEnabled(snapshot, false);
     this.emit({ type: "snapshot", appName, snapshot });
     return snapshot;
@@ -368,14 +383,41 @@ export class CfLogsRuntime {
     }
     const lines = [...stream.lineBuffer];
     stream.lineBuffer = [];
-    const existing = this.states.get(stream.appName) ?? this.mergeState(stream.appName, {});
+    const existing = this.getStreamSourceState(stream.appName);
+    const previousVisibleRows = this.applyRowFilter(existing.rows, false);
     const rawText = appendRawLogText(existing.rawText, lines.join("\n"), { logLimit: this.logLimit });
     const rows = appendParsedLines(existing.rows, lines, { logLimit: this.logLimit });
+    if (this.rowFilter !== undefined) {
+      this.streamSourceStates.set(stream.appName, { rawText, rows });
+    }
     const updatedAt = this.now().toISOString();
-    const state = this.mergeState(stream.appName, { rawText, rows, updatedAt });
+    const visibleRows = this.applyRowFilter(rows, false);
+    const visibleRawText = this.rowFilter === undefined ? rawText : formatRowsAsRawText(visibleRows);
+    const state = this.mergeState(stream.appName, { rawText: visibleRawText, rows: visibleRows, updatedAt });
     this.states.set(stream.appName, state);
-    await this.persistIfEnabled({ appName: stream.appName, rawText, rows, fetchedAt: updatedAt, truncated: false }, true);
-    this.emit({ type: "append", appName: stream.appName, lines, state });
+    const appendLines = this.rowFilter === undefined
+      ? lines
+      : buildFilteredAppendLines(previousVisibleRows, visibleRows);
+    if (appendLines.length === 0) {
+      return;
+    }
+    await this.persistIfEnabled({ appName: stream.appName, rawText: visibleRawText, rows: visibleRows, fetchedAt: updatedAt, truncated: false }, true);
+    this.emit({ type: "append", appName: stream.appName, lines: appendLines, state });
+  }
+
+  private getStreamSourceState(appName: string): StreamSourceState {
+    if (this.rowFilter !== undefined) {
+      return this.streamSourceStates.get(appName) ?? { rawText: "", rows: [] };
+    }
+    const existing = this.states.get(appName) ?? this.mergeState(appName, {});
+    return { rawText: existing.rawText, rows: existing.rows };
+  }
+
+  private applyRowFilter(rows: readonly ParsedLogRow[], renumber: boolean): readonly ParsedLogRow[] {
+    if (this.rowFilter === undefined) {
+      return rows;
+    }
+    return filterRows(rows, { ...this.rowFilter, newestFirst: false, renumber });
   }
 
   private postStreamState(appName: string, streamState: RuntimeStreamState): void {
@@ -473,6 +515,33 @@ function resolvePositiveNumber(value: number | undefined, fallback: number): num
 
 function resolveOptionalPositiveNumber(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function normalizeRuntimeRowFilter(value: FilterRowsOptions | undefined): FilterRowsOptions | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const searchTerm = value.searchTerm?.trim();
+  const hasSearch = searchTerm !== undefined && searchTerm.length > 0;
+  const hasLevel = value.level !== undefined && value.level !== "all";
+  if (!hasSearch && !hasLevel && value.minLevel === undefined) {
+    return undefined;
+  }
+  return {
+    ...(hasLevel ? { level: value.level } : {}),
+    ...(value.minLevel === undefined ? {} : { minLevel: value.minLevel }),
+    ...(hasSearch ? { searchTerm } : {}),
+  };
+}
+
+function buildFilteredAppendLines(
+  previousRows: readonly ParsedLogRow[],
+  nextRows: readonly ParsedLogRow[],
+): readonly string[] {
+  const previousIds = new Set(previousRows.map((row) => row.id));
+  const appendedRows = nextRows.filter((row) => !previousIds.has(row.id));
+  const rawText = formatRowsAsRawText(appendedRows);
+  return rawText.length === 0 ? [] : rawText.split("\n");
 }
 
 function splitLines(

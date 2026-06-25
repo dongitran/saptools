@@ -68,8 +68,10 @@ export interface ParseLogsOptions {
 
 export interface FilterRowsOptions {
   readonly level?: LogLevel | "all";
+  readonly minLevel?: LogLevel;
   readonly searchTerm?: string;
   readonly newestFirst?: boolean;
+  readonly renumber?: boolean;
 }
 
 export interface LogSnapshot {
@@ -299,6 +301,7 @@ export interface RuntimeDependencies {
 export interface CfLogsRuntimeOptions {
   readonly logLimit?: number;
   readonly sinceMs?: number;
+  readonly rowFilter?: FilterRowsOptions;
   readonly persistSnapshots?: boolean;
   readonly persistStreamAppends?: boolean;
   readonly retryInitialMs?: number;

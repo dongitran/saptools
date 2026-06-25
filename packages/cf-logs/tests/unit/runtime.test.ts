@@ -277,6 +277,61 @@ describe("CfLogsRuntime", () => {
     );
   });
 
+  it("filters snapshots by row search before updating state and persistence", async () => {
+    const persistSnapshot = vi.fn().mockResolvedValue({
+      key: {
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        org: "sample-org",
+        space: "sample",
+        app: "demo-app",
+      },
+      rawText: "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT Alpha Ready",
+      fetchedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:00.000Z",
+      rowCount: 1,
+      truncated: false,
+    });
+    const runtime = new CfLogsRuntime(
+      {
+        persistSnapshots: true,
+        rowFilter: { searchTerm: "ALPHA" },
+        now: () => new Date("2026-04-18T00:00:00.000Z"),
+      },
+      {
+        prepareSession: vi.fn().mockResolvedValue(undefined),
+        fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(
+          [
+            "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT Alpha Ready",
+            "2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT Beta Ready",
+          ].join("\n"),
+        ),
+        persistSnapshot,
+      },
+    );
+    runtime.setSession({
+      region: "ap10",
+      email: "operator@example.test",
+      password: "credential-placeholder",
+      org: "sample-org",
+      space: "sample",
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+    });
+    runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
+
+    const snapshot = await runtime.fetchSnapshot("demo-app");
+
+    expect(snapshot.rows.map((row) => row.message)).toEqual(["Alpha Ready"]);
+    expect(snapshot.rawText).toContain("Alpha Ready");
+    expect(snapshot.rawText).not.toContain("Beta Ready");
+    expect(runtime.getState("demo-app")?.rawText).not.toContain("Beta Ready");
+    expect(persistSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rawText: expect.stringContaining("Alpha Ready"),
+        rows: [expect.objectContaining({ id: 1, message: "Alpha Ready" })],
+      }),
+    );
+  });
+
   it("throws when fetching a snapshot without a session or with an unknown app", async () => {
     const runtime = new CfLogsRuntime();
     runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
@@ -374,6 +429,70 @@ describe("CfLogsRuntime", () => {
     await vi.advanceTimersByTimeAsync(30);
 
     expect(persistSnapshot).toHaveBeenCalled();
+  });
+
+  it("filters stream appends by minimum level before emitting and persisting", async () => {
+    const process = new FakeProcess();
+    const persistSnapshot = vi.fn().mockResolvedValue({
+      key: {
+        apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+        org: "sample-org",
+        space: "sample",
+        app: "demo-app",
+      },
+      rawText: "2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT failed operation",
+      fetchedAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:00.000Z",
+      rowCount: 1,
+      truncated: false,
+    });
+    const runtime = new CfLogsRuntime(
+      {
+        flushIntervalMs: 25,
+        persistStreamAppends: true,
+        rowFilter: { minLevel: "warn" },
+      },
+      {
+        prepareSession: vi.fn().mockResolvedValue(undefined),
+        fetchRecentLogsFromTarget: vi.fn(),
+        spawnLogStreamFromTarget: vi.fn().mockReturnValue({ process, stop: vi.fn() }),
+        persistSnapshot,
+      },
+    );
+    const appendedLines: string[] = [];
+    runtime.subscribe((event) => {
+      if (event.type === "append") {
+        appendedLines.push(...event.lines);
+      }
+    });
+    runtime.setSession({
+      region: "ap10",
+      email: "operator@example.test",
+      password: "credential-placeholder",
+      org: "sample-org",
+      space: "sample",
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+    });
+    runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
+
+    await runtime.setActiveApps(["demo-app"]);
+    process.stdout.emitData(
+      `${[
+        "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT routine noted",
+        "2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT failed operation",
+      ].join("\n")}\n`,
+    );
+    await vi.advanceTimersByTimeAsync(30);
+
+    expect(runtime.getState("demo-app")?.rows.map((row) => row.message)).toEqual(["failed operation"]);
+    expect(appendedLines.join("\n")).toContain("failed operation");
+    expect(appendedLines.join("\n")).not.toContain("routine noted");
+    expect(persistSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rawText: expect.stringContaining("failed operation"),
+        rows: [expect.objectContaining({ message: "failed operation" })],
+      }),
+    );
   });
 
   it("fetchSnapshot keeps credential-like log text unchanged", async () => {

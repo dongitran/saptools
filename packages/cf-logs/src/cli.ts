@@ -23,10 +23,13 @@ import { cfLogsStorePath } from "./paths.js";
 import { CfLogsRuntime } from "./runtime.js";
 import { clearStore, readStore } from "./store.js";
 import { parseSinceDurationMs } from "./time-window.js";
+import { LOG_LEVELS } from "./types.js";
 import type {
   CfLogsRuntimeEvent,
   CfLogsRuntimeOptions,
   CfSessionInput,
+  FilterRowsOptions,
+  LogLevel,
   LogStoreEntry,
   ParseLogsOptions,
   RuntimeStreamState,
@@ -50,6 +53,8 @@ interface SnapshotFlags extends AppFlags {
   readonly save?: boolean;
   readonly logLimit?: number;
   readonly since?: number;
+  readonly search?: string;
+  readonly minLevel?: LogLevel;
   readonly compact?: boolean;
   readonly compactMessageLimit?: number;
   readonly compactTtlMinutes?: number;
@@ -60,6 +65,8 @@ interface StreamFlags extends AppFlags {
   readonly save?: boolean;
   readonly maxLines?: number;
   readonly logLimit?: number;
+  readonly search?: string;
+  readonly minLevel?: LogLevel;
   readonly flushIntervalMs?: number;
   readonly retryInitialMs?: number;
   readonly retryMaxMs?: number;
@@ -129,21 +136,52 @@ function parsePositiveInteger(value: string, optionName: string): number {
   return parsed;
 }
 
+function parseSearchTerm(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error("--search must not be empty.");
+  }
+  return trimmed;
+}
+
+function parseLogLevel(value: string, optionName: string): LogLevel {
+  const normalized = value.trim().toLowerCase();
+  const level = LOG_LEVELS.find((candidate) => candidate === normalized);
+  if (level === undefined) {
+    throw new Error(`${optionName} must be one of: ${LOG_LEVELS.join(", ")}.`);
+  }
+  return level;
+}
+
 function buildParseOptions(logLimit: number | undefined): ParseLogsOptions {
   return logLimit === undefined ? {} : { logLimit };
 }
 
+function buildRowFilterOptions(flags: Pick<SnapshotFlags, "search" | "minLevel">): FilterRowsOptions | undefined {
+  if (flags.search === undefined && flags.minLevel === undefined) {
+    return undefined;
+  }
+  return {
+    ...(flags.search === undefined ? {} : { searchTerm: flags.search }),
+    ...(flags.minLevel === undefined ? {} : { minLevel: flags.minLevel }),
+  };
+}
+
 function buildSnapshotRuntimeOptions(flags: SnapshotFlags): CfLogsRuntimeOptions {
+  const rowFilter = buildRowFilterOptions(flags);
   return {
     ...buildParseOptions(flags.logLimit),
     ...(flags.since === undefined ? {} : { sinceMs: flags.since }),
+    ...(rowFilter === undefined ? {} : { rowFilter }),
     ...(flags.save === true && flags.compact !== true ? { persistSnapshots: true } : {}),
   };
 }
 
 function buildStreamRuntimeOptions(flags: StreamFlags): CfLogsRuntimeOptions {
+  const rowFilter = buildRowFilterOptions(flags);
   return {
     ...buildParseOptions(flags.logLimit),
+    ...(rowFilter === undefined ? {} : { rowFilter }),
     ...(flags.save === true && flags.compact !== true ? { persistStreamAppends: true } : {}),
     ...(flags.flushIntervalMs === undefined ? {} : { flushIntervalMs: flags.flushIntervalMs }),
     ...(flags.retryInitialMs === undefined ? {} : { retryInitialMs: flags.retryInitialMs }),
@@ -382,6 +420,16 @@ function addLogLimitOption(command: Command): Command {
   );
 }
 
+function addRowFilterOptions(command: Command): Command {
+  return command
+    .option("--search <text>", "Filter rows by case-insensitive text", parseSearchTerm)
+    .option(
+      "--min-level <level>",
+      "Keep rows at or above the given level",
+      (value: string) => parseLogLevel(value, "--min-level"),
+    );
+}
+
 function addRetryOptions(command: Command): Command {
   return command
     .option(
@@ -449,11 +497,13 @@ function buildProgram(): Command {
     .version(readPackageVersion(), "-V, --version", "Print the cf-logs package version");
 
   addCompactSessionOptions(
-    addLogLimitOption(
-      addAppOptions(
-        program
-          .command("snapshot")
-          .description("Fetch recent CF logs for one app and optionally persist a snapshot"),
+    addRowFilterOptions(
+      addLogLimitOption(
+        addAppOptions(
+          program
+            .command("snapshot")
+            .description("Fetch recent CF logs for one app and optionally persist a snapshot"),
+        ),
       ),
     ),
   )
@@ -466,11 +516,13 @@ function buildProgram(): Command {
 
   addRetryOptions(
     addCompactSessionOptions(
-      addLogLimitOption(
-        addAppOptions(
-          program
-            .command("stream")
-            .description("Start a live CF log stream for one app"),
+      addRowFilterOptions(
+        addLogLimitOption(
+          addAppOptions(
+            program
+              .command("stream")
+              .description("Start a live CF log stream for one app"),
+          ),
         ),
       ),
     ),
