@@ -1,11 +1,13 @@
-import { CfLogsRuntime } from "@saptools/cf-logs";
+import {
+  CfLogsRuntime,
+  persistSnapshot as defaultPersistSnapshot,
+} from "@saptools/cf-logs";
 import type {
   AppCatalogEntry,
   CfLogsRuntimeEvent,
   CfLogsRuntimeOptions,
   CfSessionInput,
   ParsedLogRow,
-  RedactionRule,
   RuntimeAppState,
   RuntimeDependencies,
 } from "@saptools/cf-logs";
@@ -13,6 +15,14 @@ import type {
 import { diffAppCatalogs, discoverMatchingApps } from "./discovery.js";
 import { applyAppFilter, buildAppFilter } from "./filters.js";
 import { tagRowsWithApp } from "./merge.js";
+import {
+  buildRedactionRules,
+  redactLines,
+  redactPersistInput,
+  redactRuntimeState,
+  redactStreamState,
+} from "./redaction.js";
+import type { RedactionRule } from "./redaction.js";
 import type {
   AppFilterInput,
   CfTailEvent,
@@ -27,6 +37,7 @@ export class CfTailRuntime {
   private readonly listeners = new Set<(event: CfTailEvent) => void>();
   private readonly logsRuntime: CfLogsRuntime;
   private readonly rediscoverIntervalMs: number;
+  private readonly extraSecrets: readonly string[];
   private readonly now: () => Date;
   private readonly discoverApps: (
     input: CfSessionInput & AppFilterInput,
@@ -39,6 +50,7 @@ export class CfTailRuntime {
   private started = false;
   private stopped = false;
   private discoveryRefreshes = 0;
+  private redactionRules: readonly RedactionRule[] = [];
 
   constructor(
     options: CfTailRuntimeOptions = {},
@@ -48,11 +60,12 @@ export class CfTailRuntime {
       options.rediscoverIntervalMs,
       DEFAULT_REDISCOVER_INTERVAL_MS,
     );
+    this.extraSecrets = options.extraSecrets ?? [];
     this.now = options.now ?? (() => new Date());
     this.discoverApps = dependencies.discoverApps ?? discoverMatchingApps;
     this.logsRuntime = new CfLogsRuntime(
-      buildLogsRuntimeOptions(options, options.extraSecrets ?? []),
-      pickLogsRuntimeDependencies(dependencies),
+      buildLogsRuntimeOptions(options),
+      this.pickLogsRuntimeDependencies(dependencies),
     );
     this.logsRuntime.subscribe((event) => {
       this.handleLogsRuntimeEvent(event);
@@ -61,6 +74,13 @@ export class CfTailRuntime {
 
   setSession(session: CfSessionInput | null): void {
     this.session = session;
+    this.redactionRules = session === null
+      ? []
+      : buildRedactionRules({
+        email: session.email,
+        password: session.password,
+        secrets: this.extraSecrets,
+      });
     this.logsRuntime.setSession(session);
     this.currentApps = [];
     this.logsRuntime.setAvailableApps([]);
@@ -80,7 +100,9 @@ export class CfTailRuntime {
   }
 
   listAppStates(): readonly RuntimeAppState[] {
-    return this.logsRuntime.listStates();
+    return this.logsRuntime
+      .listStates()
+      .map((state) => redactRuntimeState(state, this.redactionRules));
   }
 
   async start(): Promise<void> {
@@ -180,13 +202,14 @@ export class CfTailRuntime {
 
   private handleLogsRuntimeEvent(event: CfLogsRuntimeEvent): void {
     if (event.type === "append") {
-      const newRows = this.computeNewRows(event.appName, event.state.rows);
+      const state = redactRuntimeState(event.state, this.redactionRules);
+      const newRows = this.computeNewRows(event.appName, state.rows);
       this.emit({
         type: "lines",
         appName: event.appName,
-        lines: event.lines,
+        lines: redactLines(event.lines, this.redactionRules),
         rows: newRows,
-        state: event.state,
+        state,
       });
       return;
     }
@@ -194,9 +217,28 @@ export class CfTailRuntime {
       this.emit({
         type: "stream-state",
         appName: event.appName,
-        streamState: event.streamState,
+        streamState: redactStreamState(event.streamState, this.redactionRules),
       });
     }
+  }
+
+  private pickLogsRuntimeDependencies(
+    dependencies: CfTailRuntimeDependencies,
+  ): RuntimeDependencies {
+    const persistSnapshot = dependencies.persistSnapshot ?? defaultPersistSnapshot;
+    return {
+      ...(dependencies.prepareSession === undefined
+        ? {}
+        : { prepareSession: dependencies.prepareSession }),
+      ...(dependencies.fetchRecentLogsFromTarget === undefined
+        ? {}
+        : { fetchRecentLogsFromTarget: dependencies.fetchRecentLogsFromTarget }),
+      ...(dependencies.spawnLogStreamFromTarget === undefined
+        ? {}
+        : { spawnLogStreamFromTarget: dependencies.spawnLogStreamFromTarget }),
+      persistSnapshot: async (input) =>
+        await persistSnapshot(redactPersistInput(input, this.redactionRules)),
+    };
   }
 
   private computeNewRows(
@@ -234,11 +276,7 @@ function resolveNonNegative(value: number | undefined, fallback: number): number
 
 function buildLogsRuntimeOptions(
   options: CfTailRuntimeOptions,
-  extraSecrets: readonly string[],
 ): CfLogsRuntimeOptions {
-  const redactionRules: RedactionRule[] = extraSecrets
-    .filter((value) => value.length > 0)
-    .map((value) => ({ value, replacement: "***" }));
   return {
     ...(options.logLimit === undefined ? {} : { logLimit: options.logLimit }),
     ...(options.flushIntervalMs === undefined ? {} : { flushIntervalMs: options.flushIntervalMs }),
@@ -247,26 +285,6 @@ function buildLogsRuntimeOptions(
     ...(options.persistStreamAppends === undefined
       ? {}
       : { persistStreamAppends: options.persistStreamAppends }),
-    ...(redactionRules.length === 0 ? {} : { redactionRules }),
     ...(options.now === undefined ? {} : { now: options.now }),
-  };
-}
-
-function pickLogsRuntimeDependencies(
-  dependencies: CfTailRuntimeDependencies,
-): RuntimeDependencies {
-  return {
-    ...(dependencies.prepareSession === undefined
-      ? {}
-      : { prepareSession: dependencies.prepareSession }),
-    ...(dependencies.fetchRecentLogsFromTarget === undefined
-      ? {}
-      : { fetchRecentLogsFromTarget: dependencies.fetchRecentLogsFromTarget }),
-    ...(dependencies.spawnLogStreamFromTarget === undefined
-      ? {}
-      : { spawnLogStreamFromTarget: dependencies.spawnLogStreamFromTarget }),
-    ...(dependencies.persistSnapshot === undefined
-      ? {}
-      : { persistSnapshot: dependencies.persistSnapshot }),
   };
 }

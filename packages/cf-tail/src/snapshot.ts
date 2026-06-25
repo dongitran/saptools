@@ -1,22 +1,21 @@
 import {
   appendRawLogText,
-  buildRedactionRules,
   fetchRecentLogsFromTarget as defaultFetchRecentLogsFromTarget,
   parseRecentLogs,
   persistSnapshot as defaultPersistSnapshot,
   prepareCfCliSession as defaultPrepareCfCliSession,
-  redactText,
   resolveApiEndpoint,
 } from "@saptools/cf-logs";
 import type {
   AppCatalogEntry,
   CfSessionInput,
   ParsedLogRow,
-  RedactionRule,
 } from "@saptools/cf-logs";
 
 import { discoverMatchingApps } from "./discovery.js";
 import { mergeAppRows, tagRowsWithApp } from "./merge.js";
+import { buildRedactionRules, redactText } from "./redaction.js";
+import type { RedactionRule } from "./redaction.js";
 import type {
   AppFilterInput,
   AppSnapshotError,
