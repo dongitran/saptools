@@ -29,6 +29,8 @@ export interface TableDescription {
 export async function listSchemas(connection: Connection): Promise<readonly string[]> {
   const result = await connection.query<SchemaRow>(
     "SELECT SCHEMA_NAME FROM SYS.SCHEMAS ORDER BY SCHEMA_NAME",
+    [],
+    { autoLimit: false },
   );
   return result.rows.map((row) => row.SCHEMA_NAME);
 }
@@ -42,6 +44,7 @@ export async function listTables(
     "SELECT SCHEMA_NAME, TABLE_NAME, TABLE_TYPE FROM SYS.TABLES " +
       "WHERE SCHEMA_NAME = ? ORDER BY TABLE_NAME",
     [schema],
+    { autoLimit: false },
   );
   return result.rows.map((row) => ({
     schema: row.SCHEMA_NAME,
@@ -61,6 +64,7 @@ export async function listColumns(
     "SELECT COLUMN_NAME, DATA_TYPE_NAME, LENGTH, SCALE, IS_NULLABLE, POSITION " +
       "FROM SYS.TABLE_COLUMNS WHERE SCHEMA_NAME = ? AND TABLE_NAME = ? ORDER BY POSITION",
     [schema, table],
+    { autoLimit: false },
   );
   return result.rows.map((row) => ({
     name: row.COLUMN_NAME,

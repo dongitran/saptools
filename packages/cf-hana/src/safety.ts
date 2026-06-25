@@ -26,6 +26,7 @@ export interface StatementInspection {
 export interface AutoLimitResult {
   readonly sql: string;
   readonly applied: boolean;
+  readonly requestedLimit?: number;
 }
 
 function skipQuotedText(sql: string, start: number): number {
@@ -192,5 +193,9 @@ export function applyAutoLimit(sql: string, limit: number | false): AutoLimitRes
     return { sql, applied: false };
   }
 
-  return { sql: appendLimit(sql, limit), applied: true };
+  return {
+    sql: appendLimit(sql, limit + 1),
+    applied: true,
+    requestedLimit: limit,
+  };
 }

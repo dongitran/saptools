@@ -36,14 +36,41 @@ describe("Connection", () => {
     expect(result.rowCount).toBe(4);
   });
 
-  it("appends an auto-limit to a bare SELECT and flags truncation", async () => {
+  it("fetches one extra row and clips a truncated SELECT", async () => {
     const { driver, connection } = await openConn(
-      () => ({ rows: [{ ID: 1 }, { ID: 2 }], columns: [{ name: "ID", typeName: "INTEGER" }] }),
+      () => ({
+        rows: [{ ID: 1 }, { ID: 2 }, { ID: 3 }],
+        columns: [{ name: "ID", typeName: "INTEGER" }],
+      }),
       { autoLimit: 2 },
     );
     const result = await connection.query("SELECT * FROM ORDERS");
-    expect(driver.connections[0]?.execCalls[0]?.sql).toContain("LIMIT 2");
+    expect(driver.connections[0]?.execCalls[0]?.sql).toContain("LIMIT 3");
+    expect(result.rows).toEqual([{ ID: 1 }, { ID: 2 }]);
+    expect(result.rowCount).toBe(2);
     expect(result.truncated).toBe(true);
+  });
+
+  it("does not flag truncation when exactly the requested rows exist", async () => {
+    const { connection } = await openConn(
+      () => ({
+        rows: [{ ID: 1 }, { ID: 2 }],
+        columns: [{ name: "ID", typeName: "INTEGER" }],
+      }),
+      { autoLimit: 2 },
+    );
+
+    const result = await connection.query("SELECT * FROM ORDERS");
+
+    expect(result.rows).toHaveLength(2);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("rejects an invalid API auto-limit", async () => {
+    const { connection } = await openConn(() => ({}));
+    await expect(
+      connection.query("SELECT * FROM ORDERS", [], { autoLimit: 0 }),
+    ).rejects.toThrow(/positive safe integer/);
   });
 
   it("rejects a parameter-count mismatch", async () => {

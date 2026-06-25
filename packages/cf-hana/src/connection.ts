@@ -22,6 +22,31 @@ interface RunOptions {
   readonly bypassSafety?: boolean;
 }
 
+function assertValidAutoLimit(value: number | false): void {
+  if (
+    value !== false &&
+    (!Number.isSafeInteger(value) || value <= 0 || value >= Number.MAX_SAFE_INTEGER)
+  ) {
+    throw new CfHanaError("CONFIG", "autoLimit must be a positive safe integer");
+  }
+}
+
+function boundedRows(
+  rows: readonly Record<string, SqlParam>[],
+  requestedLimit: number | undefined,
+): {
+  readonly rows: readonly Record<string, SqlParam>[];
+  readonly truncated: boolean;
+} {
+  if (requestedLimit === undefined) {
+    return { rows, truncated: false };
+  }
+  return {
+    rows: rows.slice(0, requestedLimit),
+    truncated: rows.length > requestedLimit,
+  };
+}
+
 async function withTimeout<T>(
   work: Promise<T>,
   timeoutMs: number,
@@ -130,6 +155,7 @@ export class Connection {
 
     const kind = classifyStatement(sql);
     const autoLimit = options.autoLimit ?? this.config.autoLimit;
+    assertValidAutoLimit(autoLimit);
     const limited =
       kind === "select" ? applyAutoLimit(sql, autoLimit) : { sql, applied: false };
     const timeoutMs = options.timeoutMs ?? this.config.queryTimeoutMs;
@@ -143,13 +169,14 @@ export class Connection {
       },
     );
     const elapsedMs = Date.now() - started;
+    const selected = boundedRows(execResult.rows, limited.requestedLimit);
 
     return {
-      rows: execResult.rows,
+      rows: selected.rows,
       columns: execResult.columns,
-      rowCount: kind === "select" ? execResult.rows.length : execResult.affectedRows,
+      rowCount: kind === "select" ? selected.rows.length : execResult.affectedRows,
       statement: kind,
-      truncated: limited.applied && execResult.rows.length === autoLimit,
+      truncated: selected.truncated,
       elapsedMs,
     };
   }

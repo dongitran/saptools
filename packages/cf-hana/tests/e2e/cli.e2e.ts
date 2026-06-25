@@ -79,7 +79,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.1.6");
+  expect(result.stdout).toContain("0.2.0");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -89,19 +89,59 @@ test("User can inspect resolved connection metadata", async () => {
   expect(result.stdout).toContain("app-demo");
 });
 
-test("User can run a query and print a table", async () => {
+test("User can run a query and print compact CSV", async () => {
   const result = await runCli(["query", SELECTOR, "SELECT 1 FROM DUMMY"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("1");
+  expect(result.stdout.trim()).toBe("1\r\n1");
 });
 
-test("User can request JSON output", async () => {
+test("User sees a clear failure when requesting query format output", async () => {
   const result = await runCli(
     ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--format", "json"],
     fakeEnv(),
   );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("unknown option '--format'");
+});
+
+test("User can save a compact query and inspect it by ref", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--save", "--cell-limit", "6"],
+    fakeEnv(),
+  );
+
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([{ "1": 1 }]);
+  const lines = result.stdout.trimEnd().split(/\r?\n/);
+  expect(lines[0]).toMatch(/^ref=q[0-9a-f]{8}$/);
+  expect(lines[1]).toBe("ID,NAME");
+  expect(lines[2]).toBe("1,sample");
+  expect(result.stderr).toContain("saved result expires at");
+  expect(result.stderr).toContain("compacted 2 cell(s)");
+
+  const ref = lines[0]?.slice("ref=".length) ?? "";
+  const cell = await runCli(
+    ["result", "show", ref, "--row", "1", "--column", "NAME", "--length", "50"],
+    fakeEnv(),
+  );
+  expect(cell.exitCode).toBe(0);
+  expect(cell.stdout.trim()).toBe(
+    "ROW,COLUMN,TYPE,ORIGINAL_LENGTH,OFFSET,VALUE\r\n1,NAME,text,10,0,sample-row",
+  );
+
+  const search = await runCli(["result", "search", ref, "SECOND"], fakeEnv());
+  expect(search.exitCode).toBe(0);
+  expect(search.stdout).toContain("2,NAME,0,,second-row");
+
+  const missingColumn = await runCli(
+    ["result", "show", ref, "--row", "1", "--path", "/items"],
+    fakeEnv(),
+  );
+  expect(missingColumn.exitCode).toBe(1);
+  expect(missingColumn.stderr).toContain("--path and --offset require --column");
+
+  const list = await runCli(["result", "list"], fakeEnv());
+  expect(list.exitCode).toBe(0);
+  expect(list.stdout).toContain(ref);
 });
 
 test("User can run a query and keep local SQL history", async () => {
@@ -112,8 +152,6 @@ test("User can run a query and keep local SQL history", async () => {
       "SELECT * FROM ORDERS WHERE STATUS = ?",
       "--param",
       "hidden-parameter-value",
-      "--format",
-      "json",
     ],
     fakeEnv(),
   );
@@ -137,11 +175,11 @@ test("User can run a query and keep local SQL history", async () => {
 test("User can back up rows before an UPDATE runs", async () => {
   const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
   const result = await runCli(
-    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7"],
     fakeEnv(),
   );
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stdout).toContain("(1 row(s) affected)");
   expect(result.stderr).toContain("backup saved to");
 
   await expect(readBackupFiles(home)).resolves.toEqual([
@@ -168,14 +206,12 @@ test("User can back up rows for a complex UPDATE before the write runs", async (
       "READY",
       "--param",
       "PENDING",
-      "--format",
-      "json",
     ],
     fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stdout).toContain("(1 row(s) affected)");
   expect(result.stderr).toContain("backup saved to");
   const trace = await readFakeTraceEntries(home);
   expect(trace).toEqual([
@@ -198,14 +234,12 @@ test("User can back up rows for a complex DELETE before the write runs", async (
       "OPEN",
       "--param",
       "STANDARD",
-      "--format",
-      "json",
     ],
     fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stdout).toContain("(1 row(s) affected)");
   expect(result.stderr).toContain("backup saved to");
   expect(await readFakeTraceEntries(home)).toEqual([
     { sql: COMPLEX_DELETE_SELECT, paramCount: 2 },
@@ -226,14 +260,12 @@ test("User can back up all rows before an explicitly allowed unscoped UPDATE", a
       "--param",
       "ARCHIVED",
       "--allow-destructive",
-      "--format",
-      "json",
     ],
     fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stdout).toContain("(1 row(s) affected)");
   expect(result.stderr).toContain("backup saved to");
   expect(await readFakeTraceEntries(home)).toEqual([
     { sql: "SELECT * FROM ORDERS", paramCount: 0 },
@@ -246,7 +278,7 @@ test("User can back up all rows before an explicitly allowed unscoped UPDATE", a
 
 test("User cannot run an unscoped DELETE before explicit approval", async () => {
   const result = await runCli(
-    ["query", SELECTOR, "DELETE FROM ORDERS", "--format", "json"],
+    ["query", SELECTOR, "DELETE FROM ORDERS"],
     fakeEnv({ trace: true }),
   );
 
@@ -259,19 +291,12 @@ test("User cannot run an unscoped DELETE before explicit approval", async () => 
 test("User can back up all rows before an explicitly allowed unscoped DELETE", async () => {
   const sql = "DELETE FROM ORDERS";
   const result = await runCli(
-    [
-      "query",
-      SELECTOR,
-      sql,
-      "--allow-destructive",
-      "--format",
-      "json",
-    ],
+    ["query", SELECTOR, sql, "--allow-destructive"],
     fakeEnv({ trace: true }),
   );
 
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([]);
+  expect(result.stdout).toContain("(1 row(s) affected)");
   expect(result.stderr).toContain("backup saved to");
   expect(await readFakeTraceEntries(home)).toEqual([
     { sql: "SELECT * FROM ORDERS", paramCount: 0 },
@@ -285,7 +310,7 @@ test("User can back up all rows before an explicitly allowed unscoped DELETE", a
 test("User cannot run an UPDATE when the backup SELECT fails", async () => {
   const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
   const result = await runCli(
-    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7"],
     fakeEnv({ trace: true, failStatement: "select" }),
   );
 
@@ -300,7 +325,7 @@ test("User cannot run an UPDATE when the backup SELECT fails", async () => {
 test("User keeps the backup when the UPDATE itself fails", async () => {
   const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
   const result = await runCli(
-    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7"],
     fakeEnv({ trace: true, failStatement: "dml" }),
   );
 
@@ -319,7 +344,7 @@ test("User cannot run an UPDATE when the local backup cannot be written", async 
   await writeFile(join(home, ".saptools", "cf-hana"), "blocked", "utf8");
   const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
   const result = await runCli(
-    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7", "--format", "json"],
+    ["query", SELECTOR, sql, "--param", "DONE", "--param", "7"],
     fakeEnv({ trace: true }),
   );
 
@@ -404,8 +429,6 @@ test("User can see a clear failure for the removed backup opt-out", async () => 
       "DONE",
       "--param",
       "7",
-      "--format",
-      "json",
       "--no-backup",
     ],
     fakeEnv(),
@@ -443,4 +466,27 @@ test("User can see a clear failure for a non-positive timeout", async () => {
   );
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("positive integer");
+});
+
+test("User can see a clear failure for an oversized cell limit", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--cell-limit", "10001"],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("--cell-limit must be at most 10000");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+});
+
+test("User cannot save a write statement as a result ref", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "UPDATE ORDERS SET STATUS = ? WHERE ID = ?", "--param", "DONE", "--save"],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("--save is only available");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
 });

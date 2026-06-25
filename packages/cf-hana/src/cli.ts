@@ -1,9 +1,18 @@
 import { Command } from "commander";
 
 import { connect } from "./api.js";
-import { CLI_NAME, CLI_VERSION, DEFAULT_AUTO_LIMIT } from "./config.js";
+import { registerResultCommands } from "./cli-results.js";
+import {
+  CLI_NAME,
+  CLI_VERSION,
+  DEFAULT_AUTO_LIMIT,
+  DEFAULT_CELL_LIMIT,
+  MAX_CELL_LIMIT,
+} from "./config.js";
 import { CfHanaError, errorMessage } from "./errors.js";
-import { formatResult } from "./format.js";
+import { formatCompactCsv, formatResult, formatTable } from "./format.js";
+import { createResultSession } from "./result-store.js";
+import { classifyStatement } from "./statements.js";
 import type {
   ConnectOptions,
   DbUserRole,
@@ -13,8 +22,7 @@ import type {
   QueryRow,
 } from "./types.js";
 
-interface CliOptions {
-  readonly format: string;
+interface ConnectionCliOptions {
   readonly refresh: boolean;
   readonly role: string;
   readonly binding?: string;
@@ -24,7 +32,17 @@ interface CliOptions {
   readonly timeout?: number;
   readonly limit?: number;
   readonly autoLimit: boolean;
+}
+
+interface FormattedCliOptions extends ConnectionCliOptions {
+  readonly format: string;
+}
+
+interface QueryCliOptions extends ConnectionCliOptions {
   readonly param?: readonly string[];
+  readonly save: boolean;
+  readonly cellLimit?: number;
+  readonly resultTtlMinutes?: number;
 }
 
 function print(text: string): void {
@@ -86,7 +104,7 @@ function parseQualifiedName(value: string): { readonly schema: string; readonly 
   return { schema: value.slice(0, dot), table: value.slice(dot + 1) };
 }
 
-function toConnectOptions(opts: CliOptions): ConnectOptions {
+function toConnectOptions(opts: ConnectionCliOptions): ConnectOptions {
   assertPositiveOption("--limit", opts.limit);
   assertPositiveOption("--timeout", opts.timeout);
   assertNonNegativeOption("--binding-index", opts.bindingIndex);
@@ -103,6 +121,23 @@ function toConnectOptions(opts: CliOptions): ConnectOptions {
       ? {}
       : { queryTimeoutMs: opts.timeout, connectTimeoutMs: opts.timeout }),
   };
+}
+
+function resolveCellLimit(value: number | undefined): number {
+  const limit = value ?? DEFAULT_CELL_LIMIT;
+  assertPositiveOption("--cell-limit", limit);
+  if (limit > MAX_CELL_LIMIT) {
+    throw new CfHanaError("CONFIG", `--cell-limit must be at most ${String(MAX_CELL_LIMIT)}`);
+  }
+  return limit;
+}
+
+function assertQueryOptions(sql: string, opts: QueryCliOptions): void {
+  resolveCellLimit(opts.cellLimit);
+  assertPositiveOption("--result-ttl-minutes", opts.resultTtlMinutes);
+  if (opts.save && classifyStatement(sql) !== "select") {
+    throw new CfHanaError("CONFIG", "--save is only available for SELECT/WITH statements");
+  }
 }
 
 function rowsToResult(rows: readonly QueryRow[]): QueryResult {
@@ -135,7 +170,6 @@ function formatInfo(info: HanaClientInfo): string {
 
 function withConnectionOptions(command: Command): Command {
   return command
-    .option("--format <format>", "output format: table, json, or csv", "table")
     .option("--refresh", "bypass cached credentials and fetch them live", false)
     .option("--role <role>", "HANA user role: runtime or hdi", "runtime")
     .option("--binding <name>", "select a HANA binding by service name")
@@ -147,8 +181,18 @@ function withConnectionOptions(command: Command): Command {
     .option("--no-auto-limit", "disable the automatic SELECT row cap");
 }
 
+function withFormattedConnectionOptions(command: Command): Command {
+  return withConnectionOptions(command).option(
+    "--format <format>",
+    "output format: table, json, or csv",
+    "table",
+  );
+}
+
 async function runQuery(selector: string, sql: string, command: Command): Promise<void> {
-  const opts = command.opts<CliOptions>();
+  const opts = command.opts<QueryCliOptions>();
+  assertQueryOptions(sql, opts);
+  const cellLimit = resolveCellLimit(opts.cellLimit);
   const client = await connect(selector, toConnectOptions(opts));
   try {
     const params = opts.param ?? [];
@@ -157,7 +201,30 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
       process.stderr.write(`${CLI_NAME}: backup saved to ${backup.directory}\n`);
     }
     const result = await client.query(sql, params);
-    print(formatResult(result, parseFormat(opts.format)));
+    if (result.statement === "select") {
+      const compact = formatCompactCsv(result, cellLimit);
+      if (opts.save) {
+        const session = await createResultSession({
+          result,
+          info: client.info,
+          ...(opts.resultTtlMinutes === undefined ? {} : { ttlMinutes: opts.resultTtlMinutes }),
+        });
+        print(`ref=${session.ref}`);
+        process.stderr.write(`${CLI_NAME}: saved result expires at ${session.expiresAt}\n`);
+      }
+      print(compact.text);
+      if (result.truncated) {
+        process.stderr.write(`${CLI_NAME}: row limit reached; rerun with --limit for more rows\n`);
+      }
+      if (compact.truncatedCells > 0) {
+        process.stderr.write(
+          `${CLI_NAME}: compacted ${String(compact.truncatedCells)} cell(s); ` +
+            "use --save to inspect exact values by ref\n",
+        );
+      }
+      return;
+    }
+    print(formatTable(result));
   } finally {
     await client.close();
   }
@@ -168,7 +235,7 @@ async function runTables(
   schema: string | undefined,
   command: Command,
 ): Promise<void> {
-  const opts = command.opts<CliOptions>();
+  const opts = command.opts<FormattedCliOptions>();
   const client = await connect(selector, toConnectOptions(opts));
   try {
     const tables = await client.listTables(schema ?? client.info.schema);
@@ -184,7 +251,7 @@ async function runTables(
 }
 
 async function runColumns(selector: string, target: string, command: Command): Promise<void> {
-  const opts = command.opts<CliOptions>();
+  const opts = command.opts<FormattedCliOptions>();
   const { schema, table } = parseQualifiedName(target);
   const client = await connect(selector, toConnectOptions(opts));
   try {
@@ -203,7 +270,7 @@ async function runColumns(selector: string, target: string, command: Command): P
 }
 
 async function runCount(selector: string, target: string, command: Command): Promise<void> {
-  const opts = command.opts<CliOptions>();
+  const opts = command.opts<ConnectionCliOptions>();
   const { schema, table } = parseQualifiedName(target);
   const client = await connect(selector, toConnectOptions(opts));
   try {
@@ -215,7 +282,7 @@ async function runCount(selector: string, target: string, command: Command): Pro
 }
 
 async function runPing(selector: string, command: Command): Promise<void> {
-  const opts = command.opts<CliOptions>();
+  const opts = command.opts<ConnectionCliOptions>();
   const client = await connect(selector, toConnectOptions(opts));
   try {
     const started = Date.now();
@@ -230,7 +297,7 @@ async function runPing(selector: string, command: Command): Promise<void> {
 }
 
 async function runInfo(selector: string, command: Command): Promise<void> {
-  const opts = command.opts<CliOptions>();
+  const opts = command.opts<ConnectionCliOptions>();
   const client = await connect(selector, toConnectOptions(opts));
   try {
     print(formatInfo(client.info));
@@ -250,12 +317,19 @@ function buildProgram(): Command {
     program
       .command("query <selector> <sql>")
       .description("run a single SQL statement")
-      .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, []),
+      .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, [])
+      .option("--save", "save exact returned rows for follow-up inspection", false)
+      .option("--cell-limit <n>", "maximum visible characters per data cell", parseIntOption)
+      .option(
+        "--result-ttl-minutes <n>",
+        "minutes before a saved result expires",
+        parseIntOption,
+      ),
   ).action(async (selector: string, sql: string, _options: unknown, command: Command) => {
     await runQuery(selector, sql, command);
   });
 
-  withConnectionOptions(
+  withFormattedConnectionOptions(
     program.command("tables <selector> [schema]").description("list tables in a schema"),
   ).action(
     async (selector: string, schema: string | undefined, _options: unknown, command: Command) => {
@@ -263,7 +337,7 @@ function buildProgram(): Command {
     },
   );
 
-  withConnectionOptions(
+  withFormattedConnectionOptions(
     program
       .command("columns <selector> <schema.table>")
       .description("list the columns of a table"),
@@ -288,6 +362,8 @@ function buildProgram(): Command {
   ).action(async (selector: string, _options: unknown, command: Command) => {
     await runInfo(selector, command);
   });
+
+  registerResultCommands(program);
 
   return program;
 }

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCsv, formatJson, formatResult, formatTable } from "../../src/format.js";
+import {
+  formatCompactCsv,
+  formatCsv,
+  formatJson,
+  formatResult,
+  formatTable,
+} from "../../src/format.js";
 import type { QueryResult } from "../../src/types.js";
 
 function selectResult(): QueryResult {
@@ -118,6 +124,40 @@ describe("formatCsv", () => {
       elapsedMs: 0,
     };
     expect(formatCsv(result)).toBe('TEXT\r\n"a,""b"""');
+  });
+});
+
+describe("formatCompactCsv", () => {
+  it("bounds every data cell and reports the truncated-cell count", () => {
+    const result: QueryResult = {
+      rows: [{ ID: 1, CONTENT: "x".repeat(200) }],
+      columns: [
+        { name: "ID", typeName: "INTEGER" },
+        { name: "CONTENT", typeName: "NCLOB" },
+      ],
+      rowCount: 1,
+      statement: "select",
+      truncated: false,
+      elapsedMs: 0,
+    };
+
+    const compact = formatCompactCsv(result, 128);
+
+    expect(compact.text).toBe(`ID,CONTENT\r\n1,${"x".repeat(128)}`);
+    expect(compact.truncatedCells).toBe(1);
+  });
+
+  it("keeps CSV escaping after previewing a value", () => {
+    const result: QueryResult = {
+      rows: [{ CONTENT: 'a,"b"' }],
+      columns: [{ name: "CONTENT", typeName: "NVARCHAR" }],
+      rowCount: 1,
+      statement: "select",
+      truncated: false,
+      elapsedMs: 0,
+    };
+
+    expect(formatCompactCsv(result, 128).text).toBe('CONTENT\r\n"a,""b"""');
   });
 });
 

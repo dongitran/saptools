@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 - 2026-06-25
+
+- Change CLI `query` output for `SELECT`/`WITH` statements to compact CSV and
+  remove `--format` from `query`.
+- Default bare `SELECT` queries to at most 100 returned rows, with accurate
+  N+1 truncation detection.
+- Limit visible SELECT data cells to 128 characters by default, configurable
+  with `--cell-limit <n>` up to 10,000.
+- Add `query --save` and `cf-hana result` commands to save exact returned rows
+  for 60 minutes, inspect rows/cells/JSON paths by ref, search saved values,
+  export exact cells, and prune local result sessions.
+- Keep programmatic query APIs and write backups full-fidelity.
+
 ## 0.1.6 - 2026-06-23
 
 - Expand fake-backed E2E coverage for complex `UPDATE` and `DELETE` backups,

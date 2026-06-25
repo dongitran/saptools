@@ -1,12 +1,17 @@
 export const CLI_NAME = "cf-hana";
-export const CLI_VERSION = "0.1.6";
+export const CLI_VERSION = "0.2.0";
 export const ENV_PREFIX = "CF_HANA";
 
 export const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
 export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 export const DEFAULT_POOL_MAX = 4;
 export const DEFAULT_POOL_IDLE_MS = 60_000;
-export const DEFAULT_AUTO_LIMIT = 1_000;
+export const DEFAULT_AUTO_LIMIT = 100;
+export const DEFAULT_CELL_LIMIT = 128;
+export const MAX_CELL_LIMIT = 10_000;
+export const DEFAULT_RESULT_TTL_MINUTES = 60;
+export const DEFAULT_RESULT_SEARCH_LIMIT = 20;
+export const MAX_RESULT_STORE_BYTES = 256 * 1024 * 1024;
 export const HANA_CLOUD_DEFAULT_PORT = 443;
 
 /** Build a `CF_HANA_*` environment variable name from a suffix. */

@@ -46,26 +46,30 @@ const catalogResponder: FakeResponder = (sql) => {
   return {};
 };
 
-async function openCatalogConnection(): Promise<Connection> {
+async function openCatalogConnection(): Promise<{
+  readonly connection: Connection;
+  readonly driver: FakeHanaDriver;
+}> {
   const driver = new FakeHanaDriver(catalogResponder);
-  return await Connection.open(driver, sampleConnectionConfig());
+  const connection = await Connection.open(driver, sampleConnectionConfig());
+  return { connection, driver };
 }
 
 describe("catalog", () => {
   it("lists schemas", async () => {
-    const connection = await openCatalogConnection();
+    const { connection } = await openCatalogConnection();
     await expect(listSchemas(connection)).resolves.toEqual(["APP", "SYS"]);
   });
 
   it("lists tables in a schema", async () => {
-    const connection = await openCatalogConnection();
+    const { connection } = await openCatalogConnection();
     await expect(listTables(connection, "APP")).resolves.toEqual([
       { schema: "APP", name: "ORDERS", type: "COLUMN TABLE", rowCount: undefined },
     ]);
   });
 
   it("lists columns of a table", async () => {
-    const connection = await openCatalogConnection();
+    const { connection } = await openCatalogConnection();
     await expect(listColumns(connection, "APP", "ORDERS")).resolves.toEqual([
       {
         name: "ID",
@@ -87,9 +91,20 @@ describe("catalog", () => {
   });
 
   it("describes a table together with its columns", async () => {
-    const connection = await openCatalogConnection();
+    const { connection } = await openCatalogConnection();
     const description = await describeTable(connection, "APP", "ORDERS");
     expect(description.table?.name).toBe("ORDERS");
     expect(description.columns).toHaveLength(2);
+  });
+
+  it("does not auto-limit catalog metadata queries", async () => {
+    const { connection, driver } = await openCatalogConnection();
+
+    await listSchemas(connection);
+    await listTables(connection, "APP");
+    await listColumns(connection, "APP", "ORDERS");
+
+    const sql = driver.connections[0]?.execCalls.map((call) => call.sql) ?? [];
+    expect(sql.every((statement) => !statement.includes(" LIMIT "))).toBe(true);
   });
 });

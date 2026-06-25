@@ -85,13 +85,14 @@ describe("evaluateGuard", () => {
 describe("applyAutoLimit", () => {
   it("appends LIMIT to a bare SELECT", () => {
     expect(applyAutoLimit("SELECT * FROM T", 100)).toEqual({
-      sql: "SELECT * FROM T LIMIT 100",
+      sql: "SELECT * FROM T LIMIT 101",
       applied: true,
+      requestedLimit: 100,
     });
   });
 
   it("strips a trailing semicolon before appending LIMIT", () => {
-    expect(applyAutoLimit("SELECT * FROM T;", 10).sql).toBe("SELECT * FROM T LIMIT 10");
+    expect(applyAutoLimit("SELECT * FROM T;", 10).sql).toBe("SELECT * FROM T LIMIT 11");
   });
 
   it("does not touch a SELECT that already has a LIMIT", () => {
@@ -100,15 +101,17 @@ describe("applyAutoLimit", () => {
 
   it("ignores LIMIT-like text in comments and quoted identifiers", () => {
     expect(applyAutoLimit('SELECT "limit" FROM T -- limit 5', 100)).toEqual({
-      sql: 'SELECT "limit" FROM T LIMIT 100 -- limit 5',
+      sql: 'SELECT "limit" FROM T LIMIT 101 -- limit 5',
       applied: true,
+      requestedLimit: 100,
     });
   });
 
   it("inserts LIMIT before a trailing line comment and removes a preceding semicolon", () => {
     expect(applyAutoLimit("SELECT * FROM T; -- note", 100)).toEqual({
-      sql: "SELECT * FROM T LIMIT 100 -- note",
+      sql: "SELECT * FROM T LIMIT 101 -- note",
       applied: true,
+      requestedLimit: 100,
     });
   });
 

@@ -26,6 +26,8 @@ login on the hot path) and connections are pooled and reused within a process.
   under `~/.saptools/cf-hana/histories/` with five-day retention.
 - **Write backups** — CLI `UPDATE` and `DELETE` statements create a local CSV
   backup of matching rows before the write runs.
+- **Compact CLI results** — CLI `SELECT`/`WITH` output is compact CSV with
+  bounded cells and optional saved refs for exact follow-up inspection.
 - **Safety guard** — opt-in read-only mode and a destructive-statement guard
   (blocks `DROP`/`TRUNCATE`/`ALTER` and unscoped `UPDATE`/`DELETE`).
 - **Typed results** — `query<TRow>()` returns typed rows.
@@ -83,23 +85,69 @@ cf-hana columns <selector> <schema.table>   List the columns of a table
 cf-hana count   <selector> <schema.table>   Count rows in a table
 cf-hana ping    <selector>                  Connect and measure round-trip latency
 cf-hana info    <selector>                  Print the resolved connection metadata
+cf-hana result  <command>                   Inspect saved query refs
 ```
 
-Common options: `--format <table|json|csv>`, `--refresh`, `--role <runtime|hdi>`,
-`--binding <name>` / `--binding-index <n>`, `--timeout <ms>`, `--read-only`,
-`--allow-destructive`, `--limit <n>`, `--no-auto-limit`. The `query` command also
-accepts `--param <value>` (repeatable) to bind `?` placeholders. CLI `UPDATE`
-and `DELETE` statements are backed up automatically before the write runs.
+Common options: `--refresh`, `--role <runtime|hdi>`, `--binding <name>` /
+`--binding-index <n>`, `--timeout <ms>`, `--read-only`, `--allow-destructive`,
+`--limit <n>`, `--no-auto-limit`. The `query` command also accepts
+`--param <value>` (repeatable), `--cell-limit <n>`, `--save`, and
+`--result-ttl-minutes <n>`. `tables` and `columns` still support
+`--format <table|json|csv>`. CLI `UPDATE` and `DELETE` statements are backed up
+automatically before the write runs.
 
 ```bash
 cf-hana query eu10/example-org/space-demo/app-demo "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
-  --param OPEN --format json
+  --param OPEN --read-only --save
 cf-hana query app-demo "UPDATE ORDERS SET STATUS = ? WHERE ID = ?" \
-  --param DONE --param 42 --format json
+  --param DONE --param 42
 cf-hana tables app-demo
 cf-hana columns app-demo ORDERS_APP.ORDERS
 cf-hana ping eu10/example-org/space-demo/app-demo
 ```
+
+## Compact query output and saved refs
+
+For CLI `SELECT` and `WITH` statements, stdout is CSV. Bare reads return at most
+100 rows by default; pass `--limit <n>` to request more, or `--no-auto-limit` to
+disable the automatic cap. Data cells display at most 128 Unicode characters by
+default; pass `--cell-limit <n>` to choose a value from 1 through 10,000.
+
+Use `--save` when you need exact values later:
+
+```bash
+cf-hana query app-demo "SELECT ID, CONTENT FROM ORDERS" --read-only --save
+```
+
+Saved output starts with a control line, then CSV:
+
+```text
+ref=q7f3a9c2b
+ID,CONTENT
+1,first 128 visible characters
+```
+
+The ref is not a CSV column. Exact returned rows are stored under
+`~/.saptools/cf-hana/results/` for 60 minutes by default. Only returned rows are
+stored; rows beyond the selected `--limit` are not fetched or saved.
+
+Follow-up commands:
+
+```bash
+cf-hana result show q7f3a9c2b
+cf-hana result show q7f3a9c2b --row 1
+cf-hana result show q7f3a9c2b --row 1 --column CONTENT --length 1000
+cf-hana result show q7f3a9c2b --row 1 --column PAYLOAD --path /items/0
+cf-hana result search q7f3a9c2b "ready"
+cf-hana result export q7f3a9c2b --row 1 --column CONTENT --output content.txt
+cf-hana result list
+cf-hana result prune
+cf-hana result clear
+```
+
+`--save` is available only for `SELECT` and `WITH` statements. The programmatic
+API keeps returning full-fidelity `QueryResult` values and does not write result
+refs.
 
 ## Programmatic API
 
@@ -167,14 +215,14 @@ The backup is saved before the write runs:
 `statement.sql` contains the original write statement. `backup.csv` contains the
 rows returned by the derived `SELECT`. Backup folders are not deleted by
 `cf-hana`; clean them up manually when they are no longer needed. The backup path
-is printed to stderr so JSON and CSV stdout remain parseable.
+is printed to stderr so stdout remains parseable.
 
 ## Safety
 
 - **Read-only mode** (`readOnly` / `--read-only`) rejects every DML and DDL statement.
 - **Destructive guard** blocks `DROP` / `TRUNCATE` / `ALTER` and `UPDATE` / `DELETE`
   without a `WHERE` clause unless `allowDestructive` / `--allow-destructive` is set.
-- **Auto-limit** appends a `LIMIT` to bare `SELECT` statements (default 1000);
+- **Auto-limit** appends a `LIMIT` to bare `SELECT` statements (default 100);
   `QueryResult.truncated` reports when it clipped the result. Disable with
   `autoLimit: false` / `--no-auto-limit`.
 

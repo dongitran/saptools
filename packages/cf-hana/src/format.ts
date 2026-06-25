@@ -1,3 +1,4 @@
+import { previewCell } from "./result-preview.js";
 import type { OutputFormat, QueryResult, SqlParam } from "./types.js";
 
 type JsonCell = string | number | boolean | null;
@@ -36,6 +37,11 @@ function csvEscape(text: string): string {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+export interface CompactCsv {
+  readonly text: string;
+  readonly truncatedCells: number;
 }
 
 /** Render a result as an aligned ASCII table. */
@@ -88,6 +94,24 @@ export function formatCsv(result: QueryResult): string {
     );
   }
   return lines.join("\r\n");
+}
+
+/** Render bounded CSV for CLI SELECT output without mutating the source result. */
+export function formatCompactCsv(result: QueryResult, cellLimit: number): CompactCsv {
+  const headers = result.columns.map((column) => column.name);
+  const lines = [headers.map((header) => csvEscape(header)).join(",")];
+  let truncatedCells = 0;
+  for (const row of result.rows) {
+    const cells = result.columns.map((column) => {
+      const preview = previewCell(row[column.name] ?? null, cellLimit);
+      if (preview.truncated) {
+        truncatedCells += 1;
+      }
+      return csvEscape(preview.text);
+    });
+    lines.push(cells.join(","));
+  }
+  return { text: lines.join("\r\n"), truncatedCells };
 }
 
 /** Render a query result in the requested output format. */

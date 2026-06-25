@@ -43,7 +43,7 @@ export function sampleConnectionConfig(
     queryTimeoutMs: 30_000,
     readOnly: false,
     allowDestructive: false,
-    autoLimit: 1000,
+    autoLimit: 100,
     ...overrides,
   };
 }
