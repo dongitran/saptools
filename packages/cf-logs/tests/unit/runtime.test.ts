@@ -59,8 +59,8 @@ describe("CfLogsRuntime", () => {
     });
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -92,8 +92,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -131,8 +131,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -160,8 +160,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -183,7 +183,7 @@ describe("CfLogsRuntime", () => {
         space: "sample",
         app: "demo-app",
       },
-      rawText: "sample-password sample@example.com",
+      rawText: "credential-placeholder operator@example.test",
       fetchedAt: "2026-04-18T00:00:00.000Z",
       updatedAt: "2026-04-18T00:00:00.000Z",
       rowCount: 1,
@@ -196,15 +196,15 @@ describe("CfLogsRuntime", () => {
       {
         prepareSession: vi.fn().mockResolvedValue(undefined),
         fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(
-          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample-password sample@example.com",
+          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT credential-placeholder operator@example.test",
         ),
         persistSnapshot,
       },
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -215,7 +215,7 @@ describe("CfLogsRuntime", () => {
 
     expect(persistSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({
-        rawText: expect.stringContaining("sample-password sample@example.com"),
+        rawText: expect.stringContaining("credential-placeholder operator@example.test"),
       }),
     );
   });
@@ -228,8 +228,8 @@ describe("CfLogsRuntime", () => {
 
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -258,8 +258,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -302,8 +302,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -325,14 +325,14 @@ describe("CfLogsRuntime", () => {
       {
         prepareSession: vi.fn().mockResolvedValue(undefined),
         fetchRecentLogsFromTarget: vi.fn().mockResolvedValue(
-          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample-password sample@example.com",
+          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT credential-placeholder operator@example.test",
         ),
       },
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -341,8 +341,8 @@ describe("CfLogsRuntime", () => {
 
     const snapshot = await runtime.fetchSnapshot("demo-app");
 
-    expect(snapshot.rawText).toContain("sample-password");
-    expect(snapshot.rawText).toContain("sample@example.com");
+    expect(snapshot.rawText).toContain("credential-placeholder");
+    expect(snapshot.rawText).toContain("operator@example.test");
   });
 
   it("re-prepares the session and retries when the CF target has drifted (stale-target recovery)", async () => {
@@ -362,8 +362,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -391,8 +391,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -428,8 +428,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -465,8 +465,8 @@ describe("CfLogsRuntime", () => {
     );
     runtime.setSession({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",

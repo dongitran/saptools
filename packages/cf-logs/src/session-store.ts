@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { withFileLock } from "./lock.js";
 import { DEFAULT_LOG_LIMIT } from "./parser.js";
 import { cfLogsSessionsDir } from "./paths.js";
 import type {
@@ -58,7 +59,9 @@ export async function createCompactSession(
     ...(input.now === undefined ? {} : { now: input.now }),
   });
   const session = buildSession(input, now);
-  await writeSession(sessionsDir, session);
+  await withSessionLock(sessionsDir, session.sessionId, async () => {
+    await writeSession(sessionsDir, session);
+  });
   return session;
 }
 
@@ -71,11 +74,13 @@ export async function appendCompactSessionRows(
     sessionsDir,
     ...(input.now === undefined ? {} : { now: input.now }),
   });
-  const session = await readSessionOrThrow(sessionsDir, input.sessionId, now);
-  const rows = boundRows(mergeRows(session.rows, input.rows), input.logLimit);
-  const updated = refreshSession(session, rows, now);
-  await writeSession(sessionsDir, updated);
-  return updated;
+  return await withSessionLock(sessionsDir, input.sessionId, async () => {
+    const session = await readSessionOrThrow(sessionsDir, input.sessionId, now);
+    const rows = boundRows(mergeRows(session.rows, input.rows), input.logLimit);
+    const updated = refreshSession(session, rows, now);
+    await writeSession(sessionsDir, updated);
+    return updated;
+  });
 }
 
 export async function readCompactSessionRef(
@@ -208,11 +213,19 @@ async function listSessionFiles(sessionsDir: string): Promise<readonly string[]>
     const files = await readdir(sessionsDir);
     return files.filter((file) => file.endsWith(".json"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (readErrorCode(error) === "ENOENT") {
       return [];
     }
     throw error instanceof Error ? error : new Error(String(error), { cause: error });
   }
+}
+
+async function withSessionLock<T>(
+  sessionsDir: string,
+  sessionId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  return await withFileLock(sessionLockPath(sessionsDir, sessionId), work);
 }
 
 function mergeRows(
@@ -273,6 +286,10 @@ function isExpired(session: CompactSession, now: Date): boolean {
 
 function sessionPath(sessionsDir: string, sessionId: string): string {
   return join(sessionsDir, `${sessionId}.json`);
+}
+
+function sessionLockPath(sessionsDir: string, sessionId: string): string {
+  return join(sessionsDir, `${sessionId}.lock`);
 }
 
 function resolveSessionsDir(sessionsDir: string | undefined): string {

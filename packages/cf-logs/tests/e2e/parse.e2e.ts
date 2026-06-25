@@ -16,7 +16,7 @@ test("parse reads a local file and returns structured rows", async () => {
   await writeFile(
     inputPath,
     [
-      "Retrieving logs for app demo-app in org sample-org / space sample as sample@example.com...",
+      "Retrieving logs for app demo-app in org sample-org / space sample as operator@example.test...",
       '2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT {"level":"error","logger":"samplelogger","timestamp":"2026-04-12T02:14:41.000Z","msg":"save failed","type":"log"}',
       "2026-04-12T09:14:42.00+0700 [APP/PROC/WEB/0] OUT Request started",
       "Error: sample failure",
@@ -65,4 +65,22 @@ test("parse compact emits condensed text and compact JSON", async () => {
   expect(payload.rowCount).toBe(2);
   expect(payload.rows[1]?.message).toBe("retry scheduled");
   expect(payload.rows[1]?.rawBody).toBeUndefined();
+});
+
+test("parse rejects compact raw mode before reading input", async () => {
+  const paths = await prepareCase(ROOT_NAME, "parse-compact-raw-conflict", EMPTY_SCENARIO);
+  const env = createEnv(paths);
+  const missingInputPath = join(paths.workDir, "missing.log");
+
+  const result = await runCli(env, [
+    "parse",
+    "--input",
+    missingInputPath,
+    "--compact",
+    "--raw",
+  ]);
+
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("--compact cannot be combined with --raw.");
+  expect(result.stderr).not.toContain("ENOENT");
 });

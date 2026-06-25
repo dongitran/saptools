@@ -82,6 +82,17 @@ describe("compact logs", () => {
     expect(document.rows[0]?.message).toBe("aaaaaaaaaaaaaaaaaaaaa...");
   });
 
+  it("uses a 500 character default message cap", () => {
+    const rows = parseRecentLogs(
+      `2026-04-12T09:00:00.00+0700 [APP/PROC/WEB/0] OUT ${"b".repeat(620)}`,
+    );
+
+    const compact = compactLogRows(rows);
+
+    expect(compact[0]?.message).toHaveLength(500);
+    expect(compact[0]?.message?.endsWith("...")).toBe(true);
+  });
+
   it("formats compact documents as stable single-line text rows", () => {
     const rows = parseRecentLogs(
       [

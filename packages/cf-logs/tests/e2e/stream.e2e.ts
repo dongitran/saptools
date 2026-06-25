@@ -29,7 +29,7 @@ function createScenario(): Scenario {
                     stream: [
                       {
                         stdout:
-                          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample-password\n",
+                          "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT credential-placeholder\n",
                       },
                       {
                         stdout:
@@ -68,7 +68,7 @@ test("stream outputs full-fidelity JSON line batches and stops after the configu
   ]);
 
   expect(result.code).toBe(0);
-  expect(result.stdout).toContain("sample-password");
+  expect(result.stdout).toContain("credential-placeholder");
   const events = result.stdout
     .trim()
     .split("\n")
@@ -99,7 +99,7 @@ test("stream compact save emits row refs for full drill-down", async () => {
     "--json",
     "--save",
     "--max-lines",
-    "2",
+    "1",
   ]);
 
   expect(result.code).toBe(0);
@@ -112,11 +112,13 @@ test("stream compact save emits row refs for full drill-down", async () => {
       readonly rows?: readonly { readonly ref?: string; readonly message?: string }[];
     })
     .filter((event) => event.type === "rows");
-  const firstRef = rowEvents.flatMap((event) => event.rows ?? [])[0]?.ref;
+  const compactRows = rowEvents.flatMap((event) => event.rows ?? []);
+  expect(compactRows).toHaveLength(1);
+  const firstRef = compactRows[0]?.ref;
   expect(firstRef).toBeDefined();
 
   const show = await runCli(env, ["show", firstRef ?? "", "--json"]);
   expect(show.code).toBe(0);
   const full = JSON.parse(show.stdout) as { readonly row: { readonly rawBody: string } };
-  expect(full.row.rawBody).toContain("sample-password");
+  expect(full.row.rawBody).toContain("credential-placeholder");
 });

@@ -19,7 +19,7 @@ describe("parser", () => {
   it("drops CF system messages and parses JSON and router access rows", () => {
     const rows = parseRecentLogs(
       [
-        "Retrieving logs for app demo-app in org sample-org / space sample as sample@example.com...",
+        "Retrieving logs for app demo-app in org sample-org / space sample as operator@example.test...",
         "",
         '2026-04-12T09:14:45.25+0700 [APP/PROC/WEB/0] OUT {"level":"info","logger":"samplelogger","timestamp":"2026-04-12T02:14:45.255Z","component_name":"demo-app","organization_name":"sample-org","space_name":"sample","msg":"ready","type":"log"}',
         routerLine,

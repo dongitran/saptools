@@ -28,6 +28,11 @@ export interface CompactCliFlags {
   readonly save?: boolean;
 }
 
+export interface CompactAppendPrintResult {
+  readonly emittedCount: number;
+  readonly lastRowId?: number;
+}
+
 export async function buildSnapshotCompactDocument(
   session: CfSessionInput,
   snapshot: {
@@ -78,10 +83,15 @@ export async function printCompactAppendRows(
   flags: CompactCliFlags,
   compactSession: CompactSession | undefined,
   lastEmittedRowId: number,
-): Promise<number> {
-  const rows = event.state.rows.filter((row) => row.id > lastEmittedRowId);
+  rowLimit?: number,
+): Promise<CompactAppendPrintResult> {
+  if (rowLimit !== undefined && rowLimit <= 0) {
+    return { emittedCount: 0 };
+  }
+  const pendingRows = event.state.rows.filter((row) => row.id > lastEmittedRowId);
+  const rows = rowLimit === undefined ? pendingRows : pendingRows.slice(0, rowLimit);
   if (rows.length === 0) {
-    return 0;
+    return { emittedCount: 0 };
   }
   const refs = await buildAppendRefs(compactSession, rows, flags.logLimit);
   const compactRows = compactLogRows(rows, { ...buildCompactOptions(flags), refs });
@@ -90,7 +100,11 @@ export async function printCompactAppendRows(
   } else {
     writeRaw(formatCompactRows(compactRows));
   }
-  return compactRows.length;
+  const lastRow = rows.at(-1);
+  return {
+    emittedCount: compactRows.length,
+    ...(lastRow === undefined ? {} : { lastRowId: lastRow.id }),
+  };
 }
 
 function buildCompactOptions(flags: CompactCliFlags): { readonly messageLimit: number } {
@@ -137,10 +151,13 @@ function buildSessionTarget(
 }
 
 function buildRefs(session: CompactSession, rows: readonly ParsedLogRow[]): readonly CompactLogRowRef[] {
-  return rows.map((row) => ({
-    rowId: row.id,
-    ref: formatCompactRowRef(session.sessionId, row.id),
-  }));
+  const savedRowIds = new Set(session.rows.map((row) => row.id));
+  return rows
+    .filter((row) => savedRowIds.has(row.id))
+    .map((row) => ({
+      rowId: row.id,
+      ref: formatCompactRowRef(session.sessionId, row.id),
+    }));
 }
 
 function writeJsonLine(value: unknown): void {

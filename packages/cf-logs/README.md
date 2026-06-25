@@ -51,8 +51,8 @@ npm install @saptools/cf-logs
 
 ```bash
 # 1. Export credentials used for cf api/auth
-export SAP_EMAIL="sample@example.com"
-export SAP_PASSWORD="sample-password"
+export SAP_EMAIL="operator@example.test"
+export SAP_PASSWORD="credential-placeholder"
 
 # 2. Fetch a structured snapshot
 cf-logs snapshot \

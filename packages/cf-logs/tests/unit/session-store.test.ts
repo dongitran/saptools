@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -143,6 +143,16 @@ describe("compact session store", () => {
     const removed = await clearCompactSessions({ sessionsDir });
 
     expect(removed).toBe(2);
+    expect(await listCompactSessions({ sessionsDir })).toEqual([]);
+  });
+
+  it("prunes malformed session files without listing them", async () => {
+    const sessionsDir = await makeSessionsDir();
+    await writeFile(join(sessionsDir, "abc123ef.json"), "{\"version\":2}\n", "utf8");
+
+    const removed = await pruneExpiredCompactSessions({ sessionsDir });
+
+    expect(removed).toBe(1);
     expect(await listCompactSessions({ sessionsDir })).toEqual([]);
   });
 });

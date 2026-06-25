@@ -114,8 +114,8 @@ describe("cf transport", () => {
     const { fetchRecentLogs } = await import("../../src/cf.js");
     const result = await fetchRecentLogs({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
       app: "demo-app",
@@ -184,8 +184,8 @@ describe("cf transport", () => {
     await expect(
       fetchRecentLogs({
         region: "ap10",
-        email: "sample@example.com",
-        password: "sample-password",
+        email: "operator@example.test",
+        password: "credential-placeholder",
         org: "sample-org",
         space: "sample",
         app: "missing-app",
@@ -325,8 +325,8 @@ describe("cf transport", () => {
     const { fetchStartedAppsViaCfCli } = await import("../../src/cf.js");
     const apps = await fetchStartedAppsViaCfCli({
       region: "ap10",
-      email: "sample@example.com",
-      password: "sample-password",
+      email: "operator@example.test",
+      password: "credential-placeholder",
       org: "sample-org",
       space: "sample",
     });

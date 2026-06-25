@@ -29,8 +29,8 @@ function createScenario(): Scenario {
                   {
                     name: "demo-app",
                     recentLogs: [
-                      "Retrieving logs for app demo-app in org sample-org / space sample as sample@example.com...",
-                      "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample-password",
+                      "Retrieving logs for app demo-app in org sample-org / space sample as operator@example.test...",
+                      "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT credential-placeholder",
                       '2026-04-12T09:14:41.00+0700 [APP/PROC/WEB/0] OUT {"level":"error","logger":"samplelogger","timestamp":"2026-04-12T02:14:41.000Z","msg":"save failed","type":"log"}',
                     ].join("\n"),
                   },
@@ -75,8 +75,8 @@ test("snapshot fetches parsed rows, persists full-fidelity store entry, and uses
     readonly entries: readonly { readonly rawText: string }[];
   }>(join(paths.homeDir, ".saptools", "cf-logs-store.json"));
   expect(store.entries).toHaveLength(1);
-  expect(store.entries[0]?.rawText).toContain("sample-password");
-  expect(store.entries[0]?.rawText).toContain("sample@example.com");
+  expect(store.entries[0]?.rawText).toContain("credential-placeholder");
+  expect(store.entries[0]?.rawText).toContain("operator@example.test");
 
   const logs = await readFakeLog(paths.logPath);
   expect(logs.map((entry) => entry.command)).toEqual(["api", "auth", "target", "logs"]);
@@ -99,8 +99,8 @@ test("snapshot emits full-fidelity text by default", async () => {
   ]);
 
   expect(result.code).toBe(0);
-  expect(result.stdout).toContain("sample@example.com");
-  expect(result.stdout).toContain("sample-password");
+  expect(result.stdout).toContain("operator@example.test");
+  expect(result.stdout).toContain("credential-placeholder");
 });
 
 test("snapshot compact save emits refs and show returns the full row", async () => {
@@ -128,12 +128,30 @@ test("snapshot compact save emits refs and show returns the full row", async () 
   };
   const ref = payload.rows[0]?.ref;
   expect(ref).toBeDefined();
-  expect(payload.rows[0]?.message).toContain("sample-password");
+  expect(payload.rows[0]?.message).toContain("credential-placeholder");
 
   const show = await runCli(env, ["show", ref ?? "", "--json"]);
   expect(show.code).toBe(0);
   const full = JSON.parse(show.stdout) as {
     readonly row: { readonly rawBody: string; readonly message: string };
   };
-  expect(full.row.rawBody).toContain("sample-password");
+  expect(full.row.rawBody).toContain("credential-placeholder");
+
+  const sessionId = ref?.split(":")[0] ?? "";
+  const sessions = await runCli(env, ["session", "list"]);
+  expect(sessions.code).toBe(0);
+  expect(sessions.stdout).toContain(sessionId);
+  expect(sessions.stdout).toContain("rows=2");
+
+  const invalid = await runCli(env, ["show", "bad-ref"]);
+  expect(invalid.code).toBe(1);
+  expect(invalid.stderr).toContain("Invalid log row ref.");
+
+  const cleared = await runCli(env, ["session", "clear"]);
+  expect(cleared.code).toBe(0);
+  expect(cleared.stdout).toContain("Cleared 1 session(s)");
+
+  const expired = await runCli(env, ["show", ref ?? "", "--json"]);
+  expect(expired.code).toBe(1);
+  expect(expired.stderr).toContain("Saved log row not found or expired.");
 });

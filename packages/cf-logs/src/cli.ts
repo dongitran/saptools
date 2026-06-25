@@ -270,12 +270,12 @@ async function runSnapshot(flags: SnapshotFlags): Promise<void> {
 }
 
 async function runParse(flags: ParseFlags): Promise<void> {
-  const input = await readInputText(flags.input);
-  const parseOptions = buildParseOptions(flags.logLimit);
-  const boundedText = appendRawLogText("", input, parseOptions);
   if (flags.compact === true && flags.raw === true) {
     throw new Error("--compact cannot be combined with --raw.");
   }
+  const input = await readInputText(flags.input);
+  const parseOptions = buildParseOptions(flags.logLimit);
+  const boundedText = appendRawLogText("", input, parseOptions);
   if (flags.compact === true) {
     const rows = parseRecentLogs(boundedText, parseOptions);
     const document = buildCompactLogDocument(
@@ -368,11 +368,22 @@ async function runStream(flags: StreamFlags): Promise<void> {
       if (event.type !== "append") {
         return;
       }
-      const emittedCount = currentFlags.compact === true
-        ? await printCompactAppendRows(event, currentFlags, compactSession, lastEmittedRowId)
-        : printLines(currentAppName, event.lines, currentFlags.json === true);
-      if (currentFlags.compact === true && emittedCount > 0) {
-        lastEmittedRowId = event.state.rows.at(-1)?.id ?? lastEmittedRowId;
+      let emittedCount: number;
+      if (currentFlags.compact === true) {
+        const remainingRows = currentFlags.maxLines === undefined
+          ? undefined
+          : currentFlags.maxLines - emittedLineCount;
+        const result = await printCompactAppendRows(
+          event,
+          currentFlags,
+          compactSession,
+          lastEmittedRowId,
+          remainingRows,
+        );
+        emittedCount = result.emittedCount;
+        lastEmittedRowId = result.lastRowId ?? lastEmittedRowId;
+      } else {
+        emittedCount = printLines(currentAppName, event.lines, currentFlags.json === true);
       }
       emittedLineCount += emittedCount;
       if (currentFlags.maxLines !== undefined && emittedLineCount >= currentFlags.maxLines) {

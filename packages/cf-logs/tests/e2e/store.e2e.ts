@@ -31,7 +31,7 @@ function createScenario(): Scenario {
                   {
                     name: "demo-app",
                     recentLogs: [
-                      "Retrieving logs for app demo-app in org sample-org / space sample as sample@example.com...",
+                      "Retrieving logs for app demo-app in org sample-org / space sample as operator@example.test...",
                       "2026-04-12T09:14:40.00+0700 [APP/PROC/WEB/0] OUT sample ready",
                     ].join("\n"),
                   },
