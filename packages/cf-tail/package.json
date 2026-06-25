@@ -57,7 +57,7 @@
     "url": "https://github.com/dongitran/saptools/issues"
   },
   "dependencies": {
-    "@saptools/cf-logs": "^0.1.1",
+    "@saptools/cf-logs": "workspace:*",
     "commander": "^13.0.0"
   },
   "devDependencies": {

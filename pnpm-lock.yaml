@@ -289,7 +289,7 @@ importers:
   packages/cf-tail:
     dependencies:
       '@saptools/cf-logs':
-        specifier: ^0.1.1
+        specifier: workspace:*
         version: link:../cf-logs
       commander:
         specifier: ^13.0.0

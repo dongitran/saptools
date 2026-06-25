@@ -4,7 +4,6 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { resolveApiEndpoint } from "@saptools/cf-logs";
-import type { LogLevel } from "@saptools/cf-logs";
 import { Command } from "commander";
 
 import {
@@ -50,6 +49,7 @@ import type {
   CfTailEvent,
   MultiSnapshotResult,
   TailLogRow,
+  TailLevelSummary,
   TailStoreEntry,
 } from "./types.js";
 
@@ -266,7 +266,7 @@ async function runSummary(flags: SummaryCommandFlags): Promise<void> {
   }
 }
 
-function formatLevelLine(label: string, levels: Readonly<Record<LogLevel, number>>): string {
+function formatLevelLine(label: string, levels: TailLevelSummary): string {
   const entries = (["fatal", "error", "warn", "info", "debug", "trace"] as const).map(
     (level) => `${level}=${levels[level].toString()}`,
   );
