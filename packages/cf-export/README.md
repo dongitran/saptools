@@ -2,7 +2,7 @@
 
 # 📤 `@saptools/cf-export`
 
-**Export CAP / Cloud Foundry project artifacts (package.json, lockfiles, .cdsrc.json, default-env.json, .npmrc) from a running SAP BTP Cloud Foundry application.**
+**Export CAP / Cloud Foundry project artifacts (package.json, lockfiles, .cdsrc.json, default-env.json, .npmrc) from a running SAP BTP Cloud Foundry application.** (v0.1.1+)
 
 Pull the exact files you need for local development or debugging directly from a live CF container using `cf ssh` + CF API.
 
