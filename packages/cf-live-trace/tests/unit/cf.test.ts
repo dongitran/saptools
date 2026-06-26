@@ -261,7 +261,7 @@ describe("current CF target (direct cf target, no cf-sync)", () => {
     const path = await import("node:path");
     const os = await import("node:os");
     const cf = await import("../../src/cf.js");
-    const root = path.join(os.tmpdir(), `cf-live-trace-read-current-${Date.now()}`);
+    const root = path.join(os.tmpdir(), `cf-live-trace-read-current-${Date.now().toString()}`);
     const fake = path.join(root, "fake-target-cf.mjs");
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(fake, [
