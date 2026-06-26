@@ -1,5 +1,5 @@
 name: cf-events
-# cspell:words pipefail endgroup
+# cspell:words pipefail endgroup elif
 
 on:
   workflow_dispatch:
@@ -129,6 +129,9 @@ jobs:
           if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             echo "Version ${package_version} is already published. Skipping npm publish."
+          elif ! npm view "${package_name}" name >/dev/null 2>&1 && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Skipping npm publish::${package_name} is not bootstrapped on npm yet. Configure trusted publishing and run this workflow manually with publish=true for the first publish."
           else
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
