@@ -76,7 +76,7 @@ Targeting flags:
 
 | Flag | Description |
 | --- | --- |
-| `--region <key>` | CF region key (defaults via `cf target` when omitted) |
+| `--region <key>` | CF region key (defaults via `cf target` when omitted; errors if no current target when only app given) |
 | `--api-endpoint <url>` | Explicit CF API endpoint instead of a region key |
 | `--org <name>` | CF org name |
 | `--space <name>` | CF space name |
