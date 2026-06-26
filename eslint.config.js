@@ -127,6 +127,12 @@ export default tseslint.config(
       ],
     },
     settings: {
+      // Support for eslint-plugin-import-x (maintained fork for ESLint 10+ flat config)
+      "import-x/resolver": {
+        typescript: { alwaysTryTypes: true },
+        node: true,
+      },
+      // Backward compat for any remaining legacy usage
       "import/resolver": {
         typescript: { alwaysTryTypes: true },
         node: true,
