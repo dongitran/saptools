@@ -80,7 +80,7 @@ describe("target reading (self-contained)", () => {
     );
   });
 
-  it("readCurrentCfTarget throws on cf failure (wrapped)", async () => {
+  it("readCurrentCfTarget throws on cf failure (wrapped)", async () => { // CI trigger after lock fix
     execFileMock.mockImplementation(
       (
         _file: string,
