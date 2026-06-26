@@ -2,7 +2,7 @@
 
 ## cf-sync Removal and Self-Contained CF Targeting (2026-06)
 
-**Review note (post-CI):** Initial push had transient lockfile/hana drift from workspace dirty state during dev; follow-up ensured consistent pnpm-lock + package.jsons. Final run on corrected tree must pass all jobs (install, build, lint, type, unit, e2e, tarball). See GH run history for the cf-logs workflow.
+**Review note (post-CI):** Initial push had transient lockfile/hana drift from workspace dirty state during dev; follow-up ensured consistent pnpm-lock + package files. Final run on corrected tree must pass all jobs (install, build, lint, type, unit, e2e, tarball). See GH run history for the cf-logs workflow.
 
 ### Research Summary (via direct file reads + rg/grep)
 
