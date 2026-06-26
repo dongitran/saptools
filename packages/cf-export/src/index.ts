@@ -39,4 +39,8 @@ export {
   cfCurl,
   cfSsh,
   cfSshBuffer,
+  cfSshEnabled,
+  cfEnableSsh,
+  cfRestartApp,
+  ensureSshEnabled,
 } from "./cf.js";

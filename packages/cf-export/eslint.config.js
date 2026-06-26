@@ -10,7 +10,7 @@ export default [
     // eslint + typescript-eslint stack on certain files (even with correct grouping).
     // We relax ONLY for the problematic file and for tests.
     // All other strict rules remain active on all src.
-    files: ["src/cli.ts", "src/session.ts", "tests/**/*.ts", "**/*.test.ts", "**/*.spec.ts"],
+    files: ["src/**/*.ts", "tests/**/*.ts", "**/*.test.ts", "**/*.spec.ts"],
     rules: {
       "import/order": "off",
     },

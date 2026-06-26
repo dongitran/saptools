@@ -2,6 +2,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { fetchDefaultEnvJson } from "./default-env.js";
+import { ensureSshEnabled } from "./cf.js";
 import { fetchRemoteTextFile } from "./remote-paths.js";
 import { openCfSession } from "./session.js";
 import type { OpenCfSession } from "./session.js";
@@ -50,6 +51,13 @@ export async function exportArtifacts(
   const session: OpenCfSession = await openCfSession(options.target);
   const written: string[] = [];
   const skipped: string[] = [];
+
+  // Automatically enable SSH (and restart app) if any ssh-based artifact is requested.
+  // default-env.json uses CF API (no SSH), but regular files (package.json, locks, etc.) require SSH.
+  const needsSsh = artifacts.some((name) => name !== "default-env.json");
+  if (needsSsh) {
+    await ensureSshEnabled(options.target.app, session.context);
+  }
 
   try {
     for (const name of artifacts) {

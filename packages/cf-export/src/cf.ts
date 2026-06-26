@@ -167,6 +167,48 @@ export async function cfSshBuffer(
   return await runCfBuffer(["ssh", appName, "--disable-pseudo-tty", "-c", command], context);
 }
 
+export async function cfSshEnabled(appName: string, context?: CfExecContext): Promise<boolean> {
+  try {
+    const stdout = await runCf(["ssh-enabled", appName], context);
+    return stdout.toLowerCase().includes("ssh support is enabled");
+  } catch {
+    return false;
+  }
+}
+
+export async function cfEnableSsh(appName: string, context?: CfExecContext): Promise<void> {
+  await runCf(["enable-ssh", appName], context);
+}
+
+export async function cfRestartApp(appName: string, context?: CfExecContext): Promise<void> {
+  await runCf(["restart", appName], context);
+}
+
+export async function ensureSshEnabled(appName: string, context?: CfExecContext): Promise<void> {
+  const status = await runCf(["ssh-enabled", appName], context);
+  if (status.toLowerCase().includes("ssh support is enabled")) {
+    return;
+  }
+
+  await runCf(["enable-ssh", appName], context);
+  await runCf(["restart", appName], context);
+
+  // Wait for SSH to become available after restart (CF can take a few seconds)
+  const maxAttempts = 6;
+  const delayMs = 3000;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      await runCf(["ssh", appName, "--disable-pseudo-tty", "-c", "echo ready"], context);
+      return;
+    } catch {
+      if (attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  // If still not ready, let subsequent ssh calls fail naturally with clear error
+}
+
 export function buildRemoteFilePaths(fileName: string, remoteRoot: string | undefined): readonly string[] {
   const paths: string[] = [];
   const normalized = remoteRoot?.trim().replace(/\/+$/, "");

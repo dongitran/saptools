@@ -159,6 +159,24 @@ async function main() {
     fail(`Unsupported curl path in fake: ${path}`);
   }
 
+  if (cmd === "ssh-enabled") {
+    // Default to enabled for all e2e scenarios. Real enable/restart path can be tested
+    // by extending the scenario with per-app sshEnabled flag if needed in future.
+    process.stdout.write("ssh support is enabled\n");
+    return;
+  }
+
+  if (cmd === "enable-ssh") {
+    process.stdout.write("Enabling SSH support...\n");
+    return;
+  }
+
+  if (cmd === "restart") {
+    const appName = args[0] || "app";
+    process.stdout.write(`Restarting app ${appName}...\n`);
+    return;
+  }
+
   if (cmd === "ssh") {
     // ['ssh', appName, '--disable-pseudo-tty', '-c', 'the command string']
     const appName = args[0];
