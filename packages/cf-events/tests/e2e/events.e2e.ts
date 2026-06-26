@@ -64,5 +64,5 @@ test("events fails clearly when the app is unknown", async () => {
   const paths = await prepareCase(ROOT, "unknown", makeScenario(SAMPLE_EVENTS));
   const result = await runCli(createEnv(paths), ["events", "ghost-app"]);
   expect(result.code).toBe(1);
-  expect(result.stderr).toContain("was not found");
+  expect(result.stderr).toContain("Failed to resolve the GUID for app \"ghost-app\"");
 });
