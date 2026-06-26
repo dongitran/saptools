@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-export",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Export CAP/CF project artifacts (package.json, lockfiles, .cdsrc.json, default-env.json, .npmrc) from running SAP BTP Cloud Foundry apps",
   "type": "module",
   "publishConfig": {
@@ -8,7 +8,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "bin": {
-    "saptools-cf-export": "dist/cli.js"
+    "cf-export": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@saptools/cf-files": "^0.3.3",
+    "@saptools/cf-sync": "^0.4.13",
     "commander": "^13.0.0"
   },
   "devDependencies": {

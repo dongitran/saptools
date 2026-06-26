@@ -53,16 +53,22 @@ npm install @saptools/cf-export
 export SAP_EMAIL="you@company.com"
 export SAP_PASSWORD="your-sap-password"
 
-# Export all artifacts for an app (default behavior)
-saptools-cf-export -r ap10 -o my-org -s dev -a my-cap-app --out ./exported
+# (Recommended) Set your CF target once — then you can skip region/org/space
+cf target -o my-org -s dev
+
+# Export all artifacts — region/org/space are auto-detected from `cf target`!
+cf-export -a my-cap-app --out ./exported
+
+# You can still pass them explicitly when needed
+cf-export -r ap10 -o my-org -s dev -a my-cap-app --out ./exported
 
 # Export with a custom remote root
-saptools-cf-export -r ap10 -o my-org -s dev -a my-cap-app \
+cf-export -a my-cap-app \
   --remote-root /home/vcap/app/srv \
   --out ./exported
 
 # Export only specific files
-saptools-cf-export -r ap10 -o my-org -s dev -a my-cap-app \
+cf-export -a my-cap-app \
   --file package.json --file pnpm-lock.yaml --file default-env.json
 ```
 
@@ -75,7 +81,7 @@ After export you will have the requested files locally, ready for local CAP deve
 The default (and only) command is `export`.
 
 ```bash
-saptools-cf-export [options]
+cf-export [options]
 ```
 
 ### Common examples
@@ -83,7 +89,7 @@ saptools-cf-export [options]
 **Export everything (recommended default)**
 
 ```bash
-saptools-cf-export \
+cf-export \
   -r ap10 \
   -o my-org \
   -s dev \
@@ -94,7 +100,7 @@ saptools-cf-export \
 **With custom remote root**
 
 ```bash
-saptools-cf-export -r ap10 -o my-org -s dev -a my-cap-app \
+cf-export -r ap10 -o my-org -s dev -a my-cap-app \
   --remote-root /home/vcap/app \
   --out ./out
 ```
@@ -102,16 +108,18 @@ saptools-cf-export -r ap10 -o my-org -s dev -a my-cap-app \
 **Selective export**
 
 ```bash
-saptools-cf-export ... --file package.json --file default-env.json
+cf-export ... --file package.json --file default-env.json
 ```
 
 ### Options
 
+Region/org/space flags are **optional**. They are auto-detected from your current `cf target` (recommended: run `cf target -o ORG -s SPACE` first).
+
 | Flag                  | Description                                                                 | Required |
 |-----------------------|-----------------------------------------------------------------------------|----------|
-| `-r, --region <key>`  | CF region key (e.g. `ap10`, `eu10`)                                         | Yes      |
-| `-o, --org <name>`    | CF org name                                                                 | Yes      |
-| `-s, --space <name>`  | CF space name                                                               | Yes      |
+| `-r, --region <key>`  | CF region key (e.g. `ap10`, `eu10`). Auto-detected from current `cf target` | No       |
+| `-o, --org <name>`    | CF org name. Auto-detected from current `cf target`                         | No       |
+| `-s, --space <name>`  | CF space name. Auto-detected from current `cf target`                       | No       |
 | `-a, --app <name>`    | CF app name                                                                 | Yes      |
 | `--out <dir>`         | Output directory (default: current working directory)                       | No       |
 | `--remote-root <path>`| Hint for the base directory inside the container (the "root url")           | No       |

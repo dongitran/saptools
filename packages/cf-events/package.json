@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-events",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Inspect SAP BTP Cloud Foundry application audit events and detect active SSH/debug sessions",
   "type": "module",
   "publishConfig": {
@@ -28,7 +28,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
-    "cspell": "cspell --config ../../.cspell.json \"src/**/*.ts\" \"tests/**/*.ts\" README.md package.json",
+    "cspell": "cspell --config ../../.cspell.json \"src/**/*.ts\" \"tests/**/*.ts\" README.md package.json implementation_plan.md",
     "test:unit": "vitest run --coverage",
     "test:e2e": "playwright test",
     "check": "pnpm cspell && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test:e2e"
