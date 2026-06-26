@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { createEnv, prepareCase, runCli, type Scenario } from "./helpers.js";
+import { createEnv, prepareCase, runCli, targetFakeCf, type Scenario } from "./helpers.js";
 
 const ROOT_NAME = "cf-logs-e2e";
 
@@ -72,4 +72,19 @@ test("apps --json returns structured app list with running instance counts", asy
     { name: "demo-api", runningInstances: 2 },
     { name: "demo-worker", runningInstances: 1 },
   ]);
+});
+
+test("apps uses the current CF target when org and space flags are omitted", async () => {
+  const paths = await prepareCase(ROOT_NAME, "apps-current-target", createScenario());
+  const env = createEnv(paths);
+  await targetFakeCf(env, "https://api.cf.ap10.hana.ondemand.com", "sample-org", "sample");
+
+  const result = await runCli(env, ["apps", "--json"]);
+
+  expect(result.code).toBe(0);
+  const apps = JSON.parse(result.stdout) as readonly {
+    readonly name: string;
+    readonly runningInstances: number;
+  }[];
+  expect(apps.map((app) => app.name)).toEqual(["demo-api", "demo-worker"]);
 });

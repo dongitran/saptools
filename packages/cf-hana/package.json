@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-hana",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run SQL against SAP HANA Cloud databases bound to a Cloud Foundry app by region/org/space/app selector",
   "type": "module",
   "publishConfig": {
@@ -58,7 +58,7 @@
     "url": "https://github.com/dongitran/saptools/issues"
   },
   "dependencies": {
-    "@saptools/cf-sync": "^0.4.11",
+    "@saptools/cf-sync": "^0.4.13",
     "commander": "^13.0.0",
     "hdb": "^0.19.0"
   },

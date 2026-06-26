@@ -1,3 +1,11 @@
+import process from "node:process";
+
+import {
+  readCurrentCfTarget,
+  requireCurrentCfRegionKey,
+  type CfExecContext,
+  type CurrentCfTarget,
+} from "@saptools/cf-sync";
 import { Command } from "commander";
 
 import { enableSsh, prepareSsh, restartApp, sshStatus } from "../cf/lifecycle.js";
@@ -106,6 +114,56 @@ function buildTarget(flags: TargetFlags): ExplorerTarget {
   });
 }
 
+function currentCfContext(): CfExecContext | undefined {
+  const command = process.env["CF_EXPLORER_CF_BIN"];
+  return command === undefined ? undefined : { command };
+}
+
+function hasText(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
+}
+
+function needsCurrentTarget(flags: TargetFlags): boolean {
+  return !hasText(flags.region) || !hasText(flags.org) || !hasText(flags.space);
+}
+
+function currentRegionKey(current: CurrentCfTarget): string {
+  try {
+    return requireCurrentCfRegionKey(current, "Pass --region explicitly.");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CfExplorerError("UNKNOWN_REGION", message);
+  }
+}
+
+async function resolveTargetFlags<T extends TargetFlags>(flags: T): Promise<T> {
+  requireFlag(flags.app, "--app");
+  if (!needsCurrentTarget(flags)) {
+    return flags;
+  }
+
+  const current = await readCurrentCfTarget(currentCfContext()).catch((error: unknown) => {
+    throw new CfExplorerError(
+      "UNSAFE_INPUT",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+  if (current === undefined) {
+    throw new CfExplorerError(
+      "UNSAFE_INPUT",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+    );
+  }
+
+  return {
+    ...flags,
+    region: hasText(flags.region) ? flags.region : currentRegionKey(current),
+    org: hasText(flags.org) ? flags.org : current.orgName,
+    space: hasText(flags.space) ? flags.space : current.spaceName,
+  };
+}
+
 function buildRuntime(flags: TargetFlags): ExplorerRuntimeOptions {
   const timeoutSeconds = parsePositiveInteger(flags.timeout, "--timeout");
   const maxBytes = parsePositiveInteger(flags.maxBytes, "--max-bytes");
@@ -210,9 +268,9 @@ function parseSecondsAsMilliseconds(value: string | undefined, label: string): n
 
 function addTargetOptions(command: Command): Command {
   return command
-    .requiredOption("--region <key>", "CF region key")
-    .requiredOption("--org <name>", "CF org name")
-    .requiredOption("--space <name>", "CF space name")
+    .option("--region <key>", "CF region key (default: current cf target)")
+    .option("--org <name>", "CF org name (default: current cf target)")
+    .option("--space <name>", "CF space name (default: current cf target)")
     .requiredOption("--app <name>", "CF app name")
     .option("--process <name>", "CF process name", "web")
     .option("--instance <index>", "CF app instance index")
@@ -221,9 +279,9 @@ function addTargetOptions(command: Command): Command {
 
 function addSingleInstanceTargetOptions(command: Command): Command {
   return command
-    .requiredOption("--region <key>", "CF region key")
-    .requiredOption("--org <name>", "CF org name")
-    .requiredOption("--space <name>", "CF space name")
+    .option("--region <key>", "CF region key (default: current cf target)")
+    .option("--org <name>", "CF org name (default: current cf target)")
+    .option("--space <name>", "CF space name (default: current cf target)")
     .requiredOption("--app <name>", "CF app name")
     .option("--process <name>", "CF process name", "web")
     .option("--instance <index>", "CF app instance index");
@@ -265,62 +323,62 @@ export async function runProgram(argv: readonly string[], version: string): Prom
 function addDiscoveryCommands(program: Command): void {
   addCommonOptions(program.command("roots").description("Locate likely app roots"))
     .action(async (flags: TargetFlags): Promise<void> => {
-      writeOutput(await roots(buildDiscovery(flags)), flags.json);
+      writeOutput(await roots(buildDiscovery(await resolveTargetFlags(flags))), flags.json);
     });
   addCommonOptions(program.command("instances").description("List app instances"))
     .action(async (flags: TargetFlags): Promise<void> => {
-      writeOutput(await listInstances(buildDiscovery(flags)), flags.json);
+      writeOutput(await listInstances(buildDiscovery(await resolveTargetFlags(flags))), flags.json);
     });
   addCommonOptions(program.command("ls").description("List direct children under a remote path"))
     .requiredOption("--path <path>", "Remote directory path")
     .action(async (flags: LsFlags): Promise<void> => {
-      writeOutput(await lsRemote(buildLs(flags)), flags.json);
+      writeOutput(await lsRemote(buildLs(await resolveTargetFlags(flags))), flags.json);
     });
   addCommonOptions(program.command("find").description("Search filenames under a root"))
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--name <pattern>", "File name pattern")
     .action(async (flags: FindFlags): Promise<void> => {
-      writeOutput(await findRemote(buildFind(flags)), flags.json);
+      writeOutput(await findRemote(buildFind(await resolveTargetFlags(flags))), flags.json);
     });
   addCommonOptions(program.command("grep").description("Search file content under a root"))
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--text <text>", "Search text")
     .option("--preview", "Include bounded line preview", false)
     .action(async (flags: GrepFlags): Promise<void> => {
-      writeOutput(await grepRemote(buildGrep(flags)), flags.json);
+      writeOutput(await grepRemote(buildGrep(await resolveTargetFlags(flags))), flags.json);
     });
   addCommonOptions(program.command("view").description("Read bounded line context from a file"))
     .requiredOption("--file <path>", "Remote file")
     .requiredOption("--line <n>", "Line number")
     .option("--context <n>", "Context lines")
     .action(async (flags: ViewFlags): Promise<void> => {
-      writeOutput(await viewRemote(buildView(flags)), flags.json);
+      writeOutput(await viewRemote(buildView(await resolveTargetFlags(flags))), flags.json);
     });
   addCommonOptions(program.command("inspect-candidates").description("Find file and line candidates"))
     .requiredOption("--text <text>", "Search text")
     .option("--root <path>", "Remote root")
     .option("--name <pattern>", "File name pattern")
     .action(async (flags: InspectFlags): Promise<void> => {
-      writeOutput(await inspectCandidates(buildInspect(flags)), flags.json);
+      writeOutput(await inspectCandidates(buildInspect(await resolveTargetFlags(flags))), flags.json);
     });
 }
 
 function addLifecycleCommands(program: Command): void {
   addLifecycleOptions(program.command("ssh-status").description("Check SSH status"))
     .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await sshStatus(buildLifecycle(flags)), flags.json);
+      writeOutput(await sshStatus(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
     });
   addLifecycleOptions(program.command("enable-ssh").description("Enable SSH for the app"))
     .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await enableSsh(buildLifecycle(flags)), flags.json);
+      writeOutput(await enableSsh(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
     });
   addLifecycleOptions(program.command("restart").description("Restart the app"))
     .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await restartApp(buildLifecycle(flags)), flags.json);
+      writeOutput(await restartApp(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
     });
   addLifecycleOptions(program.command("prepare-ssh").description("Enable SSH and restart when needed"))
     .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await prepareSsh(buildLifecycle(flags)), flags.json);
+      writeOutput(await prepareSsh(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
     });
 }
 
@@ -331,12 +389,13 @@ function addSessionCommands(program: Command): void {
     .option("--idle-timeout <seconds>", "Idle timeout in seconds")
     .option("--max-lifetime <seconds>", "Maximum session lifetime in seconds")
     .action(async (flags: SessionStartFlags): Promise<void> => {
+      const resolved = await resolveTargetFlags(flags);
       const idleTimeoutMs = parseSecondsAsMilliseconds(flags.idleTimeout, "--idle-timeout");
       const maxLifetimeMs = parseSecondsAsMilliseconds(flags.maxLifetime, "--max-lifetime");
       writeOutput(await startExplorerSession({
-        target: buildTarget(flags),
-        runtime: buildRuntime(flags),
-        ...buildSelector(flags),
+        target: buildTarget(resolved),
+        runtime: buildRuntime(resolved),
+        ...buildSelector(resolved),
         ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
         ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
       }));

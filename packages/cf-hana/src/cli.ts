@@ -1,3 +1,4 @@
+import { formatCurrentCfAppSelector, readCurrentCfTarget } from "@saptools/cf-sync";
 import { Command } from "commander";
 
 import { connect } from "./api.js";
@@ -104,6 +105,26 @@ function parseQualifiedName(value: string): { readonly schema: string; readonly 
   return { schema: value.slice(0, dot), table: value.slice(dot + 1) };
 }
 
+async function resolveSelectorArgument(selector: string): Promise<string> {
+  if (selector.includes("/")) {
+    return selector;
+  }
+  const current = await readCurrentCfTarget().catch((error: unknown) => {
+    throw new CfHanaError(
+      "CONFIG",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+      { cause: error },
+    );
+  });
+  if (current === undefined) {
+    throw new CfHanaError(
+      "CONFIG",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+    );
+  }
+  return formatCurrentCfAppSelector(current, selector);
+}
+
 function toConnectOptions(opts: ConnectionCliOptions): ConnectOptions {
   assertPositiveOption("--limit", opts.limit);
   assertPositiveOption("--timeout", opts.timeout);
@@ -193,7 +214,7 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
   const opts = command.opts<QueryCliOptions>();
   assertQueryOptions(sql, opts);
   const cellLimit = resolveCellLimit(opts.cellLimit);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     const params = opts.param ?? [];
     const backup = await client.backupWriteStatement(sql, params);
@@ -236,7 +257,7 @@ async function runTables(
   command: Command,
 ): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     const tables = await client.listTables(schema ?? client.info.schema);
     const rows: readonly QueryRow[] = tables.map((table) => ({
@@ -253,7 +274,7 @@ async function runTables(
 async function runColumns(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     const columns = await client.listColumns(schema, table);
     const rows: readonly QueryRow[] = columns.map((column) => ({
@@ -272,7 +293,7 @@ async function runColumns(selector: string, target: string, command: Command): P
 async function runCount(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     const total = await client.count({ schema, table });
     print(String(total));
@@ -283,7 +304,7 @@ async function runCount(selector: string, target: string, command: Command): Pro
 
 async function runPing(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     const started = Date.now();
     await client.query("SELECT 1 FROM DUMMY");
@@ -298,7 +319,7 @@ async function runPing(selector: string, command: Command): Promise<void> {
 
 async function runInfo(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     print(formatInfo(client.info));
   } finally {

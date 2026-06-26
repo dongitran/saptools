@@ -3,10 +3,10 @@ import process from "node:process";
 import { evaluateGlobal } from "../../inspector/runtime.js";
 import type { EvalCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
-import { resolveTarget, withSession } from "../target.js";
+import { resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 
 export async function handleEval(opts: EvalCommandOptions): Promise<void> {
-  const target = resolveTarget(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts);
   const result = await withSession(target, async (session) => {
     return await evaluateGlobal(session, opts.expr);
   });

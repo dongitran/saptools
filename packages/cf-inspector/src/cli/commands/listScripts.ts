@@ -3,10 +3,10 @@ import process from "node:process";
 import { listScripts } from "../../inspector/runtime.js";
 import type { ListScriptsCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
-import { resolveTarget, withSession } from "../target.js";
+import { resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 
 export async function handleListScripts(opts: ListScriptsCommandOptions): Promise<void> {
-  const target = resolveTarget(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts);
   const scripts = await withSession(target, (session) => Promise.resolve(listScripts(session)));
   if (opts.json) {
     writeJson(scripts);

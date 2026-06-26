@@ -165,6 +165,24 @@ async function main() {
 
   if (command === "target") {
     const orgFlagIndex = args.indexOf("-o");
+    const spaceFlagIndex = args.indexOf("-s");
+    if (orgFlagIndex === -1 && spaceFlagIndex === -1) {
+      if (!state.org || !state.space) {
+        fail("No org or space targeted");
+      }
+      process.stdout.write(
+        [
+          `API endpoint:   ${region.apiEndpoint}`,
+          "API version:    3.156.0",
+          "user:           e2e@example.com",
+          `org:            ${state.org}`,
+          `space:          ${state.space}`,
+          "",
+        ].join("\n"),
+      );
+      return;
+    }
+
     if (orgFlagIndex === -1 || !args[orgFlagIndex + 1]) {
       fail("Missing -o");
     }
@@ -175,7 +193,6 @@ async function main() {
       fail(`Unknown org: ${orgName}`);
     }
 
-    const spaceFlagIndex = args.indexOf("-s");
     state.apiEndpoint = region.apiEndpoint;
     state.org = orgName;
 

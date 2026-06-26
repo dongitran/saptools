@@ -145,6 +145,23 @@ async function main() {
   if (command === "target") {
     const orgFlagIndex = args.indexOf("-o");
     const spaceFlagIndex = args.indexOf("-s");
+    if (orgFlagIndex < 0 && spaceFlagIndex < 0) {
+      if (!state.org || !state.space) {
+        fail("No org or space targeted");
+      }
+      const region = requireRegion(state, regionsByEndpoint);
+      process.stdout.write(
+        [
+          `API endpoint:   ${region.apiEndpoint}`,
+          "API version:    3.156.0",
+          "user:           operator@example.test",
+          `org:            ${state.org}`,
+          `space:          ${state.space}`,
+          "",
+        ].join("\n"),
+      );
+      return;
+    }
     const org = orgFlagIndex >= 0 ? args[orgFlagIndex + 1] : "";
     const space = spaceFlagIndex >= 0 ? args[spaceFlagIndex + 1] : "";
     if (!org || !space) {

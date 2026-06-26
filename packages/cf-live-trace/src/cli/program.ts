@@ -6,7 +6,7 @@ import { createTemporaryCfHome, removeTemporaryCfHome } from "../cf.js";
 import { LiveTraceSession } from "../session.js";
 import type { LiveTraceEvent, LiveTraceStopReason } from "../types.js";
 
-import { buildRunOptions, type CliFlags, type RunOptions } from "./options.js";
+import { buildRunOptionsWithCurrentTarget, type CliFlags, type RunOptions } from "./options.js";
 import { writeJson, writeJsonLine, writeLog, writeProgress, writeSummaryLine } from "./output.js";
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -14,10 +14,10 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .name("cf-live-trace")
     .description("Inject a runtime HTTP trace hook into a Cloud Foundry Node.js app and stream request/response events")
-    .option("-r, --region <key>", "CF region key")
+    .option("-r, --region <key>", "CF region key (default: current cf target)")
     .option("--api-endpoint <url>", "Explicit CF API endpoint")
-    .requiredOption("-o, --org <name>", "CF org name")
-    .requiredOption("-s, --space <name>", "CF space name")
+    .option("-o, --org <name>", "CF org name (default: current cf target)")
+    .option("-s, --space <name>", "CF space name (default: current cf target)")
     .requiredOption("-a, --app <name>", "CF app name")
     .option("--email <value>", "SAP email (default: SAP_EMAIL)")
     .option("--password <value>", "SAP password (default: SAP_PASSWORD)")
@@ -34,7 +34,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     .option("--format <format>", "Output format: ndjson, summary, json", "ndjson")
     .option("--quiet", "Suppress progress messages on stderr")
     .action(async (flags: CliFlags): Promise<void> => {
-      await runTraceCommand(buildRunOptions(flags, process.env));
+      await runTraceCommand(await buildRunOptionsWithCurrentTarget(flags, process.env));
     });
 
   await program.parseAsync([...argv]);

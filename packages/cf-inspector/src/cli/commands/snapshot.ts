@@ -15,7 +15,7 @@ import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { SnapshotCommandOptions, Target } from "../commandTypes.js";
 import { writeHumanSnapshot, writeJson, writeProgress } from "../output.js";
-import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
+import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import type { ProgressReporter } from "../target.js";
 import {
   roundDurationMs,
@@ -38,7 +38,8 @@ interface PreparedSnapshotCommand {
 }
 
 export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
-  const prepared = prepareSnapshotCommand(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts);
+  const prepared = prepareSnapshotCommand(opts, target);
   const reportProgress = opts.quiet === true ? undefined : writeProgress;
   const result = await runSnapshotCommand(prepared, opts, reportProgress);
   if (opts.json) {
@@ -49,8 +50,7 @@ export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void
   reportProgress?.("Snapshot complete.");
 }
 
-function prepareSnapshotCommand(opts: SnapshotCommandOptions): PreparedSnapshotCommand {
-  const target = resolveTarget(opts);
+function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): PreparedSnapshotCommand {
   if (opts.bp.length === 0) {
     throw new CfInspectorError(
       "INVALID_BREAKPOINT",

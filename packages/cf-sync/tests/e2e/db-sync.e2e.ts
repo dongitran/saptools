@@ -11,6 +11,7 @@ import {
   prepareCase,
   readDbSyncHistory,
   runJsonCommand,
+  targetFakeCf,
   waitForDbRuntimeState,
   waitForExit,
 } from "./helpers.js";
@@ -178,9 +179,22 @@ test.describe("DB sync commands", () => {
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     await expect(runJsonCommand(env, ["db-read"])).resolves.toBeNull();
-    await expect(runJsonCommand(env, ["db-read", "api-app"])).resolves.toBeNull();
+    await expect(runJsonCommand(env, ["db-read", "ap10/org-alpha/dev/api-app"])).resolves.toBeNull();
     expect(existsSync(paths.dbRuntimeStatePath)).toBe(false);
     expect(existsSync(paths.dbSnapshotPath)).toBe(false);
+  });
+
+  test("User gets a clear error when a bare DB selector has no current CF target", async () => {
+    const paths = await prepareCase(ROOT_NAME, "db-read-no-current-target", createDbScenario());
+    const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
+
+    const result = await waitForExit(spawn("node", [CLI_PATH, "db-read", "api-app"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }));
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("No current CF target found");
   });
 
   test("User can start a background DB sync for cached apps and inspect runtime progress", async () => {
@@ -239,6 +253,8 @@ test.describe("DB sync commands", () => {
       "ap10/org-alpha/dev/orders-srv",
       "ap10/org-alpha/dev/worker-srv",
     ]);
+
+    await targetFakeCf(env, "https://api.cf.ap10.hana.ondemand.com", "org-alpha", "dev");
 
     const appView = await runJsonCommand(env, ["db-read", "orders-srv"]);
     expect(appView).toMatchObject({
@@ -410,8 +426,8 @@ test.describe("DB sync commands", () => {
     expect(existsSync(paths.dbRuntimeStatePath)).toBe(false);
   });
 
-  test("User gets a clear error when a plain app name matches multiple topology entries", async () => {
-    const paths = await prepareCase(ROOT_NAME, "db-sync-ambiguous-selector", createAmbiguousScenario());
+  test("User can scope a plain DB app name to the current CF target", async () => {
+    const paths = await prepareCase(ROOT_NAME, "db-sync-current-target-selector", createAmbiguousScenario());
     const env = createEnv(paths.homeDir, paths.scenarioPath, paths.logPath);
 
     const topologySync = spawn("node", [CLI_PATH, "sync", "--only", "ap10,eu10"], {
@@ -421,15 +437,15 @@ test.describe("DB sync commands", () => {
     const topologyResult = await waitForExit(topologySync);
     expect(topologyResult.code, `stderr was: ${topologyResult.stderr}`).toBe(0);
 
+    await targetFakeCf(env, "https://api.cf.ap10.hana.ondemand.com", "org-alpha", "dev");
+
     const launcher = spawn("node", [CLI_PATH, "db-sync", "shared-srv"], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const launchResult = await waitForExit(launcher);
 
-    expect(launchResult.code).toBe(1);
-    expect(launchResult.stderr).toContain("shared-srv");
-    expect(launchResult.stderr).toContain("ap10/org-alpha/dev/shared-srv");
-    expect(launchResult.stderr).toContain("eu10/org-beta/prod/shared-srv");
+    expect(launchResult.code, `stderr was: ${launchResult.stderr}`).toBe(0);
+    expect(launchResult.stdout).toContain("ap10/org-alpha/dev/shared-srv");
   });
 });

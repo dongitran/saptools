@@ -140,6 +140,20 @@ async function main() {
     return;
   }
   if (command === "target") {
+    if (!args.includes("-o") && !args.includes("-s")) {
+      if (!state.apiEndpoint || !state.org || !state.space) {
+        fail("No org or space targeted");
+      }
+      process.stdout.write([
+        `API endpoint:   ${state.apiEndpoint}`,
+        "API version:    3.156.0",
+        "user:           e2e@example.com",
+        `org:            ${state.org}`,
+        `space:          ${state.space}`,
+        "",
+      ].join("\n"));
+      return;
+    }
     state.org = args[args.indexOf("-o") + 1] ?? "";
     state.space = args[args.indexOf("-s") + 1] ?? "";
     await writeJson(statePath, state);

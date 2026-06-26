@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { AppNode } from "../types.js";
+import { getAllRegions } from "../config/regions.js";
+import type { AppNode, RegionKey } from "../types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,8 +21,27 @@ export interface CfExecContext {
   readonly timeoutMs?: number;
 }
 
-function resolveCfCommand(context?: CfExecContext): string {
-  return context?.command ?? process.env["CF_SYNC_CF_BIN"] ?? "cf";
+export interface CurrentCfTarget {
+  readonly apiEndpoint: string;
+  readonly regionKey?: RegionKey;
+  readonly orgName: string;
+  readonly spaceName: string;
+}
+
+interface CfInvocation {
+  readonly bin: string;
+  readonly argsPrefix: readonly string[];
+}
+
+function resolveCfInvocation(context?: CfExecContext): CfInvocation {
+  const command = context?.command ?? process.env["CF_SYNC_CF_BIN"] ?? "cf";
+  return isNodeScript(command)
+    ? { bin: process.execPath, argsPrefix: [command] }
+    : { bin: command, argsPrefix: [] };
+}
+
+function isNodeScript(command: string): boolean {
+  return /\.(?:c|m)?js$/i.test(command);
 }
 
 function resolveCfEnv(context?: CfExecContext): NodeJS.ProcessEnv {
@@ -63,7 +83,8 @@ function sanitizeCfErrorDetail(detail: string, args: readonly string[]): string 
 
 async function cf(args: readonly string[], context?: CfExecContext): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(resolveCfCommand(context), [...args], {
+    const invocation = resolveCfInvocation(context);
+    const { stdout } = await execFileAsync(invocation.bin, [...invocation.argsPrefix, ...args], {
       env: resolveCfEnv(context),
       maxBuffer: MAX_BUFFER,
       timeout: resolveCfTimeout(context),
@@ -124,6 +145,64 @@ export async function cfEnv(appName: string, context?: CfExecContext): Promise<s
 
 export async function cfCurl(path: string, context?: CfExecContext): Promise<string> {
   return await cf(["curl", path], context);
+}
+
+export async function readCurrentCfTarget(context?: CfExecContext): Promise<CurrentCfTarget | undefined> {
+  return parseCfTargetOutput(await cf(["target"], context));
+}
+
+export function parseCfTargetOutput(stdout: string): CurrentCfTarget | undefined {
+  const fields = parseCfTargetFields(stdout);
+  const apiEndpoint = fields.get("api endpoint");
+  const orgName = fields.get("org");
+  const spaceName = fields.get("space");
+  if (
+    apiEndpoint === undefined ||
+    orgName === undefined ||
+    spaceName === undefined ||
+    apiEndpoint.length === 0 ||
+    orgName.length === 0 ||
+    spaceName.length === 0
+  ) {
+    return undefined;
+  }
+
+  const regionKey = regionKeyForApiEndpoint(apiEndpoint);
+  return {
+    apiEndpoint,
+    ...(regionKey === undefined ? {} : { regionKey }),
+    orgName,
+    spaceName,
+  };
+}
+
+export function regionKeyForApiEndpoint(apiEndpoint: string): RegionKey | undefined {
+  const normalized = normalizeApiEndpoint(apiEndpoint);
+  return getAllRegions().find((region) => normalizeApiEndpoint(region.apiEndpoint) === normalized)?.key;
+}
+
+export function requireCurrentCfRegionKey(
+  target: Pick<CurrentCfTarget, "apiEndpoint" | "regionKey">,
+  instruction = "Pass --region explicitly.",
+): RegionKey {
+  if (target.regionKey !== undefined) {
+    return target.regionKey;
+  }
+  throw new Error(
+    `Current CF API endpoint "${target.apiEndpoint}" does not match a known SAP region. ${instruction}`,
+  );
+}
+
+export function formatCurrentCfAppSelector(target: CurrentCfTarget, appName: string): string {
+  const trimmedAppName = appName.trim();
+  if (trimmedAppName.length === 0) {
+    throw new Error("App name is required.");
+  }
+  const regionKey = requireCurrentCfRegionKey(
+    target,
+    "Pass a full region/org/space/app selector.",
+  );
+  return `${regionKey}/${target.orgName}/${target.spaceName}/${trimmedAppName}`;
 }
 
 export function parseNameTable(stdout: string): readonly string[] {
@@ -224,4 +303,24 @@ export function parseAppDetails(stdout: string): readonly AppNode[] {
   }
 
   return apps;
+}
+
+function parseCfTargetFields(stdout: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const separator = line.indexOf(":");
+    if (separator < 0) {
+      continue;
+    }
+    const key = line.slice(0, separator).trim().toLowerCase();
+    const value = line.slice(separator + 1).trim();
+    if (key.length > 0 && value.length > 0) {
+      fields.set(key, value);
+    }
+  }
+  return fields;
+}
+
+function normalizeApiEndpoint(apiEndpoint: string): string {
+  return apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
 }

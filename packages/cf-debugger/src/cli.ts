@@ -2,6 +2,7 @@ import process from "node:process";
 
 import { Command } from "commander";
 
+import { readCurrentCfTarget, requireCurrentCfRegion } from "./cf.js";
 import {
   getSession,
   listSessions,
@@ -45,9 +46,9 @@ function parseOptionalTimeout(raw: string | undefined): number | undefined {
 }
 
 interface StartCommandOptions {
-  readonly region: string;
-  readonly org: string;
-  readonly space: string;
+  readonly region?: string;
+  readonly org?: string;
+  readonly space?: string;
   readonly app: string;
   readonly port?: string;
   readonly timeout?: string;
@@ -64,9 +65,9 @@ interface StopCommandOptions {
 }
 
 interface StatusCommandOptions {
-  readonly region: string;
-  readonly org: string;
-  readonly space: string;
+  readonly region?: string;
+  readonly org?: string;
+  readonly space?: string;
   readonly app: string;
 }
 
@@ -78,10 +79,8 @@ function logStatus(verbose: boolean, status: SessionStatus, message?: string): v
 }
 
 async function handleStart(opts: StartCommandOptions): Promise<void> {
-  const region = readRequiredOption(opts.region, "--region");
-  const org = readRequiredOption(opts.org, "--org");
-  const space = readRequiredOption(opts.space, "--space");
   const app = readRequiredOption(opts.app, "--app");
+  const key = await resolveSessionKey({ ...opts, app });
   const verbose = opts.verbose ?? false;
 
   const preferredPort = parseOptionalPort(opts.port);
@@ -103,9 +102,9 @@ async function handleStart(opts: StartCommandOptions): Promise<void> {
   let handle;
   try {
     handle = await startDebugger({
-      region,
-      org,
-      space,
+      region: key.region,
+      org: key.org,
+      space: key.space,
       app,
       verbose,
       signal: abortController.signal,
@@ -121,7 +120,7 @@ async function handleStart(opts: StartCommandOptions): Promise<void> {
   }
 
   process.stdout.write(
-    `Debugger ready for ${app} (${region}/${org}/${space}).\n` +
+    `Debugger ready for ${app} (${key.region}/${key.org}/${key.space}).\n` +
       `  Local port:  ${handle.session.localPort.toString()}\n` +
       `  Remote port: ${handle.session.remotePort.toString()}\n` +
       `  Session id:  ${handle.session.sessionId}\n` +
@@ -159,21 +158,64 @@ async function handleStart(opts: StartCommandOptions): Promise<void> {
   process.exit(code ?? 0);
 }
 
-function resolveKeyFromOpts(opts: StopCommandOptions): SessionKey | undefined {
-  if (
-    opts.region !== undefined &&
-    opts.org !== undefined &&
-    opts.space !== undefined &&
-    opts.app !== undefined
-  ) {
+function hasText(value: string | undefined): boolean {
+  return optionalText(value) !== undefined;
+}
+
+function optionalText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function currentCfOptions(): { readonly command?: string } | undefined {
+  const command = process.env["CF_DEBUGGER_CF_BIN"];
+  return command === undefined ? undefined : { command };
+}
+
+async function resolveSessionKey(opts: StopCommandOptions): Promise<SessionKey> {
+  const app = readRequiredOption(opts.app, "--app");
+  const region = optionalText(opts.region);
+  const org = optionalText(opts.org);
+  const space = optionalText(opts.space);
+  if (region !== undefined && org !== undefined && space !== undefined) {
     return {
-      region: opts.region,
-      org: opts.org,
-      space: opts.space,
-      app: opts.app,
+      region,
+      org,
+      space,
+      app,
     };
   }
-  return undefined;
+
+  const current = await readCurrentCfTarget(currentCfOptions()).catch((error: unknown) => {
+    throw new CfDebuggerError(
+      "CF_TARGET_FAILED",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+  if (current === undefined) {
+    throw new CfDebuggerError(
+      "CF_TARGET_FAILED",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+    );
+  }
+
+  return {
+    region: region ?? requireCurrentCfRegion(current),
+    org: org ?? current.org,
+    space: space ?? current.space,
+    app,
+  };
+}
+
+async function resolveOptionalSessionKey(opts: StopCommandOptions): Promise<SessionKey | undefined> {
+  if (!hasText(opts.app)) {
+    if (hasText(opts.region) || hasText(opts.org) || hasText(opts.space)) {
+      readRequiredOption(opts.app, "--app");
+    }
+    return undefined;
+  }
+  return await resolveSessionKey(opts);
 }
 
 async function handleStop(opts: StopCommandOptions): Promise<void> {
@@ -182,7 +224,7 @@ async function handleStop(opts: StopCommandOptions): Promise<void> {
     process.stdout.write(`Stopped ${count.toString()} session(s).\n`);
     return;
   }
-  const key = resolveKeyFromOpts(opts);
+  const key = await resolveOptionalSessionKey(opts);
   const result = await stopDebugger({
     ...(opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }),
     ...(key === undefined ? {} : { key }),
@@ -202,12 +244,7 @@ async function handleList(): Promise<void> {
 }
 
 async function handleStatus(opts: StatusCommandOptions): Promise<void> {
-  const session = await getSession({
-    region: opts.region,
-    org: opts.org,
-    space: opts.space,
-    app: opts.app,
-  });
+  const session = await getSession(await resolveSessionKey(opts));
   process.stdout.write(`${JSON.stringify(session ?? null, null, 2)}\n`);
 }
 
@@ -221,9 +258,9 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("start")
     .description("Open a debug tunnel for one app")
-    .requiredOption("--region <key>", "CF region key (e.g. eu10)")
-    .requiredOption("--org <name>", "CF org name")
-    .requiredOption("--space <name>", "CF space name")
+    .option("--region <key>", "CF region key (default: current cf target)")
+    .option("--org <name>", "CF org name (default: current cf target)")
+    .option("--space <name>", "CF space name (default: current cf target)")
     .requiredOption("--app <name>", "CF app name")
     .option("--port <number>", "Preferred local port (auto-assigned if omitted)")
     .option("--timeout <seconds>", "Tunnel-ready timeout in seconds (default: 180)")
@@ -255,9 +292,9 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("status")
     .description("Print one session by key as JSON (null if not active)")
-    .requiredOption("--region <key>")
-    .requiredOption("--org <name>")
-    .requiredOption("--space <name>")
+    .option("--region <key>")
+    .option("--org <name>")
+    .option("--space <name>")
     .requiredOption("--app <name>")
     .action(async (opts: StatusCommandOptions): Promise<void> => {
       await handleStatus(opts);

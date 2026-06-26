@@ -18,7 +18,7 @@ Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, except
 1. Identify whether the user wants a one-shot snapshot, continuous breakpoint watch, logpoint stream, exception capture, runtime evaluation, script listing, or connectivity check.
 2. Confirm the target:
    - Use `--port <number>` and optional `--host <host>` for an existing local inspector or tunnel.
-   - Use all of `--region --org --space --app` for Cloud Foundry auto-tunnel.
+   - Use `--app <name>` with the current `cf target` for Cloud Foundry auto-tunnel, or pass all of `--region --org --space --app` when targeting a different CF app.
 3. Use live inspector access when the task needs current runtime evidence and the target plus credentials are available. Ask only when the target, credentials, or side effects of pausing the app are unclear.
 4. Choose the narrowest command that answers the question.
 5. Prefer JSON output for agent workflows. Use `--no-json` only when the user asks for human-readable output.
@@ -92,11 +92,16 @@ node --inspect=9229 app.js
 cf-inspector attach --port 9229
 ```
 
-For Cloud Foundry, provide the complete target and let `cf-inspector` open and dispose the tunnel through `@saptools/cf-debugger`:
+For Cloud Foundry, pass `--app` to use the current `cf target`, or provide the complete target when the requested app is in a different region, org, or space. `cf-inspector` opens and disposes the tunnel through `@saptools/cf-debugger`:
 
 ```bash
 cf-inspector snapshot \
   --region eu10 --org example-org --space space-demo --app app-demo \
+  --bp src/handler.ts:42 \
+  --capture 'req.url, this.user'
+
+cf-inspector snapshot \
+  --app app-demo \
   --bp src/handler.ts:42 \
   --capture 'req.url, this.user'
 ```
@@ -167,7 +172,7 @@ For agent parsing, read stdout events line by line and parse the final stderr JS
 
 Common `CfInspectorError.code` values:
 
-- `MISSING_TARGET`: neither `--port` nor complete CF target was provided.
+- `MISSING_TARGET`: neither `--port`, `--app` with a current CF target, nor a complete CF target was provided.
 - `INVALID_ARGUMENT`: numeric flags are not positive integers.
 - `INVALID_BREAKPOINT`: location is not `file:line`.
 - `INVALID_REMOTE_ROOT`: remote-root regex failed to compile.

@@ -53,7 +53,7 @@ test("events emits a JSON array with --json", async () => {
   expect(parsed).toHaveLength(2);
 });
 
-test("events resolves a bare app name from the topology snapshot", async () => {
+test("events resolves a bare app name from the current CF target", async () => {
   const paths = await prepareCase(ROOT, "bare", makeScenario(SAMPLE_EVENTS));
   const result = await runCli(createEnv(paths), ["events", "orders-srv"]);
   expect(result.code).toBe(0);

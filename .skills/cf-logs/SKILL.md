@@ -14,7 +14,7 @@ If `cf-logs` is missing or stale, install it from `@saptools/cf-logs`: `npm inst
 ## First Steps
 
 1. Identify whether the user needs a snapshot, live stream, compact context, full-row drill-down, store inspection, or session cleanup.
-2. Confirm the target: `--region` or `--api-endpoint`, plus `--org`, `--space`, and usually `--app`.
+2. Confirm the target: use current `cf target` when region/org/space are not mentioned; pass `--region` or `--api-endpoint`, plus `--org` and `--space`, only when targeting somewhere else.
 3. Use live CF access only when current log evidence is needed and credentials are already available through `SAP_EMAIL` and `SAP_PASSWORD` or explicit secure input.
 4. Use `--compact --save` by default for snapshot and stream log collection. This keeps terminal output compact while preserving full rows through refs.
 
@@ -32,6 +32,7 @@ Always create refs for later full-row drill-down when collecting logs:
 
 ```bash
 cf-logs snapshot --region ap10 --org example-org --space space-demo --app app-demo --compact --save
+cf-logs snapshot --app app-demo --compact --save
 ```
 
 For structured refs, add `--json` to the same command.
@@ -61,12 +62,14 @@ Use `stream` for live logs. Include `--compact --save` and add `--max-lines` whe
 ```bash
 cf-logs stream --region ap10 --org example-org --space space-demo --app app-demo \
   --compact --save --max-lines 50
+cf-logs stream --app app-demo --compact --save --max-lines 50
 ```
 
 Use `apps` to list started apps with running instances:
 
 ```bash
 cf-logs apps --region ap10 --org example-org --space space-demo --json
+cf-logs apps --json
 ```
 
 Use `store` for the persistent bounded store used by non-compact `--save`:
@@ -114,5 +117,7 @@ cf-logs session list
 If compact output is still too large, reduce `--compact-message-limit`, lower `--log-limit`, or use `--max-lines` for streams.
 
 If live CF commands fail, verify the region, org, space, app, and credential environment. Do not print credential values.
+
+If `cf-logs` reports no current CF target, run `cf target -o <org> -s <space>` or pass `--region/--org/--space` explicitly.
 
 If a task needs exact original multiline body text, use `cf-logs show <ref>` rather than relying on compact output.

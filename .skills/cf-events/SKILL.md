@@ -14,8 +14,8 @@ If `cf-events` is missing, install it from `@saptools/cf-events`: `npm install -
 ## First Steps
 
 1. Identify whether the user needs audit history, SSH/debug activity, crash summary, app health, or live event watch.
-2. Confirm the selector: use `region/org/space/app` when possible; use a bare app name only when it is unique in the `cf-sync` topology snapshot.
-3. Ensure `cf-sync` topology exists or is current enough. If selector resolution fails, run `cf-sync sync` or targeted `cf-sync space <region> <org> <space>`.
+2. Confirm the selector: use `region/org/space/app` when the target differs from current `cf target`; otherwise a bare app name uses the current CF region, org, and space.
+3. Ensure `cf-sync` topology exists or is current enough for the resolved selector. If selector resolution fails, run `cf-sync sync` or targeted `cf-sync space <region> <org> <space>`.
 4. Use live CF access only when current evidence is needed and credentials are available through `SAP_EMAIL` and `SAP_PASSWORD` or secure explicit input.
 5. Prefer `--json` for structured parsing; use text output when a human-facing summary is more useful.
 
@@ -64,7 +64,7 @@ cf-events watch app-demo --lookback 2m --interval 15000 --type crash --json
 
 ## Selectors And Setup
 
-`cf-events` resolves selectors through the local `cf-sync` topology snapshot:
+`cf-events` scopes bare app names to the current `cf target`, then resolves the resulting selector through the local `cf-sync` topology snapshot:
 
 ```bash
 cf-events status ap10/example-org/dev/app-demo --json
@@ -72,6 +72,8 @@ cf-events status app-demo --json
 ```
 
 If a bare app name is ambiguous, rerun with the full `region/org/space/app` selector. If no topology snapshot exists or the app is missing, refresh with `cf-sync sync` or a targeted `cf-sync space <region> <org> <space>`.
+
+If there is no current CF target, run `cf target -o <org> -s <space>` or pass the full selector explicitly.
 
 ## SSH And Debug Interpretation
 

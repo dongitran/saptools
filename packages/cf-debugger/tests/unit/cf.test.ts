@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { isSshDisabledError, parseAppNames, parseNameTable } from "../../src/cf.js";
+import {
+  isSshDisabledError,
+  parseAppNames,
+  parseCurrentCfTarget,
+  parseNameTable,
+  requireCurrentCfRegion,
+} from "../../src/cf.js";
 
 describe("isSshDisabledError", () => {
   it("detects the 'not authorized' variant", () => {
@@ -74,5 +80,44 @@ describe("parseAppNames", () => {
       "worker-app         stopped           web:0/1                         ",
     ].join("\n");
     expect(parseAppNames(stdout)).toEqual(["api-app", "worker-app"]);
+  });
+});
+
+describe("parseCurrentCfTarget", () => {
+  it("extracts API endpoint, region, org, and space from cf target output", () => {
+    const target = parseCurrentCfTarget([
+      "API endpoint:   https://api.cf.ap10.hana.ondemand.com",
+      "API version:    3.156.0",
+      "user:           user@example.com",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n"));
+
+    expect(target).toEqual({
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+      region: "ap10",
+      org: "demo-org",
+      space: "dev",
+    });
+  });
+
+  it("returns undefined when the user is not fully targeted", () => {
+    expect(parseCurrentCfTarget("API endpoint: https://api.example.test\norg:\nspace:")).toBeUndefined();
+  });
+
+  it("requires a known SAP region when deriving CLI target keys", () => {
+    const target = parseCurrentCfTarget([
+      "API endpoint:   https://api.example.test",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n"));
+
+    expect(target).toEqual({
+      apiEndpoint: "https://api.example.test",
+      org: "demo-org",
+      space: "dev",
+    });
+    expect(() => requireCurrentCfRegion(target ?? { apiEndpoint: "https://api.example.test" }))
+      .toThrow(/does not match/);
   });
 });

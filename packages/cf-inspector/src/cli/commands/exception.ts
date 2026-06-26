@@ -15,7 +15,7 @@ import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_EXCEPTION_TIMEOUT_SEC } from "../commandTypes.js";
 import type { ExceptionCommandOptions, Target } from "../commandTypes.js";
 import { writeHumanSnapshot, writeJson } from "../output.js";
-import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
+import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import { roundDurationMs, withPausedDuration } from "../warnings.js";
 
 const VALID_PAUSE_TYPES: readonly PauseOnExceptionsState[] = ["uncaught", "caught", "all"];
@@ -32,7 +32,8 @@ interface PreparedExceptionCommand {
 }
 
 export async function handleException(opts: ExceptionCommandOptions): Promise<void> {
-  const prepared = prepareExceptionCommand(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts);
+  const prepared = prepareExceptionCommand(opts, target);
   const result = await runExceptionCommand(prepared, opts);
   if (opts.json) {
     writeJson(result);
@@ -41,8 +42,7 @@ export async function handleException(opts: ExceptionCommandOptions): Promise<vo
   }
 }
 
-function prepareExceptionCommand(opts: ExceptionCommandOptions): PreparedExceptionCommand {
-  const target = resolveTarget(opts);
+function prepareExceptionCommand(opts: ExceptionCommandOptions, target: Target): PreparedExceptionCommand {
   const stateRaw = (opts.type ?? "uncaught").trim().toLowerCase();
   if (!VALID_PAUSE_TYPES.includes(stateRaw as PauseOnExceptionsState)) {
     throw new CfInspectorError(

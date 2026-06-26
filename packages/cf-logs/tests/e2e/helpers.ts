@@ -194,6 +194,26 @@ export async function runCliAt(
   }
 }
 
+export async function targetFakeCf(
+  env: NodeJS.ProcessEnv,
+  apiEndpoint: string,
+  orgName: string,
+  spaceName: string,
+): Promise<void> {
+  await execFileAsync("node", [FAKE_CF_BIN, "api", apiEndpoint], {
+    env,
+    cwd: process.cwd(),
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  await execFileAsync("node", [FAKE_CF_BIN, "target", "-o", orgName, "-s", spaceName], {
+    env,
+    cwd: process.cwd(),
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 60_000,
+  });
+}
+
 export async function makeSymlink(target: string, linkDir: string, name: string): Promise<string> {
   await mkdir(linkDir, { recursive: true });
   const linkPath = join(linkDir, name);

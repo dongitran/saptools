@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { parseAppDetails, parseAppNames, parseNameTable } from "../../src/cf.js";
+import {
+  formatCurrentCfAppSelector,
+  parseAppDetails,
+  parseAppNames,
+  parseCfTargetOutput,
+  parseNameTable,
+  requireCurrentCfRegionKey,
+} from "../../src/cf.js";
 
 describe("parseNameTable", () => {
   it("parses cf orgs output", () => {
@@ -159,5 +166,65 @@ describe("parseAppDetails", () => {
 
   it("returns empty when header is missing", () => {
     expect(parseAppDetails("unexpected output")).toEqual([]);
+  });
+});
+
+describe("parseCfTargetOutput", () => {
+  it("parses current CF target output and maps known SAP endpoints to region keys", () => {
+    const stdout = [
+      "API endpoint:   https://api.cf.ap10.hana.ondemand.com",
+      "API version:    3.156.0",
+      "user:           user@example.test",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n");
+
+    expect(parseCfTargetOutput(stdout)).toEqual({
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+    });
+  });
+
+  it("keeps custom API endpoints without inventing a region key", () => {
+    const stdout = [
+      "API endpoint:   https://api.cf.custom.example.test",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n");
+
+    expect(parseCfTargetOutput(stdout)).toEqual({
+      apiEndpoint: "https://api.cf.custom.example.test",
+      orgName: "demo-org",
+      spaceName: "dev",
+    });
+  });
+
+  it("returns undefined when the CF CLI is not fully targeted", () => {
+    expect(parseCfTargetOutput("No org or space targeted.\n")).toBeUndefined();
+    expect(parseCfTargetOutput("API endpoint: https://api.cf.ap10.hana.ondemand.com\norg: demo\n")).toBeUndefined();
+  });
+
+  it("formats full app selectors from a current target", () => {
+    const target = {
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+      regionKey: "ap10" as const,
+      orgName: "demo-org",
+      spaceName: "dev",
+    };
+
+    expect(formatCurrentCfAppSelector(target, "orders-srv")).toBe("ap10/demo-org/dev/orders-srv");
+  });
+
+  it("rejects app selectors when the current API endpoint has no known region key", () => {
+    const target = {
+      apiEndpoint: "https://api.cf.custom.example.test",
+      orgName: "demo-org",
+      spaceName: "dev",
+    };
+
+    expect(() => requireCurrentCfRegionKey(target)).toThrow(/does not match a known SAP region/);
+    expect(() => formatCurrentCfAppSelector(target, "orders-srv")).toThrow(/full region\/org\/space\/app selector/);
   });
 });

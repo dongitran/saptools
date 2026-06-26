@@ -3,6 +3,11 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import {
+  formatCurrentCfAppSelector,
+  readCurrentCfTarget,
+  type CfExecContext,
+} from "@saptools/cf-sync";
 import { Command } from "commander";
 
 import { parseTypeFilter } from "./events.js";
@@ -81,6 +86,29 @@ function appLabel(selector: string): string {
   return (selector.split("/").at(-1) ?? selector).trim();
 }
 
+async function resolveSelectorArgument(selector: string): Promise<string> {
+  if (selector.includes("/")) {
+    return selector;
+  }
+  const current = await readCurrentCfTarget(currentCfContext()).catch((error: unknown) => {
+    throw new Error(
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+      { cause: error },
+    );
+  });
+  if (current === undefined) {
+    throw new Error(
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+    );
+  }
+  return formatCurrentCfAppSelector(current, selector);
+}
+
+function currentCfContext(): CfExecContext | undefined {
+  const command = process.env["CF_EVENTS_CF_BIN"];
+  return command === undefined ? undefined : { command };
+}
+
 function writeOut(text: string): void {
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 }
@@ -94,8 +122,9 @@ function writeJsonLine(value: unknown): void {
 }
 
 async function runEvents(selector: string, flags: EventsFlags): Promise<void> {
+  const resolvedSelector = await resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
-  const events = await runtime.fetchEvents(selector, buildCredentials(flags), {
+  const events = await runtime.fetchEvents(resolvedSelector, buildCredentials(flags), {
     limit: flags.limit ?? DEFAULT_EVENT_LIMIT,
     since: flags.since,
     types: parseTypeFilter(flags.type),
@@ -104,13 +133,14 @@ async function runEvents(selector: string, flags: EventsFlags): Promise<void> {
     writeJson(events);
     return;
   }
-  writeOut(formatEventsReport(appLabel(selector), events, new Date()));
+  writeOut(formatEventsReport(appLabel(resolvedSelector), events, new Date()));
 }
 
 async function runSshStatus(selector: string, flags: SshStatusFlags): Promise<void> {
+  const resolvedSelector = await resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
   const status = await runtime.getSshStatus(
-    selector,
+    resolvedSelector,
     buildCredentials(flags),
     flags.since ?? DEFAULT_SSH_SINCE,
   );
@@ -122,8 +152,9 @@ async function runSshStatus(selector: string, flags: SshStatusFlags): Promise<vo
 }
 
 async function runCrashes(selector: string, flags: CrashesFlags): Promise<void> {
+  const resolvedSelector = await resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
-  const summary = await runtime.getCrashes(selector, buildCredentials(flags), {
+  const summary = await runtime.getCrashes(resolvedSelector, buildCredentials(flags), {
     limit: flags.limit ?? DEFAULT_CRASH_LIMIT,
     since: flags.since,
   });
@@ -135,8 +166,9 @@ async function runCrashes(selector: string, flags: CrashesFlags): Promise<void> 
 }
 
 async function runStatus(selector: string, flags: CommonFlags): Promise<void> {
+  const resolvedSelector = await resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
-  const health = await runtime.getStatus(selector, buildCredentials(flags));
+  const health = await runtime.getStatus(resolvedSelector, buildCredentials(flags));
   if (flags.json === true) {
     writeJson(health);
     return;
@@ -153,6 +185,7 @@ function emitWatchEvent(event: AuditEvent, asJson: boolean): void {
 }
 
 async function runWatch(selector: string, flags: WatchFlags): Promise<void> {
+  const resolvedSelector = await resolveSelectorArgument(selector);
   const interval = flags.interval ?? DEFAULT_WATCH_INTERVAL_MS;
   if (interval < MIN_WATCH_INTERVAL_MS) {
     throw new Error(`--interval must be at least ${MIN_WATCH_INTERVAL_MS.toString()}ms.`);
@@ -166,9 +199,9 @@ async function runWatch(selector: string, flags: WatchFlags): Promise<void> {
   const asJson = flags.json === true;
 
   try {
-    process.stderr.write(`Watching ${selector} for new audit events. Press Ctrl+C to stop.\n`);
+    process.stderr.write(`Watching ${resolvedSelector} for new audit events. Press Ctrl+C to stop.\n`);
     await runtime.watchEvents(
-      selector,
+      resolvedSelector,
       buildCredentials(flags),
       {
         intervalMs: interval,

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { readCurrentCfTarget, type CfExecContext } from "@saptools/cf-sync";
 import { Command } from "commander";
 
 import { fetchStartedAppsViaCfCli } from "./cf.js";
@@ -102,30 +103,51 @@ function resolveCredential(value: string | undefined, envName: string): string {
   throw new Error(`Missing required environment variable: ${envName}`);
 }
 
-function requireTarget(flags: SessionFlags): void {
-  if ((flags.region ?? "").trim().length > 0 || (flags.apiEndpoint ?? "").trim().length > 0) {
-    return;
-  }
-  throw new Error("Either --region or --api-endpoint is required.");
-}
-
-function buildSession(flags: SessionFlags): CfSessionInput {
-  requireTarget(flags);
+async function buildSession(flags: SessionFlags): Promise<CfSessionInput> {
+  const current = await readCurrentTargetIfNeeded(flags);
+  const region = flags.region ?? current?.regionKey;
+  const apiEndpoint = flags.apiEndpoint ?? (region === undefined ? current?.apiEndpoint : undefined);
   return {
-    ...(flags.apiEndpoint === undefined ? {} : { apiEndpoint: requireText(flags.apiEndpoint, "--api-endpoint") }),
-    ...(flags.region === undefined ? {} : { region: requireText(flags.region, "--region") }),
+    ...(apiEndpoint === undefined ? {} : { apiEndpoint: requireText(apiEndpoint, "--api-endpoint") }),
+    ...(region === undefined ? {} : { region: requireText(region, "--region") }),
     email: resolveCredential(flags.email, "SAP_EMAIL"),
     password: resolveCredential(flags.password, "SAP_PASSWORD"),
-    org: requireText(flags.org, "--org"),
-    space: requireText(flags.space, "--space"),
+    org: requireText(flags.org ?? current?.orgName, "--org"),
+    space: requireText(flags.space ?? current?.spaceName, "--space"),
   };
 }
 
-function buildAppRef(flags: AppFlags): { readonly session: CfSessionInput; readonly appName: string } {
+async function buildAppRef(flags: AppFlags): Promise<{ readonly session: CfSessionInput; readonly appName: string }> {
   return {
-    session: buildSession(flags),
+    session: await buildSession(flags),
     appName: requireText(flags.app, "--app"),
   };
+}
+
+async function readCurrentTargetIfNeeded(flags: SessionFlags): ReturnType<typeof readCurrentCfTarget> {
+  const hasApiTarget = (flags.region ?? flags.apiEndpoint) !== undefined;
+  const hasOrg = flags.org !== undefined && flags.org.trim().length > 0;
+  const hasSpace = flags.space !== undefined && flags.space.trim().length > 0;
+  if (hasApiTarget && hasOrg && hasSpace) {
+    return undefined;
+  }
+  const current = await readCurrentCfTarget(currentCfContext()).catch((error: unknown) => {
+    throw new Error(
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+      { cause: error },
+    );
+  });
+  if (current !== undefined) {
+    return current;
+  }
+  throw new Error(
+    "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+  );
+}
+
+function currentCfContext(): CfExecContext | undefined {
+  const command = process.env["CF_LOGS_CF_BIN"];
+  return command === undefined ? undefined : { command };
 }
 
 function parsePositiveInteger(value: string, optionName: string): number {
@@ -244,8 +266,8 @@ function addSessionOptions(command: Command): Command {
   return command
     .option("-r, --region <key>", "CF region key (e.g. ap10)")
     .option("--api-endpoint <url>", "Explicit CF API endpoint")
-    .requiredOption("-o, --org <name>", "CF org name")
-    .requiredOption("-s, --space <name>", "CF space name")
+    .option("-o, --org <name>", "CF org name (default: current CF target org)")
+    .option("-s, --space <name>", "CF space name (default: current CF target space)")
     .option("--email <value>", "SAP email (default: SAP_EMAIL)")
     .option("--password <value>", "SAP password (default: SAP_PASSWORD)");
 }
@@ -255,7 +277,7 @@ function addAppOptions(command: Command): Command {
 }
 
 async function runSnapshot(flags: SnapshotFlags): Promise<void> {
-  const { session, appName } = buildAppRef(flags);
+  const { session, appName } = await buildAppRef(flags);
   const runtime = new CfLogsRuntime(buildSnapshotRuntimeOptions(flags));
   runtime.setSession(session);
   runtime.setAvailableApps([{ name: appName, runningInstances: 1 }]);
@@ -281,7 +303,7 @@ async function runSnapshot(flags: SnapshotFlags): Promise<void> {
 }
 
 async function runApps(flags: AppsFlags): Promise<void> {
-  const session = buildSession(flags);
+  const session = await buildSession(flags);
   const apps = await fetchStartedAppsViaCfCli(session);
   if (flags.json === true) {
     writeJson(apps);
@@ -318,7 +340,7 @@ async function runStoreList(flags: StoreListFlags): Promise<void> {
 }
 
 async function runStream(flags: StreamFlags): Promise<void> {
-  const { session, appName } = buildAppRef(flags);
+  const { session, appName } = await buildAppRef(flags);
   const runtime = new CfLogsRuntime(buildStreamRuntimeOptions(flags));
   const compactSession = flags.compact === true
     ? await createCompactStreamSession(session, appName, flags)

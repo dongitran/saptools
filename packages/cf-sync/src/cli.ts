@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 
+import {
+  formatCurrentCfAppSelector,
+  readCurrentCfTarget,
+  requireCurrentCfRegionKey,
+} from "./cf/index.js";
+import type { CurrentCfTarget } from "./cf/index.js";
 import { cfStructurePath } from "./config/paths.js";
 import {
   readDbAppView,
@@ -17,6 +23,7 @@ import {
 import { readRegionsView, readStructureView } from "./topology/structure.js";
 import { getRegionView, runSync, syncOrg, syncRegionOrgs, syncSpace } from "./topology/sync.js";
 import { REGION_KEYS } from "./types.js";
+import type { RegionKey } from "./types.js";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -49,6 +56,55 @@ function parseOnlyRegions(raw: string): readonly (typeof REGION_KEYS)[number][] 
   }
 
   return requested as (typeof REGION_KEYS)[number][];
+}
+
+function assertRegionKey(key: string): RegionKey {
+  if (!(REGION_KEYS as readonly string[]).includes(key)) {
+    throw new Error(`Unknown region key: ${key}`);
+  }
+  return key as RegionKey;
+}
+
+async function requireCurrentTarget(instruction: string): Promise<CurrentCfTarget> {
+  const current = await readCurrentCfTarget().catch((error: unknown) => {
+    throw new Error(`No current CF target found. ${instruction}`, { cause: error });
+  });
+  if (current !== undefined) {
+    return current;
+  }
+  throw new Error(`No current CF target found. ${instruction}`);
+}
+
+async function resolveRegionKey(key: string | undefined): Promise<RegionKey> {
+  if (key !== undefined) {
+    return assertRegionKey(key);
+  }
+  const current = await requireCurrentTarget("Run `cf target -o <org> -s <space>` or pass a region key.");
+  return requireCurrentCfRegionKey(current);
+}
+
+async function resolveOrgName(orgName: string | undefined): Promise<string> {
+  if (orgName !== undefined && orgName.trim().length > 0) {
+    return orgName;
+  }
+  return (await requireCurrentTarget("Run `cf target -o <org> -s <space>` or pass an org name.")).orgName;
+}
+
+async function resolveSpaceName(spaceName: string | undefined): Promise<string> {
+  if (spaceName !== undefined && spaceName.trim().length > 0) {
+    return spaceName;
+  }
+  return (await requireCurrentTarget("Run `cf target -o <org> -s <space>` or pass a space name.")).spaceName;
+}
+
+async function resolveDbSelector(selector: string | undefined): Promise<string | undefined> {
+  if (selector === undefined || selector.includes("/")) {
+    return selector;
+  }
+  const current = await requireCurrentTarget(
+    "Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+  );
+  return formatCurrentCfAppSelector(current, selector);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -113,15 +169,13 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("region")
     .description("Print one region as JSON, refreshing on demand when possible")
-    .argument("<key>", "Region key")
+    .argument("[key]", "Region key (default: current CF target region)")
     .option("--no-refresh", "Do not fetch the region if it is not already cached")
-    .action(async (key: string, opts: { refresh?: boolean }): Promise<void> => {
-      if (!(REGION_KEYS as readonly string[]).includes(key)) {
-        throw new Error(`Unknown region key: ${key}`);
-      }
+    .action(async (key: string | undefined, opts: { refresh?: boolean }): Promise<void> => {
+      const regionKey = await resolveRegionKey(key);
 
       const regionOptions = {
-        regionKey: key as (typeof REGION_KEYS)[number],
+        regionKey,
         refreshIfMissing: opts.refresh !== false,
         ...(process.env["SAP_EMAIL"] ? { email: process.env["SAP_EMAIL"] } : {}),
         ...(process.env["SAP_PASSWORD"] ? { password: process.env["SAP_PASSWORD"] } : {}),
@@ -134,19 +188,24 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("space")
     .description("Refresh one region/org/space and print the refreshed space view as JSON")
-    .argument("<region>", "Region key")
-    .argument("<org>", "Cloud Foundry org name")
-    .argument("<space>", "Cloud Foundry space name")
+    .argument("[region]", "Region key (default: current CF target region)")
+    .argument("[org]", "Cloud Foundry org name (default: current CF target org)")
+    .argument("[space]", "Cloud Foundry space name (default: current CF target space)")
     .option("--verbose", "Print progress lines to stdout", false)
-    .action(async (key: string, orgName: string, spaceName: string, opts: { verbose?: boolean }): Promise<void> => {
-      if (!(REGION_KEYS as readonly string[]).includes(key)) {
-        throw new Error(`Unknown region key: ${key}`);
-      }
+    .action(async (
+      key: string | undefined,
+      orgName: string | undefined,
+      spaceName: string | undefined,
+      opts: { verbose?: boolean },
+    ): Promise<void> => {
+      const regionKey = await resolveRegionKey(key);
+      const resolvedOrgName = await resolveOrgName(orgName);
+      const resolvedSpaceName = await resolveSpaceName(spaceName);
 
       const view = await syncSpace({
-        regionKey: key as (typeof REGION_KEYS)[number],
-        orgName,
-        spaceName,
+        regionKey,
+        orgName: resolvedOrgName,
+        spaceName: resolvedSpaceName,
         email: requireEnv("SAP_EMAIL"),
         password: requireEnv("SAP_PASSWORD"),
         verbose: opts.verbose ?? false,
@@ -157,17 +216,16 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("org")
     .description("Refresh one region/org and print the refreshed org view as JSON")
-    .argument("<region>", "Region key")
-    .argument("<org>", "Cloud Foundry org name")
+    .argument("[region]", "Region key (default: current CF target region)")
+    .argument("[org]", "Cloud Foundry org name (default: current CF target org)")
     .option("--verbose", "Print progress lines to stdout", false)
-    .action(async (key: string, orgName: string, opts: { verbose?: boolean }): Promise<void> => {
-      if (!(REGION_KEYS as readonly string[]).includes(key)) {
-        throw new Error(`Unknown region key: ${key}`);
-      }
+    .action(async (key: string | undefined, orgName: string | undefined, opts: { verbose?: boolean }): Promise<void> => {
+      const regionKey = await resolveRegionKey(key);
+      const resolvedOrgName = await resolveOrgName(orgName);
 
       const view = await syncOrg({
-        regionKey: key as (typeof REGION_KEYS)[number],
-        orgName,
+        regionKey,
+        orgName: resolvedOrgName,
         email: requireEnv("SAP_EMAIL"),
         password: requireEnv("SAP_PASSWORD"),
         verbose: opts.verbose ?? false,
@@ -178,15 +236,13 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("orgs")
     .description("Refresh one region org list and print the refreshed region view as JSON")
-    .argument("<region>", "Region key")
+    .argument("[region]", "Region key (default: current CF target region)")
     .option("--verbose", "Print progress lines to stdout", false)
-    .action(async (key: string, opts: { verbose?: boolean }): Promise<void> => {
-      if (!(REGION_KEYS as readonly string[]).includes(key)) {
-        throw new Error(`Unknown region key: ${key}`);
-      }
+    .action(async (key: string | undefined, opts: { verbose?: boolean }): Promise<void> => {
+      const regionKey = await resolveRegionKey(key);
 
       const view = await syncRegionOrgs({
-        regionKey: key as (typeof REGION_KEYS)[number],
+        regionKey,
         email: requireEnv("SAP_EMAIL"),
         password: requireEnv("SAP_PASSWORD"),
         verbose: opts.verbose ?? false,
@@ -201,7 +257,8 @@ export async function main(argv: readonly string[]): Promise<void> {
     .action(async (selector?: string): Promise<void> => {
       requireEnv("SAP_EMAIL");
       requireEnv("SAP_PASSWORD");
-      await resolveDbSyncTargetsFromCurrentTopology(selector);
+      const resolvedSelector = await resolveDbSelector(selector);
+      await resolveDbSyncTargetsFromCurrentTopology(resolvedSelector);
 
       const syncId = randomUUID();
       const child = spawn(
@@ -211,7 +268,7 @@ export async function main(argv: readonly string[]): Promise<void> {
           "db-sync-worker",
           "--sync-id",
           syncId,
-          ...(selector ? [selector] : []),
+          ...(resolvedSelector ? [resolvedSelector] : []),
         ],
         {
           detached: true,
@@ -222,10 +279,10 @@ export async function main(argv: readonly string[]): Promise<void> {
       child.unref();
 
       process.stdout.write(
-        `Background DB sync requested.\n` +
+          `Background DB sync requested.\n` +
           `  Sync id: ${syncId}\n` +
-          `  Target: ${selector ?? "all cached apps"}\n` +
-          `  Use \`cf-sync db-read${selector ? ` ${selector}` : ""}\` to inspect results.\n`,
+          `  Target: ${resolvedSelector ?? "all cached apps"}\n` +
+          `  Use \`cf-sync db-read${resolvedSelector ? ` ${resolvedSelector}` : ""}\` to inspect results.\n`,
       );
     });
 
@@ -234,7 +291,8 @@ export async function main(argv: readonly string[]): Promise<void> {
     .description("Print the best available HANA DB snapshot or one app binding view as JSON")
     .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
     .action(async (selector?: string): Promise<void> => {
-      const view = selector ? await readDbAppView(selector) : await readDbSnapshotView();
+      const resolvedSelector = await resolveDbSelector(selector);
+      const view = resolvedSelector ? await readDbAppView(resolvedSelector) : await readDbSnapshotView();
       process.stdout.write(`${JSON.stringify(view ?? null, null, 2)}\n`);
     });
 
@@ -246,7 +304,8 @@ export async function main(argv: readonly string[]): Promise<void> {
     .action(async (selector: string | undefined, opts: { syncId: string }): Promise<void> => {
       const email = requireEnv("SAP_EMAIL");
       const password = requireEnv("SAP_PASSWORD");
-      const targets = await resolveDbSyncTargetsFromCurrentTopology(selector);
+      const resolvedSelector = await resolveDbSelector(selector);
+      const targets = await resolveDbSyncTargetsFromCurrentTopology(resolvedSelector);
       await runDbSync({
         email,
         password,

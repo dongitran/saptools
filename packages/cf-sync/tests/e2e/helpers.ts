@@ -127,6 +127,7 @@ export function createEnv(
   return {
     ...env,
     HOME: homeDir,
+    CF_HOME: join(homeDir, ".cf"),
     SAP_EMAIL: "e2e@example.com",
     SAP_PASSWORD: "test-password",
     CF_SYNC_CF_BIN: FAKE_CF_BIN,
@@ -237,6 +238,24 @@ export async function runJsonCommand<T = Record<string, unknown> | null>(
   });
 
   return JSON.parse(stdout) as T;
+}
+
+export async function targetFakeCf(
+  env: NodeJS.ProcessEnv,
+  apiEndpoint: string,
+  orgName: string,
+  spaceName: string,
+): Promise<void> {
+  await execFileAsync("node", [FAKE_CF_BIN, "api", apiEndpoint], {
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 15_000,
+  });
+  await execFileAsync("node", [FAKE_CF_BIN, "target", "-o", orgName, "-s", spaceName], {
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 15_000,
+  });
 }
 
 export interface ExitResult {

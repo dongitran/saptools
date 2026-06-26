@@ -65,6 +65,7 @@ export async function prepareCase(caseName: string, scenario: Scenario): Promise
 export function createEnv(paths: CasePaths): NodeJS.ProcessEnv {
   return {
     ...process.env,
+    CF_HOME: join(paths.homeDir, ".cf"),
     HOME: paths.homeDir,
     SAP_EMAIL: "e2e@example.com",
     SAP_PASSWORD: "test-password",
@@ -91,6 +92,24 @@ export async function runCli(env: NodeJS.ProcessEnv, args: readonly string[]): P
       stderr: typed.stderr ?? "",
     };
   }
+}
+
+export async function targetFakeCf(
+  env: NodeJS.ProcessEnv,
+  apiEndpoint: string,
+  orgName: string,
+  spaceName: string,
+): Promise<void> {
+  await execFileAsync("node", [FAKE_CF_BIN, "api", apiEndpoint], {
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 30_000,
+  });
+  await execFileAsync("node", [FAKE_CF_BIN, "target", "-o", orgName, "-s", spaceName], {
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 30_000,
+  });
 }
 
 export async function readLog(path: string): Promise<readonly { readonly command: string }[]> {

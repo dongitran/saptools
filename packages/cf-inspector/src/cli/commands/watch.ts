@@ -17,7 +17,7 @@ import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { Target, WatchCommandOptions } from "../commandTypes.js";
 import { writeJson, writeWatchEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
-import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
+import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import { warnOnUnboundBreakpoints } from "../warnings.js";
 
 interface PreparedWatchCommand {
@@ -38,7 +38,8 @@ interface PreparedWatchCommand {
 type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed";
 
 export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
-  const prepared = prepareWatchCommand(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts);
+  const prepared = prepareWatchCommand(opts, target);
   let stoppedReason: WatchStopReason = "signal";
   let emitted = 0;
   await withTerminationSignal(async (signal) => {
@@ -51,8 +52,7 @@ export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
   writeWatchSummary(stoppedReason, emitted, opts.json);
 }
 
-function prepareWatchCommand(opts: WatchCommandOptions): PreparedWatchCommand {
-  const target = resolveTarget(opts);
+function prepareWatchCommand(opts: WatchCommandOptions, target: Target): PreparedWatchCommand {
   if (opts.bp.length === 0) {
     throw new CfInspectorError(
       "INVALID_BREAKPOINT",

@@ -99,8 +99,26 @@ async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
-  if (command === "api" || command === "auth" || command === "target") {
+  if (command === "api" || command === "auth") {
     process.stdout.write("OK\n");
+    return;
+  }
+
+  if (command === "target") {
+    if (args.includes("-o") || args.includes("-s")) {
+      process.stdout.write("OK\n");
+      return;
+    }
+    process.stdout.write(
+      [
+        `API endpoint:   ${scenario.apiEndpoint}`,
+        "API version:    3.156.0",
+        "user:           tester@example.com",
+        `org:            ${scenario.org}`,
+        `space:          ${scenario.space}`,
+        "",
+      ].join("\n"),
+    );
     return;
   }
 

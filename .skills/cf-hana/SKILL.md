@@ -14,9 +14,10 @@ If `cf-hana` is missing, install it from `@saptools/cf-hana`: `npm install -g @s
 ## First Steps
 
 1. Identify whether the user wants SQL data, schema discovery, connectivity debugging, saved-ref inspection, or an explicit write.
-2. Use live HANA access only when current database state is needed and the target plus credentials are available.
-3. For `SELECT` or `WITH`, use `--read-only --save` by default.
-4. Treat the first saved-output line as the ref (`ref=q...`) and the remaining output as CSV.
+2. If the user gives only an app name, use the current `cf target` for region, org, and space. Ask for explicit target details only when no current target exists or the task must use a different target.
+3. Use live HANA access only when current database state is needed and the target plus credentials are available.
+4. For `SELECT` or `WITH`, use `--read-only --save` by default.
+5. Treat the first saved-output line as the ref (`ref=q...`) and the remaining output as CSV.
 
 ## Safe Live Usage
 
@@ -25,6 +26,7 @@ Use only the command that matches the question:
 ```bash
 cf-hana info eu10/example-org/space-demo/app-demo --read-only
 cf-hana ping eu10/example-org/space-demo/app-demo --read-only
+cf-hana ping app-demo --read-only
 ```
 
 For user-provided SQL:
@@ -92,6 +94,8 @@ Key options:
 ## Troubleshooting
 
 If selector resolution fails, verify the region, org, space, app, and local `cf-sync` cache state.
+
+If a bare app selector fails with no current target, run `cf target -o <org> -s <space>` or use the full `region/org/space/app` selector.
 
 If credentials are missing, ask whether to refresh from Cloud Foundry. A live refresh needs valid SAP credentials in the environment or equivalent secure input; never print those values.
 

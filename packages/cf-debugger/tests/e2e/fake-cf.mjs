@@ -102,8 +102,35 @@ function handleSsh() {
 function handleCommand() {
   const command = args[0];
   switch (command) {
-    case "api":
-    case "target":
+    case "api": {
+      writeState({ ...readState(), apiEndpoint: args[1] ?? "" });
+      return;
+    }
+    case "target": {
+      const state = readState();
+      if (!args.includes("-o") && !args.includes("-s")) {
+        if (!state.apiEndpoint || !state.org || !state.space) {
+          exitWithError("No org or space targeted");
+        }
+        process.stdout.write(
+          [
+            `API endpoint:   ${state.apiEndpoint}`,
+            "API version:    3.156.0",
+            "user:           e2e@example.com",
+            `org:            ${state.org}`,
+            `space:          ${state.space}`,
+            "",
+          ].join("\n"),
+        );
+        return;
+      }
+      writeState({
+        ...state,
+        org: args[args.indexOf("-o") + 1] ?? "",
+        space: args[args.indexOf("-s") + 1] ?? "",
+      });
+      return;
+    }
     case "restart": {
       return;
     }

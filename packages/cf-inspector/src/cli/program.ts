@@ -21,10 +21,10 @@ function applyTargetOptions(cmd: Command): Command {
   return cmd
     .option("--port <number>", "Local port the inspector or tunnel listens on")
     .option("--host <host>", "Hostname (default: 127.0.0.1)", "127.0.0.1")
-    .option("--region <key>", "CF region key (e.g. eu10)")
-    .option("--org <name>", "CF org name")
-    .option("--space <name>", "CF space name")
-    .option("--app <name>", "CF app name")
+    .option("--region <key>", "CF region key (default: current cf target)")
+    .option("--org <name>", "CF org name (default: current cf target)")
+    .option("--space <name>", "CF space name (default: current cf target)")
+    .option("--app <name>", "CF app name when not using --port")
     .option("--cf-timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
 }
 

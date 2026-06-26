@@ -1,3 +1,9 @@
+import {
+  readCurrentCfTarget,
+  type CfExecContext,
+  type CurrentCfTarget,
+} from "@saptools/cf-sync";
+
 import type { CfLiveTraceTarget, LiveTraceStartOptions } from "../types.js";
 
 export type OutputFormat = "ndjson" | "summary" | "json";
@@ -55,6 +61,13 @@ export function buildRunOptions(flags: CliFlags, env: Record<string, string | un
   };
 }
 
+export async function buildRunOptionsWithCurrentTarget(
+  flags: CliFlags,
+  env: Record<string, string | undefined>,
+): Promise<RunOptions> {
+  return buildRunOptions(await resolveCurrentTargetFlags(flags, env), env);
+}
+
 export function parsePositiveInteger(raw: string | undefined, label: string): number | undefined {
   if (raw === undefined) {
     return undefined;
@@ -64,6 +77,68 @@ export function parsePositiveInteger(raw: string | undefined, label: string): nu
     throw new Error(`Invalid ${label}: "${raw}" — expected a positive integer.`);
   }
   return value;
+}
+
+async function resolveCurrentTargetFlags(
+  flags: CliFlags,
+  env: Record<string, string | undefined>,
+): Promise<CliFlags> {
+  if (!needsCurrentTarget(flags)) {
+    return flags;
+  }
+
+  const current = await readCurrentCfTarget(currentCfContext(flags, env)).catch((error: unknown) => {
+    throw new Error(
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+      { cause: error },
+    );
+  });
+  if (current === undefined) {
+    throw new Error(
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+    );
+  }
+
+  return {
+    ...flags,
+    ...currentApiFields(flags, current),
+    org: textOrFallback(flags.org, current.orgName),
+    space: textOrFallback(flags.space, current.spaceName),
+  };
+}
+
+function currentCfContext(flags: CliFlags, env: Record<string, string | undefined>): CfExecContext | undefined {
+  const command = flags.cfCommand ?? env["CF_LIVE_TRACE_CF_BIN"];
+  const context: CfExecContext = {
+    ...(command === undefined ? {} : { command }),
+    ...(flags.cfHome === undefined ? {} : { env: { CF_HOME: flags.cfHome } }),
+  };
+  return context.command === undefined && context.env === undefined ? undefined : context;
+}
+
+function currentApiFields(
+  flags: CliFlags,
+  current: CurrentCfTarget,
+): Pick<CliFlags, "apiEndpoint" | "region"> {
+  if (hasText(flags.region) || hasText(flags.apiEndpoint)) {
+    return {};
+  }
+  return current.regionKey === undefined
+    ? { apiEndpoint: current.apiEndpoint }
+    : { region: current.regionKey };
+}
+
+function needsCurrentTarget(flags: CliFlags): boolean {
+  return (!hasText(flags.region) && !hasText(flags.apiEndpoint)) || !hasText(flags.org) || !hasText(flags.space);
+}
+
+function hasText(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
+}
+
+function textOrFallback(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? fallback : trimmed;
 }
 
 function buildTarget(flags: CliFlags, env: Record<string, string | undefined>): CfLiveTraceTarget {

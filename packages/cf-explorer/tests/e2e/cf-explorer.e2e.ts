@@ -10,6 +10,7 @@ import {
   prepareCase,
   readLog,
   runCli,
+  targetFakeCf,
 } from "./helpers.js";
 
 function scenario(): Scenario {
@@ -139,6 +140,17 @@ test("User can discover roots, instances, files, content, and line context", asy
   expect(JSON.parse(view.stdout).lines.map((line: { text: string }) => line.text)).toContain(
     "  return 'needle-api';",
   );
+});
+
+test("User can discover roots from the current CF target", async () => {
+  const paths = await prepareCase("current-target", scenario());
+  const env = createEnv(paths);
+  await targetFakeCf(env, "https://api.cf.ap10.hana.ondemand.com", "demo-org", "dev");
+
+  const roots = await runCli(env, ["roots", "--app", "demo-app"]);
+
+  expect(roots.code).toBe(0);
+  expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
 });
 
 test("User can inspect candidates and aggregate all running instances", async () => {

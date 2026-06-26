@@ -1,6 +1,36 @@
+import { randomUUID } from "node:crypto";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import { buildRunOptions, parsePositiveInteger } from "../../src/cli/options.js";
+import {
+  buildRunOptions,
+  buildRunOptionsWithCurrentTarget,
+  parsePositiveInteger,
+} from "../../src/cli/options.js";
+
+async function withFakeCfTarget(
+  outputLines: readonly string[],
+  run: (fakeCf: string) => Promise<void>,
+): Promise<void> {
+  const root = join(tmpdir(), `cf-live-trace-options-${randomUUID()}`);
+  const fakeCf = join(root, "fake-cf.mjs");
+  await mkdir(root, { recursive: true });
+  await writeFile(fakeCf, [
+    "#!/usr/bin/env node",
+    "if (process.argv[2] !== 'target') process.exit(1);",
+    ...outputLines.map((line) => `process.stdout.write(${JSON.stringify(`${line}\n`)});`),
+  ].join("\n"), "utf8");
+  await chmod(fakeCf, 0o755);
+
+  try {
+    await run(fakeCf);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 describe("CLI option parsing", () => {
   it("builds run options with credentials from flags before environment", () => {
@@ -92,6 +122,97 @@ describe("CLI option parsing", () => {
     expect(options.quiet).toBe(true);
   });
 
+  it("uses the current CF target when target flags are omitted", async () => {
+    await withFakeCfTarget([
+      "API endpoint:   https://api.cf.ap10.hana.ondemand.com",
+      "org:            demo-org",
+      "space:          dev",
+    ], async (fakeCf) => {
+      const options = await buildRunOptionsWithCurrentTarget(
+        {
+          app: "orders-api",
+          email: "user",
+          password: "password",
+          cfCommand: fakeCf,
+        },
+        {},
+      );
+
+      expect(options.target).toMatchObject({
+        region: "ap10",
+        org: "demo-org",
+        space: "dev",
+        app: "orders-api",
+      });
+    });
+  });
+
+  it("uses the current CF API endpoint when it is not a known region", async () => {
+    await withFakeCfTarget([
+      "API endpoint:   https://api.example.com",
+      "org:            demo-org",
+      "space:          dev",
+    ], async (fakeCf) => {
+      const options = await buildRunOptionsWithCurrentTarget(
+        {
+          app: "orders-api",
+          email: "user",
+          password: "password",
+          cfCommand: fakeCf,
+        },
+        {},
+      );
+
+      expect(options.target).toMatchObject({
+        apiEndpoint: "https://api.example.com",
+        org: "demo-org",
+        space: "dev",
+      });
+      expect(options.target).not.toHaveProperty("region");
+    });
+  });
+
+  it("keeps an explicit API endpoint while filling current org and space", async () => {
+    await withFakeCfTarget([
+      "API endpoint:   https://api.cf.ap10.hana.ondemand.com",
+      "org:            demo-org",
+      "space:          dev",
+    ], async (fakeCf) => {
+      const options = await buildRunOptionsWithCurrentTarget(
+        {
+          apiEndpoint: "https://api.flag.example",
+          app: "orders-api",
+          email: "user",
+          password: "password",
+          cfCommand: fakeCf,
+        },
+        {},
+      );
+
+      expect(options.target).toMatchObject({
+        apiEndpoint: "https://api.flag.example",
+        org: "demo-org",
+        space: "dev",
+      });
+    });
+  });
+
+  it("rejects omitted target flags when cf target is incomplete", async () => {
+    await withFakeCfTarget([
+      "API endpoint:   https://api.cf.ap10.hana.ondemand.com",
+    ], async (fakeCf) => {
+      await expect(buildRunOptionsWithCurrentTarget(
+        {
+          app: "orders-api",
+          email: "user",
+          password: "password",
+          cfCommand: fakeCf,
+        },
+        {},
+      )).rejects.toThrow("No current CF target found");
+    });
+  });
+
   it("rejects invalid format, missing credentials, and invalid body limit", () => {
     const base = {
       apiEndpoint: "https://api.example.com",
@@ -102,6 +223,7 @@ describe("CLI option parsing", () => {
 
     expect(() => buildRunOptions({ ...base, email: "user", password: "pass", format: "xml" }, {})).toThrow("Invalid --format");
     expect(() => buildRunOptions({ ...base, email: "user", password: "pass", maxBodyBytes: "-1" }, {})).toThrow("Invalid --max-body-bytes");
+    expect(() => buildRunOptions({ ...base, app: "", email: "user", password: "pass" }, {})).toThrow("--app is required");
     expect(() => buildRunOptions(base, {})).toThrow("Missing required environment variable: SAP_EMAIL");
   });
 });

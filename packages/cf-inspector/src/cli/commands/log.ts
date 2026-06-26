@@ -7,11 +7,11 @@ import { CfInspectorError } from "../../types.js";
 import type { LogCommandOptions } from "../commandTypes.js";
 import { writeLogEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
-import { parsePositiveInt, resolveTarget, withSession } from "../target.js";
+import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import { warnOnUnboundBreakpoints } from "../warnings.js";
 
 export async function handleLog(opts: LogCommandOptions): Promise<void> {
-  const target = resolveTarget(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts);
   const location = parseBreakpointSpec(opts.at);
   const remoteRoot = parseRemoteRoot(opts.remoteRoot);
   const durationSec = parsePositiveInt(opts.duration, "--duration");
