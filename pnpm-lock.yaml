@@ -100,9 +100,6 @@ importers:
 
   packages/cf-events:
     dependencies:
-      '@saptools/cf-sync':
-        specifier: ^0.4.13
-        version: link:../cf-sync
       commander:
         specifier: ^13.0.0
         version: 13.1.0

@@ -1,6 +1,4 @@
-import type { RegionKey } from "@saptools/cf-sync";
-
-export type { RegionKey } from "@saptools/cf-sync";
+export type RegionKey = string;
 
 /** Cloud Foundry v3 audit event types that target an application. */
 export const APP_EVENT_TYPES = [
