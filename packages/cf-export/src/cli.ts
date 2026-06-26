@@ -52,23 +52,30 @@ function parseCfTargetOutput(stdout: string): { region?: string; org?: string; s
   const fields = new Map<string, string>();
   for (const line of stdout.split(/\r?\n/)) {
     const sep = line.indexOf(":");
-    if (sep < 0) continue;
+    if (sep < 0) {
+      continue;
+    }
     const key = line.slice(0, sep).trim().toLowerCase();
     const value = line.slice(sep + 1).trim();
-    if (key && value) fields.set(key, value);
+    if (key && value) {
+      fields.set(key, value);
+    }
   }
 
   const apiEndpoint = fields.get("api endpoint");
   const orgName = fields.get("org");
   const spaceName = fields.get("space");
 
-  if (!orgName || !spaceName) return undefined;
+  if (!orgName || !spaceName) {
+    return undefined;
+  }
 
   let region: string | undefined;
   if (apiEndpoint) {
     const normalized = apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
     for (const [key, reg] of Object.entries(REGIONS)) {
-      const regApi = (reg as any).apiEndpoint?.trim().replace(/\/+$/, "").toLowerCase();
+      const regionObj = reg as { apiEndpoint?: string };
+      const regApi = regionObj.apiEndpoint?.trim().replace(/\/+$/, "").toLowerCase();
       if (regApi === normalized) {
         region = key;
         break;
@@ -94,9 +101,9 @@ async function buildTarget(flags: TargetFlags): Promise<CfTarget> {
   if (!region || !org || !space) {
     const current = await readCurrentCfTarget();
     if (current) {
-      if (!region && current.region) region = current.region;
-      if (!org) org = current.org;
-      if (!space) space = current.space;
+      region ??= current.region;
+      org ??= current.org;
+      space ??= current.space;
     }
   }
 
