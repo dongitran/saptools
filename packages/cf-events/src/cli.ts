@@ -3,11 +3,6 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import {
-  formatCurrentCfAppSelector,
-  readCurrentCfTarget,
-  type CfExecContext,
-} from "@saptools/cf-sync";
 import { Command } from "commander";
 
 import { parseTypeFilter } from "./events.js";
@@ -86,27 +81,10 @@ function appLabel(selector: string): string {
   return (selector.split("/").at(-1) ?? selector).trim();
 }
 
-async function resolveSelectorArgument(selector: string): Promise<string> {
-  if (selector.includes("/")) {
-    return selector;
-  }
-  const current = await readCurrentCfTarget(currentCfContext()).catch((error: unknown) => {
-    throw new Error(
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
-      { cause: error },
-    );
-  });
-  if (current === undefined) {
-    throw new Error(
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
-    );
-  }
-  return formatCurrentCfAppSelector(current, selector);
-}
-
-function currentCfContext(): CfExecContext | undefined {
-  const command = process.env["CF_EVENTS_CF_BIN"];
-  return command === undefined ? undefined : { command };
+function resolveSelectorArgument(selector: string): string {
+  // Bare app name or full path is passed as-is.
+  // Bare names are resolved inside resolveSelector using the current CF target (no global snapshot search).
+  return selector;
 }
 
 function writeOut(text: string): void {
@@ -122,7 +100,7 @@ function writeJsonLine(value: unknown): void {
 }
 
 async function runEvents(selector: string, flags: EventsFlags): Promise<void> {
-  const resolvedSelector = await resolveSelectorArgument(selector);
+  const resolvedSelector = resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
   const events = await runtime.fetchEvents(resolvedSelector, buildCredentials(flags), {
     limit: flags.limit ?? DEFAULT_EVENT_LIMIT,
@@ -137,7 +115,7 @@ async function runEvents(selector: string, flags: EventsFlags): Promise<void> {
 }
 
 async function runSshStatus(selector: string, flags: SshStatusFlags): Promise<void> {
-  const resolvedSelector = await resolveSelectorArgument(selector);
+  const resolvedSelector = resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
   const status = await runtime.getSshStatus(
     resolvedSelector,
@@ -152,7 +130,7 @@ async function runSshStatus(selector: string, flags: SshStatusFlags): Promise<vo
 }
 
 async function runCrashes(selector: string, flags: CrashesFlags): Promise<void> {
-  const resolvedSelector = await resolveSelectorArgument(selector);
+  const resolvedSelector = resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
   const summary = await runtime.getCrashes(resolvedSelector, buildCredentials(flags), {
     limit: flags.limit ?? DEFAULT_CRASH_LIMIT,
@@ -166,7 +144,7 @@ async function runCrashes(selector: string, flags: CrashesFlags): Promise<void> 
 }
 
 async function runStatus(selector: string, flags: CommonFlags): Promise<void> {
-  const resolvedSelector = await resolveSelectorArgument(selector);
+  const resolvedSelector = resolveSelectorArgument(selector);
   const runtime = new CfEventsRuntime();
   const health = await runtime.getStatus(resolvedSelector, buildCredentials(flags));
   if (flags.json === true) {
@@ -185,7 +163,7 @@ function emitWatchEvent(event: AuditEvent, asJson: boolean): void {
 }
 
 async function runWatch(selector: string, flags: WatchFlags): Promise<void> {
-  const resolvedSelector = await resolveSelectorArgument(selector);
+  const resolvedSelector = resolveSelectorArgument(selector);
   const interval = flags.interval ?? DEFAULT_WATCH_INTERVAL_MS;
   if (interval < MIN_WATCH_INTERVAL_MS) {
     throw new Error(`--interval must be at least ${MIN_WATCH_INTERVAL_MS.toString()}ms.`);

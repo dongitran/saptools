@@ -1,6 +1,6 @@
 ---
 name: cf-events
-description: Use when a task involves inspecting SAP BTP Cloud Foundry application audit events, SSH or debug session activity, crash history, app health, or live audit-event polling with the cf-events CLI, including selector resolution through cf-sync, event type filters, duration windows, and SSH likely-active caveats.
+description: Use when inspecting SAP BTP CF app audit events, SSH/debug activity, crashes, health, or live polling with cf-events.
 ---
 
 # CF Events
@@ -14,8 +14,8 @@ If `cf-events` is missing, install it from `@saptools/cf-events`: `npm install -
 ## First Steps
 
 1. Identify whether the user needs audit history, SSH/debug activity, crash summary, app health, or live event watch.
-2. Confirm the selector: use `region/org/space/app` when the target differs from current `cf target`; otherwise a bare app name uses the current CF region, org, and space.
-3. Ensure `cf-sync` topology exists or is current enough for the resolved selector. If selector resolution fails, run `cf-sync sync` or targeted `cf-sync space <region> <org> <space>`.
+2. App name (as selector) is always required. Full `region/org/space/app` is optional. If the user only mentions the app name, try short form first. It will use the current CF target if set. Only ask the user for the full selector when no target is configured or the app is ambiguous.
+3. The selector resolution uses the current CF target for bare app names. A CF login/target must be active for bare names.
 4. Use live CF access only when current evidence is needed and credentials are available through `SAP_EMAIL` and `SAP_PASSWORD` or secure explicit input.
 5. Prefer `--json` for structured parsing; use text output when a human-facing summary is more useful.
 
@@ -64,16 +64,16 @@ cf-events watch app-demo --lookback 2m --interval 15000 --type crash --json
 
 ## Selectors And Setup
 
-`cf-events` scopes bare app names to the current `cf target`, then resolves the resulting selector through the local `cf-sync` topology snapshot:
+The selector can be a full `region/org/space/app` or just the bare app name:
 
 ```bash
 cf-events status ap10/example-org/dev/app-demo --json
 cf-events status app-demo --json
 ```
 
-If a bare app name is ambiguous, rerun with the full `region/org/space/app` selector. If no topology snapshot exists or the app is missing, refresh with `cf-sync sync` or a targeted `cf-sync space <region> <org> <space>`.
+Bare app names will automatically use the current CF target if one is active. If the name is ambiguous or no target is set, provide the full path instead.
 
-If there is no current CF target, run `cf target -o <org> -s <space>` or pass the full selector explicitly.
+Bare names require an active `cf target` (and credentials for live CF calls).
 
 ## SSH And Debug Interpretation
 

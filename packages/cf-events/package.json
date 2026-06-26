@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-events",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Inspect SAP BTP Cloud Foundry application audit events and detect active SSH/debug sessions",
   "type": "module",
   "publishConfig": {
@@ -55,7 +55,6 @@
     "url": "https://github.com/dongitran/saptools/issues"
   },
   "dependencies": {
-    "@saptools/cf-sync": "^0.4.13",
     "commander": "^13.0.0"
   },
   "devDependencies": {

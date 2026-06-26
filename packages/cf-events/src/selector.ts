@@ -1,6 +1,4 @@
-import { readStructure } from "@saptools/cf-sync";
-import type { CfStructure } from "@saptools/cf-sync";
-
+import { getApiEndpointForRegion, readCurrentCfTarget } from "./cf.js";
 import type { ResolvedSelector } from "./types.js";
 
 export interface ParsedAppName {
@@ -57,114 +55,45 @@ export function parseSelector(raw: string): ParsedSelector {
   throw new Error(`Invalid selector "${raw}": ${SELECTOR_USAGE}.`);
 }
 
-function resolveExplicit(
-  raw: string,
-  parsed: ParsedExplicit,
-  structure: CfStructure,
-): ResolvedSelector {
-  const region = structure.regions.find((entry) => entry.key === parsed.regionKey);
-  if (region === undefined) {
-    throw new Error(
-      `Region "${parsed.regionKey}" is not in the CF topology snapshot. ` +
-        "Run `cf-sync sync` first (or `cf-sync regions` to list valid region keys).",
-    );
+/**
+ * Resolves a raw selector.
+ * - Bare app name: based strictly on the CURRENT CF target (no global search).
+ * - Full path: uses known region-to-api mapping; trusts the provided org/space/app (no snapshot validation).
+ */
+export async function resolveSelector(raw: string): Promise<ResolvedSelector> {
+  const parsed = parseSelector(raw);
+
+  if (parsed.kind === "appName") {
+    const current = await readCurrentCfTarget();
+    if (!current) {
+      throw new Error(
+        "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+      );
+    }
+    return {
+      raw,
+      regionKey: current.regionKey ?? "",
+      apiEndpoint: current.apiEndpoint,
+      orgName: current.orgName,
+      spaceName: current.spaceName,
+      appName: parsed.appName,
+    };
   }
 
-  const org = region.orgs.find((entry) => entry.name === parsed.orgName);
-  if (org === undefined) {
+  // explicit full path
+  const apiEndpoint = getApiEndpointForRegion(parsed.regionKey);
+  if (!apiEndpoint) {
     throw new Error(
-      `Org "${parsed.orgName}" was not found in region ${parsed.regionKey}. ` +
-        `Run \`cf-sync orgs ${parsed.regionKey}\` to refresh it.`,
-    );
-  }
-
-  const space = org.spaces.find((entry) => entry.name === parsed.spaceName);
-  if (space === undefined) {
-    throw new Error(
-      `Space "${parsed.spaceName}" was not found in ${parsed.regionKey}/${parsed.orgName}. ` +
-        `Run \`cf-sync org ${parsed.regionKey} ${parsed.orgName}\` to refresh it.`,
-    );
-  }
-
-  const app = space.apps.find((entry) => entry.name === parsed.appName);
-  if (app === undefined) {
-    throw new Error(
-      `App "${parsed.appName}" was not found in ${parsed.regionKey}/${parsed.orgName}/${parsed.spaceName}. ` +
-        `Run \`cf-sync space ${parsed.regionKey} ${parsed.orgName} ${parsed.spaceName}\` to refresh it.`,
+      `Unknown region "${parsed.regionKey}". Use a bare app name (requires current CF target) or a known region key.`,
     );
   }
 
   return {
     raw,
-    regionKey: region.key,
-    apiEndpoint: region.apiEndpoint,
-    orgName: org.name,
-    spaceName: space.name,
-    appName: app.name,
+    regionKey: parsed.regionKey,
+    apiEndpoint,
+    orgName: parsed.orgName,
+    spaceName: parsed.spaceName,
+    appName: parsed.appName,
   };
-}
-
-function resolveByAppName(raw: string, appName: string, structure: CfStructure): ResolvedSelector {
-  const matches: ResolvedSelector[] = [];
-  for (const region of structure.regions) {
-    for (const org of region.orgs) {
-      for (const space of org.spaces) {
-        for (const app of space.apps) {
-          if (app.name === appName) {
-            matches.push({
-              raw,
-              regionKey: region.key,
-              apiEndpoint: region.apiEndpoint,
-              orgName: org.name,
-              spaceName: space.name,
-              appName: app.name,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  if (matches.length === 0) {
-    throw new Error(
-      `App "${appName}" was not found in the CF topology snapshot. ` +
-        "Run `cf-sync sync` first, or pass a full region/org/space/app selector.",
-    );
-  }
-
-  if (matches.length > 1) {
-    const candidates = matches
-      .map((match) => `  ${match.regionKey}/${match.orgName}/${match.spaceName}/${match.appName}`)
-      .join("\n");
-    throw new Error(
-      `App "${appName}" is ambiguous - it exists in multiple spaces:\n${candidates}\n` +
-        "Pass a full region/org/space/app selector to disambiguate.",
-    );
-  }
-
-  const onlyMatch = matches[0];
-  if (onlyMatch === undefined) {
-    throw new Error(`App "${appName}" could not be resolved.`);
-  }
-  return onlyMatch;
-}
-
-/**
- * Resolves a raw selector against the cf-sync topology snapshot, validating
- * that the region/org/space/app exists and resolving a bare app name to a
- * unique full path.
- */
-export async function resolveSelector(raw: string): Promise<ResolvedSelector> {
-  const parsed = parseSelector(raw);
-  const structure = await readStructure();
-  if (structure === undefined) {
-    throw new Error(
-      "No CF topology snapshot found. Run `cf-sync sync` (or `cf-sync space ...`) first.",
-    );
-  }
-
-  if (parsed.kind === "explicit") {
-    return resolveExplicit(raw, parsed, structure);
-  }
-  return resolveByAppName(raw, parsed.appName, structure);
 }
