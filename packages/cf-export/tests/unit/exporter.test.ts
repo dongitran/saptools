@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as cfModule from "../../src/cf.js";
 import * as defaultEnvModule from "../../src/default-env.js";
 import * as remoteModule from "../../src/remote-paths.js";
 import * as sessionModule from "../../src/session.js";
@@ -14,6 +15,7 @@ let tempDir: string;
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "cf-export-exporter-"));
   vi.resetAllMocks();
+  vi.spyOn(cfModule, "ensureSshEnabled").mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
