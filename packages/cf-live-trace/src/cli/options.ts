@@ -1,9 +1,4 @@
-import {
-  readCurrentCfTarget,
-  type CfExecContext,
-  type CurrentCfTarget,
-} from "@saptools/cf-sync";
-
+import { readCurrentCfTarget, type CurrentCfTarget, type CurrentCfTargetReadOptions } from "../cf.js";
 import type { CfLiveTraceTarget, LiveTraceStartOptions } from "../types.js";
 
 export type OutputFormat = "ndjson" | "summary" | "json";
@@ -107,9 +102,9 @@ async function resolveCurrentTargetFlags(
   };
 }
 
-function currentCfContext(flags: CliFlags, env: Record<string, string | undefined>): CfExecContext | undefined {
+function currentCfContext(flags: CliFlags, env: Record<string, string | undefined>): CurrentCfTargetReadOptions | undefined {
   const command = flags.cfCommand ?? env["CF_LIVE_TRACE_CF_BIN"];
-  const context: CfExecContext = {
+  const context: CurrentCfTargetReadOptions = {
     ...(command === undefined ? {} : { command }),
     ...(flags.cfHome === undefined ? {} : { env: { CF_HOME: flags.cfHome } }),
   };

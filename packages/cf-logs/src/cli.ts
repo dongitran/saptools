@@ -1,9 +1,10 @@
+/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { readCurrentCfTarget, type CfExecContext } from "@saptools/cf-sync";
+import { readCurrentCfTarget, type CfExecContext } from "./target.js";
 import { Command } from "commander";
 
 import { fetchStartedAppsViaCfCli } from "./cf.js";

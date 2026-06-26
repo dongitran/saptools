@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { getAllRegions } from "@saptools/cf-sync";
-
 import type { CfLiveTraceTarget, PortForwardHandle, TunnelOpenResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -201,11 +199,63 @@ function resolveApiEndpoint(target: Pick<CfLiveTraceTarget, "apiEndpoint" | "reg
   if (target.apiEndpoint !== undefined && target.apiEndpoint.trim().length > 0) {
     return target.apiEndpoint.trim();
   }
-  const region = getAllRegions().find((item) => item.key === target.region);
-  if (region === undefined) {
-    throw new Error(`Unknown CF region: ${target.region ?? "<missing>"}`);
+  if (target.region === undefined) {
+    throw new Error("CF region or apiEndpoint is required.");
   }
-  return region.apiEndpoint;
+  const endpoint = REGION_API_ENDPOINTS[target.region];
+  if (endpoint === undefined) {
+    throw new Error(`Unknown CF region: ${target.region}`);
+  }
+  return endpoint;
+}
+
+const REGION_API_ENDPOINTS: Readonly<Record<string, string>> = {
+  ae01: "https://api.cf.ae01.hana.ondemand.com",
+  ap01: "https://api.cf.ap01.hana.ondemand.com",
+  ap10: "https://api.cf.ap10.hana.ondemand.com",
+  ap11: "https://api.cf.ap11.hana.ondemand.com",
+  ap12: "https://api.cf.ap12.hana.ondemand.com",
+  ap20: "https://api.cf.ap20.hana.ondemand.com",
+  ap21: "https://api.cf.ap21.hana.ondemand.com",
+  ap30: "https://api.cf.ap30.hana.ondemand.com",
+  br10: "https://api.cf.br10.hana.ondemand.com",
+  br20: "https://api.cf.br20.hana.ondemand.com",
+  br30: "https://api.cf.br30.hana.ondemand.com",
+  ca10: "https://api.cf.ca10.hana.ondemand.com",
+  ca20: "https://api.cf.ca20.hana.ondemand.com",
+  ch20: "https://api.cf.ch20.hana.ondemand.com",
+  eu10: "https://api.cf.eu10.hana.ondemand.com",
+  eu11: "https://api.cf.eu11.hana.ondemand.com",
+  eu12: "https://api.cf.eu12.hana.ondemand.com",
+  eu20: "https://api.cf.eu20.hana.ondemand.com",
+  eu21: "https://api.cf.eu21.hana.ondemand.com",
+  eu30: "https://api.cf.eu30.hana.ondemand.com",
+  eu31: "https://api.cf.eu31.hana.ondemand.com",
+  in30: "https://api.cf.in30.hana.ondemand.com",
+  jp10: "https://api.cf.jp10.hana.ondemand.com",
+  jp20: "https://api.cf.jp20.hana.ondemand.com",
+  jp30: "https://api.cf.jp30.hana.ondemand.com",
+  kr30: "https://api.cf.kr30.hana.ondemand.com",
+  us10: "https://api.cf.us10.hana.ondemand.com",
+  us11: "https://api.cf.us11.hana.ondemand.com",
+  us20: "https://api.cf.us20.hana.ondemand.com",
+  us21: "https://api.cf.us21.hana.ondemand.com",
+  us30: "https://api.cf.us30.hana.ondemand.com",
+  us31: "https://api.cf.us31.hana.ondemand.com",
+};
+
+function regionKeyForApiEndpoint(apiEndpoint: string): string | undefined {
+  const normalized = normalizeApiEndpoint(apiEndpoint);
+  for (const [key, endpoint] of Object.entries(REGION_API_ENDPOINTS)) {
+    if (normalizeApiEndpoint(endpoint) === normalized) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
+function normalizeApiEndpoint(apiEndpoint: string): string {
+  return apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
 }
 
 function parseSshStatus(stdout: string): "enabled" | "disabled" {
@@ -342,6 +392,79 @@ function retryPortProbe(socket: ReturnType<typeof netConnect>, deadline: number,
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export interface CurrentCfTarget {
+  readonly apiEndpoint: string;
+  readonly regionKey?: string;
+  readonly orgName: string;
+  readonly spaceName: string;
+}
+
+export interface CurrentCfTargetReadOptions {
+  readonly command?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly timeoutMs?: number;
+}
+
+const CURRENT_TARGET_TIMEOUT_MS = 30_000;
+
+export async function readCurrentCfTarget(
+  options?: CurrentCfTargetReadOptions,
+): Promise<CurrentCfTarget | undefined> {
+  const opts = options ?? {};
+  const command = resolveCommand(opts.command);
+  const env = buildCfEnvForTarget(opts.env);
+  try {
+    const { stdout } = await execFileAsync(command.bin, [...command.argsPrefix, "target"], {
+      env,
+      maxBuffer: CF_MAX_BUFFER_BYTES,
+      timeout: opts.timeoutMs ?? CURRENT_TARGET_TIMEOUT_MS,
+    });
+    return parseCurrentCfTarget(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseCurrentCfTarget(stdout: string): CurrentCfTarget | undefined {
+  const fields = parseTargetFields(stdout);
+  const apiEndpoint = fields.get("api endpoint");
+  const org = fields.get("org");
+  const space = fields.get("space");
+  if (!apiEndpoint || !org || !space) {
+    return undefined;
+  }
+  const regionKey = regionKeyForApiEndpoint(apiEndpoint);
+  return {
+    apiEndpoint,
+    ...(regionKey === undefined ? {} : { regionKey }),
+    orgName: org,
+    spaceName: space,
+  };
+}
+
+function parseTargetFields(stdout: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx < 0) {
+      continue;
+    }
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const val = line.slice(idx + 1).trim();
+    if (key.length > 0 && val.length > 0) {
+      map.set(key, val);
+    }
+  }
+  return map;
+}
+
+function buildCfEnvForTarget(overrides?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...process.env, ...overrides };
+  delete env["SAP_EMAIL"];
+  delete env["SAP_PASSWORD"];
+  return env;
 }
 
 const INSPECTOR_SIGNAL_COMMAND = [

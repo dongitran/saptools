@@ -212,3 +212,75 @@ function createTarget() {
     instanceIndex: 1,
   };
 }
+
+describe("current CF target (direct cf target, no cf-sync)", () => {
+  it("parses complete target and maps known region", async () => {
+    const cf = await import("../../src/cf.js");
+    const out = [
+      "API endpoint:   https://api.cf.ap10.hana.ondemand.com",
+      "API version:    3.156.0",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n");
+    const parsed = cf.parseCurrentCfTarget(out);
+    expect(parsed).toEqual({
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+    });
+  });
+
+  it("parses with unknown region using apiEndpoint only", async () => {
+    const cf = await import("../../src/cf.js");
+    const out = "API endpoint:   https://api.example.com\norg: foo\nspace: bar\n";
+    const parsed = cf.parseCurrentCfTarget(out);
+    expect(parsed).toEqual({
+      apiEndpoint: "https://api.example.com",
+      orgName: "foo",
+      spaceName: "bar",
+    });
+    expect(parsed).not.toHaveProperty("regionKey");
+  });
+
+  it("returns undefined for incomplete cf target output", async () => {
+    const cf = await import("../../src/cf.js");
+    expect(cf.parseCurrentCfTarget("API endpoint: x\n")).toBeUndefined();
+    expect(cf.parseCurrentCfTarget("org: o\nspace: s\n")).toBeUndefined();
+    expect(cf.parseCurrentCfTarget("")).toBeUndefined();
+  });
+
+  it("readCurrentCfTarget returns undefined on exec failure (no target set)", async () => {
+    const cf = await import("../../src/cf.js");
+    const result = await cf.readCurrentCfTarget({ command: "/non/existent/cf" });
+    expect(result).toBeUndefined();
+  });
+
+  it("readCurrentCfTarget succeeds and maps region when fake cf target outputs complete info", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const cf = await import("../../src/cf.js");
+    const root = path.join(os.tmpdir(), `cf-live-trace-readcurrent-${Date.now()}`);
+    const fake = path.join(root, "fake-target-cf.mjs");
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(fake, [
+      "#!/usr/bin/env node",
+      "process.stdout.write('API endpoint:   https://api.cf.eu10.hana.ondemand.com\\n');",
+      "process.stdout.write('org:            test-org\\n');",
+      "process.stdout.write('space:          prod\\n');",
+    ].join("\n"));
+    await fs.chmod(fake, 0o755);
+    try {
+      const result = await cf.readCurrentCfTarget({ command: fake });
+      expect(result).toEqual({
+        apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+        regionKey: "eu10",
+        orgName: "test-org",
+        spaceName: "prod",
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});

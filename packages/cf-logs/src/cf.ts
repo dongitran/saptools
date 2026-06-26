@@ -1,6 +1,7 @@
+/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { execFile, spawn } from "node:child_process";
 
-import { getAllRegions } from "@saptools/cf-sync";
+import { getAllRegions } from "./regions.js";
 
 import type {
   FetchRecentLogsFromTargetInput,
@@ -23,9 +24,18 @@ export function resolveApiEndpoint(
   if (typeof input.apiEndpoint === "string" && input.apiEndpoint.length > 0) {
     return input.apiEndpoint;
   }
-  const region = getAllRegions().find((item) => item.key === input.region);
+  // getAllRegions returns {key, apiEndpoint}[]; use direct resolver for exact error text match.
+  if (typeof input.region === "string" && input.region.length > 0) {
+    // Delegate to keep single source of truth; wrap to preserve "<missing>" style only for undefined.
+    return resolveRegionApi(input.region);
+  }
+  throw new Error(`Unknown CF region: ${input.region ?? "<missing>"}`);
+}
+
+function resolveRegionApi(key: string): string {
+  const region = getAllRegions().find((item) => item.key === key);
   if (region === undefined) {
-    throw new Error(`Unknown CF region: ${input.region ?? "<missing>"}`);
+    throw new Error(`Unknown CF region: ${key}`);
   }
   return region.apiEndpoint;
 }

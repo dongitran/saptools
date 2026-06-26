@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-live-trace",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Inject a runtime HTTP trace hook into SAP BTP Cloud Foundry Node.js apps and stream request/response events from the CLI.",
   "type": "module",
   "publishConfig": {
@@ -58,7 +58,6 @@
   },
   "dependencies": {
     "@saptools/cf-inspector": "workspace:*",
-    "@saptools/cf-sync": "workspace:*",
     "commander": "^13.0.0"
   },
   "devDependencies": {
