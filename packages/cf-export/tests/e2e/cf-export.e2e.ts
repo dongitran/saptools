@@ -154,7 +154,8 @@ test("requires target flags", async () => {
   const paths = await prepareCase(ROOT_NAME, "export-missing-flags", createScenario());
   const env = createEnv(paths);
 
-  const { code, stderr } = await runCli(env, ["--out", paths.workDir]);
+  // Provide app but omit region/org/space to test our resolution + require
+  const { code, stderr } = await runCli(env, ["--out", paths.workDir, "-a", "demo-app"]);
   expect(code).not.toBe(0);
   expect(stderr).toContain("--region");
 });

@@ -1,8 +1,14 @@
+import { execFile } from "node:child_process";
 import process from "node:process";
+import { promisify } from "node:util";
 
 import { Command } from "commander";
 
+import { REGIONS } from "@saptools/cf-sync";
+
 import { ARTIFACT_NAMES, exportArtifacts, formatExportCompletionMessage, type ArtifactName, type CfTarget } from "./index.js";
+
+const execFileAsync = promisify(execFile);
 
 interface TargetFlags {
   readonly region?: string;
@@ -26,20 +32,87 @@ function requireFlag(value: string | undefined, name: string): string {
   return value;
 }
 
-function buildTarget(flags: TargetFlags): CfTarget {
+async function readCurrentCfTarget(): Promise<{ region?: string; org?: string; space?: string } | undefined> {
+  const cfBin = process.env["CF_EXPORT_CF_BIN"] ?? "cf";
+  const isScript = cfBin.endsWith(".mjs") || cfBin.endsWith(".js");
+  const file = isScript ? "node" : cfBin;
+  const args = isScript ? [cfBin, "target"] : ["target"];
+  try {
+    const { stdout } = await execFileAsync(file, args, {
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+    return parseCfTargetOutput(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCfTargetOutput(stdout: string): { region?: string; org?: string; space?: string } | undefined {
+  const fields = new Map<string, string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const sep = line.indexOf(":");
+    if (sep < 0) continue;
+    const key = line.slice(0, sep).trim().toLowerCase();
+    const value = line.slice(sep + 1).trim();
+    if (key && value) fields.set(key, value);
+  }
+
+  const apiEndpoint = fields.get("api endpoint");
+  const orgName = fields.get("org");
+  const spaceName = fields.get("space");
+
+  if (!orgName || !spaceName) return undefined;
+
+  let region: string | undefined;
+  if (apiEndpoint) {
+    const normalized = apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+    for (const [key, reg] of Object.entries(REGIONS)) {
+      const regApi = (reg as any).apiEndpoint?.trim().replace(/\/+$/, "").toLowerCase();
+      if (regApi === normalized) {
+        region = key;
+        break;
+      }
+    }
+  }
+
+  const result: { region?: string; org?: string; space?: string } = {
+    org: orgName,
+    space: spaceName,
+  };
+  if (region !== undefined) {
+    result.region = region;
+  }
+  return result;
+}
+
+async function buildTarget(flags: TargetFlags): Promise<CfTarget> {
+  let region = flags.region;
+  let org = flags.org;
+  let space = flags.space;
+
+  if (!region || !org || !space) {
+    const current = await readCurrentCfTarget();
+    if (current) {
+      if (!region && current.region) region = current.region;
+      if (!org) org = current.org;
+      if (!space) space = current.space;
+    }
+  }
+
   return {
-    region: requireFlag(flags.region, "region"),
-    org: requireFlag(flags.org, "org"),
-    space: requireFlag(flags.space, "space"),
+    region: requireFlag(region, "region"),
+    org: requireFlag(org, "org"),
+    space: requireFlag(space, "space"),
     app: requireFlag(flags.app, "app"),
   };
 }
 
 function addTargetOptions(cmd: Command): Command {
   return cmd
-    .requiredOption("-r, --region <key>", "CF region key (e.g. ap10)")
-    .requiredOption("-o, --org <name>", "CF org name")
-    .requiredOption("-s, --space <name>", "CF space name")
+    .option("-r, --region <key>", "CF region key (e.g. ap10). Auto-detected from current `cf target` if omitted")
+    .option("-o, --org <name>", "CF org name. Auto-detected from current `cf target` if omitted")
+    .option("-s, --space <name>", "CF space name. Auto-detected from current `cf target` if omitted")
     .requiredOption("-a, --app <name>", "CF app name");
 }
 
@@ -66,7 +139,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
 
   program
-    .name("saptools-cf-export")
+    .name("cf-export")
     .description(
       "Export project artifacts (package.json, lockfiles, .cdsrc.json, default-env.json, .npmrc) from a running CF app",
     );
@@ -86,7 +159,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     )
     .option("--all", "Export all supported artifacts (default behavior)", false)
     .action(async (opts: ExportFlags): Promise<void> => {
-      const target = buildTarget(opts);
+      const target = await buildTarget(opts);
       const outDir = opts.out && opts.out.length > 0 ? opts.out : process.cwd();
       const remoteRoot = opts.remoteRoot && opts.remoteRoot.trim().length > 0 ? opts.remoteRoot.trim() : undefined;
 
