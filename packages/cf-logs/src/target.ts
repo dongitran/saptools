@@ -1,4 +1,3 @@
-/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { execFile } from "node:child_process";
 
 import { regionKeyForApiEndpoint } from "./regions.js";

@@ -1,8 +1,6 @@
-/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { execFile, spawn } from "node:child_process";
 
 import { getAllRegions } from "./regions.js";
-
 import type {
   FetchRecentLogsFromTargetInput,
   FetchRecentLogsInput,

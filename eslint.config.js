@@ -1,7 +1,7 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import unicornPlugin from "eslint-plugin-unicorn";
-import importPlugin from "eslint-plugin-import";
+import importX from "eslint-plugin-import-x";
 
 export default tseslint.config(
   {
@@ -27,7 +27,7 @@ export default tseslint.config(
     },
     plugins: {
       unicorn: unicornPlugin,
-      import: importPlugin,
+      import: importX,
     },
     rules: {
       "@typescript-eslint/no-explicit-any": "error",

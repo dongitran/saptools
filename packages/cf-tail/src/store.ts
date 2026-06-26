@@ -1,4 +1,3 @@
-/* eslint import/order: "off" -- mirrors @saptools/cf-logs/store layout */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 

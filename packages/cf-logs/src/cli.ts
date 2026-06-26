@@ -1,10 +1,8 @@
-/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { readCurrentCfTarget, type CfExecContext } from "./target.js";
 import { Command } from "commander";
 
 import { fetchStartedAppsViaCfCli } from "./cf.js";
@@ -24,6 +22,7 @@ import { formatCompactLogDocument } from "./compact.js";
 import { cfLogsStorePath } from "./paths.js";
 import { CfLogsRuntime } from "./runtime.js";
 import { clearStore, readStore } from "./store.js";
+import { readCurrentCfTarget, type CfExecContext } from "./target.js";
 import { parseSinceDurationMs } from "./time-window.js";
 import { LOG_LEVELS } from "./types.js";
 import type {

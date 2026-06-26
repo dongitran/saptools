@@ -1,10 +1,9 @@
-/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { withFileLock } from "./lock.js";
 import { appendRawLogText } from "./parser.js";
 import { cfLogsStoreLockPath, cfLogsStorePath } from "./paths.js";
-import { withFileLock } from "./lock.js";
 import type {
   LogStore,
   LogStoreEntry,

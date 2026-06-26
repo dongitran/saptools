@@ -1,12 +1,11 @@
-/* eslint import/order: "off" -- eslint-plugin-import 2.32 crashes on this file with ESLint 10 */
 import { describe, expect, it } from "vitest";
 
-import type { CfStructure } from "../../src/types.js";
 import {
   collectDbTargets,
   parseDbTargetSelector,
   resolveDbTargetSelector,
 } from "../../src/db-targets.js";
+import type { CfStructure } from "../../src/types.js";
 
 function createStructure(): CfStructure {
   return {
