@@ -1,6 +1,6 @@
-import type { AppDbBinding, DbAppView, HanaBindingCredentials } from "@saptools/cf-sync";
-
 import type { ConnectionConfig } from "../../../src/connection.js";
+import type { HanaBinding, HanaBindingCredentials } from "../../../src/types.js";
+
 
 export function sampleCredentials(
   overrides?: Partial<HanaBindingCredentials>,
@@ -20,9 +20,8 @@ export function sampleCredentials(
   };
 }
 
-export function sampleBinding(overrides?: Partial<AppDbBinding>): AppDbBinding {
+export function sampleBinding(overrides?: Partial<HanaBinding>): HanaBinding {
   return {
-    kind: "hana",
     name: "hana-primary",
     credentials: sampleCredentials(),
     ...overrides,
@@ -45,21 +44,5 @@ export function sampleConnectionConfig(
     allowDestructive: false,
     autoLimit: 100,
     ...overrides,
-  };
-}
-
-export function sampleDbAppView(bindings: readonly AppDbBinding[]): DbAppView {
-  return {
-    source: "stable",
-    entry: {
-      selector: "eu10/example-org/space-demo/app-demo",
-      regionKey: "eu10",
-      orgName: "example-org",
-      spaceName: "space-demo",
-      appName: "app-demo",
-      syncedAt: "2026-05-22T00:00:00.000Z",
-      bindings,
-    },
-    metadata: undefined,
   };
 }

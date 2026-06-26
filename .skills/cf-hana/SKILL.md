@@ -7,14 +7,14 @@ description: Use when a task involves running SQL, inspecting saved query refs, 
 
 ## Purpose
 
-Use `cf-hana` for SQL access to SAP HANA Cloud databases bound to SAP BTP Cloud Foundry apps through a `region/org/space/app` selector. Prefer cache-backed, read-only evidence gathering. Run writes such as `UPDATE` only when the user explicitly asks for them.
+Use `cf-hana` for SQL access to SAP HANA Cloud databases bound to SAP BTP Cloud Foundry apps through a `region/org/space/app` selector. Prefer read-only usage. Run writes such as `UPDATE` only when the user explicitly asks for them.
 
 If `cf-hana` is missing, install it from `@saptools/cf-hana`: `npm install -g @saptools/cf-hana`.
 
 ## First Steps
 
 1. Identify whether the user wants SQL data, schema discovery, connectivity debugging, saved-ref inspection, or an explicit write.
-2. If the user gives only an app name, use the current `cf target` for region, org, and space. Ask for explicit target details only when no current target exists or the task must use a different target.
+2. When the user gives only a bare app name, pass it directly. The CLI will automatically try to resolve it from the active context. If the tool cannot find an active context, ask the user to provide the full `region/org/space/app` selector.
 3. Use live HANA access only when current database state is needed and the target plus credentials are available.
 4. For `SELECT` or `WITH`, use `--read-only --save` by default.
 5. Treat the first saved-output line as the ref (`ref=q...`) and the remaining output as CSV.
@@ -81,7 +81,7 @@ cf-hana count eu10/example-org/space-demo/app-demo APP_SCHEMA.ORDERS
 
 Key options:
 
-- `--refresh`: bypass cached binding data and fetch from Cloud Foundry.
+- `--refresh`: force a fresh fetch of binding data from Cloud Foundry.
 - `--role runtime|hdi`: choose the binding user.
 - `--binding <name>` or `--binding-index <n>`: disambiguate HANA bindings.
 - `--timeout <ms>`: set connection and query timeout.
@@ -93,9 +93,7 @@ Key options:
 
 ## Troubleshooting
 
-If selector resolution fails, verify the region, org, space, app, and local `cf-sync` cache state.
-
-If a bare app selector fails with no current target, run `cf target -o <org> -s <space>` or use the full `region/org/space/app` selector.
+If selector resolution fails for a bare app name (no active context found), ask the user to provide the full `region/org/space/app` selector.
 
 If credentials are missing, ask whether to refresh from Cloud Foundry. A live refresh needs valid SAP credentials in the environment or equivalent secure input; never print those values.
 

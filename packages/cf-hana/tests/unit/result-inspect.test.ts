@@ -24,7 +24,7 @@ function session(): ResultSession {
       schema: "APP_SCHEMA",
       role: "runtime",
       driver: "fake",
-      credentialSource: "cache",
+      credentialSource: "live",
     },
     result: {
       rows: [

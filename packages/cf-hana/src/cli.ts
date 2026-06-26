@@ -1,7 +1,7 @@
-import { formatCurrentCfAppSelector, readCurrentCfTarget } from "@saptools/cf-sync";
 import { Command } from "commander";
 
 import { connect } from "./api.js";
+import { formatCurrentCfAppSelector, readCurrentCfTarget } from "./cf.js";
 import { registerResultCommands } from "./cli-results.js";
 import {
   CLI_NAME,

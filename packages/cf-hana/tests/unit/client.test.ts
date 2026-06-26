@@ -2,9 +2,10 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { readDbAppView } from "@saptools/cf-sync";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as cf from "../../src/cf.js";
+import type { CurrentCfTarget } from "../../src/cf.js";
 import { HanaClient } from "../../src/client.js";
 import type { ConnectionConfig } from "../../src/connection.js";
 import { ConnectionPool } from "../../src/pool.js";
@@ -13,12 +14,14 @@ import type { HanaClientInfo } from "../../src/types.js";
 
 import { FakeHanaDriver } from "./fixtures/fake-driver.js";
 import type { FakeResponder } from "./fixtures/fake-driver.js";
-import { sampleBinding, sampleConnectionConfig, sampleDbAppView } from "./fixtures/samples.js";
+import { sampleConnectionConfig } from "./fixtures/samples.js";
 
-vi.mock("@saptools/cf-sync", () => ({
-  readDbAppView: vi.fn(),
-  fetchAppDbBindings: vi.fn(),
-}));
+const sampleTarget = {
+  apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+  orgName: "example-org",
+  spaceName: "space-demo",
+  regionKey: "eu10",
+};
 
 const SAMPLE_INFO: HanaClientInfo = {
   selector: "eu10/example-org/space-demo/app-demo",
@@ -27,7 +30,7 @@ const SAMPLE_INFO: HanaClientInfo = {
   schema: "APP_SCHEMA",
   role: "runtime",
   driver: "fake",
-  credentialSource: "cache",
+  credentialSource: "live",
 };
 
 let tempHome: string;
@@ -100,8 +103,14 @@ async function readBackupCsvFiles(): Promise<readonly string[]> {
 
 beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), "cf-hana-client-"));
+  vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+  vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:{}`);
   vi.stubEnv("HOME", tempHome);
   vi.stubEnv("USERPROFILE", tempHome);
+  vi.stubEnv("SAP_EMAIL", "user@example.com");
+  vi.stubEnv("SAP_PASSWORD", "secret");
 });
 
 afterEach(async () => {
@@ -310,13 +319,12 @@ describe("HanaClient", () => {
   });
 
   it("connect() resolves credentials and builds a client", async () => {
-    vi.mocked(readDbAppView).mockResolvedValue(sampleDbAppView([sampleBinding()]));
     vi.stubEnv("CF_HANA_DRIVER", "fake");
     const client = await HanaClient.connect("app-demo");
     expect(client.info.driver).toBe("fake");
     expect(client.info.schema).toBe("APP_SCHEMA");
     expect(client.info.role).toBe("runtime");
-    expect(client.info.credentialSource).toBe("cache");
+    expect(client.info.credentialSource).toBe("live");
     await client.close();
   });
 });

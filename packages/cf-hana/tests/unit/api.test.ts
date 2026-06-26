@@ -2,23 +2,27 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { readDbAppView } from "@saptools/cf-sync";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { connect, query, withConnection } from "../../src/api.js";
+import * as cf from "../../src/cf.js";
+import type { CurrentCfTarget } from "../../src/cf.js";
 
-import { sampleBinding, sampleDbAppView } from "./fixtures/samples.js";
-
-vi.mock("@saptools/cf-sync", () => ({
-  readDbAppView: vi.fn(),
-  fetchAppDbBindings: vi.fn(),
-}));
+const sampleTarget = {
+  apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+  orgName: "example-org",
+  spaceName: "space-demo",
+  regionKey: "eu10",
+};
 
 let tempHome: string;
 
 beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), "cf-hana-api-"));
-  vi.mocked(readDbAppView).mockResolvedValue(sampleDbAppView([sampleBinding()]));
+  vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+  vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:{}`);
   vi.stubEnv("HOME", tempHome);
   vi.stubEnv("USERPROFILE", tempHome);
   vi.stubEnv("CF_HANA_DRIVER", "fake");

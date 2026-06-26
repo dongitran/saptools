@@ -11,7 +11,7 @@ export type StatementKind = "select" | "dml" | "ddl" | "unknown";
 export type DbUserRole = "runtime" | "hdi";
 
 /** Where resolved credentials came from. */
-export type CredentialSource = "cache" | "fresh";
+export type CredentialSource = "live";
 
 /** Output rendering for CLI results. */
 export type OutputFormat = "table" | "json" | "csv";
@@ -109,4 +109,23 @@ export interface HanaClientInfo {
   readonly role: DbUserRole;
   readonly driver: string;
   readonly credentialSource: CredentialSource;
+}
+
+/** HANA binding credentials (from VCAP). */
+export interface HanaBindingCredentials {
+  readonly host: string;
+  readonly port: string;
+  readonly user: string;
+  readonly password: string;
+  readonly schema: string;
+  readonly hdiUser: string;
+  readonly hdiPassword: string;
+  readonly url?: string;
+  readonly databaseId?: string;
+  readonly certificate: string;
+}
+
+export interface HanaBinding {
+  readonly name?: string;
+  readonly credentials: HanaBindingCredentials;
 }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -82,47 +82,17 @@ export function runCli(
   });
 }
 
-/** Write a `cf-sync`-shaped HANA binding snapshot into a temporary home. */
-export async function seedCredentialsCache(home: string): Promise<void> {
-  const directory = join(home, ".saptools");
-  await mkdir(directory, { recursive: true });
-  const snapshot = {
-    version: 1,
-    syncedAt: "2026-05-22T00:00:00.000Z",
-    entries: [
-      {
-        selector: "eu10/example-org/space-demo/app-demo",
-        regionKey: "eu10",
-        orgName: "example-org",
-        spaceName: "space-demo",
-        appName: "app-demo",
-        syncedAt: "2026-05-22T00:00:00.000Z",
-        bindings: [
-          {
-            kind: "hana",
-            name: "hana-primary",
-            credentials: {
-              host: "hana.example.internal",
-              port: "443",
-              user: "DB_USER",
-              password: "db-password",
-              schema: "APP_SCHEMA",
-              hdiUser: "HDI_USER",
-              hdiPassword: "HDI_PASSWORD",
-              url: "jdbc:sap://hana.example.internal:443",
-              databaseId: "DB-1",
-              certificate: "test-certificate",
-            },
-          },
-        ],
-      },
-    ],
-  };
-  await writeFile(
-    join(directory, "cf-db-bindings.json"),
-    `${JSON.stringify(snapshot, null, 2)}\n`,
-    "utf8",
-  );
+/** Setup fake 'cf' binary in a dir to be prepended to PATH for e2e tests. */
+export async function setupFakeCfBin(home: string): Promise<string> {
+  const binDir = join(home, "bin");
+  await mkdir(binDir, { recursive: true });
+  const fakePath = join(binDir, "cf");
+  const wrapper = `#!/bin/sh
+exec node "${join(PACKAGE_DIR, "tests", "e2e", "fixtures", "fake-cf.mjs")}" "$@"
+`;
+  await writeFile(fakePath, wrapper);
+  await chmod(fakePath, 0o755);
+  return binDir;
 }
 
 export async function readHistoryEntries(

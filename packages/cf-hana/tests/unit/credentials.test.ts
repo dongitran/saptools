@@ -1,26 +1,18 @@
-import { fetchAppDbBindings, readDbAppView } from "@saptools/cf-sync";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import * as cf from "../../src/cf.js";
+import type { CurrentCfTarget } from "../../src/cf.js";
 import { resolveAppBindings, selectBinding, toConnectionTarget } from "../../src/credentials.js";
 import { CredentialsNotFoundError } from "../../src/errors.js";
 
-import { sampleBinding, sampleCredentials, sampleDbAppView } from "./fixtures/samples.js";
+import { sampleBinding, sampleCredentials } from "./fixtures/samples.js";
 
-vi.mock("@saptools/cf-sync", () => ({
-  readDbAppView: vi.fn(),
-  fetchAppDbBindings: vi.fn(),
-}));
-
-const mockReadDbAppView = vi.mocked(readDbAppView);
-const mockFetchAppDbBindings = vi.mocked(fetchAppDbBindings);
-
-const FETCHED = {
-  selector: "eu10/example-org/space-demo/app-demo",
-  regionKey: "eu10",
+const sampleTarget = {
+  apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
   orgName: "example-org",
   spaceName: "space-demo",
-  appName: "app-demo",
-} as const;
+  regionKey: "eu10",
+};
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -28,50 +20,33 @@ afterEach(() => {
 });
 
 describe("resolveAppBindings", () => {
-  it("returns cached bindings on a cache hit", async () => {
-    mockReadDbAppView.mockResolvedValue(sampleDbAppView([sampleBinding()]));
+  it("resolves bare using current target + direct (no SAP needed)", async () => {
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+    vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:{}`);
+
     const resolved = await resolveAppBindings("app-demo", {});
-    expect(resolved.source).toBe("cache");
+    expect(resolved.source).toBe("live");
     expect(resolved.bindings).toHaveLength(1);
-    expect(mockFetchAppDbBindings).not.toHaveBeenCalled();
   });
 
-  it("falls back to a live fetch on a cache miss", async () => {
-    mockReadDbAppView.mockResolvedValue(undefined);
-    mockFetchAppDbBindings.mockResolvedValue({ ...FETCHED, bindings: [sampleBinding()] });
-    vi.stubEnv("SAP_EMAIL", "user@example.com");
-    vi.stubEnv("SAP_PASSWORD", "secret");
+  it("falls back to SAP auth only on classified auth error for bare", async () => {
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+    vi.spyOn(cf, "cfEnvDirect").mockRejectedValue({ stderr: "not logged in" });
+    vi.spyOn(cf, "withCfSession").mockImplementation(async (_work: unknown) => [sampleBinding()]);
+    vi.stubEnv("SAP_EMAIL", "u@example.com");
+    vi.stubEnv("SAP_PASSWORD", "p");
+
     const resolved = await resolveAppBindings("app-demo", {});
-    expect(resolved.source).toBe("fresh");
-    expect(mockFetchAppDbBindings).toHaveBeenCalledOnce();
+    expect(resolved.source).toBe("live");
   });
 
-  it("throws when there is no cache and no SAP credentials", async () => {
-    mockReadDbAppView.mockResolvedValue(undefined);
-    vi.stubEnv("SAP_EMAIL", " ");
-    vi.stubEnv("SAP_PASSWORD", " ");
-    await expect(resolveAppBindings("app-demo", {})).rejects.toBeInstanceOf(
-      CredentialsNotFoundError,
-    );
-  });
+  it("throws specific error for non-auth problem in bare (no SAP forced)", async () => {
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+    vi.spyOn(cf, "cfEnvDirect").mockRejectedValue({ stderr: "app not found" });
 
-  it("bypasses the cache when refresh is requested", async () => {
-    mockFetchAppDbBindings.mockResolvedValue({ ...FETCHED, bindings: [sampleBinding()] });
-    const resolved = await resolveAppBindings("app-demo", {
-      refresh: true,
-      email: "user@example.com",
-      password: "secret",
-    });
-    expect(resolved.source).toBe("fresh");
-    expect(mockReadDbAppView).not.toHaveBeenCalled();
-  });
-
-  it("throws when the fetched app has no HANA binding", async () => {
-    mockReadDbAppView.mockResolvedValue(undefined);
-    mockFetchAppDbBindings.mockResolvedValue({ ...FETCHED, bindings: [] });
-    await expect(
-      resolveAppBindings("app-demo", { email: "user@example.com", password: "secret" }),
-    ).rejects.toBeInstanceOf(CredentialsNotFoundError);
+    await expect(resolveAppBindings("ghost-app", {})).rejects.toThrow(/current target/);
   });
 });
 
@@ -139,4 +114,16 @@ describe("toConnectionTarget", () => {
     const binding = sampleBinding({ credentials: sampleCredentials({ port: "not-a-port" }) });
     expect(() => toConnectionTarget(binding, "runtime")).toThrow(/Invalid HANA port/);
   });
+});
+
+it("exercises cf helpers for coverage (classify, extract, api, format)", () => {
+  expect(cf.classifyCfError("not logged in")).toEqual({ isAuthError: true, reason: "auth/session issue" });
+  const stdout = `VCAP_SERVICES:
+{"hana":[{"name":"h","credentials":{"host":"h","port":"443","user":"u","password":"p","schema":"s","hdi_user":"hu","hdi_password":"hp","url":"j","database_id":"d","certificate":"c"}}]}
+VCAP_APPLICATION:{}`;
+  const bs = cf.extractHanaBindingsFromCfEnv(stdout);
+  expect(bs).toHaveLength(1);
+  expect(cf.getApiEndpointForRegion("eu10")).toBeDefined();
+  const t: CurrentCfTarget = { apiEndpoint: "https://api...", orgName: "o", spaceName: "s", regionKey: "eu10" };
+  expect(cf.formatCurrentCfAppSelector(t, "app")).toBe("eu10/o/s/app");
 });

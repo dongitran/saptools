@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,7 +10,7 @@ import {
   readFakeTraceEntries,
   readHistoryEntries,
   runCli,
-  seedCredentialsCache,
+  setupFakeCfBin,
 } from "./helpers.js";
 
 const SELECTOR = "eu10/example-org/space-demo/app-demo";
@@ -48,10 +48,11 @@ interface FakeEnvOptions {
 }
 
 let home: string;
+let fakeBinDir: string;
 
 test.beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "cf-hana-e2e-"));
-  await seedCredentialsCache(home);
+  fakeBinDir = await setupFakeCfBin(home);
 });
 
 test.afterEach(async () => {
@@ -59,9 +60,13 @@ test.afterEach(async () => {
 });
 
 function fakeEnv(options: FakeEnvOptions = {}): Record<string, string> {
+  const path = `${fakeBinDir}:${process.env['PATH'] ?? ""}`;
   return {
     HOME: home,
     CF_HANA_DRIVER: "fake",
+    PATH: path,
+    SAP_EMAIL: "user@example.com",
+    SAP_PASSWORD: "secret",
     ...(options.trace ? { CF_HANA_FAKE_TRACE_FILE: fakeTracePath(home) } : {}),
     ...(options.failStatement === undefined
       ? {}
@@ -341,7 +346,9 @@ test("User keeps the backup when the UPDATE itself fails", async () => {
 });
 
 test("User cannot run an UPDATE when the local backup cannot be written", async () => {
-  await writeFile(join(home, ".saptools", "cf-hana"), "blocked", "utf8");
+  const sapDir = join(home, ".saptools");
+  await mkdir(sapDir, { recursive: true });
+  await writeFile(join(sapDir, "cf-hana"), "blocked", "utf8");
   const sql = "UPDATE ORDERS SET STATUS = ? WHERE ID = ?";
   const result = await runCli(
     ["query", SELECTOR, sql, "--param", "DONE", "--param", "7"],
