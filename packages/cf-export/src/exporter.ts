@@ -1,8 +1,8 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import { fetchDefaultEnvJson } from "./default-env.js";
 import { ensureSshEnabled } from "./cf.js";
+import { fetchDefaultEnvJson } from "./default-env.js";
 import { fetchRemoteTextFile } from "./remote-paths.js";
 import { openCfSession } from "./session.js";
 import type { OpenCfSession } from "./session.js";

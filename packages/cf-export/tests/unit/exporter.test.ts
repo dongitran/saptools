@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as cfModule from "../../src/cf.js";
 import * as defaultEnvModule from "../../src/default-env.js";
+import { exportArtifacts } from "../../src/exporter.js";
 import * as remoteModule from "../../src/remote-paths.js";
 import * as sessionModule from "../../src/session.js";
-import { exportArtifacts } from "../../src/exporter.js";
 
 let tempDir: string;
 

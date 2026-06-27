@@ -5,18 +5,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function parseStringifiedJson(value: unknown): unknown {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        // Fallback to string if parsing fails
+      }
+    }
+  }
+  return value;
+}
+
 function mergeRecordInto(target: Record<string, unknown>, source: unknown): void {
   if (!isRecord(source)) {
     return;
   }
   for (const [k, v] of Object.entries(source)) {
-    target[k] = v;
+    target[k] = parseStringifiedJson(v);
   }
 }
 
 function buildDefaultEnvPayload(appEnv: Record<string, unknown>): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   mergeRecordInto(payload, appEnv["system_env_json"]);
+  mergeRecordInto(payload, appEnv["application_env_json"]);
   mergeRecordInto(payload, appEnv["environment_variables"]);
   mergeRecordInto(payload, appEnv["running_env_json"]);
   mergeRecordInto(payload, appEnv["staging_env_json"]);

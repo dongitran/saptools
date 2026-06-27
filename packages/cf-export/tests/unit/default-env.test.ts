@@ -16,7 +16,12 @@ describe("fetchDefaultEnvJson", () => {
     const cfCurl = vi.spyOn(cfModule, "cfCurl").mockResolvedValue(
       JSON.stringify({
         system_env_json: { VCAP_SERVICES: { hana: [{}] } },
-        environment_variables: { FOO: "bar" },
+        application_env_json: { VCAP_APPLICATION: { application_id: "id" } },
+        environment_variables: { 
+          FOO: "bar",
+          destinations: '[{"name":"test","url":"https://test.com"}]',
+          invalid_json: '{"missing_quote: true}'
+        },
       }),
     );
 
@@ -27,7 +32,11 @@ describe("fetchDefaultEnvJson", () => {
 
     const parsed = JSON.parse(out);
     expect(parsed.VCAP_SERVICES).toBeDefined();
+    expect(parsed.VCAP_APPLICATION).toBeDefined();
+    expect(parsed.VCAP_APPLICATION.application_id).toBe("id");
     expect(parsed.FOO).toBe("bar");
+    expect(parsed.destinations).toEqual([{ name: "test", url: "https://test.com" }]);
+    expect(parsed.invalid_json).toBe('{"missing_quote: true}');
   });
 
   it("throws when no env data found", async () => {

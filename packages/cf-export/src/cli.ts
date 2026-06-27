@@ -2,9 +2,9 @@ import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
 
+import { REGIONS } from "@saptools/cf-sync";
 import { Command } from "commander";
 
-import { REGIONS } from "@saptools/cf-sync";
 
 import { ARTIFACT_NAMES, exportArtifacts, formatExportCompletionMessage, type ArtifactName, type CfTarget } from "./index.js";
 
