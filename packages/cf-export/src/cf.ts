@@ -244,8 +244,9 @@ export const REMOTE_CONTENT_SENTINEL = REMOTE_FILE_SENTINEL;
 
 export function parseRemoteFileContent(stdout: string): string | null {
   const prefix = `${REMOTE_FILE_SENTINEL}\n`;
-  if (stdout.startsWith(prefix)) {
-    return stdout.slice(prefix.length);
+  const idx = stdout.indexOf(prefix);
+  if (idx >= 0) {
+    return stdout.slice(idx + prefix.length);
   }
   return null;
 }

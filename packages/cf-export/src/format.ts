@@ -1,14 +1,11 @@
-
+import { basename } from "node:path";
 
 export function formatExportCompletionMessage(
   appName: string,
   writtenFiles: readonly string[],
   skipped: readonly string[],
 ): string {
-  const names = writtenFiles.map((p) => {
-    const parts = p.split(/[\\/]/);
-    return parts[parts.length - 1] ?? p;
-  });
+  const names = writtenFiles.map((p) => basename(p));
 
   const base = `Export completed for "${appName}".`;
   if (names.length === 0) {
