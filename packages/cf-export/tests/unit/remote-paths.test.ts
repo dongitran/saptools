@@ -41,7 +41,7 @@ describe("fetchRemoteTextFile", () => {
   });
 
   it("falls back through locations and returns null when all fail", async () => {
-    vi.spyOn(cfModule, "cfSsh").mockRejectedValue(new Error("no such file"));
+    vi.spyOn(cfModule, "cfSsh").mockRejectedValue(new Error("no such file", { cause: { code: 66 } }));
 
     const res = await fetchRemoteTextFile({
       appName,
@@ -49,6 +49,14 @@ describe("fetchRemoteTextFile", () => {
     });
 
     expect(res).toBeNull();
+  });
+
+  it("throws when error is not file missing (e.g. app stopped)", async () => {
+    vi.spyOn(cfModule, "cfSsh").mockRejectedValue(new Error("No instances found", { cause: { code: 1 } }));
+
+    await expect(
+      fetchRemoteTextFile({ appName, fileName: ".npmrc" })
+    ).rejects.toThrow("No instances found");
   });
 
   it("returns null when sentinel is missing (command succeeded but no marker)", async () => {

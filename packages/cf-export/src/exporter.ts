@@ -52,14 +52,15 @@ export async function exportArtifacts(
   const written: string[] = [];
   const skipped: string[] = [];
 
-  // Automatically enable SSH (and restart app) if any ssh-based artifact is requested.
-  // default-env.json uses CF API (no SSH), but regular files (package.json, locks, etc.) require SSH.
-  const needsSsh = artifacts.some((name) => name !== "default-env.json");
-  if (needsSsh) {
-    await ensureSshEnabled(options.target.app, session.context);
-  }
-
   try {
+    // Automatically enable SSH (and restart app) if any ssh-based artifact is requested.
+    // default-env.json uses CF API (no SSH), but regular files (package.json, locks, etc.) require SSH.
+    const needsSsh = artifacts.some((name) => name !== "default-env.json");
+    if (needsSsh) {
+      await ensureSshEnabled(options.target.app, session.context);
+    }
+
+
     for (const name of artifacts) {
       if (name === "default-env.json") {
         try {
