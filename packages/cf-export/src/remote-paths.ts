@@ -27,9 +27,16 @@ export async function fetchRemoteTextFile(options: FetchRemoteTextOptions): Prom
     } catch (err: unknown) {
       // If the file is not found, our script exits with 66.
       // Other errors (like SSH failure, app stopped) should be thrown.
-      const cause = err && typeof err === "object" && "cause" in err ? (err as any).cause : undefined;
-      if (cause && cause.code === 66) {
-        continue;
+      if (err instanceof Error) {
+        const cause = err.cause;
+        if (
+          cause &&
+          typeof cause === "object" &&
+          "code" in cause &&
+          cause.code === 66
+        ) {
+          continue;
+        }
       }
       throw err;
     }
