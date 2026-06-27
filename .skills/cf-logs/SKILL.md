@@ -14,9 +14,20 @@ If `cf-logs` is missing or stale, install it from `@saptools/cf-logs`: `npm inst
 ## First Steps
 
 1. Identify whether the user needs a snapshot, live stream, compact context, full-row drill-down, store inspection, or session cleanup.
-2. Confirm the target: use current `cf target` when region/org/space are not mentioned; pass `--region` or `--api-endpoint`, plus `--org` and `--space`, only when targeting somewhere else.
+2. App name is always required via `--app`. When the user gives only a bare app name, pass it directly (`--app app-demo`). cf-logs will automatically resolve the region/org/space from the active `cf target` if one is set. Only ask the user for the full selector when the command fails to resolve or the app is ambiguous.
 3. Use live CF access only when current log evidence is needed and credentials are already available through `SAP_EMAIL` and `SAP_PASSWORD` or explicit secure input.
 4. Use `--compact --save` by default for snapshot and stream log collection. This keeps terminal output compact while preserving full rows through refs.
+
+## Selectors
+
+The selector is passed with `--app`. A full `region/org/space/app` or just the bare app name is accepted:
+
+```bash
+cf-logs snapshot --region ap10 --org example-org --space space-demo --app app-demo --compact --save
+cf-logs snapshot --app app-demo --compact --save
+```
+
+Bare app names are resolved automatically from the current `cf target`. The CLI handles reading the active target internally.
 
 ## Compact Workflow
 
@@ -118,6 +129,6 @@ If compact output is still too large, reduce `--compact-message-limit`, lower `-
 
 If live CF commands fail, verify the region, org, space, app, and credential environment. Do not print credential values.
 
-If `cf-logs` reports no current CF target, run `cf target -o <org> -s <space>` or pass `--region/--org/--space` explicitly.
+If selector resolution fails for a bare app name (no active context found), ask the user to provide the full `region/org/space/app` selector.
 
 If a task needs exact original multiline body text, use `cf-logs show <ref>` rather than relying on compact output.

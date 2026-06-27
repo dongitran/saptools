@@ -49,7 +49,7 @@ interface StartCommandOptions {
   readonly region?: string;
   readonly org?: string;
   readonly space?: string;
-  readonly app: string;
+  readonly app?: string;
   readonly port?: string;
   readonly timeout?: string;
   readonly verbose?: boolean;
@@ -68,7 +68,7 @@ interface StatusCommandOptions {
   readonly region?: string;
   readonly org?: string;
   readonly space?: string;
-  readonly app: string;
+  readonly app?: string;
 }
 
 function logStatus(verbose: boolean, status: SessionStatus, message?: string): void {
@@ -78,8 +78,23 @@ function logStatus(verbose: boolean, status: SessionStatus, message?: string): v
   }
 }
 
-async function handleStart(opts: StartCommandOptions): Promise<void> {
-  const app = readRequiredOption(opts.app, "--app");
+function mergeSelector<T extends { region?: string; org?: string; space?: string; app?: string }>(selector: string | undefined, opts: T): T {
+  if (selector === undefined) {
+    return opts;
+  }
+  const parts = selector.split("/");
+  if (parts.length === 4) {
+    return { ...opts, region: opts.region ?? parts[0], org: opts.org ?? parts[1], space: opts.space ?? parts[2], app: opts.app ?? parts[3] };
+  }
+  if (parts.length === 1) {
+    return { ...opts, app: opts.app ?? parts[0] };
+  }
+  throw new CfDebuggerError("UNSAFE_INPUT", "Invalid app selector format. Expected <app> or <region>/<org>/<space>/<app>.");
+}
+
+async function handleStart(selector: string | undefined, rawOpts: StartCommandOptions): Promise<void> {
+  const opts = mergeSelector(selector, rawOpts);
+  const app = readRequiredOption(opts.app, "--app or selector");
   const key = await resolveSessionKey({ ...opts, app });
   const verbose = opts.verbose ?? false;
 
@@ -173,7 +188,7 @@ function currentCfOptions(): { readonly command?: string } | undefined {
 }
 
 async function resolveSessionKey(opts: StopCommandOptions): Promise<SessionKey> {
-  const app = readRequiredOption(opts.app, "--app");
+  const app = readRequiredOption(opts.app, "--app or selector");
   const region = optionalText(opts.region);
   const org = optionalText(opts.org);
   const space = optionalText(opts.space);
@@ -218,7 +233,8 @@ async function resolveOptionalSessionKey(opts: StopCommandOptions): Promise<Sess
   return await resolveSessionKey(opts);
 }
 
-async function handleStop(opts: StopCommandOptions): Promise<void> {
+async function handleStop(selector: string | undefined, rawOpts: StopCommandOptions): Promise<void> {
+  const opts = mergeSelector(selector, rawOpts);
   if (opts.all === true) {
     const count = await stopAllDebuggers();
     process.stdout.write(`Stopped ${count.toString()} session(s).\n`);
@@ -243,7 +259,8 @@ async function handleList(): Promise<void> {
   process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
 }
 
-async function handleStatus(opts: StatusCommandOptions): Promise<void> {
+async function handleStatus(selector: string | undefined, rawOpts: StatusCommandOptions): Promise<void> {
+  const opts = mergeSelector(selector, rawOpts);
   const session = await getSession(await resolveSessionKey(opts));
   process.stdout.write(`${JSON.stringify(session ?? null, null, 2)}\n`);
 }
@@ -258,28 +275,30 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("start")
     .description("Open a debug tunnel for one app")
+    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
     .option("--region <key>", "CF region key (default: current cf target)")
     .option("--org <name>", "CF org name (default: current cf target)")
     .option("--space <name>", "CF space name (default: current cf target)")
-    .requiredOption("--app <name>", "CF app name")
+    .option("--app <name>", "CF app name")
     .option("--port <number>", "Preferred local port (auto-assigned if omitted)")
     .option("--timeout <seconds>", "Tunnel-ready timeout in seconds (default: 180)")
     .option("--verbose", "Print status transitions", false)
-    .action(async (opts: StartCommandOptions): Promise<void> => {
-      await handleStart(opts);
+    .action(async (selector: string | undefined, opts: StartCommandOptions): Promise<void> => {
+      await handleStart(selector, opts);
     });
 
   program
     .command("stop")
     .description("Stop one session (by key or id) or all sessions with --all")
+    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
     .option("--region <key>")
     .option("--org <name>")
     .option("--space <name>")
     .option("--app <name>")
     .option("--session-id <id>")
     .option("--all", "Stop every active session", false)
-    .action(async (opts: StopCommandOptions): Promise<void> => {
-      await handleStop(opts);
+    .action(async (selector: string | undefined, opts: StopCommandOptions): Promise<void> => {
+      await handleStop(selector, opts);
     });
 
   program
@@ -292,12 +311,13 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .command("status")
     .description("Print one session by key as JSON (null if not active)")
+    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
     .option("--region <key>")
     .option("--org <name>")
     .option("--space <name>")
-    .requiredOption("--app <name>")
-    .action(async (opts: StatusCommandOptions): Promise<void> => {
-      await handleStatus(opts);
+    .option("--app <name>")
+    .action(async (selector: string | undefined, opts: StatusCommandOptions): Promise<void> => {
+      await handleStatus(selector, opts);
     });
 
   await program.parseAsync([...argv]);

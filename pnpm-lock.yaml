@@ -211,8 +211,8 @@ importers:
   packages/cf-inspector:
     dependencies:
       '@saptools/cf-debugger':
-        specifier: workspace:*
-        version: link:../cf-debugger
+        specifier: 0.1.9
+        version: 0.1.9
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -1633,6 +1633,11 @@ packages:
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
+
+  '@saptools/cf-debugger@0.1.9':
+    resolution: {integrity: sha512-l7ZAUREQvyXBRcr5QYt99+xIIAuvYvPgzuRZl0WQCcSCEyn5FErUIMg5Tbj8WEgMvzXNUirGpq7Ou/qc7THe4A==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
 
   '@smithy/config-resolver@4.4.16':
     resolution: {integrity: sha512-GFlGPNLZKrGfqWpqVb31z7hvYCA9ZscfX1buYnvvMGcRYsQQnhH+4uN6mWWflcD5jB4OXP/LBrdpukEdjl41tg==}
@@ -6088,6 +6093,10 @@ snapshots:
 
   '@rtsao/scc@1.1.0':
     optional: true
+
+  '@saptools/cf-debugger@0.1.9':
+    dependencies:
+      commander: 13.1.0
 
   '@smithy/config-resolver@4.4.16':
     dependencies:

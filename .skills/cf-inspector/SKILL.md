@@ -16,9 +16,10 @@ Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, except
 ## First Steps
 
 1. Identify whether the user wants a one-shot snapshot, continuous breakpoint watch, logpoint stream, exception capture, runtime evaluation, script listing, or connectivity check.
-2. Confirm the target:
-   - Use `--port <number>` and optional `--host <host>` for an existing local inspector or tunnel.
-   - Use `--app <name>` with the current `cf target` for Cloud Foundry auto-tunnel, or pass all of `--region --org --space --app` when targeting a different CF app.
+2. Choose exactly one target option:
+   - Option A: use `--app <name>` when the app is in the current `cf target`. `cf-inspector` opens and closes the tunnel internally through `@saptools/cf-debugger`; do not run `cf-debugger` first for this option.
+   - Option B: use `--region --org --space --app` when the app is not in the current `cf target`.
+   - Option C: use `--port <number>` and optional `--host <host>` only when a local inspector or Cloud Foundry tunnel is already running. For a Cloud Foundry tunnel, open it with `cf-debugger` first by reading and following the `cf-debugger` skill.
 3. Use live inspector access when the task needs current runtime evidence and the target plus credentials are available. Ask only when the target, credentials, or side effects of pausing the app are unclear.
 4. Choose the narrowest command that answers the question.
 5. Prefer JSON output for agent workflows. Use `--no-json` only when the user asks for human-readable output.
@@ -85,23 +86,34 @@ cf-inspector attach --port 9229
 
 ## Targeting
 
-For a local process, start Node with an inspector:
+`cf-inspector` has two targeting modes. Choose exactly one.
+
+### Mode 1: Cloud Foundry app auto-tunnel
+
+Use this mode when the user gives an app name. `cf-inspector` reads the current `cf target` for region/org/space, starts the tunnel through `@saptools/cf-debugger`, runs the inspector command, and disposes the tunnel on exit. Do not run `cf-debugger start` first.
 
 ```bash
-node --inspect=9229 app.js
-cf-inspector attach --port 9229
+cf-inspector snapshot \
+  --app app-demo \
+  --bp src/handler.ts:42 \
+  --capture 'req.url, this.user'
 ```
 
-For Cloud Foundry, pass `--app` to use the current `cf target`, or provide the complete target when the requested app is in a different region, org, or space. `cf-inspector` opens and disposes the tunnel through `@saptools/cf-debugger`:
+Pass the full selector when the app is outside the current `cf target`:
 
 ```bash
 cf-inspector snapshot \
   --region eu10 --org example-org --space space-demo --app app-demo \
   --bp src/handler.ts:42 \
   --capture 'req.url, this.user'
+```
 
-cf-inspector snapshot \
-  --app app-demo \
+### Mode 2: Existing inspector port
+
+Use this mode only when a Cloud Foundry tunnel is already listening locally. Open the tunnel with `cf-debugger` first by reading and following the `cf-debugger` skill. After the tunnel is ready, attach `cf-inspector` to the local port:
+
+```bash
+cf-inspector snapshot --port 9229 \
   --bp src/handler.ts:42 \
   --capture 'req.url, this.user'
 ```
