@@ -45,8 +45,9 @@ function normalizeOptionalText(value: string | undefined, label: string): string
 }
 
 export function resolveApiEndpoint(target: ExplorerTarget): string {
-  if (target.apiEndpoint !== undefined && target.apiEndpoint.trim().length > 0) {
-    return target.apiEndpoint.trim();
+  const apiEndpoint = normalizeOptionalText(target.apiEndpoint, "apiEndpoint");
+  if (apiEndpoint !== undefined) {
+    return apiEndpoint;
   }
 
   const region = getAllRegions().find((item) => item.key === target.region);

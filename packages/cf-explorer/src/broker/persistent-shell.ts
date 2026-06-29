@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { CfExplorerError } from "../core/errors.js";
+import { requireSafeTimerMs } from "../core/limits.js";
 
 import {
   parseProtocolFrame,
@@ -79,12 +80,13 @@ export class PersistentShell {
       throw new CfExplorerError("SESSION_BUSY", "Persistent session is busy.");
     }
     this.buffer = "";
+    const safeTimeoutMs = requireSafeTimerMs(timeoutMs, "timeoutMs");
     const wrapped = wrapRemoteScript(script);
     return await new Promise<PersistentResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.rejectPending(new CfExplorerError("SESSION_RECOVERY_FAILED", "Persistent command timed out."));
         this.child.kill("SIGTERM");
-      }, timeoutMs);
+      }, safeTimeoutMs);
       this.pending = { wrapped, startedAt: Date.now(), maxBytes, timeout, resolve, reject };
       this.child.stdin.write(`${wrapped.script}\n`);
     });

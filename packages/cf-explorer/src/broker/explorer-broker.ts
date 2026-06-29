@@ -8,6 +8,7 @@ import {
 } from "../cf/client.js";
 import { normalizeTarget } from "../cf/target.js";
 import { CfExplorerError } from "../core/errors.js";
+import { requireSafeTimerMs } from "../core/limits.js";
 import type {
   ExplorerMeta,
   ExplorerRuntimeOptions,
@@ -422,9 +423,19 @@ function requestLimits(request: IpcRequest): {
   readonly maxBytes?: number;
 } {
   return {
-    ...positiveIntegerField(request.timeoutMs, "timeoutMs"),
+    ...timerField(request.timeoutMs, "timeoutMs"),
     ...positiveIntegerField(request.args["maxBytes"], "maxBytes"),
   };
+}
+
+function timerField(value: unknown, key: string): Record<string, number> {
+  if (value === undefined) {
+    return {};
+  }
+  if (typeof value !== "number") {
+    throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive safe integer.`);
+  }
+  return { [key]: requireSafeTimerMs(value, key) };
 }
 
 function positiveIntegerField(value: unknown, key: string): Record<string, number> {

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.13
+
+### Hardening
+
+- Rejected timeout values above Node.js timer limits across one-shot CF calls,
+  IPC requests, persistent shell commands, broker timers, and CLI
+  seconds-based flags.
+- Validated explicit API endpoint overrides in `resolveApiEndpoint` with the
+  same control-character checks used by normalized targets.
+
+### Maintenance
+
+- Split persistent-session CLI command registration into smaller focused
+  helpers without changing command behavior.
+
 ## 0.2.11
 
 ### Maintenance

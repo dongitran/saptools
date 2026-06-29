@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CfExplorerError } from "../../src/core/errors.js";
+import { MAX_TIMER_MS } from "../../src/core/limits.js";
 import {
   attachExplorerSession,
   getExplorerSessionStatus,
@@ -123,6 +124,8 @@ describe("persistent session client", () => {
       args: { path: "/workspace/app", timeoutMs: 123, maxBytes: 456 },
     });
     await expect(attached.roots({ timeoutMs: -1 })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+    await expect(attached.roots({ timeoutMs: MAX_TIMER_MS + 1 }))
+      .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(stopExplorerSession({ sessionId: "missing", runtime: { homeDir } })).resolves.toEqual({
       stopped: 0,
     });
@@ -203,6 +206,15 @@ describe("persistent session client", () => {
       runtime: { homeDir },
       allInstances: true,
     })).rejects.toThrow(CfExplorerError);
+  });
+
+  it("rejects persistent session timers above the Node timer limit before storing state", async () => {
+    await expect(startExplorerSession({
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      runtime: { homeDir },
+      idleTimeoutMs: MAX_TIMER_MS + 1,
+    })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+    await expect(listExplorerSessions({ homeDir })).resolves.toEqual({ sessions: [] });
   });
 
   it("returns dead-status flags for crashed brokers and missing sockets", async () => {

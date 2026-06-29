@@ -3,8 +3,10 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { dirname } from "node:path";
 
 import { CfExplorerError } from "../core/errors.js";
+import { resolveTimerMs } from "../core/limits.js";
 
 export const MAX_IPC_MESSAGE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_IPC_TIMEOUT_MS = 30_000;
 
 export const IPC_COMMANDS = ["find", "grep", "inspect", "ls", "roots", "status", "stop", "view"] as const;
 export type IpcCommand = (typeof IPC_COMMANDS)[number];
@@ -88,6 +90,7 @@ export async function sendIpcRequest(
   request: IpcRequest,
   options: IpcTransportOptions = {},
 ): Promise<IpcResponse> {
+  const timeoutMs = resolveTimerMs(request.timeoutMs, DEFAULT_IPC_TIMEOUT_MS, "timeoutMs");
   return await new Promise<IpcResponse>((resolve, reject) => {
     const socket = createConnection(socketPath);
     let buffer = "";
@@ -95,7 +98,7 @@ export async function sendIpcRequest(
     const timeout = setTimeout(() => {
       socket.destroy();
       reject(new CfExplorerError("IPC_FAILED", "Timed out waiting for broker response."));
-    }, request.timeoutMs ?? 30_000);
+    }, timeoutMs);
     socket.on("connect", () => {
       socket.write(`${JSON.stringify(request)}\n`);
     });

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CfExplorerError } from "../../src/core/errors.js";
+import { MAX_TIMER_MS } from "../../src/core/limits.js";
 import { createIpcServer, errorResponse, sendIpcRequest } from "../../src/session/ipc.js";
 
 const SMALL_IPC_LIMIT_BYTES = 64;
@@ -231,5 +232,15 @@ describe("IPC transport", () => {
       args: {},
       timeoutMs: 50,
     })).rejects.toMatchObject({ code: "IPC_FAILED" });
+  });
+
+  it("rejects response timeouts above the Node timer limit", async () => {
+    await expect(sendIpcRequest(join(dir, "missing.sock"), {
+      requestId: "request-timeout-overflow",
+      sessionId: "session-a",
+      command: "roots",
+      args: {},
+      timeoutMs: MAX_TIMER_MS + 1,
+    })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
   });
 });

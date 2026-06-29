@@ -1,5 +1,6 @@
 import { normalizeTarget, resolveInstance, resolveProcessName } from "../cf/target.js";
 import { CfExplorerError } from "../core/errors.js";
+import { requireSafeTimerMs } from "../core/limits.js";
 import type { ExplorerTarget } from "../core/types.js";
 
 export interface BrokerBootstrap {
@@ -99,8 +100,8 @@ function readOptionalPositiveInteger(value: unknown, key: string): number | unde
   if (value === undefined) {
     return undefined;
   }
-  if (!Number.isInteger(value) || typeof value !== "number" || value <= 0) {
-    throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive integer.`);
+  if (typeof value !== "number") {
+    throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive safe integer.`);
   }
-  return value;
+  return requireSafeTimerMs(value, key);
 }

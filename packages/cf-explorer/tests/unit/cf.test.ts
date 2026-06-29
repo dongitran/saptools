@@ -17,6 +17,7 @@ import {
   runCfCommand,
   spawnPersistentSshShell,
 } from "../../src/cf/client.js";
+import { MAX_TIMER_MS } from "../../src/core/limits.js";
 
 describe("CF command runner", () => {
   let cfHomeDir: string;
@@ -189,6 +190,8 @@ describe("CF command runner", () => {
   it("handles truncation, aborts, timeouts, and spawn errors", async () => {
     const cfBin = await writeFakeCf();
     await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: 0 }))
+      .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: MAX_TIMER_MS + 1 }))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { maxBytes: 0 }))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });

@@ -11,6 +11,7 @@ import { Command } from "commander";
 import { enableSsh, prepareSsh, restartApp, sshStatus } from "../cf/lifecycle.js";
 import { normalizeTarget, parseNonNegativeInteger, parsePositiveInteger } from "../cf/target.js";
 import { CfExplorerError } from "../core/errors.js";
+import { secondsToTimerMs } from "../core/limits.js";
 import type {
   DiscoveryOptions,
   ExplorerRuntimeOptions,
@@ -168,7 +169,7 @@ function buildRuntime(flags: TargetFlags): ExplorerRuntimeOptions {
   const timeoutSeconds = parsePositiveInteger(flags.timeout, "--timeout");
   const maxBytes = parsePositiveInteger(flags.maxBytes, "--max-bytes");
   return {
-    ...(timeoutSeconds === undefined ? {} : { timeoutMs: timeoutSeconds * 1000 }),
+    ...(timeoutSeconds === undefined ? {} : { timeoutMs: secondsToTimerMs(timeoutSeconds, "--timeout") }),
     ...(maxBytes === undefined ? {} : { maxBytes }),
   };
 }
@@ -204,7 +205,7 @@ function sessionLimitFields(flags: TargetFlags): {
   const timeoutSeconds = parsePositiveInteger(flags.timeout, "--timeout");
   const maxBytes = parsePositiveInteger(flags.maxBytes, "--max-bytes");
   return {
-    ...(timeoutSeconds === undefined ? {} : { timeoutMs: timeoutSeconds * 1000 }),
+    ...(timeoutSeconds === undefined ? {} : { timeoutMs: secondsToTimerMs(timeoutSeconds, "--timeout") }),
     ...(maxBytes === undefined ? {} : { maxBytes }),
   };
 }
@@ -263,7 +264,7 @@ function buildLifecycle(flags: LifecycleFlags): LifecycleOptions {
 
 function parseSecondsAsMilliseconds(value: string | undefined, label: string): number | undefined {
   const seconds = parsePositiveInteger(value, label);
-  return seconds === undefined ? undefined : seconds * 1000;
+  return seconds === undefined ? undefined : secondsToTimerMs(seconds, label);
 }
 
 function addTargetOptions(command: Command): Command {
@@ -384,22 +385,12 @@ function addLifecycleCommands(program: Command): void {
 
 function addSessionCommands(program: Command): void {
   const session = program.command("session").description("Manage persistent explorer sessions");
-  addSingleInstanceTargetOptions(session.command("start").description("Start a persistent explorer session"))
-    .option("--timeout <seconds>", "Startup timeout in seconds")
-    .option("--idle-timeout <seconds>", "Idle timeout in seconds")
-    .option("--max-lifetime <seconds>", "Maximum session lifetime in seconds")
-    .action(async (flags: SessionStartFlags): Promise<void> => {
-      const resolved = await resolveTargetFlags(flags);
-      const idleTimeoutMs = parseSecondsAsMilliseconds(flags.idleTimeout, "--idle-timeout");
-      const maxLifetimeMs = parseSecondsAsMilliseconds(flags.maxLifetime, "--max-lifetime");
-      writeOutput(await startExplorerSession({
-        target: buildTarget(resolved),
-        runtime: buildRuntime(resolved),
-        ...buildSelector(resolved),
-        ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
-        ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
-      }));
-    });
+  addSessionManagementCommands(session);
+  addSessionDiscoveryCommands(session);
+}
+
+function addSessionManagementCommands(session: Command): void {
+  addSessionStartCommand(session);
   session.command("list").description("List persistent sessions")
     .action(async (): Promise<void> => {
       writeOutput(await listExplorerSessions());
@@ -418,6 +409,37 @@ function addSessionCommands(program: Command): void {
         ...(flags.all === undefined ? {} : { all: flags.all }),
       }));
     });
+}
+
+function addSessionStartCommand(session: Command): void {
+  addSingleInstanceTargetOptions(session.command("start").description("Start a persistent explorer session"))
+    .option("--timeout <seconds>", "Startup timeout in seconds")
+    .option("--idle-timeout <seconds>", "Idle timeout in seconds")
+    .option("--max-lifetime <seconds>", "Maximum session lifetime in seconds")
+    .action(async (flags: SessionStartFlags): Promise<void> => {
+      const resolved = await resolveTargetFlags(flags);
+      const idleTimeoutMs = parseSecondsAsMilliseconds(flags.idleTimeout, "--idle-timeout");
+      const maxLifetimeMs = parseSecondsAsMilliseconds(flags.maxLifetime, "--max-lifetime");
+      writeOutput(await startExplorerSession({
+        target: buildTarget(resolved),
+        runtime: buildRuntime(resolved),
+        ...buildSelector(resolved),
+        ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+        ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
+      }));
+    });
+}
+
+function addSessionDiscoveryCommands(session: Command): void {
+  addSessionRootsCommand(session);
+  addSessionLsCommand(session);
+  addSessionFindCommand(session);
+  addSessionGrepCommand(session);
+  addSessionViewCommand(session);
+  addSessionInspectCommand(session);
+}
+
+function addSessionRootsCommand(session: Command): void {
   addSessionReadOptions(session.command("roots").description("Locate roots through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .option("--max-files <count>", "Maximum remote paths to return")
@@ -425,6 +447,9 @@ function addSessionCommands(program: Command): void {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
       writeOutput(await attached.roots({ ...maxFilesField(flags), ...sessionLimitFields(flags) }));
     });
+}
+
+function addSessionLsCommand(session: Command): void {
   addSessionReadOptions(session.command("ls").description("List direct children through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--path <path>", "Remote directory path")
@@ -437,6 +462,9 @@ function addSessionCommands(program: Command): void {
         ...sessionLimitFields(flags),
       }));
     });
+}
+
+function addSessionFindCommand(session: Command): void {
   addSessionReadOptions(session.command("find").description("Search filenames through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--root <path>", "Remote root")
@@ -451,6 +479,9 @@ function addSessionCommands(program: Command): void {
         ...sessionLimitFields(flags),
       }));
     });
+}
+
+function addSessionGrepCommand(session: Command): void {
   addSessionReadOptions(session.command("grep").description("Search through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--root <path>", "Remote root")
@@ -467,6 +498,9 @@ function addSessionCommands(program: Command): void {
         ...sessionLimitFields(flags),
       }));
     });
+}
+
+function addSessionViewCommand(session: Command): void {
   addSessionReadOptions(session.command("view").description("Read line context through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--file <path>", "Remote file")
@@ -482,6 +516,9 @@ function addSessionCommands(program: Command): void {
         ...sessionLimitFields(flags),
       }));
     });
+}
+
+function addSessionInspectCommand(session: Command): void {
   addSessionReadOptions(session.command("inspect-candidates").description("Find candidates through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--text <text>", "Search text")

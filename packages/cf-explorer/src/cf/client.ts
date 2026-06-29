@@ -8,6 +8,7 @@ import process from "node:process";
 import type { Readable } from "node:stream";
 
 import { CfExplorerError } from "../core/errors.js";
+import { resolveTimerMs } from "../core/limits.js";
 import { buildRedactionRules, redactText } from "../core/redaction.js";
 import type { ExplorerCredentials, ExplorerRuntimeOptions, ExplorerTarget } from "../core/types.js";
 
@@ -173,7 +174,7 @@ export async function runCfCommand(
 ): Promise<CfRunResult> {
   const command = resolveSpawnCommand(context);
   const startedAt = Date.now();
-  const timeoutMs = resolvePositiveRunLimit(options.timeoutMs, DEFAULT_TIMEOUT_MS, "timeoutMs");
+  const timeoutMs = resolveTimerMs(options.timeoutMs, DEFAULT_TIMEOUT_MS, "timeoutMs");
   const maxBytes = resolvePositiveRunLimit(options.maxBytes, DEFAULT_MAX_BYTES, "maxBytes");
   const child = spawn(command.bin, [...command.argsPrefix, ...args], {
     env: buildChildEnv(context, options.envOverrides),

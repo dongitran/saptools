@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PersistentShell } from "../../src/broker/persistent-shell.js";
+import { MAX_TIMER_MS } from "../../src/core/limits.js";
 
 const RESPONDER_SCRIPT = [
   "process.stdin.setEncoding('utf8');",
@@ -128,6 +129,13 @@ describe("persistent shell", () => {
       .rejects.toMatchObject({ code: "SESSION_RECOVERY_FAILED" });
     await sleep(20);
     expect(child.killed).toBe(true);
+  });
+
+  it("rejects command timeouts above the Node timer limit", async () => {
+    const shell = createShell(RESPONDER_SCRIPT);
+
+    await expect(shell.execute("printf ok", MAX_TIMER_MS + 1))
+      .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
   });
 
   it("rejects non-zero remote protocol frames", async () => {

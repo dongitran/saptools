@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseBrokerBootstrap } from "../../src/broker/bootstrap.js";
 import { runBrokerFromEnv } from "../../src/broker.js";
+import { MAX_TIMER_MS } from "../../src/core/limits.js";
 
 describe("broker bootstrap", () => {
   it("validates and normalizes broker bootstrap payloads", () => {
@@ -87,5 +88,9 @@ describe("broker bootstrap", () => {
       ...basePayload,
       idleTimeoutMs: 0,
     }))).toThrow(/idleTimeoutMs/);
+    expect(() => parseBrokerBootstrap(JSON.stringify({
+      ...basePayload,
+      maxLifetimeMs: MAX_TIMER_MS + 1,
+    }))).toThrow(/milliseconds/);
   });
 });

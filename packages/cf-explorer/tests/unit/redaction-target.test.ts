@@ -11,6 +11,7 @@ import {
   resolveInstanceSelector,
   resolveProcessName,
 } from "../../src/cf/target.js";
+import { MAX_TIMER_SECONDS, secondsToTimerMs } from "../../src/core/limits.js";
 import { buildRedactionRules, redactText } from "../../src/core/redaction.js";
 
 describe("redaction and target helpers", () => {
@@ -78,6 +79,13 @@ describe("redaction and target helpers", () => {
       org: "org",
       space: "dev",
       app: "demo-app",
+      apiEndpoint: "https://api.example.test\nbad",
+    })).toThrow(/line breaks/);
+    expect(() => resolveApiEndpoint({
+      region: "unknown",
+      org: "org",
+      space: "dev",
+      app: "demo-app",
     })).toThrow(/Unknown/);
   });
 
@@ -103,6 +111,12 @@ describe("redaction and target helpers", () => {
     expect(() => parsePositiveInteger("9007199254740993", "--timeout")).toThrow(/safe/);
     expect(parsePositiveInteger(undefined, "--max-files")).toBeUndefined();
     expect(parseNonNegativeInteger(undefined, "--instance")).toBeUndefined();
+  });
+
+  it("keeps CLI second-based timers inside Node timer limits", () => {
+    expect(secondsToTimerMs(1, "--timeout")).toBe(1000);
+    expect(secondsToTimerMs(MAX_TIMER_SECONDS, "--timeout")).toBe(MAX_TIMER_SECONDS * 1000);
+    expect(() => secondsToTimerMs(MAX_TIMER_SECONDS + 1, "--timeout")).toThrow(/seconds/);
   });
 
   it("rejects conflicting instance selectors", () => {

@@ -2,6 +2,8 @@ import { mkdir, open, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { resolveTimerMs } from "../core/limits.js";
+
 const DEFAULT_POLL_MS = 50;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -56,10 +58,12 @@ export async function withFileLock<T>(
   work: () => Promise<T>,
   options: WithFileLockOptions = {},
 ): Promise<T> {
+  const timeoutMs = resolveTimerMs(options.timeoutMs, DEFAULT_TIMEOUT_MS, "timeoutMs");
+  const pollMs = resolveTimerMs(options.pollMs, DEFAULT_POLL_MS, "pollMs");
   const handle = await acquireFileLock(
     lockPath,
-    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    options.pollMs ?? DEFAULT_POLL_MS,
+    timeoutMs,
+    pollMs,
   );
   try {
     return await work();

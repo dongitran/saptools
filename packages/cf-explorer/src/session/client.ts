@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { normalizeTarget, resolveCredentials, resolveInstance, resolveProcessName } from "../cf/target.js";
 import { CfExplorerError } from "../core/errors.js";
+import { requireSafeTimerMs, resolveTimerMs } from "../core/limits.js";
 import { EXPLORER_ERROR_CODES } from "../core/types.js";
 import type {
   AttachedExplorerSession,
@@ -161,7 +162,7 @@ async function requestSession<T>(
     throw new CfExplorerError("SESSION_NOT_FOUND", `Session not found: ${session.sessionId}`);
   }
   assertSessionReady(current);
-  const timeoutMs = readPositiveNumber(args, "timeoutMs");
+  const timeoutMs = readSafeTimerMs(args, "timeoutMs");
   const response = await sendIpcRequest(current.socketPath, {
     requestId: randomUUID(),
     sessionId: current.sessionId,
@@ -287,7 +288,7 @@ async function waitForBrokerReady(
   sessionId: string,
   timeoutMs = STARTUP_TIMEOUT_MS,
 ): Promise<ExplorerSessionRecord> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + resolveTimerMs(timeoutMs, STARTUP_TIMEOUT_MS, "timeoutMs");
   for (;;) {
     const session = await readExplorerSession(homeDir, sessionId);
     if (session?.status === "ready") {
@@ -310,6 +311,8 @@ function buildBootstrap(
   processName: string,
   instance: number,
 ): BrokerBootstrap {
+  const idleTimeoutMs = readOptionalSafeTimerMs(options.idleTimeoutMs, "idleTimeoutMs");
+  const maxLifetimeMs = readOptionalSafeTimerMs(options.maxLifetimeMs, "maxLifetimeMs");
   return {
     sessionId,
     homeDir,
@@ -317,8 +320,8 @@ function buildBootstrap(
     process: processName,
     instance,
     ...(options.runtime?.cfBin === undefined ? {} : { cfBin: options.runtime.cfBin }),
-    ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
-    ...(options.maxLifetimeMs === undefined ? {} : { maxLifetimeMs: options.maxLifetimeMs }),
+    ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+    ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
   };
 }
 
@@ -378,13 +381,17 @@ function terminateProcess(pid: number): void {
   }
 }
 
-function readPositiveNumber(args: Record<string, unknown>, key: string): number | undefined {
+function readSafeTimerMs(args: Record<string, unknown>, key: string): number | undefined {
   const value = args[key];
   if (value === undefined) {
     return undefined;
   }
-  if (!Number.isInteger(value) || typeof value !== "number" || value <= 0) {
-    throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive integer.`);
+  if (typeof value !== "number") {
+    throw new CfExplorerError("UNSAFE_INPUT", `${key} must be a positive safe integer.`);
   }
-  return value;
+  return requireSafeTimerMs(value, key);
+}
+
+function readOptionalSafeTimerMs(value: number | undefined, key: string): number | undefined {
+  return value === undefined ? undefined : requireSafeTimerMs(value, key);
 }
