@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-ops",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Operate SAP BTP Cloud Foundry apps with safe restart and scaling workflows",
   "type": "module",
   "publishConfig": {
