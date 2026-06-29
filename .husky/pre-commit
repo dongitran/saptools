@@ -62,6 +62,16 @@ if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^pack
   run_package_checks '@saptools/cf-events' 'packages/cf-events'
 fi
 
+if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/cf-ops/'; then
+  run_package_checks '@saptools/cf-ops' 'packages/cf-ops'
+  if git ls-files --error-unmatch "packages/cf-ops/package.json" >/dev/null 2>&1; then
+    echo "pre-commit: e2e for @saptools/cf-ops"
+    pnpm --filter '@saptools/cf-ops' build
+    pnpm --filter '@saptools/cf-ops' test:e2e
+    ran_checks=1
+  fi
+fi
+
 if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/jira/'; then
   run_package_checks '@saptools/jira' 'packages/jira'
   if git ls-files --error-unmatch "packages/jira/package.json" >/dev/null 2>&1; then

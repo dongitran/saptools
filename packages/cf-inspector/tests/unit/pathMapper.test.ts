@@ -60,25 +60,20 @@ describe("parseRemoteRoot", () => {
 
   it("parses regex: prefix", () => {
     const result = parseRemoteRoot("regex:^/example-root-.*$");
-    expect(result.kind).toBe("regex");
-    if (result.kind === "regex") {
-      expect(result.pattern).toBe("^/example-root-.*$");
-      expect(result.flags).toBe("");
-      expect(result.regex.test("/example-root-foo")).toBe(true);
-    }
+    expect(result).toEqual({
+      kind: "regex",
+      pattern: "^/example-root-.*$",
+      flags: "",
+    });
   });
 
   it("parses /pattern/flags slash-delimited form", () => {
     const result = parseRemoteRoot("/^\\/example-root-[a-z]+$/i");
-    expect(result.kind).toBe("regex");
-    if (result.kind === "regex") {
-      expect(result.flags).toBe("i");
-      expect(result.regex.test("/EXAMPLE-ROOT-FOO")).toBe(true);
-    }
-  });
-
-  it("throws CfInspectorError on invalid regex", () => {
-    expect(() => parseRemoteRoot("regex:[")).toThrowError(CfInspectorError);
+    expect(result).toEqual({
+      kind: "regex",
+      pattern: "^\\/example-root-[a-z]+$",
+      flags: "i",
+    });
   });
 
   it("treats a slash-delimited form without flags as a literal path", () => {

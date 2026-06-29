@@ -44,7 +44,6 @@ export interface RemoteRootRegex {
   readonly kind: "regex";
   readonly pattern: string;
   readonly flags: string;
-  readonly regex: RegExp;
 }
 
 export interface RemoteRootNone {
