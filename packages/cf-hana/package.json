@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-hana",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Run SQL against SAP HANA Cloud databases bound to a Cloud Foundry app by region/org/space/app selector",
   "type": "module",
   "publishConfig": {

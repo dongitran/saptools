@@ -23,6 +23,7 @@ export interface GraphRequestOptions {
   readonly body?: unknown;
   readonly rawBody?: Uint8Array | string;
   readonly headers?: Readonly<Record<string, string>>;
+  readonly includeAuthorization?: boolean;
 }
 
 export interface GraphClient {
@@ -71,8 +72,11 @@ function resolveBaseUrl(options: GraphClientOptions): string {
     : fromEnv.replace(/\/+$/, "");
 }
 
-function resolveUrl(base: string, path: string): string {
+function resolveUrl(base: string, path: string, includeAuthorization: boolean): string {
   if (/^https?:\/\//i.test(path)) {
+    if (includeAuthorization && new URL(path).origin !== new URL(base).origin) {
+      throw new Error("Refusing to send a Graph bearer token to a different origin");
+    }
     return path;
   }
   return `${base}${path.startsWith("/") ? path : `/${path}`}`;
@@ -116,8 +120,8 @@ async function extractErrorDetail(response: Response): Promise<{ code: string | 
 
 function buildInit(accessToken: string, options: GraphRequestOptions): RequestInit {
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
+    ...(options.includeAuthorization === false ? {} : { Authorization: `Bearer ${accessToken}` }),
     ...options.headers,
   };
   const init: RequestInit = { method: options.method ?? "GET", headers };
@@ -160,7 +164,8 @@ export function createGraphClient(options: GraphClientOptions): GraphClient {
   const sleepFn = options.retry?.sleepFn ?? defaultSleep;
 
   async function execute(path: string, requestOptions: GraphRequestOptions): Promise<Response> {
-    const url = resolveUrl(baseUrl, path);
+    const includeAuthorization = requestOptions.includeAuthorization !== false;
+    const url = resolveUrl(baseUrl, path, includeAuthorization);
     const init = buildInit(options.accessToken, requestOptions);
     let attempt = 0;
     let response = await fetchFn(url, init);

@@ -204,7 +204,10 @@ async function writeSession(sessionsDir: string, session: CompactSession): Promi
   await mkdir(sessionsDir, { recursive: true });
   const path = sessionPath(sessionsDir, session.sessionId);
   const tempPath = `${path}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(session, null, 2)}\n`, "utf8");
+  await writeFile(tempPath, `${JSON.stringify(session, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   await rename(tempPath, path);
 }
 

@@ -37,7 +37,7 @@ describe("createGraphClient", () => {
     expect(headers?.["Accept"]).toBe("application/json");
   });
 
-  it("accepts absolute URLs (for @odata.nextLink pagination)", async () => {
+  it("accepts same-origin absolute pagination URLs and rejects other origins", async () => {
     const calls: string[] = [];
     const fetchFn: FetchLike = async (input) => {
       calls.push(urlString(input));
@@ -48,8 +48,9 @@ describe("createGraphClient", () => {
       baseUrl: "http://api/v1",
       fetchFn,
     });
-    await client.request("https://other.example/next");
-    expect(calls[0]).toBe("https://other.example/next");
+    await client.request("http://api/v1/next");
+    await expect(client.request("https://other.example/next")).rejects.toThrow(/origin/);
+    expect(calls).toEqual(["http://api/v1/next"]);
   });
 
   it("serialises JSON bodies and sets content-type", async () => {

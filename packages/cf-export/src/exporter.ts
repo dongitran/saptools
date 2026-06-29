@@ -32,7 +32,10 @@ async function writeArtifact(outDir: string, fileName: string, content: string):
   const outPath = resolve(join(outDir, fileName));
   await mkdir(dirname(outPath), { recursive: true });
   const isSensitive = fileName === "default-env.json" || fileName === ".npmrc";
-  await writeFile(outPath, content, { encoding: "utf8" });
+  await writeFile(outPath, content, {
+    encoding: "utf8",
+    ...(isSensitive ? { mode: 0o600 } : {}),
+  });
   if (isSensitive) {
     await chmod(outPath, 0o600);
   }
@@ -71,7 +74,7 @@ export async function exportArtifacts(
           const path = await writeArtifact(options.outDir, name, json);
           written.push(path);
         } catch {
-          // Treat default-env as best-effort too (consistent with "nếu có" for all artifacts in default "all" mode).
+          // Default "all" mode treats every optional remote artifact as best-effort.
           // Only the presence of the file/VCAP in the remote app determines if it can be exported.
           skipped.push(name);
         }

@@ -12,6 +12,9 @@ import type { SqlToolsConnection } from "../../src/types.js";
 import { CLI_PATH } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
+const RUN_LIVE_E2E = process.env["SQLTOOLS_LIVE_E2E"] === "1";
+const HAS_SAP_CREDENTIALS =
+  process.env["SAP_EMAIL"] !== undefined && process.env["SAP_PASSWORD"] !== undefined;
 
 interface CfStructureFile {
   readonly regions: readonly {
@@ -159,55 +162,58 @@ async function discoverTarget(): Promise<TestTarget> {
   );
 }
 
-test("from-app writes a valid SQLTools connection for a real HANA-bound app", async () => {
-  expect(existsSync(CLI_PATH), `CLI must be built at ${CLI_PATH}`).toBe(true);
-  expect(process.env["SAP_EMAIL"]).toBeTruthy();
-  expect(process.env["SAP_PASSWORD"]).toBeTruthy();
+test.describe("live SQLTools against a real HANA-bound app", () => {
+  test.skip(!RUN_LIVE_E2E, "Set SQLTOOLS_LIVE_E2E=1 to run live SQLTools checks");
+  test.skip(!HAS_SAP_CREDENTIALS, "SAP_EMAIL and SAP_PASSWORD must be set to run live SQLTools checks");
 
-  const target = await discoverTarget();
-  const workspaceRoot = await mkdtemp(join(tmpdir(), "sqltools-live-"));
-  try {
-    const { stdout } = await runExportFromApp(target, workspaceRoot);
-    expect(stdout).toContain("Updated SQLTools connections");
+  test("User can write a SQLTools connection for a real HANA-bound app", async () => {
+    expect(existsSync(CLI_PATH), `CLI must be built at ${CLI_PATH}`).toBe(true);
 
-    const settingsPath = join(workspaceRoot, ".vscode", "settings.json");
-    expect(existsSync(settingsPath)).toBe(true);
+    const target = await discoverTarget();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sqltools-live-"));
+    try {
+      const { stdout } = await runExportFromApp(target, workspaceRoot);
+      expect(stdout).toContain("Updated SQLTools connections");
 
-    const settings = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
-    expect(settings["sqltools.useNodeRuntime"]).toBe(true);
+      const settingsPath = join(workspaceRoot, ".vscode", "settings.json");
+      expect(existsSync(settingsPath)).toBe(true);
 
-    const connections = settings["sqltools.connections"] as readonly SqlToolsConnection[];
-    expect(connections.length).toBeGreaterThan(0);
-    const connection = connections[0];
-    expect(connection?.driver).toBe("SAPHana");
-    expect(connection?.name).toBe(`${target.app} (${target.region})`);
-    expect(typeof connection?.server).toBe("string");
-    expect(connection?.server.length ?? 0).toBeGreaterThan(0);
-    expect(typeof connection?.port).toBe("number");
-    expect(connection?.port ?? 0).toBeGreaterThan(0);
-    expect(typeof connection?.username).toBe("string");
-    expect(connection?.username.length ?? 0).toBeGreaterThan(0);
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
-});
+      const settings = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
+      expect(settings["sqltools.useNodeRuntime"]).toBe(true);
 
-test("convert pipes a real VCAP into a SQLTools connection JSON", async () => {
-  const target = await discoverTarget();
-  const workspaceRoot = await mkdtemp(join(tmpdir(), "sqltools-live-convert-"));
-  try {
-    await runExportFromApp(target, workspaceRoot);
+      const connections = settings["sqltools.connections"] as readonly SqlToolsConnection[];
+      expect(connections.length).toBeGreaterThan(0);
+      const connection = connections[0];
+      expect(connection?.driver).toBe("SAPHana");
+      expect(connection?.name).toBe(`${target.app} (${target.region})`);
+      expect(typeof connection?.server).toBe("string");
+      expect(connection?.server.length ?? 0).toBeGreaterThan(0);
+      expect(typeof connection?.port).toBe("number");
+      expect(connection?.port ?? 0).toBeGreaterThan(0);
+      expect(typeof connection?.username).toBe("string");
+      expect(connection?.username.length ?? 0).toBeGreaterThan(0);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 
-    const settingsPath = join(workspaceRoot, ".vscode", "settings.json");
-    const settings = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
-    const connections = settings["sqltools.connections"] as readonly SqlToolsConnection[];
-    const connection = connections[0];
-    expect(connection).toBeDefined();
-    expect(connection?.hanaOptions.encrypt).toBe(true);
-    expect(connection?.hanaOptions.sslValidateCertificate).toBe(true);
-    expect(connection?.connectionTimeout).toBeGreaterThan(0);
-    expect(connection?.previewLimit).toBeGreaterThan(0);
-  } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
-  }
+  test("User can convert a real VCAP into a SQLTools connection JSON", async () => {
+    const target = await discoverTarget();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "sqltools-live-convert-"));
+    try {
+      await runExportFromApp(target, workspaceRoot);
+
+      const settingsPath = join(workspaceRoot, ".vscode", "settings.json");
+      const settings = JSON.parse(await readFile(settingsPath, "utf8")) as Record<string, unknown>;
+      const connections = settings["sqltools.connections"] as readonly SqlToolsConnection[];
+      const connection = connections[0];
+      expect(connection).toBeDefined();
+      expect(connection?.hanaOptions.encrypt).toBe(true);
+      expect(connection?.hanaOptions.sslValidateCertificate).toBe(true);
+      expect(connection?.connectionTimeout).toBeGreaterThan(0);
+      expect(connection?.previewLimit).toBeGreaterThan(0);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 });

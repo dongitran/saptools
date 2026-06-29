@@ -74,7 +74,10 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
 async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> {
   const tempPath = `${path}.${randomUUID()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   await rename(tempPath, path);
 }
 

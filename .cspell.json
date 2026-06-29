@@ -139,16 +139,34 @@
     "xlsx",
     "ETag",
     "ETags",
-    "etag"
+    "etag",
+    "basenames",
+    "BCDEF",
+    "behaviour",
+    "gita",
+    "lockfiles",
+    "mgit",
+    "MGIT",
+    "mygroup",
+    "myrepo",
+    "qabc",
+    "qdef",
+    "sess",
+    "tcpmux",
+    "uploadpack"
   ],
   "ignorePaths": [
-    "node_modules/**",
-    "dist/**",
-    "coverage/**",
-    ".turbo/**",
-    "_backup/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/coverage/**",
+    "**/.turbo/**",
+    "**/_backup/**",
+    "**/implementation_plan.md",
+    "**/package-lock.json",
+    "**/notes/**",
+    "packages/bruno/README.md",
     "pnpm-lock.yaml",
-    "playwright-report/**",
-    "test-results/**"
+    "**/playwright-report/**",
+    "**/test-results/**"
   ]
 }

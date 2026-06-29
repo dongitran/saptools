@@ -158,7 +158,7 @@ export async function cfEnv(appName: string, ctx: CfExecContext): Promise<string
 
 /**
  * Direct current user CF context for bare app names.
- * No isolated CF_HOME, no forced re-auth. This is the "chỉ nối tên app là đủ" path.
+ * No isolated CF_HOME or forced re-authentication: the current target supplies the app scope.
  */
 export async function cfEnvDirect(appName: string): Promise<string> {
   const { bin, argsPrefix } = resolveCfBin();

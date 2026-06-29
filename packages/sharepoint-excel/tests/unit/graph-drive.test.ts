@@ -68,6 +68,7 @@ describe("Graph drive helpers", () => {
     expect(calls[1]?.url).toContain("createUploadSession");
     const headers = calls[2]?.init?.headers as Record<string, string> | undefined;
     expect(headers?.["Content-Range"]).toBe("bytes 0-1/2");
+    expect(headers?.["Authorization"]).toBeUndefined();
   });
 
   it("refuses to create when preflight finds an existing item", async () => {

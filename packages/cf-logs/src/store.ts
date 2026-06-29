@@ -105,7 +105,10 @@ async function readStoreUnlocked(storePath: string): Promise<LogStore> {
 async function writeStoreUnlocked(store: LogStore, storePath: string): Promise<void> {
   const tempPath = `${storePath}.tmp`;
   await mkdir(dirname(storePath), { recursive: true });
-  await writeFile(tempPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  await writeFile(tempPath, `${JSON.stringify(store, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   await rename(tempPath, storePath);
 }
 

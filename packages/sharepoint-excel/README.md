@@ -11,7 +11,7 @@ Create `.xlsx` files, read workbook content, append records, update cells, and a
 [![install size](https://packagephobia.com/badge?p=@saptools/sharepoint-excel)](https://packagephobia.com/result?p=@saptools/sharepoint-excel)
 [![types](https://img.shields.io/npm/types/@saptools/sharepoint-excel.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Security](#-credential-security) • [API](#-programmatic-usage)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Security](#-credential-security)
 
 </div>
 
@@ -29,21 +29,10 @@ Create `.xlsx` files, read workbook content, append records, update cells, and a
 - 🧪 **Fake-backed e2e tests**: package tests do not call real Microsoft Graph or SharePoint
 - 🧰 **CLI and typed API**: every CLI action is backed by exported TypeScript functions
 
-> [!NOTE]
-> Microsoft Graph's direct Excel workbook APIs are excellent for delegated user flows, but several workbook mutation endpoints do not support application permissions. This package intentionally treats SharePoint as file storage, edits the workbook locally, and uploads the changed `.xlsx` with conflict protection.
-
----
-
 ## 📦 Install
 
 ```bash
-# Global CLI
 npm install -g @saptools/sharepoint-excel
-
-# Or as a dependency
-npm install @saptools/sharepoint-excel
-# pnpm add @saptools/sharepoint-excel
-# yarn add @saptools/sharepoint-excel
 ```
 
 Requires **Node.js >= 20**. The CLI binary is `saptools-sharepoint-excel`.
@@ -247,71 +236,6 @@ Fails if the sheet already exists.
 - Mutating workbook commands use SharePoint ETags so a stale local download cannot silently replace a newer SharePoint edit.
 
 Required Graph application permissions depend on your tenant model. Typical setups use `Sites.Selected` with site-specific grant plus file read/write access, or a broader `Files.ReadWrite.All`/`Sites.ReadWrite.All` policy where your organization permits it.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  appendRemoteWorkbookRows,
-  createRemoteWorkbook,
-  openSession,
-  parseSiteRef,
-} from "@saptools/sharepoint-excel";
-
-const session = await openSession({
-  credentials: {
-    tenantId: process.env.SHAREPOINT_EXCEL_TENANT_ID ?? "",
-    clientId: process.env.SHAREPOINT_EXCEL_CLIENT_ID ?? "",
-    clientSecret: process.env.SHAREPOINT_EXCEL_CLIENT_SECRET ?? "",
-  },
-  site: parseSiteRef("contoso.sharepoint.com/sites/demo"),
-});
-
-await createRemoteWorkbook(
-  { session, driveHint: "Documents" },
-  "Reports/orders.xlsx",
-  {
-    sheetName: "Orders",
-    headers: ["Name", "Amount"],
-    rows: [{ Name: "Coffee", Amount: 3 }],
-  },
-);
-
-await appendRemoteWorkbookRows(
-  { session, driveHint: "Documents" },
-  "Reports/orders.xlsx",
-  "Orders",
-  [{ Name: "Tea", Amount: 8 }],
-  true,
-);
-```
-
-<details>
-<summary><b>📚 Main exports</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `resolveRuntime()` | Resolve flags/env/profile into a SharePoint target |
-| `createProfileStore()` | Read/write redacted local profile metadata |
-| `createKeyringSecretVault()` | OS credential vault adapter |
-| `acquireAppToken()` | Request an app-only Graph token |
-| `createGraphClient()` | Minimal Graph JSON/binary client |
-| `parseSiteRef()` / `resolveSite()` | Parse and resolve SharePoint site references |
-| `listDrives()` / `selectDrive()` | Discover and select document libraries |
-| `createWorkbookBytes()` | Build a local `.xlsx` workbook |
-| `readWorkbookBytes()` | Read sheet rows from workbook bytes |
-| `appendWorkbookRows()` | Append rows in workbook bytes |
-| `updateWorkbookCell()` | Update an A1 cell in workbook bytes |
-| `addWorkbookSheet()` | Add a new worksheet |
-| `createRemoteWorkbook()` | Create SharePoint workbook without overwriting |
-| `readRemoteWorkbook()` | Download and read SharePoint workbook |
-| `appendRemoteWorkbookRows()` | Append rows and upload with ETag protection |
-| `updateRemoteWorkbookCell()` | Update one cell and upload with ETag protection |
-| `addRemoteWorkbookSheet()` | Add a worksheet and upload with ETag protection |
-
-</details>
 
 ---
 

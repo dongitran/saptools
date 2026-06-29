@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { chmod, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
 
@@ -20,6 +20,7 @@ export async function writeCredentials(
     ? resolve(cwd, options.outputPath)
     : resolve(cwd, OUTPUT_FILENAME);
   const content = `${JSON.stringify(entries, null, 2)}\n`;
-  await writeFile(filePath, content, "utf-8");
+  await writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
+  await chmod(filePath, 0o600);
   return filePath;
 }

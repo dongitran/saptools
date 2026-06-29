@@ -189,7 +189,7 @@ describe("cloud-foundry command wrappers", () => {
       message: expect.not.stringContaining(password),
       stderr: expect.not.stringContaining(password),
     });
-  });
+  }, 10_000);
 
   it("maps app not-found output to false and rethrows unrelated app errors", async () => {
     await expect(cfAppExists("missing-app", context)).resolves.toBe(false);

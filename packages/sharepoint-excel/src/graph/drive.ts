@@ -170,6 +170,7 @@ export async function uploadNewDriveFile(
   const raw = await client.requestJson<RawDriveItem>(uploadUrl, {
     method: "PUT",
     rawBody: bytes,
+    includeAuthorization: false,
     headers: {
       "Content-Length": bytes.byteLength.toString(),
       "Content-Range": `bytes 0-${lastByte.toString()}/${bytes.byteLength.toString()}`,

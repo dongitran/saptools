@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import type * as NodeOs from "node:os";
 import { hostname as getHostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -119,9 +119,11 @@ describe("db-store", () => {
       entries: [createEntry()],
     };
 
+    const { cfDbSnapshotPath } = await import("../../src/paths.js");
     const { readDbSnapshot, writeDbSnapshot } = await import("../../src/db-store.js");
     await writeDbSnapshot(snapshot);
     await expect(readDbSnapshot()).resolves.toEqual(snapshot);
+    expect((await stat(cfDbSnapshotPath())).mode & 0o777).toBe(0o600);
   });
 
   it("prefers runtime DB state while a DB sync is running", async () => {

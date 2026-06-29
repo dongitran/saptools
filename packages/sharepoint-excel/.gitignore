@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.turbo/
+playwright-report/
+test-results/
+.env
+.env.*
+*.log
+default-env.json
+hana-credentials.json

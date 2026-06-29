@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,6 +93,7 @@ describe("compact session store", () => {
     expect(session.expiresAt).toBe("2026-04-12T01:00:00.000Z");
     expect(result.row.message).toBe("full body content");
     expect(result.session.target?.app).toBe("neutral-app");
+    expect((await stat(join(sessionsDir, "abc123ef.json"))).mode & 0o777).toBe(0o600);
   });
 
   it("appends rows, bounds saved rows, and prunes expired sessions", async () => {

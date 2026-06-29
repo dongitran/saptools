@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -96,6 +96,7 @@ describe("updateVscodeConnections", () => {
     const connections = settings[SQLTOOLS_CONNECTIONS_KEY] as readonly SqlToolsConnection[];
     expect(connections.length).toBe(1);
     expect(connections[0]?.name).toBe("invoice-service (eu10)");
+    expect((await stat(result.settingsPath)).mode & 0o777).toBe(0o600);
   });
 
   it("preserves unrelated keys in an existing settings.json", async () => {

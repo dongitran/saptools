@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +43,7 @@ describe("writeCredentials", () => {
     const contents = JSON.parse(await readFile(filePath, "utf-8")) as readonly AppHanaEntry[];
     expect(contents.length).toBe(1);
     expect(contents[0]?.app).toBe("svc");
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
   });
 
   it("respects a custom output path", async () => {

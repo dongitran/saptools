@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import type * as OsModule from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -52,6 +52,8 @@ describe("store", () => {
     await writeStore(store);
 
     await expect(readStore()).resolves.toEqual(store);
+    const { cfLogsStorePath } = await import("../../src/paths.js");
+    expect((await stat(cfLogsStorePath())).mode & 0o777).toBe(0o600);
   });
 
   it("readStore ignores malformed data gracefully", async () => {

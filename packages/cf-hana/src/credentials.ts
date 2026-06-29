@@ -46,13 +46,13 @@ export interface SelectedConnectionTarget {
 /**
  * Resolve an app's HANA bindings.
  *
- * Bare app name: Use current `cf target` to "nối" the app name.
+ * Bare app name: resolve it against the current `cf target`.
  *   - First try the user's *existing* CF session directly via cfEnvDirect (no re-auth).
  *   - Only fall back to SAP + isolated re-auth if the error is classified as auth/session problem.
  * Explicit selector: Always full authenticated isolated path.
  *
  * This is the professional realization of the request:
- * "khi user truyền app thôi + đã cf target → chỉ nối tên app là đủ".
+ * When only an app is provided, the current CF target supplies org and space.
  * Auth/re-auth ONLY on session/unauthorize (per user feedback).
  */
 export async function resolveAppBindings(
@@ -75,7 +75,7 @@ export async function resolveAppBindings(
   const isBare = !selector.includes("/");
 
   if (isBare) {
-    // Bare: read current target, "nối" app name
+    // A bare app inherits region, org, and space from the current CF target.
     const current = await readCurrentCfTarget();
     if (!current) {
       throw new CfHanaError(

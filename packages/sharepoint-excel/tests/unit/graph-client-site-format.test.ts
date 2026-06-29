@@ -58,9 +58,12 @@ describe("Graph client", () => {
     await expect(client.requestNoContent("/content")).resolves.toBeUndefined();
   });
 
-  it("uses env base URLs, absolute URLs, and text error fallback", async () => {
-    const fetchFn: FetchLike = async (input) => {
-      if (requestUrl(input).endsWith("/fail")) {
+  it("uses env base URLs, protects absolute URLs, and handles text errors", async () => {
+    const requests: { readonly url: string; readonly init: RequestInit | undefined }[] = [];
+    const fetchFn: FetchLike = async (input, init) => {
+      const url = requestUrl(input);
+      requests.push({ url, init });
+      if (url.endsWith("/fail")) {
         return new Response("plain failure", { status: 500 });
       }
       return jsonResponse(200, { ok: true });
@@ -71,8 +74,13 @@ describe("Graph client", () => {
       env: { SHAREPOINT_EXCEL_GRAPH_BASE: "http://env-graph/" },
     });
 
-    await expect(client.requestJson("http://absolute/ping")).resolves.toEqual({ ok: true });
+    await expect(client.requestJson("http://absolute/ping")).rejects.toThrow(/origin/);
+    await expect(
+      client.requestJson("http://absolute/ping", { includeAuthorization: false }),
+    ).resolves.toEqual({ ok: true });
     await expect(client.requestJson("/fail")).rejects.toMatchObject({ detail: "plain failure" });
+    const externalHeaders = requests[0]?.init?.headers as Record<string, string> | undefined;
+    expect(externalHeaders?.["Authorization"]).toBeUndefined();
     expect(client.baseUrl).toBe("http://env-graph");
   });
 

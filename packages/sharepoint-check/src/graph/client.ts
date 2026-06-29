@@ -94,6 +94,9 @@ function resolveBaseUrl(explicit?: string): string {
 
 function resolveUrl(base: string, path: string): string {
   if (/^https?:\/\//i.test(path)) {
+    if (new URL(path).origin !== new URL(base).origin) {
+      throw new Error("Refusing to send a Graph bearer token to a different origin");
+    }
     return path;
   }
 

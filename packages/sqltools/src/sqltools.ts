@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 
@@ -64,7 +64,11 @@ async function writeVscodeSettings(
   if (!existsSync(vscodeDir)) {
     await mkdir(vscodeDir, { recursive: true });
   }
-  await writeFile(settingsPath, `${JSON.stringify(settings, null, 4)}\n`, "utf-8");
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 4)}\n`, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  await chmod(settingsPath, 0o600);
 }
 
 export interface UpdateVscodeConnectionsOptions {
