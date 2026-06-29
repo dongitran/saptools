@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { ChildProcess, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 
@@ -240,6 +241,57 @@ describe('cfClient', () => {
       } as Response);
 
       await expect(promise).resolves.toBe('fake-token');
+    });
+
+    it('uses the first valid xsuaa binding when earlier bindings are incomplete', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchXsuaaTokenFromTarget({ appName: 'test-app' });
+      const vcapOutput = JSON.stringify({
+        VCAP_SERVICES: {
+          xsuaa: [
+            { credentials: { clientid: 'missing-secret', url: 'https://invalid.example' } },
+            { credentials: { clientid: 'id', clientsecret: 'secret', url: 'https://auth.com' } },
+          ],
+        },
+      });
+      mockChild.stdout.write(`System-Provided:\n${vcapOutput}\n`);
+      mockChild.emit('close', 0);
+
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'fake-token' }),
+      } as Response);
+
+      await expect(promise).resolves.toBe('fake-token');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://auth.com/oauth/token?grant_type=client_credentials',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
+
+    it('trims xsuaa credential fields before requesting a token', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchXsuaaTokenFromTarget({ appName: 'test-app' });
+      const vcapOutput = 'VCAP_SERVICES: {"xsuaa":[{"credentials":{"clientid":" id ","clientsecret":" secret ","url":" https://auth.com/ "}}]}';
+      mockChild.stdout.write(vcapOutput);
+      mockChild.emit('close', 0);
+
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'fake-token' }),
+      } as Response);
+
+      await expect(promise).resolves.toBe('fake-token');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://auth.com/oauth/token?grant_type=client_credentials',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: `Basic ${Buffer.from('id:secret').toString('base64')}`,
+          }),
+        }),
+      );
     });
 
     it('does not request a token when xsuaa credentials are incomplete', async () => {

@@ -62,7 +62,7 @@ async function discoverRootEntities(
       headers['Authorization'] = normalizeBearerToken(token);
     }
 
-    const response = await fetch(`${options.baseUrl}/`, {
+    const response = await fetch(buildEndpointUrl(options.baseUrl, '/'), {
       headers,
       signal: AbortSignal.timeout(10000),
     });
@@ -82,25 +82,33 @@ function parseRootCatalog(value: unknown): readonly DiscoveredApiEntity[] {
   if (!isRecord(value)) { return []; }
   const endpoints = value['endpoints'];
   if (Array.isArray(endpoints) && endpoints.length > 0) {
-    return endpoints.map((endpoint) => {
-      const record = isRecord(endpoint) ? endpoint : {};
-      const path = typeof record['path'] === 'string' ? record['path'] : '';
-      const normalizedPath = path.replace(/[^a-zA-Z0-9]/g, '');
-      const fallbackName = normalizedPath === '' ? 'Unknown' : normalizedPath;
-      const name = typeof record['name'] === 'string' && record['name'] !== ''
-        ? record['name']
-        : fallbackName;
-      return createEntity(name, path);
-    });
+    return endpoints.flatMap((endpoint) => rootEntityFromEndpoint(endpoint));
   }
   const entries = value['value'];
   if (!Array.isArray(entries) || entries.length === 0) { return []; }
-  return entries.map((entry) => {
-    const record = isRecord(entry) ? entry : {};
-    const name = typeof record['name'] === 'string' ? record['name'] : 'Unknown';
-    const path = typeof record['url'] === 'string' ? `/${record['url']}` : '';
-    return createEntity(name, path);
-  });
+  return entries.flatMap((entry) => rootEntityFromServiceDocumentEntry(entry));
+}
+
+function rootEntityFromEndpoint(endpoint: unknown): readonly DiscoveredApiEntity[] {
+  if (!isRecord(endpoint)) { return []; }
+  const path = readNonEmptyString(endpoint['path']);
+  if (path === undefined) { return []; }
+  const name = readNonEmptyString(endpoint['name']) ?? fallbackNameFromPath(path);
+  return [createEntity(name, path)];
+}
+
+function rootEntityFromServiceDocumentEntry(entry: unknown): readonly DiscoveredApiEntity[] {
+  if (!isRecord(entry)) { return []; }
+  const url = readNonEmptyString(entry['url']);
+  const name = readNonEmptyString(entry['name']);
+  const path = url === undefined ? name : `/${url.replace(/^\/+/g, '')}`;
+  if (path === undefined) { return []; }
+  return [createEntity(name ?? fallbackNameFromPath(path), path)];
+}
+
+function fallbackNameFromPath(path: string): string {
+  const normalizedPath = path.replace(/[^a-zA-Z0-9]/g, '');
+  return normalizedPath === '' ? 'Unknown' : normalizedPath;
 }
 
 async function discoverCdsEntities(
@@ -434,4 +442,10 @@ export function errorMessage(error: unknown): string {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') { return undefined; }
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
 }

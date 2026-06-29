@@ -141,16 +141,34 @@ interface XsuaaCredentials {
 function parseXsuaaCredentials(output: string): XsuaaCredentials | undefined {
   const services = extractVcapServices(output);
   if (services === undefined || !Array.isArray(services['xsuaa'])) { return undefined; }
-  const firstBinding: unknown = services['xsuaa'][0];
-  if (!isRecord(firstBinding) || !isRecord(firstBinding['credentials'])) { return undefined; }
-  const credentials = firstBinding['credentials'];
+  for (const binding of services['xsuaa']) {
+    const credentials = parseXsuaaBindingCredentials(binding);
+    if (credentials !== undefined) { return credentials; }
+  }
+  return undefined;
+}
+
+function parseXsuaaBindingCredentials(binding: unknown): XsuaaCredentials | undefined {
+  if (!isRecord(binding) || !isRecord(binding['credentials'])) { return undefined; }
+  const credentials = binding['credentials'];
   const clientId = credentials['clientid'];
   const clientSecret = credentials['clientsecret'];
   const url = credentials['url'];
-  if (!isNonEmptyString(clientId) || !isNonEmptyString(clientSecret) || !isNonEmptyString(url)) {
+  const normalizedClientId = readNonEmptyString(clientId);
+  const normalizedClientSecret = readNonEmptyString(clientSecret);
+  const normalizedUrl = readNonEmptyString(url);
+  if (
+    normalizedClientId === undefined
+    || normalizedClientSecret === undefined
+    || normalizedUrl === undefined
+  ) {
     return undefined;
   }
-  return { clientId, clientSecret, url };
+  return {
+    clientId: normalizedClientId,
+    clientSecret: normalizedClientSecret,
+    url: normalizedUrl,
+  };
 }
 
 function extractVcapServices(output: string): Record<string, unknown> | undefined {
@@ -216,6 +234,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value !== '';
+function readNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') { return undefined; }
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
 }

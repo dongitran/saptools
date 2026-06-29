@@ -278,6 +278,71 @@ describe('discovery', () => {
       expect(entities[0]?.path).toBe('/odata/v4/service1');
     });
 
+    it('normalizes trailing slash base URLs for root discovery', async () => {
+      vi.mocked(cfClient.fetchXsuaaTokenFromTarget).mockResolvedValue(null);
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            endpoints: [
+              { name: 'CatalogService', path: '/odata/v4/catalog' },
+            ],
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+        } as Response);
+
+      const entities = await discoverApiEntities({
+        ...defaultOptions,
+        baseUrl: 'http://test.com/',
+      });
+
+      expect(entities).toEqual([
+        {
+          name: 'CatalogService',
+          path: '/odata/v4/catalog',
+          methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+          schema: { type: 'object', properties: {} },
+        },
+      ]);
+      expect(vi.mocked(global.fetch).mock.calls.map(([url]) => url)).toEqual([
+        'http://test.com/',
+        'http://test.com/odata/v4/catalog/$metadata',
+        'http://test.com/odata/v4/catalog',
+      ]);
+    });
+
+    it('ignores root catalog entries without usable paths', async () => {
+      vi.mocked(cfClient.fetchXsuaaTokenFromTarget).mockResolvedValue(null);
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            endpoints: [
+              { name: '', path: '' },
+              { name: 'MissingPath' },
+              { name: 'CatalogService', path: '/odata/v4/catalog' },
+            ],
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+        } as Response);
+
+      const entities = await discoverApiEntities(defaultOptions);
+
+      expect(entities.map((entity) => [entity.name, entity.path])).toEqual([
+        ['CatalogService', '/odata/v4/catalog'],
+      ]);
+    });
+
     it('expands root service endpoints through OData metadata before falling back to service documents', async () => {
       vi.mocked(cfClient.fetchXsuaaTokenFromTarget).mockResolvedValue('fake-token');
       vi.mocked(global.fetch)
