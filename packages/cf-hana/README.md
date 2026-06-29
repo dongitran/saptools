@@ -24,7 +24,7 @@ login on the hot path) and connections are pooled and reused within a process.
 - **Schema introspection** — list schemas, tables, and columns.
 - **Local SQL history** — direct SQL calls are appended to dated JSONL files
   under `~/.saptools/cf-hana/histories/` with five-day retention.
-- **Write backups** — CLI `UPDATE` and `DELETE` statements create a local CSV
+- **Write backups** — CLI `UPDATE`, `UPSERT`, and `DELETE` statements create a local CSV
   backup of matching rows before the write runs.
 - **Compact CLI results** — CLI `SELECT`/`WITH` output is compact CSV with
   bounded cells and optional saved refs for exact follow-up inspection.
@@ -93,7 +93,7 @@ Common options: `--refresh`, `--role <runtime|hdi>`, `--binding <name>` /
 `--limit <n>`, `--no-auto-limit`. The `query` command also accepts
 `--param <value>` (repeatable), `--cell-limit <n>`, `--save`, and
 `--result-ttl-minutes <n>`. `tables` and `columns` still support
-`--format <table|json|csv>`. CLI `UPDATE` and `DELETE` statements are backed up
+`--format <table|json|csv>`. CLI `UPDATE`, `UPSERT`, and `DELETE` statements are backed up
 automatically before the write runs.
 
 ```bash
@@ -196,10 +196,12 @@ and `columns` is not recorded as user SQL history.
 
 ## Write backups
 
-When `cf-hana query` receives an `UPDATE` or `DELETE`, it first builds and runs a
+When `cf-hana query` receives an `UPDATE`, `UPSERT`, or `DELETE`, it first builds and runs a
 matching `SELECT`:
 
 - `UPDATE <target> SET ... WHERE ...` becomes
+  `SELECT * FROM <target> WHERE ...`.
+- `UPSERT <target> VALUES ... WHERE ...` becomes
   `SELECT * FROM <target> WHERE ...`.
 - `DELETE FROM <target> WHERE ...` becomes
   `SELECT * FROM <target> WHERE ...`.
@@ -207,15 +209,18 @@ matching `SELECT`:
 The backup is saved before the write runs:
 
 ```text
-~/.saptools/cf-hana/backups/<timestamp>-<operation>-<hash>/
-  statement.sql
-  backup.csv
+~/.saptools/cf-hana/backups/YYYYMM/
+  <region-org-space-app>-<operation>-<timestamp>.sql
+  <region-org-space-app>-<operation>-<timestamp>.statement.sql
+  <region-org-space-app>-<operation>-<timestamp>.json
 ```
 
-`statement.sql` contains the original write statement. `backup.csv` contains the
-rows returned by the derived `SELECT`. Backup folders are not deleted by
-`cf-hana`; clean them up manually when they are no longer needed. The backup path
-is printed to stderr so stdout remains parseable.
+The main `.sql` backup file contains CSV-formatted rows returned by the derived
+`SELECT`, matching the requested region/org/space/app/action/timestamp naming
+shape. The companion `.statement.sql` file contains the original write statement,
+and `.json` contains non-secret metadata for auditability. Backup files are not
+deleted by `cf-hana`; clean them up manually when they are no longer needed. The
+backup path is printed to stderr so stdout remains parseable.
 
 ## Safety
 
