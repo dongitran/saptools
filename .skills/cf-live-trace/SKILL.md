@@ -1,0 +1,121 @@
+---
+name: cf-live-trace
+description: Use when capturing live HTTP request and response traces from SAP BTP Cloud Foundry Node.js apps, including Node inspector tunnel setup, bounded event streams, body/header capture controls, and runtime hook cleanup.
+---
+
+# CF Live Trace
+
+## Purpose
+
+Use `cf-live-trace` to inspect live HTTP traffic from a running SAP BTP Cloud Foundry Node.js app. Prefer it when the user needs current request/response evidence such as methods, URLs, status codes, durations, byte counts, correlation IDs, headers, or bounded body previews.
+
+If `cf-live-trace` is missing, install it from `@saptools/cf-live-trace`: `npm install -g @saptools/cf-live-trace`.
+
+Use it only for apps and spaces the user is authorized to inspect. The CLI can enable SSH, restart the app if SSH is disabled, start the Node inspector, open an SSH tunnel, and inject a runtime hook into the running Node process.
+
+## First Steps
+
+1. Identify the target app, instance index, and whether the current `cf target` is the intended region, org, and space.
+2. Use `--app <name>` for every run. Pass `--region` or `--api-endpoint`, `--org`, and `--space` explicitly when the current `cf target` is missing, stale, or not the intended target.
+3. Prefer `SAP_EMAIL` and `SAP_PASSWORD` for credentials. Avoid `--email` and `--password` unless necessary because process arguments can expose credentials.
+4. Bound agent runs with `--duration <seconds>` or `--max-events <count>` so the trace does not stream indefinitely.
+5. Reduce captured data with `--no-capture-headers`, `--no-capture-request-body`, `--no-capture-response-body`, or a smaller `--max-body-bytes` when the app handles sensitive payloads.
+
+## Command Choice
+
+Trace an app using the current `cf target`:
+
+```bash
+cf-live-trace --app orders-api --duration 30 --format ndjson
+```
+
+Trace with an explicit region, org, and space:
+
+```bash
+cf-live-trace \
+  --region ap10 \
+  --org sample-org \
+  --space dev \
+  --app orders-api \
+  --instance 0 \
+  --duration 30 \
+  --format ndjson
+```
+
+Use an explicit CF API endpoint when the region key is unknown or custom:
+
+```bash
+cf-live-trace \
+  --api-endpoint https://api.cf.ap10.hana.ondemand.com \
+  --org sample-org \
+  --space dev \
+  --app orders-api \
+  --max-events 25 \
+  --format json
+```
+
+Capture a compact text stream without request or response bodies:
+
+```bash
+cf-live-trace \
+  --app orders-api \
+  --no-capture-request-body \
+  --no-capture-response-body \
+  --max-events 10 \
+  --format summary
+```
+
+Use `--cf-home <dir>` only when the run must reuse or isolate a specific Cloud Foundry CLI home:
+
+```bash
+cf-live-trace --app orders-api --cf-home /tmp/cf-live-trace-home --duration 30
+```
+
+## Runtime Behavior
+
+The CLI prepares a CF session with `cf api`, `cf auth`, and `cf target`. It checks `cf ssh-enabled`; when SSH is disabled, it runs `cf enable-ssh`, restarts the app, and smoke-checks SSH before continuing.
+
+After SSH is ready, the CLI sends `SIGUSR1` to the best Node.js process candidate, opens a tunnel to `127.0.0.1:9229`, connects through the Node inspector, and evaluates a runtime hook named `__SAPTOOLS_CF_LIVE_TRACE__`. The hook patches Node `http` and `https` server prototypes, queues events in process memory, and drains them back to the CLI.
+
+Cleanup normally uninstalls the runtime hook and closes the tunnel. With `--no-uninstall-on-exit`, cleanup disables the hook instead of uninstalling it. If cleanup fails, the hook can remain disabled or installed until the app process restarts.
+
+## Output Handling
+
+Use `--format ndjson` for streaming agent workflows. Each captured request is printed as one JSON object on stdout.
+
+Use `--format summary` for a human-readable stream containing timestamp, method, normalized URL, status, and duration.
+
+Use `--format json` when downstream code needs one final JSON object after the run stops. Combine it with `--duration` or `--max-events`.
+
+Progress and lifecycle messages are written to stderr unless `--quiet` is set. Do not treat stderr progress lines as trace events.
+
+Trace events can include:
+
+- `method`
+- `normalizedUrl`
+- `status`
+- `durationMs`
+- `requestHeaders`
+- `responseHeaders`
+- `requestBodyPreview`
+- `responseBodyPreview`
+- `requestBytes`
+- `responseBytes`
+- `traceId`
+- `correlationId`
+
+## Data Handling
+
+Captured URLs, headers, cookies, authorization values, request bodies, response bodies, correlation IDs, app names, org names, and space names can be sensitive. The CLI does not redact captured event data. Summarize findings and avoid pasting raw trace output unless the user explicitly asks for it.
+
+Set `--max-body-bytes <n>` to limit request and response previews. The default is `4096`; `0` keeps unlimited previews locally, so avoid `0` for sensitive or high-throughput services unless the user explicitly needs full bodies.
+
+## Troubleshooting
+
+- `No current CF target found`: run `cf target -o <org> -s <space>` first or pass `--region`/`--api-endpoint`, `--org`, and `--space`.
+- `Missing required environment variable: SAP_EMAIL` or `SAP_PASSWORD`: export the credential variables or pass explicit flags only when acceptable.
+- `Unknown CF region`: use `--api-endpoint <url>` instead of `--region`.
+- The command restarts the app: SSH was disabled. This is expected behavior for this CLI; confirm the user accepts that side effect before retrying in production.
+- `Node Inspector is not reachable on 127.0.0.1:9229`: verify the app is a Node.js app, the selected instance is running, SSH works, and the process can start the inspector after `SIGUSR1`.
+- Output is too large: add `--duration`, `--max-events`, a smaller `--max-body-bytes`, or disable header/body capture.
+- Trace misses expected traffic: generate the request after the stderr progress line shows `streaming`, verify the selected `--instance`, and confirm the traffic reaches the same app process.
