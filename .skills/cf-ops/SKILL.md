@@ -1,6 +1,6 @@
 ---
 name: cf-ops
-description: Use when operating SAP BTP Cloud Foundry apps with the cf-ops CLI or @saptools/cf-ops package, including restart, rolling restart, restage, start, stop, scaling instances, scaling memory or disk, dry-run planning, validating planned CF commands, and troubleshooting mutating app lifecycle operations.
+description: Use when operating SAP BTP Cloud Foundry apps with the cf-ops CLI, including restart, rolling restart, restage, start, stop, scaling instances, scaling memory or disk, dry-run planning, validating planned CF commands, and troubleshooting mutating app lifecycle operations.
 ---
 
 # CF Ops
@@ -91,37 +91,6 @@ Before running a non-dry-run operation:
 Treat app names, orgs, spaces, routes, and command output as operationally
 sensitive. Never print `SAP_EMAIL`, `SAP_PASSWORD`, CF tokens, or app
 environment values.
-
-## Programmatic Usage
-
-Use the package API when code needs to build or review typed plans before
-invoking CF:
-
-```ts
-import {
-  buildLifecyclePlan,
-  buildScalePlan,
-  lifecycleCommandArgs,
-  scaleCommandArgs,
-} from "@saptools/cf-ops";
-
-const plan = buildScalePlan({
-  appName: "orders-srv",
-  instances: 3,
-  restart: true,
-  strategy: "rolling",
-});
-
-console.log(scaleCommandArgs(plan));
-```
-
-For tests or controlled automation, set `CF_OPS_CF_BIN` to a fake or alternate
-CF executable. If it ends with `.js`, `.mjs`, or `.cjs`, `cf-ops` runs it
-through the current Node.js binary.
-
-```bash
-CF_OPS_CF_BIN=./tests/e2e/fixtures/fake-cf.mjs cf-ops scale --app orders-srv --instances 2
-```
 
 ## Troubleshooting
 
