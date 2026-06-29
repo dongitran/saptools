@@ -48,16 +48,7 @@ export function parseRemoteRoot(value: string | undefined): RemoteRootSetting {
 }
 
 function toRegex(pattern: string, flags: string): RemoteRootSetting {
-  try {
-    const regex = new RegExp(pattern, flags);
-    return { kind: "regex", pattern, flags, regex };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new CfInspectorError(
-      "INVALID_REMOTE_ROOT",
-      `Failed to compile remote-root regex "${pattern}" with flags "${flags}": ${message}`,
-    );
-  }
+  return { kind: "regex", pattern, flags };
 }
 
 function parseSlashDelimited(value: string): { pattern: string; flags: string } | undefined {
