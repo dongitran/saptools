@@ -24,6 +24,7 @@ const API_METHODS = ['GET', 'POST', 'PATCH', 'DELETE'] as const;
 const READ_METHODS = ['GET'] as const;
 const ACTION_METHODS = ['POST'] as const;
 const DISCOVERY_TIMEOUT_MS = 5000;
+const BEARER_AUTH_SCHEME = /^Bearer\s+/iu;
 
 interface XmlNode {
   readonly attributes: string;
@@ -127,29 +128,48 @@ async function discoverCdsEntities(
 export function parseCdsServices(content: string): readonly DiscoveredApiEntity[] {
   const entities: DiscoveredApiEntity[] = [];
   const discovered = new Set<string>();
-  const withPath = /service\s+([A-Za-z0-9_]+)[^{]*?@\(\s*path\s*:\s*['"]([^'"]+)['"]\s*\)/g;
-  let match = withPath.exec(content);
+  const services = /service\s+([A-Za-z0-9_]+)/g;
+  let match = services.exec(content);
   while (match !== null) {
     const name = match[1] ?? '';
     if (name !== '' && !discovered.has(name)) {
       discovered.add(name);
-      entities.push(createEntity(name, match[2] ?? ''));
+      const path = readCdsPathAfterService(content, match.index + match[0].length)
+        ?? readCdsPathBeforeService(content, match.index)
+        ?? defaultCdsServicePath(name);
+      entities.push(createEntity(name, path));
     }
-    match = withPath.exec(content);
-  }
-  if (entities.length > 0) { return entities; }
-
-  const byName = /service\s+([A-Za-z0-9_]+)/g;
-  match = byName.exec(content);
-  while (match !== null) {
-    const name = match[1] ?? '';
-    if (name !== '' && !discovered.has(name)) {
-      discovered.add(name);
-      entities.push(createEntity(name, `/odata/v4/${name.replace(/Service$/, '').toLowerCase()}`));
-    }
-    match = byName.exec(content);
+    match = services.exec(content);
   }
   return entities;
+}
+
+function readCdsPathAfterService(content: string, serviceNameEndIdx: number): string | undefined {
+  const serviceHeaderEndIdx = content.indexOf('{', serviceNameEndIdx);
+  const endIdx = serviceHeaderEndIdx === -1
+    ? Math.min(content.length, serviceNameEndIdx + 300)
+    : serviceHeaderEndIdx;
+  return readCdsPathAnnotation(content.slice(serviceNameEndIdx, endIdx));
+}
+
+function readCdsPathBeforeService(content: string, serviceStartIdx: number): string | undefined {
+  return readTrailingCdsPathAnnotation(content.slice(0, serviceStartIdx).trimEnd());
+}
+
+function readCdsPathAnnotation(source: string): string | undefined {
+  const grouped = /@\(\s*path\s*:\s*['"]([^'"]+)['"]\s*\)/u.exec(source);
+  if (grouped?.[1] !== undefined) { return grouped[1]; }
+  return /@path\s*:\s*['"]([^'"]+)['"]/u.exec(source)?.[1];
+}
+
+function readTrailingCdsPathAnnotation(source: string): string | undefined {
+  const grouped = /@\(\s*path\s*:\s*['"]([^'"]+)['"]\s*\)\s*$/u.exec(source);
+  if (grouped?.[1] !== undefined) { return grouped[1]; }
+  return /@path\s*:\s*['"]([^'"]+)['"]\s*$/u.exec(source)?.[1];
+}
+
+function defaultCdsServicePath(name: string): string {
+  return `/odata/v4/${name.replace(/Service$/, '').toLowerCase()}`;
 }
 
 async function expandEntities(
@@ -230,8 +250,9 @@ export function parseODataMetadata(
   servicePath: string,
   serviceName: string
 ): readonly DiscoveredApiEntity[] {
+  const externalAnnotationsByEntity = collectExternalAnnotations(metadataXml);
   return [
-    ...parseEntitySetMetadata(metadataXml, servicePath, serviceName),
+    ...parseEntitySetMetadata(metadataXml, servicePath, serviceName, externalAnnotationsByEntity),
     ...parseOperationImports(metadataXml, 'FunctionImport', servicePath, serviceName, READ_METHODS),
     ...parseOperationImports(metadataXml, 'ActionImport', servicePath, serviceName, ACTION_METHODS),
   ];
@@ -240,19 +261,43 @@ export function parseODataMetadata(
 function parseEntitySetMetadata(
   metadataXml: string,
   servicePath: string,
-  serviceName: string
+  serviceName: string,
+  externalAnnotationsByEntity: ReadonlyMap<string, readonly string[]>
 ): readonly DiscoveredApiEntity[] {
   const entities: DiscoveredApiEntity[] = [];
   for (const node of findXmlNodes(metadataXml, 'EntitySet')) {
     const name = readXmlAttribute(node.attributes, 'Name');
     if (name === undefined || name === '') { continue; }
+    const metadataSource = [
+      node.body,
+      ...(externalAnnotationsByEntity.get(name) ?? []),
+    ].join('\n');
     entities.push(createEntity(
       `${serviceName} / ${name}`,
       joinEndpointPath(servicePath, name),
-      entityMethodsFromMetadata(node.body),
+      entityMethodsFromMetadata(metadataSource),
     ));
   }
   return entities;
+}
+
+function collectExternalAnnotations(metadataXml: string): ReadonlyMap<string, readonly string[]> {
+  const annotationsByEntity = new Map<string, string[]>();
+  for (const node of findXmlNodes(metadataXml, 'Annotations')) {
+    const target = readXmlAttribute(node.attributes, 'Target');
+    const entityName = target === undefined ? undefined : entityNameFromAnnotationTarget(target);
+    if (entityName === undefined || entityName === '') { continue; }
+    const annotations = annotationsByEntity.get(entityName) ?? [];
+    annotations.push(node.body);
+    annotationsByEntity.set(entityName, annotations);
+  }
+  return annotationsByEntity;
+}
+
+function entityNameFromAnnotationTarget(target: string): string | undefined {
+  const slashSegment = target.split('/').pop();
+  const finalSegment = slashSegment?.split('.').pop();
+  return finalSegment === '' ? undefined : finalSegment;
 }
 
 function parseOperationImports(
@@ -316,8 +361,8 @@ function findXmlNodes(source: string, tagName: string): readonly XmlNode[] {
 
 function readXmlAttribute(attributes: string, name: string): string | undefined {
   const escapedName = escapeRegExp(name);
-  const match = new RegExp(`\\b${escapedName}="([^"]*)"`, 'u').exec(attributes);
-  const value = match?.[1];
+  const match = new RegExp(`\\b${escapedName}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'u').exec(attributes);
+  const value = match?.[2];
   return value === undefined ? undefined : decodeXmlText(value);
 }
 
@@ -379,7 +424,8 @@ export function createEntity(
 }
 
 export function normalizeBearerToken(token: string): string {
-  return token.startsWith('bearer') || token.startsWith('Bearer') ? token : `Bearer ${token}`;
+  const trimmed = token.trim();
+  return BEARER_AUTH_SCHEME.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
 }
 
 export function errorMessage(error: unknown): string {
@@ -387,5 +433,5 @@ export function errorMessage(error: unknown): string {
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

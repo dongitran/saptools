@@ -9,6 +9,7 @@ import {
   parseODataMetadata,
   parseSubEntities,
   createEntity,
+  normalizeBearerToken,
 } from '../src/discovery.js';
 
 vi.mock('../src/cfClient.js', () => ({
@@ -46,6 +47,55 @@ describe('discovery', () => {
       expect(entities).toHaveLength(1);
       expect(entities[0]?.name).toBe('AdminService');
       expect(entities[0]?.path).toBe('/odata/v4/admin');
+    });
+
+    it('should parse cds services with @path annotation before the service', () => {
+      const content = `
+        @path: '/browse'
+        service CatalogService {
+          entity Books as projection on my.Books;
+        }
+      `;
+
+      const entities = parseCdsServices(content);
+
+      expect(entities).toHaveLength(1);
+      expect(entities[0]?.name).toBe('CatalogService');
+      expect(entities[0]?.path).toBe('/browse');
+    });
+
+    it('should parse cds services with grouped path annotation before the service', () => {
+      const content = `
+        @(path: '/admin')
+        service AdminService {
+          entity Authors as projection on my.Authors;
+        }
+      `;
+
+      const entities = parseCdsServices(content);
+
+      expect(entities).toHaveLength(1);
+      expect(entities[0]?.name).toBe('AdminService');
+      expect(entities[0]?.path).toBe('/admin');
+    });
+
+    it('should keep unannotated services when another service has an explicit path', () => {
+      const content = `
+        service CatalogService @(path: '/browse') {
+          entity Books as projection on my.Books;
+        }
+
+        service AdminService {
+          entity Authors as projection on my.Authors;
+        }
+      `;
+
+      const entities = parseCdsServices(content);
+
+      expect(entities.map((entity) => [entity.name, entity.path])).toEqual([
+        ['CatalogService', '/browse'],
+        ['AdminService', '/odata/v4/admin'],
+      ]);
     });
   });
 
@@ -138,6 +188,67 @@ describe('discovery', () => {
           schema: { type: 'object', properties: {} },
         },
       ]);
+    });
+
+    it('derives methods from external annotations and single-quoted XML attributes', () => {
+      const metadata = `
+        <edmx:Edmx xmlns:edmx='http://docs.oasis-open.org/odata/ns/edmx'>
+          <edmx:DataServices>
+            <Schema Namespace='CatalogService' xmlns='http://docs.oasis-open.org/odata/ns/edm'>
+              <EntityContainer Name='EntityContainer'>
+                <EntitySet Name='Books' EntityType='CatalogService.Books' />
+              </EntityContainer>
+              <Annotations Target='CatalogService.EntityContainer/Books'>
+                <Annotation Term='Org.OData.Capabilities.V1.InsertRestrictions'>
+                  <Record>
+                    <PropertyValue Property='Insertable' Bool='false' />
+                  </Record>
+                </Annotation>
+                <Annotation Term='Org.OData.Capabilities.V1.UpdateRestrictions'>
+                  <Record>
+                    <PropertyValue Property='Updatable' Bool='false' />
+                  </Record>
+                </Annotation>
+                <Annotation Term='Org.OData.Capabilities.V1.DeleteRestrictions'>
+                  <Record>
+                    <PropertyValue Property='Deletable' Bool='false' />
+                  </Record>
+                </Annotation>
+              </Annotations>
+            </Schema>
+          </edmx:DataServices>
+        </edmx:Edmx>
+      `;
+
+      const entities = parseODataMetadata(metadata, '/odata/v4/catalog', 'CatalogService');
+
+      expect(entities).toEqual([
+        {
+          name: 'CatalogService / Books',
+          path: '/odata/v4/catalog/Books',
+          methods: ['GET'],
+          schema: { type: 'object', properties: {} },
+        },
+      ]);
+    });
+  });
+
+  describe('normalizeBearerToken', () => {
+    it('should normalize raw bearer tokens', () => {
+      expect(normalizeBearerToken('raw-token')).toBe('Bearer raw-token');
+    });
+
+    it('should preserve existing bearer authorization scheme case-insensitively', () => {
+      expect(normalizeBearerToken('bearer existing-token')).toBe('bearer existing-token');
+      expect(normalizeBearerToken('Bearer existing-token')).toBe('Bearer existing-token');
+    });
+
+    it('should not treat prefix-looking raw tokens as authorization schemes', () => {
+      expect(normalizeBearerToken('bearerTokenValue')).toBe('Bearer bearerTokenValue');
+    });
+
+    it('should trim whitespace before normalizing', () => {
+      expect(normalizeBearerToken('  raw-token  ')).toBe('Bearer raw-token');
     });
   });
 
