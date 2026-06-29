@@ -32,6 +32,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/bruno`](./packages/bruno) | Smart runner for [Bruno](https://www.usebruno.com) collections with CF-aware env metadata and automatic XSUAA token injection | [![npm](https://img.shields.io/npm/v/@saptools/bruno.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/bruno) |
 | [`@saptools/sqltools`](./packages/sqltools) | Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections | [![npm](https://img.shields.io/npm/v/@saptools/sqltools.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sqltools) |
 | [`@saptools/cf-hana`](./packages/cf-hana) | Run SQL (SELECT/DML/DDL) against SAP HANA Cloud databases bound to a CF app by region/org/space/app selector | [![npm](https://img.shields.io/npm/v/@saptools/cf-hana.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-hana) |
+| [`@saptools/sharepoint-excel`](./packages/sharepoint-excel) | Create, read, append, and update SharePoint-hosted Excel workbooks with app-only Microsoft Graph access | [![npm](https://img.shields.io/npm/v/@saptools/sharepoint-excel.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sharepoint-excel) |
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
 | [`@saptools/jira`](./packages/jira) | Jira Cloud CLI and typed API that reuse the JiraOps OAuth token store | [![npm](https://img.shields.io/npm/v/@saptools/jira.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/jira) |
 
@@ -156,6 +157,17 @@ Runs SQL straight against the SAP HANA Cloud database bound to a CF app — pass
 
 Docs → [`packages/cf-hana/README.md`](./packages/cf-hana/README.md)
 
+### 📊 `@saptools/sharepoint-excel`
+
+Automates SharePoint-hosted `.xlsx` files without relying on delegated-only Graph workbook APIs.
+
+- 🔐 local profiles with OS credential-vault secret storage by default
+- 🆕 create workbooks without overwriting existing SharePoint files
+- ➕ append JSON records, update A1 cells, add sheets, and read sheets/ranges
+- 🛡️ ETag-protected uploads to avoid silently replacing concurrent edits
+
+Docs → [`packages/sharepoint-excel/README.md`](./packages/sharepoint-excel/README.md)
+
 ### 🔁 `@saptools/gitport`
 
 Ports one GitLab source MR into another repository as a Draft MR, preserving review context for clean ports and incoming auto-resolved conflicts.
@@ -221,6 +233,7 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── bruno/
 │   ├── sqltools/
 │   ├── cf-hana/
+│   ├── sharepoint-excel/
 │   ├── gitport/
 │   └── jira/
 ├── package.json

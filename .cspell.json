@@ -129,7 +129,17 @@
     "remotelink",
     "inspectable",
     "cmdline",
-    "idempotently"
+    "idempotently",
+    "napi",
+    "exceljs",
+    "keyring",
+    "openxmlformats",
+    "officedocument",
+    "spreadsheetml",
+    "xlsx",
+    "ETag",
+    "ETags",
+    "etag"
   ],
   "ignorePaths": [
     "node_modules/**",
