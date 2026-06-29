@@ -1,6 +1,6 @@
 {
   "name": "@saptools/sharepoint-excel",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Create, read, and update SharePoint-hosted Excel workbooks through Microsoft Graph with safe local credential profiles",
   "type": "module",
   "publishConfig": {
@@ -8,7 +8,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "bin": {
-    "saptools-sharepoint-excel": "dist/cli.js"
+    "sharepoint-excel": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

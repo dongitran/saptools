@@ -16,7 +16,8 @@ interface SecretFile {
   readonly entries: Readonly<Record<string, string>>;
 }
 
-const SERVICE_NAME = "saptools-sharepoint-excel";
+const SERVICE_NAME = "sharepoint-excel";
+const LEGACY_SERVICE_NAME = `saptools-${SERVICE_NAME}`;
 const SECRET_FILE_MODE = 0o600;
 const EMPTY_SECRET_FILE: SecretFile = { version: 1, entries: {} };
 
@@ -55,11 +56,31 @@ async function writeSecretFile(path: string, value: SecretFile): Promise<void> {
   await chmod(path, SECRET_FILE_MODE);
 }
 
+function getKeyringPassword(serviceName: string, profileName: string): string | undefined {
+  const password = new Entry(serviceName, profileName).getPassword();
+  return password === null || password.length === 0 ? undefined : password;
+}
+
+function deleteKeyringPassword(serviceName: string, profileName: string): void {
+  try {
+    new Entry(serviceName, profileName).deletePassword();
+  } catch (err) {
+    if (err instanceof Error && /not found|no entry|missing/i.test(err.message)) {
+      return;
+    }
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+}
+
 export function createKeyringSecretVault(serviceName = SERVICE_NAME): SecretVault {
+  const legacyServiceName = serviceName === SERVICE_NAME ? LEGACY_SERVICE_NAME : undefined;
   return {
     getSecret(profileName: string): Promise<string | undefined> {
-      const password = new Entry(serviceName, profileName).getPassword();
-      return Promise.resolve(password === null || password.length === 0 ? undefined : password);
+      const password = getKeyringPassword(serviceName, profileName);
+      if (password !== undefined || legacyServiceName === undefined) {
+        return Promise.resolve(password);
+      }
+      return Promise.resolve(getKeyringPassword(legacyServiceName, profileName));
     },
     setSecret(profileName: string, secret: string): Promise<void> {
       new Entry(serviceName, profileName).setPassword(secret);
@@ -67,11 +88,11 @@ export function createKeyringSecretVault(serviceName = SERVICE_NAME): SecretVaul
     },
     deleteSecret(profileName: string): Promise<void> {
       try {
-        new Entry(serviceName, profileName).deletePassword();
-      } catch (err) {
-        if (err instanceof Error && /not found|no entry|missing/i.test(err.message)) {
-          return Promise.resolve();
+        deleteKeyringPassword(serviceName, profileName);
+        if (legacyServiceName !== undefined) {
+          deleteKeyringPassword(legacyServiceName, profileName);
         }
+      } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
       return Promise.resolve();

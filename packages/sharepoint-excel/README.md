@@ -35,7 +35,7 @@ Create `.xlsx` files, read workbook content, append records, update cells, and a
 npm install -g @saptools/sharepoint-excel
 ```
 
-Requires **Node.js >= 20**. The CLI binary is `saptools-sharepoint-excel`.
+Requires **Node.js >= 20**. The CLI binary is `sharepoint-excel`.
 
 ---
 
@@ -43,7 +43,7 @@ Requires **Node.js >= 20**. The CLI binary is `saptools-sharepoint-excel`.
 
 ```bash
 # 1. Store an app-only SharePoint profile
-saptools-sharepoint-excel config set \
+sharepoint-excel config set \
   --tenant "11111111-1111-1111-1111-111111111111" \
   --client-id "22222222-2222-2222-2222-222222222222" \
   --client-secret "<your-client-secret>" \
@@ -51,30 +51,30 @@ saptools-sharepoint-excel config set \
   --drive "Documents"
 
 # 2. Prove auth and target resolution
-saptools-sharepoint-excel test
+sharepoint-excel test
 
 # 3. Create a workbook without overwriting an existing file
-saptools-sharepoint-excel create \
+sharepoint-excel create \
   --path "Reports/orders.xlsx" \
   --sheet "Orders" \
   --headers "Name,Amount,Status" \
   --rows '[{"Name":"Coffee","Amount":3,"Status":"open"}]'
 
 # 4. Append one object by matching row 1 headers
-saptools-sharepoint-excel append \
+sharepoint-excel append \
   --path "Reports/orders.xlsx" \
   --sheet "Orders" \
   --record '{"Name":"Tea","Amount":8,"Status":"open"}'
 
 # 5. Update one cell
-saptools-sharepoint-excel update-cell \
+sharepoint-excel update-cell \
   --path "Reports/orders.xlsx" \
   --sheet "Orders" \
   --cell "C2" \
   --value '"closed"'
 
 # 6. Read workbook JSON
-saptools-sharepoint-excel read --path "Reports/orders.xlsx" --json
+sharepoint-excel read --path "Reports/orders.xlsx" --json
 ```
 
 For CI, every command can also read credentials from environment variables:
@@ -110,7 +110,7 @@ The CLI also accepts the shorter `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`,
 Store a reusable local profile.
 
 ```bash
-saptools-sharepoint-excel config set \
+sharepoint-excel config set \
   --profile finance \
   --tenant "$SHAREPOINT_EXCEL_TENANT_ID" \
   --client-id "$SHAREPOINT_EXCEL_CLIENT_ID" \
@@ -129,7 +129,7 @@ For headless CI containers where an OS keyring is unavailable, an explicit plain
 
 ```bash
 SAPTOOLS_SHAREPOINT_EXCEL_ALLOW_PLAINTEXT=1 \
-saptools-sharepoint-excel config set --store file --allow-plaintext-secret ...
+sharepoint-excel config set --store file --allow-plaintext-secret ...
 ```
 
 Use that only in controlled CI environments. The file is written with `0600` permissions under `~/.saptools/sharepoint-excel/secrets.json`.
@@ -137,8 +137,8 @@ Use that only in controlled CI environments. The file is written with `0600` per
 ### 👀 `config get`
 
 ```bash
-saptools-sharepoint-excel config get --profile finance
-saptools-sharepoint-excel config get --profile finance --json
+sharepoint-excel config get --profile finance
+sharepoint-excel config get --profile finance --json
 ```
 
 Secrets are never printed.
@@ -146,7 +146,7 @@ Secrets are never printed.
 ### 🧹 `config remove`
 
 ```bash
-saptools-sharepoint-excel config remove --profile finance
+sharepoint-excel config remove --profile finance
 ```
 
 Removes both profile metadata and the stored secret.
@@ -156,15 +156,15 @@ Removes both profile metadata and the stored secret.
 Authenticate, resolve the site, and list document libraries.
 
 ```bash
-saptools-sharepoint-excel test
-saptools-sharepoint-excel test --json
+sharepoint-excel test
+sharepoint-excel test --json
 ```
 
 ### 🗂️ `drives`
 
 ```bash
-saptools-sharepoint-excel drives
-saptools-sharepoint-excel drives --json
+sharepoint-excel drives
+sharepoint-excel drives --json
 ```
 
 Use this when you are unsure whether the document library is named `Documents`, `Shared Documents`, or something custom.
@@ -172,7 +172,7 @@ Use this when you are unsure whether the document library is named `Documents`, 
 ### 🆕 `create`
 
 ```bash
-saptools-sharepoint-excel create \
+sharepoint-excel create \
   --path "Reports/orders.xlsx" \
   --sheet "Orders" \
   --headers "Name,Amount,Status" \
@@ -185,14 +185,14 @@ saptools-sharepoint-excel create \
 ### 📖 `read`
 
 ```bash
-saptools-sharepoint-excel read --path "Reports/orders.xlsx"
-saptools-sharepoint-excel read --path "Reports/orders.xlsx" --sheet "Orders" --range "A1:C10" --json
+sharepoint-excel read --path "Reports/orders.xlsx"
+sharepoint-excel read --path "Reports/orders.xlsx" --sheet "Orders" --range "A1:C10" --json
 ```
 
 ### ➕ `append`
 
 ```bash
-saptools-sharepoint-excel append \
+sharepoint-excel append \
   --path "Reports/orders.xlsx" \
   --sheet "Orders" \
   --record '{"Name":"Tea","Amount":8,"Status":"open"}'
@@ -203,7 +203,7 @@ Objects are mapped by the first row's headers by default. Use `--no-match-header
 ### 🎯 `update-cell`
 
 ```bash
-saptools-sharepoint-excel update-cell \
+sharepoint-excel update-cell \
   --path "Reports/orders.xlsx" \
   --sheet "Orders" \
   --cell "B2" \
@@ -215,7 +215,7 @@ saptools-sharepoint-excel update-cell \
 ### 📄 `add-sheet`
 
 ```bash
-saptools-sharepoint-excel add-sheet \
+sharepoint-excel add-sheet \
   --path "Reports/orders.xlsx" \
   --sheet "Audit" \
   --headers "At,Action,Actor"

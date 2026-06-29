@@ -2,9 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const keyringValues = new Map<string, string>();
+const legacyServiceName = ["saptools", "sharepoint-excel"].join("-");
 
 vi.mock("@napi-rs/keyring", () => ({
   Entry: class Entry {
@@ -29,6 +30,10 @@ vi.mock("@napi-rs/keyring", () => ({
 }));
 
 describe("secret vaults", () => {
+  beforeEach(() => {
+    keyringValues.clear();
+  });
+
   it("stores file secrets with get/set/delete", async () => {
     const { createFileSecretVault } = await import("../../src/credentials/secret-vault.js");
     const dir = await mkdtemp(join(tmpdir(), "sharepoint-excel-secrets-"));
@@ -48,5 +53,20 @@ describe("secret vaults", () => {
     expect(await vault.getSecret("demo")).toBe("secret");
     await vault.deleteSecret("demo");
     expect(await vault.getSecret("demo")).toBeUndefined();
+  });
+
+  it("uses the renamed keyring service while cleaning up legacy entries", async () => {
+    const { createKeyringSecretVault } = await import("../../src/credentials/secret-vault.js");
+    const vault = createKeyringSecretVault();
+
+    await vault.setSecret("demo", "secret");
+    expect(keyringValues.get("sharepoint-excel:demo")).toBe("secret");
+    expect(keyringValues.get(`${legacyServiceName}:demo`)).toBeUndefined();
+
+    keyringValues.set(`${legacyServiceName}:legacy`, "legacy-secret");
+    expect(await vault.getSecret("legacy")).toBe("legacy-secret");
+
+    await vault.deleteSecret("legacy");
+    expect(keyringValues.get(`${legacyServiceName}:legacy`)).toBeUndefined();
   });
 });

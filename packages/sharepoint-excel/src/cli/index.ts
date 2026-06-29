@@ -7,7 +7,7 @@ import { registerCommands } from "./commands.js";
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   program
-    .name("saptools-sharepoint-excel")
+    .name("sharepoint-excel")
     .description("Create, read, and update SharePoint-hosted Excel workbooks");
   registerCommands(program);
   await program.parseAsync([...argv]);

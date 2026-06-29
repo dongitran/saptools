@@ -10,6 +10,7 @@ import { buildBaseEnv, PACKAGE_ROOT, runCli, startFakeGraph } from "./helpers.js
 import type { FakeGraphProcess } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
+const oldCommandName = ["saptools", "sharepoint-excel"].join("-");
 
 function scenario() {
   return {
@@ -32,7 +33,7 @@ function scenario() {
   } as const;
 }
 
-test.describe("saptools-sharepoint-excel fake Graph flow", () => {
+test.describe("sharepoint-excel fake Graph flow", () => {
   let server: FakeGraphProcess | undefined;
   let env: Readonly<Record<string, string>>;
 
@@ -57,6 +58,14 @@ test.describe("saptools-sharepoint-excel fake Graph flow", () => {
     if (server) {
       await server.stop();
     }
+  });
+
+  test("User can open help for the renamed CLI", async () => {
+    const result = await runCli({ args: ["--help"], env: {} });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Usage: sharepoint-excel");
+    expect(result.stdout).not.toContain(oldCommandName);
   });
 
   test("User can test auth and list drives", async () => {
