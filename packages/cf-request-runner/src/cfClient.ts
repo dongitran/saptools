@@ -4,6 +4,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const TOKEN_REQUEST_TIMEOUT_MS = 15_000;
+const SYSTEM_PROVIDED_MARKER = 'System-Provided:';
+const VCAP_SERVICES_MARKER = 'VCAP_SERVICES:';
 
 export interface CfCommandOptions {
   readonly cfHomeDir?: string | undefined;
@@ -78,10 +80,14 @@ export async function fetchRemoteCdsServicesFromTarget(params: {
   readonly appName: string;
   readonly cfHomeDir?: string | undefined;
 }): Promise<string | null> {
-  const command = `find / -maxdepth 7 \\( -path '*/node_modules' -o -path /proc -o -path /sys -o -path /dev \\) -prune -o -type f -name '*.cds' -print 2>/dev/null | xargs cat`;
+  const command = [
+    'find / -maxdepth 7',
+    "\\( -path '*/node_modules' -o -path /proc -o -path /sys -o -path /dev \\) -prune",
+    "-o -type f -name '*.cds' -exec cat {} + 2>/dev/null",
+  ].join(' ');
 
   try {
-    const stdout = await runCfCommand(['ssh', params.appName, '-c', `"${command}"`], {
+    const stdout = await runCfCommand(['ssh', params.appName, '--disable-pseudo-tty', '-c', command], {
       cfHomeDir: params.cfHomeDir,
       failureMessage: `Failed to fetch remote .cds files for app "${params.appName}".`,
     });
@@ -133,16 +139,9 @@ interface XsuaaCredentials {
 }
 
 function parseXsuaaCredentials(output: string): XsuaaCredentials | undefined {
-  const systemProvided = /System-Provided:\n([\s\S]*?)\n\n/.exec(output)?.[1];
-  if (systemProvided === undefined || systemProvided === '') { return undefined; }
-  const start = systemProvided.indexOf('VCAP_SERVICES:');
-  const objectStart = systemProvided.indexOf('{', start);
-  if (start === -1 || objectStart === -1) { return undefined; }
-  const nextKey = /\n[A-Z_]+:\s*\{/.exec(systemProvided.slice(objectStart));
-  const objectEnd = nextKey === null ? systemProvided.length : objectStart + nextKey.index;
-  const parsed: unknown = JSON.parse(systemProvided.slice(objectStart, objectEnd).trim());
-  if (!isRecord(parsed) || !Array.isArray(parsed['xsuaa'])) { return undefined; }
-  const firstBinding: unknown = parsed['xsuaa'][0];
+  const services = extractVcapServices(output);
+  if (services === undefined || !Array.isArray(services['xsuaa'])) { return undefined; }
+  const firstBinding: unknown = services['xsuaa'][0];
   if (!isRecord(firstBinding) || !isRecord(firstBinding['credentials'])) { return undefined; }
   const credentials = firstBinding['credentials'];
   const clientId = credentials['clientid'];
@@ -154,8 +153,67 @@ function parseXsuaaCredentials(output: string): XsuaaCredentials | undefined {
   return { clientId, clientSecret, url };
 }
 
+function extractVcapServices(output: string): Record<string, unknown> | undefined {
+  const systemProvided = extractSystemProvidedJson(output);
+  const structuredServices = systemProvided?.['VCAP_SERVICES'];
+  if (isRecord(structuredServices)) { return structuredServices; }
+  return extractNamedJsonObject(output, VCAP_SERVICES_MARKER);
+}
+
+function extractSystemProvidedJson(output: string): Record<string, unknown> | undefined {
+  const markerIdx = output.indexOf(SYSTEM_PROVIDED_MARKER);
+  if (markerIdx === -1) { return undefined; }
+  const afterMarker = output.slice(markerIdx + SYSTEM_PROVIDED_MARKER.length).trimStart();
+  if (!afterMarker.startsWith('{')) { return undefined; }
+  const closeIdx = findJsonObjectEnd(afterMarker, 0);
+  if (closeIdx === -1) { return undefined; }
+  return parseJsonObject(afterMarker.slice(0, closeIdx + 1));
+}
+
+function extractNamedJsonObject(output: string, marker: string): Record<string, unknown> | undefined {
+  const markerIdx = output.indexOf(marker);
+  if (markerIdx === -1) { return undefined; }
+  const afterMarker = output.slice(markerIdx + marker.length);
+  const openIdx = afterMarker.indexOf('{');
+  if (openIdx === -1) { return undefined; }
+  const closeIdx = findJsonObjectEnd(afterMarker, openIdx);
+  if (closeIdx === -1) { return undefined; }
+  return parseJsonObject(afterMarker.slice(openIdx, closeIdx + 1));
+}
+
+function findJsonObjectEnd(source: string, startIdx: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let idx = startIdx;
+  while (idx < source.length) {
+    const char = source[idx];
+    idx++;
+    if (char === undefined) { continue; }
+    if (escaped) { escaped = false; continue; }
+    if (inString && char === '\\') { escaped = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) { continue; }
+    if (char === '{') { depth++; continue; }
+    if (char === '}') {
+      depth--;
+      if (depth === 0) { return idx - 1; }
+    }
+  }
+  return -1;
+}
+
+function parseJsonObject(rawJson: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(rawJson);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

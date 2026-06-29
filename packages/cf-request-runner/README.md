@@ -4,7 +4,7 @@
 
 **Auto-discover all API endpoints of an SAP CAP CDS service deployed on Cloud Foundry.**
 
-Automatically walk your remote CAP `$metadata` and `endpoints` catalog, perform deep entity expansion, and safely fall back to container SSH to parse `.cds` files — no more guessing routes or reading manual documentation.
+Automatically walk your remote CAP service documents, OData `$metadata`, and `endpoints` catalog, perform deep entity expansion, and safely fall back to container SSH to parse `.cds` files — no more guessing routes or reading manual documentation.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/cf-request-runner.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/cf-request-runner)
 [![license](https://img.shields.io/npm/l/@saptools/cf-request-runner.svg?style=flat&color=blue)](./LICENSE)
@@ -19,8 +19,8 @@ Automatically walk your remote CAP `$metadata` and `endpoints` catalog, perform 
 
 ## ✨ Features
 
-- 🌍 **Root Endpoint Discovery** — fetches root metadata and catalogs from a deployed CAP service dynamically.
-- 🟢 **Deep Entity Discovery** — crawls and expands endpoints to discover all nested sub-entities and resources automatically.
+- 🌍 **Root Endpoint Discovery** — fetches root service documents and catalogs from a deployed CAP service dynamically.
+- 🟢 **Deep Entity Discovery** — reads OData `$metadata` before falling back to service documents to infer entity and operation endpoints.
 - ⚡ **CF SSH Fallback** — if runtime requests are blocked or hidden, falls back to `cf ssh` to run a headless script parsing `.cds` definitions.
 - 🧭 **Zero Configuration** — seamlessly integrates with your active Cloud Foundry CLI (`cf target`) session. No complex credential management required.
 - 🗄️ **Programmatic API** — exports fully typed methods for deep integrations in other Node.js apps.
@@ -31,13 +31,7 @@ Automatically walk your remote CAP `$metadata` and `endpoints` catalog, perform 
 ## 📦 Install
 
 ```bash
-# Global CLI
 npm install -g @saptools/cf-request-runner
-
-# Or as a dependency
-npm install @saptools/cf-request-runner
-# pnpm add @saptools/cf-request-runner
-# yarn add @saptools/cf-request-runner
 ```
 
 > [!NOTE]
@@ -75,8 +69,16 @@ cf-request-runner --app <appId> --url <baseUrl>
 | `--app <name>` | `-a` | Cloud Foundry application name. | Yes |
 | `--url <baseUrl>` | `-u` | Base URL of the deployed application. | Yes |
 | `--cf-home <dir>` | | Custom `CF_HOME` directory if using an isolated CF session. | No |
+| `--token <bearerToken>` | | Bearer token override. Prefer `CF_REQUEST_RUNNER_TOKEN` for sensitive tokens. | No |
 | `--json` | | Output the results in strict JSON format. | No |
+| `--out <filePath>` | | Save JSON output to a specific file. | No |
 | `--help` | `-h` | Display help for command. | No |
+
+For token-based runs, prefer an environment variable so the bearer token is not saved in shell history:
+
+```bash
+CF_REQUEST_RUNNER_TOKEN="$TOKEN" cf-request-runner -a my-cap-app -u https://my-cap-app.example.com --json
+```
 
 ---
 
@@ -112,6 +114,7 @@ endpoints.forEach((ep) => {
 | `fetchXsuaaTokenFromTarget(params)` | Fetches XSUAA client credentials via CF CLI. |
 | `fetchRemoteCdsServicesFromTarget(params)` | Fetches `.cds` source via `cf ssh`. |
 | `parseCdsServices(content)` | Parses source `.cds` contents into service paths. |
+| `parseODataMetadata(metadataXml, servicePath, serviceName)` | Parses common OData metadata entity sets and operation imports. |
 | `parseSubEntities(value, parent)` | Recursively parses sub-entities from an OData JSON result. |
 
 </details>

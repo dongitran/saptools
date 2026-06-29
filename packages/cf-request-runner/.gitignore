@@ -3,4 +3,5 @@ dist
 coverage
 .turbo
 test-results
+package-lock.json
 *.log

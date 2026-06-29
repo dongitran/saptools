@@ -15,12 +15,42 @@ interface CliOptions {
   readonly out?: string;
 }
 
+interface PackageMetadata {
+  readonly version: string;
+}
+
 const program = new Command();
+
+function readPackageVersion(): string {
+  try {
+    const raw = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    return isPackageMetadata(parsed) ? parsed.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+function isPackageMetadata(value: unknown): value is PackageMetadata {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as { readonly version?: unknown }).version === 'string'
+    && (value as { readonly version: string }).version.length > 0
+  );
+}
+
+function resolveBearerToken(cliToken: string | undefined): string | undefined {
+  const token = cliToken ?? process.env['CF_REQUEST_RUNNER_TOKEN'];
+  const trimmed = token?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
 
 program
   .name('cf-request-runner')
   .description('Auto-discover all API endpoints of an SAP CAP CDS service on Cloud Foundry')
-  .version('0.1.0')
+  .version(readPackageVersion())
   .requiredOption('-a, --app <appId>', 'CF Application Name')
   .requiredOption('-u, --url <baseUrl>', 'Base URL of the deployed application (e.g., https://my-app.cfapps.us10.hana.ondemand.com)')
   .option('--cf-home <dir>', 'Custom CF_HOME directory (optional)')
@@ -39,7 +69,7 @@ program
         appId: options.app,
         baseUrl: options.url,
         cfHomeDir: options.cfHome,
-        token: options.token,
+        token: resolveBearerToken(options.token),
         log: (msg) => {
           if (spinner !== null) {
             spinner.text = msg;

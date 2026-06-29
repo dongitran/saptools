@@ -1,8 +1,15 @@
+// cspell:words edm edmx Edmx Insertable
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import * as cfClient from '../src/cfClient.js';
 import type { ApiCatalogDiscoveryOptions } from '../src/discovery.js';
-import { discoverApiEntities, parseCdsServices, parseSubEntities, createEntity } from '../src/discovery.js';
+import {
+  discoverApiEntities,
+  parseCdsServices,
+  parseODataMetadata,
+  parseSubEntities,
+  createEntity,
+} from '../src/discovery.js';
 
 vi.mock('../src/cfClient.js', () => ({
   fetchXsuaaTokenFromTarget: vi.fn(),
@@ -75,6 +82,65 @@ describe('discovery', () => {
     });
   });
 
+  describe('parseODataMetadata', () => {
+    it('derives entity and operation endpoints from OData metadata', () => {
+      const metadata = `
+        <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+          <edmx:DataServices>
+            <Schema Namespace="CatalogService" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+              <EntityContainer Name="EntityContainer">
+                <edm:EntitySet Name="Books" EntityType="CatalogService.Books">
+                  <edm:Annotation Term="Org.OData.Capabilities.V1.InsertRestrictions">
+                    <edm:Record>
+                      <edm:PropertyValue Property="Insertable" Bool="false" />
+                    </edm:Record>
+                  </edm:Annotation>
+                  <edm:Annotation Term="Org.OData.Capabilities.V1.DeleteRestrictions">
+                    <edm:Record>
+                      <edm:PropertyValue Property="Deletable" Bool="false" />
+                    </edm:Record>
+                  </edm:Annotation>
+                </edm:EntitySet>
+                <edm:EntitySet Name="Authors" EntityType="CatalogService.Authors" />
+                <edm:FunctionImport Name="topBooks" Function="CatalogService.topBooks" />
+                <edm:ActionImport Name="resetCatalog" Action="CatalogService.resetCatalog" />
+              </EntityContainer>
+            </Schema>
+          </edmx:DataServices>
+        </edmx:Edmx>
+      `;
+
+      const entities = parseODataMetadata(metadata, '/odata/v4/catalog', 'CatalogService');
+
+      expect(entities).toEqual([
+        {
+          name: 'CatalogService / Books',
+          path: '/odata/v4/catalog/Books',
+          methods: ['GET', 'PATCH'],
+          schema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'CatalogService / Authors',
+          path: '/odata/v4/catalog/Authors',
+          methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+          schema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'CatalogService / topBooks',
+          path: '/odata/v4/catalog/topBooks',
+          methods: ['GET'],
+          schema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'CatalogService / resetCatalog',
+          path: '/odata/v4/catalog/resetCatalog',
+          methods: ['POST'],
+          schema: { type: 'object', properties: {} },
+        },
+      ]);
+    });
+  });
+
   describe('discoverApiEntities', () => {
     const defaultOptions: ApiCatalogDiscoveryOptions = {
       appId: 'test-app',
@@ -99,6 +165,43 @@ describe('discovery', () => {
       expect(entities).toHaveLength(1);
       expect(entities[0]?.name).toBe('Service1');
       expect(entities[0]?.path).toBe('/odata/v4/service1');
+    });
+
+    it('expands root service endpoints through OData metadata before falling back to service documents', async () => {
+      vi.mocked(cfClient.fetchXsuaaTokenFromTarget).mockResolvedValue('fake-token');
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            endpoints: [
+              { name: 'CatalogService', path: '/odata/v4/catalog' },
+            ],
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          text: async () => `
+            <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+              <edmx:DataServices>
+                <Schema Namespace="CatalogService" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+                  <EntityContainer Name="EntityContainer">
+                    <EntitySet Name="Books" EntityType="CatalogService.Books" />
+                  </EntityContainer>
+                </Schema>
+              </edmx:DataServices>
+            </edmx:Edmx>
+          `,
+        } as Response);
+
+      const entities = await discoverApiEntities(defaultOptions);
+
+      expect(entities).toHaveLength(1);
+      expect(entities[0]?.name).toBe('CatalogService / Books');
+      expect(entities[0]?.path).toBe('/odata/v4/catalog/Books');
+      expect(vi.mocked(global.fetch).mock.calls.map(([url]) => url)).toEqual([
+        'http://test.com/',
+        'http://test.com/odata/v4/catalog/$metadata',
+      ]);
     });
 
     it('should fallback to CDS SSH if root discovery fails', async () => {

@@ -124,6 +124,25 @@ describe('cfClient', () => {
       expect(result).toBe('service content');
     });
 
+    it('passes the remote CDS scan as one unquoted cf ssh command argument', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchRemoteCdsServicesFromTarget({ appName: 'test-app' });
+
+      mockChild.stdout.write('service content');
+      mockChild.emit('close', 0);
+
+      await promise;
+      const call = vi.mocked(spawn).mock.calls[0];
+      expect(call?.[0]).toBe('cf');
+      expect(call?.[1]?.slice(0, 4)).toEqual(['ssh', 'test-app', '--disable-pseudo-tty', '-c']);
+      const remoteCommand = call?.[1]?.[4];
+      expect(remoteCommand).toContain("find / -maxdepth 7");
+      expect(remoteCommand).toContain("-exec cat {} +");
+      expect(remoteCommand?.startsWith('"')).toBe(false);
+      expect(remoteCommand?.endsWith('"')).toBe(false);
+    });
+
     it('should return null if SSH fails', async () => {
       const mockChild = createMockChild();
       vi.mocked(spawn).mockReturnValue(mockChild);
@@ -167,6 +186,88 @@ describe('cfClient', () => {
         'https://auth.com/oauth/token?grant_type=client_credentials',
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
+    });
+
+    it('parses VCAP_SERVICES when VCAP_APPLICATION follows without a blank separator', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchXsuaaTokenFromTarget({ appName: 'test-app' });
+      const vcapOutput = [
+        'System-Provided:',
+        'VCAP_SERVICES: {"xsuaa":[{"credentials":{"clientid":"id","clientsecret":"secret","url":"https://auth.com"}}]}',
+        'VCAP_APPLICATION: {"application_name":"test-app"}',
+        'User-Provided:',
+        '(empty)',
+      ].join('\n');
+      mockChild.stdout.write(vcapOutput);
+      mockChild.emit('close', 0);
+
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'fake-token' }),
+      } as Response);
+
+      await expect(promise).resolves.toBe('fake-token');
+    });
+
+    it('parses VCAP_SERVICES from structured System-Provided JSON', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchXsuaaTokenFromTarget({ appName: 'test-app' });
+      const vcapOutput = [
+        'System-Provided:',
+        JSON.stringify({
+          VCAP_SERVICES: {
+            xsuaa: [
+              {
+                credentials: {
+                  clientid: 'id',
+                  clientsecret: 'secret',
+                  url: 'https://auth.com',
+                },
+              },
+            ],
+          },
+        }),
+        '',
+      ].join('\n');
+      mockChild.stdout.write(vcapOutput);
+      mockChild.emit('close', 0);
+
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'fake-token' }),
+      } as Response);
+
+      await expect(promise).resolves.toBe('fake-token');
+    });
+
+    it('does not request a token when xsuaa credentials are incomplete', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchXsuaaTokenFromTarget({ appName: 'test-app' });
+      const vcapOutput = 'VCAP_SERVICES: {"xsuaa":[{"credentials":{"clientid":"id","url":"https://auth.com"}}]}';
+      mockChild.stdout.write(vcapOutput);
+      mockChild.emit('close', 0);
+
+      await expect(promise).resolves.toBeNull();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the token endpoint does not return an access token string', async () => {
+      const mockChild = createMockChild();
+      vi.mocked(spawn).mockReturnValue(mockChild);
+      const promise = cfClient.fetchXsuaaTokenFromTarget({ appName: 'test-app' });
+      const vcapOutput = 'VCAP_SERVICES: {"xsuaa":[{"credentials":{"clientid":"id","clientsecret":"secret","url":"https://auth.com"}}]}';
+      mockChild.stdout.write(vcapOutput);
+      mockChild.emit('close', 0);
+
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 123 }),
+      } as Response);
+
+      await expect(promise).resolves.toBeNull();
     });
 
     it('should return null if CF env fails', async () => {

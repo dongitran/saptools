@@ -1,3 +1,4 @@
+// cspell:words Insertable apos
 import {
   fetchRemoteCdsServicesFromTarget,
   fetchXsuaaTokenFromTarget,
@@ -20,6 +21,14 @@ export interface ApiCatalogDiscoveryOptions {
 }
 
 const API_METHODS = ['GET', 'POST', 'PATCH', 'DELETE'] as const;
+const READ_METHODS = ['GET'] as const;
+const ACTION_METHODS = ['POST'] as const;
+const DISCOVERY_TIMEOUT_MS = 5000;
+
+interface XmlNode {
+  readonly attributes: string;
+  readonly body: string;
+}
 
 export async function discoverApiEntities(
   options: ApiCatalogDiscoveryOptions
@@ -175,11 +184,37 @@ async function expandEntity(
   headers: Readonly<Record<string, string>>
 ): Promise<readonly DiscoveredApiEntity[]> {
   if (entity.path === '' || entity.path === '/') { return [entity]; }
+  const metadataEntities = await fetchMetadataEntities(baseUrl, entity, headers);
+  if (metadataEntities.length > 0) { return metadataEntities; }
+  return await fetchServiceDocumentEntities(baseUrl, entity, headers);
+}
+
+async function fetchMetadataEntities(
+  baseUrl: string,
+  entity: DiscoveredApiEntity,
+  headers: Readonly<Record<string, string>>
+): Promise<readonly DiscoveredApiEntity[]> {
   try {
-    const separator = entity.path.startsWith('/') ? '' : '/';
-    const response = await fetch(`${baseUrl}${separator}${entity.path}`, {
+    const response = await fetch(buildEndpointUrl(baseUrl, entity.path, '$metadata'), {
+      headers: { ...headers, Accept: 'application/xml, text/xml, */*' },
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+    });
+    if (!response.ok) { return []; }
+    return parseODataMetadata(await response.text(), entity.path, entity.name);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchServiceDocumentEntities(
+  baseUrl: string,
+  entity: DiscoveredApiEntity,
+  headers: Readonly<Record<string, string>>
+): Promise<readonly DiscoveredApiEntity[]> {
+  try {
+    const response = await fetch(buildEndpointUrl(baseUrl, entity.path), {
       headers,
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
     });
     if (!response.ok) { return [entity]; }
     const data = await response.json();
@@ -188,6 +223,128 @@ async function expandEntity(
   } catch {
     return [entity];
   }
+}
+
+export function parseODataMetadata(
+  metadataXml: string,
+  servicePath: string,
+  serviceName: string
+): readonly DiscoveredApiEntity[] {
+  return [
+    ...parseEntitySetMetadata(metadataXml, servicePath, serviceName),
+    ...parseOperationImports(metadataXml, 'FunctionImport', servicePath, serviceName, READ_METHODS),
+    ...parseOperationImports(metadataXml, 'ActionImport', servicePath, serviceName, ACTION_METHODS),
+  ];
+}
+
+function parseEntitySetMetadata(
+  metadataXml: string,
+  servicePath: string,
+  serviceName: string
+): readonly DiscoveredApiEntity[] {
+  const entities: DiscoveredApiEntity[] = [];
+  for (const node of findXmlNodes(metadataXml, 'EntitySet')) {
+    const name = readXmlAttribute(node.attributes, 'Name');
+    if (name === undefined || name === '') { continue; }
+    entities.push(createEntity(
+      `${serviceName} / ${name}`,
+      joinEndpointPath(servicePath, name),
+      entityMethodsFromMetadata(node.body),
+    ));
+  }
+  return entities;
+}
+
+function parseOperationImports(
+  metadataXml: string,
+  tagName: 'FunctionImport' | 'ActionImport',
+  servicePath: string,
+  serviceName: string,
+  methods: readonly string[]
+): readonly DiscoveredApiEntity[] {
+  const entities: DiscoveredApiEntity[] = [];
+  for (const node of findXmlNodes(metadataXml, tagName)) {
+    const name = readXmlAttribute(node.attributes, 'Name');
+    if (name === undefined || name === '') { continue; }
+    entities.push(createEntity(`${serviceName} / ${name}`, joinEndpointPath(servicePath, name), methods));
+  }
+  return entities;
+}
+
+function entityMethodsFromMetadata(entityBody: string): readonly string[] {
+  return API_METHODS.filter((method) => capabilityAllowsMethod(entityBody, method));
+}
+
+function capabilityAllowsMethod(entityBody: string, method: string): boolean {
+  if (method === 'POST') {
+    return !hasFalseCapability(entityBody, 'InsertRestrictions', 'Insertable');
+  }
+  if (method === 'PATCH') {
+    return !hasFalseCapability(entityBody, 'UpdateRestrictions', 'Updatable');
+  }
+  if (method === 'DELETE') {
+    return !hasFalseCapability(entityBody, 'DeleteRestrictions', 'Deletable');
+  }
+  return true;
+}
+
+function hasFalseCapability(entityBody: string, restrictionName: string, propertyName: string): boolean {
+  return findXmlNodes(entityBody, 'Annotation').some((annotation) => {
+    const term = readXmlAttribute(annotation.attributes, 'Term') ?? '';
+    return term.endsWith(restrictionName) && hasFalsePropertyValue(annotation.body, propertyName);
+  });
+}
+
+function hasFalsePropertyValue(source: string, propertyName: string): boolean {
+  return findXmlNodes(source, 'PropertyValue').some((propertyValue) =>
+    readXmlAttribute(propertyValue.attributes, 'Property') === propertyName
+    && readXmlAttribute(propertyValue.attributes, 'Bool') === 'false'
+  );
+}
+
+function findXmlNodes(source: string, tagName: string): readonly XmlNode[] {
+  const nodes: XmlNode[] = [];
+  const qualifiedTagName = `(?:[A-Za-z_][\\w.-]*:)?${escapeRegExp(tagName)}`;
+  const pattern = new RegExp(`<${qualifiedTagName}\\b([^>]*?)(?:\\s*/>|>([\\s\\S]*?)<\\/${qualifiedTagName}>)`, 'gu');
+  let match = pattern.exec(source);
+  while (match !== null) {
+    nodes.push({ attributes: match[1] ?? '', body: match[2] ?? '' });
+    match = pattern.exec(source);
+  }
+  return nodes;
+}
+
+function readXmlAttribute(attributes: string, name: string): string | undefined {
+  const escapedName = escapeRegExp(name);
+  const match = new RegExp(`\\b${escapedName}="([^"]*)"`, 'u').exec(attributes);
+  const value = match?.[1];
+  return value === undefined ? undefined : decodeXmlText(value);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function buildEndpointUrl(baseUrl: string, endpointPath: string, suffix?: string): string {
+  const normalizedBase = baseUrl.replace(/\/+$/g, '');
+  const normalizedPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
+  const normalizedSuffix = suffix === undefined ? '' : `/${suffix.replace(/^\/+/g, '')}`;
+  return `${normalizedBase}${normalizedPath}${normalizedSuffix}`;
+}
+
+function joinEndpointPath(basePath: string, segment: string): string {
+  const normalizedBase = basePath.replace(/\/+$/g, '');
+  const normalizedSegment = segment.replace(/^\/+/g, '');
+  return `${normalizedBase}/${normalizedSegment}`.replace(/\/+/g, '/');
 }
 
 export function parseSubEntities(
@@ -208,10 +365,14 @@ export function parseSubEntities(
   return entities;
 }
 
-export function createEntity(name: string, path: string): DiscoveredApiEntity {
+export function createEntity(
+  name: string,
+  path: string,
+  methods: readonly string[] = API_METHODS
+): DiscoveredApiEntity {
   return {
     name,
-    methods: API_METHODS,
+    methods,
     schema: { type: 'object', properties: {} },
     path,
   };
