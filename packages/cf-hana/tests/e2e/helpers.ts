@@ -128,11 +128,19 @@ export async function readBackupFiles(
     throw error;
   }
   const backups: { statement: string; csv: string }[] = [];
-  for (const directory of [...directories].sort()) {
-    backups.push({
-      statement: await readFile(join(backupRoot, directory, "statement.sql"), "utf8"),
-      csv: await readFile(join(backupRoot, directory, "backup.csv"), "utf8"),
-    });
+  for (const month of [...directories].sort()) {
+    const monthDir = join(backupRoot, month);
+    const entries = await readdir(monthDir);
+    const dataFiles = entries
+      .filter((entry) => entry.endsWith(".sql") && !entry.endsWith(".statement.sql"))
+      .sort();
+    for (const dataFile of dataFiles) {
+      const statementFile = dataFile.replace(/\.sql$/, ".statement.sql");
+      backups.push({
+        statement: await readFile(join(monthDir, statementFile), "utf8"),
+        csv: await readFile(join(monthDir, dataFile), "utf8"),
+      });
+    }
   }
   return backups;
 }

@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -99,6 +99,40 @@ describe("write backup planning", () => {
     });
   });
 
+  it("derives a SELECT for UPSERT with a WHERE clause", () => {
+    expect(
+      buildWriteBackupPlan("UPSERT ORDERS VALUES (?, ?) WHERE ID = ?", [7, "DONE", 7]),
+    ).toEqual({
+      operation: "upsert",
+      statementSql: "UPSERT ORDERS VALUES (?, ?) WHERE ID = ?",
+      selectSql: "SELECT * FROM ORDERS WHERE ID = ?",
+      selectParams: [7],
+    });
+  });
+
+  it("derives a SELECT for UPSERT with an explicit column list", () => {
+    expect(
+      buildWriteBackupPlan(
+        "UPSERT APP.ORDERS (ID, STATUS) VALUES (?, ?) WHERE ID = ?",
+        [7, "DONE", 7],
+      ),
+    ).toEqual({
+      operation: "upsert",
+      statementSql: "UPSERT APP.ORDERS (ID, STATUS) VALUES (?, ?) WHERE ID = ?",
+      selectSql: "SELECT * FROM APP.ORDERS WHERE ID = ?",
+      selectParams: [7],
+    });
+  });
+
+  it("backs up the whole UPSERT target when no WHERE clause is provided", () => {
+    expect(buildWriteBackupPlan("UPSERT ORDERS VALUES (?, ?)", [7, "DONE"])).toEqual({
+      operation: "upsert",
+      statementSql: "UPSERT ORDERS VALUES (?, ?)",
+      selectSql: "SELECT * FROM ORDERS",
+      selectParams: [],
+    });
+  });
+
   it("returns undefined for non-write statements", () => {
     expect(buildWriteBackupPlan("SELECT * FROM ORDERS", [])).toBeUndefined();
   });
@@ -113,18 +147,28 @@ describe("write backup planning", () => {
 describe("writeSqlBackup", () => {
   it("writes one statement file and one CSV file under the backup root", async () => {
     const saptoolsRoot = join(rootDir, ".saptools");
-    const record = await writeSqlBackup(sampleBackupInput(), {
-      now: fixedNow(),
-      saptoolsRoot,
-    });
+    const record = await writeSqlBackup(
+      sampleBackupInput({ selector: "eu10/example-org/space-demo/app-demo" }),
+      {
+        now: fixedNow(),
+        saptoolsRoot,
+      },
+    );
 
-    expect(record.directory.startsWith(cfHanaBackupRoot(saptoolsRoot))).toBe(true);
-    expect(basename(record.directory)).toMatch(/^2026-06-23T120000000Z-update-/);
+    expect(record.directory).toBe(join(cfHanaBackupRoot(saptoolsRoot), "202606"));
+    expect(dirname(record.backupPath)).toBe(record.directory);
+    expect(basename(record.backupPath)).toMatch(
+      /^eu10-example-org-space-demo-app-demo-update-2026-06-23T120000000Z\.sql$/,
+    );
+    expect(extname(record.backupPath)).toBe(".sql");
     await expect(readFile(record.statementPath, "utf8")).resolves.toBe(
       "UPDATE ORDERS SET STATUS = ? WHERE ID = ?\n",
     );
     await expect(readFile(record.backupPath, "utf8")).resolves.toBe(
       "ID,STATUS\r\n1,OPEN",
+    );
+    await expect(readFile(record.metadataPath, "utf8")).resolves.toContain(
+      "eu10/example-org/space-demo/app-demo",
     );
     expect(record.rowCount).toBe(1);
   });

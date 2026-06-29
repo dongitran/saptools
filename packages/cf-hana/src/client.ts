@@ -129,6 +129,7 @@ export class HanaClient {
         operation: plan.operation,
         statementSql: plan.statementSql,
         result,
+        selector: this.info.selector,
       });
     });
   }

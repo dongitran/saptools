@@ -87,10 +87,16 @@ async function readHistoryEntries(): Promise<readonly Record<string, unknown>[]>
 async function readBackupCsvFiles(): Promise<readonly string[]> {
   const backupRoot = join(tempHome, ".saptools", "cf-hana", "backups");
   try {
-    const directories = await readdir(backupRoot);
+    const months = await readdir(backupRoot);
     const files: string[] = [];
-    for (const directory of directories) {
-      files.push(await readFile(join(backupRoot, directory, "backup.csv"), "utf8"));
+    for (const month of months) {
+      const monthDir = join(backupRoot, month);
+      const entries = await readdir(monthDir);
+      for (const entry of entries) {
+        if (entry.endsWith(".sql") && !entry.endsWith(".statement.sql")) {
+          files.push(await readFile(join(monthDir, entry), "utf8"));
+        }
+      }
     }
     return files;
   } catch (error) {
@@ -194,6 +200,32 @@ describe("HanaClient", () => {
     expect(driver.connections[0]?.execCalls.map((call) => call.sql)).toEqual([
       "SELECT * FROM ORDERS WHERE ID = ?",
       "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+    ]);
+    await expect(readBackupCsvFiles()).resolves.toEqual(["ID,STATUS\r\n7,OPEN"]);
+  });
+
+  it("backs up rows for an UPSERT statement before callers execute it", async () => {
+    const { driver, client } = makeClient((sql, params) => {
+      if (sql === "SELECT * FROM ORDERS WHERE ID = ?") {
+        return {
+          rows: [{ ID: params[0] as number, STATUS: "OPEN" }],
+          columns: [
+            { name: "ID", typeName: "INTEGER" },
+            { name: "STATUS", typeName: "NVARCHAR" },
+          ],
+        };
+      }
+      return { affectedRows: 1 };
+    });
+
+    const sql = "UPSERT ORDERS VALUES (?, ?) WHERE ID = ?";
+    const backup = await client.backupWriteStatement(sql, [7, "DONE", 7]);
+    await client.query(sql, [7, "DONE", 7]);
+
+    expect(backup?.rowCount).toBe(1);
+    expect(driver.connections[0]?.execCalls.map((call) => call.sql)).toEqual([
+      "SELECT * FROM ORDERS WHERE ID = ?",
+      sql,
     ]);
     await expect(readBackupCsvFiles()).resolves.toEqual(["ID,STATUS\r\n7,OPEN"]);
   });
