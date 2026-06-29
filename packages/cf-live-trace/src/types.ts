@@ -95,6 +95,16 @@ export interface InspectorRuntimeClient {
   close(): Promise<void> | void;
 }
 
+export type InspectorStartupResult =
+  | {
+    readonly status: "ready";
+    readonly detail?: string;
+  }
+  | {
+    readonly status: "not-ready";
+    readonly detail?: string;
+  };
+
 export interface PortForwardProcess {
   once(event: "exit" | "error", listener: () => void): this;
   removeListener(event: "exit" | "error", listener: () => void): this;

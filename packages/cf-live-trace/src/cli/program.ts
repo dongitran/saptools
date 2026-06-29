@@ -42,30 +42,33 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 export async function runTraceCommand(options: RunOptions): Promise<void> {
   const cfHome = await resolveCfHome(options);
-  const events: LiveTraceEvent[] = [];
-  const eventLimit = createEventLimit(options);
-  const session = new LiveTraceSession({
-    target: { ...options.target, cfHomeDir: cfHome.path },
-    onState: (event) => {
-      if (!options.quiet) {
-        writeProgress(event);
-      }
-    },
-    onLog: (message) => {
-      if (!options.quiet) {
-        writeLog(message);
-      }
-    },
-    onEvents: (batch) => {
-      handleEvents(batch, options, events);
-      eventLimit.check(events.length);
-    },
-  });
-  await runUntilStopped(session, options, eventLimit.promise);
-  if (options.format === "json") {
-    writeJson({ events });
+  try {
+    const events: LiveTraceEvent[] = [];
+    const eventLimit = createEventLimit(options);
+    const session = new LiveTraceSession({
+      target: { ...options.target, cfHomeDir: cfHome.path },
+      onState: (event) => {
+        if (!options.quiet) {
+          writeProgress(event);
+        }
+      },
+      onLog: (message) => {
+        if (!options.quiet) {
+          writeLog(message);
+        }
+      },
+      onEvents: (batch) => {
+        handleEvents(batch, options, events);
+        eventLimit.check(events.length);
+      },
+    });
+    await runUntilStopped(session, options, eventLimit);
+    if (options.format === "json") {
+      writeJson({ events });
+    }
+  } finally {
+    await cfHome.dispose();
   }
-  await cfHome.dispose();
 }
 
 function handleEvents(batch: readonly LiveTraceEvent[], options: RunOptions, events: LiveTraceEvent[]): void {
@@ -83,37 +86,53 @@ function handleEvents(batch: readonly LiveTraceEvent[], options: RunOptions, eve
 async function runUntilStopped(
   session: LiveTraceSession,
   options: RunOptions,
-  eventLimit: Promise<LiveTraceStopReason>,
+  eventLimit: StopWaiter & { readonly check: (count: number) => void },
 ): Promise<void> {
   const abort = createAbortPromise();
+  const duration = createDurationStopWaiter(options.limits.durationMs);
   let stopReason: LiveTraceStopReason = "user";
+  let failed = false;
   try {
     await session.start(options.trace);
-    stopReason = await waitForStop(options, abort.promise, eventLimit);
+    stopReason = await waitForStop([abort, eventLimit, duration]);
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     abort.cleanup();
-    await session.stop({ uninstallRuntimeHook: options.uninstallOnExit, reason: stopReason });
+    duration.cleanup();
+    eventLimit.cleanup();
+    await session.stop({ uninstallRuntimeHook: options.uninstallOnExit, reason: failed ? "error" : stopReason });
   }
 }
 
-async function waitForStop(
-  options: RunOptions,
-  abort: Promise<LiveTraceStopReason>,
-  eventLimit: Promise<LiveTraceStopReason>,
-): Promise<LiveTraceStopReason> {
-  const waits: Promise<LiveTraceStopReason>[] = [abort, eventLimit];
-  if (options.limits.durationMs !== undefined) {
-    waits.push(waitForDuration(options.limits.durationMs));
-  }
-  return await Promise.race(waits);
+interface StopWaiter {
+  readonly promise: Promise<LiveTraceStopReason>;
+  cleanup(): void;
 }
 
-function waitForDuration(durationMs: number): Promise<LiveTraceStopReason> {
-  return new Promise<LiveTraceStopReason>((resolve) => {
-    setTimeout(() => {
+async function waitForStop(waiters: readonly StopWaiter[]): Promise<LiveTraceStopReason> {
+  return await Promise.race(waiters.map((waiter) => waiter.promise));
+}
+
+function createDurationStopWaiter(durationMs: number | undefined): StopWaiter {
+  if (durationMs === undefined) {
+    return createNeverStopWaiter();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<LiveTraceStopReason>((resolve) => {
+    timer = setTimeout(() => {
       resolve("duration");
     }, durationMs);
   });
+  return {
+    promise,
+    cleanup: (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
 
 function createAbortPromise(): { readonly promise: Promise<LiveTraceStopReason>; readonly cleanup: () => void } {
@@ -137,15 +156,25 @@ function createAbortPromise(): { readonly promise: Promise<LiveTraceStopReason>;
   };
 }
 
+function createNeverStopWaiter(): StopWaiter {
+  return {
+    promise: new Promise<LiveTraceStopReason>(() => {
+      return;
+    }),
+    cleanup: (): void => {
+      return;
+    },
+  };
+}
+
 function createEventLimit(options: RunOptions): {
   readonly promise: Promise<LiveTraceStopReason>;
   readonly check: (count: number) => void;
+  readonly cleanup: () => void;
 } {
   if (options.limits.maxEvents === undefined) {
     return {
-      promise: new Promise<LiveTraceStopReason>(() => {
-        return;
-      }),
+      ...createNeverStopWaiter(),
       check: (): void => {
         return;
       },
@@ -163,6 +192,9 @@ function createEventLimit(options: RunOptions): {
       if (options.limits.maxEvents !== undefined && count >= options.limits.maxEvents) {
         resolveLimit("max-events");
       }
+    },
+    cleanup: (): void => {
+      return;
     },
   };
 }

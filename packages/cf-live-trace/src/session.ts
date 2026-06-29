@@ -1,10 +1,11 @@
-import { ensureSshEnabled, openInspectorTunnel, prepareCfSession, tryStartNodeInspector } from "./cf.js";
+import { ensureSshEnabled, openInspectorTunnel, prepareCfSession, startNodeInspector } from "./cf.js";
 import { connectRuntimeInspector } from "./inspector.js";
 import { parseDrainResult } from "./payload.js";
 import { buildDrainExpression, buildInstallExpression, buildStopExpression } from "./runtime-source.js";
 import { buildUrlSummaries } from "./summary.js";
 import type {
   CfLiveTraceTarget,
+  InspectorStartupResult,
   InspectorRuntimeClient,
   LiveTraceEvent,
   LiveTraceStartOptions,
@@ -24,7 +25,7 @@ export interface LiveTraceSessionOptions {
 export interface LiveTraceDependencies {
   prepareCfSession(target: CfLiveTraceTarget): Promise<void>;
   ensureSshEnabled(target: CfLiveTraceTarget): Promise<void>;
-  tryStartNodeInspector(target: CfLiveTraceTarget): Promise<boolean>;
+  tryStartNodeInspector(target: CfLiveTraceTarget): Promise<boolean | InspectorStartupResult>;
   openInspectorTunnel(target: CfLiveTraceTarget): Promise<TunnelOpenResult>;
   connectInspector(localPort: number): Promise<InspectorRuntimeClient>;
   setInterval(callback: () => void, ms: number): NodeJS.Timeout;
@@ -42,7 +43,7 @@ const DRAIN_TRANSPORT_BODY_LIMIT = 20_000;
 const defaultDependencies: LiveTraceDependencies = {
   prepareCfSession,
   ensureSshEnabled,
-  tryStartNodeInspector,
+  tryStartNodeInspector: startNodeInspector,
   openInspectorTunnel,
   connectInspector: connectRuntimeInspector,
   setInterval,
@@ -102,9 +103,11 @@ export class LiveTraceSession {
     } catch (error) {
       this.log(`Live Trace startup failed for ${this.options.target.app}: ${formatError(error)}`);
       await this.stopRuntimeTrace(false);
+      const startupError = toStartupError(error);
       if (!this.shouldStop()) {
-        this.postState("error", "Runtime HTTP trace could not be started.", false, false);
+        this.postState("error", startupError.stateMessage, false, false);
       }
+      throw startupError;
     }
   }
 
@@ -115,7 +118,7 @@ export class LiveTraceSession {
       return;
     }
     this.postState("starting-inspector", "Requesting Node Inspector startup.", false, false);
-    await this.dependencies.tryStartNodeInspector(this.options.target);
+    this.reportInspectorStartup(await this.dependencies.tryStartNodeInspector(this.options.target));
     if (this.shouldStop()) {
       return;
     }
@@ -130,8 +133,10 @@ export class LiveTraceSession {
       return;
     }
     if (tunnel.status !== "ready") {
-      this.postState("error", "Node Inspector is not reachable on 127.0.0.1:9229.", false, false);
-      return;
+      throw new LiveTraceStartupError(
+        "Node Inspector is not reachable on 127.0.0.1:9229.",
+        "Node Inspector is not reachable on 127.0.0.1:9229.",
+      );
     }
     this.tunnelHandle = tunnel.handle;
     this.inspectorClient = await this.dependencies.connectInspector(tunnel.handle.localPort);
@@ -208,11 +213,29 @@ export class LiveTraceSession {
     this.stopPolling();
     this.consecutiveDrainTimeouts = 0;
     const uninstalled = await this.stopInspectorHook(uninstallRuntimeHook);
-    await this.inspectorClient?.close();
-    this.inspectorClient = undefined;
-    this.tunnelHandle?.stop();
-    this.tunnelHandle = undefined;
+    await this.closeInspectorClient();
+    this.stopTunnel();
     return uninstalled;
+  }
+
+  private async closeInspectorClient(): Promise<void> {
+    const client = this.inspectorClient;
+    this.inspectorClient = undefined;
+    try {
+      await client?.close();
+    } catch (error) {
+      this.log(`Live Trace inspector close failed for ${this.options.target.app}: ${formatError(error)}`);
+    }
+  }
+
+  private stopTunnel(): void {
+    const tunnel = this.tunnelHandle;
+    this.tunnelHandle = undefined;
+    try {
+      tunnel?.stop();
+    } catch (error) {
+      this.log(`Live Trace tunnel cleanup failed for ${this.options.target.app}: ${formatError(error)}`);
+    }
   }
 
   private async stopInspectorHook(uninstallRuntimeHook: boolean): Promise<boolean> {
@@ -262,6 +285,25 @@ export class LiveTraceSession {
   private log(message: string): void {
     this.options.onLog?.(message);
   }
+
+  private reportInspectorStartup(result: boolean | InspectorStartupResult): void {
+    const normalized = normalizeInspectorStartupResult(result);
+    if (normalized.status === "ready") {
+      return;
+    }
+    const detail = normalized.detail === undefined ? "" : `: ${normalized.detail}`;
+    this.log(`Node Inspector startup was not confirmed for ${this.options.target.app}${detail}`);
+  }
+}
+
+class LiveTraceStartupError extends Error {
+  public constructor(
+    message: string,
+    public readonly stateMessage: string,
+    cause?: unknown,
+  ) {
+    super(message, cause === undefined ? undefined : { cause });
+  }
 }
 
 function resolveStartOptions(options: LiveTraceStartOptions): Required<LiveTraceStartOptions> {
@@ -287,6 +329,23 @@ function resolveDrainTransportBodyLimit(maxBodyBytes: number): number {
 function isEvaluateTimeout(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("Runtime.evaluate timed out");
+}
+
+function toStartupError(error: unknown): LiveTraceStartupError {
+  if (error instanceof LiveTraceStartupError) {
+    return error;
+  }
+  return new LiveTraceStartupError(
+    "Runtime HTTP trace could not be started.",
+    "Runtime HTTP trace could not be started.",
+    error,
+  );
+}
+
+function normalizeInspectorStartupResult(result: boolean | InspectorStartupResult): InspectorStartupResult {
+  return typeof result === "boolean"
+    ? { status: result ? "ready" : "not-ready" }
+    : result;
 }
 
 function formatError(error: unknown): string {

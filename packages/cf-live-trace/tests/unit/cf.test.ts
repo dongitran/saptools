@@ -13,6 +13,7 @@ import {
   openInspectorTunnel,
   prepareCfSession,
   runCfCommand,
+  startNodeInspector,
   tryStartNodeInspector,
 } from "../../src/cf.js";
 import type { PortForwardProcess } from "../../src/types.js";
@@ -117,6 +118,38 @@ describe("Cloud Foundry helpers", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("cancels tunnel readiness polling when the port-forward process exits early", async () => {
+    const emitter = new EventEmitter();
+    const process = emitter as PortForwardProcess;
+    const stop = vi.fn();
+    let readinessSignal: AbortSignal | undefined;
+
+    const resultPromise = openInspectorTunnel(
+      { appName: "orders-api", instanceIndex: 0 },
+      {
+        allocatePort: vi.fn(async () => 51236),
+        spawnPortForward: vi.fn(() => ({ process, localPort: 51236, stop })),
+        waitForLocalPort: vi.fn((_port: number, _timeoutMs: number, signal?: AbortSignal) => {
+          readinessSignal = signal;
+          queueMicrotask(() => {
+            emitter.emit("exit");
+          });
+          return new Promise<boolean>((resolve) => {
+            signal?.addEventListener("abort", () => {
+              resolve(false);
+            }, { once: true });
+          });
+        }),
+      },
+    );
+
+    const result = await resultPromise;
+
+    expect(result.status).toBe("not-reachable");
+    expect(readinessSignal?.aborted).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it("redacts credentials from errors", () => {
     const redact = createSecretRedactor(["secret-password", "Bearer raw-token"]);
 
@@ -160,6 +193,30 @@ describe("Cloud Foundry helpers", () => {
       "-c",
       expect.stringContaining("saptools-inspector-ready"),
     ]);
+  });
+
+  it("returns structured inspector startup details when the ready marker is missing", async () => {
+    const runCf = vi.fn(async () => [
+      "saptools-inspector-node-pid=123",
+      "saptools-inspector-signaled",
+      "saptools-inspector-not-ready",
+    ].join("\n"));
+
+    await expect(startNodeInspector(createTarget(), { runCf })).resolves.toEqual({
+      status: "not-ready",
+      detail: "saptools-inspector-node-pid=123; saptools-inspector-signaled; saptools-inspector-not-ready",
+    });
+  });
+
+  it("redacts inspector startup failure details", async () => {
+    const runCf = vi.fn(async () => {
+      throw new Error("ssh failed with secret-password");
+    });
+
+    await expect(startNodeInspector(createTarget(), { runCf })).resolves.toEqual({
+      status: "not-ready",
+      detail: "ssh failed with <redacted>",
+    });
   });
 
   it("returns false when the remote inspector startup command fails", async () => {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import type { CfLiveTraceTarget, PortForwardHandle, TunnelOpenResult } from "./types.js";
+import type { CfLiveTraceTarget, InspectorStartupResult, PortForwardHandle, TunnelOpenResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,7 +34,7 @@ export interface CfDependencies {
 export interface TunnelDependencies {
   allocatePort(): Promise<number>;
   spawnPortForward(params: PortForwardParams): PortForwardHandle;
-  waitForLocalPort(port: number, timeoutMs: number): Promise<boolean>;
+  waitForLocalPort(port: number, timeoutMs: number, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface PortForwardParams {
@@ -101,15 +101,25 @@ export async function tryStartNodeInspector(
   target: Pick<CfLiveTraceTarget, "app" | "cfHomeDir" | "command" | "email" | "password" | "instanceIndex">,
   dependencies: CfDependencies = defaultCfDependencies,
 ): Promise<boolean> {
+  const result = await startNodeInspector(target, dependencies);
+  return result.status === "ready";
+}
+
+export async function startNodeInspector(
+  target: Pick<CfLiveTraceTarget, "app" | "cfHomeDir" | "command" | "email" | "password" | "instanceIndex">,
+  dependencies: CfDependencies = defaultCfDependencies,
+): Promise<InspectorStartupResult> {
+  const redactor = createSecretRedactor([target.email, target.password]);
   try {
-    const redactor = createSecretRedactor([target.email, target.password]);
     const stdout = await dependencies.runCf(
       buildCfSshArgs(target.app, target.instanceIndex, ["-c", buildInspectorSignalCommand()]),
       { ...buildRunOptions(target, redactor), timeoutMs: INSPECTOR_SIGNAL_TIMEOUT_MS },
     );
-    return hasInspectorReadyMarker(stdout);
-  } catch {
-    return false;
+    return hasInspectorReadyMarker(stdout)
+      ? { status: "ready" }
+      : { status: "not-ready", ...optionalDetail(summarizeInspectorStartupOutput(stdout)) };
+  } catch (error) {
+    return { status: "not-ready", ...optionalDetail(redactor(formatErrorMessage(error))) };
   }
 }
 
@@ -287,6 +297,7 @@ function resolveTunnelAppName(target: InspectorTunnelTarget): string {
 }
 
 async function raceForwardReadiness(handle: PortForwardHandle, dependencies: TunnelDependencies): Promise<boolean> {
+  const controller = new AbortController();
   let markFailed: () => void = () => {
     return;
   };
@@ -297,11 +308,14 @@ async function raceForwardReadiness(handle: PortForwardHandle, dependencies: Tun
     handle.process.once("exit", markFailed);
     handle.process.once("error", markFailed);
   });
-  const ready = dependencies.waitForLocalPort(handle.localPort, TUNNEL_READY_TIMEOUT_MS);
-  const outcome = await Promise.race([ready, failedEarly]);
-  handle.process.removeListener("exit", markFailed);
-  handle.process.removeListener("error", markFailed);
-  return outcome;
+  const ready = dependencies.waitForLocalPort(handle.localPort, TUNNEL_READY_TIMEOUT_MS, controller.signal);
+  try {
+    return await Promise.race([ready, failedEarly]);
+  } finally {
+    controller.abort();
+    handle.process.removeListener("exit", markFailed);
+    handle.process.removeListener("error", markFailed);
+  }
 }
 
 function resolveCommand(command?: string): { readonly bin: string; readonly argsPrefix: readonly string[] } {
@@ -338,12 +352,29 @@ function extractErrorDetail(error: unknown): string {
   return error["message"] instanceof Error ? error["message"].message : "";
 }
 
+function formatErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.trim().length > 0 ? message.trim() : "Unknown error";
+}
+
 function formatArgs(args: readonly string[]): string {
   return args.join(" ");
 }
 
 function hasInspectorReadyMarker(stdout: string): boolean {
   return stdout.split(/\r?\n/).map((line) => line.trim()).includes("saptools-inspector-ready");
+}
+
+function summarizeInspectorStartupOutput(stdout: string): string | undefined {
+  const markers = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("saptools-inspector-"));
+  return markers.length === 0 ? undefined : markers.join("; ");
+}
+
+function optionalDetail(detail: string | undefined): { readonly detail?: string } {
+  return detail === undefined || detail.length === 0 ? {} : { detail };
 }
 
 function findFreePort(): Promise<number> {
@@ -364,30 +395,68 @@ function findFreePort(): Promise<number> {
   });
 }
 
-function waitForLocalPort(port: number, timeoutMs: number): Promise<boolean> {
+function waitForLocalPort(port: number, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   return new Promise<boolean>((resolve) => {
+    let activeSocket: ReturnType<typeof netConnect> | undefined;
+    let settled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (ready: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+      }
+      activeSocket?.destroy();
+      activeSocket = undefined;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(ready);
+    };
+    const onAbort = (): void => {
+      finish(false);
+    };
     const attempt = (): void => {
+      if (settled) {
+        return;
+      }
       const socket = netConnect({ host: "127.0.0.1", port });
+      activeSocket = socket;
       socket.once("connect", () => {
         socket.destroy();
-        resolve(true);
+        activeSocket = undefined;
+        finish(true);
       });
       socket.once("error", () => {
-        retryPortProbe(socket, deadline, attempt, resolve);
+        activeSocket = undefined;
+        retryPortProbe(socket, deadline, attempt, finish, (timer) => {
+          retryTimer = timer;
+        });
       });
     };
+    if (signal?.aborted === true) {
+      finish(false);
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     attempt();
   });
 }
 
-function retryPortProbe(socket: ReturnType<typeof netConnect>, deadline: number, attempt: () => void, resolve: (ready: boolean) => void): void {
+function retryPortProbe(
+  socket: ReturnType<typeof netConnect>,
+  deadline: number,
+  attempt: () => void,
+  finish: (ready: boolean) => void,
+  setRetryTimer: (timer: ReturnType<typeof setTimeout>) => void,
+): void {
   socket.destroy();
   if (Date.now() >= deadline) {
-    resolve(false);
+    finish(false);
     return;
   }
-  setTimeout(attempt, TUNNEL_READY_POLL_MS);
+  setRetryTimer(setTimeout(attempt, TUNNEL_READY_POLL_MS));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

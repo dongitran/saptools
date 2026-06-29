@@ -20,6 +20,7 @@ export {
   createSecretRedactor,
   openInspectorTunnel,
   prepareCfSession,
+  startNodeInspector,
   tryStartNodeInspector,
 } from "./cf.js";
 export type { CfDependencies, PortForwardParams, RunCfOptions, TunnelDependencies } from "./cf.js";
@@ -30,6 +31,7 @@ export type { LiveTraceDependencies, LiveTraceSessionOptions } from "./session.j
 export type {
   CfLiveTraceTarget,
   DrainParseResult,
+  InspectorStartupResult,
   InspectorRuntimeClient,
   LiveTraceEvent,
   LiveTraceLifecycleState,
