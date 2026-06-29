@@ -155,6 +155,30 @@ describe("LiveTraceSession", () => {
     ]);
   });
 
+  it("keeps the error state when stopped after startup failure cleanup", async () => {
+    const states: LiveTraceStateEvent[] = [];
+    const session = new LiveTraceSession(
+      {
+        target: createTarget(),
+        onState: (state) => states.push(state),
+      },
+      {
+        prepareCfSession: vi.fn(async () => {
+          throw new Error("cf auth failed");
+        }),
+        ensureSshEnabled: vi.fn(async () => undefined),
+        tryStartNodeInspector: vi.fn(async () => true),
+        openInspectorTunnel: vi.fn(async (): Promise<TunnelOpenResult> => ({ status: "not-reachable" })),
+        connectInspector: vi.fn(),
+      },
+    );
+
+    await expect(session.start({ maxBodyBytes: 4096 })).rejects.toThrow("Runtime HTTP trace could not be started.");
+    await session.stop({ uninstallRuntimeHook: true, reason: "error" });
+
+    expect(states.map((state) => state.state)).toEqual(["preparing", "error"]);
+  });
+
   it("reports an error when the inspector tunnel is not reachable", async () => {
     const states: LiveTraceStateEvent[] = [];
     const session = new LiveTraceSession(

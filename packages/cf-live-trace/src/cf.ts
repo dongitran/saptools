@@ -176,6 +176,8 @@ export function spawnPortForward(params: PortForwardParams): PortForwardHandle {
     env: buildCfEnv(params.cfHomeDir),
     stdio: ["ignore", "pipe", "pipe"],
   });
+  child.stdout.resume();
+  child.stderr.resume();
   return {
     process: child,
     localPort: params.localPort,
@@ -349,7 +351,11 @@ function extractErrorDetail(error: unknown): string {
   if (stderr.length > 0) {
     return stderr;
   }
-  return error["message"] instanceof Error ? error["message"].message : "";
+  const message = error["message"];
+  if (typeof message === "string") {
+    return message.trim();
+  }
+  return message instanceof Error ? message.message.trim() : "";
 }
 
 function formatErrorMessage(error: unknown): string {

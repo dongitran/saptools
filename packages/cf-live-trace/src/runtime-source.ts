@@ -1,5 +1,5 @@
 export const CF_LIVE_TRACE_GLOBAL_NAME = "__SAPTOOLS_CF_LIVE_TRACE__";
-export const CF_LIVE_TRACE_RUNTIME_VERSION = 1;
+export const CF_LIVE_TRACE_RUNTIME_VERSION = 2;
 
 export interface RuntimeInstallOptions {
   readonly appId: string;
@@ -211,15 +211,12 @@ export const CF_LIVE_TRACE_RUNTIME_SOURCE = `
     status() {
       return { installed: state.installed, enabled: state.enabled, queueSize: state.queue.length, droppedCount: state.droppedCount, maxEvents: state.options.maxEvents };
     },
-    uninstall() {
+    async uninstall() {
       state.enabled = false;
-      const requireFn = loadRequire();
-      if (requireFn) {
-        const http = requireFn('http');
-        const https = requireFn('https');
-        if (state.originals.httpServerEmit && http && http.Server) http.Server.prototype.emit = state.originals.httpServerEmit;
-        if (state.originals.httpsServerEmit && https && https.Server) https.Server.prototype.emit = state.originals.httpsServerEmit;
-      }
+      const http = await loadModule('http');
+      const https = await loadModule('https');
+      if (state.originals.httpServerEmit && http && http.Server) http.Server.prototype.emit = state.originals.httpServerEmit;
+      if (state.originals.httpsServerEmit && https && https.Server) https.Server.prototype.emit = state.originals.httpsServerEmit;
       state.installed = false;
       return api.status();
     }

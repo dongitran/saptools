@@ -79,6 +79,9 @@ export class LiveTraceSession {
   public async stop(options: LiveTraceStopOptions): Promise<void> {
     this.stopRequested = true;
     if (!this.isRunning()) {
+      if (this.state === "error" && options.reason === "error") {
+        return;
+      }
       this.postState("stopped", `Trace stopped (${options.reason}).`, false, false);
       return;
     }

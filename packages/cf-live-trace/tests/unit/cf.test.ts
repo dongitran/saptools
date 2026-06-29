@@ -158,6 +158,12 @@ describe("Cloud Foundry helpers", () => {
     );
   });
 
+  it("includes exec error messages when stderr is empty", async () => {
+    await expect(runCfCommand(["api", "https://api.example.com"], {
+      command: "/definitely/missing/cf-live-trace-cf",
+    })).rejects.toThrow("ENOENT");
+  });
+
   it("enables SSH, restarts the app, and smoke checks the selected instance when disabled", async () => {
     const runCf = vi.fn(async (args: readonly string[]) => args[0] === "ssh-enabled" ? "ssh support is disabled" : "");
 

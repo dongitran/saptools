@@ -4,7 +4,7 @@ import { Command } from "commander";
 
 import { createTemporaryCfHome, removeTemporaryCfHome } from "../cf.js";
 import { LiveTraceSession } from "../session.js";
-import type { LiveTraceEvent, LiveTraceStopReason } from "../types.js";
+import type { LiveTraceEvent, LiveTraceStateEvent, LiveTraceStopReason } from "../types.js";
 
 import { buildRunOptionsWithCurrentTarget, type CliFlags, type RunOptions } from "./options.js";
 import { writeJson, writeJsonLine, writeLog, writeProgress, writeSummaryLine } from "./output.js";
@@ -45,12 +45,14 @@ export async function runTraceCommand(options: RunOptions): Promise<void> {
   try {
     const events: LiveTraceEvent[] = [];
     const eventLimit = createEventLimit(options);
+    const runtimeError = createRuntimeErrorStopWaiter();
     const session = new LiveTraceSession({
       target: { ...options.target, cfHomeDir: cfHome.path },
       onState: (event) => {
         if (!options.quiet) {
           writeProgress(event);
         }
+        runtimeError.report(event);
       },
       onLog: (message) => {
         if (!options.quiet) {
@@ -62,7 +64,7 @@ export async function runTraceCommand(options: RunOptions): Promise<void> {
         eventLimit.check(events.length);
       },
     });
-    await runUntilStopped(session, options, eventLimit);
+    await runUntilStopped(session, options, eventLimit, runtimeError);
     if (options.format === "json") {
       writeJson({ events });
     }
@@ -87,6 +89,7 @@ async function runUntilStopped(
   session: LiveTraceSession,
   options: RunOptions,
   eventLimit: StopWaiter & { readonly check: (count: number) => void },
+  runtimeError: RuntimeErrorStopWaiter,
 ): Promise<void> {
   const abort = createAbortPromise();
   const duration = createDurationStopWaiter(options.limits.durationMs);
@@ -94,7 +97,7 @@ async function runUntilStopped(
   let failed = false;
   try {
     await session.start(options.trace);
-    stopReason = await waitForStop([abort, eventLimit, duration]);
+    stopReason = await waitForStop([abort, eventLimit, duration, runtimeError]);
   } catch (error) {
     failed = true;
     throw error;
@@ -102,6 +105,7 @@ async function runUntilStopped(
     abort.cleanup();
     duration.cleanup();
     eventLimit.cleanup();
+    runtimeError.cleanup();
     await session.stop({ uninstallRuntimeHook: options.uninstallOnExit, reason: failed ? "error" : stopReason });
   }
 }
@@ -109,6 +113,10 @@ async function runUntilStopped(
 interface StopWaiter {
   readonly promise: Promise<LiveTraceStopReason>;
   cleanup(): void;
+}
+
+interface RuntimeErrorStopWaiter extends StopWaiter {
+  report(event: LiveTraceStateEvent): void;
 }
 
 async function waitForStop(waiters: readonly StopWaiter[]): Promise<LiveTraceStopReason> {
@@ -163,6 +171,37 @@ function createNeverStopWaiter(): StopWaiter {
     }),
     cleanup: (): void => {
       return;
+    },
+  };
+}
+
+function createRuntimeErrorStopWaiter(): RuntimeErrorStopWaiter {
+  let hasStreamed = false;
+  let settled = false;
+  let rejectStop: (error: Error) => void = () => {
+    return;
+  };
+  const promise = new Promise<LiveTraceStopReason>((_resolve, reject) => {
+    rejectStop = reject;
+  });
+  promise.catch(() => {
+    return;
+  });
+  return {
+    promise,
+    report: (event): void => {
+      if (event.state === "streaming") {
+        hasStreamed = true;
+        return;
+      }
+      if (event.state !== "error" || !hasStreamed || settled) {
+        return;
+      }
+      settled = true;
+      rejectStop(new Error(event.message));
+    },
+    cleanup: (): void => {
+      settled = true;
     },
   };
 }

@@ -15,7 +15,7 @@ interface RuntimeApi {
   readonly version: number;
   install(options: unknown): Promise<unknown>;
   drainEvents(maxCount: number, maxTransportBodyBytes?: number): { readonly events: readonly RuntimeTraceEvent[] };
-  uninstall(): unknown;
+  uninstall(): Promise<unknown>;
 }
 
 interface RuntimeTraceEvent {
@@ -102,12 +102,38 @@ describe("runtime source", () => {
       }),
     );
   });
+
+  it("restores patched server emits when uninstalling without require", async () => {
+    const httpModule = createRuntimeHttpModule();
+    const httpsModule = createRuntimeHttpModule();
+    const originalHttpEmit = httpModule.Server.prototype.emit;
+    const originalHttpsEmit = httpsModule.Server.prototype.emit;
+    const runtimeApi = await runRuntimeSource(createRuntimeContextWithBuiltinModules({ httpModule, httpsModule }));
+
+    await runtimeApi.install({
+      appId: "orders-api",
+      instance: "0",
+      captureHeaders: true,
+      captureRequestBody: true,
+      captureResponseBody: true,
+      maxBodyBytes: 4096,
+      maxEvents: 1000,
+    });
+
+    expect(httpModule.Server.prototype.emit).not.toBe(originalHttpEmit);
+    expect(httpsModule.Server.prototype.emit).not.toBe(originalHttpsEmit);
+
+    await runtimeApi.uninstall();
+
+    expect(httpModule.Server.prototype.emit).toBe(originalHttpEmit);
+    expect(httpsModule.Server.prototype.emit).toBe(originalHttpsEmit);
+  });
 });
 
 interface RuntimeModule {
   readonly Server: {
     readonly prototype: {
-      emit(eventName: string, ...args: unknown[]): boolean;
+      readonly emit: (eventName: string, ...args: unknown[]) => boolean;
     };
   };
 }
@@ -158,13 +184,32 @@ function createRuntimeContext(modules?: {
   };
 }
 
+function createRuntimeContextWithBuiltinModules(modules: {
+  readonly httpModule: RuntimeModule;
+  readonly httpsModule: RuntimeModule;
+}): Record<string, unknown> {
+  return {
+    Buffer,
+    WeakSet,
+    process: {
+      getBuiltinModule(moduleName: string): unknown {
+        if (moduleName === "http") {
+          return modules.httpModule;
+        }
+        if (moduleName === "https") {
+          return modules.httpsModule;
+        }
+        throw new Error(`Unexpected module: ${moduleName}`);
+      },
+    },
+  };
+}
+
 function createRuntimeHttpModule(): RuntimeModule {
   return {
     Server: {
       prototype: {
-        emit() {
-          return true;
-        },
+        emit: () => true,
       },
     },
   };
