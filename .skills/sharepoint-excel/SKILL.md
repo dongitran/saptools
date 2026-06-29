@@ -170,7 +170,3 @@ Do not store generated workbook files, profile files, plaintext secrets, or test
 - `Sheet "<name>" not found` or `already exists`: inspect sheets with `read --json` and retry with the intended sheet name.
 - `preconditionFailed`, `412`, or ETag mismatch: the remote workbook changed between download and upload. Reread the workbook and reapply the intended change.
 - Keyring errors in CI or containers: prefer environment variables for runtime commands, or opt into `--store file --allow-plaintext-secret` only in a controlled workspace.
-
-## Related Tools
-
-Use `@saptools/sharepoint-check` for pre-flight Microsoft Graph and SharePoint diagnostics when permissions, site resolution, or drive discovery fail before workbook-specific logic starts.
