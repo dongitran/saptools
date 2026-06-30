@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { detectBodyFormat } from "../../src/trace-compact.js";
-import { inspectTraceBody, searchTraceRecords } from "../../src/trace-inspect.js";
+import {
+  inspectTraceBody,
+  inspectTraceBodyResult,
+  searchTraceRecords,
+} from "../../src/trace-inspect.js";
 import type { StoredTraceEvent } from "../../src/trace-store.js";
 import type { LiveTraceEvent } from "../../src/types.js";
 
@@ -58,6 +62,44 @@ describe("trace body inspection", () => {
     expect(() => inspectTraceBody(arrayRecord, { body: "response", path: "/2", limit: 20 })).toThrow("not found");
     expect(() => inspectTraceBody(textRecord, { body: "response", path: "", limit: 20 })).toThrow("valid JSON");
     expect(() => searchTraceRecords([arrayRecord], " ", { body: "both", limit: 1 })).toThrow("search text");
+  });
+
+  it("rejects inherited JSON Pointer properties and enforces key-match limits", () => {
+    const record = createStoredEvent({
+      responseBodyPreview: "{\"alpha1\":1,\"alpha2\":2,\"alpha3\":3}",
+      responseBodyFormat: "json",
+    });
+
+    expect(() => inspectTraceBody(record, {
+      body: "response",
+      path: "/toString",
+      limit: 20,
+    })).toThrow("not found");
+    expect(searchTraceRecords([record], "alpha", {
+      body: "response",
+      limit: 2,
+      previewLength: 20,
+    })).toHaveLength(2);
+  });
+
+  it("bounds structure rows while reporting the full child count", () => {
+    const record = createStoredEvent({
+      responseBodyPreview: "{\"one\":1,\"two\":2,\"three\":3}",
+      responseBodyFormat: "json",
+    });
+
+    const result = inspectTraceBodyResult(record, {
+      body: "response",
+      limit: 20,
+      maxRows: 2,
+    });
+
+    expect(result.rows).toEqual([
+      { path: "/one", type: "number", value: "1" },
+      { path: "/two", type: "number", value: "2" },
+    ]);
+    expect(result.totalRows).toBe(3);
+    expect(result.rowsTruncated).toBe(true);
   });
 });
 

@@ -7,6 +7,7 @@ import type { LiveTraceEvent } from "../../src/types.js";
 const storeMocks = vi.hoisted(() => ({
   listTraceSessions: vi.fn(),
   listTraceEvents: vi.fn(),
+  visitTraceEvents: vi.fn(),
   pruneTraceSessions: vi.fn(),
   readTraceEvent: vi.fn(),
 }));
@@ -17,8 +18,20 @@ describe("CLI session commands", () => {
   beforeEach(() => {
     storeMocks.listTraceSessions.mockReset();
     storeMocks.listTraceEvents.mockReset();
+    storeMocks.visitTraceEvents.mockReset();
     storeMocks.pruneTraceSessions.mockReset();
     storeMocks.readTraceEvent.mockReset();
+    storeMocks.visitTraceEvents.mockImplementation(async (
+      _sessionId: string,
+      visitor: (record: StoredTraceEventFile) => boolean | Promise<boolean>,
+    ): Promise<void> => {
+      const records: readonly StoredTraceEventFile[] = await storeMocks.listTraceEvents();
+      for (const record of records) {
+        if (!await visitor(record)) {
+          return;
+        }
+      }
+    });
   });
 
   it("lists saved trace sessions", async () => {
@@ -76,12 +89,20 @@ describe("CLI session commands", () => {
       "/data",
       "--limit",
       "12",
+      "--rows",
+      "1",
     ]);
-    const parsed = JSON.parse(output) as { readonly rows: readonly Record<string, unknown>[] };
+    const parsed = JSON.parse(output) as {
+      readonly rows: readonly Record<string, unknown>[];
+      readonly totalRows: number;
+      readonly rowsTruncated: boolean;
+    };
 
     expect(parsed.rows).toEqual([
       { path: "/data/name", type: "string", value: "alpha-value-" },
     ]);
+    expect(parsed.totalRows).toBe(1);
+    expect(parsed.rowsTruncated).toBe(false);
   });
 
   it("prunes expired trace events", async () => {

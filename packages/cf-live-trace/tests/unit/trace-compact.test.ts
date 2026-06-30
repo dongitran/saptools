@@ -38,6 +38,22 @@ describe("trace compact output", () => {
     expect(compact).not.toHaveProperty("requestHeaders");
     expect(compact).not.toHaveProperty("responseHeaders");
   });
+
+  it("does not split Unicode characters and redacts credential query values from stdout", () => {
+    const record = createStoredEvent({
+      url: "/orders?access_token=raw-token&view=full",
+      normalizedUrl: "/orders?access_token=raw-token&view=full",
+      responseBodyPreview: "😀".repeat(130),
+    });
+
+    const compact = compactTraceEvent(record);
+
+    expect(compact.url).toBe("/orders?access_token=redacted&view=full");
+    expect(compact.normalizedUrl).toBe("/orders?access_token=redacted&view=full");
+    expect(Array.from(compact.responseBodyPreview)).toHaveLength(128);
+    expect(compact.responseBodyPreviewRemainingChars).toBe(2);
+    expect(record.event.url).toContain("raw-token");
+  });
 });
 
 function createStoredEvent(overrides: Partial<LiveTraceEvent> = {}): StoredTraceEvent {

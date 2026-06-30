@@ -7,12 +7,19 @@ export interface TraceBodyInspectionOptions {
   readonly body: TraceBodySide;
   readonly path?: string;
   readonly limit?: number;
+  readonly maxRows?: number;
 }
 
 export interface TraceBodyInspectionRow {
   readonly path: string;
   readonly type: string;
   readonly value: string;
+}
+
+export interface TraceBodyInspectionResult {
+  readonly rows: readonly TraceBodyInspectionRow[];
+  readonly totalRows: number;
+  readonly rowsTruncated: boolean;
 }
 
 export interface TraceSearchOptions {
@@ -44,17 +51,62 @@ export function inspectTraceBody(
   record: StoredTraceEvent,
   options: TraceBodyInspectionOptions,
 ): readonly TraceBodyInspectionRow[] {
+  return inspectTraceBodyResult(record, options).rows;
+}
+
+export function inspectTraceBodyResult(
+  record: StoredTraceEvent,
+  options: TraceBodyInspectionOptions,
+): TraceBodyInspectionResult {
   const limit = positive("limit", options.limit ?? DEFAULT_BODY_LIMIT);
+  const maxRows = positive("max rows", options.maxRows ?? Number.MAX_SAFE_INTEGER);
   const pointer = options.path ?? "";
   const parsed = parseJsonBody(bodyText(record, options.body));
   const selected = resolvePointer(parsed, pointer);
+  const rows = inspectionRows(selected, pointer, limit, maxRows);
+  return {
+    rows: rows.values,
+    totalRows: rows.total,
+    rowsTruncated: rows.total > rows.values.length,
+  };
+}
+
+function inspectionRows(
+  selected: unknown,
+  pointer: string,
+  valueLimit: number,
+  maxRows: number,
+): { readonly values: readonly TraceBodyInspectionRow[]; readonly total: number } {
   if (Array.isArray(selected)) {
-    return selected.map((item, index) => inspectionRow(`${pointer}/${String(index)}`, item, limit));
+    const values = selected.slice(0, maxRows).map(
+      (item, index) => inspectionRow(`${pointer}/${String(index)}`, item, valueLimit),
+    );
+    return { values, total: selected.length };
   }
-  if (typeof selected === "object" && selected !== null) {
-    return Object.entries(selected).map(([key, value]) => inspectionRow(`${pointer}/${escapePointerToken(key)}`, value, limit));
+  if (!isRecord(selected)) {
+    return { values: [inspectionRow(pointer, selected, valueLimit)], total: 1 };
   }
-  return [inspectionRow(pointer, selected, limit)];
+  return objectInspectionRows(selected, pointer, valueLimit, maxRows);
+}
+
+function objectInspectionRows(
+  selected: Record<string, unknown>,
+  pointer: string,
+  valueLimit: number,
+  maxRows: number,
+): { readonly values: readonly TraceBodyInspectionRow[]; readonly total: number } {
+  const values: TraceBodyInspectionRow[] = [];
+  let total = 0;
+  for (const key in selected) {
+    if (!Object.hasOwn(selected, key)) {
+      continue;
+    }
+    if (values.length < maxRows) {
+      values.push(inspectionRow(`${pointer}/${escapePointerToken(key)}`, selected[key], valueLimit));
+    }
+    total += 1;
+  }
+  return { values, total };
 }
 
 export function searchTraceRecords(
@@ -132,7 +184,7 @@ function jsonSearchMatches(
     if (entry === undefined) {
       break;
     }
-    inspectJsonSearchEntry(record, side, entry, term, previewLength, matches, stack);
+    inspectJsonSearchEntry(record, side, entry, term, limit, previewLength, matches, stack);
   }
   return matches.slice(0, limit);
 }
@@ -142,12 +194,13 @@ function inspectJsonSearchEntry(
   side: TraceBodySide,
   entry: { readonly path: string; readonly value: unknown },
   term: string,
+  limit: number,
   previewLength: number,
   matches: TraceSearchMatch[],
   stack: { readonly path: string; readonly value: unknown }[],
 ): void {
   if (typeof entry.value === "object" && entry.value !== null) {
-    pushJsonChildren(record, side, entry, term, previewLength, matches, stack);
+    pushJsonChildren(record, side, entry, term, limit, previewLength, matches, stack);
     return;
   }
   const text = jsonScalarSearchText(entry.value);
@@ -161,6 +214,7 @@ function pushJsonChildren(
   side: TraceBodySide,
   entry: { readonly path: string; readonly value: unknown },
   term: string,
+  limit: number,
   previewLength: number,
   matches: TraceSearchMatch[],
   stack: { readonly path: string; readonly value: unknown }[],
@@ -172,6 +226,9 @@ function pushJsonChildren(
     ? entry.value.map((item, index) => [String(index), item] as const)
     : Object.entries(entry.value);
   for (const [key, value] of entries.reverse()) {
+    if (matches.length >= limit) {
+      return;
+    }
     const path = `${entry.path}/${escapePointerToken(key)}`;
     if (key.toLowerCase().includes(term)) {
       matches.push(toSearchMatch(record, side, path, jsonValueText(value, previewLength)));
@@ -258,7 +315,7 @@ function resolvePointerToken(current: unknown, token: string, pointer: string): 
     }
     return current[index];
   }
-  if (isRecord(current) && token in current) {
+  if (isRecord(current) && Object.hasOwn(current, token)) {
     return current[token];
   }
   throw new Error(`JSON Pointer path "${pointer}" not found`);

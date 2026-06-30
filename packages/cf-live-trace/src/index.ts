@@ -15,9 +15,10 @@ export type { PreviewTruncationResult } from "./preview.js";
 export { buildUrlSummaries, normalizeEventUrl } from "./summary.js";
 export { compactTraceEvent, detectBodyFormat } from "./trace-compact.js";
 export type { CompactTraceEvent, TraceBodyFormat } from "./trace-compact.js";
-export { inspectTraceBody, searchTraceRecords } from "./trace-inspect.js";
+export { inspectTraceBody, inspectTraceBodyResult, searchTraceRecords } from "./trace-inspect.js";
 export type {
   TraceBodyInspectionOptions,
+  TraceBodyInspectionResult,
   TraceBodyInspectionRow,
   TraceBodySide,
   TraceSearchBodySide,
@@ -31,6 +32,7 @@ export {
   pruneTraceSessions,
   readTraceEvent,
   traceSessionsRoot,
+  visitTraceEvents,
   writeTraceEvent,
 } from "./trace-store.js";
 export type {
@@ -41,6 +43,7 @@ export type {
   TraceSessionSummary,
   TraceStoreOptions,
   TraceTargetIdentity,
+  TraceEventVisitor,
 } from "./trace-store.js";
 
 export {

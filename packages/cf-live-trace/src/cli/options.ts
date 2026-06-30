@@ -1,6 +1,8 @@
 import { readCurrentCfTarget, type CurrentCfTarget, type CurrentCfTargetReadOptions } from "../cf.js";
 import type { CfLiveTraceTarget, LiveTraceStartOptions } from "../types.js";
 
+const MAX_TIMER_SECONDS = 2_147_483;
+
 export type OutputFormat = "ndjson" | "summary" | "json";
 
 export interface CliFlags {
@@ -68,7 +70,7 @@ export function parsePositiveInteger(raw: string | undefined, label: string): nu
     return undefined;
   }
   const value = Number.parseInt(raw, 10);
-  if (!Number.isInteger(value) || value <= 0 || String(value) !== raw.trim()) {
+  if (!Number.isSafeInteger(value) || value <= 0 || String(value) !== raw.trim()) {
     throw new Error(`Invalid ${label}: "${raw}" — expected a positive integer.`);
   }
   return value;
@@ -154,6 +156,9 @@ function buildTarget(flags: CliFlags, env: Record<string, string | undefined>): 
 function buildLimits(flags: CliFlags): RunOptions["limits"] {
   const duration = parsePositiveInteger(flags.duration, "--duration");
   const maxEvents = parsePositiveInteger(flags.maxEvents, "--max-events");
+  if (duration !== undefined && duration > MAX_TIMER_SECONDS) {
+    throw new Error(`--duration is too large; maximum is ${String(MAX_TIMER_SECONDS)} seconds.`);
+  }
   return {
     ...(duration === undefined ? {} : { durationMs: duration * 1000 }),
     ...(maxEvents === undefined ? {} : { maxEvents }),
@@ -198,7 +203,7 @@ function parseBodyLimit(value: string | undefined): number {
 
 function parseNonNegativeInteger(raw: string, label: string): number {
   const value = Number.parseInt(raw, 10);
-  if (!Number.isInteger(value) || value < 0 || String(value) !== raw.trim()) {
+  if (!Number.isSafeInteger(value) || value < 0 || String(value) !== raw.trim()) {
     throw new Error(`Invalid ${label}: "${raw}" — expected a non-negative integer.`);
   }
   return value;

@@ -15,17 +15,18 @@ describe("LiveTraceSession", () => {
     const states: LiveTraceStateEvent[] = [];
     const events: LiveTraceEvent[] = [];
     const tunnelStop = vi.fn();
+    const evaluate = vi.fn(async (expression: string, _timeoutMs: number) => {
+      if (expression.includes("?.drainEvents")) {
+        return {
+          events: [{ id: "runtime-1", url: "/health", method: "GET", responseBodyPreview: "{}" }],
+          droppedCount: 0,
+          queueSize: 0,
+        };
+      }
+      return { installed: true };
+    });
     const client: InspectorRuntimeClient = {
-      evaluate: vi.fn(async (expression: string) => {
-        if (expression.includes("?.drainEvents")) {
-          return {
-            events: [{ id: "runtime-1", url: "/health", method: "GET", responseBodyPreview: "{}" }],
-            droppedCount: 0,
-            queueSize: 0,
-          };
-        }
-        return { installed: true };
-      }),
+      evaluate,
       close: vi.fn(async () => undefined),
     };
 
@@ -57,7 +58,7 @@ describe("LiveTraceSession", () => {
         connectInspector: vi.fn(async () => client),
         setInterval: vi.fn((callback: () => void) => {
           pollCallback = callback;
-          return 10 as unknown as NodeJS.Timeout;
+          return createTimerHandle();
         }),
         clearInterval: vi.fn(),
       },
@@ -80,9 +81,9 @@ describe("LiveTraceSession", () => {
       "stopping",
       "stopped",
     ]);
-    const evaluateCalls = (client.evaluate as unknown as { readonly mock: { readonly calls: readonly [string, number][] } }).mock.calls;
+    const evaluateCalls = evaluate.mock.calls;
     expect(evaluateCalls[0]).toEqual([expect.stringContaining(".install("), 5000]);
-    expect(evaluateCalls.some(([expression, timeout]) => expression.includes(".uninstall()") && timeout === 5000)).toBe(true);
+    expect(evaluateCalls.some(([expression, timeout]) => expression.includes("?.uninstall()") && timeout === 5000)).toBe(true);
     expect(tunnelStop).toHaveBeenCalledTimes(1);
   });
 
@@ -129,10 +130,14 @@ describe("LiveTraceSession", () => {
     expect(states.at(-1)?.state).toBe("streaming");
   });
 
-  it("uses the requested positive body limit as the drain transport limit", async () => {
+  it("adapts the drain batch size to the requested body limit", async () => {
     let pollCallback: (() => void) | undefined;
+    const evaluate = vi.fn(async (
+      _expression: string,
+      _timeoutMs: number,
+    ) => ({ events: [], droppedCount: 0, queueSize: 0 }));
     const client: InspectorRuntimeClient = {
-      evaluate: vi.fn(async () => ({ events: [], droppedCount: 0, queueSize: 0 })),
+      evaluate,
       close: vi.fn(async () => undefined),
     };
     const session = new LiveTraceSession(
@@ -145,11 +150,164 @@ describe("LiveTraceSession", () => {
     await session.start({ maxBodyBytes: 1_048_576 });
     pollCallback?.();
     await vi.waitFor(() => {
-      expect((client.evaluate as unknown as { readonly mock: { readonly calls: readonly [string, number][] } }).mock.calls.some(
-        ([expression]) => expression.includes(".drainEvents(50, 1048576)"),
+      expect(evaluate.mock.calls.some(
+        ([expression]) => expression.includes(".drainEvents(4, 1048576, null)"),
       )).toBe(true);
     });
     await session.stop({ uninstallRuntimeHook: true, reason: "user" });
+  });
+
+  it("acknowledges a persisted runtime drain on the next poll", async () => {
+    let pollCallback: (() => void) | undefined;
+    const events: LiveTraceEvent[] = [];
+    let drainCalls = 0;
+    const evaluate = vi.fn(async (expression: string) => {
+      if (!expression.includes("?.drainEvents")) {
+        return { installed: true };
+      }
+      drainCalls += 1;
+      return drainCalls === 1
+        ? {
+          drainId: "d1",
+          events: [{ id: "runtime-1", url: "/orders", method: "GET" }],
+          droppedCount: 0,
+          queueSize: 1,
+        }
+        : { drainId: null, events: [], droppedCount: 0, queueSize: 0 };
+    });
+    const client: InspectorRuntimeClient = {
+      evaluate,
+      close: vi.fn(async () => undefined),
+    };
+    const session = new LiveTraceSession(
+      {
+        target: createTarget(),
+        onEvents: async (batch) => {
+          events.push(...batch);
+        },
+      },
+      createReadyDependencies(client, (callback) => {
+        pollCallback = callback;
+      }),
+    );
+
+    await session.start({ maxBodyBytes: 4096 });
+    pollCallback?.();
+    await vi.waitFor(() => {
+      expect(events).toHaveLength(1);
+    });
+    pollCallback?.();
+    await vi.waitFor(() => {
+      expect(drainCalls).toBe(2);
+    });
+
+    const calls = evaluate.mock.calls;
+    expect(calls.some(([expression]) => expression.includes(".drainEvents(50, 4096, \"d1\")"))).toBe(true);
+    await session.stop({ uninstallRuntimeHook: true, reason: "user" });
+  });
+
+  it("reports event handler failures separately from inspector connection failures", async () => {
+    let pollCallback: (() => void) | undefined;
+    const states: LiveTraceStateEvent[] = [];
+    const logs: string[] = [];
+    const client: InspectorRuntimeClient = {
+      evaluate: vi.fn(async (expression: string) => expression.includes("?.drainEvents")
+        ? {
+          drainId: "d1",
+          events: [{ id: "runtime-1", url: "/orders", method: "GET" }],
+          droppedCount: 0,
+          queueSize: 1,
+        }
+        : { installed: true }),
+      close: vi.fn(async () => undefined),
+    };
+    const session = new LiveTraceSession(
+      {
+        target: createTarget(),
+        onEvents: async () => {
+          throw new Error("disk full");
+        },
+        onState: (state) => states.push(state),
+        onLog: (message) => logs.push(message),
+      },
+      createReadyDependencies(client, (callback) => {
+        pollCallback = callback;
+      }),
+    );
+
+    await session.start({ maxBodyBytes: 4096 });
+    pollCallback?.();
+    await vi.waitFor(() => {
+      expect(states.at(-1)?.state).toBe("error");
+    });
+
+    expect(states.at(-1)?.message).toBe("Trace event handler failed.");
+    expect(logs).toContain("Live Trace event handler failed for orders-api: disk full");
+  });
+
+  it("waits for an in-flight event handler before uninstalling the runtime hook", async () => {
+    let pollCallback: (() => void) | undefined;
+    let releaseHandler: () => void = () => {
+      return;
+    };
+    let markHandlerStarted: () => void = () => {
+      return;
+    };
+    const handlerStarted = new Promise<void>((resolve) => {
+      markHandlerStarted = resolve;
+    });
+    const handlerRelease = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const evaluate = vi.fn(async (expression: string) => expression.includes("?.drainEvents")
+      ? {
+        drainId: "d1",
+        events: [{ id: "runtime-1", url: "/orders", method: "GET" }],
+        droppedCount: 0,
+        queueSize: 1,
+      }
+      : { installed: true });
+    const client: InspectorRuntimeClient = {
+      evaluate,
+      close: vi.fn(async () => undefined),
+    };
+    const session = new LiveTraceSession(
+      {
+        target: createTarget(),
+        onEvents: async () => {
+          markHandlerStarted();
+          await handlerRelease;
+        },
+      },
+      createReadyDependencies(client, (callback) => {
+        pollCallback = callback;
+      }),
+    );
+
+    await session.start({ maxBodyBytes: 4096 });
+    pollCallback?.();
+    await handlerStarted;
+    const stopPromise = session.stop({ uninstallRuntimeHook: true, reason: "user" });
+    await Promise.resolve();
+
+    const callsBeforeRelease = evaluate.mock.calls;
+    expect(callsBeforeRelease.some(([expression]) => expression.includes("?.uninstall()"))).toBe(false);
+    releaseHandler();
+    await stopPromise;
+    expect(callsBeforeRelease.some(([expression]) => expression.includes("?.uninstall()"))).toBe(true);
+  });
+
+  it("rejects a non-positive runtime queue size before starting CF work", async () => {
+    const prepareCfSession = vi.fn(async () => undefined);
+    const session = new LiveTraceSession(
+      { target: createTarget() },
+      { prepareCfSession },
+    );
+
+    await expect(session.start({ runtimeQueueSize: 0 })).rejects.toThrow(
+      "runtimeQueueSize must be a positive safe integer",
+    );
+    expect(prepareCfSession).not.toHaveBeenCalled();
   });
 
   it("rejects startup failures instead of leaving callers waiting for a stop condition", async () => {
@@ -356,8 +514,14 @@ function createReadyDependencies(
     connectInspector: vi.fn(async () => client),
     setInterval: vi.fn((callback: () => void) => {
       onInterval(callback);
-      return 10 as unknown as NodeJS.Timeout;
+      return createTimerHandle();
     }),
     clearInterval: vi.fn(),
   };
+}
+
+function createTimerHandle(): NodeJS.Timeout {
+  return setTimeout(() => {
+    return;
+  }, 0);
 }

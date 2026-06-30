@@ -85,6 +85,7 @@ export interface LiveTraceUrlSummary {
 }
 
 export interface DrainParseResult {
+  readonly drainId: string | null;
   readonly events: readonly LiveTraceEvent[];
   readonly droppedCount: number;
   readonly queueSize: number;

@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -12,8 +12,9 @@ const SESSIONS_DIR_NAME = "sessions";
 const EVENTS_DIR_NAME = "events";
 const MANIFEST_FILE_NAME = "manifest.json";
 const TRACE_TTL_MS = 2 * 60 * 60 * 1000;
-const SESSION_ID_PATTERN = /^s[0-9a-f]{8}$/;
-const REQUEST_ID_PATTERN = /^r[0-9a-f]{8}$/;
+const MAX_TARGET_SLUG_BYTES = 160;
+const SESSION_ID_PATTERN = /^s(?:[0-9a-f]{8}|[0-9a-f]{16})$/;
+const REQUEST_ID_PATTERN = /^r(?:[0-9a-f]{8}|[0-9a-f]{16})$/;
 
 export interface TraceTargetIdentity {
   readonly region?: string;
@@ -68,6 +69,10 @@ export interface TraceStoreOptions {
   readonly requestId?: () => string;
 }
 
+export type TraceEventVisitor = (
+  record: StoredTraceEventFile,
+) => boolean | Promise<boolean>;
+
 interface StoredTraceSessionManifest {
   readonly version: 1;
   readonly sessionId: string;
@@ -91,7 +96,7 @@ export async function createTraceSession(
   const eventsDirectory = join(directory, EVENTS_DIR_NAME);
   const manifestPath = join(directory, MANIFEST_FILE_NAME);
   await mkdir(eventsDirectory, { recursive: true, mode: 0o700 });
-  await writeJsonFile(manifestPath, { version: 1, sessionId, createdAt, target });
+  await writeJsonFile(manifestPath, createManifest(sessionId, createdAt, target));
   return { sessionId, createdAt, target, directory, eventsDirectory, manifestPath };
 }
 
@@ -102,6 +107,7 @@ export async function writeTraceEvent(
 ): Promise<StoredTraceEventFile> {
   const now = options.now?.() ?? new Date();
   const requestId = resolveRequestId(options.requestId?.());
+  await ensureSessionManifest(session);
   const record: StoredTraceEvent = {
     version: 1,
     sessionId: session.sessionId,
@@ -124,25 +130,52 @@ export async function readTraceEvent(
   requestId: string,
   options: TraceStoreOptions = {},
 ): Promise<StoredTraceEventFile> {
-  const events = await listTraceEvents(sessionId, options);
-  const record = events.find((item) => item.requestId === requestId);
-  if (record === undefined) {
-    throw new Error("Saved trace request not found or expired");
+  const resolvedSessionId = resolveSessionId(sessionId);
+  const resolvedRequestId = resolveRequestId(requestId);
+  const entries = await listEventFilePaths(resolvedSessionId, options.saptoolsRoot);
+  const candidates = entries.filter((path) => path.includes(`-${resolvedRequestId}-`));
+  for (const path of candidates) {
+    const record = await readStoredTraceEvent(path, resolvedSessionId);
+    if (record === undefined || isExpired(record, options)) {
+      await rm(path, { force: true });
+      continue;
+    }
+    if (record.requestId === resolvedRequestId) {
+      return record;
+    }
   }
-  return record;
+  throw new Error("Saved trace request not found or expired");
 }
 
 export async function listTraceEvents(
   sessionId: string,
   options: TraceStoreOptions = {},
 ): Promise<readonly StoredTraceEventFile[]> {
+  const records: StoredTraceEventFile[] = [];
+  await visitTraceEvents(sessionId, (record) => {
+    records.push(record);
+    return true;
+  }, options);
+  return records;
+}
+
+export async function visitTraceEvents(
+  sessionId: string,
+  visitor: TraceEventVisitor,
+  options: TraceStoreOptions = {},
+): Promise<void> {
   const resolvedSessionId = resolveSessionId(sessionId);
-  await pruneTraceSessions(options);
   const entries = await listEventFilePaths(resolvedSessionId, options.saptoolsRoot);
-  const records = await Promise.all(entries.map(async (path) => await readStoredTraceEvent(path)));
-  return records
-    .filter((item): item is StoredTraceEventFile => item !== undefined)
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.requestId.localeCompare(right.requestId));
+  for (const path of entries) {
+    const record = await readStoredTraceEvent(path, resolvedSessionId);
+    if (record === undefined || isExpired(record, options)) {
+      await rm(path, { force: true });
+      continue;
+    }
+    if (!await visitor(record)) {
+      return;
+    }
+  }
 }
 
 export async function listTraceSessions(options: TraceStoreOptions = {}): Promise<readonly TraceSessionSummary[]> {
@@ -175,12 +208,41 @@ function toTargetIdentity(target: CfLiveTraceTarget): TraceTargetIdentity {
   };
 }
 
+function createManifest(
+  sessionId: string,
+  createdAt: string,
+  target: TraceTargetIdentity,
+): StoredTraceSessionManifest {
+  return { version: 1, sessionId, createdAt, target };
+}
+
+async function ensureSessionManifest(session: TraceSession): Promise<void> {
+  try {
+    await access(session.manifestPath);
+    return;
+  } catch (error) {
+    if (!isNodeError(error, "ENOENT")) {
+      throw error;
+    }
+  }
+  await mkdir(session.eventsDirectory, { recursive: true, mode: 0o700 });
+  await writeJsonFile(
+    session.manifestPath,
+    createManifest(session.sessionId, session.createdAt, session.target),
+  );
+}
+
+function isExpired(record: StoredTraceEvent, options: TraceStoreOptions): boolean {
+  const now = (options.now?.() ?? new Date()).getTime();
+  return Date.parse(record.expiresAt) <= now;
+}
+
 async function readSessionSummary(
   sessionId: string,
   options: TraceStoreOptions,
 ): Promise<TraceSessionSummary | undefined> {
   const manifest = await readStoredManifest(manifestPath(sessionId, options.saptoolsRoot));
-  if (manifest === undefined) {
+  if (manifest?.sessionId !== sessionId) {
     return undefined;
   }
   const eventCount = (await listEventFilePaths(sessionId, options.saptoolsRoot)).length;
@@ -199,8 +261,8 @@ async function pruneSession(sessionId: string, now: number, saptoolsRoot?: strin
   let removed = 0;
   let remaining = 0;
   for (const path of eventPaths) {
-    const record = await readStoredTraceEvent(path);
-    if (record === undefined || Date.parse(record.expiresAt) <= now) {
+    const expiresAt = eventPathExpiresAt(path) ?? await storedEventExpiresAt(path);
+    if (expiresAt === undefined || expiresAt <= now) {
       await rm(path, { force: true });
       removed += 1;
     } else {
@@ -211,6 +273,11 @@ async function pruneSession(sessionId: string, now: number, saptoolsRoot?: strin
     await rm(sessionDirectory(sessionId, saptoolsRoot), { recursive: true, force: true });
   }
   return removed;
+}
+
+async function storedEventExpiresAt(path: string): Promise<number | undefined> {
+  const record = await readStoredTraceEvent(path);
+  return record === undefined ? undefined : Date.parse(record.expiresAt);
 }
 
 function isManifestExpiredOrMissing(manifest: StoredTraceSessionManifest | undefined, now: number): boolean {
@@ -240,7 +307,8 @@ async function listEventFilePaths(sessionId: string, saptoolsRoot?: string): Pro
     const entries = await readdir(directory, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => join(directory, entry.name));
+      .map((entry) => join(directory, entry.name))
+      .sort(compareEventPaths);
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
       return [];
@@ -249,31 +317,83 @@ async function listEventFilePaths(sessionId: string, saptoolsRoot?: string): Pro
   }
 }
 
-async function readStoredManifest(path: string): Promise<StoredTraceSessionManifest | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isStoredManifest(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
+function compareEventPaths(left: string, right: string): number {
+  const leftTimestamp = eventPathTimestamp(left);
+  const rightTimestamp = eventPathTimestamp(right);
+  return leftTimestamp.localeCompare(rightTimestamp) || left.localeCompare(right);
 }
 
-async function readStoredTraceEvent(path: string): Promise<StoredTraceEventFile | undefined> {
+function eventPathTimestamp(path: string): string {
+  return /-(\d{8}T\d{9}Z)\.json$/.exec(path)?.[1] ?? "";
+}
+
+function eventPathExpiresAt(path: string): number | undefined {
+  const compact = eventPathTimestamp(path);
+  if (compact.length === 0) {
+    return undefined;
+  }
+  const iso = compact.replace(
+    /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z$/,
+    "$1-$2-$3T$4:$5:$6.$7Z",
+  );
+  const createdAt = Date.parse(iso);
+  return Number.isNaN(createdAt) ? undefined : createdAt + TRACE_TTL_MS;
+}
+
+async function readStoredManifest(path: string): Promise<StoredTraceSessionManifest | undefined> {
+  const parsed = await readJsonFile(path);
+  return parsed !== undefined && isStoredManifest(parsed) ? parsed : undefined;
+}
+
+async function readStoredTraceEvent(
+  path: string,
+  expectedSessionId?: string,
+): Promise<StoredTraceEventFile | undefined> {
+  const parsed = await readJsonFile(path);
+  if (parsed === undefined || !isStoredTraceEvent(parsed)) {
+    return undefined;
+  }
+  if (expectedSessionId !== undefined && parsed.sessionId !== expectedSessionId) {
+    return undefined;
+  }
+  return { ...parsed, backupPath: path };
+}
+
+async function readJsonFile(path: string): Promise<unknown> {
+  let raw: string;
   try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isStoredTraceEvent(parsed) ? { ...parsed, backupPath: path } : undefined;
-  } catch {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
     return undefined;
   }
 }
 
 async function writeJsonFile(path: string, value: unknown): Promise<void> {
   const temporaryPath = `${path}.tmp-${process.pid.toString()}-${randomHex(4)}`;
-  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  await rename(temporaryPath, path);
+  let renamed = false;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await rename(temporaryPath, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await rm(temporaryPath, { force: true });
+    }
+  }
 }
 
 function eventFileName(record: StoredTraceEvent, now: Date): string {
@@ -288,7 +408,15 @@ function eventFileName(record: StoredTraceEvent, now: Date): string {
 
 function targetSlug(target: TraceTargetIdentity): string {
   const regionOrApi = target.region ?? target.apiEndpoint ?? "api";
-  return [regionOrApi, target.org, target.space, target.app].map(sanitizePathPart).join("-");
+  const fullSlug = [regionOrApi, target.org, target.space, target.app]
+    .map(sanitizePathPart)
+    .join("-");
+  if (Buffer.byteLength(fullSlug) <= MAX_TARGET_SLUG_BYTES) {
+    return fullSlug;
+  }
+  const hash = createHash("sha256").update(fullSlug).digest("hex").slice(0, 12);
+  const prefix = fullSlug.slice(0, MAX_TARGET_SLUG_BYTES - hash.length - 1).replace(/-+$/, "");
+  return `${prefix}-${hash}`;
 }
 
 function sanitizePathPart(value: string): string {
@@ -313,7 +441,7 @@ function manifestPath(sessionId: string, saptoolsRoot?: string): string {
 }
 
 function resolveSessionId(value: string | undefined): string {
-  const sessionId = value ?? `s${randomHex(4)}`;
+  const sessionId = value ?? `s${randomHex(8)}`;
   if (!SESSION_ID_PATTERN.test(sessionId)) {
     throw new Error("Invalid trace session id");
   }
@@ -321,7 +449,7 @@ function resolveSessionId(value: string | undefined): string {
 }
 
 function resolveRequestId(value: string | undefined): string {
-  const requestId = value ?? `r${randomHex(4)}`;
+  const requestId = value ?? `r${randomHex(8)}`;
   if (!REQUEST_ID_PATTERN.test(requestId)) {
     throw new Error("Invalid trace request id");
   }
@@ -336,8 +464,8 @@ function isStoredManifest(value: unknown): value is StoredTraceSessionManifest {
   return (
     isRecord(value) &&
     value["version"] === 1 &&
-    typeof value["sessionId"] === "string" &&
-    typeof value["createdAt"] === "string" &&
+    isSessionId(value["sessionId"]) &&
+    isIsoTimestamp(value["createdAt"]) &&
     isTraceTargetIdentity(value["target"])
   );
 }
@@ -346,14 +474,20 @@ function isStoredTraceEvent(value: unknown): value is StoredTraceEvent {
   return (
     isRecord(value) &&
     value["version"] === 1 &&
-    typeof value["sessionId"] === "string" &&
-    typeof value["requestId"] === "string" &&
-    typeof value["createdAt"] === "string" &&
-    typeof value["expiresAt"] === "string" &&
+    isStoredEventMetadata(value) &&
     isTraceTargetIdentity(value["target"]) &&
     isTraceBodyFormat(value["requestBodyFormat"]) &&
     isTraceBodyFormat(value["responseBodyFormat"]) &&
     isLiveTraceEvent(value["event"])
+  );
+}
+
+function isStoredEventMetadata(value: Record<string, unknown>): boolean {
+  return (
+    isSessionId(value["sessionId"]) &&
+    isRequestId(value["requestId"]) &&
+    isIsoTimestamp(value["createdAt"]) &&
+    isIsoTimestamp(value["expiresAt"])
   );
 }
 
@@ -372,12 +506,40 @@ function isTraceTargetIdentity(value: unknown): value is TraceTargetIdentity {
 function isLiveTraceEvent(value: unknown): value is LiveTraceEvent {
   return (
     isRecord(value) &&
-    typeof value["id"] === "string" &&
-    typeof value["timestamp"] === "string" &&
-    typeof value["appId"] === "string" &&
-    typeof value["method"] === "string" &&
-    typeof value["normalizedUrl"] === "string" &&
-    value["source"] === "runtime-http"
+    hasLiveTraceStrings(value) &&
+    hasLiveTraceMetrics(value) &&
+    isStringRecord(value["requestHeaders"]) &&
+    isStringRecord(value["responseHeaders"]) &&
+    typeof value["requestBodyTruncated"] === "boolean" &&
+    typeof value["responseBodyTruncated"] === "boolean" &&
+    value["source"] === "runtime-http" &&
+    optionalNullableString(value["correlationId"])
+  );
+}
+
+function hasLiveTraceStrings(value: Record<string, unknown>): boolean {
+  const fields = [
+    "id",
+    "appId",
+    "instance",
+    "method",
+    "path",
+    "url",
+    "normalizedUrl",
+    "requestBodyPreview",
+    "responseBodyPreview",
+    "traceId",
+  ];
+  return isIsoTimestamp(value["timestamp"]) && fields.every((field) => typeof value[field] === "string");
+}
+
+function hasLiveTraceMetrics(value: Record<string, unknown>): boolean {
+  return (
+    isNullableFiniteNumber(value["status"]) &&
+    isNullableNonNegativeNumber(value["durationMs"]) &&
+    isNonNegativeFiniteNumber(value["requestBytes"]) &&
+    isNonNegativeFiniteNumber(value["responseBytes"]) &&
+    isNonNegativeFiniteNumber(value["droppedBeforeEvent"])
   );
 }
 
@@ -396,6 +558,46 @@ function isTraceBodyFormat(value: unknown): value is TraceBodyFormat {
 
 function optionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
+}
+
+function optionalNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isSessionId(value: unknown): value is string {
+  return typeof value === "string" && SESSION_ID_PATTERN.test(value);
+}
+
+function isRequestId(value: unknown): value is string {
+  return typeof value === "string" && REQUEST_ID_PATTERN.test(value);
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isNullableFiniteNumber(value: unknown): boolean {
+  return value === null || isFiniteNumber(value);
+}
+
+function isNullableNonNegativeNumber(value: unknown): boolean {
+  return value === null || isNonNegativeFiniteNumber(value);
+}
+
+function isNonNegativeFiniteNumber(value: unknown): boolean {
+  return isFiniteNumber(value) && value >= 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

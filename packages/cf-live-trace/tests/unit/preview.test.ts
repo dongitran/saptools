@@ -11,4 +11,10 @@ describe("preview truncation", () => {
   it("marks long previews as truncated", () => {
     expect(truncatePreview("abcdef", 3)).toEqual({ preview: "abc", truncated: true });
   });
+
+  it("applies the limit in UTF-8 bytes without splitting multibyte characters", () => {
+    expect(truncatePreview("ééé", 4)).toEqual({ preview: "éé", truncated: true });
+    expect(truncatePreview("😀x", 3)).toEqual({ preview: "", truncated: true });
+    expect(truncatePreview("😀x", 4)).toEqual({ preview: "😀", truncated: true });
+  });
 });

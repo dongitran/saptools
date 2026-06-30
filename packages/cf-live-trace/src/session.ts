@@ -39,6 +39,7 @@ const CONTROL_EVALUATE_TIMEOUT_MS = 5000;
 const DRAIN_EVALUATE_TIMEOUT_MS = 10000;
 const DRAIN_TIMEOUT_RETRY_LIMIT = 3;
 const MAX_DRAIN_EVALUATE_TIMEOUT_MS = 60_000;
+const DRAIN_BODY_BUDGET_BYTES = 8 * 1024 * 1024;
 
 const defaultDependencies: LiveTraceDependencies = {
   prepareCfSession,
@@ -52,11 +53,12 @@ const defaultDependencies: LiveTraceDependencies = {
 
 export class LiveTraceSession {
   private readonly dependencies: LiveTraceDependencies;
-  private readonly events: LiveTraceEvent[] = [];
+  private readonly summaryEvents: LiveTraceEvent[] = [];
   private consecutiveDrainTimeouts = 0;
-  private drainInFlight = false;
+  private drainTask: Promise<void> | undefined;
   private inspectorClient: InspectorRuntimeClient | undefined;
   private pollTimer: NodeJS.Timeout | undefined;
+  private pendingDrainAcknowledgement: string | null = null;
   private state: LiveTraceStateEvent["state"] = "idle";
   private stopRequested = false;
   private tunnelHandle: { readonly localPort: number; readonly stop: () => void } | undefined;
@@ -73,6 +75,8 @@ export class LiveTraceSession {
       return;
     }
     this.stopRequested = false;
+    this.pendingDrainAcknowledgement = null;
+    this.summaryEvents.splice(0);
     await this.startRuntimeTrace(resolveStartOptions(options));
   }
 
@@ -165,38 +169,70 @@ export class LiveTraceSession {
     this.stopPolling();
     this.consecutiveDrainTimeouts = 0;
     this.pollTimer = this.dependencies.setInterval(() => {
-      void this.drainTraceEvents(maxBodyBytes);
+      this.startDrain(maxBodyBytes);
     }, DRAIN_INTERVAL_MS);
   }
 
-  private async drainTraceEvents(maxBodyBytes: number): Promise<void> {
-    if (this.drainInFlight || this.inspectorClient === undefined || this.state !== "streaming") {
+  private startDrain(maxBodyBytes: number): void {
+    if (this.drainTask !== undefined || this.inspectorClient === undefined || this.state !== "streaming") {
       return;
     }
-    this.drainInFlight = true;
+    const task = this.drainTraceEvents(maxBodyBytes);
+    this.drainTask = task;
+    void task.then(
+      () => {
+        this.clearDrainTask(task);
+      },
+      () => {
+        this.clearDrainTask(task);
+      },
+    );
+  }
+
+  private clearDrainTask(task: Promise<void>): void {
+    if (this.drainTask === task) {
+      this.drainTask = undefined;
+    }
+  }
+
+  private async drainTraceEvents(maxBodyBytes: number): Promise<void> {
+    const batchSize = resolveDrainBatchSize(maxBodyBytes);
     try {
-      const payload = await this.inspectorClient.evaluate(
-        buildDrainExpression(DRAIN_BATCH_SIZE, resolveDrainTransportBodyLimit(maxBodyBytes)),
-        resolveDrainEvaluateTimeout(maxBodyBytes),
+      const payload = await this.requireInspector().evaluate(
+        buildDrainExpression(
+          batchSize,
+          resolveDrainTransportBodyLimit(maxBodyBytes),
+          this.pendingDrainAcknowledgement,
+        ),
+        resolveDrainEvaluateTimeout(maxBodyBytes, batchSize),
       );
       this.consecutiveDrainTimeouts = 0;
-      await this.publishDrainedEvents(payload, maxBodyBytes);
+      try {
+        await this.publishDrainedEvents(payload, maxBodyBytes);
+      } catch (error) {
+        await this.handleEventHandlerFailure(error);
+      }
     } catch (error) {
       await this.handleDrainFailure(error);
-    } finally {
-      this.drainInFlight = false;
     }
   }
 
   private async publishDrainedEvents(payload: unknown, maxBodyBytes: number): Promise<void> {
     const drained = parseDrainResult(payload, { appId: this.options.target.app, maxBodyBytes });
-    if (drained.events.length === 0) {
+    if (drained.events.length > 0) {
+      await this.options.onEvents?.(drained.events);
+      this.publishSummary(drained.events);
+    }
+    this.pendingDrainAcknowledgement = drained.drainId;
+  }
+
+  private publishSummary(events: readonly LiveTraceEvent[]): void {
+    if (this.options.onSummary === undefined) {
       return;
     }
-    this.events.push(...drained.events);
-    this.events.splice(0, Math.max(0, this.events.length - RUNTIME_QUEUE_SIZE));
-    await this.options.onEvents?.(drained.events);
-    this.options.onSummary?.(buildUrlSummaries(this.events));
+    this.summaryEvents.push(...events.map(toSummaryEvent));
+    this.summaryEvents.splice(0, Math.max(0, this.summaryEvents.length - RUNTIME_QUEUE_SIZE));
+    this.options.onSummary(buildUrlSummaries(this.summaryEvents));
   }
 
   private async handleDrainFailure(error: unknown): Promise<void> {
@@ -208,12 +244,24 @@ export class LiveTraceSession {
       }
     }
     this.log(`Live Trace stream failed for ${this.options.target.app}: ${formatError(error)}`);
-    await this.stopRuntimeTrace(false);
+    await this.stopRuntimeTrace(false, false);
     this.postState("error", "Runtime HTTP trace connection was lost.", false, true);
   }
 
-  private async stopRuntimeTrace(uninstallRuntimeHook: boolean): Promise<boolean> {
+  private async handleEventHandlerFailure(error: unknown): Promise<void> {
+    this.log(`Live Trace event handler failed for ${this.options.target.app}: ${formatError(error)}`);
+    await this.stopRuntimeTrace(false, false);
+    this.postState("error", "Trace event handler failed.", false, true);
+  }
+
+  private async stopRuntimeTrace(
+    uninstallRuntimeHook: boolean,
+    waitForDrain = true,
+  ): Promise<boolean> {
     this.stopPolling();
+    if (waitForDrain) {
+      await this.drainTask;
+    }
     this.consecutiveDrainTimeouts = 0;
     const uninstalled = await this.stopInspectorHook(uninstallRuntimeHook);
     await this.closeInspectorClient();
@@ -314,12 +362,16 @@ function resolveStartOptions(options: LiveTraceStartOptions): Required<LiveTrace
   if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
     throw new Error("maxBodyBytes must be a positive safe integer.");
   }
+  const runtimeQueueSize = options.runtimeQueueSize ?? RUNTIME_QUEUE_SIZE;
+  if (!Number.isSafeInteger(runtimeQueueSize) || runtimeQueueSize <= 0) {
+    throw new Error("runtimeQueueSize must be a positive safe integer.");
+  }
   return {
     captureHeaders: options.captureHeaders ?? true,
     captureRequestBody: options.captureRequestBody ?? true,
     captureResponseBody: options.captureResponseBody ?? true,
     maxBodyBytes,
-    runtimeQueueSize: options.runtimeQueueSize ?? RUNTIME_QUEUE_SIZE,
+    runtimeQueueSize,
   };
 }
 
@@ -333,8 +385,14 @@ function resolveDrainTransportBodyLimit(maxBodyBytes: number): number {
   return maxBodyBytes > 0 ? maxBodyBytes : 1;
 }
 
-function resolveDrainEvaluateTimeout(maxBodyBytes: number): number {
-  const extraMegabytes = Math.ceil(Math.max(0, maxBodyBytes - 1_000_000) / 1_000_000);
+function resolveDrainBatchSize(maxBodyBytes: number): number {
+  const perEventBytes = Math.max(1, maxBodyBytes * 2);
+  return Math.max(1, Math.min(DRAIN_BATCH_SIZE, Math.floor(DRAIN_BODY_BUDGET_BYTES / perEventBytes)));
+}
+
+function resolveDrainEvaluateTimeout(maxBodyBytes: number, batchSize: number): number {
+  const estimatedBytes = Math.min(Number.MAX_SAFE_INTEGER, maxBodyBytes * 2 * batchSize);
+  const extraMegabytes = Math.ceil(Math.max(0, estimatedBytes - 1_000_000) / 1_000_000);
   return Math.min(MAX_DRAIN_EVALUATE_TIMEOUT_MS, DRAIN_EVALUATE_TIMEOUT_MS + extraMegabytes * 5_000);
 }
 
@@ -363,4 +421,14 @@ function normalizeInspectorStartupResult(result: boolean | InspectorStartupResul
 function formatError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.trim().length > 0 ? message.trim() : "Unknown error";
+}
+
+function toSummaryEvent(event: LiveTraceEvent): LiveTraceEvent {
+  return {
+    ...event,
+    requestHeaders: {},
+    responseHeaders: {},
+    requestBodyPreview: "",
+    responseBodyPreview: "",
+  };
 }

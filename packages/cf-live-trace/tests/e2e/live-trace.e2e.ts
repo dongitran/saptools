@@ -57,8 +57,8 @@ test("User can capture HTTP request and response events through a fake CF tunnel
     const events = parseTraceEvents(result.stdout);
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual(expect.objectContaining({
-      sessionId: expect.stringMatching(/^s[0-9a-f]{8}$/),
-      requestId: expect.stringMatching(/^r[0-9a-f]{8}$/),
+      sessionId: expect.stringMatching(/^s[0-9a-f]{16}$/),
+      requestId: expect.stringMatching(/^r[0-9a-f]{16}$/),
       instance: "0",
       method: "POST",
       normalizedUrl: "/orders/42?expand=items",

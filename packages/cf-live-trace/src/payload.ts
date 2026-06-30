@@ -10,16 +10,21 @@ let fallbackEventId = 0;
 
 export function parseDrainResult(payload: unknown, options: DrainParseOptions): DrainParseResult {
   if (!isRecord(payload)) {
-    return { events: [], droppedCount: 0, queueSize: 0 };
+    return { drainId: null, events: [], droppedCount: 0, queueSize: 0 };
   }
   const rawEvents = Array.isArray(payload["events"]) ? payload["events"] : [];
   return {
+    drainId: readDrainId(payload["drainId"]),
     events: rawEvents
       .map((event) => parseRuntimeEvent(event, options))
       .filter((event): event is LiveTraceEvent => event !== null),
     droppedCount: readNonNegativeNumber(payload["droppedCount"]),
     queueSize: readNonNegativeNumber(payload["queueSize"]),
   };
+}
+
+function readDrainId(value: unknown): string | null {
+  return typeof value === "string" && /^d\d+$/.test(value) ? value : null;
 }
 
 function parseRuntimeEvent(payload: unknown, options: DrainParseOptions): LiveTraceEvent | null {

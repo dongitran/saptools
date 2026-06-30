@@ -31,6 +31,20 @@ export interface CompactTraceEvent {
 }
 
 const COMPACT_BODY_PREVIEW_CHARS = 128;
+const SENSITIVE_QUERY_KEYS = new Set([
+  "access_token",
+  "api_key",
+  "auth",
+  "authorization",
+  "client_secret",
+  "oauth_code",
+  "passwd",
+  "password",
+  "refresh_token",
+  "sig",
+  "signature",
+  "token",
+].map(normalizeQueryKey));
 
 export function detectBodyFormat(body: string, headers: Record<string, string>): TraceBodyFormat {
   if (body.length === 0) {
@@ -67,8 +81,8 @@ export function compactTraceEvent(record: StoredTraceEvent): CompactTraceEvent {
     instance: event.instance,
     method: event.method,
     path: event.path,
-    url: event.url,
-    normalizedUrl: event.normalizedUrl,
+    url: redactSensitiveQueryValues(event.url),
+    normalizedUrl: redactSensitiveQueryValues(event.normalizedUrl),
     status: event.status,
     durationMs: event.durationMs,
     requestBytes: event.requestBytes,
@@ -141,11 +155,45 @@ function hasBinaryControlChars(text: string): boolean {
 }
 
 function compactBody(body: string): { readonly preview: string; readonly remainingChars: number } {
-  if (body.length <= COMPACT_BODY_PREVIEW_CHARS) {
-    return { preview: body, remainingChars: 0 };
+  let preview = "";
+  let length = 0;
+  for (const character of body) {
+    if (length < COMPACT_BODY_PREVIEW_CHARS) {
+      preview += character;
+    }
+    length += 1;
   }
   return {
-    preview: body.slice(0, COMPACT_BODY_PREVIEW_CHARS),
-    remainingChars: body.length - COMPACT_BODY_PREVIEW_CHARS,
+    preview,
+    remainingChars: Math.max(0, length - COMPACT_BODY_PREVIEW_CHARS),
   };
+}
+
+function redactSensitiveQueryValues(rawUrl: string): string {
+  const queryIndex = rawUrl.indexOf("?");
+  if (queryIndex < 0) {
+    return rawUrl;
+  }
+  const fragmentIndex = rawUrl.indexOf("#", queryIndex);
+  const queryEnd = fragmentIndex < 0 ? rawUrl.length : fragmentIndex;
+  const query = rawUrl.slice(queryIndex + 1, queryEnd);
+  const redacted = query.split("&").map(redactQueryPart).join("&");
+  return `${rawUrl.slice(0, queryIndex + 1)}${redacted}${rawUrl.slice(queryEnd)}`;
+}
+
+function redactQueryPart(part: string): string {
+  const separatorIndex = part.indexOf("=");
+  const rawKey = separatorIndex < 0 ? part : part.slice(0, separatorIndex);
+  if (!SENSITIVE_QUERY_KEYS.has(normalizeQueryKey(rawKey))) {
+    return part;
+  }
+  return `${rawKey}=redacted`;
+}
+
+function normalizeQueryKey(rawKey: string): string {
+  try {
+    return decodeURIComponent(rawKey).toLowerCase().replaceAll(/[^a-z0-9]/g, "");
+  } catch {
+    return rawKey.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
+  }
 }

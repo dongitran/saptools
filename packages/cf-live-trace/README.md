@@ -21,7 +21,7 @@
 - Automatic CF session setup, SSH enablement check, Node inspector startup, and SSH port forwarding.
 - CDP-based JavaScript injection derived from the SAP Tools VS Code Live Trace flow.
 - Request and response header capture, bounded body capture, status, duration, byte counts, correlation id, and bounded queue drops.
-- Compact stdout for scripts and agents: headers and app id stay out of live output, body previews are capped at 128 characters, and full captured events are saved locally.
+- Compact stdout for scripts and agents: headers and app id stay out of live output, common credential query values are redacted, body previews are capped at 128 characters, and full captured events are saved locally.
 - Per-request backup JSON files under `~/.saptools/cf-live-trace/sessions/` with two-hour retention and session inspection commands for large JSON bodies.
 - Strict TypeScript, ESLint, unit coverage, and fake-backed E2E tests without live SAP access.
 
@@ -62,7 +62,7 @@ If you already know the CF API endpoint, replace `--region ap10` with `--api-end
 By default the command streams one JSON object per captured HTTP request and runs until `Ctrl+C`.
 
 ```json
-{"id":"1","sessionId":"s1a2b3c4d","requestId":"r5e6f7a8b","method":"POST","normalizedUrl":"/orders","status":201,"durationMs":24,"requestBodyFormat":"json","responseBodyFormat":"json"}
+{"id":"1","sessionId":"s1a2b3c4d5e6f7a8b","requestId":"r1a2b3c4d5e6f7a8","method":"POST","normalizedUrl":"/orders","status":201,"durationMs":24,"requestBodyFormat":"json","responseBodyFormat":"json"}
 ```
 
 ---
@@ -110,7 +110,7 @@ Each captured request is also saved as a private JSON file under:
 ~/.saptools/cf-live-trace/sessions/<sessionId>/events/
 ```
 
-Files expire after two hours. The path is based on Node's user home directory, so Windows uses the current user's profile directory.
+Files expire after two hours. Expired files are pruned while tracing and when session commands run. The path is based on Node's user home directory, so Windows uses the current user's profile directory.
 
 ---
 
@@ -155,9 +155,9 @@ cf-live-trace \
 Inspect a saved session after or during a trace run:
 
 ```bash
-cf-live-trace session events s1a2b3c4d --method POST --limit 20
-cf-live-trace session search s1a2b3c4d orderId --body both --length 256
-cf-live-trace session body s1a2b3c4d r5e6f7a8b --body response --path /data/items/0 --limit 4000
+cf-live-trace session events s1a2b3c4d5e6f7a8b --method POST --limit 20
+cf-live-trace session search s1a2b3c4d5e6f7a8b orderId --body both --length 256
+cf-live-trace session body s1a2b3c4d5e6f7a8b r1a2b3c4d5e6f7a8 --body response --path /data/items/0 --limit 4000 --rows 100
 cf-live-trace session prune
 ```
 
@@ -173,7 +173,7 @@ cf-live-trace session prune
 4. Open `cf ssh -L <local>:127.0.0.1:9229` for the selected app instance.
 5. Attach to the Node inspector over CDP using `@saptools/cf-inspector`.
 6. Evaluate a runtime hook that patches Node's `http` and `https` server prototypes.
-7. Poll a bounded in-process queue, save each drained trace event locally, and stream compact trace events back to stdout.
+7. Poll a bounded in-process queue with acknowledgement-based retries, save each drained trace event locally, and stream compact trace events back to stdout.
 8. Disable or uninstall the hook and close the tunnel on exit.
 
 The injected global is named `__SAPTOOLS_CF_LIVE_TRACE__` so CLI sessions do not collide with the VS Code extension's Live Trace runtime global.
@@ -217,7 +217,7 @@ The public API also exports helpers for payload parsing, runtime expression cons
 
 - This tool injects JavaScript into a running Node.js process through the Node inspector. Use it only for apps and spaces you are authorized to inspect.
 - Captured headers and bodies can contain credentials, tokens, cookies, or personal data. Backup files are private by default, but keep the user profile and CI artifacts protected.
-- Live stdout intentionally omits request/response headers and app id, and only prints 128 characters of each captured body. Backup JSON files retain the fuller captured event for two hours.
+- Live stdout intentionally omits request/response headers and app id, redacts common credential query values, and only prints 128 characters of each captured body. Backup JSON files retain the fuller captured event for two hours.
 - `--max-body-bytes` bounds captured body data transported back from the app and must be greater than zero. Set it lower for sensitive or high-throughput services.
 - The CLI avoids putting credentials in `cf auth` arguments; credentials are passed to the CF CLI through `CF_USERNAME` and `CF_PASSWORD`.
 - If cleanup fails, the runtime hook can remain disabled or installed until the app process restarts. Progress events report this state.

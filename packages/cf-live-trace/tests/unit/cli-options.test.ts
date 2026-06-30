@@ -65,6 +65,16 @@ describe("CLI option parsing", () => {
   it("rejects invalid positive integers", () => {
     expect(() => parsePositiveInteger("0", "--duration")).toThrow("Invalid --duration");
     expect(() => parsePositiveInteger("1.5", "--duration")).toThrow("Invalid --duration");
+    expect(() => parsePositiveInteger("9007199254740992", "--duration")).toThrow("Invalid --duration");
+    expect(() => buildRunOptions({
+      apiEndpoint: "https://api.example.com",
+      org: "demo-org",
+      space: "dev",
+      app: "orders-api",
+      email: "user",
+      password: "password",
+      duration: "2147484",
+    }, {})).toThrow("--duration is too large");
   });
 
   it("requires either region or api endpoint", () => {

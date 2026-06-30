@@ -14,7 +14,14 @@ import {
 interface RuntimeApi {
   readonly version: number;
   install(options: unknown): Promise<unknown>;
-  drainEvents(maxCount: number, maxTransportBodyBytes?: number): { readonly events: readonly RuntimeTraceEvent[] };
+  drainEvents(
+    maxCount: number,
+    maxTransportBodyBytes?: number,
+    acknowledgedDrainId?: string,
+  ): {
+    readonly drainId: string | null;
+    readonly events: readonly RuntimeTraceEvent[];
+  };
   uninstall(): Promise<unknown>;
 }
 
@@ -26,6 +33,8 @@ interface RuntimeTraceEvent {
   readonly responseBodyPreview: string;
   readonly requestBodyTruncated: boolean;
   readonly responseBodyTruncated: boolean;
+  readonly requestBytes: number;
+  readonly responseBytes: number;
 }
 
 describe("runtime source", () => {
@@ -36,7 +45,7 @@ describe("runtime source", () => {
     expect(CF_LIVE_TRACE_RUNTIME_SOURCE).toContain("drainEvents");
     expect(CF_LIVE_TRACE_RUNTIME_SOURCE).toContain("uninstall");
     expect(CF_LIVE_TRACE_RUNTIME_SOURCE).not.toContain("console.log");
-    expect(buildDrainExpression(50, 20_000)).toContain(".drainEvents(50, 20000)");
+    expect(buildDrainExpression(50, 20_000)).toContain(".drainEvents(50, 20000, null)");
     expect(buildStopExpression({ uninstallRuntimeHook: true })).toContain(".uninstall()");
     expect(buildStopExpression({ uninstallRuntimeHook: false })).toContain(".disable()");
   });
@@ -66,6 +75,64 @@ describe("runtime source", () => {
     );
   });
 
+  it("keeps an unacknowledged drain available for retry", async () => {
+    const { runtimeApi, httpModule } = await installRuntimeSource();
+    const req = createRuntimeRequest("/retry");
+    const res = createRuntimeResponse();
+    httpModule.Server.prototype.emit("request", req, res);
+    res.end("ok");
+    res.emit("finish");
+
+    const first = runtimeApi.drainEvents(10);
+    const retry = runtimeApi.drainEvents(10);
+    const afterAck = runtimeApi.drainEvents(10, 4096, first.drainId ?? undefined);
+
+    expect(first.drainId).toMatch(/^d\d+$/);
+    expect(retry).toEqual(first);
+    expect(afterAck).toEqual(expect.objectContaining({ drainId: null, events: [] }));
+  });
+
+  it("counts and truncates UTF-8 payload bytes accurately", async () => {
+    const { runtimeApi, httpModule } = await installRuntimeSource({ maxBodyBytes: 4 });
+    const req = createRuntimeRequest("/unicode");
+    const res = createRuntimeResponse();
+    httpModule.Server.prototype.emit("request", req, res);
+    req.emit("data", "ééé");
+    res.end("éé");
+    res.emit("finish");
+
+    const drained = runtimeApi.drainEvents(10, 4);
+
+    expect(drained.events[0]).toEqual(expect.objectContaining({
+      requestBytes: 6,
+      requestBodyPreview: "éé",
+      requestBodyTruncated: true,
+      responseBytes: 4,
+      responseBodyPreview: "éé",
+      responseBodyTruncated: false,
+    }));
+  });
+
+  it("preserves a UTF-8 character split across incoming Buffer chunks", async () => {
+    const { runtimeApi, httpModule } = await installRuntimeSource({ maxBodyBytes: 16 });
+    const req = createRuntimeRequest("/split-unicode");
+    const res = createRuntimeResponse();
+    const encoded = Buffer.from("😀");
+    httpModule.Server.prototype.emit("request", req, res);
+    req.emit("data", encoded.subarray(0, 2));
+    req.emit("data", encoded.subarray(2));
+    res.end();
+    res.emit("finish");
+
+    const drained = runtimeApi.drainEvents(10, 16);
+
+    expect(drained.events[0]).toEqual(expect.objectContaining({
+      requestBytes: 4,
+      requestBodyPreview: "😀",
+      requestBodyTruncated: false,
+    }));
+  });
+
   it("uninstalls stale lower-version hooks before replacing them", async () => {
     const staleUninstall = vi.fn();
     const context = createRuntimeContext();
@@ -79,6 +146,35 @@ describe("runtime source", () => {
     expect(staleUninstall).toHaveBeenCalledTimes(1);
     expect(runtimeApi.version).toBe(CF_LIVE_TRACE_RUNTIME_VERSION);
     expect(context[CF_LIVE_TRACE_GLOBAL_NAME]).toBe(runtimeApi);
+  });
+
+  it("waits for asynchronous stale-hook cleanup before installing the replacement", async () => {
+    const httpModule = createRuntimeHttpModule();
+    const httpsModule = createRuntimeHttpModule();
+    const originalHttpEmit = httpModule.Server.prototype.emit;
+    let finishStaleCleanup: () => void = () => {
+      return;
+    };
+    const staleCleanup = new Promise<void>((resolve) => {
+      finishStaleCleanup = resolve;
+    });
+    const context = createRuntimeContext({ httpModule, httpsModule });
+    context[CF_LIVE_TRACE_GLOBAL_NAME] = {
+      version: CF_LIVE_TRACE_RUNTIME_VERSION - 1,
+      uninstall: vi.fn(async (): Promise<void> => {
+        await staleCleanup;
+      }),
+    };
+    const runtimeApi = await runRuntimeSource(context);
+    const installPromise = runtimeApi.install(createInstallOptions());
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(httpModule.Server.prototype.emit).toBe(originalHttpEmit);
+    finishStaleCleanup();
+    await installPromise;
+    expect(httpModule.Server.prototype.emit).not.toBe(originalHttpEmit);
   });
 
   it("does not treat a non-positive runtime body limit as unlimited capture", async () => {
@@ -145,16 +241,20 @@ async function installRuntimeSource(options: { readonly maxBodyBytes?: number } 
   const httpModule = createRuntimeHttpModule();
   const httpsModule = createRuntimeHttpModule();
   const runtimeApi = await runRuntimeSource(createRuntimeContext({ httpModule, httpsModule }));
-  await runtimeApi.install({
+  await runtimeApi.install(createInstallOptions(options.maxBodyBytes));
+  return { runtimeApi, httpModule };
+}
+
+function createInstallOptions(maxBodyBytes = 4096): Record<string, unknown> {
+  return {
     appId: "orders-api",
     instance: "0",
     captureHeaders: true,
     captureRequestBody: true,
     captureResponseBody: true,
-    maxBodyBytes: options.maxBodyBytes ?? 4096,
+    maxBodyBytes,
     maxEvents: 1000,
-  });
-  return { runtimeApi, httpModule };
+  };
 }
 
 async function runRuntimeSource(context: Record<string, unknown>): Promise<RuntimeApi> {

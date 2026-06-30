@@ -5,7 +5,12 @@ import { Command } from "commander";
 import { createTemporaryCfHome, removeTemporaryCfHome } from "../cf.js";
 import { LiveTraceSession } from "../session.js";
 import { compactTraceEvent, type CompactTraceEvent } from "../trace-compact.js";
-import { createTraceSession, writeTraceEvent, type TraceSession } from "../trace-store.js";
+import {
+  createTraceSession,
+  pruneTraceSessions,
+  writeTraceEvent,
+  type TraceSession,
+} from "../trace-store.js";
 import type { LiveTraceEvent, LiveTraceStateEvent, LiveTraceStopReason } from "../types.js";
 
 import { buildRunOptionsWithCurrentTarget, type CliFlags, type RunOptions } from "./options.js";
@@ -46,10 +51,12 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 export async function runTraceCommand(options: RunOptions): Promise<void> {
   const cfHome = await resolveCfHome(options);
+  let retention: RetentionPruner | undefined;
   try {
     const traceSession = await createTraceSession({ target: options.target });
+    retention = startRetentionPruner(options);
     writeSessionHints(traceSession, options);
-    const events: CompactTraceEvent[] = [];
+    const output: TraceOutputState = { count: 0, events: [] };
     const eventLimit = createEventLimit(options);
     const runtimeError = createRuntimeErrorStopWaiter();
     const session = new LiveTraceSession({
@@ -66,29 +73,61 @@ export async function runTraceCommand(options: RunOptions): Promise<void> {
         }
       },
       onEvents: async (batch) => {
-        await handleEvents(batch, options, events, traceSession);
-        eventLimit.check(events.length);
+        await handleEvents(batch, options, output, traceSession);
+        eventLimit.check(output.count);
       },
     });
     await runUntilStopped(session, options, eventLimit, runtimeError);
     if (options.format === "json") {
-      writeJson({ sessionId: traceSession.sessionId, events });
+      writeJson({ sessionId: traceSession.sessionId, events: output.events });
     }
   } finally {
+    retention?.cleanup();
     await cfHome.dispose();
   }
+}
+
+interface TraceOutputState {
+  count: number;
+  readonly events: CompactTraceEvent[];
+}
+
+interface RetentionPruner {
+  cleanup(): void;
+}
+
+function startRetentionPruner(options: RunOptions): RetentionPruner {
+  const timer = setInterval(() => {
+    void pruneTraceSessions().catch((error: unknown) => {
+      if (!options.quiet) {
+        writeLog(`session: retention cleanup failed: ${formatError(error)}`);
+      }
+    });
+  }, 60_000);
+  timer.unref();
+  return {
+    cleanup(): void {
+      clearInterval(timer);
+    },
+  };
 }
 
 async function handleEvents(
   batch: readonly LiveTraceEvent[],
   options: RunOptions,
-  events: CompactTraceEvent[],
+  output: TraceOutputState,
   traceSession: TraceSession,
 ): Promise<void> {
-  for (const event of batch) {
+  const remaining = options.limits.maxEvents === undefined
+    ? batch.length
+    : Math.max(0, options.limits.maxEvents - output.count);
+  for (const event of batch.slice(0, remaining)) {
     const record = await writeTraceEvent(traceSession, event);
     const compact = compactTraceEvent(record);
-    events.push(compact);
+    output.count += 1;
+    if (options.format === "json") {
+      output.events.push(compact);
+    }
     if (options.format === "ndjson") {
       writeJsonLine(compact);
     }
@@ -275,4 +314,9 @@ async function resolveCfHome(options: RunOptions): Promise<{ readonly path: stri
       await removeTemporaryCfHome(path);
     },
   };
+}
+
+function formatError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.trim().length > 0 ? message.trim() : "Unknown error";
 }
