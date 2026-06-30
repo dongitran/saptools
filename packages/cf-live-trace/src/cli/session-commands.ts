@@ -56,7 +56,7 @@ export function registerSessionCommands(program: Command): void {
   session
     .command("search <sessionId> <text>")
     .description("search saved request and response bodies")
-    .option("--body <side>", "request, response, or both", parseSearchBodySide, "both")
+    .option("--body <side>", "request, response, or both", parseSearchBodySide, "response")
     .option("--limit <count>", "maximum matches to print", parseIntOption)
     .option("--length <chars>", "maximum preview characters", parseIntOption)
     .action(async (sessionId: string, text: string, _options: unknown, command: Command) => {
@@ -92,7 +92,7 @@ async function runEvents(sessionId: string, options: EventsOptions): Promise<voi
 
 async function runSearch(sessionId: string, text: string, options: SearchOptions): Promise<void> {
   const limit = positive("--limit", options.limit, 20);
-  const body = options.body ?? "both";
+  const body = options.body ?? "response";
   const previewLength = positive("--length", options.length, 128);
   const matches: TraceSearchMatch[] = [];
   await visitTraceEvents(sessionId, (record) => {

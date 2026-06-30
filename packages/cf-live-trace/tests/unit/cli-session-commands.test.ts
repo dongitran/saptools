@@ -63,16 +63,15 @@ describe("CLI session commands", () => {
     expect(parsed.events[0]).not.toHaveProperty("responseHeaders");
   });
 
-  it("searches saved request and response bodies", async () => {
+  it("searches saved response bodies by default", async () => {
     storeMocks.listTraceEvents.mockResolvedValue([createStoredEvent()]);
 
-    const output = await runSessionCommand(["session", "search", "s12345678", "alpha", "--body", "both", "--limit", "5", "--length", "20"]);
+    const output = await runSessionCommand(["session", "search", "s12345678", "alpha", "--limit", "5", "--length", "20"]);
     const parsed = JSON.parse(output) as { readonly matches: readonly Record<string, unknown>[] };
 
-    expect(parsed.matches).toEqual(expect.arrayContaining([
-      expect.objectContaining({ requestId: "r12345678", body: "request", path: "/filter" }),
+    expect(parsed.matches).toEqual([
       expect.objectContaining({ requestId: "r12345678", body: "response", path: "/data/name" }),
-    ]));
+    ]);
   });
 
   it("inspects a saved response JSON body", async () => {

@@ -91,12 +91,14 @@ Progress and lifecycle messages are written to stderr unless `--quiet` is set. D
 
 Trace events can include:
 
+- `sessionId`
+- `requestId`
 - `method`
 - `normalizedUrl`
 - `status`
 - `durationMs`
-- `requestHeaders`
-- `responseHeaders`
+- `requestBodyFormat`
+- `responseBodyFormat`
 - `requestBodyPreview`
 - `responseBodyPreview`
 - `requestBytes`
@@ -104,11 +106,31 @@ Trace events can include:
 - `traceId`
 - `correlationId`
 
+## Saved Sessions
+
+Each request is backed up for two hours under `~/.saptools/cf-live-trace/sessions/<sessionId>/events/`. Use:
+
+```bash
+cf-live-trace session list
+cf-live-trace session events <sessionId> --limit 20
+cf-live-trace session search <sessionId> "orderId" --body response
+cf-live-trace session body <sessionId> <requestId> --body response --path /data --limit 4000 --rows 100
+```
+
+- `<sessionId>`: ID shown when tracing starts or returned by `session list`.
+- `<requestId>`: ID returned by `session events`.
+- `"orderId"`: text to find in saved request or response bodies.
+- `--limit 20` on `session events`: maximum events to return.
+- `--body response`: search response bodies by default; use `both` for both sides or `request` for request bodies.
+- `--path /data`: JSON Pointer selecting a field or object inside the saved body.
+- `--limit 4000` on `session body`: maximum characters shown for each value.
+- `--rows 100`: maximum structure rows to return.
+
 ## Data Handling
 
-Captured URLs, headers, cookies, authorization values, request bodies, response bodies, correlation IDs, app names, org names, and space names can be sensitive. The CLI does not redact captured event data. Summarize findings and avoid pasting raw trace output unless the user explicitly asks for it.
+Compact stdout omits app ID and headers, redacts common credential query values, and limits each body preview to 128 characters. Backup files retain the fuller captured event and can contain credentials or personal data, so summarize findings instead of pasting raw values unless requested.
 
-Set `--max-body-bytes <n>` to limit request and response previews. The default is `4096`; `0` keeps unlimited previews locally, so avoid `0` for sensitive or high-throughput services unless the user explicitly needs full bodies.
+Set `--max-body-bytes <n>` to bound each captured request and response body. The default is `4096`, and the value must be greater than `0`.
 
 ## Troubleshooting
 

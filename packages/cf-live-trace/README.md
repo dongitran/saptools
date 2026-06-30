@@ -156,7 +156,7 @@ Inspect a saved session after or during a trace run:
 
 ```bash
 cf-live-trace session events s1a2b3c4d5e6f7a8b --method POST --limit 20
-cf-live-trace session search s1a2b3c4d5e6f7a8b orderId --body both --length 256
+cf-live-trace session search s1a2b3c4d5e6f7a8b orderId --body response --length 256
 cf-live-trace session body s1a2b3c4d5e6f7a8b r1a2b3c4d5e6f7a8 --body response --path /data/items/0 --limit 4000 --rows 100
 cf-live-trace session prune
 ```
