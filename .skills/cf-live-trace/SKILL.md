@@ -36,24 +36,9 @@ cf-live-trace --app orders-api --duration 30 --format ndjson
 - `--instance <index>`: app instance, default `0`.
 - `--duration <seconds>`: stop after the specified time.
 - `--max-events <count>`: stop after the specified number of events.
-- `--format ndjson|summary|json`: output format, default `ndjson`.
-
-Capture a compact text stream without request or response bodies:
-
-```bash
-cf-live-trace \
-  --app orders-api \
-  --no-capture-request-body \
-  --no-capture-response-body \
-  --max-events 10 \
-  --format summary
-```
-
-- `--app orders-api`: app to trace.
 - `--no-capture-request-body`: do not capture request bodies.
 - `--no-capture-response-body`: do not capture response bodies.
-- `--max-events 10`: stop after 10 events.
-- `--format summary`: print a compact human-readable stream.
+- `--format ndjson|summary|json`: output format, default `ndjson`.
 
 Use `--cf-home <dir>` only when the run must reuse or isolate a specific Cloud Foundry CLI home:
 
