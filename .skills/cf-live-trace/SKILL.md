@@ -29,30 +29,14 @@ Trace an app using the current `cf target`:
 cf-live-trace --app orders-api --duration 30 --format ndjson
 ```
 
-Trace with an explicit region, org, and space:
-
-```bash
-cf-live-trace \
-  --region ap10 \
-  --org sample-org \
-  --space dev \
-  --app orders-api \
-  --instance 0 \
-  --duration 30 \
-  --format ndjson
-```
-
-Use an explicit CF API endpoint when the region key is unknown or custom:
-
-```bash
-cf-live-trace \
-  --api-endpoint https://api.cf.ap10.hana.ondemand.com \
-  --org sample-org \
-  --space dev \
-  --app orders-api \
-  --max-events 25 \
-  --format json
-```
+- `--app <name>`: app to trace.
+- `--region <key>`: CF region; defaults to the current `cf target`.
+- `--api-endpoint <url>`: alternative to `--region` for a custom or unknown region.
+- `--org <name>` and `--space <name>`: CF target; default to the current `cf target`.
+- `--instance <index>`: app instance, default `0`.
+- `--duration <seconds>`: stop after the specified time.
+- `--max-events <count>`: stop after the specified number of events.
+- `--format ndjson|summary|json`: output format, default `ndjson`.
 
 Capture a compact text stream without request or response bodies:
 
@@ -64,6 +48,12 @@ cf-live-trace \
   --max-events 10 \
   --format summary
 ```
+
+- `--app orders-api`: app to trace.
+- `--no-capture-request-body`: do not capture request bodies.
+- `--no-capture-response-body`: do not capture response bodies.
+- `--max-events 10`: stop after 10 events.
+- `--format summary`: print a compact human-readable stream.
 
 Use `--cf-home <dir>` only when the run must reuse or isolate a specific Cloud Foundry CLI home:
 
