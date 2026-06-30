@@ -60,6 +60,19 @@ export function buildJiraIssueRemoteLinksUrl(
   return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/remotelink`;
 }
 
+export function buildJiraIssueCommentsUrl(
+  cloudId: string,
+  issueKey: string,
+  startAt: number,
+  maxResults: number,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  const url = new URL(`${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/comment`);
+  url.searchParams.set("startAt", startAt.toString());
+  url.searchParams.set("maxResults", maxResults.toString());
+  return url.toString();
+}
+
 export function buildJiraIssueTransitionsUrl(
   cloudId: string,
   issueKey: string,

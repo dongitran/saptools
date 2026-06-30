@@ -188,6 +188,19 @@ async function handleFakeJiraRequest(
     return;
   }
 
+  if (
+    method === "GET" &&
+    url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/comment?startAt=0&maxResults=100"
+  ) {
+    writeJson(response, {
+      comments: [],
+      maxResults: 100,
+      startAt: 0,
+      total: 0,
+    });
+    return;
+  }
+
   if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/20001") {
     response.writeHead(200, { "content-type": "image/png" });
     response.end(IMAGE_BYTES);
@@ -255,6 +268,14 @@ function normalizeOutput(output: string | Uint8Array): string {
 }
 
 test.describe("Jira CLI", () => {
+  test("User can inspect the installed CLI version", async () => {
+    const { stdout } = await execFileAsync("node", [CLI_PATH, "--version"], {
+      timeout: 30_000,
+    });
+
+    expect(normalizeOutput(stdout)).toMatch(/^\d+\.\d+\.\d+\n$/u);
+  });
+
   test("User can inspect shared JiraOps token status", async () => {
     const ctx = await prepareCliContext();
     try {
@@ -348,6 +369,19 @@ test.describe("Jira CLI", () => {
         .map((entry) => entry.body);
       expect(writeBodies[0]).toBe(JSON.stringify({ transition: { id: "31" } }));
       expect(writeBodies[1]).toContain("Focused review");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can log out by clearing the shared token store", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const logout = await ctx.run(["logout"]);
+      const status = await ctx.run(["status", "--json"]);
+
+      expect(logout.stdout).toBe("Logged out from Jira.\n");
+      expect(JSON.parse(status.stdout)).toMatchObject({ connected: false, usable: false });
     } finally {
       await ctx.cleanup();
     }

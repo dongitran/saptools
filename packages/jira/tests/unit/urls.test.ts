@@ -6,6 +6,7 @@ import {
   buildAssignedIssuesSearchUrl,
   buildJiraAttachmentContentUrl,
   buildJiraAttachmentThumbnailUrl,
+  buildJiraIssueCommentsUrl,
   buildJiraIssueDetailUrl,
   buildJiraIssueRemoteLinksUrl,
   buildJiraIssueTransitionsUrl,
@@ -23,6 +24,9 @@ describe("Jira URL builders", () => {
     );
     expect(buildJiraIssueRemoteLinksUrl("cloud 1", "OPS/123")).toBe(
       "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123/remotelink",
+    );
+    expect(buildJiraIssueCommentsUrl("cloud 1", "OPS/123", 100, 50)).toBe(
+      "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123/comment?startAt=100&maxResults=50",
     );
     expect(buildJiraAttachmentContentUrl("cloud 1", "100/01")).toBe(
       "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/attachment/content/100%2F01",

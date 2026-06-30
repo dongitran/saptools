@@ -21,7 +21,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 
 - 🔁 **Shared JiraOps token** — reads and refreshes `~/.jira-oauth/tokens.json`, the default `jira-oauth-client` store used by JiraOps.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
-- 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text, comments, attachments, and clone-linked issues.
+- 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text, paginated comments, attachments, and clone-linked issues.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
 - ⏱️ **Worklogs** — adds focused time entries with optional ADF text comments.
@@ -69,6 +69,12 @@ export JIRA_CLIENT_SECRET="your-atlassian-oauth-client-secret"
 jira connect
 ```
 
+To remove the local shared token file:
+
+```bash
+jira logout
+```
+
 Your Atlassian OAuth app must allow the `jira-oauth-client` callback URL:
 
 ```text
@@ -109,6 +115,14 @@ Delete the shared token file.
 
 ```bash
 jira disconnect
+```
+
+### `jira logout`
+
+Delete the shared token file. This is equivalent to `jira disconnect`.
+
+```bash
+jira logout
 ```
 
 ### `jira token`

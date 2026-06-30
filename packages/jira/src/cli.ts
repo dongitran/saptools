@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import process from "node:process";
 
 import { Command } from "commander";
@@ -71,6 +72,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   program
     .name("jira")
     .description("Jira Cloud CLI that reuses the JiraOps OAuth token store")
+    .version(readPackageVersion(), "-V, --version", "Print the jira package version")
     .option("--api-root <url>", "Jira API root for Atlassian Cloud or tests")
     .option("--token-store <path>", "Path to the shared jira-oauth-client token store")
     .option("--client-id <id>", "Atlassian OAuth app client ID")
@@ -80,6 +82,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addStatusCommand(program);
   addConnectCommand(program);
   addDisconnectCommand(program);
+  addLogoutCommand(program);
   addTokenCommand(program);
   addIssuesCommand(program);
   addIssueCommand(program);
@@ -124,8 +127,18 @@ function addDisconnectCommand(program: Command): void {
     .command("disconnect")
     .description("Remove the shared Jira OAuth token store")
     .action(async (): Promise<void> => {
-      await disconnectJira(toAuthOptions(program));
+      await clearStoredJiraConnection(program);
       process.stdout.write("Disconnected from Jira.\n");
+    });
+}
+
+function addLogoutCommand(program: Command): void {
+  program
+    .command("logout")
+    .description("Remove the shared Jira OAuth token store")
+    .action(async (): Promise<void> => {
+      await clearStoredJiraConnection(program);
+      process.stdout.write("Logged out from Jira.\n");
     });
 }
 
@@ -294,6 +307,10 @@ async function resolveTokens(program: Command): Promise<JiraTokens> {
   return await requireStoredOrRefreshJiraTokens(toAuthOptions(program));
 }
 
+async function clearStoredJiraConnection(program: Command): Promise<void> {
+  await disconnectJira(toAuthOptions(program));
+}
+
 function toAuthOptions(program: Command): JiraAuthOptions {
   const flags = program.opts<GlobalFlags>();
   const port = parseOptionalPositiveInteger(flags.port, "--port <number>");
@@ -349,6 +366,29 @@ function maskSensitiveText(text: string, secrets: readonly string[]): string {
   return secrets
     .filter((secret) => secret.length > 0)
     .reduce((current, secret) => current.split(secret).join("[REDACTED]"), text);
+}
+
+interface PackageMetadata {
+  readonly version: string;
+}
+
+function readPackageVersion(): string {
+  try {
+    const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    return isPackageMetadata(parsed) ? parsed.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+function isPackageMetadata(value: unknown): value is PackageMetadata {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly version?: unknown }).version === "string" &&
+    (value as PackageMetadata).version.length > 0
+  );
 }
 
 try {

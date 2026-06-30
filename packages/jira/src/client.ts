@@ -22,6 +22,7 @@ import type {
 import {
   buildAssignedIssuesSearchBody,
   buildAssignedIssuesSearchUrl,
+  buildJiraIssueCommentsUrl,
   buildJiraIssueDetailUrl,
   buildJiraIssueRemoteLinksUrl,
   buildJiraIssueTransitionsUrl,
@@ -29,10 +30,12 @@ import {
 } from "./urls.js";
 
 const nonEmptyStringSchema = z.string().min(1);
+const JIRA_COMMENTS_PAGE_SIZE = 100;
 
 interface ParsedJiraIssueDetail {
+  readonly commentImageReferences: readonly JiraIssueImageReference[];
   readonly detail: JiraIssueDetail;
-  readonly imageReferences: readonly JiraIssueImageReference[];
+  readonly descriptionImageReferences: readonly JiraIssueImageReference[];
 }
 
 interface MappedComments {
@@ -83,6 +86,14 @@ const CommentSchema = z.object({
   author: z.object({ displayName: z.string().optional() }).optional(),
   body: z.unknown().optional().nullable(),
   created: z.string().optional(),
+});
+
+const JiraCommentsResponseSchema = z.object({
+  comments: z.array(CommentSchema),
+  isLast: z.boolean().optional(),
+  maxResults: z.number().int().positive().optional(),
+  startAt: z.number().int().nonnegative().optional(),
+  total: z.number().int().nonnegative().optional(),
 });
 
 const AttachmentSchema = z.object({
@@ -152,9 +163,16 @@ export async function fetchJiraIssueDetail(
   assertOk(response, "Jira issue detail could not be loaded.");
   const responseBody: unknown = await response.json();
   const parsed = parseJiraIssueDetail(responseBody);
+  const mappedComments = await fetchPaginatedIssueComments(options);
+  const detail =
+    mappedComments === null ? parsed.detail : { ...parsed.detail, comments: mappedComments.comments };
+  const imageReferences = [
+    ...parsed.descriptionImageReferences,
+    ...(mappedComments?.imageReferences ?? parsed.commentImageReferences),
+  ];
   return options.downloadImages === true
-    ? await hydrateIssueImages(parsed.detail, parsed.imageReferences, options)
-    : parsed.detail;
+    ? await hydrateIssueImages(detail, imageReferences, options)
+    : detail;
 }
 
 export async function fetchJiraIssueRemoteLinks(
@@ -270,6 +288,10 @@ function mapIssueDetail(
   issue: z.infer<typeof JiraIssueDetailResponseSchema>,
 ): ParsedJiraIssueDetail {
   const mappedComments = mapComments(issue.fields.comment);
+  const descriptionImageReferences = collectDescriptionImageReferences(
+    issue.fields.description,
+    issue.renderedFields?.description ?? "",
+  );
   const detail = {
     ...mapIssueSummary(issue),
     attachments: mapAttachments(issue.fields.attachment ?? []),
@@ -280,14 +302,78 @@ function mapIssueDetail(
   };
   return {
     detail,
-    imageReferences: [
-      ...collectDescriptionImageReferences(
-        issue.fields.description,
-        issue.renderedFields?.description ?? "",
-      ),
-      ...mappedComments.imageReferences,
-    ],
+    commentImageReferences: mappedComments.imageReferences,
+    descriptionImageReferences,
   };
+}
+
+async function fetchPaginatedIssueComments(
+  options: JiraIssueKeyRequestOptions,
+): Promise<MappedComments | null> {
+  try {
+    return await fetchPaginatedIssueCommentsOrThrow(options);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPaginatedIssueCommentsOrThrow(
+  options: JiraIssueKeyRequestOptions,
+): Promise<MappedComments> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const comments: z.infer<typeof CommentSchema>[] = [];
+  let isComplete = false;
+  let startAt = 0;
+
+  while (!isComplete) {
+    const response = await fetchImpl(
+      buildJiraIssueCommentsUrl(
+        options.cloudId,
+        options.issueKey,
+        startAt,
+        JIRA_COMMENTS_PAGE_SIZE,
+        options.apiRoot,
+      ),
+      { headers: readJiraHeaders(options.accessToken) },
+    );
+    if (!response.ok) {
+      throw new Error("Jira issue comments could not be loaded.");
+    }
+
+    const page = parseCommentsPage(await response.json());
+    comments.push(...page.comments);
+    const pageStartAt = page.startAt ?? startAt;
+    const nextStartAt = pageStartAt + page.comments.length;
+    isComplete = isLastCommentsPage(page, startAt, nextStartAt);
+    startAt = nextStartAt;
+  }
+
+  return mapCommentList(comments);
+}
+
+function parseCommentsPage(
+  responseBody: unknown,
+): z.infer<typeof JiraCommentsResponseSchema> {
+  const parseResult = JiraCommentsResponseSchema.safeParse(responseBody);
+  if (parseResult.success) {
+    return parseResult.data;
+  }
+
+  throw new Error("Jira issue comments response was not valid.");
+}
+
+function isLastCommentsPage(
+  page: z.infer<typeof JiraCommentsResponseSchema>,
+  currentStartAt: number,
+  nextStartAt: number,
+): boolean {
+  return (
+    page.isLast === true ||
+    page.comments.length === 0 ||
+    page.comments.length < (page.maxResults ?? JIRA_COMMENTS_PAGE_SIZE) ||
+    nextStartAt <= currentStartAt ||
+    (page.total !== undefined && nextStartAt >= page.total)
+  );
 }
 
 function mapIssueSummary(issue: z.infer<typeof JiraIssueSummarySchema>): JiraIssueSummary {
@@ -307,6 +393,12 @@ function mapComments(
   commentField: z.infer<typeof JiraIssueDetailResponseSchema>["fields"]["comment"],
 ): MappedComments {
   const comments = Array.isArray(commentField) ? commentField : commentField?.comments ?? [];
+  return mapCommentList(comments);
+}
+
+function mapCommentList(
+  comments: readonly z.infer<typeof CommentSchema>[],
+): MappedComments {
   const imageReferences: JiraIssueImageReference[] = [];
   return {
     comments: comments.map((comment, index) => {

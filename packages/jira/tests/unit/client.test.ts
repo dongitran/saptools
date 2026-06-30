@@ -143,6 +143,103 @@ describe("Jira REST client", () => {
     });
   });
 
+  it("fetches paginated issue comments and downloads inline comment images", async () => {
+    const imageOutputDir = await createTempDir();
+    const fetchMock = vi.fn(async (input: FetchInput) => {
+      const url = requestUrl(input);
+      if (url.includes("/rest/api/3/issue/OPS-124?")) {
+        return await Promise.resolve(
+          jsonResponse({
+            key: "OPS-124",
+            fields: {
+              summary: "Paginated comments",
+              status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+              priority: null,
+              assignee: null,
+              issuetype: { name: "Task" },
+              updated: "2026-05-01T08:20:00.000+0000",
+              description: null,
+              comment: { comments: [] },
+              attachment: [{ id: "41001", filename: "comment.png", mimeType: "image/png", size: 8 }],
+              issuelinks: [],
+            },
+          }),
+        );
+      }
+
+      if (url.includes("/rest/api/3/issue/OPS-124/comment?startAt=0")) {
+        return await Promise.resolve(
+          jsonResponse({
+            comments: [
+              {
+                id: "comment-1",
+                author: { displayName: "Reviewer" },
+                body: mediaDocument("comment.png", "41001"),
+                created: "2026-05-01T09:00:00.000+0000",
+              },
+            ],
+            maxResults: 1,
+            startAt: 0,
+            total: 2,
+          }),
+        );
+      }
+
+      if (url.includes("/rest/api/3/issue/OPS-124/comment?startAt=1")) {
+        return await Promise.resolve(
+          jsonResponse({
+            comments: [
+              {
+                id: "comment-2",
+                author: { displayName: "Tester" },
+                body: {
+                  type: "doc",
+                  content: [{ type: "paragraph", content: [{ type: "text", text: "Second page" }] }],
+                },
+                created: "2026-05-01T10:00:00.000+0000",
+              },
+            ],
+            maxResults: 1,
+            startAt: 1,
+            total: 2,
+          }),
+        );
+      }
+
+      return await Promise.resolve(
+        new Response(pngBytes, {
+          headers: { "Content-Type": "image/png" },
+          status: 200,
+        }),
+      );
+    });
+
+    const detail = await fetchJiraIssueDetail({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      downloadImages: true,
+      fetchImpl: fetchMock,
+      imageOutputDir,
+      issueKey: "OPS-124",
+      maxImageBytes: 64,
+    });
+
+    expect(detail.comments).toMatchObject([
+      { authorDisplayName: "Reviewer", id: "comment-1" },
+      { authorDisplayName: "Tester", bodyText: "Second page", id: "comment-2" },
+    ]);
+    expect(detail.images).toEqual([
+      expect.objectContaining({
+        attachmentId: "41001",
+        commentId: "comment-1",
+        filename: "comment.png",
+        source: "comment",
+      }),
+    ]);
+    expect(detail.comments[0]?.images).toEqual([detail.images[0]]);
+  });
+
   it("downloads inline description images to local temp files when requested", async () => {
     const imageOutputDir = await createTempDir();
     const fetchMock = vi.fn(async (input: FetchInput) => {
@@ -298,8 +395,7 @@ describe("Jira REST client", () => {
       }),
     ]);
     expect(detail.comments[0]?.images).toEqual([detail.images[0]]);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+    expect(fetchMock).toHaveBeenLastCalledWith(
       "https://api.media.atlassian.com/file/media-1/binary",
       {
         headers: {
