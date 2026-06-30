@@ -28,6 +28,7 @@ describe("remote command builders", () => {
     const script = buildRootsScript(3);
     expect(script.script).toContain("CFX_OP='roots'");
     expect(script.script).toContain("emit_root '/workspace/app'");
+    expect(script.script).not.toContain("emit_root '/srv'");
     expect(script.script).toContain("find / -maxdepth 4");
     expect(script.script).toContain("-path '*/node_modules'");
     expect(script.script).toContain("head -n 3");
