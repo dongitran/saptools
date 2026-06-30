@@ -1,3 +1,5 @@
+# cspell:ignore endgroup mktemp pipefail
+
 name: bruno
 
 on:
@@ -77,6 +79,42 @@ jobs:
 
       - name: Run e2e tests (offline, stubbed bru)
         run: pnpm --filter @saptools/bruno test:e2e
+
+      - name: Wait for @saptools/* deps to appear on npm
+        working-directory: packages/bruno
+        run: |
+          set -euo pipefail
+          deps=$(node -e "
+            const p = require('./package.json');
+            for (const [n, v] of Object.entries(p.dependencies || {})) {
+              if (n.startsWith('@saptools/')) {
+                console.log(n + '@' + v.replace(/^[\^~]/, ''));
+              }
+            }
+          ")
+          if [ -z "$deps" ]; then
+            echo "No @saptools/* deps to wait for."
+            exit 0
+          fi
+          while IFS= read -r spec; do
+            [ -z "$spec" ] && continue
+            echo "::group::Waiting for $spec (timeout 5m)"
+            found=0
+            for i in $(seq 1 60); do
+              if npm view "$spec" version >/dev/null 2>&1; then
+                echo "✔ $spec is available"
+                found=1
+                break
+              fi
+              echo "Attempt $i/60: not yet, sleeping 5s..."
+              sleep 5
+            done
+            echo "::endgroup::"
+            if [ "$found" -eq 0 ]; then
+              echo "::error::Timed out waiting for $spec after 5 minutes"
+              exit 1
+            fi
+          done <<< "$deps"
 
       - name: Verify publish tarball
         run: |

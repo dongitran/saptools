@@ -1,0 +1,611 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  addJiraIssueWorklog,
+  fetchAssignedJiraIssues,
+  fetchJiraIssueDetail,
+  fetchJiraIssueRemoteLinks,
+  fetchJiraIssueTransitions,
+  transitionJiraIssue,
+} from "../../src/client.js";
+import { buildAssignedIssuesSearchBody } from "../../src/urls.js";
+
+const apiRoot = "https://jira-api.example.com/ex/jira";
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xdb]);
+const tempDirs: string[] = [];
+type FetchInput = Parameters<typeof fetch>[0];
+
+afterEach(async () => {
+  await Promise.all(
+    tempDirs.map(async (dir) => {
+      await rm(dir, { force: true, recursive: true });
+    }),
+  );
+  tempDirs.length = 0;
+});
+
+describe("Jira REST client", () => {
+  it("fetches assigned issues through enhanced JQL search", async () => {
+    const fetchMock = vi.fn(async () => {
+      return await Promise.resolve(
+        jsonResponse({
+          issues: [
+            {
+              key: "OPS-123",
+              fields: {
+                summary: "Stabilize deployment",
+                status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+                priority: { name: "High" },
+                assignee: { displayName: "Current User" },
+                issuetype: { name: "Bug" },
+                updated: "2026-05-01T08:20:00.000+0000",
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    await expect(
+      fetchAssignedJiraIssues({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+      }),
+    ).resolves.toEqual([
+      {
+        assigneeDisplayName: "Current User",
+        issueType: "Bug",
+        key: "OPS-123",
+        priority: "High",
+        status: "In Progress",
+        statusCategory: "In Progress",
+        summary: "Stabilize deployment",
+        updated: "2026-05-01T08:20:00.000+0000",
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/search/jql",
+      {
+        body: JSON.stringify(buildAssignedIssuesSearchBody()),
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer secret-access-token",
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      },
+    );
+  });
+
+  it("fetches issue detail and extracts readable ADF text", async () => {
+    const fetchMock = vi.fn(async () => {
+      return await Promise.resolve(
+        jsonResponse({
+          key: "OPS-123",
+          fields: {
+            summary: "Stabilize deployment",
+            status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+            priority: null,
+            assignee: null,
+            issuetype: { name: "Task" },
+            updated: "2026-05-01T08:20:00.000+0000",
+            description: {
+              type: "doc",
+              content: [{ type: "paragraph", content: [{ type: "text", text: "Deploy safely" }] }],
+            },
+            comment: {
+              comments: [
+                {
+                  id: "10001",
+                  author: { displayName: "Reviewer" },
+                  body: {
+                    type: "doc",
+                    content: [{ type: "paragraph", content: [{ type: "text", text: "Looks good" }] }],
+                  },
+                  created: "2026-05-01T09:00:00.000+0000",
+                },
+              ],
+            },
+            attachment: [{ id: "20001", filename: "diagram.png", mimeType: "image/png", size: 42 }],
+            issuelinks: [
+              {
+                type: { name: "Cloners", outward: "clones" },
+                outwardIssue: { key: "OPS-456", fields: { status: { name: "Done" } } },
+              },
+            ],
+          },
+        }),
+      );
+    });
+
+    await expect(
+      fetchJiraIssueDetail({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-123",
+      }),
+    ).resolves.toMatchObject({
+      attachments: [{ filename: "diagram.png", id: "20001", mimeType: "image/png", size: 42 }],
+      comments: [{ authorDisplayName: "Reviewer", bodyText: "Looks good" }],
+      descriptionText: "Deploy safely",
+      linkedCloneIssues: [{ key: "OPS-456", relationship: "clones", status: "Done" }],
+      key: "OPS-123",
+      priority: null,
+    });
+  });
+
+  it("downloads inline description images to local temp files when requested", async () => {
+    const imageOutputDir = await createTempDir();
+    const fetchMock = vi.fn(async (input: FetchInput) => {
+      const url = requestUrl(input);
+      if (url.includes("/rest/api/3/issue/OPS-125?")) {
+        return await Promise.resolve(
+          jsonResponse({
+            key: "OPS-125",
+            renderedFields: {
+              description: '<p><img src="/rest/api/3/attachment/content/30001" /></p>',
+            },
+            fields: {
+              summary: "Review inline image",
+              status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+              priority: null,
+              assignee: null,
+              issuetype: { name: "Task" },
+              updated: "2026-05-01T08:20:00.000+0000",
+              description: mediaDocument("diagram.png", "media-platform-id"),
+              comment: { comments: [] },
+              attachment: [
+                {
+                  id: "30001",
+                  filename: "diagram.png",
+                  mimeType: "application/octet-stream",
+                  size: pngBytes.byteLength,
+                },
+              ],
+              issuelinks: [],
+            },
+          }),
+        );
+      }
+
+      return await Promise.resolve(
+        new Response(pngBytes, {
+          headers: { "Content-Type": "application/octet-stream" },
+          status: 200,
+        }),
+      );
+    });
+
+    const detail = await fetchJiraIssueDetail({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      downloadImages: true,
+      fetchImpl: fetchMock,
+      imageOutputDir,
+      issueKey: "OPS-125",
+      maxImageBytes: 64,
+    });
+
+    expect(detail.images).toEqual([
+      expect.objectContaining({
+        attachmentId: "30001",
+        byteLength: pngBytes.byteLength,
+        filename: "diagram.png",
+        mimeType: "image/png",
+        source: "description",
+      }),
+    ]);
+    const savedImage = detail.images[0];
+    expect(savedImage?.filePath.startsWith(imageOutputDir)).toBe(true);
+    expect(savedImage?.fileUrl.startsWith("file://")).toBe(true);
+    await expect(readFile(savedImage?.filePath ?? "")).resolves.toEqual(Buffer.from(pngBytes));
+    expect(detail.attachments[0]).toMatchObject({
+      byteLength: pngBytes.byteLength,
+      fileUrl: savedImage?.fileUrl,
+      localPath: savedImage?.filePath,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/attachment/content/30001",
+      {
+        headers: {
+          Accept: "*/*",
+          Authorization: "Bearer secret-access-token",
+        },
+        redirect: "manual",
+      },
+    );
+  });
+
+  it("follows signed media redirects without forwarding Authorization headers", async () => {
+    const imageOutputDir = await createTempDir();
+    const fetchMock = vi.fn(async (input: FetchInput) => {
+      const url = requestUrl(input);
+      if (url.includes("/rest/api/3/issue/OPS-126?")) {
+        return await Promise.resolve(
+          jsonResponse({
+            key: "OPS-126",
+            fields: {
+              summary: "Review comment image",
+              status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+              priority: null,
+              assignee: null,
+              issuetype: { name: "Task" },
+              updated: "2026-05-01T08:20:00.000+0000",
+              description: null,
+              comment: {
+                comments: [
+                  {
+                    id: "comment-1",
+                    body: mediaDocument("alert.jpg", "40001"),
+                    created: "2026-05-01T09:00:00.000+0000",
+                  },
+                ],
+              },
+              attachment: [
+                { id: "40001", filename: "alert.jpg", mimeType: "image/jpeg", size: 4 },
+              ],
+              issuelinks: [],
+            },
+          }),
+        );
+      }
+
+      if (url.includes("/attachment/content/40001")) {
+        return await Promise.resolve(
+          new Response(null, {
+            headers: { Location: "https://api.media.atlassian.com/file/media-1/binary" },
+            status: 302,
+          }),
+        );
+      }
+
+      return await Promise.resolve(
+        new Response(jpegBytes, {
+          headers: { "Content-Type": "application/octet-stream" },
+          status: 200,
+        }),
+      );
+    });
+
+    const detail = await fetchJiraIssueDetail({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      downloadImages: true,
+      fetchImpl: fetchMock,
+      imageOutputDir,
+      issueKey: "OPS-126",
+      maxImageBytes: 64,
+    });
+
+    expect(detail.images).toEqual([
+      expect.objectContaining({
+        attachmentId: "40001",
+        commentId: "comment-1",
+        filename: "alert.jpg",
+        mimeType: "image/jpeg",
+        source: "comment",
+      }),
+    ]);
+    expect(detail.comments[0]?.images).toEqual([detail.images[0]]);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://api.media.atlassian.com/file/media-1/binary",
+      {
+        headers: {
+          Accept: "image/*",
+        },
+      },
+    );
+  });
+
+  it("skips inline image downloads when the image body exceeds the byte limit", async () => {
+    const imageOutputDir = await createTempDir();
+    const fetchMock = vi.fn(async (input: FetchInput) => {
+      const url = requestUrl(input);
+      if (url.includes("/rest/api/3/issue/OPS-127?")) {
+        return await Promise.resolve(
+          jsonResponse({
+            key: "OPS-127",
+            fields: {
+              summary: "Oversized image",
+              status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+              priority: null,
+              assignee: null,
+              issuetype: { name: "Task" },
+              updated: "2026-05-01T08:20:00.000+0000",
+              description: mediaDocument("large.png", "50001"),
+              comment: { comments: [] },
+              attachment: [{ id: "50001", filename: "large.png", mimeType: "image/png", size: 4 }],
+              issuelinks: [],
+            },
+          }),
+        );
+      }
+
+      return await Promise.resolve(
+        new Response(pngBytes, {
+          headers: {
+            "Content-Length": pngBytes.byteLength.toString(),
+            "Content-Type": "image/png",
+          },
+          status: 200,
+        }),
+      );
+    });
+
+    await expect(
+      fetchJiraIssueDetail({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        downloadImages: true,
+        fetchImpl: fetchMock,
+        imageOutputDir,
+        issueKey: "OPS-127",
+        maxImageBytes: 3,
+      }),
+    ).resolves.toMatchObject({
+      images: [],
+    });
+  });
+
+  it("fetches remote links and transitions", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: 10001,
+            relationship: "Runbook",
+            object: { title: "Service Runbook", url: "https://docs.example.com/runbook" },
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ transitions: [{ id: "31", name: "Start Review", to: { name: "Review" } }] }),
+      );
+
+    await expect(
+      fetchJiraIssueRemoteLinks({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-123",
+      }),
+    ).resolves.toEqual([
+      {
+        id: "10001",
+        relationship: "Runbook",
+        title: "Service Runbook",
+        url: "https://docs.example.com/runbook",
+      },
+    ]);
+    await expect(
+      fetchJiraIssueTransitions({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-123",
+      }),
+    ).resolves.toEqual([{ id: "31", name: "Start Review", toStatus: "Review" }]);
+  });
+
+  it("covers fallback mapping for remote links, transitions, and sparse details", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse([{ id: "10002", object: { title: "Dashboard", url: "https://dash.example.com" } }]),
+      )
+      .mockResolvedValueOnce(jsonResponse({ transitions: [{ id: "41", name: "Done" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          key: "OPS-124",
+          fields: {
+            summary: "Sparse issue",
+            status: { name: "Open", statusCategory: { name: "To Do" } },
+            issuetype: { name: "Task" },
+            updated: "2026-05-01T08:20:00.000+0000",
+            comment: [{ body: null }],
+            attachment: [{ id: 20002, filename: "notes.txt", mimeType: "text/plain" }],
+            issuelinks: [
+              {
+                type: { name: "Cloners", inward: "clones" },
+                inwardIssue: { key: "OPS-100" },
+              },
+              {
+                type: { name: "Relates", outward: "relates to" },
+                outwardIssue: { key: "OPS-200" },
+              },
+            ],
+          },
+        }),
+      );
+
+    await expect(
+      fetchJiraIssueRemoteLinks({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-124",
+      }),
+    ).resolves.toEqual([
+      {
+        id: "10002",
+        relationship: "Remote link",
+        title: "Dashboard",
+        url: "https://dash.example.com",
+      },
+    ]);
+    await expect(
+      fetchJiraIssueTransitions({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-124",
+      }),
+    ).resolves.toEqual([{ id: "41", name: "Done", toStatus: "Done" }]);
+    await expect(
+      fetchJiraIssueDetail({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-124",
+      }),
+    ).resolves.toMatchObject({
+      assigneeDisplayName: null,
+      attachments: [{ id: "20002", size: 0 }],
+      comments: [{ authorDisplayName: "Unknown author", bodyText: "", id: "comment-0" }],
+      descriptionText: "",
+      linkedCloneIssues: [{ key: "OPS-100", relationship: "clones", status: null }],
+      priority: null,
+    });
+  });
+
+  it("sends Jira write requests with neutral errors", async () => {
+    const transitionFetch = vi.fn(async () => await Promise.resolve(new Response(null, { status: 204 })));
+    await expect(
+      transitionJiraIssue({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: transitionFetch,
+        issueKey: "OPS-123",
+        transitionId: "31",
+      }),
+    ).resolves.toBeUndefined();
+
+    const worklogFetch = vi.fn(async () => await Promise.resolve(new Response("denied secret-access-token", { status: 403 })));
+    await expect(
+      addJiraIssueWorklog({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: worklogFetch,
+        issueKey: "OPS-123",
+        minutes: 30,
+        started: "2026-05-01T08:20:00.000+0000",
+      }),
+    ).rejects.toThrow("Jira worklog could not be added.");
+    await expect(
+      addJiraIssueWorklog({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: worklogFetch,
+        issueKey: "OPS-123",
+        minutes: 30,
+      }),
+    ).rejects.not.toThrow(/secret-access-token/);
+  });
+
+  it("adds worklogs without comments and validates positive minutes", async () => {
+    const fetchMock = vi.fn(async () => await Promise.resolve(new Response("{}", { status: 201 })));
+
+    await expect(
+      addJiraIssueWorklog({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-123",
+        minutes: 15,
+        started: "2026-05-01T08:20:00.000+0000",
+      }),
+    ).resolves.toBeUndefined();
+    const request = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(request.body).toBe(
+      JSON.stringify({
+        started: "2026-05-01T08:20:00.000+0000",
+        timeSpentSeconds: 900,
+      }),
+    );
+
+    await expect(
+      addJiraIssueWorklog({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: fetchMock,
+        issueKey: "OPS-123",
+        minutes: 0,
+      }),
+    ).rejects.toThrow("positive integer");
+  });
+
+  it("throws neutral validation errors for malformed Jira responses", async () => {
+    const invalidFetch = vi.fn(async () => await Promise.resolve(jsonResponse({ invalid: true })));
+
+    await expect(
+      fetchAssignedJiraIssues({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: invalidFetch,
+      }),
+    ).rejects.toThrow("Assigned Jira issue response was not valid.");
+    await expect(
+      fetchJiraIssueRemoteLinks({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: invalidFetch,
+        issueKey: "OPS-123",
+      }),
+    ).rejects.toThrow("Jira remote links response was not valid.");
+    await expect(
+      fetchJiraIssueTransitions({
+        accessToken: "secret-access-token",
+        apiRoot,
+        cloudId: "cloud-1",
+        fetchImpl: invalidFetch,
+        issueKey: "OPS-123",
+      }),
+    ).rejects.toThrow("Jira issue transitions response was not valid.");
+  });
+});
+
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    headers: { "content-type": "application/json" },
+    status: 200,
+  });
+}
+
+async function createTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "saptools-jira-images-test-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function mediaDocument(filename: string, mediaId: string): unknown {
+  return {
+    content: [
+      {
+        content: [{ attrs: { alt: filename, id: mediaId, type: "file" }, type: "media" }],
+        type: "mediaSingle",
+      },
+    ],
+    type: "doc",
+    version: 1,
+  };
+}
+
+function requestUrl(input: FetchInput): string {
+  return typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+}

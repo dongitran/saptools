@@ -1,0 +1,355 @@
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { expect, test } from "@playwright/test";
+
+const execFileAsync = promisify(execFile);
+const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
+const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+interface JiraTokensFixture {
+  readonly accessToken: string;
+  readonly refreshToken: string;
+  readonly expiresIn: number;
+  readonly scope: string;
+  readonly tokenType: string;
+  readonly cloudId: string;
+  readonly cloudName: string;
+  readonly issuedAt: number;
+}
+
+interface RecordedRequest {
+  readonly authorization: string | undefined;
+  readonly body: string;
+  readonly method: string;
+  readonly url: string;
+}
+
+interface FakeJiraServer {
+  readonly apiRoot: string;
+  readonly close: () => Promise<void>;
+  readonly requests: () => readonly RecordedRequest[];
+}
+
+interface CliContext {
+  readonly cleanup: () => Promise<void>;
+  readonly env: NodeJS.ProcessEnv;
+  readonly fakeJira: FakeJiraServer;
+  readonly run: (args: readonly string[]) => Promise<{ readonly stdout: string; readonly stderr: string }>;
+}
+
+function createTokens(): JiraTokensFixture {
+  return {
+    accessToken: "e2e-access-token",
+    refreshToken: "e2e-refresh-token",
+    expiresIn: 3600,
+    scope: "read:jira-work write:jira-work offline_access",
+    tokenType: "Bearer",
+    cloudId: "cloud-1",
+    cloudName: "E2E Jira",
+    issuedAt: Date.now(),
+  };
+}
+
+async function prepareCliContext(): Promise<CliContext> {
+  const home = await mkdtemp(join(tmpdir(), "saptools-jira-e2e-"));
+  const tokenPath = join(home, ".jira-oauth", "tokens.json");
+  const fakeJira = await startFakeJiraServer();
+  await mkdir(dirname(tokenPath), { recursive: true });
+  await writeFile(tokenPath, `${JSON.stringify(createTokens(), null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  Reflect.deleteProperty(env, "FORCE_COLOR");
+  Reflect.deleteProperty(env, "NO_COLOR");
+
+  return {
+    env,
+    fakeJira,
+    run: async (args) => {
+      const { stderr, stdout } = await execFileAsync("node", [CLI_PATH, ...args], {
+        env,
+        timeout: 30_000,
+      });
+      return {
+        stderr: normalizeOutput(stderr),
+        stdout: normalizeOutput(stdout),
+      };
+    },
+    cleanup: async () => {
+      await fakeJira.close();
+      await rm(home, { recursive: true, force: true });
+    },
+  };
+}
+
+async function startFakeJiraServer(): Promise<FakeJiraServer> {
+  const requests: RecordedRequest[] = [];
+  const server = createServer((request, response) => {
+    void handleFakeJiraRequest(request, response, requests);
+  });
+
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("Fake Jira server did not expose a TCP port");
+  }
+
+  return {
+    apiRoot: `http://127.0.0.1:${address.port.toString()}/ex/jira`,
+    close: async () => {
+      await closeServer(server);
+    },
+    requests: () => requests,
+  };
+}
+
+async function handleFakeJiraRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requests: RecordedRequest[],
+): Promise<void> {
+  const body = await readRequestBody(request);
+  const method = request.method ?? "GET";
+  const url = request.url ?? "/";
+  requests.push({
+    authorization: request.headers.authorization,
+    body,
+    method,
+    url,
+  });
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/search/jql") {
+    writeJson(response, {
+      issues: [
+        {
+          key: "OPS-123",
+          fields: {
+            summary: "Stabilize deployment",
+            status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+            priority: { name: "High" },
+            assignee: { displayName: "Current User" },
+            issuetype: { name: "Bug" },
+            updated: "2026-05-01T08:20:00.000+0000",
+          },
+        },
+      ],
+    });
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/OPS-123?")) {
+    writeJson(response, {
+      key: "OPS-123",
+      renderedFields: {
+        description: '<p><img src="/rest/api/3/attachment/content/20001" /></p>',
+      },
+      fields: {
+        summary: "Stabilize deployment",
+        status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+        priority: null,
+        assignee: null,
+        issuetype: { name: "Task" },
+        updated: "2026-05-01T08:20:00.000+0000",
+        description: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "Deploy safely" }] },
+            {
+              type: "mediaSingle",
+              content: [
+                {
+                  type: "media",
+                  attrs: { alt: "deployment.png", id: "media-platform-id", type: "file" },
+                },
+              ],
+            },
+          ],
+        },
+        comment: { comments: [] },
+        attachment: [{ id: "20001", filename: "deployment.png", mimeType: "image/png", size: 8 }],
+        issuelinks: [],
+      },
+    });
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/20001") {
+    response.writeHead(200, { "content-type": "image/png" });
+    response.end(IMAGE_BYTES);
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/remotelink") {
+    writeJson(response, [
+      {
+        id: 10001,
+        relationship: "Runbook",
+        object: { title: "Docs", url: "https://docs.example.com" },
+      },
+    ]);
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/transitions") {
+    writeJson(response, { transitions: [{ id: "31", name: "Start Review", to: { name: "Review" } }] });
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/transitions") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/worklog") {
+    writeJson(response, { id: "30001" }, 201);
+    return;
+  }
+
+  response.writeHead(404, { "content-type": "text/plain" });
+  response.end("not found");
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function writeJson(response: ServerResponse, value: unknown, status = 200): void {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(value));
+}
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolvePromise();
+    });
+  });
+}
+
+function normalizeOutput(output: string | Uint8Array): string {
+  return typeof output === "string" ? output : Buffer.from(output).toString("utf8");
+}
+
+test.describe("Jira CLI", () => {
+  test("User can inspect shared JiraOps token status", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const result = await ctx.run(["status", "--json"]);
+      const status = JSON.parse(result.stdout) as {
+        readonly cloudId: string;
+        readonly connected: boolean;
+      };
+
+      expect(status).toMatchObject({ cloudId: "cloud-1", connected: true });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can list assigned issues using the shared token store", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const result = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issues", "--json"]);
+      const issues = JSON.parse(result.stdout) as readonly { readonly key: string }[];
+
+      expect(issues).toEqual([expect.objectContaining({ key: "OPS-123" })]);
+      expect(ctx.fakeJira.requests()[0]).toMatchObject({
+        authorization: "Bearer e2e-access-token",
+        method: "POST",
+        url: "/ex/jira/cloud-1/rest/api/3/search/jql",
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can read issue details, links, and transitions", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const detail = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issue", "OPS-123", "--json"]);
+      const links = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "links", "OPS-123", "--json"]);
+      const transitions = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "transitions",
+        "OPS-123",
+        "--json",
+      ]);
+
+      const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly descriptionText: string;
+        readonly images: readonly { readonly filePath: string; readonly fileUrl: string }[];
+      };
+      expect(parsedDetail).toMatchObject({ descriptionText: "Deploy safely" });
+      expect(parsedDetail.images[0]?.fileUrl).toMatch(/^file:\/\//u);
+      await expect(readFile(parsedDetail.images[0]?.filePath ?? "")).resolves.toEqual(
+        Buffer.from(IMAGE_BYTES),
+      );
+      expect(JSON.parse(links.stdout)).toEqual([expect.objectContaining({ title: "Docs" })]);
+      expect(JSON.parse(transitions.stdout)).toEqual([expect.objectContaining({ id: "31" })]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can transition an issue and add worklog time", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const transition = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "transition",
+        "OPS-123",
+        "--id",
+        "31",
+      ]);
+      const worklog = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "worklog",
+        "OPS-123",
+        "--minutes",
+        "30",
+        "--comment",
+        "Focused review",
+        "--started",
+        "2026-05-01T08:20:00.000+0000",
+      ]);
+
+      expect(transition.stdout).toContain("Transition applied");
+      expect(worklog.stdout).toContain("Worklog added");
+      const writeBodies = ctx.fakeJira
+        .requests()
+        .filter((entry) => entry.method === "POST")
+        .map((entry) => entry.body);
+      expect(writeBodies[0]).toBe(JSON.stringify({ transition: { id: "31" } }));
+      expect(writeBodies[1]).toContain("Focused review");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+});

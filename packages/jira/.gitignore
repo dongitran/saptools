@@ -1,0 +1,47 @@
+# Planning / agent scratch files
+implementation_plan.md
+
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build outputs
+dist/
+build/
+lib/
+out/
+*.tsbuildinfo
+
+# Test and coverage outputs
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+.vitest/
+
+# Tool caches
+.turbo/
+.cache/
+.eslintcache
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Package manager artifacts
+package-lock.json
+npm-packlist.json
+*.tgz
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,67 @@
+{
+  "name": "@saptools/jira",
+  "version": "0.1.1",
+  "description": "Jira Cloud CLI and typed API that reuses the JiraOps OAuth token store",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "jira": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --max-warnings 0",
+    "cspell": "cspell --config ../../.cspell.json \"src/**/*.ts\" \"tests/**/*.ts\" README.md package.json",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "pnpm build && playwright test",
+    "check": "pnpm cspell && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test:e2e"
+  },
+  "keywords": [
+    "jira",
+    "atlassian",
+    "oauth",
+    "cli",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/jira"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/jira#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "jira-oauth-client": "^0.1.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}
