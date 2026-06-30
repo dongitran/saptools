@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
       options: unknown,
     ) => Promise<{ readonly stdout: string; readonly durationMs: number; readonly truncated: boolean }>
   >(),
+  cfSshEnabled: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<boolean>>(),
+  cfEnableSsh: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<void>>(),
+  cfRestartApp: vi.fn<(target: unknown, context: unknown, options: unknown) => Promise<void>>(),
   prepareCfCliSession: vi.fn<
     (target: unknown, cfHomeDir: string, runtime: unknown) => Promise<{
       readonly context: { readonly cfHomeDir: string };
@@ -26,6 +29,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../src/cf/client.js", () => ({
+  cfEnableSsh: mocks.cfEnableSsh,
+  cfRestartApp: mocks.cfRestartApp,
+  cfSshEnabled: mocks.cfSshEnabled,
   cfSshOneShot: mocks.cfSshOneShot,
   prepareCfCliSession: mocks.prepareCfCliSession,
 }));
@@ -36,11 +42,39 @@ describe("one-shot remote runner", () => {
   beforeEach(async () => {
     homeDir = await mkdtemp(join(tmpdir(), "cf-explorer-runner-"));
     mocks.cfSshOneShot.mockReset();
+    mocks.cfSshEnabled.mockReset();
+    mocks.cfEnableSsh.mockReset();
+    mocks.cfRestartApp.mockReset();
+    mocks.cfSshEnabled.mockResolvedValue(true);
     mocks.prepareCfCliSession.mockReset();
     mocks.prepareCfCliSession.mockImplementation(async (_target, cfHomeDir) => ({
       context: { cfHomeDir },
       target: _target,
     }));
+  });
+
+  it("automatically enables SSH and restarts before SSH commands when disabled", async () => {
+    mocks.cfSshEnabled.mockResolvedValue(false);
+    mocks.cfEnableSsh.mockResolvedValue();
+    mocks.cfRestartApp.mockResolvedValue();
+    mocks.cfSshOneShot.mockResolvedValue({
+      stdout: "ok\n",
+      durationMs: 1,
+      truncated: false,
+    });
+
+    await executeRemoteScript({
+      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
+      processName: "web",
+      instance: 0,
+      script: "printf ok",
+      runtime: { homeDir },
+    });
+
+    expect(mocks.cfSshEnabled).toHaveBeenCalledOnce();
+    expect(mocks.cfEnableSsh).toHaveBeenCalledOnce();
+    expect(mocks.cfRestartApp).toHaveBeenCalledOnce();
+    expect(mocks.cfSshOneShot).toHaveBeenCalledOnce();
   });
 
   afterEach(async () => {

@@ -23,6 +23,7 @@ import type {
   StopSessionResult,
   ViewResult,
 } from "../core/types.js";
+import { prepareSshAccess, withPreparedCfSession } from "../discovery/runner.js";
 
 import { sendIpcRequest, type IpcCommand, type IpcResponse } from "./ipc.js";
 import { explorerHome, sessionsLockPath } from "./paths.js";
@@ -66,6 +67,9 @@ export async function startExplorerSession(
   const instance = resolveInstance(options.instance);
   const target = normalizeTarget(options.target);
   const bootstrap = buildBootstrap(options, sessionId, homeDir, processName, instance);
+  await withPreparedCfSession(target, runtime, async (context) => {
+    await prepareSshAccess(target, context, runtime);
+  });
   await registerExplorerSession({
     sessionId,
     brokerPid: process.pid,

@@ -181,20 +181,27 @@ test("User can inspect candidates and aggregate all running instances", async ()
   expect(JSON.parse(all.stdout).instances).toHaveLength(2);
 });
 
-test("User must confirm lifecycle commands that change app state", async () => {
-  const paths = await prepareCase("lifecycle", scenario());
+test("SSH-backed commands automatically enable SSH when needed", async () => {
+  const paths = await prepareCase("auto-ssh", scenario());
   const env = createEnv(paths);
 
-  const blocked = await runCli(env, ["enable-ssh", ...targetArgs]);
-  expect(blocked.code).not.toBe(0);
-  expect(blocked.stderr).toContain("LIFECYCLE_CONFIRMATION_REQUIRED");
-
-  const enabled = await runCli(env, ["enable-ssh", ...targetArgs, "--yes"]);
-  expect(enabled.code).toBe(0);
-  expect(JSON.parse(enabled.stdout).changed).toBe(true);
+  const roots = await runCli(env, ["roots", ...targetArgs]);
+  expect(roots.code).toBe(0);
+  expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
 
   const logs = await readLog(paths.logPath);
-  expect(logs.map((entry) => entry.command)).toContain("enable-ssh");
+  expect(logs.map((entry) => entry.command)).toEqual(
+    expect.arrayContaining(["ssh-enabled", "enable-ssh", "restart", "ssh"]),
+  );
+});
+
+test("Lifecycle commands are not exposed by the CLI", async () => {
+  const paths = await prepareCase("lifecycle-hidden", scenario());
+  const env = createEnv(paths);
+
+  const blocked = await runCli(env, ["enable-ssh", ...targetArgs, "--yes"]);
+  expect(blocked.code).not.toBe(0);
+  expect(blocked.stderr).toContain("unknown command");
 });
 
 test("User can reuse a persistent session through the broker", async () => {

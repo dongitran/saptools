@@ -36,6 +36,7 @@ import {
   parseRootsOutput,
   parseViewOutput,
 } from "../discovery/parsers.js";
+import { prepareSshAccess } from "../discovery/runner.js";
 import { createIpcServer, errorResponse, type IpcHandlerResult, type IpcRequest, type IpcResponse } from "../session/ipc.js";
 import { cleanupSessionFiles, readExplorerSession, removeExplorerSession, updateExplorerSession } from "../session/storage.js";
 
@@ -74,6 +75,7 @@ class ExplorerBroker {
     try {
       this.session = await this.requireSession();
       const context = await this.prepareContext();
+      await prepareSshAccess(this.bootstrap.target, context, this.runtimeOptions());
       const child = spawnPersistentSshShell(this.bootstrap.target, context, this.bootstrap.process, this.bootstrap.instance);
       this.shell = new PersistentShell(child, (reason) => {
         this.handleShellExit(reason);
@@ -304,6 +306,13 @@ class ExplorerBroker {
     delete process.env["CF_USERNAME"];
     delete process.env["CF_PASSWORD"];
     return prepared.context;
+  }
+
+  private runtimeOptions(): ExplorerRuntimeOptions {
+    return {
+      homeDir: this.bootstrap.homeDir,
+      ...(this.bootstrap.cfBin === undefined ? {} : { cfBin: this.bootstrap.cfBin }),
+    };
   }
 
   private async touchLastUsed(): Promise<void> {

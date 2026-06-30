@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
       readonly truncated: boolean;
     }>
   >(),
+  prepareSshAccess: vi.fn<() => Promise<boolean>>(),
 }));
 
 vi.mock("../../src/cf/client.js", () => ({
@@ -45,6 +46,7 @@ vi.mock("../../src/cf/client.js", () => ({
 vi.mock("../../src/discovery/runner.js", () => ({
   executeRemoteScript: mocks.executeRemoteScript,
   executeRemoteScriptWithContext: mocks.executeRemoteScriptWithContext,
+  prepareSshAccess: mocks.prepareSshAccess,
   withPreparedCfSession: async (
     _target: unknown,
     _runtime: unknown,
@@ -59,6 +61,8 @@ describe("discovery API", () => {
     mocks.cfApp.mockReset();
     mocks.executeRemoteScript.mockReset();
     mocks.executeRemoteScriptWithContext.mockReset();
+    mocks.prepareSshAccess.mockReset();
+    mocks.prepareSshAccess.mockResolvedValue(false);
     // All-instance flows share one prepared CF session via
     // executeRemoteScriptWithContext; delegate to the same fake so existing
     // executeRemoteScript expectations remain useful.

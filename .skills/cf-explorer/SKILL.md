@@ -15,7 +15,7 @@ If `cf-explorer` is missing, install it: `npm install -g @saptools/cf-explorer`.
 
 1. Identify what the user needs to find: the app root, a specific file, a text pattern (grep), or line context (view).
 2. `--app` is always required. `--region`, `--org`, and `--space` are optional and will automatically resolve if a current `cf target` is active. If the resolution fails (no target set), you must explicitly pass the full target. Note: there are no short flags (like `-a`); always use `--app`.
-3. Keep discovery read-only by default. Lifecycle commands like `enable-ssh`, `prepare-ssh`, or `restart` should only be used if explicitly needed to enable access (and they require `--yes` to bypass prompts in non-interactive usage).
+3. Keep discovery read-only for remote files; `cf-explorer` automatically enables SSH and restarts the app when SSH is disabled.
 4. Use single-shot commands for quick lookups. If you need to run multiple `ls`, `grep`, or `view` commands back-to-back, consider starting a persistent `session` to avoid the overhead of opening multiple SSH connections.
 5. All discovery commands support `--json` for structured output and `--no-json` for human-readable output.
 
@@ -68,17 +68,8 @@ cf-explorer session view --session-id <id> --file /home/vcap/app/src/index.js --
 cf-explorer session stop --session-id <id>
 ```
 
-**Lifecycle:**
-
-Check SSH status or enable it (requires app restart if enabled):
-```bash
-cf-explorer ssh-status --app app-demo
-cf-explorer prepare-ssh --app app-demo --yes
-```
-
 ## Troubleshooting
 
 - **Error: "No current CF target found"**: The user hasn't run `cf target` and didn't provide `--region`, `--org`, `--space`. Pass them explicitly via flags.
-- **Error: "SSH_DISABLED"**: Run `cf-explorer prepare-ssh --app <name> --yes` to enable SSH and restart the app.
 - **Timeouts / Output Limit Exceeded**: Use `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches.
 - **Empty Grep Results**: Ensure the `--root` path is correct (use `roots` command to discover it) and the `--text` is exact.
