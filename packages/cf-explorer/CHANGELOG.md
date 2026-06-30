@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.14
+
+### Bug fixes
+
+- Stopped reporting the Linux FHS `/srv` directory as an app root during root discovery.
+
 ## 0.2.13
 
 ### Hardening

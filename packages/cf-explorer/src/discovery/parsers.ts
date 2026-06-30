@@ -13,13 +13,15 @@ const FIND_LINE_PATTERN = /^CFX\tFIND\t(file|directory)\t(.+)$/;
 const LS_LINE_PATTERN = /^CFX\tLS\t(file|directory|symlink|other)\t([^\t]+)\t(.+)$/;
 const LEGACY_GREP_PREFIX = "CFX\tGREP\t";
 const VIEW_LINE_PATTERN = /^CFX\tLINE\t(\d+)\t(.*)$/;
+const SYSTEM_ROOTS = new Set(["/srv"]);
 
 export function parseRootsOutput(stdout: string): readonly string[] {
   return uniqueSorted(
     stdout
       .split(/\r?\n/)
       .map((line) => ROOT_LINE_PATTERN.exec(line)?.[1])
-      .filter((path): path is string => path !== undefined && path.length > 0),
+      .filter((path): path is string => path !== undefined && path.length > 0)
+      .filter((path) => !SYSTEM_ROOTS.has(path)),
   );
 }
 

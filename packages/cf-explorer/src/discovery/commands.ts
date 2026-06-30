@@ -4,7 +4,7 @@ const DEFAULT_MAX_FILES = 200;
 const DEFAULT_CONTEXT_LINES = 5;
 const MAX_CONTEXT_LINES = 50;
 const NOISY_DIRS = ["node_modules", ".git", "dist", "build", ".cache", "tmp", "temp"] as const;
-const ROOT_CANDIDATES = ["/home/vcap/app", "/workspace/app", "/workspace", "/app", "/srv", "/opt/app"] as const;
+const ROOT_CANDIDATES = ["/home/vcap/app", "/workspace/app", "/workspace", "/app", "/opt/app"] as const;
 
 export interface RemoteScript {
   readonly script: string;

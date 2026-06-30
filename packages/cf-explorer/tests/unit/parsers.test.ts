@@ -12,8 +12,8 @@ import {
 } from "../../src/discovery/parsers.js";
 
 describe("output parsers", () => {
-  it("deduplicates and sorts roots", () => {
-    const roots = parseRootsOutput("CFX\tROOT\t/b\nCFX\tROOT\t/a\nCFX\tROOT\t/a\n");
+  it("deduplicates, sorts, and ignores system roots", () => {
+    const roots = parseRootsOutput("CFX\tROOT\t/b\nCFX\tROOT\t/srv\nCFX\tROOT\t/a\nCFX\tROOT\t/a\n");
     expect(roots).toEqual(["/a", "/b"]);
   });
 
