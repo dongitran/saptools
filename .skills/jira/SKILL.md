@@ -11,8 +11,6 @@ Use `jira` to read and update Jira Cloud issues from the terminal. Prefer it whe
 
 If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptools/jira`.
 
-This CLI targets Jira Cloud through Atlassian's `api.atlassian.com/ex/jira` API. It is not for Jira Data Center.
-
 ## First Steps
 
 1. Identify whether the user needs auth status, assigned issues, one issue detail, remote links, transitions, a transition write, or a worklog write.
@@ -153,13 +151,3 @@ When using `jira issue <key>` and the JSON output contains `images[]`, inspect e
 Do not paste access tokens, refresh tokens, Authorization headers, OAuth client secrets, or raw token-store contents into chat. The token store is `~/.jira-oauth/tokens.json`.
 
 Downloaded image files are local temp artifacts, not repository files. If the images are sensitive, use `--image-dir <path>` pointing to a controlled temporary folder and remove it after use.
-
-## Troubleshooting
-
-- `Jira token is required`: run `jira connect` or confirm `~/.jira-oauth/tokens.json` exists.
-- Refresh fails: set `JIRA_CLIENT_ID` and `JIRA_CLIENT_SECRET`, then rerun `jira connect` or the requested command.
-- `jira issue` returns no `images`: the issue may not contain inline ADF media, image attachments may not match the media nodes, or the downloaded body did not verify as an image.
-- Saved image output is too large: rerun with `--max-images <n>`, `--max-image-bytes <n>`, or `--no-images`.
-- A transition write fails: run `jira transitions <key> --json` and use one of the returned IDs.
-- Worklog writes fail: ensure `--minutes` is a positive integer and the account has Jira worklog permission.
-- API calls fail against tests or custom roots: verify `--api-root` includes the `/ex/jira` prefix expected by the CLI.
