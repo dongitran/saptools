@@ -59,10 +59,10 @@ importers:
         specifier: ^8.3.2
         version: 8.5.2(@types/node@26.0.1)
       '@saptools/cf-sync':
-        specifier: ^0.4.10
+        specifier: ^0.4.15
         version: link:../cf-sync
       '@saptools/cf-xsuaa':
-        specifier: ^0.1.6
+        specifier: ^0.1.11
         version: link:../cf-xsuaa
       '@usebruno/cli':
         specifier: ^3.5.0
@@ -125,7 +125,7 @@ importers:
   packages/cf-explorer:
     dependencies:
       '@saptools/cf-sync':
-        specifier: ^0.4.13
+        specifier: ^0.4.15
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0
@@ -147,10 +147,10 @@ importers:
   packages/cf-export:
     dependencies:
       '@saptools/cf-files':
-        specifier: ^0.3.3
+        specifier: ^0.3.4
         version: link:../cf-files
       '@saptools/cf-sync':
-        specifier: ^0.4.13
+        specifier: ^0.4.15
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0
@@ -172,7 +172,7 @@ importers:
   packages/cf-files:
     dependencies:
       '@saptools/cf-sync':
-        specifier: ^0.4.3
+        specifier: ^0.4.15
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0
@@ -216,7 +216,7 @@ importers:
   packages/cf-inspector:
     dependencies:
       '@saptools/cf-debugger':
-        specifier: ^0.1.12
+        specifier: ^0.1.13
         version: link:../cf-debugger
       commander:
         specifier: ^13.0.0
@@ -244,7 +244,7 @@ importers:
   packages/cf-live-trace:
     dependencies:
       '@saptools/cf-inspector':
-        specifier: workspace:*
+        specifier: ^0.4.8
         version: link:../cf-inspector
       commander:
         specifier: ^13.0.0
@@ -348,7 +348,7 @@ importers:
   packages/cf-tail:
     dependencies:
       '@saptools/cf-logs':
-        specifier: workspace:*
+        specifier: ^0.6.2
         version: link:../cf-logs
       commander:
         specifier: ^13.0.0
@@ -392,7 +392,7 @@ importers:
   packages/cf-xsuaa:
     dependencies:
       '@saptools/cf-sync':
-        specifier: ^0.4.1
+        specifier: ^0.4.15
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0
@@ -527,7 +527,7 @@ importers:
   packages/sqltools:
     dependencies:
       '@saptools/cf-sync':
-        specifier: ^0.4.1
+        specifier: ^0.4.15
         version: link:../cf-sync
       commander:
         specifier: ^13.0.0

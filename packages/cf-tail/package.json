@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-tail",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Aggregate, stream, parse, and filter SAP BTP Cloud Foundry logs across every app in a space",
   "type": "module",
   "publishConfig": {
@@ -57,7 +57,7 @@
     "url": "https://github.com/dongitran/saptools/issues"
   },
   "dependencies": {
-    "@saptools/cf-logs": "workspace:*",
+    "@saptools/cf-logs": "^0.6.2",
     "commander": "^13.0.0"
   },
   "devDependencies": {
