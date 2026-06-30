@@ -45,6 +45,7 @@ import {
 import {
   executeRemoteScript,
   executeRemoteScriptWithContext,
+  prepareSshAccess,
   withPreparedCfSession,
   type RemoteExecutionResult,
 } from "./runner.js";
@@ -289,6 +290,7 @@ async function runAcrossInstances<T>(
     normalizeTarget(options.target),
     options.runtime,
     async (context) => {
+      await prepareSshAccess(options.target, context, options.runtime);
       return await Promise.all(running.map(async (item) => await runInstance(item, async (instance) => await work(instance, context))));
     },
   );

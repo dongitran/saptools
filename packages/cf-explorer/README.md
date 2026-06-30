@@ -36,7 +36,7 @@ Cloud Foundry app exploration often starts with a slow, repetitive loop:
 - 🧭 **Map** grep results into reusable file/line candidates.
 - ⚡ **Reuse** one SSH-backed session when many reads are needed.
 - 🧩 **Import** the same behavior from another Node.js project.
-- 🛡️ **Protect** the app by keeping file discovery read-only by default.
+- 🛡️ **Protect** inputs with bounded commands; SSH is enabled and restarted automatically when needed.
 
 ---
 
@@ -52,7 +52,6 @@ Cloud Foundry app exploration often starts with a slow, repetitive loop:
 | `view` | Print a bounded line window around a remote file location |
 | `inspect-candidates` | Suggest candidate paths, line numbers, and root mappings |
 | `session start` | Keep one SSH-backed broker alive for fast repeated reads |
-| `ssh-status` / `enable-ssh` / `restart` | Explicit SSH lifecycle commands with confirmation |
 
 ---
 
@@ -206,30 +205,9 @@ Suggested candidate shape:
 }
 ```
 
-### 🔁 SSH Lifecycle
+### 🔁 SSH Access
 
-Lifecycle commands can change app state, so they are never run implicitly by
-read-only discovery commands.
-
-```bash
-cf-explorer ssh-status --region region-key --org org-name --space space-name --app app-name
-cf-explorer enable-ssh --region region-key --org org-name --space space-name --app app-name
-cf-explorer restart --region region-key --org org-name --space space-name --app app-name
-cf-explorer prepare-ssh --region region-key --org org-name --space space-name --app app-name
-```
-
-Use `--yes` only when you intentionally want non-interactive lifecycle changes:
-
-```bash
-cf-explorer prepare-ssh \
-  --region region-key \
-  --org org-name \
-  --space space-name \
-  --app app-name \
-  --yes
-```
-
----
+SSH-backed commands automatically enable app SSH and restart the app when SSH is disabled.
 
 ## 🧵 Persistent Sessions
 
@@ -340,13 +318,6 @@ const result = await attached.grep({ root: "/app-root", text: "needle" });
 await stopExplorerSession({ sessionId: session.sessionId });
 ```
 
-Lifecycle APIs require explicit confirmation:
-
-```ts
-await explorer.prepareSsh({ confirmImpact: true });
-await explorer.restartApp({ confirmImpact: true });
-```
-
 ---
 
 ## 🛡️ Safety Model
@@ -366,12 +337,11 @@ Read-only discovery commands:
   contain remote file content, so it is returned only to the caller and is not
   stored in session state.
 
-Explicit lifecycle commands:
+Automatic SSH access:
 
-- may run `cf enable-ssh` or `cf restart`;
-- prompt for confirmation unless `--yes` is provided;
-- are app-level operations, not per-instance operations;
-- stop or mark related persistent sessions stale after restart.
+- checks SSH before opening SSH-backed reads;
+- runs `cf enable-ssh` and `cf restart` only when SSH is disabled;
+- marks related persistent sessions stale after restart.
 
 No command uploads, edits, deletes, installs packages, changes permissions, or
 opens an unrestricted interactive shell.
@@ -460,12 +430,11 @@ Examples:
 | `CF_LOGIN_FAILED` | `cf api` or `cf auth` failed |
 | `CF_TARGET_FAILED` | `cf target` failed |
 | `APP_NOT_FOUND` | Target app was not found |
-| `SSH_DISABLED` | App SSH is not currently enabled |
+| `SSH_DISABLED` | SSH could not be used after automatic preparation |
 | `INSTANCE_NOT_FOUND` | Requested app process instance is unavailable |
 | `UNSAFE_INPUT` | Input failed validation |
 | `OUTPUT_LIMIT_EXCEEDED` | Remote output exceeded configured limits |
 | `REMOTE_COMMAND_FAILED` | A bounded remote command failed |
-| `LIFECYCLE_CONFIRMATION_REQUIRED` | A state-changing command needs confirmation |
 | `SESSION_NOT_FOUND` | The requested persistent session does not exist |
 | `SESSION_STALE` | The persistent session is no longer usable |
 | `SESSION_BUSY` | Persistent broker queue is full |

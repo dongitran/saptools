@@ -2,10 +2,18 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { cfSshOneShot, prepareCfCliSession, type CfCommandContext } from "../cf/client.js";
+import {
+  cfEnableSsh,
+  cfRestartApp,
+  cfSshEnabled,
+  cfSshOneShot,
+  prepareCfCliSession,
+  type CfCommandContext,
+} from "../cf/client.js";
 import { normalizeTarget } from "../cf/target.js";
 import type { ExplorerRuntimeOptions, ExplorerTarget } from "../core/types.js";
 import { explorerHome, tmpRunDir } from "../session/paths.js";
+import { markSessionsStaleForTarget } from "../session/storage.js";
 
 export interface RemoteExecutionInput {
   readonly target: ExplorerTarget;
@@ -37,6 +45,7 @@ export async function executeRemoteScriptWithContext(
 ): Promise<RemoteExecutionResult> {
   const timeoutMs = input.timeoutMs ?? input.runtime?.timeoutMs;
   const maxBytes = input.maxBytes ?? input.runtime?.maxBytes;
+  await prepareSshAccess(input.target, context, input.runtime);
   const result = await cfSshOneShot(
     normalizeTarget(input.target),
     input.script,
@@ -53,6 +62,23 @@ export async function executeRemoteScriptWithContext(
     durationMs: result.durationMs,
     truncated: result.truncated,
   };
+}
+
+export async function prepareSshAccess(
+  target: ExplorerTarget,
+  context: CfCommandContext,
+  runtime: ExplorerRuntimeOptions = {},
+): Promise<boolean> {
+  const normalizedTarget = normalizeTarget(target);
+  const enabled = await cfSshEnabled(normalizedTarget, context, runtime);
+  if (enabled) {
+    return false;
+  }
+  await cfEnableSsh(normalizedTarget, context, runtime);
+  await cfRestartApp(normalizedTarget, context, runtime);
+  const homeDir = runtime.homeDir ?? explorerHome(runtime.env);
+  await markSessionsStaleForTarget(homeDir, normalizedTarget, "Automatic SSH preparation restarted the app.");
+  return true;
 }
 
 export async function withPreparedCfSession<T>(

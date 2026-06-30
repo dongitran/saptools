@@ -287,6 +287,9 @@ async function main() {
     return;
   }
   if (command === "ssh") {
+    if (!appSshEnabled(state, app)) {
+      fail("SSH support is disabled for this application.");
+    }
     const shellCommand = args[args.indexOf("-c") + 1];
     if (shellCommand === "sh") {
       handlePersistentShell(app);

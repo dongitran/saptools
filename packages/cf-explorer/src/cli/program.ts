@@ -8,7 +8,6 @@ import {
 } from "@saptools/cf-sync";
 import { Command } from "commander";
 
-import { enableSsh, prepareSsh, restartApp, sshStatus } from "../cf/lifecycle.js";
 import { normalizeTarget, parseNonNegativeInteger, parsePositiveInteger } from "../cf/target.js";
 import { CfExplorerError } from "../core/errors.js";
 import { secondsToTimerMs } from "../core/limits.js";
@@ -20,7 +19,6 @@ import type {
   GrepOptions,
   InspectCandidatesOptions,
   InstanceSelector,
-  LifecycleOptions,
   LsOptions,
   ViewOptions,
 } from "../core/types.js";
@@ -82,10 +80,6 @@ interface InspectFlags extends TargetFlags {
   readonly root?: string;
   readonly text?: string;
   readonly name?: string;
-}
-
-interface LifecycleFlags extends TargetFlags {
-  readonly yes?: boolean;
 }
 
 interface SessionFlags extends TargetFlags {
@@ -253,15 +247,6 @@ function buildInspect(flags: InspectFlags): InspectCandidatesOptions {
   };
 }
 
-function buildLifecycle(flags: LifecycleFlags): LifecycleOptions {
-  return {
-    target: buildTarget(flags),
-    runtime: buildRuntime(flags),
-    ...buildSelector(flags),
-    ...(flags.yes === true ? { confirmImpact: true } : {}),
-  };
-}
-
 function parseSecondsAsMilliseconds(value: string | undefined, label: string): number | undefined {
   const seconds = parsePositiveInteger(value, label);
   return seconds === undefined ? undefined : secondsToTimerMs(seconds, label);
@@ -296,13 +281,6 @@ function addCommonOptions(command: Command): Command {
     .option("--no-json", "Emit human-readable output");
 }
 
-function addLifecycleOptions(command: Command): Command {
-  return addTargetOptions(command)
-    .option("--timeout <seconds>", "Timeout in seconds")
-    .option("--yes", "Confirm the lifecycle impact", false)
-    .option("--no-json", "Emit human-readable output");
-}
-
 function addSessionReadOptions(command: Command): Command {
   return command
     .option("--timeout <seconds>", "Per-request timeout in seconds")
@@ -316,7 +294,6 @@ export async function runProgram(argv: readonly string[], version: string): Prom
     .description("Safe Cloud Foundry app file explorer")
     .version(version);
   addDiscoveryCommands(program);
-  addLifecycleCommands(program);
   addSessionCommands(program);
   await program.parseAsync([...argv]);
 }
@@ -361,25 +338,6 @@ function addDiscoveryCommands(program: Command): void {
     .option("--name <pattern>", "File name pattern")
     .action(async (flags: InspectFlags): Promise<void> => {
       writeOutput(await inspectCandidates(buildInspect(await resolveTargetFlags(flags))), flags.json);
-    });
-}
-
-function addLifecycleCommands(program: Command): void {
-  addLifecycleOptions(program.command("ssh-status").description("Check SSH status"))
-    .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await sshStatus(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
-    });
-  addLifecycleOptions(program.command("enable-ssh").description("Enable SSH for the app"))
-    .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await enableSsh(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
-    });
-  addLifecycleOptions(program.command("restart").description("Restart the app"))
-    .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await restartApp(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
-    });
-  addLifecycleOptions(program.command("prepare-ssh").description("Enable SSH and restart when needed"))
-    .action(async (flags: LifecycleFlags): Promise<void> => {
-      writeOutput(await prepareSsh(buildLifecycle(await resolveTargetFlags(flags))), flags.json);
     });
 }
 
