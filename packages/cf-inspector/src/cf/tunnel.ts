@@ -3,6 +3,7 @@ import type { DebuggerHandle, SessionStatus, StartDebuggerOptions } from "@sapto
 
 export interface TunnelTarget {
   readonly region: string;
+  readonly apiEndpoint?: string;
   readonly org: string;
   readonly space: string;
   readonly app: string;
@@ -22,6 +23,7 @@ export interface OpenedTunnel {
 export async function openCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> {
   const opts: StartDebuggerOptions = {
     region: target.region,
+    ...(target.apiEndpoint === undefined ? {} : { apiEndpoint: target.apiEndpoint }),
     org: target.org,
     space: target.space,
     app: target.app,

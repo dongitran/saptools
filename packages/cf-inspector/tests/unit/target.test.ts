@@ -7,6 +7,7 @@ import process from "node:process";
 import type { SessionStatus } from "@saptools/cf-debugger";
 import { describe, expect, it } from "vitest";
 
+import { main } from "../../src/cli/program.js";
 import {
   formatCfTunnelStatus,
   resolveTarget,
@@ -53,6 +54,20 @@ describe("Cloud Foundry target timeout", () => {
     });
   });
 
+  it("preserves an explicit --api-endpoint override", () => {
+    expect(
+      resolveTarget({
+        ...cfOptions,
+        region: "eu10-005",
+        apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+      }),
+    ).toMatchObject({
+      kind: "cf",
+      region: "eu10-005",
+      apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+    });
+  });
+
   it("uses the current CF target when only --app is provided", async () => {
     const root = join(tmpdir(), `cf-inspector-target-${randomUUID()}`);
     const fakeCf = join(root, "fake-cf.mjs");
@@ -85,4 +100,72 @@ describe("Cloud Foundry target timeout", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("derives indexed regions from the current CF target and keeps the raw endpoint", async () => {
+    await withFakeCfTarget("https://api.cf.eu10-005.hana.ondemand.com", async () => {
+      await expect(resolveTargetWithCurrentCfTarget({ app: "demo-app" })).resolves.toMatchObject({
+        kind: "cf",
+        region: "eu10-005",
+        apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+        org: "org-a",
+        space: "dev",
+        app: "demo-app",
+      });
+    });
+  });
+
+  it("derives China regions from the current CF target domain", async () => {
+    await withFakeCfTarget("https://api.cf.cn20.platform.sapcloud.cn", async () => {
+      await expect(resolveTargetWithCurrentCfTarget({ app: "demo-app" })).resolves.toMatchObject({
+        kind: "cf",
+        region: "cn20",
+        apiEndpoint: "https://api.cf.cn20.platform.sapcloud.cn",
+      });
+    });
+  });
+
+  it("documents --api-endpoint in command help", async () => {
+    const previousWrite = process.stdout.write.bind(process.stdout);
+    let stdout = "";
+    process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+      stdout += chunk.toString();
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main(["node", "cf-inspector", "eval", "--help"])).rejects.toThrow(
+        /process\.exit unexpectedly called/,
+      );
+    } finally {
+      process.stdout.write = previousWrite;
+    }
+
+    expect(stdout).toContain("--api-endpoint <url>");
+  });
 });
+
+async function withFakeCfTarget(apiEndpoint: string, fn: () => Promise<void>): Promise<void> {
+  const root = join(tmpdir(), `cf-inspector-target-${randomUUID()}`);
+  const fakeCf = join(root, "fake-cf.mjs");
+  const previous = process.env["CF_DEBUGGER_CF_BIN"];
+  await mkdir(root, { recursive: true });
+  await writeFile(fakeCf, [
+    "#!/usr/bin/env node",
+    "if (process.argv[2] !== 'target') process.exit(1);",
+    `process.stdout.write('API endpoint:   ${apiEndpoint}\\n');`,
+    "process.stdout.write('org:            org-a\\n');",
+    "process.stdout.write('space:          dev\\n');",
+  ].join("\n"), "utf8");
+  await chmod(fakeCf, 0o755);
+  process.env["CF_DEBUGGER_CF_BIN"] = fakeCf;
+
+  try {
+    await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env["CF_DEBUGGER_CF_BIN"];
+    } else {
+      process.env["CF_DEBUGGER_CF_BIN"] = previous;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}

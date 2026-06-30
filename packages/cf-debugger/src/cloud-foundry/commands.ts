@@ -205,11 +205,20 @@ function parseTargetFields(stdout: string): Map<string, string> {
 
 function regionKeyForApiEndpoint(apiEndpoint: string): string | undefined {
   const normalized = normalizeApiEndpoint(apiEndpoint);
-  return listKnownRegionKeys().find((key) => normalizeApiEndpoint(resolveApiEndpoint(key)) === normalized);
+  const known = listKnownRegionKeys().find((key) => normalizeApiEndpoint(resolveApiEndpoint(key)) === normalized);
+  if (known !== undefined) {
+    return known;
+  }
+  return regionKeyFromSapApiEndpoint(normalized);
 }
 
 function normalizeApiEndpoint(apiEndpoint: string): string {
   return apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function regionKeyFromSapApiEndpoint(apiEndpoint: string): string | undefined {
+  const match = /^https:\/\/api\.cf\.([a-z]{2}\d{2}(?:-\d{3})?)\.(?:hana\.ondemand\.com|platform\.sapcloud\.cn)$/.exec(apiEndpoint);
+  return match?.[1];
 }
 
 function isPresent(value: string | undefined): value is string {
