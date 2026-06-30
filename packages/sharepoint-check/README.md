@@ -11,7 +11,7 @@ Verify auth, resolve the target site, inspect document libraries, walk folder tr
 [![install size](https://packagephobia.com/badge?p=@saptools/sharepoint-check)](https://packagephobia.com/result?p=@saptools/sharepoint-check)
 [![types](https://img.shields.io/npm/types/@saptools/sharepoint-check.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
 
 </div>
 
@@ -178,84 +178,6 @@ saptools-sharepoint-check check --drive Documents --root Apps --subdirs "sample-
 ```
 
 `check` emits human-readable output only. It returns exit code `2` for layout/write failures and exit code `1` for fatal errors such as missing config or Graph failures.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  listDrives,
-  openSession,
-  resolveConfig,
-  runWriteTest,
-  validateLayout,
-  walkFolderTree,
-} from "@saptools/sharepoint-check";
-
-const config = resolveConfig({ requireRoot: true });
-const session = await openSession(config.target);
-
-const drives = await listDrives(session.client, session.site.id);
-const drive = drives.find((entry) => entry.name === "Documents") ?? drives[0];
-
-if (!drive) {
-  throw new Error("No document libraries found");
-}
-
-const tree = await walkFolderTree(session.client, {
-  driveId: drive.id,
-  rootPath: config.rootPath,
-  limits: { maxDepth: 2 },
-});
-
-const layout = await validateLayout(session.client, drive.id, {
-  rootPath: config.rootPath,
-  subdirectories: config.subdirectories,
-});
-
-const probe = await runWriteTest(session.client, {
-  driveId: drive.id,
-  rootPath: config.rootPath,
-});
-
-console.log({
-  site: session.site.displayName,
-  foldersOk: layout.allPresent,
-  probeOk: probe.created && probe.deleted,
-  treeRoot: tree.path,
-});
-```
-
-<details>
-<summary><b>📚 Main exports</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `acquireAppToken(credentials, options)` | Request an app-only token |
-| `decodeAccessToken(token)` | Decode JWT claims locally |
-| `createGraphClient(options)` | Create a minimal Graph client wrapper |
-| `parseSiteRef(value)` | Parse `host/sites/...` or full site URL |
-| `resolveSite(client, ref)` | Resolve a SharePoint site via Graph |
-| `listDrives(client, siteId)` | List document libraries |
-| `listDriveRoot(client, driveId)` | List root children |
-| `listDriveChildren(client, driveId, path)` | List children under a relative path |
-| `getDriveItemByPath(client, driveId, path)` | Resolve one file/folder by path |
-| `createFolder(client, driveId, parentPath, folderName)` | Create a folder |
-| `deleteItem(client, driveId, itemId)` | Delete a drive item |
-| `walkFolderTree(client, options)` | Build a summarized folder tree |
-| `validateLayout(client, driveId, expectation)` | Validate required directories |
-| `runWriteTest(client, options)` | Create/delete probe folder |
-| `resolveConfig(options)` | Read flags/env into typed config |
-| `openSession(target, options)` | Acquire token, decode claims, create client, resolve site |
-| `renderFolderTree(tree)` | Render the text tree used by the CLI |
-| `renderValidateResult(result)` | Render validation output |
-| `summarizeToken(claims)` | Format auth claims for CLI output |
-
-</details>
-
-> [!TIP]
-> The API accepts fetch overrides where appropriate, which is how the package's fake-backed tests run without calling the real Microsoft Graph.
 
 ---
 

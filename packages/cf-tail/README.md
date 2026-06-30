@@ -13,7 +13,7 @@ persistence.
 [![license](https://img.shields.io/npm/l/@saptools/cf-tail.svg?style=flat&color=blue)](./LICENSE)
 [![node](https://img.shields.io/node/v/@saptools/cf-tail.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [Store](#-store-file) • [Security](#-security-notes)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Store](#-store-file) • [Security](#-security-notes)
 
 </div>
 
@@ -231,112 +231,6 @@ cf-tail store clear
 ### `cf-tail --version`
 
 Prints the installed `@saptools/cf-tail` semantic version.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-### Multi-app snapshot
-
-```ts
-import { fetchMultiSnapshot, filterTailRows, summarizeRows } from "@saptools/cf-tail";
-
-const result = await fetchMultiSnapshot({
-  region: "ap10",
-  org: "sample-org",
-  space: "sample",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  includeRegex: ["^api-"],
-  concurrency: 6,
-  persist: true,
-});
-
-const errors = filterTailRows(result.merged, {
-  level: "error",
-  sinceMs: 60 * 60 * 1000,
-});
-const summary = summarizeRows(result.merged);
-console.log(summary.total, errors.length);
-```
-
-### Multiplexed stream
-
-```ts
-import { CfTailRuntime } from "@saptools/cf-tail";
-
-const runtime = new CfTailRuntime({
-  rediscoverIntervalMs: 30_000,
-  flushIntervalMs: 150,
-});
-
-runtime.setSession({
-  region: "ap10",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  org: "sample-org",
-  space: "sample",
-});
-
-runtime.setAppFilter({ includeRegex: ["^demo-"] });
-
-runtime.subscribe((event) => {
-  if (event.type === "lines") {
-    process.stdout.write(`[${event.appName}] ${event.lines.join("\n")}\n`);
-  }
-  if (event.type === "discovery") {
-    process.stderr.write(
-      `[discovery] +${event.addedApps.length} -${event.removedApps.length}\n`,
-    );
-  }
-});
-
-await runtime.start();
-
-process.once("SIGINT", () => {
-  void runtime.stop();
-});
-```
-
-### Lower-level helpers
-
-```ts
-import {
-  buildAppFilter,
-  applyAppFilter,
-  discoverMatchingApps,
-  fetchSnapshotsForApps,
-  mergeAppRows,
-} from "@saptools/cf-tail";
-
-const apps = await discoverMatchingApps({
-  region: "ap10",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  org: "sample-org",
-  space: "sample",
-  excludeRegex: ["-canary$"],
-});
-
-const filter = buildAppFilter({ excludeRegex: ["-canary$"] });
-const allowed = applyAppFilter(apps, filter);
-
-const result = await fetchSnapshotsForApps({
-  session: {
-    region: "ap10",
-    email: process.env["SAP_EMAIL"] ?? "",
-    password: process.env["SAP_PASSWORD"] ?? "",
-    org: "sample-org",
-    space: "sample",
-  },
-  apps: allowed,
-  concurrency: 4,
-});
-
-const rowsByApp = new Map(result.apps.map((entry) => [entry.appName, entry.rows]));
-const timeline = mergeAppRows(rowsByApp);
-console.log(timeline.length);
-```
 
 ---
 

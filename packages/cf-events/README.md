@@ -12,7 +12,7 @@ Point it at a `region/org/space/app` (or a bare app name) and instantly answer: 
 [![install size](https://packagephobia.com/badge?p=@saptools/cf-events)](https://packagephobia.com/result?p=@saptools/cf-events)
 [![types](https://img.shields.io/npm/types/@saptools/cf-events.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
 
 </div>
 
@@ -169,52 +169,6 @@ cf-events watch orders-srv --interval 30000 --type crash --lookback 5m
 | `--lookback <dur>` | Initial fetch window on start (default `2m`)  |
 | `--type <types>`  | Filter (supports `ssh` / `crash` shorthands)    |
 | `--json`          | Line-delimited JSON output                      |
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  CfEventsRuntime,
-  // also re-exported for advanced use:
-  // fetchAuditEvents, fetchApp, fetchSshEnabled, fetchWebProcessStats,
-  // parseTypeFilter, durationToCreatedAfter,
-  // formatEventsReport, formatSshStatusReport, formatCrashReport, formatStatusReport,
-  // resolveSelector, parseSelector,
-  // plus all types
-} from "@saptools/cf-events";
-
-const runtime = new CfEventsRuntime();
-
-const events = await runtime.fetchEvents("orders-srv", {
-  email: process.env.SAP_EMAIL ?? "",
-  password: process.env.SAP_PASSWORD ?? "",
-}, {
-  limit: 50,
-  since: "6h",
-  types: [], // or ["audit.app.crash"] or use parseTypeFilter("crash")
-});
-
-console.log(events.length);
-
-// SSH inference + enabled flag
-const ssh = await runtime.getSshStatus("orders-srv", creds, "24h");
-
-// Crash summary
-const crashes = await runtime.getCrashes("orders-srv", creds, { limit: 20 });
-
-// Health + instances
-const health = await runtime.getStatus("ap10/my-org/dev/orders-srv", creds);
-
-// Live polling (call with AbortSignal)
-const ac = new AbortController();
-await runtime.watchEvents("orders-srv", creds, { intervalMs: 15000, lookback: "2m", types: [] }, (ev) => {
-  console.log(ev);
-}, ac.signal);
-```
-
-The package is a full barrel; everything under `src/` (parsers, formatters, low-level CF session helpers, types) is exported for power users or custom tooling.
 
 ---
 

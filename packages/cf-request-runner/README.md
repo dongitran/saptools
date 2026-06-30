@@ -11,7 +11,7 @@ Automatically walk your remote CAP service documents, OData `$metadata`, and `en
 [![node](https://img.shields.io/node/v/@saptools/cf-request-runner.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 [![types](https://img.shields.io/npm/types/@saptools/cf-request-runner.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
 
 </div>
 
@@ -79,45 +79,6 @@ For token-based runs, prefer an environment variable so the bearer token is not 
 ```bash
 CF_REQUEST_RUNNER_TOKEN="$TOKEN" cf-request-runner -a my-cap-app -u https://my-cap-app.example.com --json
 ```
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-You can use the exported discovery engine directly inside your own Node.js scripts:
-
-```ts
-import { discoverApiEntities, type ApiCatalogDiscoveryOptions } from '@saptools/cf-request-runner';
-
-const options: ApiCatalogDiscoveryOptions = {
-  appId: 'my-cap-app',
-  baseUrl: 'https://my-cap-app.cfapps.us10.hana.ondemand.com',
-  log: (msg) => console.log(`[INFO]: ${msg}`),
-  onDeepDiscoveryStart: () => console.log('[START]: Deep discovery initiated'),
-};
-
-const endpoints = await discoverApiEntities(options);
-
-console.log(`Discovered ${endpoints.length} endpoints!`);
-endpoints.forEach((ep) => {
-  console.log(`- ${ep.name} -> ${ep.path} [${ep.methods.join(', ')}]`);
-});
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `discoverApiEntities(options)` | Discovers all available endpoints. |
-| `runCfCommand(args, options)` | Wrapper to run CF CLI commands. |
-| `fetchXsuaaTokenFromTarget(params)` | Fetches XSUAA client credentials via CF CLI. |
-| `fetchRemoteCdsServicesFromTarget(params)` | Fetches `.cds` source via `cf ssh`. |
-| `parseCdsServices(content)` | Parses source `.cds` contents into service paths. |
-| `parseODataMetadata(metadataXml, servicePath, serviceName)` | Parses common OData metadata entity sets and operation imports. |
-| `parseSubEntities(value, parent)` | Recursively parses sub-entities from an OData JSON result. |
-
-</details>
 
 ---
 

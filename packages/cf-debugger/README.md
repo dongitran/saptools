@@ -12,7 +12,7 @@ Signal the remote process, enable SSH if needed, forward `9229` to a free local 
 [![install size](https://packagephobia.com/badge?p=@saptools/cf-debugger)](https://packagephobia.com/result?p=@saptools/cf-debugger)
 [![types](https://img.shields.io/npm/types/@saptools/cf-debugger.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [How it works](#-how-it-works) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [How it works](#-how-it-works) • [FAQ](#-faq)
 
 </div>
 
@@ -133,70 +133,6 @@ Print one session by key (or `null` if no active session matches).
 ```bash
 cf-debugger status --region eu10 --org my-org --space dev --app my-app
 ```
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  startDebugger,
-  stopDebugger,
-  listSessions,
-  getSession,
-  resolveApiEndpoint,
-} from "@saptools/cf-debugger";
-
-const handle = await startDebugger({
-  region: "eu10",
-  org: "my-org",
-  space: "dev",
-  app: "my-app",
-  email: process.env["SAP_EMAIL"],
-  password: process.env["SAP_PASSWORD"],
-  verbose: true,
-  onStatus: (status, message) => {
-    console.log(`[${status}]`, message ?? "");
-  },
-});
-
-console.log(`Attach your debugger to localhost:${handle.session.localPort}`);
-
-// Later — shut the tunnel down and clean up state:
-await handle.dispose();
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `startDebugger(options)` | Open a tunnel; returns a `DebuggerHandle` |
-| `stopDebugger({ sessionId?, key? })` | Stop one session by id or by key |
-| `stopAllDebuggers()` | Stop every session owned by this process/machine |
-| `listSessions()` | Return every live session as `ActiveSession[]` |
-| `getSession(key)` | Return one session matching `{ region, org, space, app }` |
-| `resolveApiEndpoint(key, override?)` | Map a region key to its API endpoint |
-| `sessionKeyString(key)` | Stable string form of a session key |
-| `CfDebuggerError` | Rich error class with typed `code` |
-
-</details>
-
-<details>
-<summary><b>🧪 Error codes</b></summary>
-
-| Code | When |
-| --- | --- |
-| `MISSING_CREDENTIALS` | No `SAP_EMAIL` / `SAP_PASSWORD` in env or options |
-| `SESSION_ALREADY_RUNNING` | A session already exists for the same `region/org/space/app` |
-| `CF_LOGIN_FAILED` | `cf api` / `cf auth` rejected the credentials |
-| `CF_TARGET_FAILED` | Org or space not reachable |
-| `SSH_NOT_ENABLED` | SSH disabled at space or app level and could not be enabled |
-| `USR1_SIGNAL_FAILED` | Remote `kill -s USR1` failed, timed out, or was terminated by a signal |
-| `TUNNEL_NOT_READY` | Inspector didn't respond on port 9229 before timeout |
-| `PORT_UNAVAILABLE` | Preferred local port is taken and could not be freed |
-
-</details>
 
 ---
 

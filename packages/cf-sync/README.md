@@ -12,7 +12,7 @@ Walk every region, org, space, and app you have access to, cache the topology, t
 [![install size](https://packagephobia.com/badge?p=@saptools/cf-sync)](https://packagephobia.com/result?p=@saptools/cf-sync)
 [![types](https://img.shields.io/npm/types/@saptools/cf-sync.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
 
 </div>
 
@@ -200,120 +200,6 @@ cf-sync db-read
 cf-sync db-read orders-srv
 cf-sync db-read ap10/my-org/dev/orders-srv
 ```
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  readDbAppView,
-  readDbSnapshotView,
-  resolveDbSyncTargetsFromCurrentTopology,
-  runDbSync,
-  findRegion,
-  getRegionView,
-  readRegionsView,
-  readStructure,
-  readStructureView,
-  runSync,
-  syncOrg,
-  syncRegionOrgs,
-  syncSpace,
-} from "@saptools/cf-sync";
-
-// Run a sync from Node (great for scheduled jobs)
-const result = await runSync({
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  onlyRegions: ["ap10", "ap11"],
-  interactive: false,
-});
-console.log(`${result.accessibleRegions.length} regions reachable`);
-
-// Read the last snapshot
-const structure = await readStructure();
-const ap10 = structure ? findRegion(structure, "ap10") : undefined;
-console.log(`${ap10?.orgs.length ?? 0} orgs in ap10`);
-
-// Refresh only one region's org names without loading spaces/apps
-const ap10Orgs = await syncRegionOrgs({
-  regionKey: "ap10",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-});
-console.log(ap10Orgs.orgNames.join(", "));
-
-// Partial / on-demand reads
-const view = await readStructureView();           // best-available full view
-const regions = await readRegionsView();          // region list only
-const eu10 = await getRegionView({                // one region, auto-fetch if missing
-  regionKey: "eu10",
-  email: process.env["SAP_EMAIL"],
-  password: process.env["SAP_PASSWORD"],
-});
-console.log(eu10?.source); // "runtime" | "stable" | "fresh"
-
-// Targeted org refresh
-const refreshedOrg = await syncOrg({
-  regionKey: "ap10",
-  orgName: "my-org",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-});
-console.log(refreshedOrg.org.spaces.map((space) => space.name));
-
-// Targeted space refresh
-const refreshedSpace = await syncSpace({
-  regionKey: "ap10",
-  orgName: "my-org",
-  spaceName: "dev",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-});
-console.log(refreshedSpace.space.apps.map((app) => app.name));
-console.log(refreshedSpace.space.apps[0]?.requestedState);
-
-// Resolve DB targets from cached topology or an explicit selector
-const dbTargets = await resolveDbSyncTargetsFromCurrentTopology("orders-srv");
-const dbResult = await runDbSync({
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  targets: dbTargets,
-});
-console.log(dbResult.snapshot.entries.length);
-
-const dbView = await readDbSnapshotView();
-const ordersDb = await readDbAppView("orders-srv");
-console.log(dbView?.metadata?.status, ordersDb?.entry.bindings.length);
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `runSync(options)` | Drive a full/partial sync |
-| `syncOrg({ regionKey, orgName, ... })` | Refresh one CF org and merge it into runtime/stable topology |
-| `syncSpace({ regionKey, orgName, spaceName, ... })` | Refresh one CF space and merge it into runtime/stable topology |
-| `readStructure()` | Last stable snapshot, or `undefined` |
-| `readStructureView()` | Best-available full view with metadata |
-| `readRegionsView()` | Region list only, with fallbacks |
-| `readRegionView(key)` | One region from cached data |
-| `getRegionView({ regionKey, ... })` | One region, fetching on demand if missing |
-| `resolveDbSyncTargetsFromCurrentTopology(selector?)` | Resolve all apps, one app name, or one explicit app selector for DB sync |
-| `runDbSync({ email, password, targets, ... })` | Collect HANA DB bindings for the given app targets |
-| `readDbSnapshot()` | Last stable DB binding snapshot, or `undefined` |
-| `readDbRuntimeState()` | Current DB sync runtime state, or `undefined` |
-| `readDbSnapshotView()` | Best-available DB snapshot view with runtime metadata |
-| `readDbAppView(selector)` | One DB snapshot entry by app name or explicit selector |
-| `findRegion(structure, key)` | Look up a region by key |
-| `findOrg(region, name)` | Look up an org within a region |
-| `findSpace(org, name)` | Look up a space within an org |
-| `cfAppDetails(context?)` | Run `cf apps` and parse app state, instance counts, and routes |
-| `findApp(space, name)` | Look up an app within a space |
-
-</details>
 
 ---
 

@@ -13,7 +13,7 @@ Scaffold a CF-aware collection. Resolve requests by `region/org/space/app` short
 [![types](https://img.shields.io/npm/types/@saptools/bruno.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![build](https://img.shields.io/github/actions/workflow/status/dongitran/saptools/bruno.yml?style=flat&logo=github&label=CI)](https://github.com/dongitran/saptools/actions/workflows/bruno.yml)
 
-[**Install**](#-install) · [**Quick Start**](#-quick-start) · [**CLI**](#-cli) · [**API**](#-programmatic-usage) · [**FAQ**](#-faq) · [**Roadmap**](#-roadmap)
+[**Install**](#-install) · [**Quick Start**](#-quick-start) · [**CLI**](#-cli) · [**FAQ**](#-faq) · [**Roadmap**](#-roadmap)
 
 </div>
 
@@ -250,82 +250,6 @@ bruno use ap10/my-org/dev/my-srv --no-verify
 | `--no-verify` | Skip verifying the shorthand against the cached CF structure |
 
 The context lives at `~/.saptools/bruno-context.json`.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  buildRunPlan,
-  readContext,
-  runBruno,
-  scanCollection,
-  setupApp,
-  useContext,
-} from "@saptools/bruno";
-
-// 1. Scaffold an app folder (BYO prompts — perfect for headless/CI)
-const result = await setupApp({
-  root: "./collections",
-  prompts: {
-    selectRegion: async (choices) => choices[0]!.value,
-    selectOrg:    async (choices) => choices[0]!.value,
-    selectSpace:  async (choices) => choices[0]!.value,
-    selectApp:    async (choices) => choices[0]!.value,
-    confirmCreate: async () => true,
-    selectEnvironments: async ({ common }) => [...common, "qa-eu"],
-  },
-});
-console.log(`Created ${result.environments.length} env files at ${result.appPath}`);
-
-// 2. Pin a default context for later runs
-await useContext({ shorthand: "ap10/my-org/dev/my-srv" });
-
-// 3. Run Bruno — token is fetched and injected for you
-const run = await runBruno({
-  root: "./collections",
-  target: "ap10/my-org/dev/my-srv",
-  environment: "dev",
-});
-process.exit(run.code);
-
-// 4. Need the plan without spawning `bru`? (CI dry-runs, IDE integrations)
-const plan = await buildRunPlan({
-  root: "./collections",
-  target: "ap10/my-org/dev/my-srv",
-  environment: "dev",
-});
-console.log(plan.bruArgs);
-// → ["run", "--env", "dev", "--env-var", "accessToken=..."]
-
-// 5. Walk a whole collection to build a UI tree
-const tree = await scanCollection("./collections");
-console.log(tree.regions.map((r) => r.key));
-
-// 6. Inspect the active default context
-const ctx = await readContext();
-console.log(ctx?.app);
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `setupApp(options)` | Interactive app-folder scaffolder with pluggable prompts |
-| `COMMON_ENVIRONMENTS` | Default environment-name suggestions (`local`, `dev`, `staging`, `prod`) |
-| `runBruno(options)` | Build a plan and spawn `bru run` with token injected |
-| `buildRunPlan(options)` | Build the plan (args, cwd, env file, token) without spawning |
-| `useContext({ shorthand, verify })` | Pin a default region/org/space/app context |
-| `readContext()` | Read the pinned context, or `undefined` |
-| `writeContext(ctx)` | Persist a new default context |
-| `scanCollection(root)` | Walk the folder tree and return a typed `region → org → space → app → env` view |
-| `parseShorthandPath(shorthand)` | Split `region/org/space/app[/file]` into a typed ref |
-| `parseBruEnvFile(raw)` / `writeBruEnvFile(...)` | Minimal `.bru` env reader/writer |
-| `readCfMetaFromFile(path)` / `writeCfMetaToFile(path, ref)` | Round-trip `__cf_*` vars in an env file |
-
-</details>
 
 ---
 

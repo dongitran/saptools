@@ -11,7 +11,7 @@ Built for teams that need to move a whole MR from one related repository to anot
 [![typescript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![license](https://img.shields.io/badge/license-MIT-blue?style=flat)](#-license)
 
-[Status](#-status) • [Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [How it works](#-how-it-works)
+[Status](#-status) • [Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [How it works](#-how-it-works)
 
 </div>
 
@@ -89,36 +89,6 @@ gitport \
 | `--title <title>` | **Required.** Destination Draft MR title |
 | `--token <token>` | GitLab token. Falls back to `GITPORT_GITLAB_TOKEN` |
 | `--keep-workdir` | Keep the isolated run folder after a successful port |
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import { parseSourceMergeRequestRef, portGitLabMergeRequest } from "@saptools/gitport";
-
-const source = parseSourceMergeRequestRef(
-  "https://gitlab.example.com/repo-a/-/merge_requests/123",
-);
-
-const result = await portGitLabMergeRequest({
-  sourceRepo: source.sourceRepo.original,
-  destRepo: "https://gitlab.example.com/repo-b",
-  sourceMergeRequestIid: source.sourceMergeRequestIid,
-  baseBranch: "main",
-  portBranch: "gitport/repo-a-mr-123",
-  title: "JIR-112 carry feature",
-  token: process.env.GITPORT_GITLAB_TOKEN,
-});
-
-if (result.mergeRequestCreated) {
-  console.log(result.mergeRequestUrl);
-} else {
-  console.log(`Updated ${result.portBranch}`);
-}
-```
-
-The CLI and library use the same porting engine. Library consumers can build custom review flows, batch jobs, internal dashboards, or agent workflows without shelling out to the CLI.
 
 ---
 

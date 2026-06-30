@@ -12,7 +12,7 @@ Fetch XSUAA credentials and OAuth2 access tokens from SAP BTP Cloud Foundry apps
 [![install size](https://packagephobia.com/badge?p=@saptools/cf-xsuaa)](https://packagephobia.com/result?p=@saptools/cf-xsuaa)
 [![types](https://img.shields.io/npm/types/@saptools/cf-xsuaa.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
 
 </div>
 
@@ -100,74 +100,6 @@ curl -H "Authorization: Bearer $TOKEN" https://my-srv.cfapps.ap10.hana.ondemand.
 
 > [!TIP]
 > Cached tokens are refreshed before they become stale, so callers do not receive a JWT that is about to expire.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  fetchSecret,
-  getToken,
-  getTokenCached,
-  readStore,
-  xsuaaDataPath,
-} from "@saptools/cf-xsuaa";
-
-const ref = {
-  region: "ap10",
-  org: "my-org",
-  space: "dev",
-  app: "my-srv",
-} as const;
-
-// One-time: cache the client credentials
-await fetchSecret(ref);
-
-// Every call: reuse a cached token when possible
-const token = await getTokenCached(ref);
-
-// Or: force a fresh token
-const freshToken = await getToken(ref);
-
-// Introspect the cache
-const store = await readStore();
-console.log(`${store.entries.length} apps cached in ${xsuaaDataPath()}`);
-```
-
-### 🧪 Dependency injection (great for tests)
-
-```ts
-await getToken(ref, {
-  fetchCredentials: async () => ({
-    clientId: "cid",
-    clientSecret: "csec",
-    url: "https://uaa.example.com",
-  }),
-  fetchToken: async () => "fake-jwt",
-  now: new Date("2026-04-18T00:00:00Z"),
-});
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `fetchSecret(ref)` | Cache a freshly-fetched XSUAA binding |
-| `getToken(ref)` | Force a new OAuth2 token |
-| `getTokenCached(ref)` | Reuse cache, fall through on expiry |
-| `readStore()` / `writeStore(store)` | Read / write the on-disk store |
-| `findEntry(store, ref)` | Look up a single entry |
-| `upsertSecret(store, ref, creds)` | Merge credentials into a store |
-| `upsertToken(store, ref, token)` | Merge a token into a store |
-| `fetchClientCredentialsToken(creds)` | Low-level UAA call |
-| `parseXsuaaFromVcap(stdout)` | Parse `cf env` output |
-| `decodeJwtPayload(jwt)` | Decode the JWT payload without verification |
-| `computeExpiryIso(jwt)` / `isExpired(iso)` | Expiry math |
-| `xsuaaDataPath()` / `saptoolsDir()` | Resolve on-disk paths |
-
-</details>
 
 ---
 

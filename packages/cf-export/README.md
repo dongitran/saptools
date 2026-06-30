@@ -12,7 +12,7 @@ Pull the exact files you need for local development or debugging directly from a
 [![install size](https://packagephobia.com/badge?p=@saptools/cf-export)](https://packagephobia.com/result?p=@saptools/cf-export)
 [![types](https://img.shields.io/npm/types/@saptools/cf-export.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [Development](#-development)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Development](#-development)
 
 </div>
 
@@ -135,40 +135,6 @@ Region/org/space flags are **optional**. They are auto-detected from your curren
 - `.npmrc`
 
 Missing optional files are skipped (only `default-env.json` failures when explicitly selected will surface clearly).
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import { exportArtifacts, formatExportCompletionMessage } from "@saptools/cf-export";
-
-const result = await exportArtifacts({
-  target: {
-    region: "ap10",
-    org: "my-org",
-    space: "dev",
-    app: "my-cap-app",
-  },
-  outDir: "./export-dir",
-  remoteRoot: "/home/vcap/app",           // optional "root url"
-  // artifacts: ["default-env.json", "pnpm-lock.yaml"], // optional subset
-});
-
-console.log(
-  formatExportCompletionMessage(
-    "my-cap-app",
-    result.writtenFiles,
-    result.skipped
-  )
-);
-```
-
-**Exported types & helpers** (see `src/index.ts` for full list):
-- `exportArtifacts(options)`
-- `formatExportCompletionMessage(appName, written, skipped)`
-- `CfTarget`, `ArtifactName`, `ExportArtifactsOptions`, etc.
-- Low-level: `fetchDefaultEnvJson`, `fetchRemoteTextFile`, `buildRemoteFilePaths`, `openCfSession`, etc.
 
 ---
 

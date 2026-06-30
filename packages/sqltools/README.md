@@ -12,7 +12,7 @@ One command turns a SAP BTP Cloud Foundry HANA service binding into a ready-to-u
 [![install size](https://packagephobia.com/badge?p=@saptools/sqltools)](https://packagephobia.com/result?p=@saptools/sqltools)
 [![types](https://img.shields.io/npm/types/@saptools/sqltools.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
 
 </div>
 
@@ -135,71 +135,6 @@ sqltools-export convert --input ./vcap.json \
 
 > [!TIP]
 > Use `--merge` to keep hand-crafted connections in `.vscode/settings.json` untouched while only overwriting the one matching `<app> (<region>)`.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  exportFromApp,
-  exportFromCf,
-  exportFromFile,
-  exportFromVcap,
-  toSqlToolsConnection,
-  buildEntryFromVcap,
-} from "@saptools/sqltools";
-
-const context = {
-  app: "my-srv",
-  region: "eu10",
-  org: "my-org",
-  space: "dev",
-} as const;
-
-// Full login → target → env → write flow
-await exportFromApp(
-  { context, email: process.env["SAP_EMAIL"]!, password: process.env["SAP_PASSWORD"]! },
-  { merge: true },
-);
-
-// Or: already targeted, just run `cf env`
-await exportFromCf({ context });
-
-// Or: in-memory VCAP from your own source
-const vcapServices = JSON.stringify({ hana: [/* … */] });
-const result = await exportFromVcap({ vcapServices, context });
-console.log(result.settingsPath, result.connectionCount);
-
-// Or: one-off convert without touching the workspace
-const entry = buildEntryFromVcap({ vcapServices, context });
-if (entry !== null) {
-  console.log(toSqlToolsConnection(entry));
-}
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `exportFromApp(input, options?)` | CF login + target + env + write settings |
-| `exportFromCf(input, options?)` | Shell `cf env <app>` and write settings |
-| `exportFromFile(input, options?)` | Read VCAP JSON from disk and write settings |
-| `exportFromVcap(input, options?)` | Accept in-memory VCAP JSON and write settings |
-| `buildEntryFromVcap(input)` | Parse a VCAP payload into a typed `AppHanaEntry` |
-| `toSqlToolsConnection(entry)` | Convert an entry into a single SQLTools connection |
-| `updateVscodeConnections(entries, options?)` | Low-level `.vscode/settings.json` writer |
-| `writeCredentials(entries, options?)` | Low-level `hana-credentials.json` writer |
-| `parseVcapServices(raw)` | Strict VCAP JSON parser |
-| `extractHanaCredentials(binding)` | Map `snake_case` → `camelCase` |
-| `extractVcapServicesSection(stdout)` | Isolate the VCAP block from `cf env` output |
-| `cfLoginAndTarget(input)` | `cf api` + `cf auth` + `cf target -o -s` |
-| `cfAppVcapServices(app)` | Run `cf env` and return the VCAP JSON |
-| `assertRegionKey(region)` | Guard an unknown string as a known CF region |
-| Constants | `DRIVER`, `HANA_OPTIONS`, `CONNECTION_TIMEOUT`, `PREVIEW_LIMIT`, `SQLTOOLS_CONNECTIONS_KEY`, `SQLTOOLS_USE_NODE_RUNTIME_KEY`, `VSCODE_SETTINGS_REL_PATH`, `OUTPUT_FILENAME` |
-
-</details>
 
 ---
 

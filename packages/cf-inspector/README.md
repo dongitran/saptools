@@ -10,7 +10,7 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 [![license](https://img.shields.io/npm/l/@saptools/cf-inspector.svg?style=flat&color=blue)](./LICENSE)
 [![node](https://img.shields.io/node/v/@saptools/cf-inspector.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [How it works](#-how-it-works)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [How it works](#-how-it-works)
 
 </div>
 
@@ -279,91 +279,6 @@ Connect, fetch the runtime version, print it, disconnect. Useful as a smoke-test
 ```bash
 cf-inspector attach --port 9229
 ```
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  connectInspector,
-  setBreakpoint,
-  waitForPause,
-  captureSnapshot,
-  evaluateOnFrame,
-  resume,
-} from "@saptools/cf-inspector";
-
-const session = await connectInspector({ port: 9229 });
-const bp = await setBreakpoint(session, {
-  file: "src/handler.ts",
-  line: 42,
-});
-const pause = await waitForPause(session, { timeoutMs: 30_000 });
-const snapshot = await captureSnapshot(session, pause, {
-  captures: ["this.user"],
-  maxValueLength: 4096,
-});
-const topFrame = pause.callFrames[0];
-if (topFrame === undefined) {
-  throw new Error("Breakpoint paused without a call frame");
-}
-const customValue = await evaluateOnFrame(session, topFrame.callFrameId, "this.user");
-await resume(session);
-await session.dispose();
-
-console.log({ bp, snapshot, customValue });
-```
-
-<details>
-<summary><b>📚 Full export list</b></summary>
-
-| Export | Description |
-| --- | --- |
-| `connectInspector(options)` | Open a CDP WebSocket session against a port |
-| `setBreakpoint(session, location)` | Set a breakpoint by file/line + optional remote root and `hitCount` |
-| `removeBreakpoint(session, id)` | Remove a breakpoint by id |
-| `setPauseOnExceptions(session, state)` | Configure exception pause state: `none / uncaught / caught / all` |
-| `waitForPause(session, options)` | Resolve when the next `Debugger.paused` event fires; supports `pauseReasons` allow-list |
-| `captureSnapshot(session, pause, options)` | Build a structured snapshot of the paused frame. Pass `includeScopes: true` to expand scopes, `stackDepth` + `stackCaptures` for multi-frame walks, or `maxValueLength` to override the default captured value limit |
-| `captureException(session, pause, maxValueLength)` | Materialize the exception attached to a `Debugger.paused` event |
-| `walkStack(session, frames, options)` | Walk a call stack and evaluate per-frame expressions |
-| `evaluateOnFrame(session, frameId, expression)` | Evaluate in a paused frame |
-| `evaluateGlobal(session, expression)` | Evaluate against the global Runtime |
-| `listScripts(session)` | Return the scripts the V8 instance knows about |
-| `resume(session)` | Resume execution |
-| `streamLogpoint(session, options)` | Stream a non-pausing logpoint until duration / signal / max-events / transport-close |
-| `buildLogpointCondition(sentinel, expression, options?)` | Build the CDP `condition` string for a logpoint with optional predicate / hit-count gates |
-| `buildHitCountedCondition(hitCount, key, userCondition?)` | Build the hit-count gate used by `setBreakpoint({ hitCount })` |
-| `parseRemoteRoot(value)` | Parse a literal/regex remote-root setting |
-| `buildBreakpointUrlRegex(input)` | Build a CDP `urlRegex` for a file path |
-| `CfInspectorError` | Rich error class with typed `code` |
-
-</details>
-
-<details>
-<summary><b>🧪 Error codes</b></summary>
-
-| Code | When |
-| --- | --- |
-| `INVALID_ARGUMENT` | A numeric flag (`--port`, `--timeout`, `--duration`, …) is not a positive integer |
-| `INVALID_BREAKPOINT` | `--bp` / `--at` is not in `file:line` form, or line is not a positive integer |
-| `INVALID_REMOTE_ROOT` | `--remote-root` regex did not compile |
-| `INVALID_EXPRESSION` | `--condition` or `--expr` failed to parse on V8 (`Runtime.compileScript` reported a SyntaxError) — fast-fail before the breakpoint is set |
-| `INVALID_HIT_COUNT` | `--hit-count` is not a positive integer |
-| `INVALID_PAUSE_TYPE` | `cf-inspector exception --type` is not one of `uncaught / caught / all` |
-| `BREAKPOINT_DID_NOT_BIND` | Reserved: a breakpoint resolved to no scripts. Currently surfaced as a stderr warning only — see `BreakpointHandle.resolvedLocations` for programmatic detection |
-| `INSPECTOR_DISCOVERY_FAILED` | `/json/list` did not return a usable WebSocket URL |
-| `INSPECTOR_CONNECTION_FAILED` | WebSocket handshake failed, or the connection closed mid-request |
-| `CDP_REQUEST_FAILED` | A CDP method returned an error result, timed out, or failed to send |
-| `BREAKPOINT_NOT_HIT` | The breakpoint did not hit before the timeout elapsed |
-| `UNRELATED_PAUSE` | The target paused somewhere else and `--fail-on-unmatched-pause` was enabled |
-| `UNRELATED_PAUSE_TIMEOUT` | The target stayed paused somewhere else until the snapshot timeout elapsed |
-| `EVALUATION_FAILED` | Reserved for future use — current evaluation paths surface remote exceptions inline via `CapturedExpression.error` instead of throwing |
-| `MISSING_TARGET` | Neither `--port` nor a complete CF target (`--region/--org/--space/--app`) was provided |
-| `ABORTED` | Reserved for future use by long-running streams when an `AbortSignal` fires |
-
-</details>
 
 ---
 

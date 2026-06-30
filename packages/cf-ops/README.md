@@ -11,7 +11,7 @@ Restart, restage, start/stop, and scale app instances, memory, or disk from one 
 [![node](https://img.shields.io/node/v/@saptools/cf-ops.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 [![types](https://img.shields.io/npm/types/@saptools/cf-ops.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Programmatic Usage](#-programmatic-usage) • [Safety](#-safety-model) • [FAQ](#-faq)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Safety](#-safety-model) • [FAQ](#-faq)
 
 </div>
 
@@ -163,46 +163,6 @@ cf-ops scale --app orders-srv --instances 3 --restart --strategy rolling --dry-r
 | `--dry-run` | Print all planned `cf` commands without executing them |
 
 `scale` requires at least one of `--instances`, `--memory`, or `--disk`.
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-```ts
-import {
-  buildLifecyclePlan,
-  buildScalePlan,
-  lifecycleCommandArgs,
-  runLifecycle,
-  runScale,
-  scaleCommandArgs,
-} from "@saptools/cf-ops";
-
-// Review a typed plan before invoking CF
-const scalePlan = buildScalePlan({
-  appName: "orders-srv",
-  instances: 3,
-  memory: "1G",
-  restart: true,
-  strategy: "rolling",
-});
-
-console.log(scaleCommandArgs(scalePlan));
-await runScale(scalePlan);
-
-// Or run lifecycle operations explicitly
-const restartPlan = buildLifecyclePlan("orders-srv", "restart", "rolling");
-console.log(lifecycleCommandArgs(restartPlan));
-await runLifecycle(restartPlan);
-```
-
-### Test doubles and alternate CF binaries
-
-Set `CF_OPS_CF_BIN` to override the executable used by the command runner. If the value ends with `.js`, `.mjs`, or `.cjs`, it is executed through the current Node.js binary.
-
-```bash
-CF_OPS_CF_BIN=./tests/fixtures/fake-cf.mjs cf-ops scale --app orders-srv --instances 2
-```
 
 ---
 

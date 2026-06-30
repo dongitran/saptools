@@ -9,7 +9,7 @@
 [![node](https://img.shields.io/node/v/@saptools/cf-live-trace.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
 [![types](https://img.shields.io/npm/types/@saptools/cf-live-trace.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#install) - [Quick Start](#quick-start) - [CLI](#cli) - [API](#programmatic-usage) - [Security](#security-notes)
+[Install](#install) - [Quick Start](#quick-start) - [CLI](#cli) - [Security](#security-notes)
 
 </div>
 
@@ -177,39 +177,6 @@ cf-live-trace session prune
 8. Disable or uninstall the hook and close the tunnel on exit.
 
 The injected global is named `__SAPTOOLS_CF_LIVE_TRACE__` so CLI sessions do not collide with the VS Code extension's Live Trace runtime global.
-
----
-
-## Programmatic Usage
-
-```ts
-import { LiveTraceSession } from "@saptools/cf-live-trace";
-
-const session = new LiveTraceSession({
-  target: {
-    region: "ap10",
-    email: process.env["SAP_EMAIL"] ?? "",
-    password: process.env["SAP_PASSWORD"] ?? "",
-    org: "sample-org",
-    space: "dev",
-    app: "orders-api",
-    instanceIndex: 0,
-  },
-  onEvents(events) {
-    for (const event of events) {
-      process.stdout.write(`${event.method} ${event.normalizedUrl} ${String(event.status)}\n`);
-    }
-  },
-});
-
-await session.start({ maxBodyBytes: 4096 });
-
-process.once("SIGINT", () => {
-  void session.stop({ uninstallRuntimeHook: true, reason: "user" });
-});
-```
-
-The public API also exports helpers for payload parsing, runtime expression construction, CF SSH argument construction, and URL summaries.
 
 ---
 

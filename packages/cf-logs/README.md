@@ -12,7 +12,7 @@ Fetch snapshots, stream live output, normalize plain-text and JSON rows, emit co
 [![install size](https://packagephobia.com/badge?p=@saptools/cf-logs)](https://packagephobia.com/result?p=@saptools/cf-logs)
 [![types](https://img.shields.io/npm/types/@saptools/cf-logs.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [API](#-programmatic-usage) • [Store](#-store-file) • [Security](#-security-notes)
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [Store](#-store-file) • [Security](#-security-notes)
 
 </div>
 
@@ -223,77 +223,6 @@ Print the installed `@saptools/cf-logs` semantic version.
 
 ```bash
 cf-logs --version
-```
-
----
-
-## 🧑‍💻 Programmatic Usage
-
-### Drive snapshots and streams from code
-
-```ts
-import { CfLogsRuntime } from "@saptools/cf-logs";
-
-const runtime = new CfLogsRuntime({
-  persistSnapshots: true,
-  persistStreamAppends: true,
-  rowFilter: { searchTerm: "failed", minLevel: "warn" },
-  retryInitialMs: 1_000,
-  retryMaxMs: 20_000,
-});
-
-runtime.setSession({
-  region: "ap10",
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  org: "sample-org",
-  space: "sample",
-});
-
-runtime.setAvailableApps([{ name: "demo-app", runningInstances: 1 }]);
-
-runtime.subscribe((event) => {
-  if (event.type === "append") {
-    process.stdout.write(`${event.lines.join("\n")}\n`);
-  }
-});
-
-const snapshot = await runtime.fetchSnapshot("demo-app");
-console.log(snapshot.rows.length);
-
-await runtime.setActiveApps(["demo-app"]);
-```
-
-### Lower-level helpers
-
-```ts
-import {
-  fetchRecentLogs,
-  fetchStartedAppsViaCfCli,
-  readStore,
-  resolveApiEndpoint,
-} from "@saptools/cf-logs";
-
-const apiEndpoint = resolveApiEndpoint({ region: "ap10" });
-const apps = await fetchStartedAppsViaCfCli({
-  apiEndpoint,
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  org: "sample-org",
-  space: "sample",
-});
-
-const rawLogs = await fetchRecentLogs({
-  apiEndpoint,
-  email: process.env["SAP_EMAIL"] ?? "",
-  password: process.env["SAP_PASSWORD"] ?? "",
-  org: "sample-org",
-  space: "sample",
-  app: apps[0]?.name ?? "demo-app",
-});
-
-const store = await readStore();
-console.log(rawLogs.length, store.entries.length);
 ```
 
 ---
