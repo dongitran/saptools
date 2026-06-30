@@ -147,6 +147,49 @@ describe("formatCompactCsv", () => {
     expect(compact.truncatedCells).toBe(1);
   });
 
+  it("renders text LOB buffers as text and binary buffers as hex", () => {
+    const result: QueryResult = {
+      rows: [
+        {
+          NCLOB_VALUE: Buffer.from("hello", "utf8"),
+          CLOB_VALUE: Buffer.from("hello", "utf8"),
+          BLOB_VALUE: Buffer.from([0, 1, 2, 255]),
+          UNKNOWN_VALUE: Buffer.from("hello", "utf8"),
+        },
+      ],
+      columns: [
+        { name: "NCLOB_VALUE", typeName: "NCLOB" },
+        { name: "CLOB_VALUE", typeName: "CLOB" },
+        { name: "BLOB_VALUE", typeName: "BLOB" },
+        { name: "UNKNOWN_VALUE", typeName: "TYPE_999" },
+      ],
+      rowCount: 1,
+      statement: "select",
+      truncated: false,
+      elapsedMs: 0,
+    };
+
+    expect(formatCompactCsv(result, 128).text).toBe(
+      "NCLOB_VALUE,CLOB_VALUE,BLOB_VALUE,UNKNOWN_VALUE\r\nhello,hello,0x000102ff,0x68656c6c6f",
+    );
+  });
+
+  it("truncates text LOB buffers after decoding", () => {
+    const result: QueryResult = {
+      rows: [{ CONTENT: Buffer.from("hello", "utf8") }],
+      columns: [{ name: "CONTENT", typeName: "NCLOB" }],
+      rowCount: 1,
+      statement: "select",
+      truncated: false,
+      elapsedMs: 0,
+    };
+
+    const compact = formatCompactCsv(result, 3);
+
+    expect(compact.text).toBe("CONTENT\r\nhel");
+    expect(compact.truncatedCells).toBe(1);
+  });
+
   it("keeps CSV escaping after previewing a value", () => {
     const result: QueryResult = {
       rows: [{ CONTENT: 'a,"b"' }],
