@@ -17,7 +17,7 @@ import type {
 export interface LiveTraceSessionOptions {
   readonly target: CfLiveTraceTarget;
   readonly onState?: (event: LiveTraceStateEvent) => void;
-  readonly onEvents?: (events: readonly LiveTraceEvent[]) => void;
+  readonly onEvents?: (events: readonly LiveTraceEvent[]) => void | Promise<void>;
   readonly onSummary?: (summary: ReturnType<typeof buildUrlSummaries>) => void;
   readonly onLog?: (message: string) => void;
 }
@@ -38,7 +38,7 @@ const RUNTIME_QUEUE_SIZE = 1000;
 const CONTROL_EVALUATE_TIMEOUT_MS = 5000;
 const DRAIN_EVALUATE_TIMEOUT_MS = 10000;
 const DRAIN_TIMEOUT_RETRY_LIMIT = 3;
-const DRAIN_TRANSPORT_BODY_LIMIT = 20_000;
+const MAX_DRAIN_EVALUATE_TIMEOUT_MS = 60_000;
 
 const defaultDependencies: LiveTraceDependencies = {
   prepareCfSession,
@@ -177,10 +177,10 @@ export class LiveTraceSession {
     try {
       const payload = await this.inspectorClient.evaluate(
         buildDrainExpression(DRAIN_BATCH_SIZE, resolveDrainTransportBodyLimit(maxBodyBytes)),
-        DRAIN_EVALUATE_TIMEOUT_MS,
+        resolveDrainEvaluateTimeout(maxBodyBytes),
       );
       this.consecutiveDrainTimeouts = 0;
-      this.publishDrainedEvents(payload, maxBodyBytes);
+      await this.publishDrainedEvents(payload, maxBodyBytes);
     } catch (error) {
       await this.handleDrainFailure(error);
     } finally {
@@ -188,14 +188,14 @@ export class LiveTraceSession {
     }
   }
 
-  private publishDrainedEvents(payload: unknown, maxBodyBytes: number): void {
+  private async publishDrainedEvents(payload: unknown, maxBodyBytes: number): Promise<void> {
     const drained = parseDrainResult(payload, { appId: this.options.target.app, maxBodyBytes });
     if (drained.events.length === 0) {
       return;
     }
     this.events.push(...drained.events);
     this.events.splice(0, Math.max(0, this.events.length - RUNTIME_QUEUE_SIZE));
-    this.options.onEvents?.(drained.events);
+    await this.options.onEvents?.(drained.events);
     this.options.onSummary?.(buildUrlSummaries(this.events));
   }
 
@@ -310,11 +310,15 @@ class LiveTraceStartupError extends Error {
 }
 
 function resolveStartOptions(options: LiveTraceStartOptions): Required<LiveTraceStartOptions> {
+  const maxBodyBytes = options.maxBodyBytes ?? 4096;
+  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
+    throw new Error("maxBodyBytes must be a positive safe integer.");
+  }
   return {
     captureHeaders: options.captureHeaders ?? true,
     captureRequestBody: options.captureRequestBody ?? true,
     captureResponseBody: options.captureResponseBody ?? true,
-    maxBodyBytes: options.maxBodyBytes ?? 4096,
+    maxBodyBytes,
     runtimeQueueSize: options.runtimeQueueSize ?? RUNTIME_QUEUE_SIZE,
   };
 }
@@ -326,7 +330,12 @@ function stopLateTunnel(tunnel: TunnelOpenResult): void {
 }
 
 function resolveDrainTransportBodyLimit(maxBodyBytes: number): number {
-  return maxBodyBytes > 0 ? Math.min(maxBodyBytes, DRAIN_TRANSPORT_BODY_LIMIT) : DRAIN_TRANSPORT_BODY_LIMIT;
+  return maxBodyBytes > 0 ? maxBodyBytes : 1;
+}
+
+function resolveDrainEvaluateTimeout(maxBodyBytes: number): number {
+  const extraMegabytes = Math.ceil(Math.max(0, maxBodyBytes - 1_000_000) / 1_000_000);
+  return Math.min(MAX_DRAIN_EVALUATE_TIMEOUT_MS, DRAIN_EVALUATE_TIMEOUT_MS + extraMegabytes * 5_000);
 }
 
 function isEvaluateTimeout(error: unknown): boolean {

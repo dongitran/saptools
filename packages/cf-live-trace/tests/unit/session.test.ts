@@ -42,7 +42,9 @@ describe("LiveTraceSession", () => {
           instanceIndex: 0,
         },
         onState: (state) => states.push(state),
-        onEvents: (batch) => events.push(...batch),
+        onEvents: (batch) => {
+          events.push(...batch);
+        },
       },
       {
         prepareCfSession: vi.fn(async () => undefined),
@@ -114,7 +116,7 @@ describe("LiveTraceSession", () => {
       }),
     );
 
-    await session.start({ maxBodyBytes: 0 });
+    await session.start({ maxBodyBytes: 4096 });
     pollCallback?.();
     await vi.waitFor(() => {
       expect(logs).toContain("Live Trace drain timed out for orders-api; retrying (1/3).");
@@ -125,6 +127,29 @@ describe("LiveTraceSession", () => {
     });
 
     expect(states.at(-1)?.state).toBe("streaming");
+  });
+
+  it("uses the requested positive body limit as the drain transport limit", async () => {
+    let pollCallback: (() => void) | undefined;
+    const client: InspectorRuntimeClient = {
+      evaluate: vi.fn(async () => ({ events: [], droppedCount: 0, queueSize: 0 })),
+      close: vi.fn(async () => undefined),
+    };
+    const session = new LiveTraceSession(
+      { target: createTarget() },
+      createReadyDependencies(client, (callback) => {
+        pollCallback = callback;
+      }),
+    );
+
+    await session.start({ maxBodyBytes: 1_048_576 });
+    pollCallback?.();
+    await vi.waitFor(() => {
+      expect((client.evaluate as unknown as { readonly mock: { readonly calls: readonly [string, number][] } }).mock.calls.some(
+        ([expression]) => expression.includes(".drainEvents(50, 1048576)"),
+      )).toBe(true);
+    });
+    await session.stop({ uninstallRuntimeHook: true, reason: "user" });
   });
 
   it("rejects startup failures instead of leaving callers waiting for a stop condition", async () => {

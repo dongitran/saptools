@@ -13,6 +13,35 @@ export type { DrainParseOptions } from "./payload.js";
 export { truncatePreview } from "./preview.js";
 export type { PreviewTruncationResult } from "./preview.js";
 export { buildUrlSummaries, normalizeEventUrl } from "./summary.js";
+export { compactTraceEvent, detectBodyFormat } from "./trace-compact.js";
+export type { CompactTraceEvent, TraceBodyFormat } from "./trace-compact.js";
+export { inspectTraceBody, searchTraceRecords } from "./trace-inspect.js";
+export type {
+  TraceBodyInspectionOptions,
+  TraceBodyInspectionRow,
+  TraceBodySide,
+  TraceSearchBodySide,
+  TraceSearchMatch,
+  TraceSearchOptions,
+} from "./trace-inspect.js";
+export {
+  createTraceSession,
+  listTraceEvents,
+  listTraceSessions,
+  pruneTraceSessions,
+  readTraceEvent,
+  traceSessionsRoot,
+  writeTraceEvent,
+} from "./trace-store.js";
+export type {
+  CreateTraceSessionInput,
+  StoredTraceEvent,
+  StoredTraceEventFile,
+  TraceSession,
+  TraceSessionSummary,
+  TraceStoreOptions,
+  TraceTargetIdentity,
+} from "./trace-store.js";
 
 export {
   buildCfSshArgs,

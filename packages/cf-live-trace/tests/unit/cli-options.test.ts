@@ -43,7 +43,7 @@ describe("CLI option parsing", () => {
         email: "flag-user",
         password: "flag-password",
         instance: "2",
-        maxBodyBytes: "0",
+        maxBodyBytes: "8192",
         duration: "5",
         maxEvents: "10",
         format: "ndjson",
@@ -58,7 +58,7 @@ describe("CLI option parsing", () => {
         instanceIndex: 2,
       }),
     );
-    expect(options.trace.maxBodyBytes).toBe(0);
+    expect(options.trace.maxBodyBytes).toBe(8192);
     expect(options.limits).toEqual({ durationMs: 5000, maxEvents: 10 });
   });
 
@@ -223,6 +223,7 @@ describe("CLI option parsing", () => {
 
     expect(() => buildRunOptions({ ...base, email: "user", password: "pass", format: "xml" }, {})).toThrow("Invalid --format");
     expect(() => buildRunOptions({ ...base, email: "user", password: "pass", maxBodyBytes: "-1" }, {})).toThrow("Invalid --max-body-bytes");
+    expect(() => buildRunOptions({ ...base, email: "user", password: "pass", maxBodyBytes: "0" }, {})).toThrow("Invalid --max-body-bytes");
     expect(() => buildRunOptions({ ...base, app: "", email: "user", password: "pass" }, {})).toThrow("--app is required");
     expect(() => buildRunOptions(base, {})).toThrow("Missing required environment variable: SAP_EMAIL");
   });

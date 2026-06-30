@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-import type { LiveTraceEvent } from "../../src/types.js";
+import type { CompactTraceEvent } from "../../src/trace-compact.js";
+import type { StoredTraceEvent } from "../../src/trace-store.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
@@ -56,16 +57,25 @@ test("User can capture HTTP request and response events through a fake CF tunnel
     const events = parseTraceEvents(result.stdout);
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual(expect.objectContaining({
-      appId: "orders-api",
+      sessionId: expect.stringMatching(/^s[0-9a-f]{8}$/),
+      requestId: expect.stringMatching(/^r[0-9a-f]{8}$/),
       instance: "0",
       method: "POST",
       normalizedUrl: "/orders/42?expand=items",
       status: 201,
       correlationId: "e2e-trace-1",
+      requestBodyFormat: "json",
+      responseBodyFormat: "json",
       requestBodyPreview: '{"sku":"A-100","quantity":2}',
     }));
     expect(events[0]?.responseBodyPreview).toContain('"ok":true');
-    expect(events[0]?.responseHeaders["x-fixture"]).toBe("cf-live-trace");
+    expect(events[0]).not.toHaveProperty("appId");
+    expect(events[0]).not.toHaveProperty("requestHeaders");
+    expect(events[0]).not.toHaveProperty("responseHeaders");
+    const stored = await readSingleBackupEvent(paths.root, events[0]?.sessionId ?? "");
+    expect(stored.event.appId).toBe("orders-api");
+    expect(stored.event.responseHeaders["x-fixture"]).toBe("cf-live-trace");
+    expect(stored.requestBodyFormat).toBe("json");
     expect(await readFakeCfCommands(paths.logPath)).toEqual([
       "api",
       "auth",
@@ -161,7 +171,7 @@ async function isInspectorReady(port: number): Promise<boolean> {
 }
 
 function startTraceCli(
-  paths: { readonly cfHome: string; readonly logPath: string },
+  paths: { readonly root: string; readonly cfHome: string; readonly logPath: string },
   inspectorPort: number,
 ): TraceCli {
   const env = createCliEnv(paths, inspectorPort);
@@ -182,7 +192,7 @@ function startTraceCli(
 }
 
 function createCliEnv(
-  paths: { readonly logPath: string },
+  paths: { readonly root: string; readonly logPath: string },
   inspectorPort: number,
 ): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -190,6 +200,8 @@ function createCliEnv(
   delete env["NO_COLOR"];
   return {
     ...env,
+    HOME: paths.root,
+    USERPROFILE: paths.root,
     CF_LIVE_TRACE_FAKE_LOG_PATH: paths.logPath,
     CF_LIVE_TRACE_TEST_INSPECTOR_PORT: inspectorPort.toString(),
   };
@@ -297,8 +309,15 @@ async function readFakeCfCommands(path: string): Promise<readonly string[]> {
   }
 }
 
-function parseTraceEvents(raw: string): readonly LiveTraceEvent[] {
-  return raw.trim().split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line) as LiveTraceEvent);
+function parseTraceEvents(raw: string): readonly CompactTraceEvent[] {
+  return raw.trim().split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line) as CompactTraceEvent);
+}
+
+async function readSingleBackupEvent(root: string, sessionId: string): Promise<StoredTraceEvent> {
+  const eventsDir = join(root, ".saptools", "cf-live-trace", "sessions", sessionId, "events");
+  const files = (await readdir(eventsDir)).filter((file) => file.endsWith(".json"));
+  expect(files).toHaveLength(1);
+  return JSON.parse(await readFile(join(eventsDir, files[0] ?? ""), "utf8")) as StoredTraceEvent;
 }
 
 async function waitForCondition(check: () => Promise<boolean>, timeoutMs: number, message: string): Promise<void> {

@@ -4,10 +4,13 @@ import { Command } from "commander";
 
 import { createTemporaryCfHome, removeTemporaryCfHome } from "../cf.js";
 import { LiveTraceSession } from "../session.js";
+import { compactTraceEvent, type CompactTraceEvent } from "../trace-compact.js";
+import { createTraceSession, writeTraceEvent, type TraceSession } from "../trace-store.js";
 import type { LiveTraceEvent, LiveTraceStateEvent, LiveTraceStopReason } from "../types.js";
 
 import { buildRunOptionsWithCurrentTarget, type CliFlags, type RunOptions } from "./options.js";
 import { writeJson, writeJsonLine, writeLog, writeProgress, writeSummaryLine } from "./output.js";
+import { registerSessionCommands } from "./session-commands.js";
 
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
@@ -18,7 +21,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     .option("--api-endpoint <url>", "Explicit CF API endpoint")
     .option("-o, --org <name>", "CF org name (default: current cf target)")
     .option("-s, --space <name>", "CF space name (default: current cf target)")
-    .requiredOption("-a, --app <name>", "CF app name")
+    .option("-a, --app <name>", "CF app name")
     .option("--email <value>", "SAP email (default: SAP_EMAIL)")
     .option("--password <value>", "SAP password (default: SAP_PASSWORD)")
     .option("-i, --instance <index>", "CF app instance index (default: 0)")
@@ -26,7 +29,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     .option("--cf-command <path>", "CF CLI executable or test shim")
     .option("--duration <seconds>", "Stop after N seconds")
     .option("--max-events <count>", "Stop after N trace events")
-    .option("--max-body-bytes <bytes>", "Maximum request/response preview bytes; 0 keeps unlimited previews locally", "4096")
+    .option("--max-body-bytes <bytes>", "Maximum request/response capture bytes; must be greater than 0", "4096")
     .option("--no-capture-headers", "Do not capture request/response headers")
     .option("--no-capture-request-body", "Do not capture request body previews")
     .option("--no-capture-response-body", "Do not capture response body previews")
@@ -37,13 +40,16 @@ export async function main(argv: readonly string[]): Promise<void> {
       await runTraceCommand(await buildRunOptionsWithCurrentTarget(flags, process.env));
     });
 
+  registerSessionCommands(program);
   await program.parseAsync([...argv]);
 }
 
 export async function runTraceCommand(options: RunOptions): Promise<void> {
   const cfHome = await resolveCfHome(options);
   try {
-    const events: LiveTraceEvent[] = [];
+    const traceSession = await createTraceSession({ target: options.target });
+    writeSessionHints(traceSession, options);
+    const events: CompactTraceEvent[] = [];
     const eventLimit = createEventLimit(options);
     const runtimeError = createRuntimeErrorStopWaiter();
     const session = new LiveTraceSession({
@@ -59,30 +65,47 @@ export async function runTraceCommand(options: RunOptions): Promise<void> {
           writeLog(message);
         }
       },
-      onEvents: (batch) => {
-        handleEvents(batch, options, events);
+      onEvents: async (batch) => {
+        await handleEvents(batch, options, events, traceSession);
         eventLimit.check(events.length);
       },
     });
     await runUntilStopped(session, options, eventLimit, runtimeError);
     if (options.format === "json") {
-      writeJson({ events });
+      writeJson({ sessionId: traceSession.sessionId, events });
     }
   } finally {
     await cfHome.dispose();
   }
 }
 
-function handleEvents(batch: readonly LiveTraceEvent[], options: RunOptions, events: LiveTraceEvent[]): void {
+async function handleEvents(
+  batch: readonly LiveTraceEvent[],
+  options: RunOptions,
+  events: CompactTraceEvent[],
+  traceSession: TraceSession,
+): Promise<void> {
   for (const event of batch) {
-    events.push(event);
+    const record = await writeTraceEvent(traceSession, event);
+    const compact = compactTraceEvent(record);
+    events.push(compact);
     if (options.format === "ndjson") {
-      writeJsonLine(event);
+      writeJsonLine(compact);
     }
     if (options.format === "summary") {
-      writeSummaryLine(event);
+      writeSummaryLine(compact);
     }
   }
+}
+
+function writeSessionHints(traceSession: TraceSession, options: RunOptions): void {
+  if (options.quiet) {
+    return;
+  }
+  writeLog(`session: id=${traceSession.sessionId} backups=${traceSession.directory} ttl=2h`);
+  writeLog(`session: list events with \`cf-live-trace session events ${traceSession.sessionId}\``);
+  writeLog(`session: search bodies with \`cf-live-trace session search ${traceSession.sessionId} <text>\``);
+  writeLog(`session: inspect JSON with \`cf-live-trace session body ${traceSession.sessionId} <requestId> --body response --path / --limit 4000\``);
 }
 
 async function runUntilStopped(

@@ -81,7 +81,7 @@ describe("runtime source", () => {
     expect(context[CF_LIVE_TRACE_GLOBAL_NAME]).toBe(runtimeApi);
   });
 
-  it("truncates unlimited body previews for inspector transport drains", async () => {
+  it("does not treat a non-positive runtime body limit as unlimited capture", async () => {
     const { runtimeApi, httpModule } = await installRuntimeSource({ maxBodyBytes: 0 });
     const req = createRuntimeRequest("/large");
     const res = createRuntimeResponse();
@@ -95,10 +95,10 @@ describe("runtime source", () => {
 
     expect(drained.events[0]).toEqual(
       expect.objectContaining({
-        requestBodyPreview: "request-",
-        responseBodyPreview: "response",
-        requestBodyTruncated: true,
-        responseBodyTruncated: true,
+        requestBodyPreview: "",
+        responseBodyPreview: "",
+        requestBodyTruncated: false,
+        responseBodyTruncated: false,
       }),
     );
   });

@@ -193,10 +193,7 @@ function parseInstanceIndex(value: string | undefined): number {
 }
 
 function parseBodyLimit(value: string | undefined): number {
-  if (value === undefined) {
-    return 4096;
-  }
-  return parseNonNegativeInteger(value, "--max-body-bytes");
+  return parsePositiveInteger(value, "--max-body-bytes") ?? 4096;
 }
 
 function parseNonNegativeInteger(raw: string, label: string): number {

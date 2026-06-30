@@ -73,7 +73,7 @@ export const CF_LIVE_TRACE_RUNTIME_SOURCE = `
   const appendPreview = (current, chunk, enabled) => {
     if (!enabled) return current;
     const text = chunkText(chunk);
-    if (state.options.maxBodyBytes <= 0) return current + text;
+    if (state.options.maxBodyBytes <= 0) return current;
     if (current.length >= state.options.maxBodyBytes) return current;
     return (current + text).slice(0, state.options.maxBodyBytes);
   };
