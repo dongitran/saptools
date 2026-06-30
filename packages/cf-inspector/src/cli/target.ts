@@ -57,6 +57,7 @@ export function resolveTarget(opts: SharedTargetOptions): Target {
     return {
       kind: "cf",
       region: opts.region,
+      ...(opts.apiEndpoint === undefined ? {} : { apiEndpoint: opts.apiEndpoint }),
       org: opts.org,
       space: opts.space,
       app: opts.app,
@@ -82,10 +83,11 @@ export async function resolveTargetWithCurrentCfTarget(opts: SharedTargetOptions
 
   const cfTimeoutSec = parsePositiveInt(opts.cfTimeout, "--cf-timeout") ?? DEFAULT_CF_TIMEOUT_SEC;
   const region = optionalText(opts.region);
+  const apiEndpoint = optionalText(opts.apiEndpoint);
   const org = optionalText(opts.org);
   const space = optionalText(opts.space);
   if (region !== undefined && org !== undefined && space !== undefined) {
-    return buildCfTarget(region, org, space, app, cfTimeoutSec);
+    return buildCfTarget(region, apiEndpoint, org, space, app, cfTimeoutSec);
   }
 
   const current = await readCurrentTarget();
@@ -98,6 +100,7 @@ export async function resolveTargetWithCurrentCfTarget(opts: SharedTargetOptions
 
   return buildCfTarget(
     region ?? currentRegion(current),
+    apiEndpoint ?? current.apiEndpoint,
     org ?? current.org,
     space ?? current.space,
     app,
@@ -107,6 +110,7 @@ export async function resolveTargetWithCurrentCfTarget(opts: SharedTargetOptions
 
 function hasCfTarget(opts: SharedTargetOptions): opts is SharedTargetOptions & {
   readonly region: string;
+  readonly apiEndpoint?: string;
   readonly org: string;
   readonly space: string;
   readonly app: string;
@@ -121,6 +125,7 @@ function hasCfTarget(opts: SharedTargetOptions): opts is SharedTargetOptions & {
 
 function buildCfTarget(
   region: string,
+  apiEndpoint: string | undefined,
   org: string,
   space: string,
   app: string,
@@ -129,6 +134,7 @@ function buildCfTarget(
   return {
     kind: "cf",
     region,
+    ...(apiEndpoint === undefined ? {} : { apiEndpoint }),
     org,
     space,
     app,
@@ -218,6 +224,7 @@ export async function openTarget(
   reportProgress?.(formatCfTunnelStatus("starting"));
   const tunnel = await openCfTunnel({
     region: target.region,
+    ...(target.apiEndpoint === undefined ? {} : { apiEndpoint: target.apiEndpoint }),
     org: target.org,
     space: target.space,
     app: target.app,

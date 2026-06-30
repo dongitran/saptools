@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readdir, readFile, readlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 
@@ -42,11 +43,87 @@ async function findListeningPidsWithLsof(port: number): Promise<readonly number[
   }
 }
 
+async function findListeningPidsWithProc(port: number): Promise<readonly number[]> {
+  const inodes = await findListeningSocketInodesWithProc(port);
+  if (inodes.size === 0) {
+    return [];
+  }
+
+  try {
+    const entries = await readdir("/proc", { withFileTypes: true });
+    const pids = new Set<number>();
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) {
+        continue;
+      }
+      if (await processHasSocketInode(entry.name, inodes)) {
+        pids.add(Number.parseInt(entry.name, 10));
+      }
+    }
+    return [...pids];
+  } catch {
+    return [];
+  }
+}
+
+async function findListeningSocketInodesWithProc(port: number): Promise<ReadonlySet<string>> {
+  const inodes = new Set<string>();
+  await collectListeningSocketInodes("/proc/net/tcp", port, inodes);
+  await collectListeningSocketInodes("/proc/net/tcp6", port, inodes);
+  return inodes;
+}
+
+async function collectListeningSocketInodes(
+  path: string,
+  port: number,
+  inodes: Set<string>,
+): Promise<void> {
+  try {
+    const content = await readFile(path, "utf8");
+    for (const line of content.split("\n").slice(1)) {
+      const fields = line.trim().split(/\s+/);
+      const localAddress = fields[1];
+      const state = fields[3];
+      const inode = fields[9];
+      if (localAddress === undefined || state === undefined || inode === undefined) {
+        continue;
+      }
+      const localPort = Number.parseInt(localAddress.split(":")[1] ?? "", 16);
+      if (localPort === port && state === "0A") {
+        inodes.add(inode);
+      }
+    }
+  } catch {
+    // /proc/net/tcp* is Linux-specific; callers fall back to other strategies.
+  }
+}
+
+async function processHasSocketInode(pid: string, inodes: ReadonlySet<string>): Promise<boolean> {
+  try {
+    const descriptors = await readdir(`/proc/${pid}/fd`);
+    for (const descriptor of descriptors) {
+      try {
+        const link = await readlink(`/proc/${pid}/fd/${descriptor}`);
+        const match = /^socket:\[(\d+)\]$/.exec(link);
+        if (match?.[1] !== undefined && inodes.has(match[1])) {
+          return true;
+        }
+      } catch {
+        // The process may close descriptors while we scan them.
+      }
+    }
+  } catch {
+    // The process may exit, or permissions may prevent fd inspection.
+  }
+  return false;
+}
+
 async function findListeningPids(port: number): Promise<readonly number[]> {
   if (process.platform === "win32") {
     return await findListeningPidsWithNetstat(port);
   }
-  return await findListeningPidsWithLsof(port);
+  const lsofPids = await findListeningPidsWithLsof(port);
+  return lsofPids.length > 0 ? lsofPids : await findListeningPidsWithProc(port);
 }
 
 export async function isPortFree(port: number): Promise<boolean> {

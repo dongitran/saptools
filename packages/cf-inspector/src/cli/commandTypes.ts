@@ -11,6 +11,7 @@ export interface PortTarget {
 export interface CfTarget {
   readonly kind: "cf";
   readonly region: string;
+  readonly apiEndpoint?: string;
   readonly org: string;
   readonly space: string;
   readonly app: string;
@@ -23,6 +24,7 @@ export interface SharedTargetOptions {
   readonly port?: string;
   readonly host?: string;
   readonly region?: string;
+  readonly apiEndpoint?: string;
   readonly org?: string;
   readonly space?: string;
   readonly app?: string;

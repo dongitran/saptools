@@ -101,6 +101,47 @@ describe("parseCurrentCfTarget", () => {
     });
   });
 
+  it("extracts indexed SAP regions from current cf target output", () => {
+    const target = parseCurrentCfTarget([
+      "API endpoint:   https://api.cf.eu10-005.hana.ondemand.com/",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n"));
+
+    expect(target).toEqual({
+      apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com/",
+      region: "eu10-005",
+      org: "demo-org",
+      space: "dev",
+    });
+  });
+
+  it("extracts China SAP regions from current cf target output", () => {
+    const target = parseCurrentCfTarget([
+      "API endpoint:   https://api.cf.cn40.platform.sapcloud.cn",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n"));
+
+    expect(target).toEqual({
+      apiEndpoint: "https://api.cf.cn40.platform.sapcloud.cn",
+      region: "cn40",
+      org: "demo-org",
+      space: "dev",
+    });
+  });
+
+  it("accepts newly added SAP CF endpoint-shaped current targets", () => {
+    const target = parseCurrentCfTarget([
+      "API endpoint:   https://api.cf.eu10-999.hana.ondemand.com",
+      "org:            demo-org",
+      "space:          dev",
+    ].join("\n"));
+
+    expect(target?.region).toBe("eu10-999");
+    expect(() => requireCurrentCfRegion(target ?? { apiEndpoint: "" })).not.toThrow();
+  });
+
   it("returns undefined when the user is not fully targeted", () => {
     expect(parseCurrentCfTarget("API endpoint: https://api.example.test\norg:\nspace:")).toBeUndefined();
   });
