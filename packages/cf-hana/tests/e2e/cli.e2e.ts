@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -147,6 +147,48 @@ test("User can save a compact query and inspect it by ref", async () => {
   const list = await runCli(["result", "list"], fakeEnv());
   expect(list.exitCode).toBe(0);
   expect(list.stdout).toContain(ref);
+});
+
+test("User sees text LOB values as text and binary LOB values as hex", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM LOB_FIXTURE", "--save", "--cell-limit", "100"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  const lines = result.stdout.trimEnd().split(/\r?\n/);
+  expect(lines[1]).toBe("LOG_CONTENT,CLOB_CONTENT,PAYLOAD");
+  expect(lines[2]).toBe("Example log entry,Clob log entry,0x000102ff");
+
+  const ref = lines[0]?.slice("ref=".length) ?? "";
+  const show = await runCli(
+    ["result", "show", ref, "--row", "1", "--column", "LOG_CONTENT", "--length", "100"],
+    fakeEnv(),
+  );
+  expect(show.exitCode).toBe(0);
+  expect(show.stdout.trim()).toBe(
+    "ROW,COLUMN,TYPE,ORIGINAL_LENGTH,OFFSET,VALUE\r\n1,LOG_CONTENT,text,17,0,Example log entry",
+  );
+
+  const search = await runCli(["result", "search", ref, "Example"], fakeEnv());
+  expect(search.exitCode).toBe(0);
+  expect(search.stdout).toContain("1,LOG_CONTENT,0,,Example log entry");
+
+  const textOutput = join(home, "log.txt");
+  const textExport = await runCli(
+    ["result", "export", ref, "--row", "1", "--column", "LOG_CONTENT", "--output", textOutput],
+    fakeEnv(),
+  );
+  expect(textExport.exitCode).toBe(0);
+  await expect(readFile(textOutput, "utf8")).resolves.toBe("Example log entry");
+
+  const binaryOutput = join(home, "payload.bin");
+  const binaryExport = await runCli(
+    ["result", "export", ref, "--row", "1", "--column", "PAYLOAD", "--output", binaryOutput],
+    fakeEnv(),
+  );
+  expect(binaryExport.exitCode).toBe(0);
+  await expect(readFile(binaryOutput)).resolves.toEqual(Buffer.from([0, 1, 2, 255]));
 });
 
 test("User can run a query and keep local SQL history", async () => {

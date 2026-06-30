@@ -1,9 +1,10 @@
+import { isTextLobType } from "./lob.js";
 import { previewCell } from "./result-preview.js";
-import type { OutputFormat, QueryResult, SqlParam } from "./types.js";
+import type { OutputFormat, QueryResult, QueryResultColumn, SqlParam } from "./types.js";
 
 type JsonCell = string | number | boolean | null;
 
-function cellText(value: SqlParam, nullText: string): string {
+function cellText(value: SqlParam, nullText: string, column?: QueryResultColumn): string {
   if (value === null) {
     return nullText;
   }
@@ -11,7 +12,9 @@ function cellText(value: SqlParam, nullText: string): string {
     return value.toISOString();
   }
   if (Buffer.isBuffer(value)) {
-    return `0x${value.toString("hex")}`;
+    return isTextLobType(column?.typeName)
+      ? value.toString("utf8")
+      : `0x${value.toString("hex")}`;
   }
   if (typeof value === "boolean") {
     return value ? "true" : "false";
@@ -19,7 +22,7 @@ function cellText(value: SqlParam, nullText: string): string {
   return typeof value === "number" ? value.toString() : value;
 }
 
-function serializeCell(value: SqlParam): JsonCell {
+function serializeCell(value: SqlParam, column?: QueryResultColumn): JsonCell {
   if (value === null) {
     return null;
   }
@@ -27,7 +30,9 @@ function serializeCell(value: SqlParam): JsonCell {
     return value.toISOString();
   }
   if (Buffer.isBuffer(value)) {
-    return `0x${value.toString("hex")}`;
+    return isTextLobType(column?.typeName)
+      ? value.toString("utf8")
+      : `0x${value.toString("hex")}`;
   }
   return value;
 }
@@ -52,7 +57,7 @@ export function formatTable(result: QueryResult): string {
 
   const headers = result.columns.map((column) => column.name);
   const rows = result.rows.map((row) =>
-    result.columns.map((column) => cellText(row[column.name] ?? null, "NULL")),
+    result.columns.map((column) => cellText(row[column.name] ?? null, "NULL", column)),
   );
   const widths = headers.map((header, index) => {
     const widest = rows.reduce(
@@ -75,7 +80,8 @@ export function formatJson(result: QueryResult): string {
   const rows = result.rows.map((row) => {
     const serialized: Record<string, JsonCell> = {};
     for (const [key, value] of Object.entries(row)) {
-      serialized[key] = serializeCell(value);
+      const column = result.columns.find((item) => item.name === key);
+      serialized[key] = serializeCell(value, column);
     }
     return serialized;
   });
@@ -89,7 +95,7 @@ export function formatCsv(result: QueryResult): string {
   for (const row of result.rows) {
     lines.push(
       result.columns
-        .map((column) => csvEscape(cellText(row[column.name] ?? null, "")))
+        .map((column) => csvEscape(cellText(row[column.name] ?? null, "", column)))
         .join(","),
     );
   }
@@ -103,7 +109,7 @@ export function formatCompactCsv(result: QueryResult, cellLimit: number): Compac
   let truncatedCells = 0;
   for (const row of result.rows) {
     const cells = result.columns.map((column) => {
-      const preview = previewCell(row[column.name] ?? null, cellLimit);
+      const preview = previewCell(row[column.name] ?? null, cellLimit, column.typeName);
       if (preview.truncated) {
         truncatedCells += 1;
       }

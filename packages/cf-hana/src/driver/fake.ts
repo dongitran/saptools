@@ -22,6 +22,24 @@ function fakeExec(sql: string): DriverExecResult {
     throw new Error(`fake driver forced ${kind.toUpperCase()} failure`);
   }
 
+  if (sql.toUpperCase().includes("LOB_FIXTURE")) {
+    return {
+      rows: [
+        {
+          LOG_CONTENT: Buffer.from("Example log entry", "utf8"),
+          CLOB_CONTENT: Buffer.from("Clob log entry", "utf8"),
+          PAYLOAD: Buffer.from([0, 1, 2, 255]),
+        },
+      ],
+      columns: [
+        { name: "LOG_CONTENT", typeName: "NCLOB" },
+        { name: "CLOB_CONTENT", typeName: "CLOB" },
+        { name: "PAYLOAD", typeName: "BLOB" },
+      ],
+      affectedRows: 0,
+    };
+  }
+
   if (sql.toUpperCase().includes("DUMMY")) {
     return {
       rows: [{ "1": 1 }],

@@ -9,6 +9,7 @@ import {
 } from "./config.js";
 import { CfHanaError } from "./errors.js";
 import { formatCompactCsv } from "./format.js";
+import { isTextLobType } from "./lob.js";
 import {
   inspectJsonCell,
   readCellWindow,
@@ -144,7 +145,12 @@ async function runShow(ref: string, options: ShowOptions): Promise<void> {
     print(csv(rows, ["PATH", "TYPE", "VALUE"], length));
     return;
   }
-  const window = readCellWindow(selected.value, nonNegative("--offset", options.offset), length);
+  const window = readCellWindow(
+    selected.value,
+    nonNegative("--offset", options.offset),
+    length,
+    selected.typeName,
+  );
   print(
     csv(
       [
@@ -200,9 +206,9 @@ async function runSearch(ref: string, text: string, options: SearchOptions): Pro
   print(csv(rows, ["ROW", "COLUMN", "OFFSET", "PATH", "PREVIEW"], length));
 }
 
-function cellExportValue(value: SqlParam): string | Buffer {
+function cellExportValue(value: SqlParam, typeName?: string): string | Buffer {
   if (Buffer.isBuffer(value)) {
-    return value;
+    return isTextLobType(typeName) ? value.toString("utf8") : value;
   }
   if (value instanceof Date) {
     return value.toISOString();
@@ -225,7 +231,9 @@ async function runExport(ref: string, options: ExportOptions): Promise<void> {
   }
   const session = await readResultSession(ref);
   const selected = selectResultCell(session, options.row, options.column);
-  await writeFile(options.output, cellExportValue(selected.value), { mode: 0o600 });
+  await writeFile(options.output, cellExportValue(selected.value, selected.typeName), {
+    mode: 0o600,
+  });
   print(`wrote=${options.output}`);
 }
 

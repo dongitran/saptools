@@ -1,3 +1,4 @@
+import { isTextLobType } from "./lob.js";
 import type { SqlParam } from "./types.js";
 
 export type PreviewUnit = "chars" | "bytes";
@@ -53,12 +54,14 @@ function scalarText(value: Exclude<SqlParam, string | Buffer | null>): string {
 }
 
 /** Produce a bounded, single-line representation of one result cell. */
-export function previewCell(value: SqlParam, limit: number): CellPreview {
+export function previewCell(value: SqlParam, limit: number, typeName?: string): CellPreview {
   if (value === null) {
     return { text: "", truncated: false, originalLength: 0, unit: "chars" };
   }
   if (Buffer.isBuffer(value)) {
-    return previewBuffer(value, limit);
+    return isTextLobType(typeName)
+      ? previewText(value.toString("utf8"), limit)
+      : previewBuffer(value, limit);
   }
   if (typeof value === "string") {
     return previewText(value, limit);

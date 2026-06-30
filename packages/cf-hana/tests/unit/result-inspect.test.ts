@@ -83,6 +83,41 @@ describe("saved result inspection", () => {
     });
   });
 
+  it("reads text LOB buffers using text ranges", () => {
+    const window = readCellWindow(Buffer.from("Example log entry", "utf8"), 8, 3, "NCLOB");
+
+    expect(window).toEqual({
+      type: "text",
+      originalLength: 17,
+      offset: 8,
+      value: "log",
+    });
+  });
+
+  it("searches decoded text LOB buffers", () => {
+    const lobSession: ResultSession = {
+      ...session(),
+      result: {
+        ...session().result,
+        rows: [{ ID: 1, CONTENT: Buffer.from("Example log entry", "utf8") }],
+        columns: [
+          { name: "ID", typeName: "INTEGER" },
+          { name: "CONTENT", typeName: "NCLOB" },
+        ],
+        rowCount: 1,
+      },
+    };
+
+    expect(searchResultSession(lobSession, "log", { limit: 10 })).toEqual([
+      expect.objectContaining({
+        row: 1,
+        column: "CONTENT",
+        offset: 8,
+        preview: "Example log entry",
+      }),
+    ]);
+  });
+
   it("resolves an RFC 6901 JSON Pointer", () => {
     const rows = inspectJsonCell(
       selectResultCell(session(), 1, "PAYLOAD").value,

@@ -1,4 +1,5 @@
 import { CfHanaError } from "./errors.js";
+import { isTextLobType } from "./lob.js";
 import { previewCell } from "./result-preview.js";
 import type { ResultSession } from "./result-store.js";
 import type { QueryRow, SqlParam } from "./types.js";
@@ -89,12 +90,20 @@ function textRange(value: string, offset: number, length: number): CellWindow {
 }
 
 /** Read a bounded range from an exact saved cell. */
-export function readCellWindow(value: SqlParam, offset: number, length: number): CellWindow {
+export function readCellWindow(
+  value: SqlParam,
+  offset: number,
+  length: number,
+  typeName?: string,
+): CellWindow {
   if (!Number.isSafeInteger(offset) || offset < 0) {
     throw new CfHanaError("CONFIG", "offset must be a non-negative safe integer");
   }
   assertPositiveInteger("length", length);
   if (Buffer.isBuffer(value)) {
+    if (isTextLobType(typeName)) {
+      return textRange(value.toString("utf8"), offset, length);
+    }
     return {
       type: "binary",
       originalLength: value.length,
@@ -304,21 +313,25 @@ function searchCell(
   term: string,
   row: number,
   column: string,
+  typeName: string | undefined,
   limit: number,
   previewLength: number,
 ): readonly ResultSearchMatch[] {
-  if (typeof value !== "string") {
+  const text = Buffer.isBuffer(value) && isTextLobType(typeName)
+    ? value.toString("utf8")
+    : value;
+  if (typeof text !== "string") {
     return [];
   }
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed: unknown = JSON.parse(text);
     if (typeof parsed === "object" && parsed !== null) {
       return jsonSearchMatches(parsed, term, row, column, limit, previewLength);
     }
   } catch {
     // Non-JSON text is searched literally below.
   }
-  return plainTextMatches(value, term, row, column, limit, previewLength);
+  return plainTextMatches(text, term, row, column, limit, previewLength);
 }
 
 /** Search exact saved text and JSON values without loading binary cells into output. */
@@ -351,6 +364,7 @@ export function searchResultSession(
           term,
           item.rowNumber,
           column.name,
+          column.typeName,
           remaining,
           previewLength,
         ),
