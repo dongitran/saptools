@@ -128,6 +128,24 @@ describe("CLI session commands", () => {
     expect(output).not.toContain("a".repeat(160));
   });
 
+  it("does not warn for untruncated curl display and uses the first forwarded header value", async () => {
+    storeMocks.readTraceEvent.mockResolvedValue(createStoredEvent({
+      url: "/api/v1/orders",
+      requestHeaders: {
+        "x-forwarded-proto": "https, http",
+        "x-forwarded-host": "orders.example.com, proxy.internal",
+        "content-type": "application/json",
+      },
+      requestBodyPreview: "{\"name\":\"alpha\"}",
+    }));
+
+    const output = await runSessionCommandWithStreams(["session", "curl", "s12345678", "r12345678"]);
+
+    expect(output.stdout).toContain("curl -i -X 'POST' 'https://orders.example.com/api/v1/orders'");
+    expect(output.stdout).not.toContain("... [Truncated for display]");
+    expect(output.stderr).toBe("");
+  });
+
   it("writes the full curl command to a script with target URL rewriting", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "cf-live-trace-curl-"));
     const out = join(tempDir, "replay.sh");
@@ -221,22 +239,32 @@ describe("CLI session commands", () => {
 });
 
 async function runSessionCommand(args: readonly string[]): Promise<string> {
+  return (await runSessionCommandWithStreams(args)).stdout;
+}
+
+async function runSessionCommandWithStreams(args: readonly string[]): Promise<{ readonly stdout: string; readonly stderr: string }> {
   const { registerSessionCommands } = await import("../../src/cli/session-commands.js");
   const program = new Command();
   program.exitOverride();
   program.configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
   registerSessionCommands(program);
-  const chunks: string[] = [];
-  const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array): boolean => {
-    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array): boolean => {
+    stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  });
+  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array): boolean => {
+    stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
     return true;
   });
   try {
     await program.parseAsync(["node", "cf-live-trace", ...args]);
   } finally {
-    writeSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
   }
-  return chunks.join("");
+  return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join("") };
 }
 
 function createSessionSummary(): TraceSessionSummary {
