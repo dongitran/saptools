@@ -187,6 +187,7 @@ class ExplorerBroker {
       return this.buildFind(await shell.execute(buildFindScript({
         root: readString(args, "root"),
         name: readString(args, "name"),
+        followSymlinks: readBoolean(args, "followSymlinks"),
         ...numberField(args, "maxFiles"),
       }).script, limits.timeoutMs, limits.maxBytes));
     }
@@ -194,6 +195,8 @@ class ExplorerBroker {
       const path = readString(args, "path");
       return this.buildLs(await shell.execute(buildLsScript({
         path,
+        ...stringField(args, "pattern"),
+        followSymlinks: readBoolean(args, "followSymlinks"),
         ...numberField(args, "maxFiles"),
       }).script, limits.timeoutMs, limits.maxBytes), path);
     }
@@ -202,6 +205,8 @@ class ExplorerBroker {
         root: readString(args, "root"),
         text: readString(args, "text"),
         preview: readBoolean(args, "preview"),
+        followSymlinks: readBoolean(args, "followSymlinks"),
+        ...numberField(args, "maxMatches"),
         ...numberField(args, "maxFiles"),
       }).script, limits.timeoutMs, limits.maxBytes), readBoolean(args, "preview"));
     }
@@ -220,6 +225,7 @@ class ExplorerBroker {
       ...numberField(args, "maxFiles"),
       ...numberField(args, "maxMatches"),
       ...(includeFiles ? { includeFiles: true } : {}),
+      followSymlinks: readBoolean(args, "followSymlinks"),
     }).script, limits.timeoutMs, limits.maxBytes), includeFiles);
   }
 

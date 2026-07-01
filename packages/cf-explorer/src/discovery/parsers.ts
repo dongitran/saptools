@@ -10,7 +10,7 @@ import type {
 
 const ROOT_LINE_PATTERN = /^CFX\tROOT\t(.+)$/;
 const FIND_LINE_PATTERN = /^CFX\tFIND\t(file|directory)\t(.+)$/;
-const LS_LINE_PATTERN = /^CFX\tLS\t(file|directory|symlink|other)\t([^\t]+)\t(.+)$/;
+const LS_LINE_PATTERN = /^CFX\tLS\t(file|directory|symlink|other)\t([^\t]+)\t([^\t]+)(?:\t(.*))?$/;
 const LEGACY_GREP_PREFIX = "CFX\tGREP\t";
 const VIEW_LINE_PATTERN = /^CFX\tLINE\t(\d+)\t(.*)$/;
 const SYSTEM_ROOTS = new Set(["/srv"]);
@@ -42,12 +42,16 @@ export function parseLsOutput(stdout: string, instance: number): readonly LsEntr
     .split(/\r?\n/)
     .map((line) => LS_LINE_PATTERN.exec(line))
     .filter((match): match is RegExpExecArray => match !== null)
-    .map((match) => ({
-      instance,
-      kind: parseLsKind(match[1] ?? "other"),
-      name: match[2] ?? "",
-      path: match[3] ?? "",
-    }))
+    .map((match) => {
+      const target = match[4] ?? "";
+      return {
+        instance,
+        kind: parseLsKind(match[1] ?? "other"),
+        name: match[2] ?? "",
+        path: match[3] ?? "",
+        ...(target.length === 0 ? {} : { target }),
+      };
+    })
     .filter((entry) => entry.name.length > 0 && entry.path.length > 0);
 }
 

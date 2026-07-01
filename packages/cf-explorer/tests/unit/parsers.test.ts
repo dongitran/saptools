@@ -33,7 +33,7 @@ describe("output parsers", () => {
       [
         "CFX\tLS\tdirectory\tsrc\t/workspace/app/src",
         "CFX\tLS\tfile\tpackage.json\t/workspace/app/package.json",
-        "CFX\tLS\tsymlink\tcurrent\t/workspace/app/current",
+        "CFX\tLS\tsymlink\tcurrent\t/workspace/app/current\t../releases/current",
         "CFX\tLS\tother\tdevice\t/workspace/app/device",
       ].join("\n"),
       2,
@@ -42,7 +42,7 @@ describe("output parsers", () => {
     expect(entries).toEqual([
       { instance: 2, kind: "directory", name: "src", path: "/workspace/app/src" },
       { instance: 2, kind: "file", name: "package.json", path: "/workspace/app/package.json" },
-      { instance: 2, kind: "symlink", name: "current", path: "/workspace/app/current" },
+      { instance: 2, kind: "symlink", name: "current", path: "/workspace/app/current", target: "../releases/current" },
       { instance: 2, kind: "other", name: "device", path: "/workspace/app/device" },
     ]);
   });
