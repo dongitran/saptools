@@ -153,7 +153,7 @@ test("User can discover roots from the current CF target", async () => {
   expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
 });
 
-test("User can inspect candidates and aggregate all running instances", async () => {
+test("User can inspect compact candidates and explicit instances", async () => {
   const paths = await prepareCase("inspect", scenario());
   const env = createEnv(paths);
 
@@ -166,19 +166,22 @@ test("User can inspect candidates and aggregate all running instances", async ()
     "needle-api",
   ]);
   expect(inspect.code).toBe(0);
-  expect(JSON.parse(inspect.stdout).suggestedBreakpoints[0].bp).toContain("connect.js");
+  const compact = JSON.parse(inspect.stdout);
+  expect(compact.suggestedBreakpoints[0].bp).toContain("connect.js");
+  expect(compact.files).toBeUndefined();
 
-  const all = await runCli(env, [
+  const explicit = await runCli(env, [
     "grep",
     ...targetArgs,
     "--root",
     "/workspace/app",
     "--text",
     "needle-api",
-    "--all-instances",
+    "--instance",
+    "1",
   ]);
-  expect(all.code).toBe(0);
-  expect(JSON.parse(all.stdout).instances).toHaveLength(2);
+  expect(explicit.code).toBe(0);
+  expect(JSON.parse(explicit.stdout).meta.instance).toBe(1);
 });
 
 test("SSH-backed commands automatically enable SSH when needed", async () => {
@@ -219,6 +222,13 @@ test("User can reuse a persistent session through the broker", async () => {
   const roots = await runCli(env, ["session", "roots", "--session-id", sessionId]);
   expect(roots.code).toBe(0);
   expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
+
+  const humanRoots = await runCli(env, ["session", "roots", "--session-id", sessionId, "--no-json"]);
+  expect(humanRoots.code).toBe(0);
+  expect(humanRoots.stdout).toContain("/workspace/app");
+  expect((): void => {
+    JSON.parse(humanRoots.stdout) as unknown;
+  }).toThrow();
 
   const list = await runCli(env, [
     "session",

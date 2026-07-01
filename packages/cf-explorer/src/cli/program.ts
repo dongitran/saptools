@@ -48,10 +48,10 @@ interface TargetFlags {
   readonly app?: string;
   readonly process?: string;
   readonly instance?: string;
-  readonly allInstances?: boolean;
   readonly timeout?: string;
   readonly maxFiles?: string;
   readonly maxBytes?: string;
+  readonly maxMatches?: string;
   readonly json?: boolean;
 }
 
@@ -80,6 +80,7 @@ interface InspectFlags extends TargetFlags {
   readonly root?: string;
   readonly text?: string;
   readonly name?: string;
+  readonly includeFiles?: boolean;
 }
 
 interface SessionFlags extends TargetFlags {
@@ -173,7 +174,6 @@ function buildSelector(flags: TargetFlags): InstanceSelector {
   return {
     ...(flags.process === undefined ? {} : { process: flags.process }),
     ...(instance === undefined ? {} : { instance }),
-    ...(flags.allInstances === true ? { allInstances: true } : {}),
   };
 }
 
@@ -190,6 +190,11 @@ function buildDiscovery(flags: TargetFlags): DiscoveryOptions {
 function maxFilesField(flags: TargetFlags): { readonly maxFiles?: number } {
   const maxFiles = parsePositiveInteger(flags.maxFiles, "--max-files");
   return maxFiles === undefined ? {} : { maxFiles };
+}
+
+function maxMatchesField(flags: TargetFlags): { readonly maxMatches?: number } {
+  const maxMatches = parsePositiveInteger(flags.maxMatches, "--max-matches");
+  return maxMatches === undefined ? {} : { maxMatches };
 }
 
 function sessionLimitFields(flags: TargetFlags): {
@@ -244,6 +249,8 @@ function buildInspect(flags: InspectFlags): InspectCandidatesOptions {
     text: requireFlag(flags.text, "--text"),
     ...(flags.root === undefined ? {} : { root: flags.root }),
     ...(flags.name === undefined ? {} : { name: flags.name }),
+    ...(flags.includeFiles === true ? { includeFiles: true } : {}),
+    ...maxMatchesField(flags),
   };
 }
 
@@ -259,8 +266,7 @@ function addTargetOptions(command: Command): Command {
     .option("--space <name>", "CF space name (default: current cf target)")
     .requiredOption("--app <name>", "CF app name")
     .option("--process <name>", "CF process name", "web")
-    .option("--instance <index>", "CF app instance index")
-    .option("--all-instances", "Run supported command on all running instances", false);
+    .option("--instance <index>", "CF app instance index");
 }
 
 function addSingleInstanceTargetOptions(command: Command): Command {
@@ -274,15 +280,20 @@ function addSingleInstanceTargetOptions(command: Command): Command {
 }
 
 function addCommonOptions(command: Command): Command {
-  return addTargetOptions(command)
+  return addOutputOptions(addTargetOptions(command)
     .option("--timeout <seconds>", "Timeout in seconds")
     .option("--max-files <count>", "Maximum remote paths to return")
-    .option("--max-bytes <bytes>", "Maximum command output bytes")
+    .option("--max-bytes <bytes>", "Maximum command output bytes"));
+}
+
+function addOutputOptions(command: Command): Command {
+  return command
+    .option("--json", "Emit structured JSON output (default)", true)
     .option("--no-json", "Emit human-readable output");
 }
 
 function addSessionReadOptions(command: Command): Command {
-  return command
+  return addOutputOptions(command)
     .option("--timeout <seconds>", "Per-request timeout in seconds")
     .option("--max-bytes <bytes>", "Maximum command output bytes");
 }
@@ -336,6 +347,8 @@ function addDiscoveryCommands(program: Command): void {
     .requiredOption("--text <text>", "Search text")
     .option("--root <path>", "Remote root")
     .option("--name <pattern>", "File name pattern")
+    .option("--include-files", "Include file candidate list in JSON output", false)
+    .option("--max-matches <count>", "Maximum content matches to return")
     .action(async (flags: InspectFlags): Promise<void> => {
       writeOutput(await inspectCandidates(buildInspect(await resolveTargetFlags(flags))), flags.json);
     });
@@ -403,7 +416,7 @@ function addSessionRootsCommand(session: Command): void {
     .option("--max-files <count>", "Maximum remote paths to return")
     .action(async (flags: SessionFlags): Promise<void> => {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
-      writeOutput(await attached.roots({ ...maxFilesField(flags), ...sessionLimitFields(flags) }));
+      writeOutput(await attached.roots({ ...maxFilesField(flags), ...sessionLimitFields(flags) }), flags.json);
     });
 }
 
@@ -418,7 +431,7 @@ function addSessionLsCommand(session: Command): void {
         path: requireFlag(flags.path, "--path"),
         ...maxFilesField(flags),
         ...sessionLimitFields(flags),
-      }));
+      }), flags.json);
     });
 }
 
@@ -435,7 +448,7 @@ function addSessionFindCommand(session: Command): void {
         name: requireFlag(flags.name, "--name"),
         ...maxFilesField(flags),
         ...sessionLimitFields(flags),
-      }));
+      }), flags.json);
     });
 }
 
@@ -454,7 +467,7 @@ function addSessionGrepCommand(session: Command): void {
         ...(flags.preview === true ? { preview: true } : {}),
         ...maxFilesField(flags),
         ...sessionLimitFields(flags),
-      }));
+      }), flags.json);
     });
 }
 
@@ -472,7 +485,7 @@ function addSessionViewCommand(session: Command): void {
         line: parsePositiveInteger(requireFlag(flags.line, "--line"), "--line") ?? 1,
         ...(context === undefined ? {} : { context }),
         ...sessionLimitFields(flags),
-      }));
+      }), flags.json);
     });
 }
 
@@ -482,15 +495,19 @@ function addSessionInspectCommand(session: Command): void {
     .requiredOption("--text <text>", "Search text")
     .option("--root <path>", "Remote root")
     .option("--name <pattern>", "File name pattern")
-    .option("--max-files <count>", "Maximum remote paths to return")
+    .option("--max-files <count>", "Maximum remote paths to return when --include-files is used")
+    .option("--include-files", "Include file candidate list in JSON output", false)
+    .option("--max-matches <count>", "Maximum content matches to return")
     .action(async (flags: SessionFlags & InspectFlags): Promise<void> => {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
       writeOutput(await attached.inspectCandidates({
         text: requireFlag(flags.text, "--text"),
         ...(flags.root === undefined ? {} : { root: flags.root }),
         ...(flags.name === undefined ? {} : { name: flags.name }),
+        ...(flags.includeFiles === true ? { includeFiles: true } : {}),
+        ...maxMatchesField(flags),
         ...maxFilesField(flags),
         ...sessionLimitFields(flags),
-      }));
+      }), flags.json);
     });
 }

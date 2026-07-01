@@ -91,6 +91,21 @@ describe("remote command builders", () => {
     expect(script.script).toContain("CFX_ROOT='/workspace/app'");
     expect(script.script).toContain("CFX_TEXT='needle-api'");
     expect(script.script).toContain("inspect_root \"$CFX_ROOT\"");
+    expect(script.script).not.toContain("-iname \"$CFX_NAME\"");
+  });
+
+  it("builds inspect candidates with file listing only when requested", () => {
+    const script = buildInspectCandidatesScript({
+      root: "/workspace/app",
+      text: "needle-api",
+      name: "connect",
+      includeFiles: true,
+      maxFiles: 7,
+      maxMatches: 3,
+    });
+    expect(script.script).toContain("CFX\\tFIND");
+    expect(script.script).toContain("head -n 7");
+    expect(script.script).toContain("head -n 3");
   });
 
   it("builds dynamic inspect candidates across discovered roots when no root is supplied", () => {

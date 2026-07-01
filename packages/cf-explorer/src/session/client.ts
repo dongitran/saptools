@@ -57,9 +57,6 @@ interface BrokerBootstrap {
 export async function startExplorerSession(
   options: StartSessionOptions,
 ): Promise<ExplorerSessionRecord> {
-  if (options.allInstances === true) {
-    throw new CfExplorerError("UNSAFE_INPUT", "Persistent sessions target one instance. Use --instance instead.");
-  }
   const runtime = options.runtime ?? {};
   const homeDir = runtime.homeDir ?? explorerHome(runtime.env);
   const sessionId = options.sessionIdFactory?.() ?? randomUUID();

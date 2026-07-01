@@ -61,8 +61,6 @@ describe("lifecycle API", () => {
 
   it("rejects instance selectors for app-level lifecycle operations", async () => {
     await expect(sshStatus({ target, instance: 1 })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
-    await expect(restartApp({ target, confirmImpact: true, allInstances: true }))
-      .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     expect(mocks.cfRestartApp).not.toHaveBeenCalled();
   });
 

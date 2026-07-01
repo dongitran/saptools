@@ -49,7 +49,6 @@ export interface ExplorerRuntimeOptions {
 export interface InstanceSelector {
   readonly process?: string;
   readonly instance?: number;
-  readonly allInstances?: boolean;
 }
 
 export interface ExplorerMeta {
@@ -90,7 +89,6 @@ export interface InstanceResult<T> {
 export interface RootsResult {
   readonly meta: ExplorerMeta;
   readonly roots: readonly string[];
-  readonly instances?: readonly InstanceResult<Pick<RootsResult, "roots">>[];
 }
 
 export interface InstancesResult {
@@ -115,13 +113,11 @@ export interface LsResult {
   readonly meta: ExplorerMeta;
   readonly path: string;
   readonly entries: readonly LsEntry[];
-  readonly instances?: readonly InstanceResult<Pick<LsResult, "entries" | "path">>[];
 }
 
 export interface FindResult {
   readonly meta: ExplorerMeta;
   readonly matches: readonly FindMatch[];
-  readonly instances?: readonly InstanceResult<Pick<FindResult, "matches">>[];
 }
 
 export interface GrepMatch {
@@ -134,7 +130,6 @@ export interface GrepMatch {
 export interface GrepResult {
   readonly meta: ExplorerMeta;
   readonly matches: readonly GrepMatch[];
-  readonly instances?: readonly InstanceResult<Pick<GrepResult, "matches">>[];
 }
 
 export interface ViewLine {
@@ -162,12 +157,9 @@ export interface SuggestedBreakpoint {
 export interface InspectCandidatesResult {
   readonly meta: ExplorerMeta;
   readonly roots: readonly string[];
-  readonly files: readonly FindMatch[];
+  readonly files?: readonly FindMatch[];
   readonly contentMatches: readonly GrepMatch[];
   readonly suggestedBreakpoints: readonly SuggestedBreakpoint[];
-  readonly instances?: readonly InstanceResult<
-    Pick<InspectCandidatesResult, "contentMatches" | "files" | "roots" | "suggestedBreakpoints">
-  >[];
 }
 
 export interface LifecycleResult {
@@ -180,6 +172,7 @@ export interface LifecycleResult {
 export interface DiscoveryOptions extends InstanceSelector {
   readonly target: ExplorerTarget;
   readonly maxFiles?: number;
+  readonly maxMatches?: number;
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
   readonly runtime?: ExplorerRuntimeOptions;
@@ -210,6 +203,7 @@ export interface InspectCandidatesOptions extends DiscoveryOptions {
   readonly text: string;
   readonly root?: string;
   readonly name?: string;
+  readonly includeFiles?: boolean;
 }
 
 export interface LifecycleOptions extends InstanceSelector {
@@ -287,27 +281,27 @@ export interface StopSessionResult {
 
 export type AttachedDiscoveryOptions = Omit<
   DiscoveryOptions,
-  "allInstances" | "instance" | "process" | "runtime" | "target"
+  "instance" | "process" | "runtime" | "target"
 >;
 export type AttachedFindOptions = Omit<
   FindOptions,
-  "allInstances" | "instance" | "process" | "runtime" | "target"
+  "instance" | "process" | "runtime" | "target"
 >;
 export type AttachedLsOptions = Omit<
   LsOptions,
-  "allInstances" | "instance" | "process" | "runtime" | "target"
+  "instance" | "process" | "runtime" | "target"
 >;
 export type AttachedGrepOptions = Omit<
   GrepOptions,
-  "allInstances" | "instance" | "process" | "runtime" | "target"
+  "instance" | "process" | "runtime" | "target"
 >;
 export type AttachedViewOptions = Omit<
   ViewOptions,
-  "allInstances" | "instance" | "process" | "runtime" | "target"
+  "instance" | "process" | "runtime" | "target"
 >;
 export type AttachedInspectCandidatesOptions = Omit<
   InspectCandidatesOptions,
-  "allInstances" | "instance" | "process" | "runtime" | "target"
+  "instance" | "process" | "runtime" | "target"
 >;
 
 export interface AttachedExplorerSession {
