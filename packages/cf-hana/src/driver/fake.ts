@@ -1,6 +1,7 @@
 import { appendFile } from "node:fs/promises";
 
 import { envName, readEnv } from "../config.js";
+import { QueryError } from "../errors.js";
 import { classifyStatement } from "../statements.js";
 import type { SqlParam } from "../types.js";
 
@@ -11,15 +12,53 @@ import type {
   HanaDriver,
 } from "./types.js";
 
+let catalogFailureInjected = false;
+
 /**
  * Deterministic in-memory driver used by hermetic end-to-end tests and offline
  * smoke checks. Selected via `CF_HANA_DRIVER=fake`. It never opens a socket.
  */
+interface FakeCatalogObjectRow extends Record<string, SqlParam> {
+  readonly SCHEMA_NAME: string;
+  readonly OBJECT_NAME: string;
+  readonly OBJECT_TYPE: "TABLE" | "VIEW";
+}
+
+function catalogObjects(): readonly FakeCatalogObjectRow[] {
+  return [
+    { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "EXISTING_TABLE", OBJECT_TYPE: "TABLE" },
+    { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "MISSING_TABLE_FIXED", OBJECT_TYPE: "TABLE" },
+    { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "MISSING_TABLE_VIEW", OBJECT_TYPE: "VIEW" },
+    { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "STATUS_ITEMS", OBJECT_TYPE: "TABLE" },
+  ];
+}
+
 function fakeExec(sql: string): DriverExecResult {
   const kind = classifyStatement(sql);
   const forcedFailure = readEnv(envName("FAKE_FAIL_STATEMENT"))?.toLowerCase();
   if (forcedFailure === kind) {
     throw new Error(`fake driver forced ${kind.toUpperCase()} failure`);
+  }
+
+  const upperSql = sql.toUpperCase();
+  if (upperSql.includes("SYS.TABLES") && upperSql.includes("SYS.VIEWS")) {
+    if (readEnv(envName("FAKE_FAIL_CATALOG_ONCE")) === "1" && !catalogFailureInjected) {
+      catalogFailureInjected = true;
+      throw new QueryError("fake transient catalog metadata failure");
+    }
+    return {
+      rows: catalogObjects(),
+      columns: [
+        { name: "SCHEMA_NAME", typeName: "NVARCHAR" },
+        { name: "OBJECT_NAME", typeName: "NVARCHAR" },
+        { name: "OBJECT_TYPE", typeName: "NVARCHAR" },
+      ],
+      affectedRows: 0,
+    };
+  }
+
+  if (upperSql.includes("MISSING_TABLE") || upperSql.includes("MISSING_TABLES")) {
+    throw new QueryError("invalid table name: MISSING_TABLE", { sqlState: "42S02" });
   }
 
   if (sql.toUpperCase().includes("LOB_FIXTURE")) {

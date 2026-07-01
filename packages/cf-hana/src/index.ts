@@ -24,6 +24,7 @@ export type {
   HanaDriver,
 } from "./driver/index.js";
 export { formatCsv, formatJson, formatResult, formatTable } from "./format.js";
+export type { CatalogObjectInfo } from "./metadata-cache.js";
 export {
   CfHanaError,
   CredentialsNotFoundError,

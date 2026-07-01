@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { connect } from "./api.js";
 import { formatCurrentCfAppSelector, readCurrentCfTarget } from "./cf.js";
 import { registerResultCommands } from "./cli-results.js";
+import type { HanaClient } from "./client.js";
 import {
   CLI_NAME,
   CLI_VERSION,
@@ -12,8 +13,16 @@ import {
 } from "./config.js";
 import { CfHanaError, errorMessage } from "./errors.js";
 import { formatCompactCsv, formatResult, formatTable } from "./format.js";
+import { loadCatalogObjectsWithCache, toMetadataCacheScope } from "./metadata-cache.js";
 import { createResultSession } from "./result-store.js";
 import { classifyStatement } from "./statements.js";
+import {
+  extractMissingObjectName,
+  extractMissingObjectNameFromError,
+  formatSuggestions,
+  isInvalidCatalogObjectError,
+  rankCatalogSuggestions,
+} from "./suggestions.js";
 import type {
   ConnectOptions,
   DbUserRole,
@@ -33,6 +42,7 @@ interface ConnectionCliOptions {
   readonly timeout?: number;
   readonly limit?: number;
   readonly autoLimit: boolean;
+  readonly refreshMetadata: boolean;
 }
 
 interface FormattedCliOptions extends ConnectionCliOptions {
@@ -199,7 +209,8 @@ function withConnectionOptions(command: Command): Command {
     .option("--allow-destructive", "permit destructive statements", false)
     .option("--timeout <ms>", "connection and query timeout in milliseconds", parseIntOption)
     .option("--limit <n>", "row cap auto-applied to bare SELECT statements", parseIntOption)
-    .option("--no-auto-limit", "disable the automatic SELECT row cap");
+    .option("--no-auto-limit", "disable the automatic SELECT row cap")
+    .option("--refresh-metadata", "bypass the 30-minute table/view metadata suggestion cache", false);
 }
 
 function withFormattedConnectionOptions(command: Command): Command {
@@ -210,6 +221,50 @@ function withFormattedConnectionOptions(command: Command): Command {
   );
 }
 
+async function loadSuggestionCatalogObjects(
+  client: HanaClient,
+  refresh: boolean,
+): Promise<Awaited<ReturnType<HanaClient["listCatalogObjects"]>>> {
+  try {
+    return await loadCatalogObjectsWithCache(
+      toMetadataCacheScope(client.info),
+      refresh,
+      async () => await client.listCatalogObjects(client.info.schema),
+    );
+  } catch {
+    // Retry one direct catalog read for transient metadata lookup failures. The
+    // retry intentionally bypasses cache writes so another cache failure cannot
+    // hide useful suggestions or the original query error.
+    return await client.listCatalogObjects(client.info.schema);
+  }
+}
+
+async function enrichAndRethrowQueryError(
+  error: unknown,
+  client: HanaClient,
+  sql: string,
+  refresh: boolean,
+): Promise<never> {
+  if (!isInvalidCatalogObjectError(error)) {
+    throw error;
+  }
+  const requested = extractMissingObjectNameFromError(error) ?? extractMissingObjectName(sql);
+  if (requested === undefined) {
+    throw error;
+  }
+  try {
+    const objects = await loadSuggestionCatalogObjects(client, refresh);
+    const text = formatSuggestions(rankCatalogSuggestions(requested, objects));
+    if (text !== undefined) {
+      process.stderr.write(`${text}\n`);
+    }
+  } catch {
+    // Metadata lookup failures are intentionally silent: stderr should stay
+    // focused on the original query failure unless reliable suggestions exist.
+  }
+  throw error;
+}
+
 async function runQuery(selector: string, sql: string, command: Command): Promise<void> {
   const opts = command.opts<QueryCliOptions>();
   assertQueryOptions(sql, opts);
@@ -217,11 +272,25 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
   const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
   try {
     const params = opts.param ?? [];
-    const backup = await client.backupWriteStatement(sql, params);
+    let backup: Awaited<ReturnType<HanaClient["backupWriteStatement"]>>;
+    try {
+      backup = await client.backupWriteStatement(sql, params);
+    } catch (error) {
+      await enrichAndRethrowQueryError(error, client, sql, opts.refreshMetadata || opts.refresh);
+    }
     if (backup !== undefined) {
       process.stderr.write(`${CLI_NAME}: backup saved to ${backup.directory}\n`);
     }
-    const result = await client.query(sql, params);
+    const result = await client
+      .query(sql, params)
+      .catch(async (error: unknown): Promise<QueryResult> => {
+        return await enrichAndRethrowQueryError(
+          error,
+          client,
+          sql,
+          opts.refreshMetadata || opts.refresh,
+        );
+      });
     if (result.statement === "select") {
       const compact = formatCompactCsv(result, cellLimit);
       if (opts.save) {

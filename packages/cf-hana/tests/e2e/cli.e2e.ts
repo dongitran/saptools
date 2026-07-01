@@ -45,6 +45,7 @@ const COMPLEX_DELETE_SELECT = [
 interface FakeEnvOptions {
   readonly trace?: boolean;
   readonly failStatement?: "select" | "dml";
+  readonly failCatalogOnce?: boolean;
 }
 
 let home: string;
@@ -71,6 +72,7 @@ function fakeEnv(options: FakeEnvOptions = {}): Record<string, string> {
     ...(options.failStatement === undefined
       ? {}
       : { CF_HANA_FAKE_FAIL_STATEMENT: options.failStatement }),
+    ...(options.failCatalogOnce === true ? { CF_HANA_FAKE_FAIL_CATALOG_ONCE: "1" } : {}),
   };
 }
 
@@ -84,7 +86,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.2.1");
+  expect(result.stdout).toContain("0.3.0");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -189,6 +191,55 @@ test("User sees text LOB values as text and binary LOB values as hex", async () 
   );
   expect(binaryExport.exitCode).toBe(0);
   await expect(readFile(binaryOutput)).resolves.toEqual(Buffer.from([0, 1, 2, 255]));
+});
+
+
+test("User gets invalid table suggestions on stderr and cached metadata is reused", async () => {
+  const sql = "SELECT\n\n *\n FROM\n\n MISSING_TABLES\n WHERE ID = ?";
+  const first = await runCli(["query", SELECTOR, sql, "--param", "1"], fakeEnv({ trace: true }));
+  expect(first.exitCode).toBe(1);
+  expect(first.stdout).toBe("");
+  expect(first.stderr).toContain("Did you mean:");
+  expect(first.stderr).toContain("APP_SCHEMA.MISSING_TABLE_FIXED (TABLE)");
+
+  const second = await runCli(["query", SELECTOR, sql, "--param", "1"], fakeEnv({ trace: true }));
+  expect(second.exitCode).toBe(1);
+  const traces = await readFakeTraceEntries(home);
+  const metadataReads = traces.filter((entry) => entry.sql.includes("SYS.TABLES") && entry.sql.includes("SYS.VIEWS"));
+  expect(metadataReads).toHaveLength(1);
+
+  const refreshed = await runCli(["query", SELECTOR, sql, "--param", "1", "--refresh-metadata"], fakeEnv({ trace: true }));
+  expect(refreshed.exitCode).toBe(1);
+  const refreshedTraces = await readFakeTraceEntries(home);
+  const refreshedMetadataReads = refreshedTraces.filter((entry) => entry.sql.includes("SYS.TABLES") && entry.sql.includes("SYS.VIEWS"));
+  expect(refreshedMetadataReads).toHaveLength(2);
+
+  await expect(readHistoryEntries(home)).rejects.toThrow();
+});
+
+test("User still gets suggestions after one transient metadata lookup failure", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM MISSING_TABLES"],
+    fakeEnv({ trace: true, failCatalogOnce: true }),
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("APP_SCHEMA.MISSING_TABLE_FIXED (TABLE)");
+  const traces = await readFakeTraceEntries(home);
+  const metadataReads = traces.filter((entry) => entry.sql.includes("SYS.TABLES") && entry.sql.includes("SYS.VIEWS"));
+  expect(metadataReads).toHaveLength(2);
+});
+
+test("User gets invalid table suggestions for quoted schema-qualified and DML statements", async () => {
+  const quoted = await runCli(["query", SELECTOR, "SELECT * FROM \"APP_SCHEMA\".\"MISSING_TABLES\""], fakeEnv());
+  expect(quoted.exitCode).toBe(1);
+  expect(quoted.stdout).toBe("");
+  expect(quoted.stderr).toContain("APP_SCHEMA.MISSING_TABLE_FIXED (TABLE)");
+
+  const update = await runCli(["query", SELECTOR, "UPDATE APP_SCHEMA.MISSING_TABLES SET STATUS = ? WHERE ID = ?", "--param", "A", "--param", "1"], fakeEnv());
+  expect(update.exitCode).toBe(1);
+  expect(update.stdout).toBe("");
+  expect(update.stderr).toContain("Did you mean:");
 });
 
 test("User can run a query and keep local SQL history", async () => {

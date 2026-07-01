@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeTable, listColumns, listSchemas, listTables } from "../../src/catalog.js";
+import { describeTable, listCatalogObjects, listColumns, listSchemas, listTables } from "../../src/catalog.js";
 import { Connection } from "../../src/connection.js";
 
 import { FakeHanaDriver } from "./fixtures/fake-driver.js";
@@ -12,6 +12,15 @@ const catalogResponder: FakeResponder = (sql) => {
     return {
       rows: [{ SCHEMA_NAME: "APP" }, { SCHEMA_NAME: "SYS" }],
       columns: [{ name: "SCHEMA_NAME", typeName: "NVARCHAR" }],
+    };
+  }
+  if (sql.includes("SYS.TABLES") && sql.includes("SYS.VIEWS")) {
+    return {
+      rows: [
+        { SCHEMA_NAME: "APP", OBJECT_NAME: "ORDERS", OBJECT_TYPE: "TABLE" },
+        { SCHEMA_NAME: "APP", OBJECT_NAME: "ORDER_VIEW", OBJECT_TYPE: "VIEW" },
+      ],
+      columns: [],
     };
   }
   if (sql.includes("SYS.TABLES")) {
@@ -68,6 +77,14 @@ describe("catalog", () => {
     ]);
   });
 
+  it("lists table and view catalog objects for suggestions", async () => {
+    const { connection } = await openCatalogConnection();
+    await expect(listCatalogObjects(connection, "APP")).resolves.toEqual([
+      { schema: "APP", name: "ORDERS", type: "TABLE" },
+      { schema: "APP", name: "ORDER_VIEW", type: "VIEW" },
+    ]);
+  });
+
   it("lists columns of a table", async () => {
     const { connection } = await openCatalogConnection();
     await expect(listColumns(connection, "APP", "ORDERS")).resolves.toEqual([
@@ -103,6 +120,7 @@ describe("catalog", () => {
     await listSchemas(connection);
     await listTables(connection, "APP");
     await listColumns(connection, "APP", "ORDERS");
+    await listCatalogObjects(connection, "APP");
 
     const sql = driver.connections[0]?.execCalls.map((call) => call.sql) ?? [];
     expect(sql.every((statement) => !statement.includes(" LIMIT "))).toBe(true);
