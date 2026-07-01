@@ -31,31 +31,54 @@ interface XmlNode {
   readonly body: string;
 }
 
+type ResolvedApiCatalogDiscoveryOptions = Omit<ApiCatalogDiscoveryOptions, 'token'> & {
+  readonly token: string | null;
+};
+
+export interface ApiCatalogDiscoveryResult {
+  readonly entities: readonly DiscoveredApiEntity[];
+  readonly token: string | null;
+}
+
 export async function discoverApiEntities(
   options: ApiCatalogDiscoveryOptions
 ): Promise<readonly DiscoveredApiEntity[]> {
-  let entities = await discoverRootEntities(options);
+  return (await discoverApiEntitiesWithToken(options)).entities;
+}
+
+export async function discoverApiEntitiesWithToken(
+  options: ApiCatalogDiscoveryOptions
+): Promise<ApiCatalogDiscoveryResult> {
+  const resolvedOptions = await withResolvedDiscoveryToken(options);
+  let entities = await discoverRootEntities(resolvedOptions);
   if (entities.length === 0) {
-    entities = await discoverCdsEntities(options);
+    entities = await discoverCdsEntities(resolvedOptions);
   }
   if (entities.length === 0) {
-    return [];
+    return { entities: [], token: resolvedOptions.token };
   }
-  options.log(`Attempting deep discovery on ${String(entities.length)} root endpoints...`);
-  options.onDeepDiscoveryStart();
-  const expanded = await expandEntities(options, entities);
-  options.log(`Deep discovery complete. Found ${String(expanded.length)} total endpoints.`);
-  return expanded;
+  resolvedOptions.log(`Attempting deep discovery on ${String(entities.length)} root endpoints...`);
+  resolvedOptions.onDeepDiscoveryStart();
+  const expanded = await expandEntities(resolvedOptions, entities);
+  resolvedOptions.log(`Deep discovery complete. Found ${String(expanded.length)} total endpoints.`);
+  return { entities: expanded, token: resolvedOptions.token };
+}
+
+async function withResolvedDiscoveryToken(
+  options: ApiCatalogDiscoveryOptions
+): Promise<ResolvedApiCatalogDiscoveryOptions> {
+  const token = options.token ?? await fetchXsuaaTokenFromTarget({
+    appName: options.appId,
+    cfHomeDir: options.cfHomeDir,
+  });
+  return { ...options, token };
 }
 
 async function discoverRootEntities(
-  options: ApiCatalogDiscoveryOptions
+  options: ResolvedApiCatalogDiscoveryOptions
 ): Promise<readonly DiscoveredApiEntity[]> {
   try {
-    const token = options.token ?? await fetchXsuaaTokenFromTarget({
-      appName: options.appId,
-      cfHomeDir: options.cfHomeDir,
-    });
+    const token = options.token;
 
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (token !== null && token !== '') {
@@ -101,7 +124,7 @@ function rootEntityFromServiceDocumentEntry(entry: unknown): readonly Discovered
   if (!isRecord(entry)) { return []; }
   const url = readNonEmptyString(entry['url']);
   const name = readNonEmptyString(entry['name']);
-  const path = url === undefined ? name : `/${url.replace(/^\/+/g, '')}`;
+  const path = url === undefined ? name : `/${stripLeadingSlashes(url)}`;
   if (path === undefined) { return []; }
   return [createEntity(name ?? fallbackNameFromPath(path), path)];
 }
@@ -112,7 +135,7 @@ function fallbackNameFromPath(path: string): string {
 }
 
 async function discoverCdsEntities(
-  options: ApiCatalogDiscoveryOptions
+  options: Pick<ApiCatalogDiscoveryOptions, 'appId' | 'cfHomeDir' | 'log'>
 ): Promise<readonly DiscoveredApiEntity[]> {
   options.log(
     `Warning: No API entities discovered remotely from root endpoint for ${options.appId}. Attempting fallback via CF SSH remote .cds scan...`
@@ -181,13 +204,10 @@ function defaultCdsServicePath(name: string): string {
 }
 
 async function expandEntities(
-  options: ApiCatalogDiscoveryOptions,
+  options: ResolvedApiCatalogDiscoveryOptions,
   entities: readonly DiscoveredApiEntity[]
 ): Promise<readonly DiscoveredApiEntity[]> {
-  const token = options.token ?? await fetchXsuaaTokenFromTarget({
-    appName: options.appId,
-    cfHomeDir: options.cfHomeDir,
-  });
+  const token = options.token;
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (token !== null && token !== '') {
     headers['Authorization'] = normalizeBearerToken(token);
@@ -387,17 +407,44 @@ function decodeXmlText(value: string): string {
     .replace(/&amp;/g, '&');
 }
 
-function buildEndpointUrl(baseUrl: string, endpointPath: string, suffix?: string): string {
-  const normalizedBase = baseUrl.replace(/\/+$/g, '');
+export function buildEndpointUrl(baseUrl: string, endpointPath: string, suffix?: string): string {
+  const normalizedBase = stripTrailingSlashes(baseUrl);
   const normalizedPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
-  const normalizedSuffix = suffix === undefined ? '' : `/${suffix.replace(/^\/+/g, '')}`;
+  const normalizedSuffix = suffix === undefined ? '' : `/${stripLeadingSlashes(suffix)}`;
   return `${normalizedBase}${normalizedPath}${normalizedSuffix}`;
 }
 
 function joinEndpointPath(basePath: string, segment: string): string {
-  const normalizedBase = basePath.replace(/\/+$/g, '');
-  const normalizedSegment = segment.replace(/^\/+/g, '');
-  return `${normalizedBase}/${normalizedSegment}`.replace(/\/+/g, '/');
+  const normalizedBase = stripTrailingSlashes(basePath);
+  const normalizedSegment = stripLeadingSlashes(segment);
+  return collapseRepeatedSlashes(`${normalizedBase}/${normalizedSegment}`);
+}
+
+function stripLeadingSlashes(value: string): string {
+  let startIndex = 0;
+  while (value[startIndex] === '/') { startIndex++; }
+  return startIndex === 0 ? value : value.slice(startIndex);
+}
+
+function stripTrailingSlashes(value: string): string {
+  let endIndex = value.length;
+  while (endIndex > 0 && value[endIndex - 1] === '/') { endIndex--; }
+  return endIndex === value.length ? value : value.slice(0, endIndex);
+}
+
+function collapseRepeatedSlashes(value: string): string {
+  const parts: string[] = [];
+  let previousWasSlash = false;
+  for (const char of value) {
+    if (char === '/') {
+      if (!previousWasSlash) { parts.push(char); }
+      previousWasSlash = true;
+    } else {
+      parts.push(char);
+      previousWasSlash = false;
+    }
+  }
+  return parts.join('');
 }
 
 export function parseSubEntities(
@@ -412,7 +459,7 @@ export function parseSubEntities(
     const path = typeof rawEntry['url'] === 'string' && rawEntry['url'] !== ''
       ? rawEntry['url']
       : rawEntry['name'];
-    const joinedPath = `${parent.path}/${path}`.replace(/\/+/g, '/');
+    const joinedPath = joinEndpointPath(parent.path, path);
     entities.push(createEntity(`${parent.name} / ${rawEntry['name']}`, joinedPath));
   }
   return entities;

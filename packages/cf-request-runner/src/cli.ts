@@ -4,7 +4,8 @@ import path from 'node:path';
 import { Command } from 'commander';
 import ora from 'ora';
 
-import { discoverApiEntities, type ApiCatalogDiscoveryOptions } from './discovery.js';
+import { discoverApiEntitiesWithToken, type ApiCatalogDiscoveryOptions } from './discovery.js';
+import { buildCurlCommands, formatResponse, promptAndRunRequest } from './runner.js';
 
 interface CliOptions {
   readonly app: string;
@@ -13,6 +14,8 @@ interface CliOptions {
   readonly json?: boolean;
   readonly token?: string;
   readonly out?: string;
+  readonly curl?: boolean;
+  readonly interactive?: boolean;
 }
 
 interface PackageMetadata {
@@ -57,11 +60,13 @@ program
   .option('--token <bearerToken>', 'Provide your own Bearer token (bypasses CF XSUAA token fetch)')
   .option('--json', 'Output results in JSON format')
   .option('--out <filePath>', 'Save JSON output to a specific file')
+  .option('--curl', 'Output ready-to-run curl commands for every discovered endpoint and method')
+  .option('-i, --interactive', 'Interactively select and execute a discovered endpoint')
   .action(async () => {
     const options = program.opts<CliOptions>();
 
     // Only use spinner if not outputting raw JSON to console
-    const isQuiet = options.json === true && options.out === undefined;
+    const isQuiet = (options.json === true && options.out === undefined) || options.curl === true;
     const spinner = isQuiet ? null : ora('Initializing discovery...').start();
 
     try {
@@ -82,15 +87,43 @@ program
         }
       };
 
-      const entities = await discoverApiEntities(discoveryOptions);
+      const discoveryResult = await discoverApiEntitiesWithToken(discoveryOptions);
+      const { entities, token } = discoveryResult;
 
       spinner?.stop();
 
       const outputJson = JSON.stringify(entities, null, 2);
 
       if (options.out !== undefined) {
-        fs.writeFileSync(path.resolve(process.cwd(), options.out), outputJson, 'utf8');
+        const targetPath = path.resolve(process.cwd(), options.out);
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.writeFileSync(targetPath, outputJson, 'utf8');
         process.stdout.write(`\nSuccessfully saved ${String(entities.length)} endpoints to ${options.out}\n\n`);
+      }
+
+      if (options.interactive === true) {
+        if (entities.length === 0) {
+          process.stdout.write('\nNo API endpoints discovered.\n\n');
+          return;
+        }
+        const result = await promptAndRunRequest({
+          appId: options.app,
+          baseUrl: options.url,
+          token,
+          entities,
+        });
+        process.stdout.write(`\n${formatResponse(result)}\n`);
+      } else if (options.curl === true) {
+        if (entities.length === 0) {
+          process.stdout.write('\nNo API endpoints discovered.\n\n');
+          return;
+        }
+        const commands = buildCurlCommands({
+          baseUrl: options.url,
+          token,
+          entities,
+        });
+        process.stdout.write(`${commands.join('\n')}\n`);
       } else if (options.json) {
         process.stdout.write(`${outputJson}\n`);
       } else {
