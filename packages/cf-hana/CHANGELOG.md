@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 - 2026-07-01
+
+- Remove the `cf-hana: saved result expires at...` stderr notice from `query --save` output while keeping result refs available for inspection.
+
 ## 0.3.0 - 2026-07-01
 
 - Add invalid table/view recovery suggestions for failed `query` statements, with nearby table and view names printed to stderr so stdout remains parseable.

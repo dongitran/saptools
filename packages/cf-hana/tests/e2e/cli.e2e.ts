@@ -86,7 +86,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.3.0");
+  expect(result.stdout).toContain("0.3.1");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -122,7 +122,7 @@ test("User can save a compact query and inspect it by ref", async () => {
   expect(lines[0]).toMatch(/^ref=q[0-9a-f]{8}$/);
   expect(lines[1]).toBe("ID,NAME");
   expect(lines[2]).toBe("1,sample");
-  expect(result.stderr).toContain("saved result expires at");
+  expect(result.stderr).not.toContain("saved result expires at");
   expect(result.stderr).toContain("compacted 2 cell(s)");
 
   const ref = lines[0]?.slice("ref=".length) ?? "";
