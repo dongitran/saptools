@@ -100,15 +100,11 @@ export interface JiraIssueComment {
   readonly bodyText: string;
   readonly created: string;
   readonly id: string;
-  readonly images?: readonly JiraIssueImageFile[];
 }
 
 export interface JiraIssueAttachment {
-  readonly byteLength?: number;
-  readonly fileUrl?: string;
   readonly filename: string;
   readonly id: string;
-  readonly localPath?: string;
   readonly mimeType: string;
   readonly size: number;
 }

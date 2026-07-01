@@ -322,16 +322,61 @@ test.describe("Jira CLI", () => {
       ]);
 
       const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly attachments: readonly Record<string, unknown>[];
+        readonly comments: readonly Record<string, unknown>[];
         readonly descriptionText: string;
         readonly images: readonly { readonly filePath: string; readonly fileUrl: string }[];
       };
       expect(parsedDetail).toMatchObject({ descriptionText: "Deploy safely" });
+      expect(parsedDetail.attachments[0]).toEqual({
+        filename: "deployment.png",
+        id: "20001",
+        mimeType: "image/png",
+        size: 8,
+      });
+      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "localPath")).toBe(false);
+      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "fileUrl")).toBe(false);
+      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "byteLength")).toBe(false);
+      expect(Object.hasOwn(parsedDetail.comments[0] ?? {}, "images")).toBe(false);
       expect(parsedDetail.images[0]?.fileUrl).toMatch(/^file:\/\//u);
       await expect(readFile(parsedDetail.images[0]?.filePath ?? "")).resolves.toEqual(
         Buffer.from(IMAGE_BYTES),
       );
       expect(JSON.parse(links.stdout)).toEqual([expect.objectContaining({ title: "Docs" })]);
       expect(JSON.parse(transitions.stdout)).toEqual([expect.objectContaining({ id: "31" })]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+
+  test("User can read issue details without downloading images", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const detail = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "issue",
+        "OPS-123",
+        "--json",
+        "--no-images",
+      ]);
+      const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly attachments: readonly Record<string, unknown>[];
+        readonly images: readonly unknown[];
+      };
+
+      expect(parsedDetail.images).toEqual([]);
+      expect(parsedDetail.attachments[0]).toEqual({
+        filename: "deployment.png",
+        id: "20001",
+        mimeType: "image/png",
+        size: 8,
+      });
+      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "localPath")).toBe(false);
+      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "fileUrl")).toBe(false);
+      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "byteLength")).toBe(false);
+      expect(ctx.fakeJira.requests().some((entry) => entry.url.includes("/attachment/content/20001"))).toBe(false);
     } finally {
       await ctx.cleanup();
     }

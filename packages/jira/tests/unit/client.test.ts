@@ -237,7 +237,7 @@ describe("Jira REST client", () => {
         source: "comment",
       }),
     ]);
-    expect(detail.comments[0]?.images).toEqual([detail.images[0]]);
+    expect(Object.hasOwn(detail.comments[0] ?? {}, "images")).toBe(false);
   });
 
   it("downloads inline description images to local temp files when requested", async () => {
@@ -306,11 +306,15 @@ describe("Jira REST client", () => {
     expect(savedImage?.filePath.startsWith(imageOutputDir)).toBe(true);
     expect(savedImage?.fileUrl.startsWith("file://")).toBe(true);
     await expect(readFile(savedImage?.filePath ?? "")).resolves.toEqual(Buffer.from(pngBytes));
-    expect(detail.attachments[0]).toMatchObject({
-      byteLength: pngBytes.byteLength,
-      fileUrl: savedImage?.fileUrl,
-      localPath: savedImage?.filePath,
+    expect(detail.attachments[0]).toEqual({
+      filename: "diagram.png",
+      id: "30001",
+      mimeType: "application/octet-stream",
+      size: pngBytes.byteLength,
     });
+    expect(Object.hasOwn(detail.attachments[0] ?? {}, "byteLength")).toBe(false);
+    expect(Object.hasOwn(detail.attachments[0] ?? {}, "fileUrl")).toBe(false);
+    expect(Object.hasOwn(detail.attachments[0] ?? {}, "localPath")).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/attachment/content/30001",
       {
@@ -394,7 +398,7 @@ describe("Jira REST client", () => {
         source: "comment",
       }),
     ]);
-    expect(detail.comments[0]?.images).toEqual([detail.images[0]]);
+    expect(Object.hasOwn(detail.comments[0] ?? {}, "images")).toBe(false);
     expect(fetchMock).toHaveBeenLastCalledWith(
       "https://api.media.atlassian.com/file/media-1/binary",
       {
