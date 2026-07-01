@@ -4,6 +4,7 @@ import {
   CfHanaError,
   CredentialsNotFoundError,
   DestructiveStatementError,
+  databaseCode,
   errorMessage,
   QueryError,
   ReadOnlyViolationError,
@@ -32,9 +33,19 @@ describe("errors", () => {
     expect(new DestructiveStatementError("destructive").code).toBe("DESTRUCTIVE_BLOCKED");
   });
 
-  it("QueryError exposes an optional sqlState", () => {
-    expect(new QueryError("boom", { sqlState: "42000" }).sqlState).toBe("42000");
+  it("QueryError exposes optional sqlState and database code", () => {
+    const error = new QueryError("boom", { sqlState: "42000", databaseCode: 260 });
+    expect(error.sqlState).toBe("42000");
+    expect(error.databaseCode).toBe(260);
     expect(new QueryError("boom").sqlState).toBeUndefined();
+    expect(new QueryError("boom").databaseCode).toBeUndefined();
+  });
+
+  it("extracts safe numeric database codes from wrapped failures", () => {
+    const raw = Object.assign(new Error("raw"), { code: "274" });
+    expect(databaseCode(raw)).toBe(274);
+    expect(databaseCode(new QueryError("wrapped", { cause: raw }))).toBe(274);
+    expect(databaseCode(Object.assign(new Error("client"), { code: "EHDBCONNECT" }))).toBeUndefined();
   });
 
   it("preserves the underlying cause", () => {

@@ -54,6 +54,13 @@ Generate reusable file/line candidates for other tools:
 cf-explorer inspect-candidates --app app-demo --text "needle"
 ```
 
+Optional discovery parameters:
+
+- `ls` and `session ls`: add `--pattern <pattern>` to filter direct children by shell-style name pattern, for example `--pattern "*helper*"`.
+- `grep` and `session grep`: add `--max-matches <count>` to bound content matches. `--include-files` is accepted for parity with `inspect-candidates`, but grep output remains the content match list.
+- `find`, `grep`, `inspect-candidates`, and their session variants: add `--follow-symlinks` when pnpm-style symlinked dependencies must be traversed.
+- `view` and `session view`: use `--context <lines>` for surrounding lines; large contexts are allowed, but keep `--max-bytes` in mind for output size.
+
 **Persistent Sessions (For repeated reads):**
 
 Start a session to keep the SSH broker alive:
@@ -72,5 +79,5 @@ cf-explorer session stop --session-id <id>
 ## Troubleshooting
 
 - **Error: "No current CF target found"**: The user hasn't run `cf target` and didn't provide `--region`, `--org`, `--space`. Pass them explicitly via flags.
-- **Timeouts / Output Limit Exceeded**: Use `--max-matches`, `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches. Pass `--include-files` only when the file candidate list is needed.
+- **Timeouts / Output Limit Exceeded**: Use `--max-matches`, `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches. Pass `--include-files` only when the file candidate list is needed. Use `--follow-symlinks` for pnpm-linked dependencies and `ls --pattern` to narrow directory listings.
 - **Empty Grep Results**: Ensure the `--root` path is correct (use `roots` command to discover it) and the `--text` is exact.

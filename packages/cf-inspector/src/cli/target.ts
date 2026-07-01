@@ -47,13 +47,18 @@ export function parsePositiveInt(raw: string | undefined, label: string): number
   return value;
 }
 
-export function resolveTarget(opts: SharedTargetOptions): Target {
+export interface TargetResolveOptions {
+  readonly useTimeoutForTunnel?: boolean;
+}
+
+export function resolveTarget(opts: SharedTargetOptions, options: TargetResolveOptions = {}): Target {
   const port = parsePositiveInt(opts.port, "--port");
+  const targetIndex = parseTargetIndex(opts.target);
   if (port !== undefined) {
-    return { kind: "port", port, host: opts.host ?? "127.0.0.1" };
+    return { kind: "port", port, host: opts.host ?? "127.0.0.1", ...targetIndexOption(targetIndex) };
   }
   if (hasCfTarget(opts)) {
-    const cfTimeoutSec = parsePositiveInt(opts.cfTimeout, "--cf-timeout") ?? DEFAULT_CF_TIMEOUT_SEC;
+    const tunnelTimeoutSec = parseTunnelTimeout(opts, options);
     return {
       kind: "cf",
       region: opts.region,
@@ -61,7 +66,8 @@ export function resolveTarget(opts: SharedTargetOptions): Target {
       org: opts.org,
       space: opts.space,
       app: opts.app,
-      cfTimeoutMs: cfTimeoutSec * 1000,
+      tunnelTimeoutMs: tunnelTimeoutSec * 1000,
+      ...targetIndexOption(targetIndex),
     };
   }
   throw new CfInspectorError(
@@ -70,10 +76,14 @@ export function resolveTarget(opts: SharedTargetOptions): Target {
   );
 }
 
-export async function resolveTargetWithCurrentCfTarget(opts: SharedTargetOptions): Promise<Target> {
+export async function resolveTargetWithCurrentCfTarget(
+  opts: SharedTargetOptions,
+  options: TargetResolveOptions = {},
+): Promise<Target> {
   const port = parsePositiveInt(opts.port, "--port");
+  const targetIndex = parseTargetIndex(opts.target);
   if (port !== undefined) {
-    return { kind: "port", port, host: opts.host ?? "127.0.0.1" };
+    return { kind: "port", port, host: opts.host ?? "127.0.0.1", ...targetIndexOption(targetIndex) };
   }
 
   const app = optionalText(opts.app);
@@ -81,13 +91,13 @@ export async function resolveTargetWithCurrentCfTarget(opts: SharedTargetOptions
     throw missingTargetError();
   }
 
-  const cfTimeoutSec = parsePositiveInt(opts.cfTimeout, "--cf-timeout") ?? DEFAULT_CF_TIMEOUT_SEC;
+  const tunnelTimeoutSec = parseTunnelTimeout(opts, options);
   const region = optionalText(opts.region);
   const apiEndpoint = optionalText(opts.apiEndpoint);
   const org = optionalText(opts.org);
   const space = optionalText(opts.space);
   if (region !== undefined && org !== undefined && space !== undefined) {
-    return buildCfTarget(region, apiEndpoint, org, space, app, cfTimeoutSec);
+    return buildCfTarget(region, apiEndpoint, org, space, app, tunnelTimeoutSec, targetIndex);
   }
 
   const current = await readCurrentTarget();
@@ -104,8 +114,31 @@ export async function resolveTargetWithCurrentCfTarget(opts: SharedTargetOptions
     org ?? current.org,
     space ?? current.space,
     app,
-    cfTimeoutSec,
+    tunnelTimeoutSec,
+    targetIndex,
   );
+}
+
+function parseTunnelTimeout(opts: SharedTargetOptions, options: TargetResolveOptions): number {
+  if (options.useTimeoutForTunnel === false) {
+    return DEFAULT_CF_TIMEOUT_SEC;
+  }
+  return parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_CF_TIMEOUT_SEC;
+}
+
+function parseTargetIndex(raw: string | undefined): number | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (Number.isNaN(value) || value < 0 || value.toString() !== raw.trim()) {
+    throw new CfInspectorError("INVALID_ARGUMENT", `Invalid --target: "${raw}" — expected a non-negative integer`);
+  }
+  return value;
+}
+
+function targetIndexOption(targetIndex: number | undefined): { readonly targetIndex?: number } {
+  return targetIndex === undefined ? {} : { targetIndex };
 }
 
 function hasCfTarget(opts: SharedTargetOptions): opts is SharedTargetOptions & {
@@ -129,7 +162,8 @@ function buildCfTarget(
   org: string,
   space: string,
   app: string,
-  cfTimeoutSec: number,
+  tunnelTimeoutSec: number,
+  targetIndex: number | undefined,
 ): Target {
   return {
     kind: "cf",
@@ -138,7 +172,8 @@ function buildCfTarget(
     org,
     space,
     app,
-    cfTimeoutMs: cfTimeoutSec * 1000,
+    tunnelTimeoutMs: tunnelTimeoutSec * 1000,
+    ...targetIndexOption(targetIndex),
   };
 }
 
@@ -197,7 +232,11 @@ export async function withSession<T>(
     reportProgress?.(
       `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
     );
-    session = await connectInspector({ port: tunnel.port, host: tunnel.host });
+    session = await connectInspector({
+      port: tunnel.port,
+      host: tunnel.host,
+      ...targetIndexOption(target.targetIndex),
+    });
     reportProgress?.("Inspector session is ready.");
     return await fn(session, tunnel.port);
   } finally {
@@ -228,12 +267,12 @@ export async function openTarget(
     org: target.org,
     space: target.space,
     app: target.app,
-    tunnelReadyTimeoutMs: target.cfTimeoutMs,
+    tunnelReadyTimeoutMs: target.tunnelTimeoutMs,
     ...(reportProgress === undefined
       ? {}
       : {
-          onStatus: (status: SessionStatus): void => {
-            reportProgress(formatCfTunnelStatus(status));
+          onStatus: (status: SessionStatus, message?: string): void => {
+            reportProgress(message ?? formatCfTunnelStatus(status));
           },
         }),
   });

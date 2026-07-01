@@ -100,6 +100,10 @@ test("User can discover roots, instances, files, content, and line context", asy
     expect.arrayContaining(["README.md", "package.json", "src"]),
   );
 
+  const filteredList = await runCli(env, ["ls", ...targetArgs, "--path", "/workspace/app", "--pattern", "*json"]);
+  expect(filteredList.code).toBe(0);
+  expect(JSON.parse(filteredList.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(["package.json"]);
+
   const instances = await runCli(env, ["instances", ...targetArgs]);
   expect(instances.code).toBe(0);
   expect(JSON.parse(instances.stdout).instances).toHaveLength(2);
@@ -122,6 +126,10 @@ test("User can discover roots, instances, files, content, and line context", asy
     "/workspace/app",
     "--text",
     "needle-api",
+    "--max-matches",
+    "1",
+    "--include-files",
+    "--follow-symlinks",
   ]);
   expect(grep.code).toBe(0);
   expect(JSON.parse(grep.stdout).matches[0].line).toBe(2);
@@ -134,7 +142,7 @@ test("User can discover roots, instances, files, content, and line context", asy
     "--line",
     "2",
     "--context",
-    "1",
+    "140",
   ]);
   expect(view.code).toBe(0);
   expect(JSON.parse(view.stdout).lines.map((line: { text: string }) => line.text)).toContain(
@@ -207,6 +215,42 @@ test("Lifecycle commands are not exposed by the CLI", async () => {
   expect(blocked.stderr).toContain("unknown command");
 });
 
+test("User can start a persistent session with human-readable output", async () => {
+  const paths = await prepareCase("session-start-human", scenario());
+  const env = createEnv(paths);
+
+  const started = await runCli(env, ["session", "start", ...targetArgs, "--no-json"]);
+  expect(started.code).toBe(0);
+  expect(started.stdout).toContain("sessionId:");
+  expect(started.stdout).toContain("status: ready");
+  expect((): void => {
+    JSON.parse(started.stdout) as unknown;
+  }).toThrow();
+
+  const sessionId = /^sessionId:\s*(\S+)/m.exec(started.stdout)?.[1];
+  expect(sessionId).toBeTruthy();
+  if (sessionId !== undefined) {
+    const listed = await runCli(env, ["session", "list", "--no-json"]);
+    expect(listed.code).toBe(0);
+    expect(listed.stdout).toContain(sessionId);
+    expect((): void => {
+      JSON.parse(listed.stdout) as unknown;
+    }).toThrow();
+
+    const status = await runCli(env, ["session", "status", "--session-id", sessionId, "--no-json"]);
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain(`sessionId: ${sessionId}`);
+    expect(status.stdout).toContain("status: ready");
+    expect((): void => {
+      JSON.parse(status.stdout) as unknown;
+    }).toThrow();
+
+    const stopped = await runCli(env, ["session", "stop", "--session-id", sessionId, "--no-json"]);
+    expect(stopped.code).toBe(0);
+    expect(stopped.stdout).toContain("stopped: 1");
+  }
+});
+
 test("User can reuse a persistent session through the broker", async () => {
   const paths = await prepareCase("session", scenario());
   const env = createEnv(paths);
@@ -241,11 +285,11 @@ test("User can reuse a persistent session through the broker", async () => {
     "30",
     "--max-bytes",
     "1048576",
+    "--pattern",
+    "*json",
   ]);
   expect(list.code).toBe(0);
-  expect(JSON.parse(list.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(
-    expect.arrayContaining(["README.md", "package.json", "src"]),
-  );
+  expect(JSON.parse(list.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(["package.json"]);
 
   const grep = await runCli(env, [
     "session",
@@ -260,6 +304,10 @@ test("User can reuse a persistent session through the broker", async () => {
     "30",
     "--max-bytes",
     "1048576",
+    "--max-matches",
+    "1",
+    "--include-files",
+    "--follow-symlinks",
   ]);
   expect(grep.code).toBe(0);
   expect(JSON.parse(grep.stdout).matches[0].path).toContain("connect.js");

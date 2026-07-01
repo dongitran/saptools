@@ -11,17 +11,20 @@ import {
   DEFAULT_CELL_LIMIT,
   MAX_CELL_LIMIT,
 } from "./config.js";
-import { CfHanaError, errorMessage } from "./errors.js";
+import { CfHanaError, QueryError, databaseCode, errorMessage } from "./errors.js";
 import { formatCompactCsv, formatResult, formatTable } from "./format.js";
 import { loadCatalogObjectsWithCache, toMetadataCacheScope } from "./metadata-cache.js";
 import { createResultSession } from "./result-store.js";
 import { classifyStatement } from "./statements.js";
 import {
+  extractInvalidColumnNameFromError,
   extractMissingObjectName,
   extractMissingObjectNameFromError,
+  formatColumnSuggestions,
   formatSuggestions,
   isInvalidCatalogObjectError,
   rankCatalogSuggestions,
+  rankNameSuggestions,
 } from "./suggestions.js";
 import type {
   ConnectOptions,
@@ -239,18 +242,66 @@ async function loadSuggestionCatalogObjects(
   }
 }
 
-async function enrichAndRethrowQueryError(
+function isLobSortOrGroupError(error: unknown): boolean {
+  const code = databaseCode(error);
+  if (code !== 266 && code !== 274) {
+    return false;
+  }
+  return (
+    error instanceof QueryError &&
+    /LOB type is not allowed in (?:ORDER BY|GROUP BY) clause/i.test(error.message)
+  );
+}
+
+function printLobSortOrGroupHint(): void {
+  const lines = [
+    `${CLI_NAME}: HANA cannot ORDER BY or GROUP BY NCLOB/CLOB/BLOB columns directly.`,
+    `${CLI_NAME}: Remove the LOB column from ORDER BY/GROUP BY or wrap it as TO_VARCHAR(<column>).`,
+  ];
+  process.stderr.write(`${lines.join("\n")}\n`);
+}
+
+async function printColumnSuggestions(
+  error: unknown,
+  client: HanaClient,
+  sql: string,
+): Promise<void> {
+  if (databaseCode(error) !== 260) {
+    return;
+  }
+  const columnName = extractInvalidColumnNameFromError(error);
+  const tableName = extractMissingObjectName(sql);
+  if (columnName === undefined || tableName === undefined) {
+    return;
+  }
+
+  try {
+    const columns = await client.listColumns(
+      tableName.schema ?? client.info.schema,
+      tableName.name,
+    );
+    const text = formatColumnSuggestions(rankNameSuggestions(columnName, columns));
+    if (text !== undefined) {
+      process.stderr.write(`${text}\n`);
+    }
+  } catch {
+    // Column metadata failures are intentionally silent: stderr should stay
+    // focused on the original query failure unless reliable suggestions exist.
+  }
+}
+
+async function printCatalogObjectSuggestions(
   error: unknown,
   client: HanaClient,
   sql: string,
   refresh: boolean,
-): Promise<never> {
+): Promise<void> {
   if (!isInvalidCatalogObjectError(error)) {
-    throw error;
+    return;
   }
   const requested = extractMissingObjectNameFromError(error) ?? extractMissingObjectName(sql);
   if (requested === undefined) {
-    throw error;
+    return;
   }
   try {
     const objects = await loadSuggestionCatalogObjects(client, refresh);
@@ -262,6 +313,21 @@ async function enrichAndRethrowQueryError(
     // Metadata lookup failures are intentionally silent: stderr should stay
     // focused on the original query failure unless reliable suggestions exist.
   }
+}
+
+async function enrichAndRethrowQueryError(
+  error: unknown,
+  client: HanaClient,
+  sql: string,
+  refresh: boolean,
+): Promise<never> {
+  if (isLobSortOrGroupError(error)) {
+    printLobSortOrGroupHint();
+    throw error;
+  }
+
+  await printColumnSuggestions(error, client, sql);
+  await printCatalogObjectSuggestions(error, client, sql, refresh);
   throw error;
 }
 

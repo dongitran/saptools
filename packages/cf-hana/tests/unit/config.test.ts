@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { envName, readEnv, readSapCredentials } from "../../src/config.js";
+import { DEFAULT_RESULT_TTL_MINUTES, envName, readEnv, readSapCredentials } from "../../src/config.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -9,6 +9,10 @@ afterEach(() => {
 describe("config", () => {
   it("builds CF_HANA-prefixed environment variable names", () => {
     expect(envName("DRIVER")).toBe("CF_HANA_DRIVER");
+  });
+
+  it("keeps saved query result refs for seven days by default", () => {
+    expect(DEFAULT_RESULT_TTL_MINUTES).toBe(10_080);
   });
 
   it("reads a defined environment variable", () => {

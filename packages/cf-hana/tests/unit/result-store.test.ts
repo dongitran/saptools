@@ -83,6 +83,20 @@ describe("result store", () => {
     expect(loaded.info).toEqual(info);
   });
 
+  it("defaults saved result refs to a seven-day TTL", async () => {
+    const created = await createResultSession(
+      { result: sampleResult(), info },
+      {
+        saptoolsRoot: rootDir,
+        now: () => new Date("2026-06-25T00:00:00.000Z"),
+        ref: "qabc12345",
+      },
+    );
+
+    expect(created.ttlMinutes).toBe(10_080);
+    expect(created.expiresAt).toBe("2026-07-02T00:00:00.000Z");
+  });
+
   it("creates restricted result directories and files", async () => {
     const session = await createResultSession(
       { result: sampleResult(), info },

@@ -1,8 +1,14 @@
 # Changelog
 
-## 0.3.1 - 2026-07-01
+## 0.3.2 - 2026-07-01
 
 - Remove the `cf-hana: saved result expires at...` stderr notice from `query --save` output while keeping result refs available for inspection.
+
+## 0.3.1 - 2026-07-01
+
+- Add actionable HANA LOB `ORDER BY`/`GROUP BY` hints that recommend removing LOB columns or wrapping them with `TO_VARCHAR(<column>)`.
+- Add invalid-column typo suggestions that inspect target table columns and print close matches to stderr.
+- Increase the default saved result TTL from 60 minutes to 7 days.
 
 ## 0.3.0 - 2026-07-01
 

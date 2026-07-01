@@ -7,7 +7,7 @@ description: Use when discovering SAP CAP or OData API endpoints on SAP BTP Clou
 
 ## Purpose
 
-Use `cf-request-runner` to discover API endpoints exposed by a deployed SAP CAP or OData service on Cloud Foundry. Prefer it when the user needs route inventory, entity paths, supported methods, service-document expansion, or a JSON endpoint list for another tool.
+Use `cf-request-runner` to discover and execute API endpoints exposed by a deployed SAP CAP or OData service on Cloud Foundry. Prefer it when the user needs route inventory, entity paths, supported methods, service-document expansion, copy-ready `curl` commands, an interactive CLI request runner, or a JSON endpoint list for another tool.
 
 If `cf-request-runner` is missing, install it from `@saptools/cf-request-runner`:
 
@@ -20,8 +20,10 @@ npm install -g @saptools/cf-request-runner
 1. Identify the Cloud Foundry app name and the exact public base URL to inspect.
 2. Confirm the current `cf target` when relying on automatic XSUAA token discovery or CF SSH fallback.
 3. Prefer `--json` for agent workflows and downstream parsing.
-4. Prefer `CF_REQUEST_RUNNER_TOKEN` over `--token` when providing a bearer token, so the token is not stored in shell history or exposed in process lists.
-5. Use `--out <file>` when the endpoint list should be saved for follow-up tools instead of pasted into the chat.
+4. Use `--curl` when the user wants copy/paste commands with the resolved CF bearer token injected into each `Authorization` header. Treat this output as sensitive.
+5. Use `--interactive` or `-i` when the user wants to select an endpoint, choose a method, optionally enter JSON, and execute the HTTP request from the CLI.
+6. Prefer `CF_REQUEST_RUNNER_TOKEN` over `--token` when providing a bearer token, so the token is not stored in shell history or exposed in process lists.
+7. Use `--out <file>` when the endpoint list should be saved for follow-up tools instead of pasted into the chat.
 
 ## Command Choice
 
@@ -50,6 +52,25 @@ cf-request-runner \
   --url https://orders-srv.cfapps.example.hana.ondemand.com \
   --json \
   --out endpoints.json
+```
+
+
+Generate copy-ready `curl` commands for every discovered endpoint and method:
+
+```bash
+cf-request-runner \
+  --app orders-srv \
+  --url https://orders-srv.example.com \
+  --curl
+```
+
+Run a selected endpoint interactively (CLI Postman mode):
+
+```bash
+cf-request-runner \
+  --app orders-srv \
+  --url https://orders-srv.example.com \
+  --interactive
 ```
 
 Use a provided token without putting it on the command line:
@@ -114,6 +135,8 @@ Treat discovered routes, app names, service names, tokens, XSUAA data, and remot
 - HTTP discovery fails with authorization errors: provide `CF_REQUEST_RUNNER_TOKEN` or verify the app has a usable XSUAA binding in `cf env`.
 - CF SSH fallback finds nothing: verify SSH is enabled for the app and the deployed artifact includes `.cds` files. Built-only JavaScript artifacts may not include source `.cds` files.
 - Duplicate or unexpected paths: inspect the app root catalog and service documents directly, then rerun with `--json` for exact endpoint output.
-- Saved output fails: ensure the parent directory for `--out` already exists.
+- Saved output creates missing parent directories automatically; verify filesystem permissions if it still fails.
+- `--curl` output includes bearer tokens by design. Do not paste it into logs or chat unless explicitly requested and redacted.
+- `--interactive` request execution fails: verify the chosen method accepts the provided JSON payload and the resolved token has the required scopes.
 
 Use `cf-sync` for topology discovery, `cf-explorer` for inspecting deployed files, `cf-logs` for runtime logs, and `cf-events` for audit or crash history.

@@ -152,14 +152,18 @@ cf-live-trace \
   --format json
 ```
 
-Inspect a saved session after or during a trace run:
+Inspect, export, or replay a saved session after or during a trace run:
 
 ```bash
 cf-live-trace session events s1a2b3c4d5e6f7a8b --method POST --limit 20
 cf-live-trace session search s1a2b3c4d5e6f7a8b orderId --body response --length 256
 cf-live-trace session body s1a2b3c4d5e6f7a8b r1a2b3c4d5e6f7a8 --body response --path /data/items/0 --limit 4000 --rows 100
+cf-live-trace session curl s1a2b3c4d5e6f7a8b r1a2b3c4d5e6f7a8 --target http://localhost:4004 --out replay.sh
+cf-live-trace session replay s1a2b3c4d5e6f7a8b r1a2b3c4d5e6f7a8 --target http://localhost:4004
 cf-live-trace session prune
 ```
+
+`session curl` reconstructs an absolute URL from `x-forwarded-proto`, `x-forwarded-host`, or `host` when `--target` is omitted. Without `--copy` or `--out`, it truncates displayed header values and request bodies to keep terminals responsive; use `--copy` or `--out` for the full command. Both `session curl` and `session replay` refuse to run when the captured request body was already truncated by `--max-body-bytes`, because replaying an incomplete payload is usually misleading. Hop-by-hop headers such as `host` and `content-length` are omitted from generated and replayed requests so the target HTTP client can recalculate them safely.
 
 ---
 

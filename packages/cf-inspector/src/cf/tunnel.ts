@@ -16,7 +16,7 @@ export interface TunnelTarget {
 
 export interface OpenedTunnel {
   readonly localPort: number;
-  readonly handle: DebuggerHandle;
+  readonly handle?: DebuggerHandle;
   dispose(): Promise<void>;
 }
 
@@ -33,12 +33,57 @@ export async function openCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> 
     ...(target.signal === undefined ? {} : { signal: target.signal }),
     ...(target.onStatus === undefined ? {} : { onStatus: target.onStatus }),
   };
-  const handle = await startDebugger(opts);
+  try {
+    const handle = await startDebugger(opts);
+    return {
+      localPort: handle.session.localPort,
+      handle,
+      dispose: async (): Promise<void> => {
+        await handle.dispose();
+      },
+    };
+  } catch (err: unknown) {
+    return reuseExistingTunnelOrThrow(err, target.onStatus);
+  }
+}
+
+function reuseExistingTunnelOrThrow(
+  err: unknown,
+  onStatus: TunnelTarget["onStatus"],
+): OpenedTunnel {
+  if (!isSessionAlreadyRunningError(err)) {
+    throw err;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const port = extractExistingTunnelPort(message);
+  if (port === undefined) {
+    throw err;
+  }
+  const warning = `Reusing existing tunnel on port ${port.toString()}`;
+  onStatus?.("ready", warning);
   return {
-    localPort: handle.session.localPort,
-    handle,
-    dispose: async (): Promise<void> => {
-      await handle.dispose();
-    },
+    localPort: port,
+    dispose: (): Promise<void> => Promise.resolve(),
   };
+}
+
+function isSessionAlreadyRunningError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) {
+    return false;
+  }
+  const code = (err as { readonly code?: unknown }).code;
+  return code === "SESSION_ALREADY_RUNNING";
+}
+
+function extractExistingTunnelPort(message: string): number | undefined {
+  const match = /on port (\d+)/i.exec(message);
+  if (match === null) {
+    return undefined;
+  }
+  const rawPort = match[1];
+  if (rawPort === undefined) {
+    return undefined;
+  }
+  const port = Number.parseInt(rawPort, 10);
+  return Number.isNaN(port) ? undefined : port;
 }

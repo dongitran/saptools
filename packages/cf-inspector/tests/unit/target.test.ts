@@ -43,14 +43,21 @@ describe("Cloud Foundry target timeout", () => {
   it("allows three minutes for tunnel readiness by default", () => {
     expect(resolveTarget(cfOptions)).toMatchObject({
       kind: "cf",
-      cfTimeoutMs: 180_000,
+      tunnelTimeoutMs: 180_000,
     });
   });
 
-  it("preserves an explicit --cf-timeout override", () => {
-    expect(resolveTarget({ ...cfOptions, cfTimeout: "45" })).toMatchObject({
+  it("preserves an explicit --timeout override for CF tunnel readiness", () => {
+    expect(resolveTarget({ ...cfOptions, timeout: "45" })).toMatchObject({
       kind: "cf",
-      cfTimeoutMs: 45_000,
+      tunnelTimeoutMs: 45_000,
+    });
+  });
+
+  it("can reserve --timeout for command wait semantics while keeping the default tunnel timeout", () => {
+    expect(resolveTarget({ ...cfOptions, timeout: "45" }, { useTimeoutForTunnel: false })).toMatchObject({
+      kind: "cf",
+      tunnelTimeoutMs: 180_000,
     });
   });
 

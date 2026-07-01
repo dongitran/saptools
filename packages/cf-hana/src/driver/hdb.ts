@@ -1,7 +1,7 @@
 import { createClient } from "hdb";
 import type { HdbClient, HdbColumnMetadata, HdbStatement } from "hdb";
 
-import { CfHanaError, QueryError } from "../errors.js";
+import { CfHanaError, QueryError, databaseCode } from "../errors.js";
 import { quoteIdentifier } from "../statements.js";
 import type { QueryResultColumn, SqlParam } from "../types.js";
 
@@ -53,9 +53,12 @@ function extractSqlState(error: Error): string | undefined {
 
 function toQueryError(error: Error): QueryError {
   const sqlState = extractSqlState(error);
-  return sqlState === undefined
-    ? new QueryError(error.message, { cause: error })
-    : new QueryError(error.message, { cause: error, sqlState });
+  const code = databaseCode(error);
+  return new QueryError(error.message, {
+    cause: error,
+    ...(sqlState === undefined ? {} : { sqlState }),
+    ...(code === undefined ? {} : { databaseCode: code }),
+  });
 }
 
 function toColumns(

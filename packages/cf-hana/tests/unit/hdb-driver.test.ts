@@ -145,13 +145,15 @@ describe("hdb driver", () => {
     const state: HdbMockState = {
       clients: [],
       dropError: undefined,
-      schemaError: new Error("schema failed"),
+      schemaError: Object.assign(new Error("schema failed"), { code: 260 }),
       closeCount: 0,
       disconnectCount: 0,
       autoCommit: true,
     };
 
-    await expect(openMockConnection(state)).rejects.toThrow("schema failed");
+    const failure = openMockConnection(state);
+    await expect(failure).rejects.toThrow("schema failed");
+    await expect(failure).rejects.toMatchObject({ databaseCode: 260 });
     expect(state.disconnectCount).toBe(1);
     expect(state.closeCount).toBe(1);
   });
