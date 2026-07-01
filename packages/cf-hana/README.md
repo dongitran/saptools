@@ -22,6 +22,7 @@ login on the hot path) and connections are pooled and reused within a process.
 - **Query-builder shorthands** — `selectFrom`, `count`, `insertInto`, `update`,
   `deleteFrom` — query a table by name without writing SQL.
 - **Schema introspection** — list schemas, tables, and columns.
+- **Table-name recovery** — failed CLI queries for missing tables/views show nearby schema-local suggestions on stderr.
 - **Local SQL history** — direct SQL calls are appended to dated JSONL files
   under `~/.saptools/cf-hana/histories/` with five-day retention.
 - **Write backups** — CLI `UPDATE`, `UPSERT`, and `DELETE` statements create a local CSV
@@ -91,8 +92,8 @@ cf-hana result  <command>                   Inspect saved query refs
 Common options: `--refresh`, `--role <runtime|hdi>`, `--binding <name>` /
 `--binding-index <n>`, `--timeout <ms>`, `--read-only`, `--allow-destructive`,
 `--limit <n>`, `--no-auto-limit`. The `query` command also accepts
-`--param <value>` (repeatable), `--cell-limit <n>`, `--save`, and
-`--result-ttl-minutes <n>`. `tables` and `columns` still support
+`--param <value>` (repeatable), `--cell-limit <n>`, `--save`,
+`--result-ttl-minutes <n>`, and `--refresh-metadata`. `tables` and `columns` still support
 `--format <table|json|csv>`. CLI `UPDATE`, `UPSERT`, and `DELETE` statements are backed up
 automatically before the write runs.
 
@@ -149,6 +150,31 @@ cf-hana result clear
 API keeps returning full-fidelity `QueryResult` values and does not write result
 refs.
 
+## Invalid table/view suggestions and metadata cache
+
+When `cf-hana query` fails with a likely HANA invalid table, view, or catalog
+object error, the CLI keeps stdout empty/parseable and prints the original error
+plus a small `Did you mean:` list to stderr. Suggestions are based on objects in
+the active connection schema and include physical tables from `SYS.TABLES` and
+views from `SYS.VIEWS`; `tables` output remains table-only for compatibility.
+
+To avoid repeatedly reading catalog metadata after typo failures, cf-hana stores
+only schema, object name, and object type under:
+
+```text
+~/.saptools/cf-hana/metadata/
+```
+
+Metadata cache files are private (`0700` directories, `0600` files), written
+atomically, and expire after exactly 30 minutes. The cache key is derived from
+non-secret connection identity: selector, app name, host, active schema, role,
+and driver. It does not include passwords, certificates, tokens, SQL parameter
+values, result rows, or table data, and malformed cache files are treated as
+misses. Pass `--refresh-metadata` to bypass this cache for a query; `--refresh`
+also bypasses it because it refreshes the resolved connection identity. If
+metadata lookup or cache I/O fails, cf-hana preserves the original query error
+and simply omits suggestions.
+
 ## Programmatic API
 
 | Export | Purpose |
@@ -156,7 +182,7 @@ refs.
 | `connect(selector, options?)` | Open a reusable, pooled `HanaClient`. |
 | `query(selector, sql, params?, options?)` | One-shot: connect, query, close. |
 | `withConnection(selector, work, options?)` | Run `work` with a client that auto-closes. |
-| `HanaClient` | `query`, `execute`, `backupWriteStatement`, `selectFrom`, `count`, `insertInto`, `update`, `deleteFrom`, `transaction`, `listSchemas`, `listTables`, `listColumns`, `explain`, `close`. |
+| `HanaClient` | `query`, `execute`, `backupWriteStatement`, `selectFrom`, `count`, `insertInto`, `update`, `deleteFrom`, `transaction`, `listSchemas`, `listTables`, `listCatalogObjects`, `listColumns`, `explain`, `close`. |
 | `createDriver`, `formatResult`, `build*` | Lower-level building blocks. |
 
 `ConnectOptions` highlights: `role` (`runtime` | `hdi`), `bindingName` /
@@ -191,8 +217,9 @@ count, row count, truncation flag, and elapsed time. Parameter values,
 credentials, certificates, and result rows are not stored.
 
 History retention runs opportunistically after each append and deletes dated
-history files older than five days. Helper-driven catalog SQL such as `tables`
-and `columns` is not recorded as user SQL history.
+history files older than five days. Helper-driven catalog SQL such as `tables`,
+`columns`, and table/view suggestion metadata reads is not recorded as user SQL
+history.
 
 ## Write backups
 

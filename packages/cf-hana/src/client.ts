@@ -1,7 +1,7 @@
 import { buildWriteBackupPlan, writeSqlBackup } from "./backup.js";
 import type { SqlBackupRecord } from "./backup.js";
 import { buildCount, buildDelete, buildInsert, buildSelect, buildUpdate } from "./builder.js";
-import { listColumns, listSchemas, listTables } from "./catalog.js";
+import { listCatalogObjects, listColumns, listSchemas, listTables } from "./catalog.js";
 import {
   DEFAULT_AUTO_LIMIT,
   CLI_VERSION,
@@ -13,6 +13,7 @@ import { resolveAppBindings, selectBinding, toConnectionTarget } from "./credent
 import { createDriver } from "./driver/index.js";
 import { appendSqlHistory } from "./history.js";
 import type { SqlHistoryOperation } from "./history.js";
+import type { CatalogObjectInfo } from "./metadata-cache.js";
 import { ConnectionPool } from "./pool.js";
 import { Transaction } from "./transaction.js";
 import type {
@@ -212,6 +213,11 @@ export class HanaClient {
   /** List the tables in a schema. */
   async listTables(schema: string): Promise<readonly TableInfo[]> {
     return await this.pool.withConnection((connection) => listTables(connection, schema));
+  }
+
+  /** List table and view names in a schema for typo suggestions. */
+  async listCatalogObjects(schema: string): Promise<readonly CatalogObjectInfo[]> {
+    return await this.pool.withConnection((connection) => listCatalogObjects(connection, schema));
   }
 
   /** List the columns of a table. */

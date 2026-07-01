@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - 2026-07-01
+
+- Add invalid table/view recovery suggestions for failed `query` statements, with nearby table and view names printed to stderr so stdout remains parseable.
+- Add a private local metadata cache under `~/.saptools/cf-hana/metadata` with a strict 30-minute TTL and `--refresh-metadata` bypass.
+- Include schema-scoped `SYS.TABLES` and `SYS.VIEWS` metadata for suggestions without caching credentials, parameters, result rows, or table data.
+
 ## 0.2.0 - 2026-06-25
 
 - Change CLI `query` output for `SELECT`/`WITH` statements to compact CSV and

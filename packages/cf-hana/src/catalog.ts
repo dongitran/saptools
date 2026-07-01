@@ -1,4 +1,5 @@
 import type { Connection } from "./connection.js";
+import type { CatalogObjectInfo } from "./metadata-cache.js";
 import type { ColumnInfo, TableInfo } from "./types.js";
 
 interface SchemaRow {
@@ -9,6 +10,12 @@ interface TableRow {
   readonly SCHEMA_NAME: string;
   readonly TABLE_NAME: string;
   readonly TABLE_TYPE: string;
+}
+
+interface CatalogObjectRow {
+  readonly SCHEMA_NAME: string;
+  readonly OBJECT_NAME: string;
+  readonly OBJECT_TYPE: "TABLE" | "VIEW";
 }
 
 interface ColumnRow {
@@ -51,6 +58,26 @@ export async function listTables(
     name: row.TABLE_NAME,
     type: row.TABLE_TYPE,
     rowCount: undefined,
+  }));
+}
+
+/** List table and view names in a schema for typo recovery suggestions. */
+export async function listCatalogObjects(
+  connection: Connection,
+  schema: string,
+): Promise<readonly CatalogObjectInfo[]> {
+  const result = await connection.query<CatalogObjectRow>(
+    "SELECT SCHEMA_NAME, TABLE_NAME AS OBJECT_NAME, 'TABLE' AS OBJECT_TYPE FROM SYS.TABLES " +
+      "WHERE SCHEMA_NAME = ? UNION ALL " +
+      "SELECT SCHEMA_NAME, VIEW_NAME AS OBJECT_NAME, 'VIEW' AS OBJECT_TYPE FROM SYS.VIEWS " +
+      "WHERE SCHEMA_NAME = ? ORDER BY OBJECT_NAME",
+    [schema, schema],
+    { autoLimit: false },
+  );
+  return result.rows.map((row) => ({
+    schema: row.SCHEMA_NAME,
+    name: row.OBJECT_NAME,
+    type: row.OBJECT_TYPE,
   }));
 }
 
