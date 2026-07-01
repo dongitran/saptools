@@ -39,12 +39,16 @@ export async function handleListTargets(opts: ListTargetsCommandOptions): Promis
   }
 }
 
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function compileFilter(pattern: string | undefined): RegExp | undefined {
   if (pattern === undefined || pattern.length === 0) {
     return undefined;
   }
   try {
-    return new RegExp(pattern);
+    return new RegExp(escapeRegExpLiteral(pattern));
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new CfInspectorError("INVALID_ARGUMENT", `Invalid --filter regular expression: ${detail}`);
