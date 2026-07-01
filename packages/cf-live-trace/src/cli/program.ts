@@ -154,18 +154,19 @@ async function runUntilStopped(
   runtimeError: RuntimeErrorStopWaiter,
 ): Promise<void> {
   const abort = createAbortPromise();
-  const duration = createDurationStopWaiter(options.limits.durationMs);
+  let duration: StopWaiter | undefined;
   let stopReason: LiveTraceStopReason = "user";
   let failed = false;
   try {
     await session.start(options.trace);
+    duration = createDurationStopWaiter(options.limits.durationMs);
     stopReason = await waitForStop([abort, eventLimit, duration, runtimeError]);
   } catch (error) {
     failed = true;
     throw error;
   } finally {
     abort.cleanup();
-    duration.cleanup();
+    duration?.cleanup();
     eventLimit.cleanup();
     runtimeError.cleanup();
     await session.stop({ uninstallRuntimeHook: options.uninstallOnExit, reason: failed ? "error" : stopReason });

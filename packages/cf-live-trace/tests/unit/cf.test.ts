@@ -68,6 +68,8 @@ describe("Cloud Foundry helpers", () => {
     expect(command).toContain("kill -USR1 \"$node_pid\"");
     expect(command).toContain("saptools-inspector-ready");
     expect(command).not.toContain("pidof node");
+    expect(command).not.toContain("{ ((command -v curl");
+    expect(command).toContain("( command -v curl");
   });
 
   it("opens a local tunnel to the remote Node inspector and stops it when not reachable", async () => {

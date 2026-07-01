@@ -90,6 +90,8 @@ cf-live-trace session list
 cf-live-trace session events <sessionId> --limit 20
 cf-live-trace session search <sessionId> "orderId" --body response
 cf-live-trace session body <sessionId> <requestId> --body response --path /data --limit 4000 --rows 100
+cf-live-trace session curl <sessionId> <requestId> --target http://localhost:4004 --out replay.sh
+cf-live-trace session replay <sessionId> <requestId> --target http://localhost:4004
 ```
 
 - `<sessionId>`: ID shown when tracing starts or returned by `session list`.
@@ -100,6 +102,10 @@ cf-live-trace session body <sessionId> <requestId> --body response --path /data 
 - `--path /data`: JSON Pointer selecting a field or object inside the saved body.
 - `--limit 4000` on `session body`: maximum characters shown for each value.
 - `--rows 100`: maximum structure rows to return.
+
+Use `session curl` when the user wants a reusable reproduction command. Without `--copy` or `--out`, the CLI intentionally truncates displayed header values and request bodies to avoid terminal flooding; use `--out <file>` for a full shell script or `--copy` when a local clipboard tool is available. `--target <baseUrl>` rewrites relative captured URLs for local services such as `http://localhost:4004`; without `--target`, the CLI reconstructs an absolute URL from `x-forwarded-proto`, `x-forwarded-host`, or `host`.
+
+Use `session replay` when the user wants the CLI to send the saved request immediately. Both `session curl` and `session replay` abort if `requestBodyTruncated` is true, because the captured request payload is incomplete. They also omit hop-by-hop or client-recalculated headers such as `host`, `content-length`, and `transfer-encoding`; do not re-add those headers unless the user specifically needs to reproduce proxy behavior.
 
 ## Data Handling
 
