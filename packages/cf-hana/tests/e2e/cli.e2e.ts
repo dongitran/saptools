@@ -86,7 +86,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.3.0");
+  expect(result.stdout).toContain("0.3.1");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -228,6 +228,37 @@ test("User still gets suggestions after one transient metadata lookup failure", 
   const traces = await readFakeTraceEntries(home);
   const metadataReads = traces.filter((entry) => entry.sql.includes("SYS.TABLES") && entry.sql.includes("SYS.VIEWS"));
   expect(metadataReads).toHaveLength(2);
+});
+
+test("User gets invalid column suggestions for close typos", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT ISACTIVE FROM CORE_AUTH_SCOPE"],
+    fakeEnv({ trace: true }),
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("Did you mean column:");
+  expect(result.stderr).toContain("IS_ACTIVE");
+  const traces = await readFakeTraceEntries(home);
+  expect(traces.some((entry) => entry.sql.includes("SYS.TABLE_COLUMNS"))).toBe(true);
+});
+
+test("User gets actionable hints for LOB ORDER BY and GROUP BY errors", async () => {
+  const ordered = await runCli(
+    ["query", SELECTOR, "SELECT * FROM LOB_ORDER_ERROR ORDER BY LOG_CONTENT"],
+    fakeEnv(),
+  );
+  expect(ordered.exitCode).toBe(1);
+  expect(ordered.stderr).toContain("HANA cannot ORDER BY or GROUP BY");
+  expect(ordered.stderr).toContain("TO_VARCHAR(<column>)");
+
+  const grouped = await runCli(
+    ["query", SELECTOR, "SELECT LOG_CONTENT FROM LOB_GROUP_ERROR GROUP BY LOG_CONTENT"],
+    fakeEnv(),
+  );
+  expect(grouped.exitCode).toBe(1);
+  expect(grouped.stderr).toContain("HANA cannot ORDER BY or GROUP BY");
+  expect(grouped.stderr).toContain("TO_VARCHAR(<column>)");
 });
 
 test("User gets invalid table suggestions for quoted schema-qualified and DML statements", async () => {

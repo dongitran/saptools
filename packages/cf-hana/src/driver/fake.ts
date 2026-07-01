@@ -30,6 +30,15 @@ function catalogObjects(): readonly FakeCatalogObjectRow[] {
     { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "MISSING_TABLE_FIXED", OBJECT_TYPE: "TABLE" },
     { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "MISSING_TABLE_VIEW", OBJECT_TYPE: "VIEW" },
     { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "STATUS_ITEMS", OBJECT_TYPE: "TABLE" },
+    { SCHEMA_NAME: "APP_SCHEMA", OBJECT_NAME: "CORE_AUTH_SCOPE", OBJECT_TYPE: "TABLE" },
+  ];
+}
+
+function tableColumns(): readonly Record<string, SqlParam>[] {
+  return [
+    { COLUMN_NAME: "ID", DATA_TYPE_NAME: "INTEGER", LENGTH: null, SCALE: null, IS_NULLABLE: "FALSE", POSITION: 1 },
+    { COLUMN_NAME: "IS_ACTIVE", DATA_TYPE_NAME: "BOOLEAN", LENGTH: null, SCALE: null, IS_NULLABLE: "TRUE", POSITION: 2 },
+    { COLUMN_NAME: "SCOPE_NAME", DATA_TYPE_NAME: "NVARCHAR", LENGTH: 255, SCALE: null, IS_NULLABLE: "TRUE", POSITION: 3 },
   ];
 }
 
@@ -57,8 +66,35 @@ function fakeExec(sql: string): DriverExecResult {
     };
   }
 
+  if (upperSql.includes("SYS.TABLE_COLUMNS")) {
+    return {
+      rows: tableColumns(),
+      columns: [
+        { name: "COLUMN_NAME", typeName: "NVARCHAR" },
+        { name: "DATA_TYPE_NAME", typeName: "NVARCHAR" },
+        { name: "LENGTH", typeName: "INTEGER" },
+        { name: "SCALE", typeName: "INTEGER" },
+        { name: "IS_NULLABLE", typeName: "NVARCHAR" },
+        { name: "POSITION", typeName: "INTEGER" },
+      ],
+      affectedRows: 0,
+    };
+  }
+
   if (upperSql.includes("MISSING_TABLE") || upperSql.includes("MISSING_TABLES")) {
     throw new QueryError("invalid table name: MISSING_TABLE", { sqlState: "42S02" });
+  }
+
+  if (upperSql.includes("ISACTIVE")) {
+    throw new QueryError("invalid column name: ISACTIVE: line 1 col 8 (at pos 7)", { databaseCode: 260 });
+  }
+
+  if (upperSql.includes("LOB_ORDER_ERROR")) {
+    throw new QueryError("inconsistent datatype: LOB type is not allowed in ORDER BY clause", { databaseCode: 266 });
+  }
+
+  if (upperSql.includes("LOB_GROUP_ERROR")) {
+    throw new QueryError("inconsistent datatype: LOB type is not allowed in GROUP BY clause", { databaseCode: 274 });
   }
 
   if (sql.toUpperCase().includes("LOB_FIXTURE")) {
