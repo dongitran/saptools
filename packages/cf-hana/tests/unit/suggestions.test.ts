@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { QueryError } from "../../src/errors.js";
 import {
+  extractInvalidColumnNameFromError,
   extractMissingObjectName,
   extractMissingObjectNameFromError,
+  formatColumnSuggestions,
   isInvalidCatalogObjectError,
   rankCatalogSuggestions,
+  rankNameSuggestions,
 } from "../../src/suggestions.js";
 
 const candidates = [
@@ -72,5 +75,30 @@ describe("invalid catalog object suggestions", () => {
     ]);
     expect(rankCatalogSuggestions({ name: "STATUS_ITEMS" }, candidates)[0]?.name).toBe("STATUS_ITEM");
     expect(rankCatalogSuggestions({ name: "ZZZ" }, candidates)).toEqual([]);
+  });
+});
+
+
+describe("invalid column suggestions", () => {
+  it("extracts invalid HANA column names", () => {
+    expect(
+      extractInvalidColumnNameFromError(
+        new QueryError("invalid column name: ISACTIVE: line 1 col 38 (at pos 37)", {
+          databaseCode: 260,
+        }),
+      ),
+    ).toBe("ISACTIVE");
+    expect(extractInvalidColumnNameFromError(new Error("invalid column name: ISACTIVE"))).toBeUndefined();
+  });
+
+  it("ranks and formats close column names", () => {
+    const columns = [
+      { name: "ID" },
+      { name: "IS_ACTIVE" },
+      { name: "SCOPE_NAME" },
+    ];
+    const ranked = rankNameSuggestions("ISACTIVE", columns);
+    expect(ranked.map((column) => column.name)).toEqual(["IS_ACTIVE"]);
+    expect(formatColumnSuggestions(ranked)).toBe("Did you mean column:\n  IS_ACTIVE");
   });
 });

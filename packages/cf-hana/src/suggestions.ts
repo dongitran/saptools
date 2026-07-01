@@ -353,6 +353,19 @@ function score(requested: MissingObjectName, candidate: CatalogObjectInfo): numb
   return value;
 }
 
+export interface NameSuggestion {
+  readonly name: string;
+}
+
+export function extractInvalidColumnNameFromError(error: unknown): string | undefined {
+  if (!(error instanceof QueryError)) {
+    return undefined;
+  }
+  const match = /invalid column name:\s*([^:]+)/i.exec(error.message);
+  const name = match?.[1]?.trim();
+  return name === undefined || name.length === 0 ? undefined : name;
+}
+
 export function rankCatalogSuggestions(
   requested: MissingObjectName,
   candidates: readonly CatalogObjectInfo[],
@@ -383,5 +396,35 @@ export function formatSuggestions(suggestions: readonly CatalogObjectInfo[]): st
   return [
     "Did you mean:",
     ...suggestions.map((item) => `  ${item.schema}.${item.name} (${item.type})`),
+  ].join("\n");
+}
+
+export function rankNameSuggestions<T extends NameSuggestion>(
+  requested: string,
+  candidates: readonly T[],
+  limit = 5,
+): readonly T[] {
+  const requestedName = { name: requested };
+  return candidates
+    .map((candidate) => ({
+      candidate,
+      score: score(requestedName, { schema: "", name: candidate.name, type: "TABLE" }),
+    }))
+    .filter((item) => item.score >= 45)
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.candidate.name.localeCompare(right.candidate.name),
+    )
+    .slice(0, limit)
+    .map((item) => item.candidate);
+}
+
+export function formatColumnSuggestions(suggestions: readonly NameSuggestion[]): string | undefined {
+  if (suggestions.length === 0) {
+    return undefined;
+  }
+  return [
+    "Did you mean column:",
+    ...suggestions.map((item) => `  ${item.name}`),
   ].join("\n");
 }

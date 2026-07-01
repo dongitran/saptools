@@ -129,7 +129,7 @@ ID,CONTENT
 ```
 
 The ref is not a CSV column. Exact returned rows are stored under
-`~/.saptools/cf-hana/results/` for 60 minutes by default. Only returned rows are
+`~/.saptools/cf-hana/results/` for 7 days by default. Only returned rows are
 stored; rows beyond the selected `--limit` are not fetched or saved.
 
 Follow-up commands:
