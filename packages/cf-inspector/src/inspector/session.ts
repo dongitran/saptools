@@ -16,11 +16,12 @@ export async function connectInspector(options: InspectorConnectOptions): Promis
   const host = options.host ?? DEFAULT_HOST;
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const targets = await discoverInspectorTargets(host, options.port, connectTimeoutMs);
-  const target = targets[0];
+  const targetIndex = options.targetIndex ?? 0;
+  const target = targets[targetIndex];
   if (!target) {
     throw new CfInspectorError(
       "INSPECTOR_DISCOVERY_FAILED",
-      `No inspector targets available on ${host}:${options.port.toString()}`,
+      `No inspector target at index ${targetIndex.toString()} on ${host}:${options.port.toString()} (available: ${targets.length.toString()})`,
     );
   }
   const client = await CdpClient.connect({

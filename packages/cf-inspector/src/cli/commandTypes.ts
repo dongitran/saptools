@@ -6,6 +6,7 @@ export interface PortTarget {
   readonly kind: "port";
   readonly port: number;
   readonly host: string;
+  readonly targetIndex?: number;
 }
 
 export interface CfTarget {
@@ -15,7 +16,8 @@ export interface CfTarget {
   readonly org: string;
   readonly space: string;
   readonly app: string;
-  readonly cfTimeoutMs: number;
+  readonly tunnelTimeoutMs: number;
+  readonly targetIndex?: number;
 }
 
 export type Target = PortTarget | CfTarget;
@@ -28,7 +30,8 @@ export interface SharedTargetOptions {
   readonly org?: string;
   readonly space?: string;
   readonly app?: string;
-  readonly cfTimeout?: string;
+  readonly timeout?: string;
+  readonly target?: string;
 }
 
 export interface SnapshotCommandOptions extends SharedTargetOptions {
@@ -54,6 +57,11 @@ export interface EvalCommandOptions extends SharedTargetOptions {
 }
 
 export interface ListScriptsCommandOptions extends SharedTargetOptions {
+  readonly filter?: string;
+  readonly json: boolean;
+}
+
+export interface ListTargetsCommandOptions extends SharedTargetOptions {
   readonly json: boolean;
 }
 

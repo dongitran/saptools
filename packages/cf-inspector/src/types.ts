@@ -160,6 +160,7 @@ export interface InspectorConnectOptions {
   readonly port: number;
   readonly host?: string;
   readonly connectTimeoutMs?: number;
+  readonly targetIndex?: number;
 }
 
 export type CdpMessage =

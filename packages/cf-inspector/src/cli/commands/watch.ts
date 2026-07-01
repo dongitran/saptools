@@ -38,7 +38,7 @@ interface PreparedWatchCommand {
 type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed";
 
 export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
-  const target = await resolveTargetWithCurrentCfTarget(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareWatchCommand(opts, target);
   let stoppedReason: WatchStopReason = "signal";
   let emitted = 0;

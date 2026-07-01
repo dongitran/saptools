@@ -5,10 +5,13 @@ import type { BreakpointHandle, PauseEvent, SnapshotCaptureResult, SnapshotResul
 export function warnOnUnboundBreakpoints(handles: readonly BreakpointHandle[]): void {
   for (const handle of handles) {
     if (handle.resolvedLocations.length === 0) {
+      const tsHint = handle.file.endsWith(".ts")
+        ? " Hint: Source TS breakpoints may not bind. Try inspecting loaded scripts with list-scripts and target the compiled .js file instead."
+        : "";
       process.stderr.write(
         `[cf-inspector] warning: breakpoint ${handle.file}:${handle.line.toString()} ` +
           `did not bind to any loaded script. Check the path or pass --remote-root. ` +
-          `Use 'list-scripts' to inspect what V8 currently has loaded.\n`,
+          `Use 'list-scripts' to inspect what V8 currently has loaded.${tsHint}\n`,
       );
     }
   }
