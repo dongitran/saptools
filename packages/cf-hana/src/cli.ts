@@ -366,7 +366,6 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
           ...(opts.resultTtlMinutes === undefined ? {} : { ttlMinutes: opts.resultTtlMinutes }),
         });
         print(`ref=${session.ref}`);
-        process.stderr.write(`${CLI_NAME}: saved result expires at ${session.expiresAt}\n`);
       }
       print(compact.text);
       if (result.truncated) {
