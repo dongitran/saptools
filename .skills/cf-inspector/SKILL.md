@@ -72,7 +72,7 @@ Use `eval` for global runtime state, not paused-frame locals.
 cf-inspector eval --port 9229 --expr 'process.uptime()'
 ```
 
-Use `list-scripts` when breakpoints do not bind or path mapping is uncertain.
+Use `list-scripts` when breakpoints do not bind or path mapping is uncertain. `--filter` accepts literal text, `|` alternatives, and `.*` / `.+` wildcards.
 
 ```bash
 cf-inspector list-scripts --port 9229 --filter '/home/vcap/app|ValidatePayloadWorker'

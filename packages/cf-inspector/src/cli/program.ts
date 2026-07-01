@@ -155,7 +155,7 @@ function registerListScripts(program: Command): void {
   applyTargetOptions(
     program.command("list-scripts").description("Print the scripts the V8 instance currently knows about"),
   )
-    .option("--filter <pattern>", "Only include script URLs matching this regular expression")
+    .option("--filter <pattern>", "Only include script URLs matching this pattern")
     .option("--no-json", "Print scriptId<TAB>url instead of JSON")
     .action(async (opts: ListScriptsCommandOptions): Promise<void> => {
       await handleListScripts(opts);

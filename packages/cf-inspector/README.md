@@ -267,7 +267,7 @@ cf-inspector eval --port 9229 --expr 'process.uptime()'
 
 ### 📜 `cf-inspector list-scripts`
 
-Print every script the V8 instance knows about (useful for debugging path-mapping issues). Add `--filter <pattern>` to narrow noisy script lists with a JavaScript regular expression.
+Print every script the V8 instance knows about (useful for debugging path-mapping issues). Add `--filter <pattern>` to narrow noisy script lists with a literal/wildcard pattern; `|` separates alternatives and `.*` / `.+` match variable text.
 
 ```bash
 cf-inspector list-scripts --port 9229 --filter 'dist/.+\.js'
