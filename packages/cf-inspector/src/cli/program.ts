@@ -5,6 +5,7 @@ import type {
   EvalCommandOptions,
   ExceptionCommandOptions,
   ListScriptsCommandOptions,
+  ListTargetsCommandOptions,
   LogCommandOptions,
   SnapshotCommandOptions,
   WatchCommandOptions,
@@ -12,13 +13,13 @@ import type {
 import { handleAttach } from "./commands/attach.js";
 import { handleEval } from "./commands/eval.js";
 import { handleException } from "./commands/exception.js";
-import { handleListScripts } from "./commands/listScripts.js";
+import { handleListScripts, handleListTargets } from "./commands/listScripts.js";
 import { handleLog } from "./commands/log.js";
 import { handleSnapshot } from "./commands/snapshot.js";
 import { handleWatch } from "./commands/watch.js";
 
-function applyTargetOptions(cmd: Command): Command {
-  return cmd
+function applyTargetOptions(cmd: Command, options: { readonly includeTimeout?: boolean } = {}): Command {
+  const withBaseOptions = cmd
     .option("--port <number>", "Local port the inspector or tunnel listens on")
     .option("--host <host>", "Hostname (default: 127.0.0.1)", "127.0.0.1")
     .option("--region <key>", "CF region key (default: current cf target)")
@@ -26,7 +27,10 @@ function applyTargetOptions(cmd: Command): Command {
     .option("--org <name>", "CF org name (default: current cf target)")
     .option("--space <name>", "CF space name (default: current cf target)")
     .option("--app <name>", "CF app name when not using --port")
-    .option("--cf-timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
+    .option("--target <index>", "Inspector target index from /json/list (default: 0)");
+  return options.includeTimeout === false
+    ? withBaseOptions
+    : withBaseOptions.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
 }
 
 const collectStrings = (value: string, prev: readonly string[] = []): readonly string[] => [
@@ -46,6 +50,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   registerException(program);
   registerEval(program);
   registerListScripts(program);
+  registerListTargets(program);
   registerAttach(program);
 
   await program.parseAsync([...argv]);
@@ -54,6 +59,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 function registerSnapshot(program: Command): void {
   applyTargetOptions(
     program.command("snapshot").description("Set a breakpoint, wait for it to hit, capture expressions, and resume"),
+    { includeTimeout: false },
   )
     .option("--bp <file:line>", "Breakpoint location (repeatable; first hit wins), e.g. src/handler.ts:42", collectStrings, [] as readonly string[])
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
@@ -94,6 +100,7 @@ function registerLog(program: Command): void {
 function registerWatch(program: Command): void {
   applyTargetOptions(
     program.command("watch").description("Stream a snapshot per breakpoint hit (multi-shot watch); resume between hits"),
+    { includeTimeout: false },
   )
     .option("--bp <file:line>", "Breakpoint location (repeatable), e.g. src/handler.ts:42", collectStrings, [] as readonly string[])
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate per hit")
@@ -116,6 +123,7 @@ function registerWatch(program: Command): void {
 function registerException(program: Command): void {
   applyTargetOptions(
     program.command("exception").description("Pause on a thrown exception, capture the value and frame, then resume"),
+    { includeTimeout: false },
   )
     .option("--type <state>", "Pause type: uncaught (default), caught, or all")
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
@@ -147,9 +155,20 @@ function registerListScripts(program: Command): void {
   applyTargetOptions(
     program.command("list-scripts").description("Print the scripts the V8 instance currently knows about"),
   )
+    .option("--filter <pattern>", "Only include script URLs matching this regular expression")
     .option("--no-json", "Print scriptId<TAB>url instead of JSON")
     .action(async (opts: ListScriptsCommandOptions): Promise<void> => {
       await handleListScripts(opts);
+    });
+}
+
+function registerListTargets(program: Command): void {
+  applyTargetOptions(
+    program.command("list-targets").description("Print inspector targets from /json/list for selecting workers with --target"),
+  )
+    .option("--no-json", "Print index<TAB>type<TAB>title<TAB>url instead of JSON")
+    .action(async (opts: ListTargetsCommandOptions): Promise<void> => {
+      await handleListTargets(opts);
     });
 }
 

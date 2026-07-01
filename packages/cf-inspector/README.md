@@ -129,9 +129,10 @@ strict immediate error is preferred.
 
 For Cloud Foundry targets, replace `--port` with
 `--region/--org/--space/--app`. Cloud Foundry commands and tunnel readiness
-allow up to 180 seconds by default. `--cf-timeout <seconds>` overrides only the
-tunnel-readiness phase; snapshot `--timeout` separately controls how long to
-wait for a breakpoint hit.
+allow up to 180 seconds by default. For commands without their own wait
+semantics, `--timeout <seconds>` controls CF tunnel readiness. For breakpoint
+and exception commands, `--timeout` is reserved for the command wait and tunnel
+readiness keeps the 180-second default.
 
 ### 📡 `cf-inspector log`
 
@@ -266,10 +267,19 @@ cf-inspector eval --port 9229 --expr 'process.uptime()'
 
 ### 📜 `cf-inspector list-scripts`
 
-Print every script the V8 instance knows about (useful for debugging path-mapping issues).
+Print every script the V8 instance knows about (useful for debugging path-mapping issues). Add `--filter <pattern>` to narrow noisy script lists with a JavaScript regular expression.
 
 ```bash
-cf-inspector list-scripts --port 9229
+cf-inspector list-scripts --port 9229 --filter 'dist/.+\.js'
+```
+
+### 🎯 `cf-inspector list-targets`
+
+Print `/json/list` inspector targets with stable indexes. Use the index with `--target <index>` when a long-running worker thread appears as a separate target.
+
+```bash
+cf-inspector list-targets --port 9229
+cf-inspector snapshot --port 9229 --target 1 --bp dist/worker.js:42
 ```
 
 ### 🔗 `cf-inspector attach`

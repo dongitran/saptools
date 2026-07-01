@@ -38,7 +38,7 @@ interface PreparedSnapshotCommand {
 }
 
 export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
-  const target = await resolveTargetWithCurrentCfTarget(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareSnapshotCommand(opts, target);
   const reportProgress = opts.quiet === true ? undefined : writeProgress;
   const result = await runSnapshotCommand(prepared, opts, reportProgress);

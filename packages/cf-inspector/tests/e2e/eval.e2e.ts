@@ -17,6 +17,38 @@ test("eval prints a primitive value", async () => {
   }
 });
 
+
+test("list-scripts filters script URLs", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      ["list-scripts", "--port", fixture.port.toString(), "--filter", "sample-app\\.mjs"],
+      30_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as readonly { url?: string }[];
+    expect(parsed.length).toBeGreaterThan(0);
+    expect(parsed.every((entry) => entry.url?.includes("sample-app.mjs") === true)).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("list-targets emits selectable inspector target indices", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(["list-targets", "--port", fixture.port.toString()], 30_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as readonly { index?: number; webSocketDebuggerUrl?: string }[];
+    expect(parsed[0]?.index).toBe(0);
+    expect(typeof parsed[0]?.webSocketDebuggerUrl).toBe("string");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("eval surfaces evaluation errors", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

@@ -32,7 +32,7 @@ interface PreparedExceptionCommand {
 }
 
 export async function handleException(opts: ExceptionCommandOptions): Promise<void> {
-  const target = await resolveTargetWithCurrentCfTarget(opts);
+  const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareExceptionCommand(opts, target);
   const result = await runExceptionCommand(prepared, opts);
   if (opts.json) {

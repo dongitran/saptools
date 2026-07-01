@@ -30,7 +30,7 @@ Use `snapshot` for one-shot evidence at a line. It sets one or more breakpoints,
 
 ```bash
 cf-inspector snapshot --port 9229 \
-  --bp src/handler.ts:42 \
+  --bp dist/handler.js:42 \
   --capture 'req.url, this.user' \
   --timeout 30
 ```
@@ -39,7 +39,7 @@ Use `watch` when every hit matters. It pauses briefly per hit, captures expressi
 
 ```bash
 cf-inspector watch --port 9229 \
-  --bp src/handler.ts:42 \
+  --bp dist/handler.js:42 \
   --capture 'user.id, payload' \
   --condition 'user.id !== "system"' \
   --duration 30 \
@@ -50,7 +50,7 @@ Use `log` for low-impact observation. It creates a non-pausing logpoint by embed
 
 ```bash
 cf-inspector log --port 9229 \
-  --at src/handler.ts:42 \
+  --at dist/handler.js:42 \
   --expr 'JSON.stringify({ user: req.user, body: req.body })' \
   --duration 30
 ```
@@ -75,7 +75,14 @@ cf-inspector eval --port 9229 --expr 'process.uptime()'
 Use `list-scripts` when breakpoints do not bind or path mapping is uncertain.
 
 ```bash
-cf-inspector list-scripts --port 9229
+cf-inspector list-scripts --port 9229 --filter '/home/vcap/app|ValidatePayloadWorker'
+```
+
+Use `list-targets` and then pass `--target <index>` when worker threads appear as separate inspector targets.
+
+```bash
+cf-inspector list-targets --port 9229
+cf-inspector snapshot --port 9229 --target 1 --bp dist/worker.js:42
 ```
 
 Use `attach` as a connectivity smoke test for an inspector port or CF tunnel.
@@ -95,7 +102,7 @@ Use this mode when the user gives an app name. `cf-inspector` reads the current 
 ```bash
 cf-inspector snapshot \
   --app app-demo \
-  --bp src/handler.ts:42 \
+  --bp dist/handler.js:42 \
   --capture 'req.url, this.user'
 ```
 
@@ -104,7 +111,7 @@ Pass the full selector when the app is outside the current `cf target`:
 ```bash
 cf-inspector snapshot \
   --region eu10 --org example-org --space space-demo --app app-demo \
-  --bp src/handler.ts:42 \
+  --bp dist/handler.js:42 \
   --capture 'req.url, this.user'
 ```
 
@@ -114,7 +121,7 @@ Use this mode only when a Cloud Foundry tunnel is already listening locally. Ope
 
 ```bash
 cf-inspector snapshot --port 9229 \
-  --bp src/handler.ts:42 \
+  --bp dist/handler.js:42 \
   --capture 'req.url, this.user'
 ```
 
@@ -122,7 +129,7 @@ Run live CF tunnel/debug commands directly when the task needs current runtime e
 
 ## Breakpoints And Mapping
 
-Write breakpoint locations as `file:line`, for example `src/handler.ts:42`. Pass repeated `--bp` values to race several locations; the first matching pause wins for `snapshot`.
+Write breakpoint locations as `file:line`, for example `dist/handler.js:42`. Rule for SAP CAP: do not set breakpoints on `.ts` source files unless the loaded scripts prove sourcemaps expose those `.ts` URLs; target the compiled `.js` path shown by `list-scripts` instead. Pass repeated `--bp` values to race several locations; the first matching pause wins for `snapshot`.
 
 Use `--remote-root` when local source paths need anchoring to remote V8 script URLs:
 
@@ -132,7 +139,7 @@ Use `--remote-root` when local source paths need anchoring to remote V8 script U
 --remote-root '/^\/home\/vcap\/app$/i'
 ```
 
-The path mapper folds TypeScript and JavaScript runtime extensions, so a local `src/foo.ts` can match inspector URLs ending in `.ts`, `.js`, `.mts`, `.mjs`, `.cts`, or `.cjs`.
+The path mapper folds TypeScript and JavaScript runtime extensions, so a local `dist/foo.js` can match inspector URLs ending in `.js`, `.mjs`, or other loaded runtime extensions.
 
 When a breakpoint does not bind:
 
@@ -163,7 +170,7 @@ Use `--hit-count <n>` to skip early hits. It composes with `--condition` through
 
 ```bash
 cf-inspector snapshot --port 9229 \
-  --bp src/handler.ts:42 \
+  --bp dist/handler.js:42 \
   --condition 'req.userId === "abc"' \
   --hit-count 5 \
   --capture 'req.body'
