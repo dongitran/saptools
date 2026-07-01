@@ -156,7 +156,7 @@ jira issue OPS-123 --json
 jira issue OPS-123 --no-images
 ```
 
-Inline Jira images in the description or comments are saved to the OS temp directory by default and returned as `fileUrl`/`filePath` entries under `images`. Use `--image-dir <path>`, `--max-image-bytes <number>`, or `--max-images <number>` to control local image capture.
+Inline Jira images in the description or comments are saved to the OS temp directory by default. Downloaded local image metadata is returned only in the top-level `images[]` array as `fileUrl`/`filePath` entries plus attachment metadata; join images to `attachments[]` with `image.attachmentId === attachment.id`. Use `--image-dir <path>`, `--max-image-bytes <number>`, or `--max-images <number>` to control local image capture.
 
 ### `jira links <key>`
 

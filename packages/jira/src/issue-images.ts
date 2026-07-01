@@ -6,7 +6,6 @@ import {
 import type {
   FetchJiraIssueDetailOptions,
   JiraIssueAttachment,
-  JiraIssueComment,
   JiraIssueDetail,
   JiraIssueImageFile,
   JiraIssueImageSource,
@@ -194,37 +193,10 @@ function withIssueImageFiles(
   detail: JiraIssueDetail,
   images: readonly JiraIssueImageFile[],
 ): JiraIssueDetail {
-  const imagesByAttachmentId = new Map(images.map((image) => [image.attachmentId, image]));
   return {
     ...detail,
-    attachments: detail.attachments.map((attachment) =>
-      withAttachmentImageFile(attachment, imagesByAttachmentId.get(attachment.id) ?? null),
-    ),
-    comments: detail.comments.map((comment) => withCommentImageFiles(comment, images)),
     images,
   };
-}
-
-function withAttachmentImageFile(
-  attachment: JiraIssueAttachment,
-  image: JiraIssueImageFile | null,
-): JiraIssueAttachment {
-  return image === null
-    ? attachment
-    : {
-        ...attachment,
-        byteLength: image.byteLength,
-        fileUrl: image.fileUrl,
-        localPath: image.filePath,
-      };
-}
-
-function withCommentImageFiles(
-  comment: JiraIssueComment,
-  images: readonly JiraIssueImageFile[],
-): JiraIssueComment {
-  const commentImages = images.filter((image) => image.commentId === comment.id);
-  return commentImages.length === 0 ? comment : { ...comment, images: commentImages };
 }
 
 function toAdfMediaReference(
