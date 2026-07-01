@@ -124,7 +124,7 @@ function rootEntityFromServiceDocumentEntry(entry: unknown): readonly Discovered
   if (!isRecord(entry)) { return []; }
   const url = readNonEmptyString(entry['url']);
   const name = readNonEmptyString(entry['name']);
-  const path = url === undefined ? name : `/${url.replace(/^\/+/g, '')}`;
+  const path = url === undefined ? name : `/${stripLeadingSlashes(url)}`;
   if (path === undefined) { return []; }
   return [createEntity(name ?? fallbackNameFromPath(path), path)];
 }
@@ -408,16 +408,43 @@ function decodeXmlText(value: string): string {
 }
 
 export function buildEndpointUrl(baseUrl: string, endpointPath: string, suffix?: string): string {
-  const normalizedBase = baseUrl.replace(/\/+$/g, '');
+  const normalizedBase = stripTrailingSlashes(baseUrl);
   const normalizedPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
-  const normalizedSuffix = suffix === undefined ? '' : `/${suffix.replace(/^\/+/g, '')}`;
+  const normalizedSuffix = suffix === undefined ? '' : `/${stripLeadingSlashes(suffix)}`;
   return `${normalizedBase}${normalizedPath}${normalizedSuffix}`;
 }
 
 function joinEndpointPath(basePath: string, segment: string): string {
-  const normalizedBase = basePath.replace(/\/+$/g, '');
-  const normalizedSegment = segment.replace(/^\/+/g, '');
-  return `${normalizedBase}/${normalizedSegment}`.replace(/\/+/g, '/');
+  const normalizedBase = stripTrailingSlashes(basePath);
+  const normalizedSegment = stripLeadingSlashes(segment);
+  return collapseRepeatedSlashes(`${normalizedBase}/${normalizedSegment}`);
+}
+
+function stripLeadingSlashes(value: string): string {
+  let startIndex = 0;
+  while (value[startIndex] === '/') { startIndex++; }
+  return startIndex === 0 ? value : value.slice(startIndex);
+}
+
+function stripTrailingSlashes(value: string): string {
+  let endIndex = value.length;
+  while (endIndex > 0 && value[endIndex - 1] === '/') { endIndex--; }
+  return endIndex === value.length ? value : value.slice(0, endIndex);
+}
+
+function collapseRepeatedSlashes(value: string): string {
+  const parts: string[] = [];
+  let previousWasSlash = false;
+  for (const char of value) {
+    if (char === '/') {
+      if (!previousWasSlash) { parts.push(char); }
+      previousWasSlash = true;
+    } else {
+      parts.push(char);
+      previousWasSlash = false;
+    }
+  }
+  return parts.join('');
 }
 
 export function parseSubEntities(
@@ -432,7 +459,7 @@ export function parseSubEntities(
     const path = typeof rawEntry['url'] === 'string' && rawEntry['url'] !== ''
       ? rawEntry['url']
       : rawEntry['name'];
-    const joinedPath = `${parent.path}/${path}`.replace(/\/+/g, '/');
+    const joinedPath = joinEndpointPath(parent.path, path);
     entities.push(createEntity(`${parent.name} / ${rawEntry['name']}`, joinedPath));
   }
   return entities;

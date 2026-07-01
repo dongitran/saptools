@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -104,6 +105,26 @@ describe('runner utilities', () => {
       headers: {},
       body: undefined,
     })).toContain('undefined');
+  });
+
+  it('formats escaped JSON strings without regex backtracking', () => {
+    const adversarialValue = `"${'\\"a'.repeat(8000)}`;
+    const startMs = performance.now();
+
+    const output = formatResponse({
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' },
+      body: {
+        title: 'Books',
+        escaped: adversarialValue,
+      },
+    });
+
+    const durationMs = performance.now() - startMs;
+    expect(output).toContain('\u001B[33m"title"\u001B[0m: \u001B[32m"Books"\u001B[0m');
+    expect(output).toContain('\u001B[33m"escaped"\u001B[0m');
+    expect(durationMs).toBeLessThan(250);
   });
 
 });

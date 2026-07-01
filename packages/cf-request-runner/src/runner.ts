@@ -208,9 +208,69 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 function colorizeJson(value: unknown): string {
   if (value === undefined) { return 'undefined'; }
   const json = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  return json
-    .replace(/"([^"\\]*(?:\\.[^"\\]*)*)"(?=\s*:)/gu, `${YELLOW}"$1"${RESET}`)
-    .replace(/: "([^"\\]*(?:\\.[^"\\]*)*)"/gu, `: ${GREEN}"$1"${RESET}`);
+  const parts: string[] = [];
+  let index = 0;
+  while (index < json.length) {
+    const quoteIndex = json.indexOf('"', index);
+    if (quoteIndex === -1) {
+      parts.push(json.slice(index));
+      break;
+    }
+    if (quoteIndex > index) { parts.push(json.slice(index, quoteIndex)); }
+    const stringEndIndex = findJsonStringEnd(json, quoteIndex);
+    const token = json.slice(quoteIndex, stringEndIndex);
+    const nextChar = nextNonWhitespace(json, stringEndIndex);
+    const previousChar = previousNonWhitespace(json, quoteIndex);
+    if (nextChar === ':') {
+      parts.push(`${YELLOW}${token}${RESET}`);
+    } else if (previousChar === ':') {
+      parts.push(`${GREEN}${token}${RESET}`);
+    } else {
+      parts.push(token);
+    }
+    index = stringEndIndex;
+  }
+  return parts.join('');
+}
+
+function findJsonStringEnd(source: string, startIndex: number): number {
+  let index = startIndex + 1;
+  let escaped = false;
+  while (index < source.length) {
+    const char = source[index];
+    index++;
+    if (char === undefined) { continue; }
+    if (escaped) { escaped = false; continue; }
+    if (char === '\\') { escaped = true; continue; }
+    if (char === '"') { return index; }
+  }
+  return source.length;
+}
+
+function nextNonWhitespace(source: string, startIndex: number): string | undefined {
+  let index = startIndex;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === undefined) { return undefined; }
+    if (!isJsonWhitespace(char)) { return char; }
+    index++;
+  }
+  return undefined;
+}
+
+function previousNonWhitespace(source: string, beforeIndex: number): string | undefined {
+  let index = beforeIndex - 1;
+  while (index >= 0) {
+    const char = source[index];
+    if (char === undefined) { return undefined; }
+    if (!isJsonWhitespace(char)) { return char; }
+    index--;
+  }
+  return undefined;
+}
+
+function isJsonWhitespace(char: string): boolean {
+  return char === ' ' || char === '\n' || char === '\r' || char === '\t';
 }
 
 function authorizationHeaderValue(token: string | null | undefined): string | undefined {

@@ -1,4 +1,6 @@
 // cspell:words edm edmx Edmx Insertable
+import { performance } from 'node:perf_hooks';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import * as cfClient from '../src/cfClient.js';
@@ -10,6 +12,7 @@ import {
   parseSubEntities,
   createEntity,
   normalizeBearerToken,
+  buildEndpointUrl,
 } from '../src/discovery.js';
 
 vi.mock('../src/cfClient.js', () => ({
@@ -129,6 +132,23 @@ describe('discovery', () => {
 
       const subEntities = parseSubEntities(value, parent);
       expect(subEntities).toHaveLength(0);
+    });
+
+    it('normalizes slash-heavy paths without regex backtracking', () => {
+      const slashRun = '/'.repeat(8000);
+      const startMs = performance.now();
+
+      const url = buildEndpointUrl(`https://example.test${slashRun}`, 'odata/v4/catalog', `${slashRun}$metadata`);
+      const subEntities = parseSubEntities({
+        value: [
+          { name: 'Books', url: `${slashRun}Books` },
+        ],
+      }, createEntity('Root', '/root'));
+
+      const durationMs = performance.now() - startMs;
+      expect(url).toBe('https://example.test/odata/v4/catalog/$metadata');
+      expect(subEntities[0]?.path).toBe('/root/Books');
+      expect(durationMs).toBeLessThan(250);
     });
   });
 
