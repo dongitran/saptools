@@ -144,6 +144,7 @@ describe("output parsers", () => {
       0,
       false,
     );
+    expect(parsed.files).toEqual([{ instance: 0, kind: "file", path: "/workspace/app/src/connect.js" }]);
     expect(parsed.suggestedBreakpoints).toEqual([
       {
         instance: 0,
@@ -154,6 +155,19 @@ describe("output parsers", () => {
         reason: "content match",
       },
     ]);
+  });
+
+  it("can omit inspect files and deduplicates exact candidates", () => {
+    const parsed = parseInspectOutput([
+      "CFX\tROOT\t/workspace/app",
+      "CFX\tFIND\tfile\t/workspace/app/src/connect.js",
+      "CFX\tFIND\tfile\t/workspace/app/src/connect.js",
+      "CFX\tGREP\t/workspace/app/src/connect.js\t5\tneedle-api",
+      "CFX\tGREP\t/workspace/app/src/connect.js\t5\tneedle-api",
+    ].join("\n"), 0, false, false);
+    expect(parsed.files).toBeUndefined();
+    expect(parsed.contentMatches).toHaveLength(1);
+    expect(parsed.suggestedBreakpoints).toHaveLength(1);
   });
 
   it("assigns lower confidence for non-JavaScript paths", () => {

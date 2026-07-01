@@ -17,7 +17,8 @@ If `cf-explorer` is missing, install it: `npm install -g @saptools/cf-explorer`.
 2. `--app` is always required. `--region`, `--org`, and `--space` are optional and will automatically resolve if a current `cf target` is active. If the resolution fails (no target set), you must explicitly pass the full target. Note: there are no short flags (like `-a`); always use `--app`.
 3. Keep discovery read-only for remote files; `cf-explorer` automatically enables SSH and restarts the app when SSH is disabled.
 4. Use single-shot commands for quick lookups. If you need to run multiple `ls`, `grep`, or `view` commands back-to-back, consider starting a persistent `session` to avoid the overhead of opening multiple SSH connections.
-5. All discovery commands support `--json` for structured output and `--no-json` for human-readable output.
+5. Single-shot and session discovery commands emit JSON by default; `--json` is accepted as an explicit no-op and `--no-json` switches to human-readable output.
+6. `cf-explorer` reads the first/default app instance unless `--instance <index>` is provided.
 
 ## Command Choice
 
@@ -71,5 +72,5 @@ cf-explorer session stop --session-id <id>
 ## Troubleshooting
 
 - **Error: "No current CF target found"**: The user hasn't run `cf target` and didn't provide `--region`, `--org`, `--space`. Pass them explicitly via flags.
-- **Timeouts / Output Limit Exceeded**: Use `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches.
+- **Timeouts / Output Limit Exceeded**: Use `--max-matches`, `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches. Pass `--include-files` only when the file candidate list is needed.
 - **Empty Grep Results**: Ensure the `--root` path is correct (use `roots` command to discover it) and the `--text` is exact.

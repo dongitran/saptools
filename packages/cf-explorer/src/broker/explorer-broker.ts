@@ -212,12 +212,15 @@ class ExplorerBroker {
         ...numberField(args, "context"),
       }).script, limits.timeoutMs, limits.maxBytes), readString(args, "file"));
     }
+    const includeFiles = readBoolean(args, "includeFiles");
     return this.buildInspect(await shell.execute(buildInspectCandidatesScript({
       text: readString(args, "text"),
       ...stringField(args, "root"),
       ...stringField(args, "name"),
       ...numberField(args, "maxFiles"),
-    }).script, limits.timeoutMs, limits.maxBytes));
+      ...numberField(args, "maxMatches"),
+      ...(includeFiles ? { includeFiles: true } : {}),
+    }).script, limits.timeoutMs, limits.maxBytes), includeFiles);
   }
 
   private buildRoots(result: PersistentResult): RootsResult {
@@ -260,10 +263,10 @@ class ExplorerBroker {
     };
   }
 
-  private buildInspect(result: PersistentResult): InspectCandidatesResult {
+  private buildInspect(result: PersistentResult, includeFiles: boolean): InspectCandidatesResult {
     return {
       meta: this.meta(result),
-      ...parseInspectOutput(result.stdout, this.bootstrap.instance, false),
+      ...parseInspectOutput(result.stdout, this.bootstrap.instance, false, includeFiles),
     };
   }
 

@@ -119,10 +119,9 @@ describe("redaction and target helpers", () => {
     expect(() => secondsToTimerMs(MAX_TIMER_SECONDS + 1, "--timeout")).toThrow(/seconds/);
   });
 
-  it("rejects conflicting instance selectors", () => {
-    expect(resolveInstanceSelector({ instance: 0 })).toMatchObject({ instance: 0 });
-    expect(resolveInstanceSelector({ allInstances: true })).toMatchObject({ allInstances: true });
-    expect(() => resolveInstanceSelector({ instance: 0, allInstances: true })).toThrow(/either/);
+  it("resolves default and explicit instance selectors", () => {
+    expect(resolveInstanceSelector({})).toMatchObject({ instance: 0 });
+    expect(resolveInstanceSelector({ instance: 2 })).toMatchObject({ instance: 2 });
   });
 
   it("validates required text, process, and instance defaults", () => {

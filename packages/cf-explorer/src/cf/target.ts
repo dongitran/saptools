@@ -98,16 +98,10 @@ export function resolveProcessName(value: string | undefined): string {
 }
 
 export function resolveInstanceSelector(selector: InstanceSelector = {}): InstanceSelector {
-  if (selector.allInstances === true && selector.instance !== undefined) {
-    throw new CfExplorerError("UNSAFE_INPUT", "Use either --instance or --all-instances, not both.");
-  }
-  const base = {
+  return {
     process: resolveProcessName(selector.process),
-    allInstances: selector.allInstances === true,
+    instance: resolveInstance(selector.instance),
   };
-  return selector.allInstances === true
-    ? base
-    : { ...base, instance: resolveInstance(selector.instance) };
 }
 
 export function resolveInstance(value: number | undefined): number {

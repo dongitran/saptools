@@ -1,8 +1,5 @@
-import { setTimeout as sleep } from "node:timers/promises";
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CfExplorerError } from "../../src/core/errors.js";
 import {
   createExplorer,
   findRemote,
@@ -69,32 +66,6 @@ describe("discovery API", () => {
     mocks.executeRemoteScriptWithContext.mockImplementation(async (input) => await mocks.executeRemoteScript(input));
   });
 
-  it("measures all-instance duration after the instance work completes", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 2/2",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockImplementation(async (input) => {
-      await sleep(20);
-      return {
-        stdout: `CFX\tGREP\t/workspace/app/src/${input.instance.toString()}.js\t1\tneedle\n`,
-        durationMs: 20,
-        truncated: false,
-      };
-    });
-
-    const result = await grepRemote({
-      target,
-      root: "/workspace/app",
-      text: "needle",
-      allInstances: true,
-    });
-
-    expect(result.instances).toHaveLength(2);
-    expect(result.instances?.every((item) => item.durationMs >= 15)).toBe(true);
-  });
 
   it("passes effective timeout and output limits to cf app instance reads", async () => {
     mocks.cfApp.mockResolvedValue("instances: 1/1\n#0 running today\n");
@@ -112,122 +83,63 @@ describe("discovery API", () => {
       expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
       { timeoutMs: 2222, maxBytes: 3333 },
     );
-  });
 
-  it("aggregates all-instance successes and partial failures", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 2/2",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockImplementation(async (input) => {
-      if (input.instance === 1) {
-        throw new CfExplorerError("REMOTE_COMMAND_FAILED", "remote failed");
-      }
-      return {
-        stdout: "CFX\tFIND\tfile\t/workspace/app/src/connect.js\n",
-        durationMs: 4,
-        truncated: false,
-      };
-    });
-
-    const result = await findRemote({
+    await listInstances({ target, runtime: { timeoutMs: 1111 } });
+    expect(mocks.cfApp).toHaveBeenLastCalledWith(
       target,
-      root: "/workspace/app",
-      name: "connect",
-      allInstances: true,
-    });
+      expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
+      { timeoutMs: 1111 },
+    );
 
-    expect(result.matches).toHaveLength(1);
-    expect(result.instances).toEqual([
-      expect.objectContaining({ instance: 0, ok: true }),
-      expect.objectContaining({
-        instance: 1,
-        ok: false,
-        error: { code: "REMOTE_COMMAND_FAILED", message: "remote failed" },
-      }),
-    ]);
-  });
-
-  it("propagates all-instance truncation metadata", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 2/2",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockImplementation(async (input) => ({
-      stdout: "CFX\tROOT\t/workspace/app\n",
-      durationMs: 3,
-      truncated: input.instance === 1,
-    }));
-
-    const result = await roots({ target, allInstances: true });
-
-    expect(result.meta.truncated).toBe(true);
-    expect(result.instances?.[0]).toMatchObject({ truncated: false });
-    expect(result.instances?.[1]).toMatchObject({ truncated: true });
-  });
-
-  it("runs root and inspect discovery across all running instances", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 2/2",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockImplementation(async (input) => ({
-      stdout: [
-        "CFX\tROOT\t/workspace/app",
-        `CFX\tFIND\tfile\t/workspace/app/src/${input.instance.toString()}.js`,
-        `CFX\tGREP\t/workspace/app/src/${input.instance.toString()}.js\t1\tneedle`,
-      ].join("\n"),
-      durationMs: 5,
-      truncated: false,
-    }));
-
-    await expect(roots({ target, allInstances: true })).resolves.toMatchObject({
-      roots: ["/workspace/app"],
-      instances: [expect.objectContaining({ ok: true }), expect.objectContaining({ ok: true })],
-    });
-    await expect(inspectCandidates({
+    await listInstances({ target });
+    expect(mocks.cfApp).toHaveBeenLastCalledWith(
       target,
-      root: "/workspace/app",
-      text: "needle",
-      allInstances: true,
-    })).resolves.toMatchObject({
-      contentMatches: [{ line: 1 }, { line: 1 }],
-      suggestedBreakpoints: [{ line: 1 }, { line: 1 }],
-    });
+      expect.objectContaining({ cfHomeDir: "/tmp/cf-home" }),
+      undefined,
+    );
   });
 
-  it("keeps all-instance root aggregation stable when one instance fails", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 2/2",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockImplementation(async (input) => {
-      if (input.instance === 1) {
-        throw new Error("boom");
-      }
-      return {
-        stdout: "CFX\tROOT\t/workspace/app\n",
+
+
+  it("defaults to instance zero, honors explicit instance, and compacts inspect files", async () => {
+    mocks.executeRemoteScript
+      .mockResolvedValueOnce({
+        stdout: "CFX\tGREP\t/workspace/app/src/default.js\t1\tneedle\n",
         durationMs: 2,
         truncated: false,
-      };
-    });
+      })
+      .mockResolvedValueOnce({
+        stdout: "CFX\tGREP\t/workspace/app/src/worker.js\t3\tneedle\n",
+        durationMs: 3,
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        stdout: [
+          "CFX\tROOT\t/workspace/app",
+          "CFX\tFIND\tfile\t/workspace/app/src/connect.js",
+          "CFX\tGREP\t/workspace/app/src/connect.js\t2\tneedle",
+        ].join("\n"),
+        durationMs: 4,
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        stdout: [
+          "CFX\tROOT\t/workspace/app",
+          "CFX\tFIND\tfile\t/workspace/app/src/connect.js",
+          "CFX\tGREP\t/workspace/app/src/connect.js\t2\tneedle",
+        ].join("\n"),
+        durationMs: 5,
+        truncated: false,
+      });
 
-    const result = await roots({ target, allInstances: true, process: "worker" });
-    expect(result.meta.process).toBe("worker");
-    expect(result.roots).toEqual(["/workspace/app"]);
-    expect(result.instances?.[0]).toMatchObject({ ok: true });
-    expect(result.instances?.[1]).toMatchObject({
-      ok: false,
-      error: { code: "REMOTE_COMMAND_FAILED" },
-    });
+    await expect(grepRemote({ target, root: "/workspace/app", text: "needle" }))
+      .resolves.toMatchObject({ meta: { instance: 0 } });
+    await expect(grepRemote({ target, root: "/workspace/app", text: "needle", instance: 2 }))
+      .resolves.toMatchObject({ meta: { instance: 2 }, matches: [{ instance: 2 }] });
+    await expect(inspectCandidates({ target, root: "/workspace/app", text: "needle" }))
+      .resolves.not.toHaveProperty("files");
+    await expect(inspectCandidates({ target, root: "/workspace/app", text: "needle", includeFiles: true }))
+      .resolves.toMatchObject({ files: [{ path: "/workspace/app/src/connect.js" }] });
   });
 
   it("builds one-shot discovery result shapes", async () => {
@@ -273,66 +185,12 @@ describe("discovery API", () => {
       .resolves.toMatchObject({ matches: [{ path: "/workspace/app/src/connect.js" }] });
     await expect(viewRemote({ target, file: "/workspace/app/src/connect.js", line: 2 }))
       .resolves.toMatchObject({ startLine: 2, endLine: 2 });
-    await expect(viewRemote({
-      target,
-      file: "/workspace/app/src/connect.js",
-      line: 2,
-      allInstances: true,
-    })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(inspectCandidates({ target, root: "/workspace/app", text: "needle" }))
       .resolves.toMatchObject({ suggestedBreakpoints: [{ line: 2 }] });
   });
 
-  it("aggregates one-level directory listings across all running instances", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 2/2",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockImplementation(async (input) => ({
-      stdout: `CFX\tLS\tdirectory\tsrc-${input.instance.toString()}\t/workspace/app/src-${input.instance.toString()}\n`,
-      durationMs: 3,
-      truncated: input.instance === 1,
-    }));
 
-    const result = await lsRemote({ target, path: "/workspace/app", allInstances: true });
 
-    expect(result.meta.truncated).toBe(true);
-    expect(result.entries).toEqual([
-      { instance: 0, kind: "directory", name: "src-0", path: "/workspace/app/src-0" },
-      { instance: 1, kind: "directory", name: "src-1", path: "/workspace/app/src-1" },
-    ]);
-    expect(result.instances).toHaveLength(2);
-  });
-
-  it("shares one prepared CF session across parallel instance work", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 3/3",
-      "     state     since",
-      "#0   running   today",
-      "#1   running   today",
-      "#2   running   today",
-    ].join("\n"));
-    mocks.executeRemoteScript.mockResolvedValue({
-      stdout: "CFX\tROOT\t/workspace/app\n",
-      durationMs: 1,
-      truncated: false,
-    });
-    await roots({ target, allInstances: true });
-    expect(mocks.executeRemoteScriptWithContext).toHaveBeenCalledTimes(3);
-  });
-
-  it("throws INSTANCE_NOT_FOUND when no instances are running for all-instances aggregate", async () => {
-    mocks.cfApp.mockResolvedValue([
-      "instances: 0/2",
-      "     state",
-      "#0   stopped",
-      "#1   crashed",
-    ].join("\n"));
-    await expect(roots({ target, allInstances: true }))
-      .rejects.toMatchObject({ code: "INSTANCE_NOT_FOUND" });
-  });
 
   it("runs single-instance grep with optional preview", async () => {
     mocks.executeRemoteScript.mockResolvedValue({

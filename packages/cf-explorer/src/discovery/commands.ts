@@ -39,6 +39,8 @@ export interface BuildInspectScriptInput {
   readonly root?: string;
   readonly name?: string;
   readonly maxFiles?: number;
+  readonly maxMatches?: number;
+  readonly includeFiles?: boolean;
 }
 
 export function quoteRemoteShellArg(value: string): string {
@@ -183,12 +185,14 @@ export function buildInspectCandidatesScript(input: BuildInspectScriptInput): Re
   if (input.name !== undefined) {
     assertSafeRemoteValue(input.name, "file name pattern");
   }
-  const max = resolveMaxFiles(input.maxFiles);
+  const maxFiles = resolveMaxFiles(input.maxFiles);
+  const maxMatches = resolveMaxFiles(input.maxMatches);
+  const includeFiles = input.includeFiles === true;
   const name = input.name?.includes("*") ? input.name : `*${input.name ?? ""}*`;
   return {
     script: input.root === undefined
-      ? buildDynamicInspectScript(input.text, name, max)
-      : buildSingleRootInspectScript(input.root, input.text, name, max),
+      ? buildDynamicInspectScript(input.text, name, maxFiles, maxMatches, includeFiles)
+      : buildSingleRootInspectScript(input.root, input.text, name, maxFiles, maxMatches, includeFiles),
   };
 }
 
@@ -219,7 +223,9 @@ function buildSingleRootInspectScript(
   root: string,
   text: string,
   name: string,
-  max: number,
+  maxFiles: number,
+  maxMatches: number,
+  includeFiles: boolean,
 ): string {
   return [
     "CFX_OP='inspect'",
@@ -231,14 +237,14 @@ function buildSingleRootInspectScript(
     "  cfx_root=\"$1\"",
     "  [ -d \"$cfx_root\" ] || return 0",
     "  emit_root \"$cfx_root\"",
-    `  ${findCommand('"$cfx_root"', "$CFX_NAME", max)}`,
-    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), max)}`,
+    ...(includeFiles ? [`  ${findCommand('"$cfx_root"', "$CFX_NAME", maxFiles)}`] : []),
+    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), maxMatches)}`,
     "}",
     "inspect_root \"$CFX_ROOT\"",
   ].join("\n");
 }
 
-function buildDynamicInspectScript(text: string, name: string, max: number): string {
+function buildDynamicInspectScript(text: string, name: string, maxFiles: number, maxMatches: number, includeFiles: boolean): string {
   const candidateLines = ROOT_CANDIDATES
     .map((root) => `printf '%s\\n' ${quoteRemoteShellArg(root)}`)
     .join("\n");
@@ -251,13 +257,13 @@ function buildDynamicInspectScript(text: string, name: string, max: number): str
     "  cfx_root=\"$1\"",
     "  [ -d \"$cfx_root\" ] || return 0",
     "  emit_root \"$cfx_root\"",
-    `  ${findCommand('"$cfx_root"', "$CFX_NAME", max)}`,
-    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), max)}`,
+    ...(includeFiles ? [`  ${findCommand('"$cfx_root"', "$CFX_NAME", maxFiles)}`] : []),
+    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), maxMatches)}`,
     "}",
     "{",
     candidateLines,
-    `${rootDiscoveryFind(max)} | sed 's#/[^/]*$##'`,
-    `} | sort -u | head -n ${max.toString()} | while IFS= read -r cfx_root; do inspect_root "$cfx_root"; done`,
+    `${rootDiscoveryFind(maxFiles)} | sed 's#/[^/]*$##'`,
+    `} | sort -u | head -n ${maxFiles.toString()} | while IFS= read -r cfx_root; do inspect_root "$cfx_root"; done`,
   ].join("\n");
 }
 

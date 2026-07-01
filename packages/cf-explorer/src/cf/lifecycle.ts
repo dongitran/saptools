@@ -113,7 +113,7 @@ async function invalidateSessions(options: LifecycleOptions, message: string): P
 }
 
 function resolveLifecycleProcess(options: LifecycleOptions): string {
-  if (options.allInstances === true || options.instance !== undefined) {
+  if (options.instance !== undefined) {
     throw new CfExplorerError("UNSAFE_INPUT", "Lifecycle commands are app-level; omit instance selectors.");
   }
   return resolveProcessName(options.process);

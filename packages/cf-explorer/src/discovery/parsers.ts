@@ -75,15 +75,16 @@ export function parseInspectOutput(
   stdout: string,
   instance: number,
   includePreview: boolean,
+  includeFiles = true,
 ): Pick<InspectCandidatesResult, "contentMatches" | "files" | "roots" | "suggestedBreakpoints"> {
   const roots = parseRootsOutput(stdout);
-  const files = parseFindOutput(stdout, instance);
-  const contentMatches = parseGrepOutput(stdout, instance, includePreview);
+  const files = uniqueFindMatches(parseFindOutput(stdout, instance));
+  const contentMatches = uniqueGrepMatches(parseGrepOutput(stdout, instance, includePreview));
   return {
     roots,
-    files,
+    ...(includeFiles ? { files } : {}),
     contentMatches,
-    suggestedBreakpoints: suggestBreakpoints(roots, contentMatches),
+    suggestedBreakpoints: uniqueBreakpoints(suggestBreakpoints(roots, contentMatches)),
   };
 }
 
@@ -237,4 +238,33 @@ function parseNonNegativeDecimal(value: string): number | undefined {
   }
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+
+function uniqueFindMatches(matches: readonly FindMatch[]): readonly FindMatch[] {
+  return uniqueBy(matches, (match) => `${match.instance.toString()}:${match.kind}:${normalizePath(match.path)}`);
+}
+
+function uniqueGrepMatches(matches: readonly GrepMatch[]): readonly GrepMatch[] {
+  return uniqueBy(matches, (match) => `${match.instance.toString()}:${normalizePath(match.path)}:${match.line.toString()}`);
+}
+
+function uniqueBreakpoints(matches: readonly SuggestedBreakpoint[]): readonly SuggestedBreakpoint[] {
+  return uniqueBy(matches, (match) => `${match.instance.toString()}:${normalizePath(match.bp)}:${match.line.toString()}`);
+}
+
+function uniqueBy<T>(values: readonly T[], keyFor: (value: T) => string): readonly T[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = keyFor(value);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\/+/g, "/");
 }

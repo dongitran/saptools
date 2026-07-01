@@ -163,12 +163,12 @@ All read/discovery commands accept:
 | `--space <name>` | CF space |
 | `--app <name>` | CF app |
 | `--process <name>` | CF process name, default `web` |
-| `--instance <index>` | One app process instance |
-| `--all-instances` | Run supported read-only commands across running instances |
+| `--instance <index>` | One app process instance; defaults to the first/default instance (`0`) |
 | `--timeout <seconds>` | Command timeout |
-| `--max-files <count>` | Result limit for path-like outputs |
+| `--max-files <count>` | Result limit for path-like outputs and inspect file candidates when `--include-files` is used |
+| `--max-matches <count>` | Result limit for `inspect-candidates` content matches |
 | `--max-bytes <bytes>` | Output byte limit |
-| `--json` / `--no-json` | Structured JSON (default) or compact human-readable output |
+| `--json` / `--no-json` | Structured JSON (default) or compact human-readable output; available on single-shot and session discovery reads |
 
 ### 🪄 Discovery
 
@@ -191,6 +191,8 @@ cf-explorer inspect-candidates \
   --app app-name \
   --text "needle"
 ```
+
+`inspect-candidates` returns compact JSON by default: roots, content matches, and suggested breakpoints. It does not include the potentially large file candidate list unless you pass `--include-files`; combine that with `--max-files` when you need the full list. Use `--max-matches` to bound breakpoint-oriented search output.
 
 Suggested candidate shape:
 

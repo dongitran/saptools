@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CfExplorerError } from "../../src/core/errors.js";
 import { MAX_TIMER_MS } from "../../src/core/limits.js";
 import {
   attachExplorerSession,
@@ -200,13 +199,6 @@ describe("persistent session client", () => {
     await expect(attached.roots()).rejects.toMatchObject({ code: "SESSION_STALE" });
   });
 
-  it("rejects all-instance persistent session starts before spawning a broker", async () => {
-    await expect(startExplorerSession({
-      target: { region: "ap10", org: "org", space: "dev", app: "demo-app" },
-      runtime: { homeDir },
-      allInstances: true,
-    })).rejects.toThrow(CfExplorerError);
-  });
 
   it("rejects persistent session timers above the Node timer limit before storing state", async () => {
     await expect(startExplorerSession({
