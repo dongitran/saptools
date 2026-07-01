@@ -31,6 +31,7 @@ const sessionMocks = vi.hoisted(() => ({
   stopCalls: [] as MockStopOptions[],
   eventBatch: undefined as readonly LiveTraceEvent[] | undefined,
   reportRuntimeError: true,
+  startDelayMs: 0,
 }));
 
 const storeMocks = vi.hoisted(() => ({
@@ -44,6 +45,11 @@ vi.mock("../../src/session.js", () => ({
 
     public async start(options: unknown): Promise<void> {
       sessionMocks.startCalls = [...sessionMocks.startCalls, options];
+      if (sessionMocks.startDelayMs > 0) {
+        await new Promise((resolve) => {
+          setTimeout(resolve, sessionMocks.startDelayMs);
+        });
+      }
       this.options.onState?.(createMockState("streaming", "Streaming runtime HTTP trace events."));
       if (sessionMocks.eventBatch !== undefined) {
         await this.options.onEvents?.(sessionMocks.eventBatch);
@@ -69,6 +75,7 @@ describe("CLI trace runner", () => {
     sessionMocks.stopCalls.splice(0);
     sessionMocks.eventBatch = undefined;
     sessionMocks.reportRuntimeError = true;
+    sessionMocks.startDelayMs = 0;
     storeMocks.createTraceSession.mockReset();
     storeMocks.writeTraceEvent.mockReset();
     storeMocks.createTraceSession.mockResolvedValue(createTraceSession());
@@ -88,6 +95,27 @@ describe("CLI trace runner", () => {
       { uninstallRuntimeHook: true, reason: "error" },
     ]);
   });
+
+
+
+  it("starts the duration countdown only after session startup completes", async () => {
+    const { runTraceCommand } = await import("../../src/cli/program.js");
+    sessionMocks.reportRuntimeError = false;
+    sessionMocks.startDelayMs = 30;
+    sessionMocks.eventBatch = [createEvent("runtime-1")];
+
+    await runTraceCommand({
+      ...createRunOptions(),
+      limits: { durationMs: 10, maxEvents: 1 },
+      format: "summary",
+    });
+
+    expect(storeMocks.writeTraceEvent).toHaveBeenCalledTimes(1);
+    expect(sessionMocks.stopCalls).toEqual([
+      { uninstallRuntimeHook: true, reason: "max-events" },
+    ]);
+  });
+
 
   it("backs up and emits no more than the configured maximum event count", async () => {
     const { runTraceCommand } = await import("../../src/cli/program.js");

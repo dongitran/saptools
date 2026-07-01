@@ -544,7 +544,7 @@ function buildCfEnvForTarget(overrides?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 const INSPECTOR_SIGNAL_COMMAND = [
   'inspector_url="http://127.0.0.1:9229/json/list"',
-  'inspector_ready() { ((command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$inspector_url" >/dev/null 2>&1) || (command -v wget >/dev/null 2>&1 && wget -qO- -T 1 "$inspector_url" >/dev/null 2>&1)); }',
+  'inspector_ready() { ( command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$inspector_url" >/dev/null 2>&1 ) || ( command -v wget >/dev/null 2>&1 && wget -qO- -T 1 "$inspector_url" >/dev/null 2>&1 ); }',
   "if inspector_ready; then",
   "echo saptools-inspector-ready",
   "exit 0",
