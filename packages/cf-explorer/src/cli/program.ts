@@ -53,6 +53,7 @@ interface TargetFlags {
   readonly maxBytes?: string;
   readonly maxMatches?: string;
   readonly json?: boolean;
+  readonly followSymlinks?: boolean;
 }
 
 interface FindFlags extends TargetFlags {
@@ -62,12 +63,14 @@ interface FindFlags extends TargetFlags {
 
 interface LsFlags extends TargetFlags {
   readonly path?: string;
+  readonly pattern?: string;
 }
 
 interface GrepFlags extends TargetFlags {
   readonly root?: string;
   readonly text?: string;
   readonly preview?: boolean;
+  readonly includeFiles?: boolean;
 }
 
 interface ViewFlags extends TargetFlags {
@@ -184,6 +187,7 @@ function buildDiscovery(flags: TargetFlags): DiscoveryOptions {
     runtime: buildRuntime(flags),
     ...buildSelector(flags),
     ...(maxFiles === undefined ? {} : { maxFiles }),
+    ...(flags.followSymlinks === true ? { followSymlinks: true } : {}),
   };
 }
 
@@ -195,6 +199,10 @@ function maxFilesField(flags: TargetFlags): { readonly maxFiles?: number } {
 function maxMatchesField(flags: TargetFlags): { readonly maxMatches?: number } {
   const maxMatches = parsePositiveInteger(flags.maxMatches, "--max-matches");
   return maxMatches === undefined ? {} : { maxMatches };
+}
+
+function followSymlinksField(flags: TargetFlags): { readonly followSymlinks?: true } {
+  return flags.followSymlinks === true ? { followSymlinks: true } : {};
 }
 
 function sessionLimitFields(flags: TargetFlags): {
@@ -221,6 +229,7 @@ function buildLs(flags: LsFlags): LsOptions {
   return {
     ...buildDiscovery(flags),
     path: requireFlag(flags.path, "--path"),
+    ...(flags.pattern === undefined ? {} : { pattern: flags.pattern }),
   };
 }
 
@@ -230,6 +239,8 @@ function buildGrep(flags: GrepFlags): GrepOptions {
     root: requireFlag(flags.root, "--root"),
     text: requireFlag(flags.text, "--text"),
     ...(flags.preview === true ? { preview: true } : {}),
+    ...(flags.includeFiles === true ? { includeFiles: true } : {}),
+    ...maxMatchesField(flags),
   };
 }
 
@@ -283,7 +294,8 @@ function addCommonOptions(command: Command): Command {
   return addOutputOptions(addTargetOptions(command)
     .option("--timeout <seconds>", "Timeout in seconds")
     .option("--max-files <count>", "Maximum remote paths to return")
-    .option("--max-bytes <bytes>", "Maximum command output bytes"));
+    .option("--max-bytes <bytes>", "Maximum command output bytes")
+    .option("--follow-symlinks", "Follow symlinked directories during remote find operations", false));
 }
 
 function addOutputOptions(command: Command): Command {
@@ -295,7 +307,8 @@ function addOutputOptions(command: Command): Command {
 function addSessionReadOptions(command: Command): Command {
   return addOutputOptions(command)
     .option("--timeout <seconds>", "Per-request timeout in seconds")
-    .option("--max-bytes <bytes>", "Maximum command output bytes");
+    .option("--max-bytes <bytes>", "Maximum command output bytes")
+    .option("--follow-symlinks", "Follow symlinked directories during remote find operations", false);
 }
 
 export async function runProgram(argv: readonly string[], version: string): Promise<void> {
@@ -320,6 +333,7 @@ function addDiscoveryCommands(program: Command): void {
     });
   addCommonOptions(program.command("ls").description("List direct children under a remote path"))
     .requiredOption("--path <path>", "Remote directory path")
+    .option("--pattern <pattern>", "Filter entries by shell name pattern")
     .action(async (flags: LsFlags): Promise<void> => {
       writeOutput(await lsRemote(buildLs(await resolveTargetFlags(flags))), flags.json);
     });
@@ -333,6 +347,8 @@ function addDiscoveryCommands(program: Command): void {
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--text <text>", "Search text")
     .option("--preview", "Include bounded line preview", false)
+    .option("--include-files", "Accepted for inspect-candidates parity; grep output remains content matches", false)
+    .option("--max-matches <count>", "Maximum content matches to return")
     .action(async (flags: GrepFlags): Promise<void> => {
       writeOutput(await grepRemote(buildGrep(await resolveTargetFlags(flags))), flags.json);
     });
@@ -362,28 +378,28 @@ function addSessionCommands(program: Command): void {
 
 function addSessionManagementCommands(session: Command): void {
   addSessionStartCommand(session);
-  session.command("list").description("List persistent sessions")
-    .action(async (): Promise<void> => {
-      writeOutput(await listExplorerSessions());
+  addOutputOptions(session.command("list").description("List persistent sessions"))
+    .action(async (flags: SessionFlags): Promise<void> => {
+      writeOutput(await listExplorerSessions(), flags.json);
     });
-  session.command("status").description("Inspect one persistent session")
+  addOutputOptions(session.command("status").description("Inspect one persistent session"))
     .requiredOption("--session-id <id>", "Session id")
     .action(async (flags: SessionFlags): Promise<void> => {
-      writeOutput(await getExplorerSessionStatus(requireFlag(flags.sessionId, "--session-id")));
+      writeOutput(await getExplorerSessionStatus(requireFlag(flags.sessionId, "--session-id")), flags.json);
     });
-  session.command("stop").description("Stop one or all persistent sessions")
+  addOutputOptions(session.command("stop").description("Stop one or all persistent sessions"))
     .option("--session-id <id>", "Session id")
     .option("--all", "Stop all sessions", false)
     .action(async (flags: SessionFlags): Promise<void> => {
       writeOutput(await stopExplorerSession({
         ...(flags.sessionId === undefined ? {} : { sessionId: flags.sessionId }),
         ...(flags.all === undefined ? {} : { all: flags.all }),
-      }));
+      }), flags.json);
     });
 }
 
 function addSessionStartCommand(session: Command): void {
-  addSingleInstanceTargetOptions(session.command("start").description("Start a persistent explorer session"))
+  addOutputOptions(addSingleInstanceTargetOptions(session.command("start").description("Start a persistent explorer session")))
     .option("--timeout <seconds>", "Startup timeout in seconds")
     .option("--idle-timeout <seconds>", "Idle timeout in seconds")
     .option("--max-lifetime <seconds>", "Maximum session lifetime in seconds")
@@ -397,7 +413,7 @@ function addSessionStartCommand(session: Command): void {
         ...buildSelector(resolved),
         ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
         ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
-      }));
+      }), flags.json);
     });
 }
 
@@ -424,11 +440,14 @@ function addSessionLsCommand(session: Command): void {
   addSessionReadOptions(session.command("ls").description("List direct children through an existing session"))
     .requiredOption("--session-id <id>", "Session id")
     .requiredOption("--path <path>", "Remote directory path")
+    .option("--pattern <pattern>", "Filter entries by shell name pattern")
     .option("--max-files <count>", "Maximum remote paths to return")
     .action(async (flags: SessionFlags & LsFlags): Promise<void> => {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
       writeOutput(await attached.ls({
         path: requireFlag(flags.path, "--path"),
+        ...(flags.pattern === undefined ? {} : { pattern: flags.pattern }),
+        ...followSymlinksField(flags),
         ...maxFilesField(flags),
         ...sessionLimitFields(flags),
       }), flags.json);
@@ -446,6 +465,7 @@ function addSessionFindCommand(session: Command): void {
       writeOutput(await attached.find({
         root: requireFlag(flags.root, "--root"),
         name: requireFlag(flags.name, "--name"),
+        ...followSymlinksField(flags),
         ...maxFilesField(flags),
         ...sessionLimitFields(flags),
       }), flags.json);
@@ -458,6 +478,8 @@ function addSessionGrepCommand(session: Command): void {
     .requiredOption("--root <path>", "Remote root")
     .requiredOption("--text <text>", "Search text")
     .option("--preview", "Include bounded line preview", false)
+    .option("--include-files", "Accepted for inspect-candidates parity; grep output remains content matches", false)
+    .option("--max-matches <count>", "Maximum content matches to return")
     .option("--max-files <count>", "Maximum remote paths to return")
     .action(async (flags: SessionFlags & GrepFlags): Promise<void> => {
       const attached = await attachExplorerSession(requireFlag(flags.sessionId, "--session-id"));
@@ -465,7 +487,10 @@ function addSessionGrepCommand(session: Command): void {
         root: requireFlag(flags.root, "--root"),
         text: requireFlag(flags.text, "--text"),
         ...(flags.preview === true ? { preview: true } : {}),
+        ...(flags.includeFiles === true ? { includeFiles: true } : {}),
+        ...maxMatchesField(flags),
         ...maxFilesField(flags),
+        ...followSymlinksField(flags),
         ...sessionLimitFields(flags),
       }), flags.json);
     });
@@ -507,6 +532,7 @@ function addSessionInspectCommand(session: Command): void {
         ...(flags.includeFiles === true ? { includeFiles: true } : {}),
         ...maxMatchesField(flags),
         ...maxFilesField(flags),
+        ...followSymlinksField(flags),
         ...sessionLimitFields(flags),
       }), flags.json);
     });

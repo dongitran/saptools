@@ -107,6 +107,7 @@ export interface LsEntry {
   readonly path: string;
   readonly name: string;
   readonly kind: "file" | "directory" | "symlink" | "other";
+  readonly target?: string;
 }
 
 export interface LsResult {
@@ -176,6 +177,7 @@ export interface DiscoveryOptions extends InstanceSelector {
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
   readonly runtime?: ExplorerRuntimeOptions;
+  readonly followSymlinks?: boolean;
 }
 
 export interface FindOptions extends DiscoveryOptions {
@@ -185,12 +187,14 @@ export interface FindOptions extends DiscoveryOptions {
 
 export interface LsOptions extends DiscoveryOptions {
   readonly path: string;
+  readonly pattern?: string;
 }
 
 export interface GrepOptions extends DiscoveryOptions {
   readonly root: string;
   readonly text: string;
   readonly preview?: boolean;
+  readonly includeFiles?: boolean;
 }
 
 export interface ViewOptions extends DiscoveryOptions {

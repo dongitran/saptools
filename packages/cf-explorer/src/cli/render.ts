@@ -44,6 +44,9 @@ function renderHuman(value: Record<string, unknown>): string | undefined {
   if (Array.isArray(value["sessions"])) {
     return renderSessionList(value);
   }
+  if (typeof value["stopped"] === "number") {
+    return renderSessionStopResult(value);
+  }
   if (typeof value["sessionId"] === "string" && typeof value["status"] === "string" && "brokerAlive" in value) {
     return renderSessionStatus(value);
   }
@@ -93,8 +96,10 @@ function renderLsResult(value: Record<string, unknown>): string {
       const name = typeof entry["name"] === "string" ? entry["name"] : "";
       const path = typeof entry["path"] === "string" ? entry["path"] : "";
       const instance = entry["instance"];
+      const target = entry["target"];
+      const targetSuffix = typeof target === "string" && target.length > 0 ? `\t-> ${target}` : "";
       const instancePrefix = typeof instance === "number" ? `#${instance.toString()}\t` : "";
-      return `${instancePrefix}[${kind}]\t${name}\t${path}`;
+      return `${instancePrefix}[${kind}]\t${name}\t${path}${targetSuffix}`;
     })
     .join("\n");
 }
@@ -160,6 +165,10 @@ function renderSessionList(value: Record<string, unknown>): string {
       return `${formatCell(session["sessionId"])}\t${formatCell(session["status"])}\t${appName}`;
     })
     .join("\n");
+}
+
+function renderSessionStopResult(value: Record<string, unknown>): string {
+  return `stopped: ${(value["stopped"] as number).toString()}`;
 }
 
 function renderSessionStatus(value: Record<string, unknown>): string {

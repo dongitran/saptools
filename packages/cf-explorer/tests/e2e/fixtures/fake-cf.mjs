@@ -147,7 +147,9 @@ function listDirectEntries(files, path) {
 
 function renderLs(app, command) {
   const path = parseVar(command, "CFX_PATH") ?? "/";
+  const pattern = parseVar(command, "CFX_PATTERN");
   return listDirectEntries(app.files, path)
+    .filter((entry) => pattern === undefined || wildcardMatch(entry.name, pattern))
     .map((entry) => `CFX\tLS\t${entry.kind}\t${entry.name}\t${entry.path}`)
     .join("\n") + "\n";
 }

@@ -166,8 +166,9 @@ All read/discovery commands accept:
 | `--instance <index>` | One app process instance; defaults to the first/default instance (`0`) |
 | `--timeout <seconds>` | Command timeout |
 | `--max-files <count>` | Result limit for path-like outputs and inspect file candidates when `--include-files` is used |
-| `--max-matches <count>` | Result limit for `inspect-candidates` content matches |
+| `--max-matches <count>` | Result limit for `grep`, `session grep`, and `inspect-candidates` content matches |
 | `--max-bytes <bytes>` | Output byte limit |
+| `--follow-symlinks` | Follow symlinked directories during `find`/`grep` traversal for pnpm-style layouts |
 | `--json` / `--no-json` | Structured JSON (default) or compact human-readable output; available on single-shot and session discovery reads |
 
 ### 🪄 Discovery
@@ -175,9 +176,9 @@ All read/discovery commands accept:
 ```bash
 cf-explorer roots --region region-key --org org-name --space space-name --app app-name
 cf-explorer instances --region region-key --org org-name --space space-name --app app-name
-cf-explorer ls --region region-key --org org-name --space space-name --app app-name --path /app-root
+cf-explorer ls --region region-key --org org-name --space space-name --app app-name --path /app-root --pattern "*helper*"
 cf-explorer find --region region-key --org org-name --space space-name --app app-name --root /app-root --name "*handler*.js"
-cf-explorer grep --region region-key --org org-name --space space-name --app app-name --root /app-root --text "needle"
+cf-explorer grep --region region-key --org org-name --space space-name --app app-name --root /app-root --text "needle" --max-matches 20 --follow-symlinks
 cf-explorer view --region region-key --org org-name --space space-name --app app-name --file /app-root/src/handler.js --line 42 --context 8
 ```
 
@@ -192,7 +193,7 @@ cf-explorer inspect-candidates \
   --text "needle"
 ```
 
-`inspect-candidates` returns compact JSON by default: roots, content matches, and suggested breakpoints. It does not include the potentially large file candidate list unless you pass `--include-files`; combine that with `--max-files` when you need the full list. Use `--max-matches` to bound breakpoint-oriented search output.
+`inspect-candidates` returns compact JSON by default: roots, content matches, and suggested breakpoints. It does not include the potentially large file candidate list unless you pass `--include-files`; combine that with `--max-files` when you need the full list. Use `--max-matches` to bound breakpoint-oriented search output. `grep` accepts the same `--max-matches` and `--include-files` flags for command-line parity, although grep output remains the content match list.
 
 Suggested candidate shape:
 

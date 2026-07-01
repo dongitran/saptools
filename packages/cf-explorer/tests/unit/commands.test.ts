@@ -47,17 +47,47 @@ describe("remote command builders", () => {
     expect(script.script).toContain("CFX_OP='ls'");
     expect(script.script).toContain("CFX_PATH='/workspace/app'");
     expect(script.script).toContain("-mindepth 1 -maxdepth 1");
-    expect(script.script).toContain("CFX\\tLS\\t%s\\t%s\\t%s\\n");
+    expect(script.script).toContain("CFX\\tLS\\t%s\\t%s\\t%s\\t%s\\n");
+    expect(script.script).toContain("readlink");
     expect(script.script).toContain("head -n 5");
   });
 
+  it("builds filtered directory listings and can follow symlinks", () => {
+    const script = buildLsScript({
+      path: "/workspace/app",
+      pattern: "*helper*",
+      followSymlinks: true,
+    });
+    expect(script.script).toContain("CFX_PATTERN='*helper*'");
+    expect(script.script).toContain("find -L \"$CFX_PATH\" -mindepth 1 -maxdepth 1 -name \"$CFX_PATTERN\"");
+  });
+
   it("builds grep with fixed-string search without preview by default", () => {
-    const script = buildGrepScript({ root: "/workspace/app", text: "needle-api", maxFiles: 5 });
+    const script = buildGrepScript({ root: "/workspace/app", text: "needle-api", maxMatches: 5 });
     expect(script.script).toContain("grep -n -I -F");
     expect(script.script).toContain("CFX\\tGREP\\t%s\\t%s\\t\\n");
     expect(script.script).not.toContain("cfx_preview");
     expect(script.script).toContain("CFX_TEXT='needle-api'");
     expect(script.script).toContain("head -n 5");
+  });
+
+  it("builds grep and find with symlink-following find commands", () => {
+    const grep = buildGrepScript({
+      root: "/workspace/app",
+      text: "needle-api",
+      maxMatches: 4,
+      followSymlinks: true,
+      includeFiles: true,
+    });
+    expect(grep.script).toContain("find -L \"$CFX_ROOT\"");
+    expect(grep.script).not.toContain("-path '*/node_modules'");
+    expect(grep.script).not.toContain("-path '*/node_modules/*'");
+    expect(grep.script).toContain("-path '*/.git'");
+    expect(grep.script).toContain("head -n 4");
+
+    const find = buildFindScript({ root: "/workspace/app", name: "helper", followSymlinks: true });
+    expect(find.script).toContain("find -L \"$CFX_ROOT\"");
+    expect(find.script).not.toContain("-path '*/node_modules'");
   });
 
   it("emits grep preview only when requested", () => {
@@ -71,10 +101,10 @@ describe("remote command builders", () => {
     expect(script.script).toContain("CFX\\tGREP\\t%s\\t%s\\t%s\\n");
   });
 
-  it("builds view with bounded line context", () => {
-    const script = buildViewScript({ file: "/workspace/app/src/server.js", line: 10, context: 2 });
-    expect(script.script).toContain("CFX_VIEW_START=8");
-    expect(script.script).toContain("CFX_VIEW_END=12");
+  it("builds view with large bounded line context", () => {
+    const script = buildViewScript({ file: "/workspace/app/src/server.js", line: 140, context: 140 });
+    expect(script.script).toContain("CFX_VIEW_START=1");
+    expect(script.script).toContain("CFX_VIEW_END=280");
     expect(script.script).toContain("awk -v cfx_start=\"$CFX_VIEW_START\" -v cfx_end=\"$CFX_VIEW_END\"");
     expect(script.script).toContain("printf \"CFX\\tLINE\\t%d\\t%s\\n\", NR, $0");
     expect(script.script).not.toContain("nl -ba");
@@ -122,7 +152,7 @@ describe("remote command builders", () => {
     expect(() => buildFindScript({ root: "/workspace/../app", name: "x" })).toThrow(/parent/);
     expect(() => buildRootsScript(0)).toThrow(/maxFiles/);
     expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 0 })).toThrow(/line/);
-    expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 1, context: 99 }))
+    expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 1, context: 1001 }))
       .toThrow(/context/);
   });
 

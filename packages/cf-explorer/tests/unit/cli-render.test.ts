@@ -42,6 +42,19 @@ describe("CLI output rendering", () => {
       path: "/workspace/app",
       entries: [{ instance: 0, kind: "directory", name: "src", path: "/workspace/app/src" }],
     }, false)).toBe("#0\t[directory]\tsrc\t/workspace/app/src\n");
+    expect(formatOutput({
+      meta,
+      path: "/workspace/app/node_modules/@scope",
+      entries: [{
+        instance: 0,
+        kind: "symlink",
+        name: "pkg",
+        path: "/workspace/app/node_modules/@scope/pkg",
+        target: "../.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg",
+      }],
+    }, false)).toBe(
+      "#0\t[symlink]\tpkg\t/workspace/app/node_modules/@scope/pkg\t-> ../.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg\n",
+    );
     expect(formatOutput({ meta, path: "/workspace/app", entries: [] }, false)).toBe("No entries.\n");
   });
 
@@ -86,6 +99,7 @@ describe("CLI output rendering", () => {
     expect(formatOutput({
       sessions: [{ sessionId: "session-b", status: "ready" }],
     }, false)).toBe("session-b\tready\t?\n");
+    expect(formatOutput({ stopped: 2 }, false)).toBe("stopped: 2\n");
     expect(formatOutput({
       sessionId: "session-a",
       status: "ready",
