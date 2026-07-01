@@ -24,6 +24,8 @@ Automatically walk your remote CAP service documents, OData `$metadata`, and `en
 - ⚡ **CF SSH Fallback** — if runtime requests are blocked or hidden, falls back to `cf ssh` to run a headless script parsing `.cds` definitions.
 - 🧭 **Zero Configuration** — seamlessly integrates with your active Cloud Foundry CLI (`cf target`) session. No complex credential management required.
 - 🗄️ **Programmatic API** — exports fully typed methods for deep integrations in other Node.js apps.
+- 📋 **Copy-Ready Curl** — emits ready-to-run `curl` commands for each endpoint/method with the resolved bearer token already injected.
+- 🧪 **Interactive Runner** — select an endpoint and method, enter JSON for write requests, and print the formatted response from the CLI.
 - 🧠 **Smart Fallbacks** — safely handles missing `cf` CLI sessions, invalid tokens, or restricted network environments.
 
 ---
@@ -50,6 +52,12 @@ cf-request-runner --app my-cap-app --url https://my-cap-app.cfapps.us10.hana.ond
 
 # 3. Output as JSON for programmatic consumption
 cf-request-runner -a my-cap-app -u https://... --json | jq '.'
+
+# 4. Generate copy-ready curl commands
+cf-request-runner -a my-cap-app -u https://... --curl
+
+# 5. Run an endpoint interactively
+cf-request-runner -a my-cap-app -u https://... --interactive
 ```
 
 ---
@@ -71,8 +79,30 @@ cf-request-runner --app <appId> --url <baseUrl>
 | `--cf-home <dir>` | | Custom `CF_HOME` directory if using an isolated CF session. | No |
 | `--token <bearerToken>` | | Bearer token override. Prefer `CF_REQUEST_RUNNER_TOKEN` for sensitive tokens. | No |
 | `--json` | | Output the results in strict JSON format. | No |
-| `--out <filePath>` | | Save JSON output to a specific file. | No |
+| `--out <filePath>` | | Save JSON output to a specific file. Missing parent directories are created automatically. | No |
+| `--curl` | | Output copy-ready curl commands for every discovered endpoint and method. Includes the resolved bearer token when available. | No |
+| `--interactive` | `-i` | Select and execute a discovered endpoint from the CLI. Prompts for JSON payloads on write methods. | No |
 | `--help` | `-h` | Display help for command. | No |
+
+
+### Copy and run requests
+
+Generate curl commands for all discovered endpoint/method combinations:
+
+```bash
+cf-request-runner -a my-cap-app -u https://my-cap-app.example.com --curl
+```
+
+> [!WARNING]
+> `--curl` intentionally includes the resolved bearer token in the `Authorization` header so commands are immediately runnable. Treat this output as sensitive and avoid pasting it into logs or chat.
+
+Run a request interactively from the CLI:
+
+```bash
+cf-request-runner -a my-cap-app -u https://my-cap-app.example.com --interactive
+```
+
+Interactive mode prompts for an endpoint, a supported method, and a JSON payload for `POST`, `PUT`, and `PATCH` requests, then prints the response status, headers, and body.
 
 For token-based runs, prefer an environment variable so the bearer token is not saved in shell history:
 

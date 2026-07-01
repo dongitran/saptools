@@ -31,31 +31,54 @@ interface XmlNode {
   readonly body: string;
 }
 
+type ResolvedApiCatalogDiscoveryOptions = Omit<ApiCatalogDiscoveryOptions, 'token'> & {
+  readonly token: string | null;
+};
+
+export interface ApiCatalogDiscoveryResult {
+  readonly entities: readonly DiscoveredApiEntity[];
+  readonly token: string | null;
+}
+
 export async function discoverApiEntities(
   options: ApiCatalogDiscoveryOptions
 ): Promise<readonly DiscoveredApiEntity[]> {
-  let entities = await discoverRootEntities(options);
+  return (await discoverApiEntitiesWithToken(options)).entities;
+}
+
+export async function discoverApiEntitiesWithToken(
+  options: ApiCatalogDiscoveryOptions
+): Promise<ApiCatalogDiscoveryResult> {
+  const resolvedOptions = await withResolvedDiscoveryToken(options);
+  let entities = await discoverRootEntities(resolvedOptions);
   if (entities.length === 0) {
-    entities = await discoverCdsEntities(options);
+    entities = await discoverCdsEntities(resolvedOptions);
   }
   if (entities.length === 0) {
-    return [];
+    return { entities: [], token: resolvedOptions.token };
   }
-  options.log(`Attempting deep discovery on ${String(entities.length)} root endpoints...`);
-  options.onDeepDiscoveryStart();
-  const expanded = await expandEntities(options, entities);
-  options.log(`Deep discovery complete. Found ${String(expanded.length)} total endpoints.`);
-  return expanded;
+  resolvedOptions.log(`Attempting deep discovery on ${String(entities.length)} root endpoints...`);
+  resolvedOptions.onDeepDiscoveryStart();
+  const expanded = await expandEntities(resolvedOptions, entities);
+  resolvedOptions.log(`Deep discovery complete. Found ${String(expanded.length)} total endpoints.`);
+  return { entities: expanded, token: resolvedOptions.token };
+}
+
+async function withResolvedDiscoveryToken(
+  options: ApiCatalogDiscoveryOptions
+): Promise<ResolvedApiCatalogDiscoveryOptions> {
+  const token = options.token ?? await fetchXsuaaTokenFromTarget({
+    appName: options.appId,
+    cfHomeDir: options.cfHomeDir,
+  });
+  return { ...options, token };
 }
 
 async function discoverRootEntities(
-  options: ApiCatalogDiscoveryOptions
+  options: ResolvedApiCatalogDiscoveryOptions
 ): Promise<readonly DiscoveredApiEntity[]> {
   try {
-    const token = options.token ?? await fetchXsuaaTokenFromTarget({
-      appName: options.appId,
-      cfHomeDir: options.cfHomeDir,
-    });
+    const token = options.token;
 
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (token !== null && token !== '') {
@@ -112,7 +135,7 @@ function fallbackNameFromPath(path: string): string {
 }
 
 async function discoverCdsEntities(
-  options: ApiCatalogDiscoveryOptions
+  options: Pick<ApiCatalogDiscoveryOptions, 'appId' | 'cfHomeDir' | 'log'>
 ): Promise<readonly DiscoveredApiEntity[]> {
   options.log(
     `Warning: No API entities discovered remotely from root endpoint for ${options.appId}. Attempting fallback via CF SSH remote .cds scan...`
@@ -181,13 +204,10 @@ function defaultCdsServicePath(name: string): string {
 }
 
 async function expandEntities(
-  options: ApiCatalogDiscoveryOptions,
+  options: ResolvedApiCatalogDiscoveryOptions,
   entities: readonly DiscoveredApiEntity[]
 ): Promise<readonly DiscoveredApiEntity[]> {
-  const token = options.token ?? await fetchXsuaaTokenFromTarget({
-    appName: options.appId,
-    cfHomeDir: options.cfHomeDir,
-  });
+  const token = options.token;
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (token !== null && token !== '') {
     headers['Authorization'] = normalizeBearerToken(token);
@@ -387,7 +407,7 @@ function decodeXmlText(value: string): string {
     .replace(/&amp;/g, '&');
 }
 
-function buildEndpointUrl(baseUrl: string, endpointPath: string, suffix?: string): string {
+export function buildEndpointUrl(baseUrl: string, endpointPath: string, suffix?: string): string {
   const normalizedBase = baseUrl.replace(/\/+$/g, '');
   const normalizedPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
   const normalizedSuffix = suffix === undefined ? '' : `/${suffix.replace(/^\/+/g, '')}`;

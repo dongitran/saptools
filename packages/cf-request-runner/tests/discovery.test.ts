@@ -343,6 +343,36 @@ describe('discovery', () => {
       ]);
     });
 
+    it('fetches an XSUAA token only once across root discovery and expansion', async () => {
+      vi.mocked(cfClient.fetchXsuaaTokenFromTarget).mockResolvedValue('fake-token');
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            endpoints: [
+              { name: 'CatalogService', path: '/odata/v4/catalog' },
+            ],
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+        } as Response);
+
+      const mutableOptions = { ...defaultOptions };
+      await discoverApiEntities(mutableOptions);
+
+      expect(cfClient.fetchXsuaaTokenFromTarget).toHaveBeenCalledTimes(1);
+      expect(mutableOptions.token).toBeUndefined();
+      expect(vi.mocked(global.fetch).mock.calls.map(([, init]) => init?.headers)).toEqual([
+        { Accept: 'application/json', Authorization: 'Bearer fake-token' },
+        { Accept: 'application/xml, text/xml, */*', Authorization: 'Bearer fake-token' },
+        { Accept: 'application/json', Authorization: 'Bearer fake-token' },
+      ]);
+    });
+
     it('expands root service endpoints through OData metadata before falling back to service documents', async () => {
       vi.mocked(cfClient.fetchXsuaaTokenFromTarget).mockResolvedValue('fake-token');
       vi.mocked(global.fetch)
