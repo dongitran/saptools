@@ -35,42 +35,105 @@ const REGION_API_MAP: Record<string, string> = {
   ap20: "https://api.cf.ap20.hana.ondemand.com",
   ap21: "https://api.cf.ap21.hana.ondemand.com",
   ap30: "https://api.cf.ap30.hana.ondemand.com",
+  ap31: "https://api.cf.ap31.hana.ondemand.com",
   br10: "https://api.cf.br10.hana.ondemand.com",
   br20: "https://api.cf.br20.hana.ondemand.com",
   br30: "https://api.cf.br30.hana.ondemand.com",
   ca10: "https://api.cf.ca10.hana.ondemand.com",
   ca20: "https://api.cf.ca20.hana.ondemand.com",
   ch20: "https://api.cf.ch20.hana.ondemand.com",
+  cn20: "https://api.cf.cn20.platform.sapcloud.cn",
+  cn40: "https://api.cf.cn40.platform.sapcloud.cn",
+  eu01: "https://api.cf.eu01.hana.ondemand.com",
+  eu02: "https://api.cf.eu02.hana.ondemand.com",
   eu10: "https://api.cf.eu10.hana.ondemand.com",
+  "eu10-002": "https://api.cf.eu10-002.hana.ondemand.com",
+  "eu10-003": "https://api.cf.eu10-003.hana.ondemand.com",
+  "eu10-004": "https://api.cf.eu10-004.hana.ondemand.com",
+  "eu10-005": "https://api.cf.eu10-005.hana.ondemand.com",
+  "eu10-006": "https://api.cf.eu10-006.hana.ondemand.com",
   eu11: "https://api.cf.eu11.hana.ondemand.com",
   eu12: "https://api.cf.eu12.hana.ondemand.com",
+  eu13: "https://api.cf.eu13.hana.ondemand.com",
   eu20: "https://api.cf.eu20.hana.ondemand.com",
+  "eu20-001": "https://api.cf.eu20-001.hana.ondemand.com",
+  "eu20-002": "https://api.cf.eu20-002.hana.ondemand.com",
   eu21: "https://api.cf.eu21.hana.ondemand.com",
+  eu22: "https://api.cf.eu22.hana.ondemand.com",
   eu30: "https://api.cf.eu30.hana.ondemand.com",
-  "eu10-002": "https://api.cf.eu10-002.hana.ondemand.com",
+  eu31: "https://api.cf.eu31.hana.ondemand.com",
+  il30: "https://api.cf.il30.hana.ondemand.com",
+  in30: "https://api.cf.in30.hana.ondemand.com",
+  jp01: "https://api.cf.jp01.hana.ondemand.com",
   jp10: "https://api.cf.jp10.hana.ondemand.com",
   jp20: "https://api.cf.jp20.hana.ondemand.com",
   jp30: "https://api.cf.jp30.hana.ondemand.com",
+  jp31: "https://api.cf.jp31.hana.ondemand.com",
+  sa30: "https://api.cf.sa30.hana.ondemand.com",
+  sa31: "https://api.cf.sa31.hana.ondemand.com",
+  uk20: "https://api.cf.uk20.hana.ondemand.com",
+  us01: "https://api.cf.us01.hana.ondemand.com",
+  us02: "https://api.cf.us02.hana.ondemand.com",
   us10: "https://api.cf.us10.hana.ondemand.com",
+  "us10-001": "https://api.cf.us10-001.hana.ondemand.com",
+  "us10-002": "https://api.cf.us10-002.hana.ondemand.com",
+  "us10-003": "https://api.cf.us10-003.hana.ondemand.com",
   us11: "https://api.cf.us11.hana.ondemand.com",
   us20: "https://api.cf.us20.hana.ondemand.com",
   us21: "https://api.cf.us21.hana.ondemand.com",
+  "us21-001": "https://api.cf.us21-001.hana.ondemand.com",
+  us22: "https://api.cf.us22.hana.ondemand.com",
   us30: "https://api.cf.us30.hana.ondemand.com",
-  in30: "https://api.cf.in30.hana.ondemand.com",
+  us32: "https://api.cf.us32.hana.ondemand.com",
 };
 
+export function normalizeSapCfApiEndpoint(apiEndpoint: string): string {
+  const trimmed = apiEndpoint.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`Invalid or untrusted CF API endpoint "${apiEndpoint}".`);
+  }
+  if (/^https:\/\/[^/]*:\d+(?:[/?#]|$)/i.test(trimmed)) {
+    throw new Error(`Invalid or untrusted CF API endpoint "${apiEndpoint}".`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.port !== "" ||
+    parsed.pathname.replace(/\/+$/, "") !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== ""
+  ) {
+    throw new Error(`Invalid or untrusted CF API endpoint "${apiEndpoint}".`);
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const match = /^api\.cf\.([a-z]{2}\d{2}(?:-\d{3})?)\.(hana\.ondemand\.com|platform\.sapcloud\.cn)$/.exec(hostname);
+  if (!match) {
+    throw new Error(`Invalid or untrusted CF API endpoint "${apiEndpoint}".`);
+  }
+  return `https://${hostname}`;
+}
+
 export function getApiEndpointForRegion(regionKey: string): string | undefined {
-  return REGION_API_MAP[regionKey];
+  return REGION_API_MAP[regionKey.trim().toLowerCase()];
 }
 
 export function getRegionKeyForApi(apiEndpoint: string): string | undefined {
-  const norm = apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+  let normalized: string;
+  try {
+    normalized = normalizeSapCfApiEndpoint(apiEndpoint);
+  } catch {
+    return undefined;
+  }
   for (const [key, endpoint] of Object.entries(REGION_API_MAP)) {
-    if (endpoint.toLowerCase() === norm) {
+    if (endpoint.toLowerCase() === normalized) {
       return key;
     }
   }
-  return undefined;
+  return /^https:\/\/api\.cf\.([a-z]{2}\d{2}(?:-\d{3})?)\.hana\.ondemand\.com$/.exec(normalized)?.[1];
 }
 
 /** Run work inside a fresh temporary CF_HOME. Directory is always cleaned. */
@@ -199,9 +262,15 @@ export function parseCfTargetOutput(stdout: string): CurrentCfTarget | undefined
   if (!api || !org || !space) {
     return undefined;
   }
-  const regionKey = getRegionKeyForApi(api);
+  let normalizedApi: string;
+  try {
+    normalizedApi = normalizeSapCfApiEndpoint(api);
+  } catch {
+    return undefined;
+  }
+  const regionKey = getRegionKeyForApi(normalizedApi);
   return {
-    apiEndpoint: api,
+    apiEndpoint: normalizedApi,
     orgName: org,
     spaceName: space,
     ...(regionKey ? { regionKey } : {}),
@@ -223,12 +292,8 @@ function parseTargetFields(stdout: string): Map<string, string> {
 export function formatCurrentCfAppSelector(target: CurrentCfTarget, appName: string): string {
   const name = appName.trim();
   if (!name) {throw new Error("App name is required.");}
-  if (!target.regionKey) {
-    throw new Error(
-      `Current CF API endpoint "${target.apiEndpoint}" does not match a known SAP region. Pass a full region/org/space/app selector.`,
-    );
-  }
-  return `${target.regionKey}/${target.orgName}/${target.spaceName}/${name}`;
+  const region = target.regionKey ?? "current";
+  return `${region}/${target.orgName}/${target.spaceName}/${name}`;
 }
 
 /* VCAP parser */

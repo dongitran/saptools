@@ -81,7 +81,7 @@ cf-hana count eu10/example-org/space-demo/app-demo APP_SCHEMA.ORDERS
 
 Key options:
 
-- `--refresh`: force a fresh fetch of binding data from Cloud Foundry.
+- `--refresh`: deprecated compatibility flag; binding discovery is already live. Use `--refresh-metadata` only for the table/view suggestion cache.
 - `--role runtime|hdi`: choose the binding user.
 - `--binding <name>` or `--binding-index <n>`: disambiguate HANA bindings.
 - `--timeout <ms>`: set connection and query timeout.
@@ -95,7 +95,7 @@ Key options:
 
 If selector resolution fails for a bare app name (no active context found), ask the user to provide the full `region/org/space/app` selector.
 
-If credentials are missing, ask whether to refresh from Cloud Foundry. A live refresh needs valid SAP credentials in the environment or equivalent secure input; never print those values.
+If credentials are missing for explicit selectors or auth fallback, ask for valid SAP credentials in the environment or equivalent secure input; never print those values.
 
 If multiple HANA bindings exist, ask for the intended binding name or index:
 

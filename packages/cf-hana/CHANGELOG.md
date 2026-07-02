@@ -1,5 +1,18 @@
 # Changelog
 
+<!-- cspell:words VARCHAR -->
+
+## 0.3.4 - 2026-07-02
+
+- Keep explicit selector region lookup map-backed so unknown technical keys fail before isolated authentication unless they are added to the maintained SAP CF region catalog.
+
+## 0.3.3 - 2026-07-02
+
+- Fix Cloud Foundry region resolution for indexed SAP regions such as `eu10-005`, representative `eu20`/`us10` indexed endpoints, and China `platform.sapcloud.cn` endpoints.
+- Keep bare CLI selectors on the core current-session path so healthy `cf env <app>` calls do not require isolated SAP re-authentication.
+- Preserve and validate the current CF API endpoint for auth fallback, reject unsafe endpoint shapes, and keep binding discovery live-only without restoring `cf-sync` cache reads.
+- Update `--refresh`, README, and cf-hana skill text to describe the retained compatibility flag truthfully.
+
 ## 0.3.2 - 2026-07-01
 
 - Remove the `cf-hana: saved result expires at...` stderr notice from `query --save` output while keeping result refs available for inspection.

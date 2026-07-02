@@ -18,12 +18,27 @@ export interface FakeTraceEntry {
   readonly paramCount: number;
 }
 
+export interface FakeCfTraceEntry {
+  readonly kind: string;
+  readonly apiEndpoint?: string;
+  readonly app?: string;
+  readonly org?: string;
+  readonly space?: string;
+  readonly cfHome?: string;
+  readonly hasUsername?: boolean;
+  readonly hasPassword?: boolean;
+}
+
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
 }
 
 export function fakeTracePath(home: string): string {
   return join(home, "cf-hana-fake-trace.jsonl");
+}
+
+export function fakeCfTracePath(home: string): string {
+  return join(home, "cf-hana-fake-cf-trace.jsonl");
 }
 
 function isFakeTraceEntry(value: unknown): value is FakeTraceEntry {
@@ -59,6 +74,23 @@ export async function readFakeTraceEntries(
       }
       return parsed;
     });
+}
+
+export async function readFakeCfTraceEntries(home: string): Promise<readonly FakeCfTraceEntry[]> {
+  let raw: string;
+  try {
+    raw = await readFile(fakeCfTracePath(home), "utf8");
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return [];
+    }
+    throw error;
+  }
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as FakeCfTraceEntry);
 }
 
 /** Spawn the built CLI and capture its output. */

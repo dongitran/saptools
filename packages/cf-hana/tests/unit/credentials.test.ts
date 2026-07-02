@@ -48,6 +48,56 @@ VCAP_APPLICATION:{}`);
 
     await expect(resolveAppBindings("ghost-app", {})).rejects.toThrow(/current target/);
   });
+
+  it("uses the raw current endpoint for bare auth fallback", async () => {
+    const current: CurrentCfTarget = {
+      apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+      orgName: "example-org",
+      spaceName: "space-demo",
+      regionKey: "eu10-005",
+    };
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(current);
+    vi.spyOn(cf, "cfEnvDirect").mockRejectedValue({ stderr: "not logged in" });
+    const cfApi = vi.spyOn(cf, "cfApi").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfAuth").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfTargetSpace").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfEnv").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:{}`);
+    vi.spyOn(cf, "withCfSession").mockImplementation(async (work) => await work({ cfHome: "/tmp/fake" }));
+    vi.stubEnv("SAP_EMAIL", "u@example.com");
+    vi.stubEnv("SAP_PASSWORD", "p");
+
+    await resolveAppBindings("app-demo", {});
+
+    expect(cfApi).toHaveBeenCalledWith("https://api.cf.eu10-005.hana.ondemand.com", { cfHome: "/tmp/fake" });
+  });
+
+  it("resolves explicit indexed and China selectors", async () => {
+    const cfApi = vi.spyOn(cf, "cfApi").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfAuth").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfTargetSpace").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfEnv").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:{}`);
+    vi.spyOn(cf, "withCfSession").mockImplementation(async (work) => await work({ cfHome: "/tmp/fake" }));
+    vi.stubEnv("SAP_EMAIL", "u@example.com");
+    vi.stubEnv("SAP_PASSWORD", "p");
+
+    await resolveAppBindings("cn40/example-org/space-demo/app-demo", {});
+    await resolveAppBindings("eu20-001/example-org/space-demo/app-demo", {});
+
+    expect(cfApi).toHaveBeenCalledWith("https://api.cf.cn40.platform.sapcloud.cn", { cfHome: "/tmp/fake" });
+    expect(cfApi).toHaveBeenCalledWith("https://api.cf.eu20-001.hana.ondemand.com", { cfHome: "/tmp/fake" });
+  });
+
+  it("rejects invalid explicit selector shapes and unknown regions before auth", async () => {
+    const cfAuth = vi.spyOn(cf, "cfAuth").mockResolvedValue(undefined);
+    await expect(resolveAppBindings("eu10/example-org//app-demo", {})).rejects.toThrow(/Invalid selector/);
+    await expect(resolveAppBindings("not-a-region/example-org/space-demo/app-demo", {})).rejects.toThrow(/Unknown SAP CF region/);
+    await expect(resolveAppBindings("zz99-123/example-org/space-demo/app-demo", {})).rejects.toThrow(/Unknown SAP CF region/);
+    expect(cfAuth).not.toHaveBeenCalled();
+  });
 });
 
 describe("selectBinding", () => {

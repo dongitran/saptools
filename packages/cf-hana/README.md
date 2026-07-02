@@ -2,19 +2,17 @@
 
 > Run SQL directly against SAP HANA Cloud databases bound to a Cloud Foundry app — addressed by a `region/org/space/app` selector.
 
-`@saptools/cf-hana` closes the last gap in the `saptools` chain: `@saptools/cf-sync`
-already discovers Cloud Foundry topology and HANA service bindings, but nothing
-actually executes SQL. This package does. Pass a selector, get a connected,
-pooled client, and run `SELECT` / `INSERT` / `UPDATE` / `DELETE` / DDL.
-
-It is fast because credentials come from `cf-sync`'s on-disk cache (no 5–15s CF
-login on the hot path) and connections are pooled and reused within a process.
+`@saptools/cf-hana` opens live SAP HANA Cloud connections from Cloud Foundry app
+bindings. Pass a selector, get a connected, pooled client, and run `SELECT` /
+`INSERT` / `UPDATE` / `DELETE` / DDL. Bare app names use your active `cf target`
+and current CF session first, so a healthy local CF login does not require SAP
+password re-authentication.
 
 ## Features
 
 - **Selector-based connect** — `region/org/space/app` or a bare app name.
-- **Credentials, handled for you** — cache-first via `@saptools/cf-sync`, with an
-  on-demand live Cloud Foundry fetch as a fallback.
+- **Credentials, handled for you** — HANA bindings are read live from Cloud Foundry.
+  Bare app names use the current CF session first; explicit selectors use isolated live authentication.
 - **Parameterized queries** — values always travel as bound `?` parameters, never
   string-concatenated.
 - **Connection pooling** — pooled, reused connections; opt out with `pool: false`.
@@ -74,8 +72,9 @@ Every entry point takes a selector as its first argument:
 
 - **Explicit** — `region/org/space/app` (e.g.
   `eu10/example-org/space-demo/app-demo`). Works without any cached topology.
-- **Bare app name** — `app-demo`. Resolved against the topology cached by
-  `cf-sync sync`; throws if the name is ambiguous across spaces.
+- **Bare app name** — `app-demo`. Resolved only against the active `cf target`
+  (current org/space/API endpoint) and fetched with `cf env app-demo` using your
+  existing CF session before any isolated re-auth fallback.
 
 ## CLI
 
@@ -89,7 +88,7 @@ cf-hana info    <selector>                  Print the resolved connection metada
 cf-hana result  <command>                   Inspect saved query refs
 ```
 
-Common options: `--refresh`, `--role <runtime|hdi>`, `--binding <name>` /
+Common options: `--refresh` (deprecated compatibility flag; binding discovery is already live), `--role <runtime|hdi>`, `--binding <name>` /
 `--binding-index <n>`, `--timeout <ms>`, `--read-only`, `--allow-destructive`,
 `--limit <n>`, `--no-auto-limit`. The `query` command also accepts
 `--param <value>` (repeatable), `--cell-limit <n>`, `--save`,
@@ -170,10 +169,11 @@ atomically, and expire after exactly 30 minutes. The cache key is derived from
 non-secret connection identity: selector, app name, host, active schema, role,
 and driver. It does not include passwords, certificates, tokens, SQL parameter
 values, result rows, or table data, and malformed cache files are treated as
-misses. Pass `--refresh-metadata` to bypass this cache for a query; `--refresh`
-also bypasses it because it refreshes the resolved connection identity. If
-metadata lookup or cache I/O fails, cf-hana preserves the original query error
-and simply omits suggestions.
+misses. Pass `--refresh-metadata` to bypass this cache for a query. The legacy
+`--refresh` flag is accepted for compatibility but does not bypass the metadata
+cache and is not a credential-cache control because binding discovery is already
+live. If metadata lookup or cache I/O fails, cf-hana preserves the original
+query error and simply omits suggestions.
 
 ## Programmatic API
 
@@ -187,21 +187,31 @@ and simply omits suggestions.
 
 `ConnectOptions` highlights: `role` (`runtime` | `hdi`), `bindingName` /
 `bindingIndex`, `readOnly`, `allowDestructive`, `autoLimit`, `queryTimeoutMs`,
-`connectTimeoutMs`, `refresh`, `pool`.
+`connectTimeoutMs`, deprecated `refresh`, `pool`.
 
 ## Credentials
 
-Credentials are resolved **cache-first**:
+Credential discovery is **live-only** and does not read `@saptools/cf-sync`
+snapshots or `~/.saptools/cf-db-bindings.json`.
 
-1. Read what `cf-sync db-sync` cached in `~/.saptools/cf-db-bindings.json`.
-2. On a cache miss (or when `refresh: true` / `--refresh` is passed), fetch them
-   live from Cloud Foundry. The live fetch needs `SAP_EMAIL` and `SAP_PASSWORD`
-   (or the `email` / `password` options) and never persists anything to disk.
+- Bare app selectors (`app-demo`) read the active `cf target`, preserve its exact
+  validated API endpoint, and first run `cf env app-demo` with your current CF
+  session. This path does not require `SAP_EMAIL` or `SAP_PASSWORD` while the
+  current session is healthy.
+- If that direct bare-app call fails with an auth/session error, cf-hana falls
+  back to an isolated temporary `CF_HOME`, runs `cf api <current-endpoint>`,
+  authenticates with `SAP_EMAIL` / `SAP_PASSWORD` (or the programmatic `email` /
+  `password` options), targets the current org/space, and reads `cf env`.
+- Explicit `region/org/space/app` selectors always use isolated live
+  authentication. Region keys support current SAP CF technical keys, including
+  indexed regions such as `eu10-005`, `eu20-001`, `us10-002`, and China
+  endpoints such as `cn40` on `platform.sapcloud.cn`.
 
-Credential resolution writes nothing under `~/.saptools/` — it only reads what
-`cf-sync` cached. The connection pool is in-process and in-memory only, so it is
-safe to run many `cf-hana` processes in parallel and alongside any `cf-sync`
-command.
+The legacy `refresh` / `--refresh` option is retained only for compatibility and
+has no credential-cache meaning; binding discovery is already live. Use
+`--refresh-metadata` when you specifically want to bypass the table/view
+suggestion metadata cache. Credential resolution writes no binding credentials
+under `~/.saptools/`.
 
 ## SQL history
 
@@ -264,9 +274,9 @@ parameters.
 ## Requirements
 
 - Node.js >= 20.
-- A HANA binding reachable from your network. Resolving a bare app name, or a
-  live credential fetch, additionally needs the Cloud Foundry CLI and
-  `SAP_EMAIL` / `SAP_PASSWORD`.
+- A HANA binding reachable from your network. Resolving a bare app name needs the Cloud Foundry CLI and an active `cf target`.
+  Isolated fallback or explicit selectors additionally need `SAP_EMAIL` /
+  `SAP_PASSWORD`.
 
 ## Development
 
