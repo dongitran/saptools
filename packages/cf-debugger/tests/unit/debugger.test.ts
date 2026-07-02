@@ -24,9 +24,11 @@ const mocks = vi.hoisted(() => ({
   findListeningProcessId: vi.fn(),
   isPidAlive: vi.fn(),
   isPortFree: vi.fn(),
+  isPortListening: vi.fn(),
   isSshDisabledError: vi.fn(),
   killProcessOnPort: vi.fn(),
   probeTunnelReady: vi.fn(),
+  readActiveSessions: vi.fn(),
   readAndPruneActiveSessions: vi.fn(),
   readSessionSnapshot: vi.fn(),
   registerNewSession: vi.fn(),
@@ -56,6 +58,7 @@ vi.mock("../../src/paths.js", () => ({
 vi.mock("../../src/port.js", () => ({
   findListeningProcessId: mocks.findListeningProcessId,
   isPortFree: mocks.isPortFree,
+  isPortListening: mocks.isPortListening,
   killProcessOnPort: mocks.killProcessOnPort,
   probeTunnelReady: mocks.probeTunnelReady,
 }));
@@ -71,6 +74,7 @@ vi.mock("../../src/state.js", () => ({
     session.org === key.org &&
     session.space === key.space &&
     session.app === key.app,
+  readActiveSessions: mocks.readActiveSessions,
   readAndPruneActiveSessions: mocks.readAndPruneActiveSessions,
   readSessionSnapshot: mocks.readSessionSnapshot,
   registerNewSession: mocks.registerNewSession,
@@ -147,6 +151,7 @@ describe("startDebugger orchestration", () => {
     child = createChild(44_001);
 
     mocks.resolveApiEndpoint.mockReturnValue("https://api.example.com");
+    mocks.readActiveSessions.mockResolvedValue([]);
     mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [] });
     mocks.readSessionSnapshot.mockResolvedValue([]);
     mocks.registerNewSession.mockResolvedValue({ session });
@@ -379,7 +384,27 @@ describe("stopDebugger", () => {
     const removed = await stopDebugger({ key });
 
     expect(removed?.sessionId).toBe("session-a");
+    expect(removed?.stale).toBe(false);
     expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
+  });
+
+  it("returns a stale session pruned before session-id matching", async () => {
+    mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [session] });
+
+    const removed = await stopDebugger({ sessionId: "session-a" });
+
+    expect(removed?.sessionId).toBe("session-a");
+    expect(removed?.stale).toBe(true);
+    expect(mocks.removeSession).not.toHaveBeenCalled();
+  });
+
+  it("returns a stale session pruned before key matching", async () => {
+    mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [session] });
+
+    const removed = await stopDebugger({ key });
+
+    expect(removed?.sessionId).toBe("session-a");
+    expect(removed?.stale).toBe(true);
   });
 });
 
@@ -390,6 +415,7 @@ describe("session readers", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-readers-"));
     session = createSession(tempDir, { pid: 77_001, status: "ready" });
+    mocks.readActiveSessions.mockResolvedValue([]);
     mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [session] });
     mocks.readSessionSnapshot.mockResolvedValue([session]);
     mocks.killProcessOnPort.mockResolvedValue(undefined);
@@ -400,19 +426,21 @@ describe("session readers", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("lists stored sessions without orphan cleanup side effects", async () => {
+  it("lists healthy active sessions through the pruned state view", async () => {
+    mocks.readActiveSessions.mockResolvedValue([session]);
+
     await expect(listSessions()).resolves.toEqual([session]);
 
-    expect(mocks.readSessionSnapshot).toHaveBeenCalledTimes(1);
-    expect(mocks.readAndPruneActiveSessions).not.toHaveBeenCalled();
-    expect(mocks.killProcessOnPort).not.toHaveBeenCalled();
+    expect(mocks.readActiveSessions).toHaveBeenCalledTimes(1);
+    expect(mocks.readSessionSnapshot).not.toHaveBeenCalled();
   });
 
-  it("gets a stored session without orphan cleanup side effects", async () => {
+  it("gets a session through the same pruned state view as list", async () => {
+    mocks.readActiveSessions.mockResolvedValue([session]);
+
     await expect(getSession(key)).resolves.toEqual(session);
 
-    expect(mocks.readSessionSnapshot).toHaveBeenCalledTimes(1);
-    expect(mocks.readAndPruneActiveSessions).not.toHaveBeenCalled();
-    expect(mocks.killProcessOnPort).not.toHaveBeenCalled();
+    expect(mocks.readActiveSessions).toHaveBeenCalledTimes(1);
+    expect(mocks.readSessionSnapshot).not.toHaveBeenCalled();
   });
 });

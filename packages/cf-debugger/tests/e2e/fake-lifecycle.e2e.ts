@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +26,15 @@ interface DebuggerStateForTest {
     readonly pid: number;
     readonly app: string;
     readonly status: string;
+    readonly localPort: number;
+    readonly hostname: string;
+    readonly region: string;
+    readonly org: string;
+    readonly space: string;
+    readonly apiEndpoint: string;
+    readonly remotePort: number;
+    readonly cfHomeDir: string;
+    readonly startedAt: string;
   }[];
 }
 
@@ -68,6 +77,7 @@ async function readFakeCommands(homeDir: string): Promise<readonly string[]> {
 }
 
 async function writeState(homeDir: string, state: DebuggerStateForTest): Promise<void> {
+  await mkdir(join(homeDir, SAPTOOLS_DIR_NAME), { recursive: true });
   await writeFile(
     join(homeDir, SAPTOOLS_DIR_NAME, CF_DEBUGGER_STATE_FILENAME),
     `${JSON.stringify(state, null, 2)}\n`,
@@ -164,7 +174,7 @@ test("User can stop a fake-backed session by session id", async () => {
   }
 });
 
-test("User can inspect session state without closing a live tunnel when the stored pid is stale", async () => {
+test("User list and status prune stale session state before printing", async () => {
   expect(existsSync(CLI_PATH)).toBe(true);
   expect(existsSync(FAKE_CF_PATH)).toBe(true);
 
@@ -191,19 +201,55 @@ test("User can inspect session state without closing a live tunnel when the stor
 
     const list = await runCliCommand(env, ["list"]);
     expect(list.code, list.stderr).toBe(0);
-    const listed = JSON.parse(list.stdout) as readonly { readonly pid: number }[];
-    expect(listed[0]?.pid).toBe(stalePid);
-    await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
+    expect(JSON.parse(list.stdout)).toEqual([]);
 
     const status = await runCliCommand(env, ["status", ...TARGET_ARGS]);
     expect(status.code, status.stderr).toBe(0);
-    const statusJson = JSON.parse(status.stdout) as { readonly pid?: number } | null;
-    expect(statusJson?.pid).toBe(stalePid);
-    await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
+    expect(JSON.parse(status.stdout)).toBeNull();
   } finally {
     if (session !== undefined) {
       await stopCli(session.child);
     }
+    await cleanupHome(homeDir);
+  }
+});
+
+
+test("User can remove a stale session by session id", async () => {
+  expect(existsSync(CLI_PATH)).toBe(true);
+
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir);
+
+  try {
+    await writeState(homeDir, {
+      version: "1",
+      sessions: [
+        {
+          sessionId: "stale-session",
+          pid: 2_147_483_600,
+          hostname: (await import("node:os")).hostname(),
+          region: "eu10",
+          org: "org-a",
+          space: "dev",
+          app: "demo-app",
+          apiEndpoint: "https://api.example.com",
+          localPort: 20_009,
+          remotePort: 9229,
+          cfHomeDir: join(homeDir, "stale-home"),
+          startedAt: new Date().toISOString(),
+          status: "ready",
+        },
+      ],
+    });
+
+    const stop = await runCliCommand(env, ["stop", "--session-id", "stale-session"]);
+    expect(stop.code, stop.stderr).toBe(0);
+    expect(stop.stdout).toContain("Removed stale session stale-session");
+
+    const finalState = (await readState(homeDir)) as { sessions?: readonly unknown[] } | undefined;
+    expect(finalState?.sessions ?? []).toEqual([]);
+  } finally {
     await cleanupHome(homeDir);
   }
 });
@@ -251,7 +297,7 @@ test("User can see empty status and missing stop results", async () => {
 
     const stop = await runCliCommand(env, ["stop", ...TARGET_ARGS]);
     expect(stop.code).toBe(1);
-    expect(stop.stderr).toContain("No matching session found.");
+    expect(stop.stderr).toContain("pass --session-id or region/org/space/app");
   } finally {
     await cleanupHome(homeDir);
   }

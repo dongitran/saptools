@@ -4,7 +4,12 @@ import { killProcessOnPort } from "../port.js";
 import { readAndPruneActiveSessions } from "../state.js";
 import type { ActiveSession } from "../types.js";
 
-export async function pruneAndCleanupOrphans(): Promise<readonly ActiveSession[]> {
+export interface PruneCleanupResult {
+  readonly sessions: readonly ActiveSession[];
+  readonly removed: readonly ActiveSession[];
+}
+
+export async function pruneAndCleanupOrphans(): Promise<PruneCleanupResult> {
   const result = await readAndPruneActiveSessions();
   const host = getHostname();
   for (const removed of result.removed) {
@@ -12,5 +17,5 @@ export async function pruneAndCleanupOrphans(): Promise<readonly ActiveSession[]
       void killProcessOnPort(removed.localPort);
     }
   }
-  return result.sessions;
+  return result;
 }

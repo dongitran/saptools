@@ -5,4 +5,4 @@ export {
   stopAllDebuggers,
   stopDebugger,
 } from "./debug-session/sessions.js";
-export type { StopOptions } from "./debug-session/sessions.js";
+export type { StopDebuggerResult, StopOptions } from "./debug-session/sessions.js";

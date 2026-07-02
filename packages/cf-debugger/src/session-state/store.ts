@@ -6,6 +6,7 @@ import process from "node:process";
 
 import { withFileLock } from "../lock.js";
 import { stateFilePath, stateLockPath } from "../paths.js";
+import { findListeningProcessId, isPortListening } from "../port.js";
 import { CfDebuggerError } from "../types.js";
 import type { ActiveSession, SessionKey, StateFile } from "../types.js";
 
@@ -62,14 +63,34 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-function filterStaleSessions(sessions: readonly ActiveSession[]): readonly ActiveSession[] {
+async function isSessionHealthy(session: ActiveSession, host: string): Promise<boolean> {
+  if (session.hostname !== host) {
+    return true;
+  }
+  if (!isPidAlive(session.pid)) {
+    return false;
+  }
+  if (session.status !== "ready") {
+    return true;
+  }
+  if (!(await isPortListening(session.localPort))) {
+    return false;
+  }
+  const listeningPid = await findListeningProcessId(session.localPort);
+  return listeningPid === undefined || listeningPid === session.pid;
+}
+
+async function filterStaleSessions(
+  sessions: readonly ActiveSession[],
+): Promise<readonly ActiveSession[]> {
   const host = getHostname();
-  return sessions.filter((session) => {
-    if (session.hostname !== host) {
-      return true;
-    }
-    return isPidAlive(session.pid);
-  });
+  const checks = await Promise.all(
+    sessions.map(async (session): Promise<readonly [ActiveSession, boolean]> => [
+      session,
+      await isSessionHealthy(session, host),
+    ]),
+  );
+  return checks.filter(([, healthy]) => healthy).map(([session]) => session);
 }
 
 async function readStateRaw(): Promise<StateFile> {
@@ -91,7 +112,7 @@ export interface StateReaderResult {
 
 async function readAndPruneLocked(): Promise<StateReaderResult> {
   const raw = await readStateRaw();
-  const pruned = filterStaleSessions(raw.sessions);
+  const pruned = await filterStaleSessions(raw.sessions);
   const removed = raw.sessions.filter(
     (session) => !pruned.some((active) => active.sessionId === session.sessionId),
   );
