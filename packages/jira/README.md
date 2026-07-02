@@ -25,6 +25,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
 - ⏱️ **Worklogs** — adds focused time entries with optional ADF text comments and records successful writes in local history.
+- 🧭 **Custom fields** — discovers Jira Cloud custom fields, pins useful display names, and updates editable pinned fields without hard-coded site IDs.
 - 🧩 **Typed API** — every CLI workflow is available as a TypeScript function.
 - 🧪 **Fake-backed E2E** — test coverage validates the real built CLI without calling Atlassian.
 
@@ -184,6 +185,44 @@ Apply a transition by ID.
 jira transition OPS-123 --id 31
 ```
 
+
+### `jira fields`
+
+Discover, cache, pin, and update site-specific Jira custom fields by display name. Field IDs such as `customfield_10101` are Jira-site-specific, so agents should discover and pin names for each connected cloud instead of hard-coding IDs.
+
+```bash
+jira fields discover
+jira fields discover --search "custom text"
+jira fields search "custom text"
+jira fields pin "Custom text A"
+jira fields pin "Custom text B"
+jira fields pinned
+jira fields unpin "Custom text A"
+jira fields update OPS-123 --field 'Custom text A=analysis notes'
+jira fields update OPS-123 --field 'Custom text A=analysis notes' --field-file 'Custom text B=./review.md'
+```
+
+`jira fields discover` always refreshes from Jira Cloud and has no `--refresh` flag. `jira fields discover --search <query>` still fetches and saves the complete refreshed snapshot; the search only filters the terminal output so agents can inspect candidates immediately. `jira fields search <query>` searches the cached snapshot without calling Jira and fails clearly if discovery has not run.
+
+Local custom field metadata is stored under the current user's home directory with Node path handling:
+
+```text
+~/.saptools/jira/clouds/<cloudId>/fields.json
+~/.saptools/jira/clouds/<cloudId>/pinned-fields.json
+```
+
+The cache stores normalized field metadata only. It never stores access tokens, refresh tokens, Authorization headers, OAuth client secrets, request headers, field values, or raw Jira responses. Pinned fields are cloud/site-specific and persist the resolved Jira field ID internally, but normal pin, unpin, update, and footer workflows use Jira display names only; aliases are not generated or accepted.
+
+`jira fields update <KEY>` resolves names against `pinned-fields.json`, fetches `editmeta` for that issue, verifies every target field is editable before writing, and then sends a Jira issue field update. Textarea custom fields are sent as Atlassian Document Format; single-line text fields are sent as strings. Success output lists only display names and does not echo field values.
+
+After fields are pinned, normal human output includes a display-name-only footer such as:
+
+```text
+Updatable custom fields: Custom text A, Custom text B. Use: jira fields update <KEY> --field 'FIELD NAME=value'
+```
+
+The footer never includes `customfield_*` IDs, custom numeric IDs, schema details, aliases, or values. It is never appended to `--json`, `jira token`, help, or version output; use global `--no-hints` to suppress it in human output.
+
 ### `jira worklog <key>`
 
 Add a worklog entry.
@@ -248,6 +287,7 @@ E2E tests pre-seed a temp `HOME/.jira-oauth/tokens.json` and run the built `dist
 - OAuth app credentials come from `JIRA_CLIENT_ID`, `JIRA_CLIENT_SECRET`, or explicit flags.
 - Access and refresh tokens are stored only in the shared token file, with owner-only permissions when this package writes it.
 - Jira HTTP errors are reported as neutral messages and do not include response bodies.
+- Custom field snapshots and pinned-field configs under `~/.saptools/jira/clouds/<cloudId>/` store only normalized metadata, never credentials, Authorization headers, raw Jira responses, or field values.
 - Do not commit `~/.jira-oauth/tokens.json`, custom token stores, access tokens, refresh tokens, or Authorization headers.
 
 ---

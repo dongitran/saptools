@@ -77,8 +77,34 @@ export function buildJiraIssueTransitionsUrl(
   cloudId: string,
   issueKey: string,
   apiRoot = DEFAULT_JIRA_API_ROOT,
+  options: { readonly expandFields?: boolean } = {},
 ): string {
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/transitions`;
+  const url = new URL(`${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/transitions`);
+  if (options.expandFields === true) {
+    url.searchParams.set("expand", "transitions.fields");
+  }
+  return url.toString();
+}
+
+export function buildJiraFieldSearchUrl(
+  cloudId: string,
+  startAt: number,
+  maxResults: number,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  const url = new URL(`${cloudRoot(apiRoot, cloudId)}/rest/api/3/field/search`);
+  url.searchParams.set("type", "custom");
+  url.searchParams.set("startAt", startAt.toString());
+  url.searchParams.set("maxResults", maxResults.toString());
+  return url.toString();
+}
+
+export function buildJiraIssueEditMetaUrl(
+  cloudId: string,
+  issueKey: string,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/editmeta`;
 }
 
 export function buildJiraIssueWorklogUrl(

@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addJiraIssueWorklog,
   fetchAssignedJiraIssues,
+  fetchJiraCustomFields,
+  fetchJiraIssueEditMetadata,
   fetchJiraIssueDetail,
   fetchJiraIssueRemoteLinks,
   fetchJiraIssueTransitions,
@@ -646,6 +648,29 @@ describe("Jira REST client", () => {
         minutes: 0,
       }),
     ).rejects.toThrow("positive integer");
+  });
+
+
+  it("fetches paginated custom fields and issue edit metadata", async () => {
+    const fetchMock = vi.fn(async (input: FetchInput) => {
+      const url = requestUrl(input);
+      if (url.includes("startAt=0")) {
+        return await Promise.resolve(jsonResponse({ startAt: 0, maxResults: 1, total: 2, values: [{ id: "customfield_10101", name: "Custom text A", schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } }] }));
+      }
+      return await Promise.resolve(jsonResponse({ startAt: 1, maxResults: 1, total: 2, isLast: true, values: [{ id: "customfield_10102", key: "customfield_10102", name: "Custom text B", schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textfield", customId: 10102 } }] }));
+    });
+
+    const result = await fetchJiraCustomFields({ accessToken: "secret-access-token", apiRoot, cloudId: "cloud-1", fetchImpl: fetchMock, maxResults: 1 });
+
+    expect(result.totalFromApi).toBe(2);
+    expect(result.fields.map((field) => field.name)).toEqual(["Custom text A", "Custom text B"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("maps editable custom fields and updates issue fields", async () => {
+    const editFetch = vi.fn(async () => await Promise.resolve(jsonResponse({ fields: { customfield_10101: { name: "Custom text A", required: false, allowedValues: [], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } } } })));
+    await expect(fetchJiraIssueEditMetadata({ accessToken: "secret-access-token", apiRoot, cloudId: "cloud-1", fetchImpl: editFetch, issueKey: "OPS-123" }))
+      .resolves.toEqual(new Map([["customfield_10101", { id: "customfield_10101", name: "Custom text A", required: false, allowedValues: [], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101, items: null } }]]));
   });
 
   it("throws neutral validation errors for malformed Jira responses", async () => {

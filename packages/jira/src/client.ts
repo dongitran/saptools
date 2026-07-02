@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { JiraCustomFieldSearchPageSchema, JiraIssueEditMetadataSchema, normalizeCustomField, normalizeFieldSchema } from "./custom-fields.js";
+import type { JiraCustomFieldSearchPage, JiraIssueEditableField, NormalizedCustomField } from "./custom-fields.js";
 import {
   collectAdfMediaReferences,
   collectDescriptionImageReferences,
@@ -9,6 +11,7 @@ import {
 import type {
   AddJiraIssueWorklogOptions,
   FetchAssignedJiraIssuesOptions,
+  FetchJiraCustomFieldsOptions,
   FetchJiraIssueDetailOptions,
   JiraIssueAttachment,
   JiraIssueComment,
@@ -18,13 +21,17 @@ import type {
   JiraIssueSummary,
   JiraIssueTransition,
   TransitionJiraIssueOptions,
+  UpdateJiraIssueFieldsOptions,
 } from "./types.js";
 import {
   buildAssignedIssuesSearchBody,
   buildAssignedIssuesSearchUrl,
+  buildJiraFieldSearchUrl,
   buildJiraIssueCommentsUrl,
   buildJiraIssueDetailUrl,
+  buildJiraIssueEditMetaUrl,
   buildJiraIssueRemoteLinksUrl,
+  buildJiraIssueUrl,
   buildJiraIssueTransitionsUrl,
   buildJiraIssueWorklogUrl,
 } from "./urls.js";
@@ -136,6 +143,61 @@ const JiraIssueDetailResponseSchema = z.object({
   }),
 });
 
+
+export async function fetchJiraCustomFields(
+  options: FetchJiraCustomFieldsOptions,
+): Promise<{ readonly fields: readonly NormalizedCustomField[]; readonly totalFromApi: number }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const maxResults = options.maxResults ?? 50;
+  const fields: NormalizedCustomField[] = [];
+  let totalFromApi = 0;
+  let startAt = 0;
+  let done = false;
+  while (!done) {
+    const response = await fetchImpl(buildJiraFieldSearchUrl(options.cloudId, startAt, maxResults, options.apiRoot), {
+      headers: readJiraHeaders(options.accessToken),
+    });
+    assertOk(response, "Jira custom fields could not be loaded.");
+    const page = parseCustomFieldPage(await response.json());
+    fields.push(...page.values.map(normalizeCustomField));
+    totalFromApi = page.total ?? fields.length;
+    const pageStartAt = page.startAt ?? startAt;
+    const nextStartAt = pageStartAt + page.values.length;
+    done = page.isLast === true || page.values.length === 0 || nextStartAt <= startAt || (page.total !== undefined && nextStartAt >= page.total);
+    startAt = nextStartAt;
+  }
+  return { fields, totalFromApi };
+}
+
+export async function fetchJiraIssueEditMetadata(
+  options: JiraIssueKeyRequestOptions,
+): Promise<ReadonlyMap<string, JiraIssueEditableField>> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(buildJiraIssueEditMetaUrl(options.cloudId, options.issueKey, options.apiRoot), {
+    headers: readJiraHeaders(options.accessToken),
+  });
+  assertOk(response, "Jira issue edit metadata could not be loaded.");
+  const parsed = JiraIssueEditMetadataSchema.safeParse(await response.json());
+  if (!parsed.success) {throw new Error("Jira issue edit metadata response was not valid.");}
+  return new Map(Object.entries(parsed.data.fields).map(([id, field]) => [id, {
+    id,
+    name: field.name ?? id,
+    required: field.required ?? false,
+    allowedValues: field.allowedValues ?? [],
+    schema: field.schema === undefined ? null : normalizeFieldSchema(field.schema),
+  }]));
+}
+
+export async function updateJiraIssueFields(options: UpdateJiraIssueFieldsOptions): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(buildJiraIssueUrl(options.cloudId, options.issueKey, options.apiRoot), {
+    body: JSON.stringify({ fields: options.fields }),
+    headers: jsonJiraHeaders(options.accessToken),
+    method: "PUT",
+  });
+  assertOk(response, "Jira issue fields could not be updated.");
+}
+
 export async function fetchAssignedJiraIssues(
   options: FetchAssignedJiraIssuesOptions,
 ): Promise<JiraIssueSummary[]> {
@@ -238,6 +300,12 @@ export async function addJiraIssueWorklog(
 
 export function extractTextFromAdf(value: unknown): string {
   return collectAdfText(value).join(" ").replaceAll(/\s+/gu, " ").trim();
+}
+
+function parseCustomFieldPage(responseBody: unknown): JiraCustomFieldSearchPage {
+  const parsed = JiraCustomFieldSearchPageSchema.safeParse(responseBody);
+  if (parsed.success) {return parsed.data;}
+  throw new Error("Jira custom field response was not valid.");
 }
 
 function parseAssignedIssuesResponse(responseBody: unknown): JiraIssueSummary[] {

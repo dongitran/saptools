@@ -73,6 +73,14 @@ describe("Jira auth", () => {
     expect(client.refresh).not.toHaveBeenCalled();
   });
 
+
+  it("returns required stored tokens when they are usable", async () => {
+    const storedTokens = createTokens({ issuedAt: Date.now(), expiresIn: 3600 });
+    const tokenStorePath = await writeTempTokenStore(storedTokens);
+
+    await expect(requireStoredOrRefreshJiraTokens({ tokenStorePath })).resolves.toEqual(storedTokens);
+  });
+
   it("requires a shared token before running API commands", async () => {
     await expect(
       requireStoredOrRefreshJiraTokens({

@@ -6,6 +6,10 @@ import {
   formatIssueLinks,
   formatIssueTransitions,
   formatIssues,
+  formatCustomFieldRows,
+  formatCustomFieldDiscovery,
+  formatPinnedCustomFields,
+  formatPinnedCustomFieldHint,
 } from "../../src/format.js";
 import type {
   JiraConnectionStatus,
@@ -119,3 +123,16 @@ describe("CLI text formatters", () => {
     );
   });
 });
+
+  it("formats custom field discovery, pinned fields, and hints", () => {
+    const field = { id: "customfield_10101", key: "customfield_10101", name: "Custom text A", custom: true, orderable: true, navigable: true, searchable: true, clauseNames: ["Custom text A"], schema: { type: "string", items: null, custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } };
+    const config = { version: 1 as const, cloudId: "cloud-1", cloudName: "Example", updatedAt: "2026-07-02T00:00:00.000Z", fields: [{ id: field.id, name: field.name, schema: field.schema }] };
+    const snapshot = { version: 1 as const, cloudId: "cloud-1", cloudName: "Example", discoveredAt: "2026-07-02T00:00:00.000Z", fetched: 1, totalFromApi: 1, fields: [field] };
+    expect(formatCustomFieldRows([field])).toContain("textarea");
+    expect(formatCustomFieldRows([])).toBe("No matching Jira custom fields found.");
+    expect(formatCustomFieldDiscovery(snapshot, [])).toContain("Matches: 0");
+    expect(formatPinnedCustomFields(config)).toBe("Custom text A");
+    expect(formatPinnedCustomFields(null)).toBe("No pinned Jira custom fields.");
+    expect(formatPinnedCustomFieldHint(config)).toContain("Custom text A");
+    expect(formatPinnedCustomFieldHint(null)).toBe("");
+  });

@@ -148,3 +148,11 @@ export interface JiraIssueTransition {
   readonly name: string;
   readonly toStatus: string;
 }
+
+export interface FetchJiraCustomFieldsOptions extends JiraRequestOptions {
+  readonly maxResults?: number;
+}
+
+export interface UpdateJiraIssueFieldsOptions extends JiraIssueKeyRequestOptions {
+  readonly fields: Record<string, unknown>;
+}
