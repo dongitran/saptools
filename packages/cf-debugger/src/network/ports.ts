@@ -141,27 +141,31 @@ export async function isPortFree(port: number): Promise<boolean> {
   });
 }
 
+export async function isPortListening(port: number, timeoutMs = 200): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = createConnection({ port, host: "127.0.0.1" });
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
 export async function probeTunnelReady(port: number, timeoutMs: number): Promise<boolean> {
   const pollIntervalMs = 250;
   const started = Date.now();
 
   while (Date.now() - started < timeoutMs) {
-    const connected = await new Promise<boolean>((resolve) => {
-      const socket = createConnection({ port, host: "127.0.0.1" });
-      socket.setTimeout(200);
-      socket.once("connect", () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.once("error", () => {
-        socket.destroy();
-        resolve(false);
-      });
-      socket.once("timeout", () => {
-        socket.destroy();
-        resolve(false);
-      });
-    });
+    const connected = await isPortListening(port);
 
     if (connected) {
       return true;

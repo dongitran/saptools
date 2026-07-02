@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 import process from "node:process";
 
 import { killProcessOnPort } from "../port.js";
-import { matchesKey, readSessionSnapshot, removeSession } from "../state.js";
+import { matchesKey, readActiveSessions, removeSession } from "../state.js";
 import type { ActiveSession, SessionKey } from "../types.js";
 
 import { PORT_CLEANUP_DELAY_MS } from "./constants.js";
@@ -14,19 +14,26 @@ export interface StopOptions {
   readonly key?: SessionKey;
 }
 
-export async function stopDebugger(options: StopOptions): Promise<ActiveSession | undefined> {
-  const sessions = await pruneAndCleanupOrphans();
-  let target: ActiveSession | undefined;
+export interface StopDebuggerResult extends ActiveSession {
+  readonly stale: boolean;
+}
+
+function findMatchingSession(
+  sessions: readonly ActiveSession[],
+  options: StopOptions,
+): ActiveSession | undefined {
   if (options.sessionId !== undefined) {
-    target = sessions.find((s) => s.sessionId === options.sessionId);
-  } else if (options.key !== undefined) {
+    return sessions.find((s) => s.sessionId === options.sessionId);
+  }
+  if (options.key !== undefined) {
     const key = options.key;
-    target = sessions.find((s) => matchesKey(s, key));
+    return sessions.find((s) => matchesKey(s, key));
   }
-  if (target === undefined) {
-    return undefined;
-  }
-  if (target.pid !== process.pid) {
+  return undefined;
+}
+
+async function cleanupSession(target: ActiveSession, stale: boolean): Promise<StopDebuggerResult> {
+  if (!stale && target.pid !== process.pid) {
     try {
       await terminatePidOrGroup(target.pid);
     } catch {
@@ -36,19 +43,34 @@ export async function stopDebugger(options: StopOptions): Promise<ActiveSession 
   setTimeout(() => {
     void killProcessOnPort(target.localPort);
   }, PORT_CLEANUP_DELAY_MS);
-  const removed = await removeSession(target.sessionId);
+  const removed = stale ? undefined : await removeSession(target.sessionId);
   try {
     await rm(target.cfHomeDir, { recursive: true, force: true });
   } catch {
     // best-effort
   }
-  return removed ?? target;
+  return { ...(removed ?? target), stale };
+}
+
+export async function stopDebugger(options: StopOptions): Promise<StopDebuggerResult | undefined> {
+  const pruneResult = await pruneAndCleanupOrphans();
+  const activeTarget = findMatchingSession(pruneResult.sessions, options);
+  if (activeTarget !== undefined) {
+    return await cleanupSession(activeTarget, false);
+  }
+
+  const staleTarget = findMatchingSession(pruneResult.removed, options);
+  if (staleTarget !== undefined) {
+    return await cleanupSession(staleTarget, true);
+  }
+
+  return undefined;
 }
 
 export async function stopAllDebuggers(): Promise<number> {
-  const sessions = await pruneAndCleanupOrphans();
-  let stopped = 0;
-  for (const session of sessions) {
+  const pruneResult = await pruneAndCleanupOrphans();
+  let stopped = pruneResult.removed.length;
+  for (const session of pruneResult.sessions) {
     const result = await stopDebugger({ sessionId: session.sessionId });
     if (result) {
       stopped += 1;
@@ -58,10 +80,10 @@ export async function stopAllDebuggers(): Promise<number> {
 }
 
 export async function listSessions(): Promise<readonly ActiveSession[]> {
-  return await readSessionSnapshot();
+  return await readActiveSessions();
 }
 
 export async function getSession(key: SessionKey): Promise<ActiveSession | undefined> {
-  const sessions = await readSessionSnapshot();
+  const sessions = await readActiveSessions();
   return sessions.find((s) => matchesKey(s, key));
 }

@@ -246,8 +246,17 @@ async function handleStop(selector: string | undefined, rawOpts: StopCommandOpti
     ...(key === undefined ? {} : { key }),
   });
   if (result === undefined) {
-    process.stderr.write("No matching session found.\n");
+    process.stderr.write(
+      "No matching session found. Use `cf-debugger list` and pass --session-id or " +
+        "region/org/space/app if the current CF target differs.\n",
+    );
     process.exit(1);
+  }
+  if (result.stale) {
+    process.stdout.write(
+      `Removed stale session ${result.sessionId} (${result.app}, port ${result.localPort.toString()}).\n`,
+    );
+    return;
   }
   process.stdout.write(
     `Stopped session ${result.sessionId} (${result.app}, port ${result.localPort.toString()}).\n`,

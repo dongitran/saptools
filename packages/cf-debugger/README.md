@@ -23,7 +23,7 @@ Signal the remote process, enable SSH if needed, forward `9229` to a free local 
 - 🚀 **One-shot tunnel** — auth, target, SSH-enable, USR1 signal, port forward, readiness probe — all hidden behind `cf-debugger start`
 - 🧵 **Multi-debugger concurrency** — run N debuggers for N apps at once; each session gets its own local port, isolated `CF_HOME`, and an entry in the shared state file
 - 🛡️ **Duplicate-session protection** — the same `region/org/space/app` cannot be debugged twice simultaneously (returns `SESSION_ALREADY_RUNNING`)
-- 🧹 **Crash-proof state** — stale session entries are auto-pruned on next read using PID liveness checks
+- 🧹 **Crash-proof state** — stale session entries are auto-pruned on list/status/start/stop using PID, ready-port health, and listener-owner checks
 - 🔌 **Deterministic ports** — auto-assigned from a safe range (`20000–20999`), or pick your own with `--port`
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent with full TypeScript definitions
 - 🪶 **Small + boring** — one runtime dep (`commander`), no daemons, no magic
@@ -104,7 +104,7 @@ restart, and the one-shot SIGUSR1 SSH command) each allow up to 180 seconds.
 
 ### ⏹️ `cf-debugger stop`
 
-Stop a specific session or everything at once.
+Stop a specific session or everything at once. If a matching state entry is already stale, `stop --session-id` removes it idempotently and reports the stale cleanup instead of failing. For bare app names, matching still uses the current CF target; use `--session-id` or the full `region/org/space/app` selector when the listed session belongs to a different target.
 
 ```bash
 cf-debugger stop --region eu10 --org my-org --space dev --app my-app
@@ -120,7 +120,7 @@ cf-debugger stop --all
 
 ### 📋 `cf-debugger list`
 
-Print every active session this machine owns as JSON.
+Print healthy active sessions as JSON. `list` first prunes current-host entries whose PID is gone or whose `ready` local inspector port no longer accepts TCP connections.
 
 ```bash
 cf-debugger list | jq '.[] | {app, localPort, status}'
@@ -128,7 +128,7 @@ cf-debugger list | jq '.[] | {app, localPort, status}'
 
 ### 🔍 `cf-debugger status`
 
-Print one session by key (or `null` if no active session matches).
+Print one healthy session by key (or `null` if no active session matches after the same pruning used by `list`).
 
 ```bash
 cf-debugger status --region eu10 --org my-org --space dev --app my-app
@@ -156,8 +156,8 @@ Each step emits a status update (`logging-in`, `targeting`, `ssh-enabling`, `sig
 - **Atomic state** — `~/.saptools/cf-debugger-state.json` is written via temp-file + `rename`, guarded by a short-lived `.lock` file (`open(..., "wx")`).
 - **Port allocation** — on register, ports already used by other sessions are excluded; the first free port in `20000–20999` wins.
 - **Isolated CF homes** — each session runs with its own `CF_HOME` (`~/.saptools/cf-debugger-homes/<sessionId>/`), so `cf target` in one terminal can't clobber another.
-- **Stale pruning** — reading the state file checks every recorded PID with `process.kill(pid, 0)`; dead entries are dropped before returning the list.
-- **Duplicate guard** — trying to start a second tunnel for the same `region/org/space/app` fails fast with `SESSION_ALREADY_RUNNING` instead of racing for the port.
+- **Stale pruning** — list/status/start/stop check current-host PIDs with `process.kill(pid, 0)` and verify that `ready` sessions still accept TCP on `127.0.0.1:<localPort>` and, when detectable, that the listener is still the recorded tunnel PID; unhealthy entries are dropped before results or duplicate checks are returned.
+- **Duplicate guard** — trying to start a second healthy tunnel for the same `region/org/space/app` fails fast with `SESSION_ALREADY_RUNNING` instead of racing for the port; stale same-key entries are pruned so a fresh tunnel can recover.
 
 ---
 
