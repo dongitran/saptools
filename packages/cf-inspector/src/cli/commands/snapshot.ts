@@ -3,6 +3,7 @@ import process from "node:process";
 
 import {
   resume,
+  runSetupEvals,
   setBreakpoint,
   validateExpression,
   waitForPause,
@@ -26,6 +27,7 @@ import {
 
 interface PreparedSnapshotCommand {
   readonly target: Target;
+  readonly setupEvals: readonly string[];
   readonly breakpoints: readonly BreakpointLocation[];
   readonly captures: readonly string[];
   readonly remoteRoot: RemoteRootSetting;
@@ -64,8 +66,10 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
     : undefined;
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
   const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
+  const setupEvals = parseSetupEvals(opts.setupEval);
   return {
     target,
+    setupEvals,
     breakpoints: opts.bp.map((spec) => parseBreakpointSpec(spec)),
     captures: parseCaptureList(opts.capture),
     remoteRoot: parseRemoteRoot(opts.remoteRoot),
@@ -84,6 +88,13 @@ async function runSnapshotCommand(
   reportProgress?: ProgressReporter,
 ): Promise<SnapshotResult> {
   return await withSession(command.target, async (session): Promise<SnapshotResult> => {
+    if (command.setupEvals.length > 0) {
+      const setupCount = command.setupEvals.length;
+      reportProgress?.(`Running ${setupCount.toString()} setup ${setupCount === 1 ? "evaluation" : "evaluations"}...`);
+      await runSetupEvals(session, command.setupEvals);
+      reportProgress?.("Setup evaluation complete.");
+    }
+
     if (command.condition !== undefined) {
       reportProgress?.("Validating the breakpoint condition...");
       await validateExpression(session, command.condition);
@@ -182,3 +193,16 @@ async function resumeAfterSnapshot(
     return withPausedDuration(snapshot, null);
   }
 }
+
+function parseSetupEvals(raw: unknown): readonly string[] {
+  const values: readonly unknown[] = Array.isArray(raw) ? raw : [];
+  return values
+    .filter((expr): expr is string => typeof expr === "string" && expr.trim().length > 0)
+    .map((expr) => expr.trim());
+}
+
+export const internalsForTesting = {
+  parseSetupEvals,
+  prepareSnapshotCommand,
+  runSnapshotCommand,
+};

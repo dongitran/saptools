@@ -42,6 +42,29 @@ export async function evaluateGlobal(
   });
 }
 
+export async function runSetupEvals(
+  session: InspectorSession,
+  expressions: readonly string[],
+): Promise<void> {
+  for (const expression of expressions) {
+    const result = await evaluateGlobal(session, expression);
+    if (result.exceptionDetails !== undefined) {
+      throw new CfInspectorError(
+        "SETUP_EVAL_FAILED",
+        exceptionDetailsMessage(result, "setup evaluation failed"),
+      );
+    }
+  }
+}
+
+function exceptionDetailsMessage(result: CdpEvalResult, fallback: string): string {
+  return typeof result.exceptionDetails?.exception?.description === "string"
+    ? result.exceptionDetails.exception.description
+    : (typeof result.exceptionDetails?.text === "string"
+        ? result.exceptionDetails.text
+        : fallback);
+}
+
 export function listScripts(session: InspectorSession): readonly ScriptInfo[] {
   return [...session.scripts.values()];
 }

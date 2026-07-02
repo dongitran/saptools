@@ -589,3 +589,68 @@ test("snapshot accepts repeated --bp and captures the first hit (multi-bp)", asy
     await fixture.close();
   }
 });
+
+test("snapshot --help includes --setup-eval", async () => {
+  ensureCliBuilt();
+  const result = await runCli(["snapshot", "--help"], 15_000);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("--setup-eval <expr>");
+});
+
+test("snapshot setup eval can initialize a global before breakpoint capture", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--setup-eval",
+        "globalThis.__cfInspectorSetup = { value: 41 }",
+        "--setup-eval",
+        "globalThis.__cfInspectorSetup.value += 1",
+        "--capture",
+        "globalThis.__cfInspectorSetup.value",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    expect(parsed.captures.find((c) => c.expression === "globalThis.__cfInspectorSetup.value")?.value).toBe("42");
+    expect(result.stderr).toContain("Running 2 setup evaluations");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot setup eval failure returns SETUP_EVAL_FAILED", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--setup-eval",
+        "throw new Error('setup eval exploded')",
+        "--timeout",
+        "10",
+      ],
+      30_000,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("SETUP_EVAL_FAILED");
+    expect(result.stderr).toContain("setup eval exploded");
+    expect(result.stderr).not.toContain("Breakpoint setup complete");
+  } finally {
+    await fixture.close();
+  }
+});

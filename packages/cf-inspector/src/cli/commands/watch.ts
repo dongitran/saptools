@@ -3,6 +3,7 @@ import process from "node:process";
 
 import {
   resume,
+  runSetupEvals,
   setBreakpoint,
   validateExpression,
   waitForPause,
@@ -22,6 +23,7 @@ import { warnOnUnboundBreakpoints } from "../warnings.js";
 
 interface PreparedWatchCommand {
   readonly target: Target;
+  readonly setupEvals: readonly string[];
   readonly breakpoints: readonly BreakpointLocation[];
   readonly captures: readonly string[];
   readonly remoteRoot: RemoteRootSetting;
@@ -68,8 +70,10 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
+  const setupEvals = parseSetupEvals(opts.setupEval);
   return {
     target,
+    setupEvals,
     breakpoints: opts.bp.map((spec) => parseBreakpointSpec(spec)),
     captures: parseCaptureList(opts.capture),
     remoteRoot: parseRemoteRoot(opts.remoteRoot),
@@ -95,6 +99,10 @@ async function runWatchLoop(
   opts: WatchCommandOptions,
   signal: AbortSignal,
 ): Promise<WatchLoopResult> {
+  if (command.setupEvals.length > 0) {
+    await runSetupEvals(session, command.setupEvals);
+  }
+
   if (command.condition !== undefined) {
     await validateExpression(session, command.condition);
   }
@@ -299,10 +307,19 @@ function writeWatchSummary(reason: WatchStopReason, emitted: number, json: boole
   );
 }
 
+function parseSetupEvals(raw: unknown): readonly string[] {
+  const values: readonly unknown[] = Array.isArray(raw) ? raw : [];
+  return values
+    .filter((expr): expr is string => typeof expr === "string" && expr.trim().length > 0)
+    .map((expr) => expr.trim());
+}
+
 export const internalsForTesting = {
   formatLocation,
   computeDeadline,
   remainingForLoop,
+  parseSetupEvals,
   prepareWatchCommand,
+  runWatchLoop,
   writeJson,
 };
