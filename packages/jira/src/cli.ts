@@ -32,6 +32,13 @@ import type {
   JiraRequestOptions,
   JiraTokens,
 } from "./types.js";
+import {
+  appendJiraWorklogHistory,
+  formatJiraDate,
+  summarizeJiraWorklogHistory,
+  type WorklogSummary,
+  type WorklogSummaryFilter,
+} from "./worklog-history.js";
 
 interface GlobalFlags {
   readonly apiRoot?: string;
@@ -66,6 +73,15 @@ interface WorklogFlags {
   readonly started?: string;
 }
 
+interface WorklogsFlags extends JsonFlags {
+  readonly day?: string;
+  readonly from?: string;
+  readonly groupBy?: string;
+  readonly issue?: string;
+  readonly month?: string;
+  readonly to?: string;
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
 
@@ -90,6 +106,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addTransitionsCommand(program);
   addTransitionCommand(program);
   addWorklogCommand(program);
+  addWorklogsCommand(program);
 
   await program.parseAsync([...argv]);
 }
@@ -233,8 +250,37 @@ function addWorklogCommand(program: Command): void {
     .option("--comment <text>", "Optional worklog comment")
     .option("--started <date>", "Jira worklog start timestamp")
     .action(async (issueKey: string, flags: WorklogFlags): Promise<void> => {
-      await addJiraIssueWorklog(await toWorklogOptions(program, issueKey, flags));
+      const worklogOptions = await toWorklogOptions(program, issueKey, flags);
+      await addJiraIssueWorklog(worklogOptions);
+      await appendJiraWorklogHistory({
+        issueKey: worklogOptions.issueKey,
+        minutes: worklogOptions.minutes,
+        started: worklogOptions.started,
+        ...(worklogOptions.comment === undefined ? {} : { comment: worklogOptions.comment }),
+      }).catch((): void => {
+        process.stderr.write(
+          "Warning: Jira worklog was added, but local history could not be updated.\n",
+        );
+      });
       process.stdout.write(`Worklog added to ${issueKey}.\n`);
+    });
+}
+
+function addWorklogsCommand(program: Command): void {
+  program
+    .command("worklogs")
+    .description("Summarize local Jira worklog history without calling Jira")
+    .option("--day <YYYY-MM-DD>", "Summarize one started day")
+    .option("--issue <key>", "Summarize one Jira issue key")
+    .option("--month <YYYYMM>", "Summarize one started month")
+    .option("--from <YYYY-MM-DD>", "Start date for a started-date range")
+    .option("--to <YYYY-MM-DD>", "End date for a started-date range")
+    .option("--group-by <day|issue>", "Group human and JSON totals", "issue")
+    .option("--json", "Print JSON output", false)
+    .action(async (flags: WorklogsFlags): Promise<void> => {
+      const groupBy = parseWorklogsGroupBy(flags.groupBy);
+      const summary = await summarizeJiraWorklogHistory(toWorklogsFilter(flags), groupBy);
+      writeOutput(flags.json === true ? summary : formatWorklogSummary(summary));
     });
 }
 
@@ -251,14 +297,15 @@ async function toWorklogOptions(
   program: Command,
   issueKey: string,
   flags: WorklogFlags,
-): Promise<AddJiraIssueWorklogOptions> {
+): Promise<AddJiraIssueWorklogOptions & { readonly started: string }> {
   const requestOptions = await toIssueRequestOptions(program, issueKey);
   const minutes = parseRequiredPositiveInteger(flags.minutes, "--minutes <number>");
+  const started = normalizeWorklogStarted(flags.started, new Date());
   return {
     ...requestOptions,
     minutes,
+    started,
     ...(flags.comment === undefined ? {} : { comment: flags.comment }),
-    ...(flags.started === undefined ? {} : { started: flags.started }),
   };
 }
 
@@ -324,6 +371,51 @@ function toAuthOptions(program: Command): JiraAuthOptions {
 
 function resolveApiRoot(flags: GlobalFlags): string | undefined {
   return flags.apiRoot ?? process.env["SAPTOOLS_JIRA_API_ROOT"];
+}
+
+function normalizeWorklogStarted(raw: string | undefined, now: Date): string {
+  if (raw === undefined) {
+    return formatJiraDate(now);
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{4}$/u.test(raw)) {
+    return raw;
+  }
+  return Number.isNaN(new Date(raw).getTime()) ? formatJiraDate(now) : raw;
+}
+
+function toWorklogsFilter(flags: WorklogsFlags): WorklogSummaryFilter {
+  return {
+    ...(flags.day === undefined ? {} : { day: flags.day }),
+    ...(flags.from === undefined ? {} : { from: flags.from }),
+    ...(flags.issue === undefined ? {} : { issueKey: flags.issue }),
+    ...(flags.month === undefined ? {} : { month: flags.month }),
+    ...(flags.to === undefined ? {} : { to: flags.to }),
+  };
+}
+
+function parseWorklogsGroupBy(raw: string | undefined): "day" | "issue" {
+  if (raw === undefined || raw === "issue") {
+    return "issue";
+  }
+  if (raw === "day") {
+    return "day";
+  }
+  throw new Error("--group-by <day|issue> must be day or issue");
+}
+
+function formatWorklogSummary(summary: WorklogSummary): string {
+  const lines = [
+    `Total: ${summary.minutes.toString()} minutes (${summary.hours} hours)`,
+    `Entries: ${summary.entries.length.toString()}`,
+  ];
+  if (summary.groups.length === 0) {
+    return [...lines, "No local Jira worklog history found."].join("\n");
+  }
+  return [
+    ...lines,
+    `Grouped by ${summary.groupBy}:`,
+    ...summary.groups.map((group) => `${group.key}\t${group.minutes.toString()} minutes\t${group.hours} hours`),
+  ].join("\n");
 }
 
 function parseRequiredPositiveInteger(raw: string | undefined, label: string): number {

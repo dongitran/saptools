@@ -42,6 +42,7 @@ interface CliContext {
   readonly cleanup: () => Promise<void>;
   readonly env: NodeJS.ProcessEnv;
   readonly fakeJira: FakeJiraServer;
+  readonly home: string;
   readonly run: (args: readonly string[]) => Promise<{ readonly stdout: string; readonly stderr: string }>;
 }
 
@@ -75,6 +76,7 @@ async function prepareCliContext(): Promise<CliContext> {
   return {
     env,
     fakeJira,
+    home,
     run: async (args) => {
       const { stderr, stdout } = await execFileAsync("node", [CLI_PATH, ...args], {
         env,
@@ -231,6 +233,12 @@ async function handleFakeJiraRequest(
 
   if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/worklog") {
     writeJson(response, { id: "30001" }, 201);
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-500/worklog") {
+    response.writeHead(500, { "content-type": "text/plain" });
+    response.end("nope");
     return;
   }
 
@@ -414,6 +422,51 @@ test.describe("Jira CLI", () => {
         .map((entry) => entry.body);
       expect(writeBodies[0]).toBe(JSON.stringify({ transition: { id: "31" } }));
       expect(writeBodies[1]).toContain("Focused review");
+      expect(writeBodies[1]).toContain("2026-05-01T08:20:00.000+0000");
+      const history = await readFile(join(ctx.home, ".saptools", "jira", "worklog-history", "202605.md"), "utf8");
+      expect(history).toContain("# Jira Worklog History 202605");
+      expect(history).toContain("| 2026-05-01T08:20:00.000+0000 | OPS-123 | 30 | 0.50 | Focused review |");
+
+      const daySummary = await ctx.run(["worklogs", "--day", "2026-05-01", "--json"]);
+      expect(JSON.parse(daySummary.stdout)).toMatchObject({
+        groups: [{ key: "OPS-123", minutes: 30 }],
+        minutes: 30,
+      });
+      const issueSummary = await ctx.run(["worklogs", "--issue", "OPS-123", "--month", "202605", "--json"]);
+      expect(JSON.parse(issueSummary.stdout)).toMatchObject({ minutes: 30 });
+      const humanSummary = await ctx.run(["worklogs", "--month", "202605", "--group-by", "issue"]);
+      expect(humanSummary.stdout).toContain("OPS-123\t30 minutes\t0.50 hours");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Local worklog summaries do not need tokens or Jira network calls", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await rm(join(ctx.home, ".jira-oauth"), { recursive: true, force: true });
+      const summary = await ctx.run(["worklogs", "--month", "202607", "--json"]);
+      expect(JSON.parse(summary.stdout)).toMatchObject({ entries: [], groups: [], minutes: 0 });
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Failed Jira worklog writes do not append local history", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "worklog",
+        "OPS-500",
+        "--minutes",
+        "30",
+        "--started",
+        "2026-07-02T06:20:14.000+0000",
+      ])).rejects.toThrow("Jira worklog could not be added");
+      await expect(readFile(join(ctx.home, ".saptools", "jira", "worklog-history", "202607.md"), "utf8")).rejects.toThrow();
     } finally {
       await ctx.cleanup();
     }

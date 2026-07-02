@@ -24,7 +24,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 - 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text, paginated comments, attachments, and clone-linked issues.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
-- ⏱️ **Worklogs** — adds focused time entries with optional ADF text comments.
+- ⏱️ **Worklogs** — adds focused time entries with optional ADF text comments and records successful writes in local history.
 - 🧩 **Typed API** — every CLI workflow is available as a TypeScript function.
 - 🧪 **Fake-backed E2E** — test coverage validates the real built CLI without calling Atlassian.
 
@@ -193,6 +193,29 @@ jira worklog OPS-123 --minutes 30
 jira worklog OPS-123 --minutes 30 --comment "Reviewed rollout logs"
 jira worklog OPS-123 --minutes 30 --started "2026-05-01T08:20:00.000+0000"
 ```
+
+Successful worklog writes are also appended to a local, human-readable Markdown history file under:
+
+```text
+~/.saptools/jira/worklog-history/YYYYMM.md
+```
+
+The monthly file is chosen from the worklog `started` timestamp, so logging time today for a previous month updates that previous month file. If local history cannot be written after Jira accepts the worklog, the CLI prints a warning and does not retry or undo the Jira write. The history stores only the logged-at timestamp, started timestamp, issue key, minutes, hours, and sanitized comment text; it never stores OAuth tokens, refresh tokens, client secrets, Authorization headers, request headers, or raw Jira responses.
+
+### `jira worklogs`
+
+Summarize local worklog history without calling Jira, reading tokens, or requiring a network connection. Missing history files produce zero totals.
+
+```bash
+jira worklogs --day 2026-05-01
+jira worklogs --day 2026-05-01 --json
+jira worklogs --issue OPS-123 --month 202605 --json
+jira worklogs --issue OPS-123 --from 2026-05-01 --to 2026-05-31
+jira worklogs --month 202605 --group-by day
+jira worklogs --month 202605 --group-by issue
+```
+
+Human output includes total minutes/hours and grouped totals. `--json` returns the parsed local entries plus structured totals for agents and scripts.
 
 ### Test API root
 
