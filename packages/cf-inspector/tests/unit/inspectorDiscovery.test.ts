@@ -180,6 +180,15 @@ describe("discoverInspectorTargets", () => {
       },
     );
   });
+
+  it("reports an actionable stale or closed port error", async () => {
+    const port = await reserveClosedPort();
+    await expect(discoverInspectorTargets("127.0.0.1", port, 500)).rejects.toMatchObject({
+      code: "INSPECTOR_DISCOVERY_FAILED",
+      message: expect.stringMatching(/Cannot reach Node inspector discovery.*\/json\/list/),
+      detail: expect.stringContaining("ECONNREFUSED"),
+    });
+  });
 });
 
 describe("fetchInspectorVersion", () => {
@@ -257,7 +266,8 @@ describe("fetchInspectorVersion", () => {
     const port = await reserveClosedPort();
     await expect(fetchInspectorVersion("127.0.0.1", port, 500)).rejects.toMatchObject({
       code: "INSPECTOR_DISCOVERY_FAILED",
-      message: expect.stringContaining("Inspector discovery at"),
+      message: expect.stringMatching(/Cannot reach Node inspector discovery.*\/json\/version/),
+      detail: expect.stringContaining("ECONNREFUSED"),
     });
   });
 

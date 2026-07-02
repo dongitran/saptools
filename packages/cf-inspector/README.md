@@ -40,6 +40,8 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 npm install -g @saptools/cf-inspector
 # or
 pnpm add @saptools/cf-inspector
+
+cf-inspector --version
 ```
 
 > [!NOTE]
@@ -283,6 +285,8 @@ Print `/json/list` inspector targets with stable indexes. Use the index with `--
 cf-inspector list-targets --port 9229
 cf-inspector snapshot --port 9229 --target 1 --bp dist/worker.js:42
 ```
+
+If `list-targets`, `attach`, or another command reports `ECONNREFUSED`, the local inspector or tunnel on that port is usually stale/closed. Restart the local Node inspector or tunnel and retry; for Cloud Foundry targets, prefer `--app/--region/--org/--space` so `cf-inspector` can open a fresh tunnel.
 
 ### 🔗 `cf-inspector attach`
 
