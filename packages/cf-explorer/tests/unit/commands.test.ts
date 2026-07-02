@@ -111,6 +111,12 @@ describe("remote command builders", () => {
     expect(script.script).toContain("CFX_FILE='/workspace/app/src/server.js'");
   });
 
+  it("accepts the maximum view context limit", () => {
+    const script = buildViewScript({ file: "/workspace/app/src/server.js", line: 20_000, context: 10_000 });
+    expect(script.script).toContain("CFX_VIEW_START=10000");
+    expect(script.script).toContain("CFX_VIEW_END=30000");
+  });
+
   it("builds inspect candidates from fixed subcommands", () => {
     const script = buildInspectCandidatesScript({
       root: "/workspace/app",
@@ -152,7 +158,7 @@ describe("remote command builders", () => {
     expect(() => buildFindScript({ root: "/workspace/../app", name: "x" })).toThrow(/parent/);
     expect(() => buildRootsScript(0)).toThrow(/maxFiles/);
     expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 0 })).toThrow(/line/);
-    expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 1, context: 1001 }))
+    expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 1, context: 10001 }))
       .toThrow(/context/);
   });
 

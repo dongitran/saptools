@@ -2,7 +2,7 @@ import { CfExplorerError } from "../core/errors.js";
 
 const DEFAULT_MAX_FILES = 200;
 const DEFAULT_CONTEXT_LINES = 5;
-const MAX_CONTEXT_LINES = 1_000;
+const MAX_CONTEXT_LINES = 10_000;
 const NOISY_DIRS = ["node_modules", ".git", "dist", "build", ".cache", "tmp", "temp"] as const;
 const ROOT_CANDIDATES = ["/home/vcap/app", "/workspace/app", "/workspace", "/app", "/opt/app"] as const;
 
@@ -92,7 +92,7 @@ export function resolveMaxFiles(value: number | undefined): number {
 export function resolveContextLines(value: number | undefined): number {
   const context = value ?? DEFAULT_CONTEXT_LINES;
   if (!Number.isInteger(context) || context < 0 || context > MAX_CONTEXT_LINES) {
-    throw new CfExplorerError("UNSAFE_INPUT", "context must be between 0 and 1000.");
+    throw new CfExplorerError("UNSAFE_INPUT", "context must be between 0 and 10000.");
   }
   return context;
 }
