@@ -1,3 +1,5 @@
+import type { CustomFieldSnapshot, NormalizedCustomField, PinnedCustomFieldConfig } from "./custom-fields.js";
+import { customFieldTypeSuffix } from "./custom-fields.js";
 import type {
   JiraConnectionStatus,
   JiraIssueDetail,
@@ -71,4 +73,31 @@ function formatIssueImages(detail: JiraIssueDetail): string {
   return detail.images.length === 0
     ? ""
     : `Images:\n${detail.images.map((image) => `${image.filename}: ${image.fileUrl}`).join("\n")}`;
+}
+
+
+export function formatCustomFieldRows(fields: readonly NormalizedCustomField[]): string {
+  return fields.length === 0
+    ? "No matching Jira custom fields found."
+    : fields.map((field) => `${field.id}	${field.name}	${field.schema.type}	${customFieldTypeSuffix(field)}`).join("\n");
+}
+
+export function formatCustomFieldDiscovery(snapshot: CustomFieldSnapshot, displayedFields: readonly NormalizedCustomField[]): string {
+  return [
+    `Discovered ${snapshot.fetched.toString()} Jira custom fields for ${snapshot.cloudName} (${snapshot.cloudId}).`,
+    displayedFields.length === snapshot.fields.length ? "" : `Matches: ${displayedFields.length.toString()}`,
+    formatCustomFieldRows(displayedFields),
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+export function formatPinnedCustomFields(config: PinnedCustomFieldConfig | null): string {
+  const fields = config?.fields ?? [];
+  return fields.length === 0 ? "No pinned Jira custom fields." : fields.map((field) => field.name).join("\n");
+}
+
+export function formatPinnedCustomFieldHint(config: PinnedCustomFieldConfig | null): string {
+  const names = (config?.fields ?? []).map((field) => field.name);
+  return names.length === 0
+    ? ""
+    : `Updatable custom fields: ${names.join(", ")}. Use: jira fields update <KEY> --field 'FIELD NAME=value'`;
 }

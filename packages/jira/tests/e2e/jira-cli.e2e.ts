@@ -135,6 +135,32 @@ async function handleFakeJiraRequest(
     url,
   });
 
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/field/search?type=custom&startAt=0&maxResults=50") {
+    writeJson(response, {
+      startAt: 0, maxResults: 50, total: 2, isLast: true,
+      values: [
+        { id: "customfield_10101", key: "customfield_10101", name: "Custom text A", custom: true, orderable: true, navigable: true, searchable: true, clauseNames: ["Custom text A"], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } },
+        { id: "customfield_10102", key: "customfield_10102", name: "Custom text B", custom: true, orderable: true, navigable: true, searchable: true, clauseNames: ["Custom text B"], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textfield", customId: 10102 } },
+      ],
+    });
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/editmeta") {
+    writeJson(response, { fields: {
+      customfield_10101: { name: "Custom text A", required: false, schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } },
+      customfield_10102: { name: "Custom text B", required: false, schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textfield", customId: 10102 } },
+    } });
+    return;
+  }
+
+  if (method === "PUT" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
   if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/search/jql") {
     writeJson(response, {
       issues: [
@@ -467,6 +493,52 @@ test.describe("Jira CLI", () => {
         "2026-07-02T06:20:14.000+0000",
       ])).rejects.toThrow("Jira worklog could not be added");
       await expect(readFile(join(ctx.home, ".saptools", "jira", "worklog-history", "202607.md"), "utf8")).rejects.toThrow();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+
+  test("User can discover, pin, search, hint, and update custom fields", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const discover = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "fields", "discover", "--search", "text A"]);
+      expect(discover.stdout).toContain("Discovered 2 Jira custom fields");
+      expect(discover.stdout).toContain("customfield_10101");
+      const snapshotRaw = await readFile(join(ctx.home, ".saptools", "jira", "clouds", "cloud-1", "fields.json"), "utf8");
+      expect(snapshotRaw).toContain("customfield_10102");
+      expect(snapshotRaw).not.toContain("e2e-access-token");
+
+      const search = await ctx.run(["fields", "search", "textarea", "--json"]);
+      expect(JSON.parse(search.stdout)).toEqual([expect.objectContaining({ name: "Custom text A" })]);
+      await ctx.run(["fields", "pin", "Custom text A"]);
+      await ctx.run(["fields", "pin", "Custom text B"]);
+      const pinned = await ctx.run(["fields", "pinned"]);
+      expect(pinned.stdout).toContain("Custom text A");
+      expect(pinned.stdout).not.toContain("customfield_");
+
+      const issues = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issues"]);
+      expect(issues.stdout).toContain("Updatable custom fields: Custom text A, Custom text B");
+      expect(issues.stdout).not.toContain("customfield_");
+      const status = await ctx.run(["status"]);
+      expect(status.stdout).toContain("Updatable custom fields: Custom text A, Custom text B");
+      const noHints = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "--no-hints", "issues"]);
+      expect(noHints.stdout).not.toContain("Updatable custom fields");
+      const jsonIssues = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issues", "--json"]);
+      const parsedJsonIssues: unknown = JSON.parse(jsonIssues.stdout);
+      expect(parsedJsonIssues).toBeDefined();
+      expect(jsonIssues.stdout).not.toContain("Updatable custom fields");
+
+      const update = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "fields", "update", "OPS-123", "--field", "Custom text A=First value", "--field", "Custom text B=Second=value"]);
+      expect(update.stdout).toContain("Updated custom fields on OPS-123: Custom text A, Custom text B.");
+      expect(update.stdout).not.toContain("First value");
+      const put = ctx.fakeJira.requests().find((entry) => entry.method === "PUT");
+      const discoverHelp = await ctx.run(["fields", "discover", "--help"]);
+      expect(discoverHelp.stdout).not.toContain("--refresh");
+      expect(JSON.parse(put?.body ?? "{}")).toEqual({ fields: {
+        customfield_10101: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "First value" }] }] },
+        customfield_10102: "Second=value",
+      } });
     } finally {
       await ctx.cleanup();
     }
