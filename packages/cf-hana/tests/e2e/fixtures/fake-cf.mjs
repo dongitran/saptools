@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 
-// Minimal fake cf for cf-hana e2e tests.
-// Supports the commands needed for live binding resolution:
-//   cf target
-//   cf api ...
-//   cf auth ...
-//   cf target -o ... -s ...
-//   cf env <app>
+import { appendFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
+
+function trace(entry) {
+  const file = process.env.CF_HANA_FAKE_CF_TRACE_FILE;
+  if (file) appendFileSync(file, JSON.stringify(entry) + "\n");
+}
 
 function out(text) {
   process.stdout.write(text + "\n");
@@ -22,11 +21,12 @@ function err(text) {
 
 if (cmd === "target") {
   if (args[1] === "-o") {
-    // target space is a no-op success in fake
+    trace({ kind: "target-space", org: args[2], space: args[4], cfHome: process.env.CF_HOME ? "isolated" : "current" });
     process.exit(0);
   }
-  // default current target for tests
-  out(`api endpoint:   https://api.cf.eu10.hana.ondemand.com
+  const apiEndpoint = process.env.CF_HANA_FAKE_CF_API_ENDPOINT ?? "https://api.cf.eu10-005.hana.ondemand.com";
+  trace({ kind: "target-read", apiEndpoint, cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  out(`api endpoint:   ${apiEndpoint}
 api version:    3.XX.X
 user:           user@example.com
 org:            example-org
@@ -35,19 +35,23 @@ space:          space-demo`);
 }
 
 if (cmd === "api") {
-  // success
+  const apiEndpoint = args[1] ?? "";
+  trace({ kind: "api", apiEndpoint, cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  if (apiEndpoint.includes("attacker") || apiEndpoint.startsWith("http://")) err("unsafe endpoint");
   process.exit(0);
 }
 
 if (cmd === "auth") {
-  // success (creds are validated by test env presence)
+  trace({ kind: "auth", hasUsername: Boolean(process.env.CF_USERNAME), hasPassword: Boolean(process.env.CF_PASSWORD), cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  if (!process.env.CF_USERNAME || !process.env.CF_PASSWORD) err("missing credentials");
   process.exit(0);
 }
 
 if (cmd === "env") {
   const app = args[1] || "app-demo";
+  trace({ kind: "env", app, cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  if (process.env.CF_HANA_FAKE_CF_DIRECT_AUTH_FAIL === "1" && !process.env.CF_HOME) err("not logged in");
   if (app === "app-demo" || app.includes("app-demo")) {
-    // Return realistic VCAP output matching what extractVcapServicesSection expects
     const vcap = {
       hana: [
         {

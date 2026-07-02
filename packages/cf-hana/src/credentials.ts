@@ -8,6 +8,7 @@ import {
   extractHanaBindingsFromCfEnv,
   formatCurrentCfAppSelector,
   getApiEndpointForRegion,
+  normalizeSapCfApiEndpoint,
   readCurrentCfTarget,
   withCfSession,
 } from "./cf.js";
@@ -16,9 +17,14 @@ import { CfHanaError, CredentialsNotFoundError } from "./errors.js";
 import type { CredentialSource, DbUserRole, HanaBinding } from "./types.js";
 
 export interface ResolveBindingsOptions {
+  /** Deprecated compatibility flag. Binding discovery is always live. */
   readonly refresh?: boolean;
   readonly email?: string;
   readonly password?: string;
+}
+
+function errorMessageFromUnknown(error: unknown): string {
+  return error instanceof Error ? error.message : "Invalid or untrusted CF API endpoint.";
 }
 
 export interface ResolvedBindings {
@@ -66,7 +72,7 @@ export async function resolveAppBindings(
 
   let target: {
     selector: string;
-    apiEndpoint?: string | undefined;
+    apiEndpoint: string;
     orgName: string;
     spaceName: string;
     appName: string;
@@ -88,7 +94,7 @@ export async function resolveAppBindings(
       : `current/${current.orgName}/${current.spaceName}/${selector}`;
     target = {
       selector: displaySelector,
-      apiEndpoint: current.regionKey ? getApiEndpointForRegion(current.regionKey) : undefined,
+      apiEndpoint: current.apiEndpoint,
       orgName: current.orgName,
       spaceName: current.spaceName,
       appName: selector,
@@ -107,10 +113,16 @@ export async function resolveAppBindings(
     if (!apiEndpoint) {
       throw new CfHanaError(
         "CONFIG",
-        `Unknown region key "${regionKey}". Use a known region or the current CF target.`,
+        `Unknown SAP CF region "${regionKey}". Verify the current SAP region list or use the current CF target.`,
       );
     }
-    target = { selector, apiEndpoint, orgName, spaceName, appName };
+    let normalizedApiEndpoint: string;
+    try {
+      normalizedApiEndpoint = normalizeSapCfApiEndpoint(apiEndpoint);
+    } catch (error) {
+      throw new CfHanaError("CONFIG", errorMessageFromUnknown(error), { cause: error });
+    }
+    target = { selector, apiEndpoint: normalizedApiEndpoint, orgName, spaceName, appName };
   }
 
   let bindings: readonly HanaBinding[];
@@ -124,10 +136,12 @@ export async function resolveAppBindings(
       bindings = extractHanaBindingsFromCfEnv(stdout);
     } catch (directError: unknown) {
       // Professional classification: only re-auth for real auth/session problems.
-      let stderr = '';
-      if (directError && typeof directError === 'object') {
+      let stderr = "";
+      if (directError && typeof directError === "object") {
         const e = directError as { stderr?: unknown; message?: unknown };
-        stderr = (typeof e.stderr === 'string' ? e.stderr : '') || (typeof e.message === 'string' ? e.message : '');
+        stderr =
+          (typeof e.stderr === "string" ? e.stderr : "") ||
+          (typeof e.message === "string" ? e.message : "");
       }
       const classified = classifyCfError(stderr);
       if (classified.isAuthError) {
@@ -136,11 +150,8 @@ export async function resolveAppBindings(
           throw new CredentialsNotFoundError(
             `Current CF session problem for bare app "${target.appName}" (${classified.reason}).\n` +
               `Run "cf login" + "cf target", or provide SAP_EMAIL + SAP_PASSWORD.`,
-            { cause: directError }
+            { cause: directError },
           );
-        }
-        if (!target.apiEndpoint) {
-          throw new CfHanaError("CONFIG", "Cannot determine API endpoint for fallback auth.");
         }
         const api = target.apiEndpoint;
         bindings = await withCfSession(async (ctx) => {
@@ -156,7 +167,7 @@ export async function resolveAppBindings(
           "CONFIG",
           `Failed to get HANA bindings for bare app "${target.appName}" using current target (org=${target.orgName}, space=${target.spaceName}). ` +
             `Verify with "cf target" and "cf env ${target.appName}". ${stderr ? `Details: ${stderr}` : ""}`,
-          { cause: directError }
+          { cause: directError },
         );
       }
     }
@@ -167,9 +178,6 @@ export async function resolveAppBindings(
       throw new CredentialsNotFoundError(
         `SAP_EMAIL and SAP_PASSWORD are required to fetch HANA bindings for explicit selector "${selector}".`,
       );
-    }
-    if (!target.apiEndpoint) {
-      throw new CfHanaError("CONFIG", "Invalid explicit selector.");
     }
     const api = target.apiEndpoint;
     bindings = await withCfSession(async (ctx) => {

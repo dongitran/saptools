@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import {
+  fakeCfTracePath,
   fakeTracePath,
   readBackupFiles,
+  readFakeCfTraceEntries,
   readFakeTraceEntries,
   readHistoryEntries,
   runCli,
@@ -46,6 +48,8 @@ interface FakeEnvOptions {
   readonly trace?: boolean;
   readonly failStatement?: "select" | "dml";
   readonly failCatalogOnce?: boolean;
+  readonly apiEndpoint?: string;
+  readonly directAuthFail?: boolean;
 }
 
 let home: string;
@@ -68,11 +72,14 @@ function fakeEnv(options: FakeEnvOptions = {}): Record<string, string> {
     PATH: path,
     SAP_EMAIL: "user@example.com",
     SAP_PASSWORD: "secret",
+    CF_HANA_FAKE_CF_TRACE_FILE: fakeCfTracePath(home),
     ...(options.trace ? { CF_HANA_FAKE_TRACE_FILE: fakeTracePath(home) } : {}),
     ...(options.failStatement === undefined
       ? {}
       : { CF_HANA_FAKE_FAIL_STATEMENT: options.failStatement }),
     ...(options.failCatalogOnce === true ? { CF_HANA_FAKE_FAIL_CATALOG_ONCE: "1" } : {}),
+    ...(options.apiEndpoint === undefined ? {} : { CF_HANA_FAKE_CF_API_ENDPOINT: options.apiEndpoint }),
+    ...(options.directAuthFail === true ? { CF_HANA_FAKE_CF_DIRECT_AUTH_FAIL: "1" } : {}),
   };
 }
 
@@ -86,7 +93,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.3.2");
+  expect(result.stdout).toContain("0.3.4");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -100,6 +107,80 @@ test("User can run a query and print compact CSV", async () => {
   const result = await runCli(["query", SELECTOR, "SELECT 1 FROM DUMMY"], fakeEnv());
   expect(result.exitCode).toBe(0);
   expect(result.stdout.trim()).toBe("1\r\n1");
+});
+
+
+test("Bare current-session commands use direct cf env on eu10-005 without isolated auth", async () => {
+  const commands: readonly (readonly string[])[] = [
+    ["info", "app-demo", "--read-only"],
+    ["ping", "app-demo", "--read-only"],
+    ["query", "app-demo", "SELECT 1 FROM DUMMY", "--read-only"],
+    ["tables", "app-demo", "--read-only"],
+    ["columns", "app-demo", "APP_SCHEMA.EXISTING_TABLE", "--read-only"],
+    ["count", "app-demo", "APP_SCHEMA.EXISTING_TABLE", "--read-only"],
+  ];
+
+  for (const args of commands) {
+    const result = await runCli(args, fakeEnv());
+    expect(result.exitCode, `${args.join(" ")} stderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).not.toContain("secret");
+    expect(result.stderr).not.toContain("secret");
+  }
+
+  const traces = await readFakeCfTraceEntries(home);
+  expect(traces.filter((entry) => entry.kind === "target-read")).toHaveLength(commands.length);
+  expect(traces.filter((entry) => entry.kind === "env" && entry.cfHome === "current")).toHaveLength(commands.length);
+  expect(traces.some((entry) => entry.kind === "api" || entry.kind === "auth" || entry.kind === "target-space")).toBe(false);
+});
+
+test("Explicit indexed and China selectors use isolated live auth without leaking secrets", async () => {
+  const indexed = await runCli(["info", "eu10-005/example-org/space-demo/app-demo", "--read-only"], fakeEnv());
+  expect(indexed.exitCode).toBe(0);
+  const eu20 = await runCli(["ping", "eu20-001/example-org/space-demo/app-demo", "--read-only"], fakeEnv());
+  expect(eu20.exitCode).toBe(0);
+  const china = await runCli(["info", "cn40/example-org/space-demo/app-demo", "--read-only"], fakeEnv());
+  expect(china.exitCode).toBe(0);
+
+  const rawTrace = await readFile(fakeCfTracePath(home), "utf8");
+  expect(rawTrace).toContain("https://api.cf.eu10-005.hana.ondemand.com");
+  expect(rawTrace).toContain("https://api.cf.eu20-001.hana.ondemand.com");
+  expect(rawTrace).toContain("https://api.cf.cn40.platform.sapcloud.cn");
+  expect(rawTrace).not.toContain("secret");
+});
+
+test("Bare auth fallback uses the validated current API endpoint", async () => {
+  const result = await runCli(
+    ["info", "app-demo", "--read-only"],
+    fakeEnv({ directAuthFail: true }),
+  );
+  expect(result.exitCode).toBe(0);
+  const traces = await readFakeCfTraceEntries(home);
+  expect(traces.some((entry) => entry.kind === "api" && entry.apiEndpoint === "https://api.cf.eu10-005.hana.ondemand.com")).toBe(true);
+  expect(traces.some((entry) => entry.kind === "auth" && entry.hasUsername === true && entry.hasPassword === true)).toBe(true);
+  expect(JSON.stringify(traces)).not.toContain("secret");
+});
+
+test("Malformed current endpoint is rejected before isolated auth", async () => {
+  const result = await runCli(
+    ["info", "app-demo", "--read-only"],
+    fakeEnv({ apiEndpoint: "https://api.cf.eu10.hana.ondemand.com.attacker.example" }),
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("No current CF target found");
+  const traces = await readFakeCfTraceEntries(home);
+  expect(traces.some((entry) => entry.kind === "api" || entry.kind === "auth")).toBe(false);
+});
+
+test("Deprecated refresh flag is accepted but metadata cache uses refresh-metadata", async () => {
+  const help = await runCli(["query", "--help"], fakeEnv());
+  expect(help.stdout).toContain("deprecated compatibility flag");
+  const first = await runCli(["query", SELECTOR, "SELECT * FROM MISSING_TABLES", "--refresh"], fakeEnv({ trace: true }));
+  expect(first.exitCode).toBe(1);
+  const second = await runCli(["query", SELECTOR, "SELECT * FROM MISSING_TABLES", "--refresh"], fakeEnv({ trace: true }));
+  expect(second.exitCode).toBe(1);
+  const traces = await readFakeTraceEntries(home);
+  const metadataReads = traces.filter((entry) => entry.sql.includes("SYS.TABLES") && entry.sql.includes("SYS.VIEWS"));
+  expect(metadataReads).toHaveLength(1);
 });
 
 test("User sees a clear failure when requesting query format output", async () => {

@@ -1,7 +1,6 @@
 import { Command } from "commander";
 
 import { connect } from "./api.js";
-import { formatCurrentCfAppSelector, readCurrentCfTarget } from "./cf.js";
 import { registerResultCommands } from "./cli-results.js";
 import type { HanaClient } from "./client.js";
 import {
@@ -118,26 +117,6 @@ function parseQualifiedName(value: string): { readonly schema: string; readonly 
   return { schema: value.slice(0, dot), table: value.slice(dot + 1) };
 }
 
-async function resolveSelectorArgument(selector: string): Promise<string> {
-  if (selector.includes("/")) {
-    return selector;
-  }
-  const current = await readCurrentCfTarget().catch((error: unknown) => {
-    throw new CfHanaError(
-      "CONFIG",
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
-      { cause: error },
-    );
-  });
-  if (current === undefined) {
-    throw new CfHanaError(
-      "CONFIG",
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
-    );
-  }
-  return formatCurrentCfAppSelector(current, selector);
-}
-
 function toConnectOptions(opts: ConnectionCliOptions): ConnectOptions {
   assertPositiveOption("--limit", opts.limit);
   assertPositiveOption("--timeout", opts.timeout);
@@ -204,7 +183,7 @@ function formatInfo(info: HanaClientInfo): string {
 
 function withConnectionOptions(command: Command): Command {
   return command
-    .option("--refresh", "bypass cached credentials and fetch them live", false)
+    .option("--refresh", "deprecated compatibility flag; binding discovery is already live", false)
     .option("--role <role>", "HANA user role: runtime or hdi", "runtime")
     .option("--binding <name>", "select a HANA binding by service name")
     .option("--binding-index <n>", "select a HANA binding by index", parseIntOption)
@@ -335,14 +314,14 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
   const opts = command.opts<QueryCliOptions>();
   assertQueryOptions(sql, opts);
   const cellLimit = resolveCellLimit(opts.cellLimit);
-  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
+  const client = await connect(selector, toConnectOptions(opts));
   try {
     const params = opts.param ?? [];
     let backup: Awaited<ReturnType<HanaClient["backupWriteStatement"]>>;
     try {
       backup = await client.backupWriteStatement(sql, params);
     } catch (error) {
-      await enrichAndRethrowQueryError(error, client, sql, opts.refreshMetadata || opts.refresh);
+      await enrichAndRethrowQueryError(error, client, sql, opts.refreshMetadata);
     }
     if (backup !== undefined) {
       process.stderr.write(`${CLI_NAME}: backup saved to ${backup.directory}\n`);
@@ -354,7 +333,7 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
           error,
           client,
           sql,
-          opts.refreshMetadata || opts.refresh,
+          opts.refreshMetadata,
         );
       });
     if (result.statement === "select") {
@@ -391,7 +370,7 @@ async function runTables(
   command: Command,
 ): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
-  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
+  const client = await connect(selector, toConnectOptions(opts));
   try {
     const tables = await client.listTables(schema ?? client.info.schema);
     const rows: readonly QueryRow[] = tables.map((table) => ({
@@ -408,7 +387,7 @@ async function runTables(
 async function runColumns(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
+  const client = await connect(selector, toConnectOptions(opts));
   try {
     const columns = await client.listColumns(schema, table);
     const rows: readonly QueryRow[] = columns.map((column) => ({
@@ -427,7 +406,7 @@ async function runColumns(selector: string, target: string, command: Command): P
 async function runCount(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
+  const client = await connect(selector, toConnectOptions(opts));
   try {
     const total = await client.count({ schema, table });
     print(String(total));
@@ -438,7 +417,7 @@ async function runCount(selector: string, target: string, command: Command): Pro
 
 async function runPing(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
+  const client = await connect(selector, toConnectOptions(opts));
   try {
     const started = Date.now();
     await client.query("SELECT 1 FROM DUMMY");
@@ -453,7 +432,7 @@ async function runPing(selector: string, command: Command): Promise<void> {
 
 async function runInfo(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(await resolveSelectorArgument(selector), toConnectOptions(opts));
+  const client = await connect(selector, toConnectOptions(opts));
   try {
     print(formatInfo(client.info));
   } finally {

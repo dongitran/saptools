@@ -52,7 +52,7 @@ export interface ConnectOptions {
   readonly autoLimit?: number | false;
   readonly queryTimeoutMs?: number;
   readonly connectTimeoutMs?: number;
-  /** Bypass the cached credentials and fetch them live from Cloud Foundry. */
+  /** Deprecated compatibility flag. Binding discovery is already live. */
   readonly refresh?: boolean;
   /** SAP BTP email for the live credential fetch (else `SAP_EMAIL`). */
   readonly email?: string;
