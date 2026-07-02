@@ -37,6 +37,7 @@ export {
   listScripts,
   removeBreakpoint,
   resume,
+  runSetupEvals,
   setBreakpoint,
   setPauseOnExceptions,
   validateExpression,

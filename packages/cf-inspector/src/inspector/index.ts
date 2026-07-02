@@ -7,6 +7,7 @@ export {
   getProperties,
   listScripts,
   resume,
+  runSetupEvals,
   setPauseOnExceptions,
   validateExpression,
 } from "./runtime.js";

@@ -94,6 +94,7 @@ cf-inspector snapshot --port 9229 \
 | `--condition <expr>` | Only pause when this JS expression evaluates truthy in the paused frame. Errors in the condition are silently treated as `false` by V8 |
 | `--hit-count <n>` | Skip the first N − 1 hits and only pause on the Nth (combines with `--condition` via logical AND) |
 | `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved. Object results are materialized to JSON strings when serializable, with fallback to CDP descriptions for non-serializable values |
+| `--setup-eval <expr>` | Repeatable, order-preserving global expression evaluated inside the inspected process before breakpoint setup. It can mutate runtime state, so use it only in controlled debug sessions |
 | `--stack-depth <n>` | Walk this many call frames per hit (default: `1`, top frame only). When `> 1`, the result includes a `stack` array |
 | `--stack-captures <expr,…>` | Expressions to evaluate on each call frame in the captured stack |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
@@ -203,6 +204,7 @@ Each event is a `WatchEvent`:
 | `--port <number>` | Local port the inspector or tunnel listens on |
 | `--bp <file:line>` | **Required.** Source location to capture on (repeatable) |
 | `--capture <expr,…>` | Top-level comma-separated expressions to evaluate per hit |
+| `--setup-eval <expr>` | Repeatable, order-preserving global expression evaluated inside the inspected process before breakpoint setup. It can mutate runtime state, so use it only in controlled debug sessions |
 | `--condition <expr>` | Only emit hits where this expression evaluates truthy |
 | `--hit-count <n>` | Start emitting once the line has been hit N or more times |
 | `--remote-root <value>` | Path-mapping anchor (same DSL as `snapshot`) |

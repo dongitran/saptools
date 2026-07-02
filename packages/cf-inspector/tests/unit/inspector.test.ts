@@ -11,6 +11,7 @@ import {
   getProperties,
   removeBreakpoint,
   resume,
+  runSetupEvals,
   setBreakpoint,
   setPauseOnExceptions,
   validateExpression,
@@ -471,6 +472,48 @@ describe("evaluateOnFrame / evaluateGlobal / getProperties", () => {
     await evaluateGlobal(session, "1+1");
     expect(calls[0]?.method).toBe("Runtime.evaluate");
     expect(calls[0]?.params["silent"]).toBe(true);
+  });
+
+
+  it("runSetupEvals evaluates setup expressions sequentially", async () => {
+    const { session, calls } = makeSendSession(() => ({ result: { type: "undefined" } }));
+    await runSetupEvals(session, ["globalThis.first = 1", "globalThis.second = 2"]);
+    expect(calls.map((call) => call.method)).toEqual(["Runtime.evaluate", "Runtime.evaluate"]);
+    expect(calls.map((call) => call.params["expression"])).toEqual([
+      "globalThis.first = 1",
+      "globalThis.second = 2",
+    ]);
+  });
+
+  it("runSetupEvals throws SETUP_EVAL_FAILED with exception.description first", async () => {
+    const { session } = makeSendSession(() => ({
+      exceptionDetails: {
+        text: "text fallback",
+        exception: { description: "ReferenceError: setup boom" },
+      },
+    }));
+    await expect(runSetupEvals(session, ["missing.setup"])).rejects.toMatchObject({
+      code: "SETUP_EVAL_FAILED",
+      message: "ReferenceError: setup boom",
+    });
+  });
+
+  it("runSetupEvals falls back to exceptionDetails.text", async () => {
+    const { session } = makeSendSession(() => ({
+      exceptionDetails: { text: "setup text failure" },
+    }));
+    await expect(runSetupEvals(session, ["throw new Error('x')"])).rejects.toMatchObject({
+      code: "SETUP_EVAL_FAILED",
+      message: "setup text failure",
+    });
+  });
+
+  it("runSetupEvals falls back to a setup evaluation message", async () => {
+    const { session } = makeSendSession(() => ({ exceptionDetails: {} }));
+    await expect(runSetupEvals(session, ["throw 1"])).rejects.toMatchObject({
+      code: "SETUP_EVAL_FAILED",
+      message: "setup evaluation failed",
+    });
   });
 
   it("getProperties parses out the result array", async () => {

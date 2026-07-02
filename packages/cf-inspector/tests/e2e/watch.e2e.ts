@@ -167,3 +167,39 @@ test("watch requires at least one --bp", async () => {
     await fixture.close();
   }
 });
+
+test("watch --help includes --setup-eval", async () => {
+  ensureCliBuilt();
+  const result = await runCli(["watch", "--help"], 15_000);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("--setup-eval <expr>");
+});
+
+test("watch setup eval can initialize a global before the first hit", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "watch",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--setup-eval",
+        "globalThis.__cfInspectorWatchSetup = 'ready'",
+        "--capture",
+        "globalThis.__cfInspectorWatchSetup",
+        "--max-events",
+        "1",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const events = parseEvents(result.stdout);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.captures.find((c) => c.expression === "globalThis.__cfInspectorWatchSetup")?.value).toBe('"ready"');
+  } finally {
+    await fixture.close();
+  }
+});

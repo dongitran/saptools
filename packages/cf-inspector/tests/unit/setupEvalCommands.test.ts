@@ -1,0 +1,135 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { CdpClient } from "../../src/cdp/client.js";
+import type { SnapshotCommandOptions, Target, WatchCommandOptions } from "../../src/cli/commandTypes.js";
+import { internalsForTesting as snapshotInternals } from "../../src/cli/commands/snapshot.js";
+import { internalsForTesting as watchInternals } from "../../src/cli/commands/watch.js";
+import type { InspectorSession } from "../../src/inspector/index.js";
+import type { ScriptInfo } from "../../src/types.js";
+
+const target: Target = { kind: "port", port: 9229, host: "127.0.0.1" };
+
+function snapshotOptions(overrides: Partial<SnapshotCommandOptions> = {}): SnapshotCommandOptions {
+  return {
+    bp: ["fixtures/sample-app.mjs:14"],
+    json: true,
+    ...overrides,
+  };
+}
+
+function watchOptions(overrides: Partial<WatchCommandOptions> = {}): WatchCommandOptions {
+  return {
+    bp: ["fixtures/sample-app.mjs:14"],
+    json: true,
+    ...overrides,
+  };
+}
+
+describe("setup-eval command preparation", () => {
+  it("snapshot preparation defaults setupEvals to an empty array", () => {
+    const prepared = snapshotInternals.prepareSnapshotCommand(snapshotOptions(), target);
+    expect(prepared.setupEvals).toEqual([]);
+  });
+
+  it("snapshot preparation preserves repeated setup eval order", () => {
+    const prepared = snapshotInternals.prepareSnapshotCommand(
+      snapshotOptions({ setupEval: ["globalThis.a = 1", "globalThis.b = globalThis.a + 1"] }),
+      target,
+    );
+    expect(prepared.setupEvals).toEqual(["globalThis.a = 1", "globalThis.b = globalThis.a + 1"]);
+  });
+
+  it("snapshot preparation trims setup evals and ignores empty expressions", () => {
+    const prepared = snapshotInternals.prepareSnapshotCommand(
+      snapshotOptions({ setupEval: ["  globalThis.a = 1  ", "   ", "globalThis.b = 2"] }),
+      target,
+    );
+    expect(prepared.setupEvals).toEqual(["globalThis.a = 1", "globalThis.b = 2"]);
+  });
+
+  it("watch preparation defaults setupEvals to an empty array", () => {
+    const prepared = watchInternals.prepareWatchCommand(watchOptions(), target);
+    expect(prepared.setupEvals).toEqual([]);
+  });
+
+  it("watch preparation preserves repeated setup eval order", () => {
+    const prepared = watchInternals.prepareWatchCommand(
+      watchOptions({ setupEval: ["globalThis.a = 1", "globalThis.b = globalThis.a + 1"] }),
+      target,
+    );
+    expect(prepared.setupEvals).toEqual(["globalThis.a = 1", "globalThis.b = globalThis.a + 1"]);
+  });
+
+  it("watch preparation trims setup evals and ignores empty expressions", () => {
+    const prepared = watchInternals.prepareWatchCommand(
+      watchOptions({ setupEval: ["  globalThis.a = 1  ", "", "  ", "globalThis.b = 2"] }),
+      target,
+    );
+    expect(prepared.setupEvals).toEqual(["globalThis.a = 1", "globalThis.b = 2"]);
+  });
+});
+
+describe("watch setup-eval execution ordering", () => {
+  it("runs setup eval before condition validation and breakpoint setup", async () => {
+    const calls: string[] = [];
+    const session = makeSession(async (method, params) => {
+      const expression = params["expression"];
+      const condition = params["condition"];
+      const detail = typeof expression === "string" ? expression : (typeof condition === "string" ? condition : "");
+      calls.push(`${method}:${detail}`);
+      if (method === "Debugger.setBreakpointByUrl") {
+        return { breakpointId: "bp-1", locations: [] };
+      }
+      return {};
+    });
+    const command = watchInternals.prepareWatchCommand(
+      watchOptions({ setupEval: ["globalThis.ready = true"], condition: "globalThis.ready" }),
+      target,
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await watchInternals.runWatchLoop(session, command, watchOptions(), controller.signal);
+    expect(calls.slice(0, 3)).toEqual([
+      "Runtime.evaluate:globalThis.ready = true",
+      "Runtime.compileScript:globalThis.ready",
+      "Debugger.setBreakpointByUrl:globalThis.ready",
+    ]);
+  });
+
+  it("does not install a breakpoint when setup eval fails", async () => {
+    const calls: string[] = [];
+    const session = makeSession(async (method) => {
+      calls.push(method);
+      if (method === "Runtime.evaluate") {
+        return { exceptionDetails: { text: "setup failed" } };
+      }
+      return {};
+    });
+    const command = watchInternals.prepareWatchCommand(
+      watchOptions({ setupEval: ["throw new Error('setup failed')"], condition: "true" }),
+      target,
+    );
+    await expect(
+      watchInternals.runWatchLoop(session, command, watchOptions(), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "SETUP_EVAL_FAILED", message: "setup failed" });
+    expect(calls).toEqual(["Runtime.evaluate"]);
+  });
+});
+
+function makeSession(
+  responder: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+): InspectorSession {
+  const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => await responder(method, params));
+  return {
+    client: {
+      send,
+      onClose: () => (): void => undefined,
+    } as unknown as CdpClient,
+    target: { id: "t", type: "node" } as never,
+    scripts: new Map<string, ScriptInfo>(),
+    pauseBuffer: [],
+    pauseWaitGate: { active: false },
+    debuggerState: {},
+    dispose: async (): Promise<void> => undefined,
+  };
+}

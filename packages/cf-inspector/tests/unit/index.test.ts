@@ -19,6 +19,7 @@ import {
   parseRemoteRoot,
   removeBreakpoint,
   resume,
+  runSetupEvals,
   setBreakpoint,
   setPauseOnExceptions,
   streamLogpoint,
@@ -46,6 +47,7 @@ describe("public package API", () => {
     expect(parseRemoteRoot).toEqual(expect.any(Function));
     expect(removeBreakpoint).toEqual(expect.any(Function));
     expect(resume).toEqual(expect.any(Function));
+    expect(runSetupEvals).toEqual(expect.any(Function));
     expect(setBreakpoint).toEqual(expect.any(Function));
     expect(setPauseOnExceptions).toEqual(expect.any(Function));
     expect(streamLogpoint).toEqual(expect.any(Function));
@@ -66,5 +68,6 @@ describe("public package API", () => {
   it("supports the new error codes added in this release", () => {
     expect(new CfInspectorError("INVALID_HIT_COUNT", "bad").code).toBe("INVALID_HIT_COUNT");
     expect(new CfInspectorError("INVALID_PAUSE_TYPE", "bad").code).toBe("INVALID_PAUSE_TYPE");
+    expect(new CfInspectorError("SETUP_EVAL_FAILED", "bad").code).toBe("SETUP_EVAL_FAILED");
   });
 });

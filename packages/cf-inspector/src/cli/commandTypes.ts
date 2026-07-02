@@ -37,6 +37,7 @@ export interface SharedTargetOptions {
 export interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly bp: readonly string[];
   readonly capture?: string;
+  readonly setupEval?: readonly string[];
   readonly timeout?: string;
   readonly remoteRoot?: string;
   readonly condition?: string;
@@ -83,6 +84,7 @@ export interface AttachCommandOptions extends SharedTargetOptions {
 export interface WatchCommandOptions extends SharedTargetOptions {
   readonly bp: readonly string[];
   readonly capture?: string;
+  readonly setupEval?: readonly string[];
   readonly condition?: string;
   readonly hitCount?: string;
   readonly remoteRoot?: string;
