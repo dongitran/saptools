@@ -520,6 +520,10 @@ test.describe("Jira CLI", () => {
       const issues = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issues"]);
       expect(issues.stdout).toContain("Updatable custom fields: Custom text A, Custom text B");
       expect(issues.stdout).not.toContain("customfield_");
+      const status = await ctx.run(["status"]);
+      expect(status.stdout).toContain("Updatable custom fields: Custom text A, Custom text B");
+      const noHints = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "--no-hints", "issues"]);
+      expect(noHints.stdout).not.toContain("Updatable custom fields");
       const jsonIssues = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issues", "--json"]);
       const parsedJsonIssues: unknown = JSON.parse(jsonIssues.stdout);
       expect(parsedJsonIssues).toBeDefined();
@@ -529,6 +533,8 @@ test.describe("Jira CLI", () => {
       expect(update.stdout).toContain("Updated custom fields on OPS-123: Custom text A, Custom text B.");
       expect(update.stdout).not.toContain("First value");
       const put = ctx.fakeJira.requests().find((entry) => entry.method === "PUT");
+      const discoverHelp = await ctx.run(["fields", "discover", "--help"]);
+      expect(discoverHelp.stdout).not.toContain("--refresh");
       expect(JSON.parse(put?.body ?? "{}")).toEqual({ fields: {
         customfield_10101: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "First value" }] }] },
         customfield_10102: "Second=value",

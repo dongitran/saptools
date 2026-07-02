@@ -20,7 +20,12 @@ import {
   transitionJiraIssue,
   updateJiraIssueFields,
 } from "./client.js";
-import { readCustomFieldSnapshot, readPinnedCustomFields, writeCustomFieldSnapshot, writePinnedCustomFields } from "./custom-field-store.js";
+import {
+  readCustomFieldSnapshot,
+  readPinnedCustomFields,
+  writeCustomFieldSnapshot,
+  writePinnedCustomFields,
+} from "./custom-field-store.js";
 import { buildIssueFieldUpdate, collectFieldValueInputs } from "./custom-field-values.js";
 import { createCustomFieldSnapshot, resolveFieldByDisplayName, searchCustomFields } from "./custom-fields.js";
 import type { CustomFieldSnapshot, PinnedCustomFieldConfig } from "./custom-fields.js";
@@ -64,8 +69,14 @@ interface JsonFlags {
   readonly json?: boolean;
 }
 
-interface FieldsDiscoverFlags extends JsonFlags { readonly search?: string; }
-interface FieldsUpdateFlags extends JsonFlags { readonly field?: string[]; readonly fieldFile?: string[]; }
+interface FieldsDiscoverFlags extends JsonFlags {
+  readonly search?: string;
+}
+
+interface FieldsUpdateFlags extends JsonFlags {
+  readonly field?: string[];
+  readonly fieldFile?: string[];
+}
 
 interface IssuesFlags extends JsonFlags {
   readonly max?: string;
@@ -135,7 +146,11 @@ function addStatusCommand(program: Command): void {
     .option("--json", "Print JSON output", false)
     .action(async (flags: JsonFlags): Promise<void> => {
       const status = await getJiraConnectionStatus(toAuthOptions(program));
-      writeOutput(flags.json === true ? status : formatConnectionStatus(status));
+      if (flags.json === true || status.cloudId === null) {
+        writeOutput(flags.json === true ? status : formatConnectionStatus(status));
+        return;
+      }
+      await writeOutputWithOptionalHint(program, status.cloudId, formatConnectionStatus(status), false);
     });
 }
 
@@ -152,7 +167,12 @@ function addConnectCommand(program: Command): void {
         cloudName: tokens.cloudName,
         usable: true,
       };
-      writeOutput(flags.json === true ? status : formatConnectionStatus(status));
+      await writeOutputWithOptionalHint(
+        program,
+        tokens.cloudId,
+        flags.json === true ? status : formatConnectionStatus(status),
+        flags.json === true,
+      );
     });
 }
 
@@ -195,7 +215,12 @@ function addIssuesCommand(program: Command): void {
     .action(async (flags: IssuesFlags): Promise<void> => {
       const requestOptions = await toAssignedIssuesOptions(program, flags);
       const issues = await fetchAssignedJiraIssues(requestOptions);
-      await writeOutputWithOptionalHint(program, requestOptions.cloudId, flags.json === true ? issues : formatIssues(issues), flags.json === true);
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? issues : formatIssues(issues),
+        flags.json === true,
+      );
     });
 }
 
@@ -212,7 +237,12 @@ function addIssueCommand(program: Command): void {
     .action(async (issueKey: string, flags: IssueFlags): Promise<void> => {
       const requestOptions = await toIssueDetailOptions(program, issueKey, flags);
       const detail = await fetchJiraIssueDetail(requestOptions);
-      await writeOutputWithOptionalHint(program, requestOptions.cloudId, flags.json === true ? detail : formatIssueDetail(detail), flags.json === true);
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? detail : formatIssueDetail(detail),
+        flags.json === true,
+      );
     });
 }
 
@@ -225,7 +255,12 @@ function addLinksCommand(program: Command): void {
     .action(async (issueKey: string, flags: JsonFlags): Promise<void> => {
       const requestOptions = await toIssueRequestOptions(program, issueKey);
       const links = await fetchJiraIssueRemoteLinks(requestOptions);
-      await writeOutputWithOptionalHint(program, requestOptions.cloudId, flags.json === true ? links : formatIssueLinks(links), flags.json === true);
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? links : formatIssueLinks(links),
+        flags.json === true,
+      );
     });
 }
 
@@ -238,7 +273,12 @@ function addTransitionsCommand(program: Command): void {
     .action(async (issueKey: string, flags: JsonFlags): Promise<void> => {
       const requestOptions = await toIssueRequestOptions(program, issueKey);
       const transitions = await fetchJiraIssueTransitions(requestOptions);
-      await writeOutputWithOptionalHint(program, requestOptions.cloudId, flags.json === true ? transitions : formatIssueTransitions(transitions), flags.json === true);
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? transitions : formatIssueTransitions(transitions),
+        flags.json === true,
+      );
     });
 }
 
@@ -254,7 +294,12 @@ function addTransitionCommand(program: Command): void {
         ...requestOptions,
         transitionId: requireText(flags.id, "--id <id>"),
       });
-      await writeOutputWithOptionalHint(program, requestOptions.cloudId, `Transition applied to ${issueKey}.`, false);
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        `Transition applied to ${issueKey}.`,
+        false,
+      );
     });
 }
 
@@ -279,7 +324,12 @@ function addWorklogCommand(program: Command): void {
           "Warning: Jira worklog was added, but local history could not be updated.\n",
         );
       });
-      await writeOutputWithOptionalHint(program, worklogOptions.cloudId, `Worklog added to ${issueKey}.`, false);
+      await writeOutputWithOptionalHint(
+        program,
+        worklogOptions.cloudId,
+        `Worklog added to ${issueKey}.`,
+        false,
+      );
     });
 }
 
@@ -311,11 +361,18 @@ function addFieldsCommand(program: Command): void {
     .option("--json", "Print JSON output", false)
     .action(async (flags: FieldsDiscoverFlags): Promise<void> => {
       const tokens = await resolveTokens(program);
-      const requestOptions = await toRequestOptions(program);
+      const requestOptions = toRequestOptionsFromTokens(program, tokens);
       const discovered = await fetchJiraCustomFields(requestOptions);
-      const snapshot = createCustomFieldSnapshot({ cloudId: tokens.cloudId, cloudName: tokens.cloudName, fields: discovered.fields, totalFromApi: discovered.totalFromApi });
+      const snapshot = createCustomFieldSnapshot({
+        cloudId: tokens.cloudId,
+        cloudName: tokens.cloudName,
+        fields: discovered.fields,
+        totalFromApi: discovered.totalFromApi,
+      });
       await writeCustomFieldSnapshot(snapshot);
-      const displayed = flags.search === undefined ? snapshot.fields : searchCustomFields(snapshot.fields, flags.search);
+      const displayed = flags.search === undefined
+        ? snapshot.fields
+        : searchCustomFields(snapshot.fields, flags.search);
       writeOutput(flags.json === true ? snapshot : formatCustomFieldDiscovery(snapshot, displayed));
     });
 
@@ -336,7 +393,11 @@ function addFieldsCommand(program: Command): void {
     .action(async (flags: JsonFlags): Promise<void> => {
       const tokens = await resolveTokens(program);
       const pinned = await readPinnedCustomFields(tokens.cloudId);
-      writeOutput(flags.json === true ? (pinned ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName)) : formatPinnedCustomFields(pinned));
+      writeOutput(
+        flags.json === true
+          ? (pinned ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName))
+          : formatPinnedCustomFields(pinned),
+      );
     });
 
   fields.command("pin")
@@ -346,11 +407,21 @@ function addFieldsCommand(program: Command): void {
       const tokens = await resolveTokens(program);
       const snapshot = await requireSnapshot(tokens.cloudId);
       const matches = resolveFieldByDisplayName(snapshot.fields, fieldName);
-      if (matches.length !== 1) {throw fieldResolutionError(fieldName, matches.length, "custom field snapshot");}
-      const current = await readPinnedCustomFields(tokens.cloudId) ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName);
+      if (matches.length !== 1) {
+        throw fieldResolutionError(fieldName, matches.length, "custom field snapshot");
+      }
+      const current = await readPinnedCustomFields(tokens.cloudId)
+        ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName);
       const field = firstResolvedField(matches, fieldName);
-      if (current.fields.some((item) => item.id === field.id)) { process.stdout.write(`Custom field "${field.name}" is already pinned.\n`); return; }
-      await writePinnedCustomFields({ ...current, updatedAt: new Date().toISOString(), fields: [...current.fields, { id: field.id, name: field.name, schema: field.schema }] });
+      if (current.fields.some((item) => item.id === field.id)) {
+        process.stdout.write(`Custom field "${field.name}" is already pinned.\n`);
+        return;
+      }
+      await writePinnedCustomFields({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        fields: [...current.fields, { id: field.id, name: field.name, schema: field.schema }],
+      });
       process.stdout.write(`Pinned custom field "${field.name}".\n`);
     });
 
@@ -359,11 +430,22 @@ function addFieldsCommand(program: Command): void {
     .argument("<field-name>", "Pinned Jira field display name")
     .action(async (fieldName: string): Promise<void> => {
       const tokens = await resolveTokens(program);
-      const current = await readPinnedCustomFields(tokens.cloudId) ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName);
+      const current = await readPinnedCustomFields(tokens.cloudId)
+        ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName);
       const matches = resolveFieldByDisplayName(current.fields, fieldName);
-      if (matches.length !== 1) {throw new Error(matches.length === 0 ? `Pinned field "${fieldName}" was not found.` : `Pinned field name "${fieldName}" is ambiguous.`);}
+      if (matches.length !== 1) {
+        throw new Error(
+          matches.length === 0
+            ? `Pinned field "${fieldName}" was not found.`
+            : `Pinned field name "${fieldName}" is ambiguous.`,
+        );
+      }
       const field = firstResolvedField(matches, fieldName);
-      await writePinnedCustomFields({ ...current, updatedAt: new Date().toISOString(), fields: current.fields.filter((item) => item.id !== field.id) });
+      await writePinnedCustomFields({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        fields: current.fields.filter((item) => item.id !== field.id),
+      });
       process.stdout.write(`Unpinned custom field "${field.name}".\n`);
     });
 
@@ -376,13 +458,27 @@ function addFieldsCommand(program: Command): void {
     .action(async (issueKey: string, flags: FieldsUpdateFlags): Promise<void> => {
       const requestOptions = await toIssueRequestOptions(program, issueKey);
       const pinned = await readPinnedCustomFields(requestOptions.cloudId);
-      if (pinned === null || pinned.fields.length === 0) {throw new Error("No pinned Jira custom fields. Run `jira fields pin <field-name>` first.");}
+      if (pinned === null || pinned.fields.length === 0) {
+        throw new Error("No pinned Jira custom fields. Run `jira fields pin <field-name>` first.");
+      }
       const values = await collectFieldValueInputs(flags.field ?? [], flags.fieldFile ?? []);
       const editableFields = await fetchJiraIssueEditMetadata(requestOptions);
-      const update = buildIssueFieldUpdate({ editableFields, issueKey, pinnedFields: pinned.fields, values });
+      const update = buildIssueFieldUpdate({
+        editableFields,
+        issueKey,
+        pinnedFields: pinned.fields,
+        values,
+      });
       await updateJiraIssueFields({ ...requestOptions, fields: update.fields });
       const result = { issueKey, updatedFields: update.names };
-      await writeOutputWithOptionalHint(program, requestOptions.cloudId, flags.json === true ? result : `Updated custom fields on ${issueKey}: ${update.names.join(", ")}.`, flags.json === true);
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true
+          ? result
+          : `Updated custom fields on ${issueKey}: ${update.names.join(", ")}.`,
+        flags.json === true,
+      );
     });
 }
 
@@ -442,8 +538,11 @@ async function toIssueRequestOptions(
 }
 
 async function toRequestOptions(program: Command): Promise<JiraRequestOptions> {
+  return toRequestOptionsFromTokens(program, await resolveTokens(program));
+}
+
+function toRequestOptionsFromTokens(program: Command, tokens: JiraTokens): JiraRequestOptions {
   const flags = program.opts<GlobalFlags>();
-  const tokens = await resolveTokens(program);
   const apiRoot = resolveApiRoot(flags);
   return {
     accessToken: tokens.accessToken,
@@ -553,12 +652,20 @@ function requireText(value: string | undefined, label: string): string {
 
 async function requireSnapshot(cloudId: string): Promise<CustomFieldSnapshot> {
   const snapshot = await readCustomFieldSnapshot(cloudId);
-  if (snapshot === null) {throw new Error("No custom field snapshot found. Run `jira fields discover` first.");}
+  if (snapshot === null) {
+    throw new Error("No custom field snapshot found. Run `jira fields discover` first.");
+  }
   return snapshot;
 }
 
 function emptyPinnedConfig(cloudId: string, cloudName: string): PinnedCustomFieldConfig {
-  return { version: 1 as const, cloudId, cloudName, updatedAt: new Date(0).toISOString(), fields: [] };
+  return {
+    version: 1 as const,
+    cloudId,
+    cloudName,
+    updatedAt: new Date(0).toISOString(),
+    fields: [],
+  };
 }
 
 function fieldResolutionError(fieldName: string, count: number, source: string): Error {
@@ -569,16 +676,31 @@ function fieldResolutionError(fieldName: string, count: number, source: string):
 
 function firstResolvedField<T extends { readonly name: string }>(matches: readonly T[], fieldName: string): T {
   const field = matches[0];
-  if (field === undefined) {throw new Error(`No exact display-name match for "${fieldName}".`);}
+  if (field === undefined) {
+    throw new Error(`No exact display-name match for "${fieldName}".`);
+  }
   return field;
 }
 
-function collectOption(value: string, previous: string[]): string[] { return [...previous, value]; }
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
 
-async function writeOutputWithOptionalHint(program: Command, cloudId: string, value: unknown, isJson: boolean): Promise<void> {
-  if (isJson) { writeOutput(value); return; }
+async function writeOutputWithOptionalHint(
+  program: Command,
+  cloudId: string,
+  value: unknown,
+  isJson: boolean,
+): Promise<void> {
+  if (isJson) {
+    writeOutput(value);
+    return;
+  }
+
   const flags = program.opts<GlobalFlags>();
-  const hint = flags.hints === false ? "" : formatPinnedCustomFieldHint(await readPinnedCustomFields(cloudId));
+  const hint = flags.hints === false
+    ? ""
+    : formatPinnedCustomFieldHint(await readPinnedCustomFields(cloudId));
   writeOutput(typeof value === "string" && hint.length > 0 ? `${value}\n\n${hint}` : value);
 }
 

@@ -13,6 +13,7 @@ import {
   fetchJiraIssueRemoteLinks,
   fetchJiraIssueTransitions,
   transitionJiraIssue,
+  updateJiraIssueFields,
 } from "../../src/client.js";
 import { buildAssignedIssuesSearchBody } from "../../src/urls.js";
 
@@ -671,6 +672,23 @@ describe("Jira REST client", () => {
     const editFetch = vi.fn(async () => await Promise.resolve(jsonResponse({ fields: { customfield_10101: { name: "Custom text A", required: false, allowedValues: [], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } } } })));
     await expect(fetchJiraIssueEditMetadata({ accessToken: "secret-access-token", apiRoot, cloudId: "cloud-1", fetchImpl: editFetch, issueKey: "OPS-123" }))
       .resolves.toEqual(new Map([["customfield_10101", { id: "customfield_10101", name: "Custom text A", required: false, allowedValues: [], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101, items: null } }]]));
+
+    const updateFetch = vi.fn(async () => await Promise.resolve(new Response(null, { status: 204 })));
+    await expect(updateJiraIssueFields({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: updateFetch,
+      issueKey: "OPS-123",
+      fields: { customfield_10101: "done" },
+    })).resolves.toBeUndefined();
+    expect(updateFetch).toHaveBeenCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/issue/OPS-123",
+      expect.objectContaining({
+        body: JSON.stringify({ fields: { customfield_10101: "done" } }),
+        method: "PUT",
+      }),
+    );
   });
 
   it("throws neutral validation errors for malformed Jira responses", async () => {
