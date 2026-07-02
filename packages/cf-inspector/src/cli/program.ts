@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { Command } from "commander";
 
 import type {
@@ -38,10 +42,32 @@ const collectStrings = (value: string, prev: readonly string[] = []): readonly s
   value,
 ];
 
+function readPackageVersion(): string {
+  let current = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 4; depth += 1) {
+    const candidate = join(current, "package.json");
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(candidate, "utf8"));
+      if (typeof parsed === "object" && parsed !== null) {
+        const record = parsed as Record<string, unknown>;
+        if (record["name"] === "@saptools/cf-inspector" && typeof record["version"] === "string") {
+          return record["version"];
+        }
+      }
+    } catch {
+      // Keep walking toward the package root. The source path and bundled CLI
+      // live at different depths, so one failed candidate is expected.
+    }
+    current = dirname(current);
+  }
+  throw new Error("Unable to read @saptools/cf-inspector package version");
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   program
     .name("cf-inspector")
+    .version(readPackageVersion())
     .description("Drive a Node.js inspector from the command line — set breakpoints, capture snapshots, evaluate expressions");
 
   registerSnapshot(program);

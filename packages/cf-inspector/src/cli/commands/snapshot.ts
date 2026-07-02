@@ -8,6 +8,7 @@ import {
   validateExpression,
   waitForPause,
 } from "../../inspector/index.js";
+import type { InspectorSession } from "../../inspector/types.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
 import { CfInspectorError } from "../../types.js";
@@ -88,54 +89,63 @@ async function runSnapshotCommand(
   reportProgress?: ProgressReporter,
 ): Promise<SnapshotResult> {
   return await withSession(command.target, async (session): Promise<SnapshotResult> => {
-    if (command.setupEvals.length > 0) {
-      const setupCount = command.setupEvals.length;
-      reportProgress?.(`Running ${setupCount.toString()} setup ${setupCount === 1 ? "evaluation" : "evaluations"}...`);
-      await runSetupEvals(session, command.setupEvals);
-      reportProgress?.("Setup evaluation complete.");
-    }
-
-    if (command.condition !== undefined) {
-      reportProgress?.("Validating the breakpoint condition...");
-      await validateExpression(session, command.condition);
-      reportProgress?.("Breakpoint condition is valid.");
-    }
-    const breakpointCount = command.breakpoints.length;
-    reportProgress?.(
-      `Setting ${breakpointCount.toString()} ${breakpointCount === 1 ? "breakpoint" : "breakpoints"}...`,
-    );
-    const handles = await setCommandBreakpoints(session, command);
-    const resolvedCount = handles.reduce(
-      (total, handle) => total + handle.resolvedLocations.length,
-      0,
-    );
-    reportProgress?.(
-      `Breakpoint setup complete: ${resolvedCount.toString()} resolved ${resolvedCount === 1 ? "location" : "locations"}.`,
-    );
-    warnOnUnboundBreakpoints(handles);
-    reportProgress?.(
-      `Waiting up to ${(command.timeoutMs / 1000).toString()}s for a breakpoint hit...`,
-    );
-    const pause = await waitForCommandPause(session, opts, handles, command.timeoutMs);
-    const captureCount = command.captures.length;
-    reportProgress?.(
-      `Breakpoint hit; capturing ${captureCount.toString()} ${captureCount === 1 ? "expression" : "expressions"}...`,
-    );
-    const pausedStartedAt = pause.receivedAtMs ?? performance.now();
-    const snapshot = await captureSnapshot(session, pause, {
-      captures: command.captures,
-      includeScopes: opts.includeScopes === true,
-      ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
-      ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
-      stackCaptures: command.stackCaptures,
-    });
-    if (opts.keepPaused === true) {
-      reportProgress?.("Snapshot captured; leaving the target paused as requested.");
-      return withPausedDuration(snapshot, null);
-    }
-    reportProgress?.("Snapshot captured; resuming the target...");
-    return await resumeAfterSnapshot(session, snapshot, pausedStartedAt, reportProgress);
+    return await runSnapshotOnSession(session, command, opts, reportProgress);
   }, reportProgress);
+}
+
+async function runSnapshotOnSession(
+  session: InspectorSession,
+  command: PreparedSnapshotCommand,
+  opts: SnapshotCommandOptions,
+  reportProgress?: ProgressReporter,
+): Promise<SnapshotResult> {
+  if (command.setupEvals.length > 0) {
+    const setupCount = command.setupEvals.length;
+    reportProgress?.(`Running ${setupCount.toString()} setup ${setupCount === 1 ? "evaluation" : "evaluations"}...`);
+    await runSetupEvals(session, command.setupEvals);
+    reportProgress?.("Setup evaluation complete.");
+  }
+
+  if (command.condition !== undefined) {
+    reportProgress?.("Validating the breakpoint condition...");
+    await validateExpression(session, command.condition);
+    reportProgress?.("Breakpoint condition is valid.");
+  }
+  const breakpointCount = command.breakpoints.length;
+  reportProgress?.(
+    `Setting ${breakpointCount.toString()} ${breakpointCount === 1 ? "breakpoint" : "breakpoints"}...`,
+  );
+  const handles = await setCommandBreakpoints(session, command);
+  const resolvedCount = handles.reduce(
+    (total, handle) => total + handle.resolvedLocations.length,
+    0,
+  );
+  reportProgress?.(
+    `Breakpoint setup complete: ${resolvedCount.toString()} resolved ${resolvedCount === 1 ? "location" : "locations"}.`,
+  );
+  warnOnUnboundBreakpoints(handles);
+  reportProgress?.(
+    `Waiting up to ${(command.timeoutMs / 1000).toString()}s for a breakpoint hit...`,
+  );
+  const pause = await waitForCommandPause(session, opts, handles, command.timeoutMs);
+  const captureCount = command.captures.length;
+  reportProgress?.(
+    `Breakpoint hit; capturing ${captureCount.toString()} ${captureCount === 1 ? "expression" : "expressions"}...`,
+  );
+  const pausedStartedAt = pause.receivedAtMs ?? performance.now();
+  const snapshot = await captureSnapshot(session, pause, {
+    captures: command.captures,
+    includeScopes: opts.includeScopes === true,
+    ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+    ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
+    stackCaptures: command.stackCaptures,
+  });
+  if (opts.keepPaused === true) {
+    reportProgress?.("Snapshot captured; leaving the target paused as requested.");
+    return withPausedDuration(snapshot, null);
+  }
+  reportProgress?.("Snapshot captured; resuming the target...");
+  return await resumeAfterSnapshot(session, snapshot, pausedStartedAt, reportProgress);
 }
 
 async function setCommandBreakpoints(
@@ -205,4 +215,5 @@ export const internalsForTesting = {
   parseSetupEvals,
   prepareSnapshotCommand,
   runSnapshotCommand,
+  runSnapshotOnSession,
 };

@@ -10,6 +10,7 @@ coverage/
 test-regions.json
 playwright-report/
 test-results/
+# Agent implementation plans
 implementation_plan.md
 .bruno/
 notes/

@@ -18,6 +18,13 @@ export interface InspectorVersion {
   readonly protocolVersion: string;
 }
 
+interface NodeSystemError extends Error {
+  readonly code?: string;
+  readonly syscall?: string;
+  readonly address?: string;
+  readonly port?: number;
+}
+
 async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
     const req = request(url, { method: "GET" }, (res) => {
@@ -45,17 +52,46 @@ async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
       );
     });
     req.on("error", (err) => {
-      reject(
-        err instanceof CfInspectorError
-          ? err
-          : new CfInspectorError(
-              "INSPECTOR_DISCOVERY_FAILED",
-              `Inspector discovery at ${url} failed: ${err.message}`,
-            ),
-      );
+      reject(err instanceof CfInspectorError ? err : formatDiscoveryRequestError(url, err));
     });
     req.end();
   });
+}
+
+function isNodeSystemError(err: unknown): err is NodeSystemError {
+  return err instanceof Error;
+}
+
+function isConnectionRefusedOrUnreachable(code: string | undefined): boolean {
+  return code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH";
+}
+
+function formatEndpoint(url: string, err: NodeSystemError): string {
+  if (typeof err.address === "string" && typeof err.port === "number") {
+    return `${err.address}:${err.port.toString()}`;
+  }
+  const parsed = new URL(url);
+  return parsed.host;
+}
+
+function formatDiscoveryRequestError(url: string, err: unknown): CfInspectorError {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (!isNodeSystemError(err) || !isConnectionRefusedOrUnreachable(err.code)) {
+    return new CfInspectorError(
+      "INSPECTOR_DISCOVERY_FAILED",
+      `Inspector discovery at ${url} failed: ${detail}`,
+    );
+  }
+  const endpoint = formatEndpoint(url, err);
+  return new CfInspectorError(
+    "INSPECTOR_DISCOVERY_FAILED",
+    `Cannot reach Node inspector discovery at ${url}. Nothing is listening on ${endpoint}, or the inspector tunnel is stale/closed. Restart the local inspector or tunnel and retry. If this port came from cf-debugger, stop the stale session and start a fresh tunnel, or run cf-inspector with --app/--region/--org/--space so it can open a tunnel.`,
+    detail,
+  );
 }
 
 function parseJsonResponse(chunks: readonly Buffer[]): unknown {

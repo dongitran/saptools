@@ -116,14 +116,77 @@ describe("watch setup-eval execution ordering", () => {
   });
 });
 
+describe("snapshot setup-eval execution ordering", () => {
+  it("runs setup eval before condition validation and breakpoint setup", async () => {
+    const calls: string[] = [];
+    const session = makeSession(async (method, params) => {
+      const expression = params["expression"];
+      const condition = params["condition"];
+      const detail = typeof expression === "string" ? expression : (typeof condition === "string" ? condition : "");
+      calls.push(`${method}:${detail}`);
+      if (method === "Debugger.setBreakpointByUrl") {
+        return { breakpointId: "bp-1", locations: [] };
+      }
+      return {};
+    }, {
+      hitBreakpoints: ["bp-1"],
+    });
+    const command = snapshotInternals.prepareSnapshotCommand(
+      snapshotOptions({ setupEval: ["globalThis.ready = true"], condition: "globalThis.ready" }),
+      target,
+    );
+    await snapshotInternals.runSnapshotOnSession(session, command, snapshotOptions());
+    expect(calls.slice(0, 4)).toEqual([
+      "Runtime.evaluate:globalThis.ready = true",
+      "Runtime.compileScript:globalThis.ready",
+      "Debugger.setBreakpointByUrl:globalThis.ready",
+      "Debugger.resume:",
+    ]);
+  });
+
+  it("does not install a breakpoint when setup eval fails", async () => {
+    const calls: string[] = [];
+    const session = makeSession(async (method) => {
+      calls.push(method);
+      if (method === "Runtime.evaluate") {
+        return { exceptionDetails: { text: "setup failed" } };
+      }
+      return {};
+    });
+    const command = snapshotInternals.prepareSnapshotCommand(
+      snapshotOptions({ setupEval: ["throw new Error('setup failed')"], condition: "true" }),
+      target,
+    );
+    await expect(
+      snapshotInternals.runSnapshotOnSession(session, command, snapshotOptions()),
+    ).rejects.toMatchObject({ code: "SETUP_EVAL_FAILED", message: "setup failed" });
+    expect(calls).toEqual(["Runtime.evaluate"]);
+  });
+});
+
 function makeSession(
   responder: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+  pause?: { readonly hitBreakpoints: readonly string[] },
 ): InspectorSession {
   const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => await responder(method, params));
   return {
     client: {
       send,
       onClose: () => (): void => undefined,
+      waitFor: async () => ({
+        reason: "other",
+        hitBreakpoints: pause?.hitBreakpoints ?? [],
+        callFrames: [
+          {
+            callFrameId: "frame-1",
+            functionName: "handler",
+            url: "file:///repo/fixtures/sample-app.mjs",
+            lineNumber: 13,
+            columnNumber: 0,
+            scopeChain: [],
+          },
+        ],
+      }),
     } as unknown as CdpClient,
     target: { id: "t", type: "node" } as never,
     scripts: new Map<string, ScriptInfo>(),
