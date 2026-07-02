@@ -111,6 +111,15 @@ jira worklog OPS-123 --minutes 30
 - `--minutes <number>`: required positive worklog duration.
 - `--comment <text>`: optional worklog comment.
 - `--started <date>`: optional Jira timestamp such as `2026-05-01T08:20:00.000+0000`.
+- Successful writes are appended locally under `~/.saptools/jira/worklog-history/YYYYMM.md`; local history failures warn but do not retry the Jira write.
+
+Summarize local worklog history without calling Jira or reading tokens:
+
+```bash
+jira worklogs --day 2026-05-01 --json
+jira worklogs --issue OPS-123 --month 202605 --json
+jira worklogs --month 202605 --group-by issue
+```
 
 Use `--api-root <url>` only for deterministic tests or compatible fake Atlassian API roots:
 
