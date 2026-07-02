@@ -28,6 +28,7 @@ import {
   buildJiraIssueTransitionsUrl,
   buildJiraIssueWorklogUrl,
 } from "./urls.js";
+import { formatJiraDate } from "./worklog-history.js";
 
 const nonEmptyStringSchema = z.string().min(1);
 const JIRA_COMMENTS_PAGE_SIZE = 100;
@@ -540,8 +541,4 @@ function textToAdfDocument(text: string): Record<string, unknown> {
     type: "doc",
     version: 1,
   };
-}
-
-function formatJiraDate(date: Date): string {
-  return date.toISOString().replace("Z", "+0000");
 }
