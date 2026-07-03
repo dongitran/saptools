@@ -404,7 +404,7 @@ createCombinedHandler({ handler: [EntryHandler] });
       expect.objectContaining({ expression: 'worker.runHeavyCheck', status: 'resolved' }),
     ]));
     const proxyEvidence = JSON.parse(evidenceRows.find((row) => row.expression === 'worker.runHeavyCheck')?.evidenceJson ?? '{}') as { relation?: string; caller?: string; targetName?: string };
-    expect(proxyEvidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'EntryHandler.runEntry', targetName: 'runHeavyCheck' });
+    expect(proxyEvidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'EntryHandler.runEntry', targetName: 'runHeavyCheck', proxyVariableName: 'worker', factoryImportSource: './work-map' });
     const result = trace(db, { repo: 'app', handler: 'EntryHandler' }, { depth: 8, includeDb: true });
     expect(result.edges.some((edge) => edge.type === 'local_symbol_call' && String(edge.to).includes('DomainWorker.instance'))).toBe(true);
     expect(result.edges.some((edge) => edge.type === 'local_symbol_call' && String(edge.to).includes('runHeavyCheck'))).toBe(true);

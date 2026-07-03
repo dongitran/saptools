@@ -273,25 +273,31 @@ export function insertExecutableSymbols(db: Db, repoId: number, rows: Executable
   for (const r of rows) stmt.run(repoId, repoId, r.sourceFile, r.kind, r.localName, r.qualifiedName, r.exported ? 1 : 0, r.startLine, r.endLine, r.startOffset, r.endOffset, r.sourceFile, r.exportedName, r.importExportEvidence ? JSON.stringify(r.importExportEvidence) : null);
 }
 export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]): void {
-  const findTarget = `(SELECT id FROM symbols WHERE repo_id=? AND ((source_file=? AND (name=? OR qualified_name=?)) OR (source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?))) ORDER BY CASE WHEN source_file=? THEN 0 ELSE 1 END,id LIMIT 1)`;
-  const stmt = db.prepare(`INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,status,confidence,evidence_json,unresolved_reason) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),${findTarget},?,?,?,?,CASE WHEN ${findTarget} IS NULL THEN 'unresolved' ELSE 'resolved' END,0.8,?,CASE WHEN ${findTarget} IS NULL THEN 'No local symbol target matched exactly' ELSE NULL END)`);
+  const callerStmt = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1');
+  const insertStmt = db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,status,confidence,evidence_json,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
   for (const r of rows) {
-    const targetArgs = [repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName, r.sourceFile];
-    stmt.run(
-      repoId,
-      repoId,
-      r.sourceFile,
-      r.callerQualifiedName,
-      ...targetArgs,
-      r.calleeExpression,
-      r.importSource,
-      r.sourceFile,
-      r.sourceLine,
-      ...targetArgs,
-      JSON.stringify(r.evidence),
-      ...targetArgs,
-    );
+    const caller = callerStmt.get(repoId, r.sourceFile, r.callerQualifiedName) as { id?: number } | undefined;
+    const target = resolveSymbolCallTarget(db, repoId, r);
+    insertStmt.run(repoId, caller?.id, target.id, r.calleeExpression, r.importSource, r.sourceFile, r.sourceLine, target.status, 0.8, JSON.stringify({ ...r.evidence, candidateStrategy: target.strategy, candidateCount: target.candidateCount }), target.reason);
   }
+}
+function resolveSymbolCallTarget(db: Db, repoId: number, r: SymbolCallFact): { id: number | null; status: string; reason: string | null; strategy: string; candidateCount: number } {
+  const evidence = r.evidence as { relation?: unknown };
+  const localRows = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND (name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName) as Array<{ id: number }>;
+  if (localRows.length === 1) return { id: localRows[0]?.id ?? null, status: 'resolved', reason: null, strategy: 'same_file_exact', candidateCount: 1 };
+  if (localRows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple same-file symbol targets matched exactly', strategy: 'same_file_exact', candidateCount: localRows.length };
+  const rows = db.prepare('SELECT id,kind,evidence_json evidenceJson FROM symbols WHERE repo_id=? AND source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName) as Array<{ id: number; kind?: string; evidenceJson?: string | null }>;
+  if (evidence.relation === 'relative_import_proxy_member' && rows.length > 1) {
+    const objectMapRows = rows.filter((row) => String(row.evidenceJson ?? '').includes('exported_object_shorthand') || String(row.evidenceJson ?? '').includes('exported_object_literal'));
+    if (objectMapRows.length > 0) {
+      const concrete = rows.find((row) => row.kind !== 'object_alias') ?? objectMapRows[0];
+      return { id: concrete?.id ?? null, status: 'resolved', reason: null, strategy: 'proxy_member_exported_object_map', candidateCount: rows.length };
+    }
+    return { id: null, status: 'ambiguous', reason: 'Proxy member target requires explicit factory/module/type evidence; global member name is ambiguous', strategy: 'proxy_member_no_global_name_fallback', candidateCount: rows.length };
+  }
+  if (rows.length === 1) return { id: rows[0]?.id ?? null, status: 'resolved', reason: null, strategy: evidence.relation === 'relative_import_proxy_member' ? 'proxy_member_unique_exported_candidate' : 'relative_import_exported_exact', candidateCount: 1 };
+  if (rows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple exported symbol targets matched exactly', strategy: 'exported_exact', candidateCount: rows.length };
+  return { id: null, status: 'unresolved', reason: 'No local symbol target matched exactly', strategy: evidence.relation === 'relative_import_proxy_member' ? 'proxy_member_no_global_name_fallback' : 'exact_symbol_match', candidateCount: 0 };
 }
 export function insertCalls(
   db: Db,
@@ -299,11 +305,14 @@ export function insertCalls(
   rows: OutboundCallFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,service_binding_id) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1),?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
+    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,service_binding_id) VALUES(?,COALESCE((SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1)),?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
   );
   for (const r of rows)
     stmt.run(
       repoId,
+      repoId,
+      r.sourceFile,
+      r.sourceSymbolQualifiedName,
       repoId,
       r.sourceFile,
       r.sourceLine,

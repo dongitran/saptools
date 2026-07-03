@@ -81,7 +81,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   const exportNames = exportDeclarations(source);
   const objectExports = new Set<string>();
   const exportedClasses = new Set<string>();
-  const proxyVariables = new Map<string, { importSource: string; factory: string }>();
+  const proxyVariables = new Map<string, { importSource: string; factory: string; variableName: string }>();
   const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string, evidence?: Record<string, unknown>): void => {
     const parentRoot = parentName?.split('.')[0] ?? '';
     const declaredExportName = exportedName ?? exportNames.get(parentName ? parentRoot : localName);
@@ -123,6 +123,9 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     if (ts.isMethodDeclaration(node)) {
       const localName = nameOf(node.name);
       if (localName) addSymbol('method', localName, node, parentClass);
+    } else if (ts.isPropertyDeclaration(node) && parentClass && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      const localName = nameOf(node.name);
+      if (localName) addSymbol('method', localName, node.initializer, parentClass, undefined, { source: 'class_property_function', memberKind: ts.isArrowFunction(node.initializer) ? 'arrow_function_property' : 'function_expression_property' });
     } else if (ts.isFunctionDeclaration(node) && node.name) addSymbol('function', node.name.text, node, undefined, exported(node) ? node.name.text : undefined);
     else if (ts.isVariableStatement(node)) {
       for (const d of node.declarationList.declarations) {
@@ -147,11 +150,42 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     } else ts.forEachChild(node, (child) => visitSymbols(child, parentClass));
   };
   visitSymbols(source);
+
+  const outboundCallNames = new Set(['cds.run', 'emit', 'publish', 'on', 'send', 'axios', 'executeHttpRequest', 'useOrFetchDestination']);
+  const containsSupportedOutbound = (node: ts.Node): boolean => {
+    let found = false;
+    const visit = (child: ts.Node): void => {
+      if (found) return;
+      if (ts.isCallExpression(child)) {
+        const callee = callName(child.expression);
+        if (outboundCallNames.has(callee.expression) || (callee.member ? outboundCallNames.has(callee.member) : false)) found = true;
+      }
+      ts.forEachChild(child, visit);
+    };
+    visit(node);
+    return found;
+  };
+  const isTopLevelCallback = (node: ts.Node): node is ts.ArrowFunction | ts.FunctionExpression => {
+    if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
+    if (!ts.isCallExpression(node.parent)) return false;
+    const callee = callName(node.parent.expression);
+    const member = callee.member ?? callee.local;
+    return Boolean(member && ['bootstrap', 'served', 'connect', 'on', 'once', 'use', 'get', 'post', 'put', 'patch', 'delete', 'subscribe'].includes(member));
+  };
+  const visitCallbackSymbols = (node: ts.Node): void => {
+    if (isTopLevelCallback(node) && containsSupportedOutbound(node)) {
+      const startLine = lineOf(source, node.getStart(source));
+      const name = `callback:${startLine}`;
+      symbols.push({ kind: 'callback', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_outbound_callback', callbackLine: startLine } });
+    }
+    ts.forEachChild(node, visitCallbackSymbols);
+  };
+  visitCallbackSymbols(source);
   const visitProxyVariables = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isCallExpression(node.initializer) && ts.isPropertyAccessExpression(node.initializer.expression)) {
       const callee = callName(node.initializer.expression);
       const importSource = callee.local ? imports.get(callee.local) : undefined;
-      if (callee.member && importSource && isRelativeImport(importSource)) proxyVariables.set(node.name.text, { importSource, factory: callee.expression });
+      if (callee.member && importSource && isRelativeImport(importSource)) proxyVariables.set(node.name.text, { importSource, factory: callee.expression, variableName: node.name.text });
     }
     ts.forEachChild(node, visitProxyVariables);
   };
@@ -177,7 +211,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
         const ignored = loggerLike || terminalMember || importedFromPackage || ignoredFrameworkCall(callee);
         const resolvedTarget = provenThisMethod ? thisTarget : targetName;
         const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport);
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: proxy ? 'relative_import_proxy_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, factory: proxy?.factory } });
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: proxy ? 'relative_import_proxy_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
       }
     }
     ts.forEachChild(node, visitCalls);
