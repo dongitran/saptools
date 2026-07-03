@@ -19,6 +19,16 @@ function fuzzyScore(keyword: string, definitionName: string): number {
   }));
 }
 
+function assertSafeRegexPattern(pattern: string): void {
+  if (pattern.length > 256) {
+    throw new Error("Regex pattern is too long");
+  }
+  // Reject common catastrophic-backtracking constructs such as nested quantifiers.
+  if (/\([^)]*[+*][^)]*\)[+*?{]/u.test(pattern)) {
+    throw new Error("Unsafe regex pattern");
+  }
+}
+
 export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly SearchResult[] {
   const trimmedKeyword = keyword.trim();
   if (trimmedKeyword.length === 0) {
@@ -26,6 +36,7 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
   }
   const entries = Object.entries(csn.definitions);
   if (regexMode) {
+    assertSafeRegexPattern(trimmedKeyword);
     const pattern = new RegExp(trimmedKeyword, "iu");
     return entries
       .filter(([name]) => pattern.test(name))
