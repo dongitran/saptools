@@ -383,13 +383,25 @@ export function createProgram(): Command {
                SELECT 'warning','legacy_schema_weaker_foreign_keys','Legacy table lacks fresh-schema foreign-key metadata; rebuild the database or re-run init/index in a new database',NULL,NULL
                WHERE (SELECT COUNT(*) FROM pragma_foreign_key_list('graph_edges'))=0 OR (SELECT COUNT(*) FROM pragma_foreign_key_list('index_runs'))=0 OR (SELECT COUNT(*) FROM pragma_foreign_key_list('diagnostics'))=0
                UNION ALL
+               SELECT 'warning','implementation_candidates_rejected','Implementation candidates were rejected for ' || s.service_path || o.operation_path,o.source_file,o.source_line
+               FROM graph_edges e
+               JOIN cds_operations o ON o.id=CAST(e.from_id AS INTEGER)
+               JOIN cds_services s ON s.id=o.service_id
+               WHERE e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND e.status='unresolved' AND (? OR EXISTS (SELECT 1 FROM graph_edges remote WHERE remote.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' AND remote.to_kind='operation' AND remote.to_id=e.from_id))
+               UNION ALL
+               SELECT 'warning','remote_target_without_implementation','Remote target operation has no implementation edge: ' || s.service_path || o.operation_path,o.source_file,o.source_line
+               FROM graph_edges remote
+               JOIN cds_operations o ON o.id=CAST(remote.to_id AS INTEGER)
+               JOIN cds_services s ON s.id=o.service_id
+               WHERE remote.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' AND remote.to_kind='operation' AND NOT EXISTS (SELECT 1 FROM graph_edges impl WHERE impl.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND impl.from_kind='operation' AND impl.from_id=remote.to_id) AND ?
+               UNION ALL
                SELECT 'warning','graph_stale','Graph is stale after repository fact changes; run service-flow link',NULL,NULL
                WHERE EXISTS (SELECT 1 FROM repositories WHERE graph_stale_reason IS NOT NULL)
                UNION ALL
                SELECT 'warning','index_run_abandoned','Index run ' || id || ' started at ' || started_at || ' is still running after the 60 minute abandonment threshold',NULL,NULL
                FROM index_runs WHERE status='running' AND datetime(started_at) < datetime('now','-60 minutes')`,
             )
-            .all(Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
+            .all(Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const allDiagnostics = [...diagnostics, ...health];
           process.stdout.write(
             allDiagnostics.length

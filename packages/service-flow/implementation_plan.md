@@ -1,23 +1,25 @@
 # Implementation plan
 
 ## Scope
-Prepare `@saptools/service-flow` 0.1.9 by fixing implementation-edge linking after the 0.1.8 audit. Keep the public CLI unchanged while making graph-id comparisons deterministic, improving implementation candidate scoring/evidence, and adding neutral regression coverage.
+Prepare `@saptools/service-flow` 0.1.10 after the implementation-coverage audit. Keep the package generic for SAP CAP/CDS TypeScript workspaces and preserve 0.1.9 safety constraints around exact service-path evidence, duplicate operation names, type-stable SQLite ids, and non-mutating runtime variables.
 
 ## Files to review before edits
-- `src/linker/cross-repo-linker.ts` for implementation candidate SQL, graph-id binds, scoring, and evidence.
-- `src/linker/helper-package-linker.ts` and other `src/**` SQL call sites for graph-edge id comparison patterns.
-- `src/trace/trace-engine.ts` to confirm resolved implementation edges remain traceable.
-- Existing `tests/**` integration helpers and fixtures to add neutral cross-package and duplicate-service regressions.
-- `package.json`, lock metadata, and `CHANGELOG.md` for the 0.1.9 release update.
+- `src/linker/cross-repo-linker.ts` for implementation candidate policy, evidence, statuses, and link summaries.
+- `src/trace/trace-engine.ts` plus `src/output/*` for operation-to-handler trace rendering in JSON, table, and Mermaid output.
+- `src/doctor/*` or CLI doctor paths for implementation coverage diagnostics.
+- `src/db/connection.ts` and version metadata for Node compatibility messages.
+- Existing `tests/unit/**` fixtures/helpers to add neutral model/helper/duplicate/runtime regressions.
+- `README.md`, `CHANGELOG.md`, `package.json`, and lock metadata for release docs/version updates.
 
 ## Intended changes
-1. Add a small graph-id normalization helper for SQL comparisons against `graph_edges.from_id`/`to_id` and remove numeric `CAST(? AS TEXT)` binds from implementation candidate dependency checks.
-2. Expand implementation candidate rows with model/application/handler package context, import/dependency evidence, local service-path evidence, and accepted/rejected ranking reasons.
-3. Score candidates using direct ownership, exact local service-path matches, and validated cross-package dependency/import relationships; keep true ties ambiguous.
-4. Add neutral integration tests for cross-package app/model/handler linking, duplicate same-name service operations, and graph-id string binding behavior.
-5. Update changelog/version metadata to 0.1.9 and run package test/build/pack checks.
+1. Persist unresolved `OPERATION_IMPLEMENTED_BY_HANDLER` evidence when candidates exist but policy rejects all of them.
+2. Add a conservative helper-owned implementation acceptance path for unique registered helper handlers on model-oriented operations, while keeping multiple helpers ambiguous and local service-path contradictions rejected.
+3. Render implementation hops and terminal handler nodes in trace JSON, table, and Mermaid output, including ambiguous/unresolved explanatory edges when traversal stops.
+4. Ensure runtime-resolved operation targets reuse the persisted implementation edge lookup without mutating graph facts.
+5. Add doctor diagnostics for rejected implementation candidates and remote target operations lacking implementation coverage.
+6. Bump package metadata to 0.1.10, fix stale version strings, and update README/changelog wording.
 
 ## Verification plan
-- Run focused `service-flow` tests for the new regression coverage and existing implementation linking/trace suites.
-- Run `npm test`, `npm run build`, and `npm pack --dry-run` in `packages/service-flow`.
-- Inspect `rg` results for remaining unsafe `CAST(? AS TEXT)` graph-id comparisons.
+- Run focused unit tests for implementation linking, trace rendering, doctor diagnostics, runtime variables, and Node compatibility messaging.
+- Run `npm run build`, `npm run typecheck`, `npm run lint`, and `npm run test` in `packages/service-flow`.
+- Inspect git diff for neutral sample names only and no credential-like fixture data.

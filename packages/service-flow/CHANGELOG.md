@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.10
+
+- Persist unresolved `OPERATION_IMPLEMENTED_BY_HANDLER` audit edges when implementation candidates exist but all are rejected, including ranked candidate evidence and rejected reasons.
+- Added a conservative helper-owned implementation path for unique registered helper handlers that implement model-oriented CDS operations without direct package dependency evidence, while keeping multiple helper matches ambiguous and local service-path contradictions rejected.
+- Trace output now includes operation-to-handler implementation hops and terminal handler nodes in JSON/table/Mermaid-compatible edge data, including runtime-resolved operation targets.
+- Doctor now reports rejected implementation candidates and strict remote-target implementation coverage gaps without making entity-only services noisy by default.
+- Updated Node compatibility errors, package metadata, and README wording so current behavior is not described with stale release-specific version strings.
+
 ## 0.1.9
 
 - Fixed implementation dependency matching by binding graph repository ids as text when comparing against `graph_edges.from_id` and `graph_edges.to_id`, restoring cross-package application-to-model and application-to-handler evidence under `node:sqlite`.
