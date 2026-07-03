@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
 import type { ExecutableSymbolFact, SymbolCallFact } from '../types.js';
+import { containsSupportedOutboundCall } from './outbound-call-parser.js';
 import { normalizePath } from '../utils/path-utils.js';
 
 function lineOf(source: ts.SourceFile, pos: number): number {
@@ -151,20 +152,6 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   };
   visitSymbols(source);
 
-  const outboundCallNames = new Set(['cds.run', 'emit', 'publish', 'on', 'send', 'axios', 'executeHttpRequest', 'useOrFetchDestination']);
-  const containsSupportedOutbound = (node: ts.Node): boolean => {
-    let found = false;
-    const visit = (child: ts.Node): void => {
-      if (found) return;
-      if (ts.isCallExpression(child)) {
-        const callee = callName(child.expression);
-        if (outboundCallNames.has(callee.expression) || (callee.member ? outboundCallNames.has(callee.member) : false)) found = true;
-      }
-      ts.forEachChild(child, visit);
-    };
-    visit(node);
-    return found;
-  };
   const isTopLevelCallback = (node: ts.Node): node is ts.ArrowFunction | ts.FunctionExpression => {
     if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
     if (!ts.isCallExpression(node.parent)) return false;
@@ -173,7 +160,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     return Boolean(member && ['bootstrap', 'served', 'connect', 'on', 'once', 'use', 'get', 'post', 'put', 'patch', 'delete', 'subscribe'].includes(member));
   };
   const visitCallbackSymbols = (node: ts.Node): void => {
-    if (isTopLevelCallback(node) && containsSupportedOutbound(node)) {
+    if (isTopLevelCallback(node) && containsSupportedOutboundCall(node)) {
       const startLine = lineOf(source, node.getStart(source));
       const name = `callback:${startLine}`;
       symbols.push({ kind: 'callback', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_outbound_callback', callbackLine: startLine } });
@@ -181,6 +168,21 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     ts.forEachChild(node, visitCallbackSymbols);
   };
   visitCallbackSymbols(source);
+
+  const visitEventRegistrationSymbols = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'on') {
+      const receiver = node.expression.expression.getText(source);
+      const eventArg = node.arguments[0];
+      if ((receiver === 'cds' || /^(srv|service|serviceClient|messaging|messageClient|eventClient|.*Client)$/.test(receiver)) && eventArg && (ts.isStringLiteral(eventArg) || ts.isNoSubstitutionTemplateLiteral(eventArg))) {
+        const startLine = lineOf(source, node.getStart(source));
+        const eventName = eventArg.text.replace(/[^A-Za-z0-9_$-]/g, '_');
+        const name = `event:${eventName}:${startLine}`;
+        symbols.push({ kind: 'event_registration', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_event_registration', eventName: eventArg.text, registrationLine: startLine, receiver } });
+      }
+    }
+    ts.forEachChild(node, visitEventRegistrationSymbols);
+  };
+  visitEventRegistrationSymbols(source);
   const visitProxyVariables = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isCallExpression(node.initializer) && ts.isPropertyAccessExpression(node.initializer.expression)) {
       const callee = callName(node.initializer.expression);

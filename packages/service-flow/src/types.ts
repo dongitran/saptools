@@ -122,6 +122,7 @@ export interface OutboundCallFact {
   sourceLine: number;
   confidence: number;
   unresolvedReason?: string;
+  evidence?: Record<string, unknown>;
 }
 export interface ExecutableSymbolFact {
   kind: string;

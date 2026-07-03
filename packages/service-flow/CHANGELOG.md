@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.17
+
+- Replaced remaining raw-text outbound call detection with TypeScript AST classification so comments and strings do not create outbound facts or graph edges.
+- Added AST parser/range evidence for outbound calls and conservative CAP/service event registration ownership.
+- Tightened synthetic callback and async subscription classification to avoid generic response `.send()` and non-CAP event listener noise.
+- Expanded strict doctor ownerless source categories and examples.
+
 ## 0.1.16
 
 - Index class property arrow/function members as executable symbols so outbound calls inside handler helper properties receive precise source-symbol ownership.
