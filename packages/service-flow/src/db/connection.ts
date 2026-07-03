@@ -16,6 +16,18 @@ interface NativeDatabase {
 interface NodeSqliteModule {
   DatabaseSync: new (location: string, options?: { open?: boolean; readOnly?: boolean }) => NativeDatabase;
 }
+
+let sqliteWarningFilterInstalled = false;
+function installSqliteWarningFilter(): void {
+  if (sqliteWarningFilterInstalled) return;
+  sqliteWarningFilterInstalled = true;
+  const original = process.emitWarning.bind(process);
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]): void => {
+    const text = warning instanceof Error ? warning.message : String(warning);
+    if (text.includes('SQLite is an experimental feature')) return;
+    Reflect.apply(original, process, [warning, ...args]);
+  }) as typeof process.emitWarning;
+}
 export interface Statement {
   run: (...params: unknown[]) => { changes: number };
   get: (...params: unknown[]) => Record<string, unknown> | undefined;
@@ -36,6 +48,7 @@ export interface OpenDatabaseOptions {
 }
 function loadSqlite(): NodeSqliteModule {
   try {
+    installSqliteWarningFilter();
     const moduleValue = process.getBuiltinModule('node:sqlite') as unknown;
     if (!moduleValue || typeof moduleValue !== 'object' || !('DatabaseSync' in moduleValue))
       throw new Error('node:sqlite DatabaseSync is unavailable');
@@ -45,7 +58,7 @@ function loadSqlite(): NodeSqliteModule {
     return sqlite;
   } catch (error) {
     throw new Error(
-      'service-flow 0.1.7 requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.',
+      'service-flow 0.1.8 requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.',
       { cause: error },
     );
   }

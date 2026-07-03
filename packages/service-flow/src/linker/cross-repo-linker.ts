@@ -86,7 +86,30 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
   return { edgeCount, resolvedCount, ambiguousCount };
 }
 function implementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): Array<Record<string, unknown>> {
-  return db.prepare(`SELECT DISTINCT hm.id methodId,hc.id classId,hc.class_name className,hc.source_file sourceFile,hc.source_line sourceLine,hr.repo_id applicationRepoId,handlerRepo.name handlerRepo,appRepo.name applicationRepo FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id JOIN repositories handlerRepo ON handlerRepo.id=hc.repo_id JOIN handler_registrations hr ON hr.class_name=hc.class_name JOIN repositories appRepo ON appRepo.id=hr.repo_id JOIN graph_edges modelDep ON modelDep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND modelDep.status='resolved' AND modelDep.from_kind='repo' AND modelDep.from_id=CAST(appRepo.id AS TEXT) AND modelDep.to_id=CAST(? AS TEXT) JOIN graph_edges handlerDep ON handlerDep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND handlerDep.status='resolved' AND handlerDep.from_kind='repo' AND handlerDep.from_id=CAST(appRepo.id AS TEXT) AND handlerDep.to_id=CAST(handlerRepo.id AS TEXT) WHERE appRepo.workspace_id=? AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=?)`).all(operation.modelRepoId, workspaceId, normalizedOperation(String(operation.operationPath ?? '')), operation.operationName, operation.operationName) as Array<Record<string, unknown>>;
+  const rows = db.prepare(`SELECT DISTINCT
+      hm.id methodId,
+      hc.id classId,
+      hc.class_name className,
+      hc.source_file sourceFile,
+      hc.source_line sourceLine,
+      hr.repo_id applicationRepoId,
+      hr.registration_file registrationFile,
+      hr.registration_line registrationLine,
+      hr.import_source importSource,
+      handlerRepo.id handlerRepoId,
+      handlerRepo.name handlerRepo,
+      appRepo.name applicationRepo,
+      CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
+      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(? AS TEXT)) THEN 1 ELSE 0 END appDependsOnModel,
+      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=CAST(? AS TEXT)) THEN 1 ELSE 0 END handlerDependsOnModel
+    FROM handler_methods hm
+    JOIN handler_classes hc ON hc.id=hm.handler_class_id
+    JOIN repositories handlerRepo ON handlerRepo.id=hc.repo_id
+    JOIN handler_registrations hr ON (hr.handler_class_id=hc.id OR (hr.class_name=hc.class_name AND (hr.repo_id=hc.repo_id OR hr.import_source IS NOT NULL)))
+    JOIN repositories appRepo ON appRepo.id=hr.repo_id
+    WHERE appRepo.workspace_id=?
+      AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=?)`).all(operation.modelRepoId, operation.modelRepoId, workspaceId, normalizedOperation(String(operation.operationPath ?? '')), operation.operationName, operation.operationName) as Array<Record<string, unknown>>;
+  return rows.filter((row) => Boolean(Number(row.sameRepoRegistration)) || Boolean(Number(row.appDependsOnModel)) || Boolean(Number(row.handlerDependsOnModel)));
 }
 function normalizedOperation(value: string): string {
   return value.startsWith('/') ? value.slice(1) : value;

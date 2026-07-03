@@ -7,24 +7,32 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 const execFileAsync = promisify(execFile);
 const cli = path.resolve('dist/cli.js');
 const fixture = path.resolve('tests/fixtures/cap-workspace');
+async function runResult(
+  args: string[],
+  cwd = path.resolve('.'),
+  nodeArgs: string[] = [],
+): Promise<{ stdout: string; stderr: string }> {
+  const { stdout, stderr } = await execFileAsync('node', [...nodeArgs, cli, ...args], {
+    cwd
+  });
+  return { stdout, stderr };
+}
 async function run(
   args: string[],
   cwd = path.resolve('.'),
   nodeArgs: string[] = [],
 ): Promise<string> {
-  const { stdout } = await execFileAsync('node', [...nodeArgs, cli, ...args], {
-    cwd
-  });
+  const { stdout } = await runResult(args, cwd, nodeArgs);
   return stdout;
 }
 describe('service-flow CLI', () => {
   it('runs init index link trace graph doctor', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'service-flow-e2e-'));
     const db = path.join(dir, 'service-flow.db');
-    await run(['init', fixture, '--db', db]);
-    await run(['index', '--workspace', fixture]);
-    await run(['link', '--workspace', fixture]);
-    const json = await run([
+    await expect(runResult(['init', fixture, '--db', db])).resolves.toMatchObject({ stderr: '' });
+    await expect(runResult(['index', '--workspace', fixture])).resolves.toMatchObject({ stderr: '' });
+    await expect(runResult(['link', '--workspace', fixture])).resolves.toMatchObject({ stderr: '' });
+    const traceResult = await runResult([
       'trace',
       '--workspace',
       fixture,
@@ -38,7 +46,8 @@ describe('service-flow CLI', () => {
       '--format',
       'json'
     ]);
-    const parsed = JSON.parse(json) as { edges: unknown[] };
+    expect(traceResult.stderr).toBe('');
+    const parsed = JSON.parse(traceResult.stdout) as { edges: unknown[] };
     expect(parsed.edges.length).toBeGreaterThan(0);
     const warningHook = path.join(dir, 'stderr-warning.cjs');
     await writeFile(
@@ -67,7 +76,7 @@ describe('service-flow CLI', () => {
       edges: unknown[];
     };
     expect(parsedWithWarning.edges.length).toBeGreaterThan(0);
-    const mermaid = await run([
+    const graphResult = await runResult([
       'graph',
       '--workspace',
       fixture,
@@ -78,8 +87,10 @@ describe('service-flow CLI', () => {
       '--format',
       'mermaid'
     ]);
-    expect(mermaid).toContain('flowchart TD');
-    const doctor = await run(['doctor', '--workspace', fixture]);
-    expect(doctor).toMatch(/No diagnostics|\[/);
+    expect(graphResult.stderr).toBe('');
+    expect(graphResult.stdout).toContain('flowchart TD');
+    const doctorResult = await runResult(['doctor', '--workspace', fixture]);
+    expect(doctorResult.stderr).toBe('');
+    expect(doctorResult.stdout).toMatch(/No diagnostics|\[/);
   });
 });

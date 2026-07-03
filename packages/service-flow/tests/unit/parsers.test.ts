@@ -72,6 +72,37 @@ describe('service-flow parsers', () => {
     );
     expect(regs.length).toBeGreaterThan(0);
   });
+
+  it('parses AST handler registration arrays, spreads, imports, defaults, aliases, and re-exports', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-reg-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'local.ts'), `
+      import { PingHandler as ImportedPingHandler } from './ping';
+      import defaultHandlers from './default-handlers';
+      import { publicHandlers } from './re-export';
+      const functionHandlers = [ImportedPingHandler];
+      const entityHandlers = [...defaultHandlers];
+      const customArray = [...functionHandlers, ...entityHandlers, ...publicHandlers, ValidateHandler];
+      createCombinedHandler({ handler: [DirectHandler] });
+      createCombinedHandler({ handler: customArray });
+    `);
+    await fs.writeFile(path.join(root, 'srv', 'default-handlers.ts'), `
+      const defaultList = [DefaultHandler];
+      export default defaultList;
+    `);
+    await fs.writeFile(path.join(root, 'srv', 'source.ts'), `
+      export const exportedArray = [ReExportedHandler];
+    `);
+    await fs.writeFile(path.join(root, 'srv', 're-export.ts'), `
+      export { exportedArray as publicHandlers } from './source';
+    `);
+    const regs = await parseHandlerRegistrations(root, 'srv/local.ts');
+    expect(regs.map((reg) => reg.className)).toEqual(expect.arrayContaining(['DirectHandler', 'ImportedPingHandler', 'DefaultHandler', 'ReExportedHandler', 'ValidateHandler']));
+    expect(regs.find((reg) => reg.className === 'ImportedPingHandler')?.importSource).toBe('./ping#PingHandler');
+    expect(regs.every((reg) => reg.registrationFile === 'srv/local.ts')).toBe(true);
+    expect(regs.every((reg) => typeof reg.registrationLine === 'number')).toBe(true);
+  });
+
   it('parses service bindings and outbound calls', async () => {
     const root = path.join(fixture, 'rules-service');
     const bindings = await parseServiceBindings(
