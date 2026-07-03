@@ -48,6 +48,28 @@ describe('linker and trace engine', () => {
       { depth: 20, includeDb: true, includeAsync: true, includeExternal: true }
     );
     expect(result.edges.map((e) => e.type)).toContain('remote_action');
+    expect(result.edges.every((e) => e.from.includes('EntryHandler.ts'))).toBe(true);
+
+    const handlerResult = trace(
+      db,
+      { repo: 'rules-service', operation: 'checkPayload' },
+      {
+        depth: 20,
+        vars: { objectType: 'Thing', objectCode: 'xx' },
+        includeDb: true,
+        includeAsync: true,
+        includeExternal: true
+      }
+    );
+    expect(handlerResult.edges.every((e) => e.from.includes('RulesHandler.ts'))).toBe(true);
+    expect(handlerResult.edges.map((e) => e.to)).toContain('/ThingProcessService/getPaths');
+
+    const missingOperationResult = trace(
+      db,
+      { repo: 'rules-service', operation: 'notRegistered' },
+      { depth: 20, includeAsync: true }
+    );
+    expect(missingOperationResult.edges.length).toBeGreaterThan(0);
     db.close();
   });
 });
