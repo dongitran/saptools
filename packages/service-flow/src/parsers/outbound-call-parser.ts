@@ -7,33 +7,6 @@ import { summarizeExpression } from '../utils/redaction.js';
 function lineOf(text: string, idx: number): number {
   return text.slice(0, idx).split('\n').length;
 }
-function firstArg(body: string, key: string): string | undefined {
-  return new RegExp(`${key}\\s*:\\s*([^,}\\n]+)`).exec(body)?.[1]?.trim();
-}
-function matchingParen(text: string, open: number): number {
-  let depth = 0;
-  let quote: string | undefined;
-  let escaped = false;
-  for (let i = open; i < text.length; i += 1) {
-    const ch = text[i] ?? '';
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === quote) quote = undefined;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-      continue;
-    }
-    if (ch === '(') depth += 1;
-    if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
 function entityFromExpression(expr: ts.Expression | undefined): string | undefined {
   if (!expr) return undefined;
   if (ts.isIdentifier(expr) || ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
@@ -85,70 +58,105 @@ function queryWarning(expr: string): string {
   if (/^\s*\w+\s*$/.test(expr)) return 'query_variable_without_static_initializer';
   return 'dynamic_entity_expression';
 }
+export interface ClassifiedOutboundCall {
+  fact: OutboundCallFact;
+  node: ts.CallExpression;
+}
+function parserEvidence(source: ts.SourceFile, node: ts.CallExpression, extra?: Record<string, unknown>): Record<string, unknown> {
+  return { parser: 'typescript_ast', startOffset: node.getStart(source), endOffset: node.getEnd(), ...extra };
+}
+function isStringLike(expr: ts.Expression | undefined): expr is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+  return Boolean(expr && (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)));
+}
+function literalText(expr: ts.Expression | undefined): string | undefined {
+  if (isStringLike(expr)) return expr.text;
+  return undefined;
+}
+function objectPropertyText(object: ts.ObjectLiteralExpression, key: string): string | undefined {
+  const prop = object.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property) && nameOfProperty(property.name) === key);
+  return prop ? prop.initializer.getText() : undefined;
+}
+function nameOfProperty(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return undefined;
+}
+function collectServiceVariables(source: ts.SourceFile): Set<string> {
+  const vars = new Set<string>(['cds', 'messaging', 'messageClient', 'eventClient']);
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const text = node.initializer.getText(source);
+      if (/cds\.connect\.(to|messaging)\s*\(/.test(text) || /create.*(Client|Remote|Service|Messaging)/.test(text)) vars.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return vars;
+}
+function receiverName(expr: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr)) return expr.getText();
+  return undefined;
+}
+function isSupportedEventReceiver(receiver: string | undefined, serviceVariables: Set<string>): boolean {
+  if (!receiver) return false;
+  if (receiver === 'cds') return true;
+  if (serviceVariables.has(receiver)) return true;
+  if (/^(srv|service|serviceClient|messaging|messageClient|eventClient|.*Client)$/.test(receiver)) return true;
+  return false;
+}
+export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: string): ClassifiedOutboundCall[] {
+  const calls: ClassifiedOutboundCall[] = [];
+  const sourceFile = normalizePath(filePath);
+  const initializers = variableInitializers(source);
+  const serviceVariables = collectServiceVariables(source);
+  const add = (node: ts.CallExpression, fact: Omit<OutboundCallFact, 'sourceFile' | 'sourceLine' | 'confidence'> & { confidence?: number }, extra?: Record<string, unknown>): void => {
+    calls.push({ node, fact: { ...fact, sourceFile, sourceLine: lineOf(source.text, node.getStart(source)), confidence: fact.confidence ?? 0.8, evidence: parserEvidence(source, node, extra) } });
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const expr = node.expression;
+      const exprText = expr.getText(source);
+      if (exprText === 'cds.run') {
+        const arg = node.arguments[0];
+        const entity = arg ? queryEntityFromAst(arg, initializers) : undefined;
+        const payload = arg?.getText(source) ?? '';
+        add(node, { callType: 'local_db_query', queryEntity: entity, payloadSummary: summarizeExpression(payload), confidence: entity ? 0.9 : 0.55, unresolvedReason: entity ? undefined : queryWarning(payload) });
+      } else if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'send' && ts.isIdentifier(expr.expression)) {
+        const objectArg = node.arguments[0];
+        if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
+          const receiver = expr.expression.text;
+          const query = objectPropertyText(objectArg, 'query');
+          const op = objectPropertyText(objectArg, 'path') ?? objectPropertyText(objectArg, 'event');
+          add(node, { callType: query ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method: stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST'), operationPathExpr: op ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined, queryEntity: query ? extractQueryEntity(query) : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4 }, { receiver, classifier: 'service_client_send_object' });
+        }
+      } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
+        const receiver = receiverName(expr.expression);
+        if (expr.name.text !== 'on' || isSupportedEventReceiver(receiver, serviceVariables)) {
+          const eventName = literalText(node.arguments[0]);
+          if (eventName) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: receiver, eventNameExpr: eventName }, { receiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit' });
+        }
+      } else if (exprText === 'axios' || exprText === 'executeHttpRequest' || exprText === 'useOrFetchDestination') {
+        add(node, { callType: 'external_http', payloadSummary: summarizeExpression(node.arguments.map((arg) => arg.getText(source)).join(', ')), confidence: 0.7, unresolvedReason: 'External HTTP destination is outside indexed CAP services' });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return calls;
+}
+export function containsSupportedOutboundCall(node: ts.Node): boolean {
+  const source = node.getSourceFile();
+  const start = node.getFullStart();
+  const end = node.getEnd();
+  return classifyOutboundCallsInSource(source, source.fileName).some((call) => call.node.getStart(source) >= start && call.node.getEnd() <= end);
+}
 export async function parseOutboundCalls(
   repoPath: string,
   filePath: string,
 ): Promise<OutboundCallFact[]> {
   const text = await fs.readFile(path.join(repoPath, filePath), 'utf8');
-  const out: OutboundCallFact[] = [];
-  for (const m of text.matchAll(/(\w+)\.send\s*\(\s*\{([\s\S]*?)\}\s*\)/g)) {
-    const body = m[2] ?? '';
-    const query = firstArg(body, 'query');
-    const op = firstArg(body, 'path') ?? firstArg(body, 'event');
-    out.push({
-      callType: query ? 'remote_query' : 'remote_action',
-      serviceVariableName: m[1],
-      method: stripQuotes(firstArg(body, 'method') ?? 'POST'),
-      operationPathExpr: op
-        ? `/${stripQuotes(op).replace(/^\//, '')}`
-        : undefined,
-      queryEntity: extractQueryEntity(query ?? ''),
-      payloadSummary: summarizeExpression(body),
-      sourceFile: normalizePath(filePath),
-      sourceLine: lineOf(text, m.index ?? 0),
-      confidence: op || query ? 0.8 : 0.4,
-    });
-  }
-  for (const m of text.matchAll(/cds\.run\s*\(/g)) {
-    const open = (m.index ?? 0) + m[0].lastIndexOf('(');
-    const close = matchingParen(text, open);
-    const expr = close > open ? text.slice(open + 1, close) : '';
-    const entity = extractQueryEntity(expr);
-    out.push({
-      callType: 'local_db_query',
-      queryEntity: entity,
-      payloadSummary: summarizeExpression(expr),
-      sourceFile: normalizePath(filePath),
-      sourceLine: lineOf(text, m.index ?? 0),
-      confidence: entity ? 0.9 : 0.55,
-      unresolvedReason: entity ? undefined : queryWarning(expr),
-    });
-  }
-  for (const m of text.matchAll(
-    /(\w+)\.(emit|publish|on)\s*\(\s*(['"`])([^'"`]+)\3/g,
-  ))
-    out.push({
-      callType: m[2] === 'on' ? 'async_subscribe' : 'async_emit',
-      serviceVariableName: m[1],
-      eventNameExpr: m[4],
-      sourceFile: normalizePath(filePath),
-      sourceLine: lineOf(text, m.index ?? 0),
-      confidence: 0.8,
-    });
-  for (const m of text.matchAll(
-    /(?:axios\s*\(|executeHttpRequest\s*\(|useOrFetchDestination\s*\()([\s\S]*?)\)/g,
-  ))
-    out.push({
-      callType: 'external_http',
-      payloadSummary: summarizeExpression(m[1] ?? ''),
-      sourceFile: normalizePath(filePath),
-      sourceLine: lineOf(text, m.index ?? 0),
-      confidence: 0.7,
-      unresolvedReason:
-        'External HTTP destination is outside indexed CAP services',
-    });
-  out.push(...parseLocalServiceCalls(text, filePath));
-  return out;
+  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+  return [...classifyOutboundCallsInSource(source, filePath).map((call) => call.fact), ...parseLocalServiceCalls(text, filePath)];
 }
 function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFact[] {
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);

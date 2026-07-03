@@ -415,3 +415,70 @@ cds.on('served', async () => {
     expect(parsed.symbols.some((symbol) => symbol.qualifiedName.startsWith('module:src/handler.ts#callback:'))).toBe(true);
   });
 });
+
+describe('outbound AST parser hardening', () => {
+  async function parseSource(source: string): Promise<{ calls: Awaited<ReturnType<typeof parseOutboundCalls>>; symbols: Awaited<ReturnType<typeof parseExecutableSymbols>>['symbols'] }> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-ast-outbound-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'handler.ts'), source);
+    const calls = await parseOutboundCalls(root, 'src/handler.ts');
+    const symbols = (await parseExecutableSymbols(root, 'src/handler.ts')).symbols;
+    return { calls, symbols };
+  }
+
+  it('ignores outbound-like code in line comments, block comments, and strings', async () => {
+    const { calls } = await parseSource(`
+      // await cds.run(SELECT.from(OldEntity));
+      // await remoteClient.send({ path: '/oldOperation', method: 'POST' });
+      // await messageClient.emit('OldEvent', body);
+      // executeHttpRequest({ destinationName: 'legacy' }, { method: 'GET' });
+      /*
+        await cds.run(SELECT.from(BlockEntity));
+        await remoteClient.send({ path: '/blockOperation', method: 'POST' });
+        await messageClient.publish('BlockEvent', body);
+        await messageClient.on('BlockEvent', handler);
+        await axios('/legacy');
+        await useOrFetchDestination({ destinationName: 'legacy' });
+      */
+      const text = "await cds.run(SELECT.from(StringEntity)); remoteClient.send({ path: '/string' });";
+    `);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('indexes equivalent executable outbound calls with AST evidence', async () => {
+    const { calls } = await parseSource(`
+      async function run(): Promise<void> {
+        const remoteClient = await cds.connect.to('RemoteService');
+        await cds.run(SELECT.from(RealEntity));
+        await remoteClient.send({ path: '/doWork', method: 'POST' });
+        await remoteClient.emit('Changed', {});
+        await remoteClient.on('Changed', () => undefined);
+        await executeHttpRequest({ destinationName: 'dest' }, { method: 'GET' });
+      }
+    `);
+    expect(calls.map((call) => call.callType).sort()).toEqual(['async_emit', 'async_subscribe', 'external_http', 'local_db_query', 'remote_action']);
+    expect(calls.every((call) => call.evidence?.parser === 'typescript_ast')).toBe(true);
+  });
+
+  it('does not treat Express response send or generic event emitters as service-flow outbound behavior', async () => {
+    const { calls, symbols } = await parseSource(`
+      app.get('/health', (_req, res) => {
+        res.status(200).send('OK');
+      });
+      desktopApp.on('window-all-closed', () => undefined);
+      windowRef.on('close', () => undefined);
+    `);
+    expect(calls).toHaveLength(0);
+    expect(symbols.some((symbol) => symbol.qualifiedName.includes('#callback:'))).toBe(false);
+  });
+
+  it('creates a synthetic owner for indexed top-level CAP event registrations', async () => {
+    const { calls, symbols } = await parseSource(`
+      cds.on('served', async () => {
+        logger.info('ready');
+      });
+    `);
+    expect(calls).toEqual([expect.objectContaining({ callType: 'async_subscribe', eventNameExpr: 'served' })]);
+    expect(symbols.some((symbol) => symbol.kind === 'event_registration' && symbol.qualifiedName.includes('module:src/handler.ts#event:served:'))).toBe(true);
+  });
+});

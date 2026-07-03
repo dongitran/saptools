@@ -18,9 +18,9 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 
 ---
 
-## 0.1.16 quality update
+## 0.1.17 quality update
 
-`service-flow` 0.1.16 tightens source ownership and proxy evidence after the 0.1.15 audit. It indexes class property arrow/function members, creates conservative synthetic callback symbols only for top-level framework callbacks containing supported outbound calls, prefers explicit outbound source-symbol names when provided, hardens proxy-member resolution away from ambiguous global name-only matches, and splits link output into remote/local/unresolved/ambiguous/dynamic/terminal operation-call buckets.
+`service-flow` 0.1.17 hardens outbound extraction after the 0.1.16 audit. Outbound calls are classified from the TypeScript AST, so comments and strings are ignored; CAP/service lifecycle registrations that remain indexed receive synthetic event-registration owners; generic event emitters and response `.send()` calls are not treated as CAP service-flow edges; and `doctor --strict` reports actionable ownerless categories. The previous 0.1.16 source ownership and proxy-evidence improvements remain in place. It indexes class property arrow/function members, creates conservative synthetic callback symbols only for top-level framework callbacks containing supported outbound calls, prefers explicit outbound source-symbol names when provided, hardens proxy-member resolution away from ambiguous global name-only matches, and splits link output into remote/local/unresolved/ambiguous/dynamic/terminal operation-call buckets.
 
 ## ✨ Features
 
@@ -473,3 +473,8 @@ Handler registrations persist parsed class names and import sources. Linking res
 ### Graph variables
 
 The `graph` command accepts repeatable `--var key=value` options, matching `trace`, for runtime substitution previews in JSON or Mermaid output.
+
+
+### 0.1.17 parser ownership policy
+
+Outbound call extraction is AST-based and ignores comments, block comments, and string literals. CAP/service `.on(...)` registrations are indexed only when the receiver has CAP/service evidence, and top-level registrations receive `module:<relative-file>#event:<event-name>:<line>` synthetic owners. Generic event emitters such as desktop or window events are ignored by default rather than guessed as CAP async edges. Unsupported source shapes are surfaced through diagnostics and strict doctor ownerless categories instead of guessed graph edges.

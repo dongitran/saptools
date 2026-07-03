@@ -122,7 +122,24 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const dbq = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN query_entity IS NOT NULL THEN 1 ELSE 0 END) known, SUM(CASE WHEN query_entity IS NULL THEN 1 ELSE 0 END) unknown FROM outbound_calls WHERE call_type='local_db_query'").get() as { total?: number; known?: number; unknown?: number };
   const outbound = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN source_symbol_id IS NULL THEN 1 ELSE 0 END) withoutOwnership FROM outbound_calls").get() as { total?: number; withoutOwnership?: number };
   const ownerlessByType = db.prepare("SELECT call_type callType, COUNT(*) count FROM outbound_calls WHERE source_symbol_id IS NULL GROUP BY call_type ORDER BY count DESC, call_type").all() as Array<Record<string, unknown>>;
-  const ownerlessByGap = db.prepare("SELECT CASE WHEN source_line <= 1 THEN 'module_preamble' ELSE 'no_indexed_enclosing_symbol' END gap, COUNT(*) count FROM outbound_calls WHERE source_symbol_id IS NULL GROUP BY gap ORDER BY count DESC, gap").all() as Array<Record<string, unknown>>;
+  const ownerlessByCategory = db.prepare(`SELECT CASE
+    WHEN COALESCE(evidence_json,'') LIKE '%comment_or_non_executable_source%' THEN 'comment_or_non_executable_source'
+    WHEN call_type='async_subscribe' AND COALESCE(evidence_json,'') LIKE '%cap_service_event_subscription%' THEN 'top_level_event_registration'
+    WHEN call_type='async_subscribe' THEN 'generic_event_listener_ignored_or_unowned'
+    WHEN EXISTS (SELECT 1 FROM symbols s WHERE s.repo_id=outbound_calls.repo_id AND s.source_file=outbound_calls.source_file) THEN 'line_range_mismatch'
+    WHEN source_line <= 1 THEN 'unsupported_function_shape'
+    WHEN source_line > 1 THEN 'unsupported_callback_shape'
+    ELSE 'unknown' END category, COUNT(*) count
+    FROM outbound_calls WHERE source_symbol_id IS NULL GROUP BY category ORDER BY count DESC, category`).all() as Array<Record<string, unknown>>;
+  const ownerlessExamples = db.prepare(`SELECT CASE
+    WHEN COALESCE(evidence_json,'') LIKE '%comment_or_non_executable_source%' THEN 'comment_or_non_executable_source'
+    WHEN call_type='async_subscribe' AND COALESCE(evidence_json,'') LIKE '%cap_service_event_subscription%' THEN 'top_level_event_registration'
+    WHEN call_type='async_subscribe' THEN 'generic_event_listener_ignored_or_unowned'
+    WHEN EXISTS (SELECT 1 FROM symbols s WHERE s.repo_id=outbound_calls.repo_id AND s.source_file=outbound_calls.source_file) THEN 'line_range_mismatch'
+    WHEN source_line <= 1 THEN 'unsupported_function_shape'
+    WHEN source_line > 1 THEN 'unsupported_callback_shape'
+    ELSE 'unknown' END category, call_type callType, source_file sourceFile, source_line sourceLine, unresolved_reason unresolvedReason
+    FROM outbound_calls WHERE source_symbol_id IS NULL ORDER BY category, source_file, source_line LIMIT 10`).all() as Array<Record<string, unknown>>;
   const symbolTotal = Number(symbol.total ?? 0);
   const symbolUnresolved = Number(symbol.unresolved ?? 0);
   const symbolUnresolvedRatio = symbolTotal === 0 ? 0 : Number((symbolUnresolved / symbolTotal).toFixed(4));
@@ -136,7 +153,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
     { severity: Number(evidence.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_symbol_call_evidence_quality', message: 'Symbol-call evidence JSON object aggregate', total: Number(evidence.total ?? 0), nonObject: Number(evidence.nonObject ?? 0) },
     { severity: symbolUnresolvedRatio > symbolUnresolvedThreshold ? 'warning' : 'info', code: 'strict_symbol_call_quality', message: 'Symbol-call quality aggregate', total: symbolTotal, resolved: Number(symbol.resolved ?? 0), unresolved: symbolUnresolved, unresolvedRatio: symbolUnresolvedRatio, unresolvedRatioThreshold: symbolUnresolvedThreshold, topUnresolvedCallees: top },
     { severity: queryUnknownRatio > dbUnknownThreshold ? 'warning' : 'info', code: 'strict_db_query_quality', message: 'Local DB query quality aggregate', total: queryTotal, known: Number(dbq.known ?? 0), unknown: queryUnknown, unknownRatio: queryUnknownRatio, unknownRatioThreshold: dbUnknownThreshold },
-    { severity: outboundWithoutOwnershipRatio > outboundUnownedThreshold ? 'warning' : 'info', code: 'strict_outbound_source_ownership_quality', message: 'Outbound call source-symbol ownership aggregate', total: outboundTotal, withoutOwnership: outboundWithoutOwnership, withoutOwnershipRatio: outboundWithoutOwnershipRatio, withoutOwnershipRatioThreshold: outboundUnownedThreshold, ownerlessByType, ownerlessByGap },
+    { severity: outboundWithoutOwnershipRatio > outboundUnownedThreshold ? 'warning' : 'info', code: 'strict_outbound_source_ownership_quality', message: 'Outbound call source-symbol ownership aggregate', total: outboundTotal, withoutOwnership: outboundWithoutOwnership, withoutOwnershipRatio: outboundWithoutOwnershipRatio, withoutOwnershipRatioThreshold: outboundUnownedThreshold, ownerlessByType, ownerlessByCategory, ownerlessExamples },
   ];
 }
 

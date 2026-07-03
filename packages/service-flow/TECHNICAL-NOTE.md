@@ -68,3 +68,8 @@
 - Fingerprints hash normalized package facts and package bytes in addition to source file paths/content and analyzer version.
 - The CLI version imports package metadata, so package metadata, `service-flow --version`, changelog, and analyzer/fingerprint version share one release source.
 - Supported runtime is Node.js 24+ with `node:sqlite` validation; older runtimes should fail with a compatibility message instead of a late `DatabaseSync` error.
+
+
+### 0.1.17 parser ownership policy
+
+Outbound call extraction is AST-based and ignores comments, block comments, and string literals. CAP/service `.on(...)` registrations are indexed only when the receiver has CAP/service evidence, and top-level registrations receive `module:<relative-file>#event:<event-name>:<line>` synthetic owners. Generic event emitters such as desktop or window events are ignored by default rather than guessed as CAP async edges. Unsupported source shapes are surfaced through diagnostics and strict doctor ownerless categories instead of guessed graph edges.
