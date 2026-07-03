@@ -1,0 +1,11 @@
+# Agent-local planning
+implementation_plan.md
+
+# Build/test outputs
+dist/
+coverage/
+.test-dist/
+*.tsbuildinfo
+
+# hana-lens generated workspace cache
+.hana-lens-cache.json

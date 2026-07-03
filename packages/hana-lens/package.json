@@ -1,0 +1,57 @@
+{
+  "name": "@saptools/hana-lens",
+  "version": "0.1.0",
+  "description": "Static AST analysis CLI for SAP CAP workspaces",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "hana-lens": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test:unit": "tsc -p tsconfig.test.json && node --test .test-dist/tests/unit/*.test.js",
+    "test:e2e": "pnpm run build && tsc -p tsconfig.test.json && node --test .test-dist/tests/e2e/*.test.js",
+    "test": "pnpm run test:unit && pnpm run test:e2e"
+  },
+  "keywords": [
+    "sap",
+    "cap",
+    "cds",
+    "hana",
+    "cli",
+    "ast",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/hana-lens"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/hana-lens#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  }
+}
