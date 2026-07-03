@@ -432,6 +432,63 @@ describe('local service model fallback', () => {
     expect(result.nodes.some((node) => node.kind === 'handler_method' && node.className === 'LoadRemoteDataHandler' && node.repoName === 'process-helper-b')).toBe(false);
     db.close();
   });
+
+  it('propagates outbound parser evidence into graph and trace evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-evidence-'));
+    await writeFixtureFile(root, 'app-service/.git-fixture');
+    await writeFixtureFile(root, 'app-service/package.json', JSON.stringify({ name: 'app-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'app-service/srv/service.cds', 'service AppService { action runEntry(); action refresh(); }');
+    await writeFixtureFile(root, 'app-service/srv/EntryHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class EntryHandler {
+  @Action('runEntry')
+  async runEntry(): Promise<void> {
+    const local = cds.services.AppService;
+    await local.refresh();
+    await cds.run(SELECT.from('Books'));
+    await cds.emit('DomainEvent', {});
+  }
+}
+`);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const rows = db.prepare("SELECT c.call_type callType,e.edge_type edgeType,e.evidence_json evidenceJson FROM graph_edges e JOIN outbound_calls c ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER) ORDER BY c.call_type").all() as Array<{ callType: string; edgeType: string; evidenceJson: string }>;
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (const row of rows) {
+      const evidence = JSON.parse(row.evidenceJson) as { outboundEvidence?: { parser?: string; classifier?: string } };
+      expect(evidence.outboundEvidence?.parser).toBe('typescript_ast');
+    }
+    expect(rows.find((row) => row.callType === 'local_service_call')?.evidenceJson).toContain('local_cap_service_call');
+    const result = trace(db, { repo: 'app-service', handler: 'EntryHandler' }, { depth: 5, includeDb: true, includeAsync: true });
+    expect(result.edges.some((edge) => edge.evidence.outboundEvidence && (edge.evidence.outboundEvidence as { parser?: string }).parser === 'typescript_ast')).toBe(true);
+    db.close();
+  });
+
+  it('keeps terminal event edges from dynamic bindings graph-static while preserving binding evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-dynamic-event-'));
+    await writeFixtureFile(root, 'app-service/.git-fixture');
+    await writeFixtureFile(root, 'app-service/package.json', JSON.stringify({ name: 'app-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'app-service/srv/service.cds', 'service AppService { action runEntry(); }');
+    await writeFixtureFile(root, 'app-service/srv/EntryHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class EntryHandler {
+  @Action('runEntry')
+  async runEntry(code: string): Promise<void> {
+    const messaging = await cds.connect.to(\`bus_\${code}\`);
+    await messaging.emit('DynamicEvent', {});
+  }
+}
+`);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const edge = db.prepare("SELECT is_dynamic isDynamic,evidence_json evidenceJson FROM graph_edges WHERE edge_type='HANDLER_EMITS_EVENT'").get() as { isDynamic: number; evidenceJson: string };
+    expect(edge.isDynamic).toBe(0);
+    expect(JSON.parse(edge.evidenceJson)).toMatchObject({ bindingHasDynamicExpression: true });
+    db.close();
+  });
+
 });
 
 describe('0.1.14 audit regressions', () => {

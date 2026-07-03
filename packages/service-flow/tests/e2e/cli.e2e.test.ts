@@ -97,6 +97,10 @@ describe('service-flow CLI', () => {
     const strictDiagnostics = JSON.parse(strictDoctorResult.stdout) as Array<{ code?: string; topUnresolvedCallees?: unknown[] }>;
     expect(strictDiagnostics.some((item) => item.code === 'strict_symbol_call_quality' && Array.isArray(item.topUnresolvedCallees))).toBe(true);
     expect(strictDiagnostics.some((item) => item.code === 'strict_db_query_quality')).toBe(true);
+    expect(strictDiagnostics.some((item) => item.code === 'strict_outbound_evidence_quality')).toBe(true);
+    expect(strictDiagnostics.some((item) => item.code === 'strict_graph_evidence_quality')).toBe(true);
+    expect(strictDiagnostics.some((item) => item.code === 'strict_event_receiver_classification_quality')).toBe(true);
+    expect(strictDiagnostics.some((item) => item.code === 'strict_graph_dynamic_flag_consistency')).toBe(true);
   });
 });
 

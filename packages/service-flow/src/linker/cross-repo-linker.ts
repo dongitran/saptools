@@ -69,7 +69,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
     return { status: 'terminal', callType };
   }
   if (resolution.target) {
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, callType === 'local_service_call' ? 'LOCAL_CALL_RESOLVES_TO_OPERATION' : 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify(evidence), isDynamic ? 1 : 0, generation);
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, callType === 'local_service_call' ? 'LOCAL_CALL_RESOLVES_TO_OPERATION' : 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify(evidence), 0, generation);
     return { status: 'resolved', callType };
   }
   const edgeType = callType === 'local_db_query' ? 'HANDLER_RUNS_DB_QUERY' : callType === 'external_http' ? 'HANDLER_CALLS_EXTERNAL_HTTP' : callType === 'async_emit' ? 'HANDLER_EMITS_EVENT' : callType === 'async_subscribe' ? 'EVENT_CONSUMED_BY_HANDLER' : resolution.status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE';
@@ -77,11 +77,25 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const unresolvedReason = status === 'terminal' ? null : String(call.unresolved_reason ?? (resolution.status === 'ambiguous' ? 'Ambiguous operation candidates require a strong service signal' : resolution.status === 'dynamic' ? `Dynamic target requires runtime variable overrides: ${(resolution.reasons.length ? resolution.reasons : ['missing runtime variables']).join(', ')}` : 'No indexed target operation matched'));
   const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : 'external';
   const targetId = callType === 'local_db_query' ? String(call.query_entity ?? 'unknown') : String(call.event_name_expr ?? op ?? call.id);
-  db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(evidence), isDynamic || resolution.status === 'dynamic' ? 1 : 0, unresolvedReason, generation);
+  const graphLevelDynamic = edgeType === 'DYNAMIC_EDGE_CANDIDATE' && resolution.status === 'dynamic';
+  db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(evidence), graphLevelDynamic ? 1 : 0, unresolvedReason, generation);
   return { status, callType };
 }
+function parseJson(value: unknown): unknown {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(String(value)) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+function objectJson(value: unknown): Record<string, unknown> | undefined {
+  const parsed = parseJson(value);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+}
 function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined): Record<string, unknown> {
-  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: call.alias_chain_json ? (JSON.parse(String(call.alias_chain_json)) as unknown) : undefined, transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: call.helperChainJson ? (JSON.parse(String(call.helperChainJson)) as unknown) : undefined, candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
+  const bindingHasDynamicExpression = Boolean(Number(call.isDynamic ?? 0));
+  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: parseJson(call.alias_chain_json), transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: parseJson(call.helperChainJson), candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, bindingHasDynamicExpression: bindingHasDynamicExpression || undefined, outboundEvidence: objectJson(call.evidence_json), analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
 }
 
 function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {
