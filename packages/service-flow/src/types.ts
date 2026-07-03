@@ -95,6 +95,7 @@ export interface HandlerRegistrationFact {
 export interface ServiceBindingFact {
   variableName: string;
   alias?: string;
+  aliasExpr?: string;
   destinationExpr?: string;
   servicePathExpr?: string;
   isDynamic: boolean;

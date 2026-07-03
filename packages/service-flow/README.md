@@ -27,6 +27,8 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 - 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets traces apply runtime `--var key=value` values
 - 📊 **Multiple output modes** — renders human-readable tables, JSON for automation, and Mermaid diagrams for architecture docs
 - 🩺 **Diagnostics-first workflow** — records parse/index issues and exposes them through `service-flow doctor` instead of hiding partial analysis
+- 🧩 **CAP helper-aware binding evidence** — follows imported helpers exported directly or through named export lists and separates alias, destination, and service-path expressions for dynamic `cds.connect.to(alias, options)` calls
+- 🧭 **Nested workspace discovery** — scans nested repositories even when the selected root is itself a valid Git repository, while ignoring empty `.git` placeholders
 - 🔐 **Secret-aware summaries** — redacts sensitive keys in persisted summaries and CLI output while keeping useful source evidence
 - 📦 **Standalone CLI & typed package** — ships as an npm CLI with TypeScript definitions for integration into other saptools workflows
 
@@ -180,6 +182,7 @@ service-flow list repos --workspace /path/to/workspace
 service-flow list services --workspace /path/to/workspace --repo facade-service
 service-flow list operations --workspace /path/to/workspace --repo facade-service --service /FacadeService
 service-flow list calls --workspace /path/to/workspace --repo facade-service --operation doWork
+# `--operation` filters outgoing call paths/payloads; use trace/graph `--operation` for handler-origin traversal.
 ```
 
 | Command | Description |
@@ -280,6 +283,10 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 
 When a concrete target exists after variable substitution, the trace shows both the parameterized evidence and the resolved match. When it does not, `service-flow` keeps the edge as a dynamic candidate or unresolved edge so the missing link remains visible.
 
+Service-binding evidence keeps these fields distinct: service alias, alias expression, destination expression, service-path expression, operation-path expression, and runtime placeholders. This is important for common CAP helpers such as `cds.connect.to(`remote_${code}`, { credentials: { destination: `remote_${code}`, path: `/${entityType}ProcessService` } })`, where the alias is not the service path.
+
+By default, production traces should be built from production source files. Keep generated credentials and local state out of git, and use explicit fixture/test workspaces when validating test-only mocked service clients so they do not pollute production graph interpretation.
+
 ---
 
 ## 📁 Workspace State
@@ -377,6 +384,7 @@ Run `service-flow index` after source, CDS, package metadata, or helper-package 
 <summary><b>Why is an expected call unresolved?</b></summary>
 
 Check `service-flow doctor`, then inspect the facts with `service-flow list services`, `service-flow list operations`, and `service-flow list calls`. Dynamic destinations may need `--var key=value`, and custom wrappers may need new parser support.
+Default doctor output is intended to focus on actionable indexing or trace-impacting issues; use `--strict` when you need exhaustive model-shape diagnostics for entity-only or extension-heavy CDS models.
 
 </details>
 
