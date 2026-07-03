@@ -115,6 +115,39 @@ export function buildJiraIssueWorklogUrl(
   return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/worklog`;
 }
 
+export function buildJiraCurrentUserUrl(
+  cloudId: string,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  return `${cloudRoot(apiRoot, cloudId)}/rest/api/3/myself`;
+}
+
+export function buildJiraAssignableUserSearchUrl(
+  cloudId: string,
+  issueKey: string,
+  options: { readonly accountId?: string; readonly query?: string },
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  const url = new URL(`${cloudRoot(apiRoot, cloudId)}/rest/api/3/user/assignable/search`);
+  url.searchParams.set("issueKey", issueKey);
+  if (options.query !== undefined) {
+    url.searchParams.set("query", options.query);
+  }
+  if (options.accountId !== undefined) {
+    url.searchParams.set("accountId", options.accountId);
+  }
+  url.searchParams.set("maxResults", "1000");
+  return url.toString();
+}
+
+export function buildJiraIssueAssigneeUrl(
+  cloudId: string,
+  issueKey: string,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/assignee`;
+}
+
 export function buildJiraAttachmentContentUrl(
   cloudId: string,
   attachmentId: string,

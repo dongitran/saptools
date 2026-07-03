@@ -1,13 +1,13 @@
 ---
 name: jira
-description: Use when working with Jira Cloud through the jira CLI, including assigned issue lists, issue details with local inline image files, remote links, transitions, and worklogs.
+description: Use when working with Jira Cloud through the jira CLI, including assigned issue lists, issue details with local inline image files, remote links, transitions, safe issue assignment, and worklogs.
 ---
 
 # Jira
 
 ## Purpose
 
-Use `jira` to read and update Jira Cloud issues from the terminal. Prefer it when the user needs assigned tickets, one issue's description/comments/attachments, locally saved inline issue images, remote links, available transitions, status changes, logout, or worklog entries.
+Use `jira` to read and update Jira Cloud issues from the terminal. Prefer it when the user needs assigned tickets, one issue's description/comments/attachments, locally saved inline issue images, remote links, available transitions, safe assignee changes, status changes, logout, or worklog entries.
 
 If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptools/jira`.
 
@@ -16,7 +16,7 @@ If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptool
 1. Identify whether the user needs auth status, assigned issues, one issue detail, remote links, transitions, a transition write, or a worklog write.
 2. Prefer `--json` for agent workflows and downstream parsing.
 3. Reuse the default token store at `~/.jira-oauth/tokens.json` when available.
-4. Use write commands only when the user explicitly asks to transition an issue or add worklog time.
+4. Use write commands only when the user explicitly asks to assign an issue, transition an issue, or add worklog time.
 5. Treat access tokens, refresh tokens, Authorization headers, OAuth client secrets, and raw token-store contents as sensitive.
 
 ## Authentication
@@ -101,6 +101,21 @@ jira transition OPS-123 --id 31
 ```
 
 - `--id <id>`: required transition ID from `jira transitions <key> --json`.
+
+Assign one issue only when the user explicitly asks for an assignee write:
+
+```bash
+jira assign OPS-123 --me
+jira assign OPS-123 --to "Display Name"
+jira assign OPS-123 --account-id "account-id-from-ambiguity"
+```
+
+- Use `jira assign <KEY> --me` for the connected Jira account.
+- Use `jira assign <KEY> --to "Display Name"` for Jira's issue-scoped assignable-user name lookup.
+- Use `--account-id` only after inspecting ambiguous candidates or when the stable Jira account ID is already known.
+- Assignment is a write and requires explicit user intent.
+- If assignment is ambiguous, no Jira mutation occurred; inspect the returned candidate display names/account IDs and ask the user which account to use.
+- Never work around ambiguity by calling `jira token` and hand-writing an unsafe first-result script.
 
 Add worklog time:
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { parseJiraAssignableUsers, parseJiraCurrentUser } from "./assignment.js";
 import { JiraCustomFieldSearchPageSchema, JiraIssueEditMetadataSchema, normalizeCustomField, normalizeFieldSchema } from "./custom-fields.js";
 import type { JiraCustomFieldSearchPage, JiraIssueEditableField, NormalizedCustomField } from "./custom-fields.js";
 import {
@@ -10,9 +11,11 @@ import {
 } from "./issue-images.js";
 import type {
   AddJiraIssueWorklogOptions,
+  AssignJiraIssueOptions,
   FetchAssignedJiraIssuesOptions,
   FetchJiraCustomFieldsOptions,
   FetchJiraIssueDetailOptions,
+  JiraAssignableUser,
   JiraIssueAttachment,
   JiraIssueComment,
   JiraIssueDetail,
@@ -20,13 +23,18 @@ import type {
   JiraIssueRemoteLink,
   JiraIssueSummary,
   JiraIssueTransition,
+  JiraRequestOptions,
+  SearchJiraAssignableUsersOptions,
   TransitionJiraIssueOptions,
   UpdateJiraIssueFieldsOptions,
 } from "./types.js";
 import {
   buildAssignedIssuesSearchBody,
   buildAssignedIssuesSearchUrl,
+  buildJiraAssignableUserSearchUrl,
+  buildJiraCurrentUserUrl,
   buildJiraFieldSearchUrl,
+  buildJiraIssueAssigneeUrl,
   buildJiraIssueCommentsUrl,
   buildJiraIssueDetailUrl,
   buildJiraIssueEditMetaUrl,
@@ -196,6 +204,54 @@ export async function updateJiraIssueFields(options: UpdateJiraIssueFieldsOption
     method: "PUT",
   });
   assertOk(response, "Jira issue fields could not be updated.");
+}
+
+export async function fetchJiraCurrentUser(options: JiraRequestOptions): Promise<JiraAssignableUser> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(buildJiraCurrentUserUrl(options.cloudId, options.apiRoot), {
+    headers: readJiraHeaders(options.accessToken),
+  });
+  assertOk(response, "Jira current user could not be loaded.");
+  return parseJiraCurrentUser(await response.json());
+}
+
+export async function searchJiraAssignableUsers(
+  options: SearchJiraAssignableUsersOptions,
+): Promise<JiraAssignableUser[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    buildJiraAssignableUserSearchUrl(
+      options.cloudId,
+      options.issueKey,
+      assignableSearchUrlOptions(options),
+      options.apiRoot,
+    ),
+    { headers: readJiraHeaders(options.accessToken) },
+  );
+  assertOk(response, "Jira assignable users could not be loaded.");
+  return parseJiraAssignableUsers(await response.json());
+}
+
+function assignableSearchUrlOptions(
+  options: SearchJiraAssignableUsersOptions,
+): { readonly accountId?: string; readonly query?: string } {
+  return {
+    ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
+    ...(options.query === undefined ? {} : { query: options.query }),
+  };
+}
+
+export async function assignJiraIssue(options: AssignJiraIssueOptions): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    buildJiraIssueAssigneeUrl(options.cloudId, options.issueKey, options.apiRoot),
+    {
+      body: JSON.stringify({ accountId: options.accountId }),
+      headers: jsonJiraHeaders(options.accessToken),
+      method: "PUT",
+    },
+  );
+  assertOk(response, "Jira issue assignee could not be updated.");
 }
 
 export async function fetchAssignedJiraIssues(

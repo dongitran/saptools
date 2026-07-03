@@ -24,6 +24,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 - 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text, paginated comments, attachments, and clone-linked issues.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
+- 👤 **Safe assignment** — assigns one issue only after resolving exactly one active issue-assignable Jira account.
 - ⏱️ **Worklogs** — adds focused time entries with optional ADF text comments and records successful writes in local history.
 - 🧭 **Custom fields** — discovers Jira Cloud custom fields, pins useful display names, and updates editable pinned fields without hard-coded site IDs.
 - 🧩 **Typed API** — every CLI workflow is available as a TypeScript function.
@@ -184,6 +185,62 @@ Apply a transition by ID.
 ```bash
 jira transition OPS-123 --id 31
 ```
+
+### `jira assign <key>`
+
+Assign one Jira issue after deterministic assignee resolution:
+
+```bash
+jira assign OPS-123 --me
+jira assign OPS-123 --to "Example User"
+jira assign OPS-123 --account-id "account-id-from-ambiguity"
+jira assign OPS-123 --to "Example User" --json
+```
+
+Exactly one selector is required: `--me`, `--to <name-or-query>`, or `--account-id <account-id>`. The CLI rejects missing, combined, or blank selectors before calling Jira.
+
+- `--me` fetches `GET /rest/api/3/myself`, then verifies that active account through the issue-scoped assignable-user search before writing.
+- `--to` is an approximate Jira display-name query. The CLI searches only users assignable to the target issue with `issueKey=<KEY>`, `query=<name-or-query>`, and `maxResults=1000`.
+- `--account-id` is the deterministic retry path. It still verifies the account through the same issue-scoped assignable-user endpoint with `accountId=<account-id>` before assignment.
+
+Jira can return broad name matches. The CLI never auto-selects among multiple unresolved candidates. A unique normalized exact display-name match wins over weaker fuzzy matches, and a single fuzzy candidate is accepted only when no exact full-name match exists. Multiple exact display-name matches or multiple fuzzy candidates are ambiguous and no Jira mutation occurs.
+
+Human ambiguity output lists the candidate display names and account IDs and recommends retrying with `--account-id`:
+
+```text
+Multiple active assignable Jira users match "Example"; no assignment was changed.
+2 candidates:
+Example One    account-id-1
+Example Two    account-id-2
+Retry with: jira assign OPS-123 --account-id <account-id>
+```
+
+JSON ambiguity is written to stderr with a non-zero exit status:
+
+```json
+{
+  "error": "ambiguous_assignee",
+  "issueKey": "OPS-123",
+  "query": "Example",
+  "message": "Multiple active assignable Jira users matched; no assignment was changed.",
+  "candidates": [
+    { "accountId": "account-id-1", "displayName": "Example One" },
+    { "accountId": "account-id-2", "displayName": "Example Two" }
+  ]
+}
+```
+
+Successful JSON output has no hint footer:
+
+```json
+{
+  "issueKey": "OPS-123",
+  "assignee": { "accountId": "account-id-1", "displayName": "Example One" },
+  "resolution": "exact"
+}
+```
+
+Assignment requires Jira Browse Projects and Assign Issues permissions, any applicable issue-security access, and OAuth scopes that allow user lookup and assignment (`read:jira-user` and `write:jira-work` for classic scopes). Jira user search operations are documented around a first-1,000-user search window, so the CLI requests `maxResults=1000`; zero results mean only that no active assignable candidate was returned for that issue and query.
 
 
 ### `jira fields`

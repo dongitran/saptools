@@ -4,6 +4,11 @@ import process from "node:process";
 import { Command } from "commander";
 
 import {
+  JiraAssigneeAmbiguityError,
+  resolveAssignableUserByAccountId,
+  resolveAssignableUserByQuery,
+} from "./assignment.js";
+import {
   connectJira,
   disconnectJira,
   getJiraConnectionStatus,
@@ -11,12 +16,15 @@ import {
 } from "./auth.js";
 import {
   addJiraIssueWorklog,
+  assignJiraIssue,
   fetchAssignedJiraIssues,
+  fetchJiraCurrentUser,
   fetchJiraCustomFields,
   fetchJiraIssueDetail,
   fetchJiraIssueEditMetadata,
   fetchJiraIssueRemoteLinks,
   fetchJiraIssueTransitions,
+  searchJiraAssignableUsers,
   transitionJiraIssue,
   updateJiraIssueFields,
 } from "./client.js";
@@ -46,6 +54,7 @@ import type {
   FetchJiraIssueDetailOptions,
   JiraAuthOptions,
   JiraRequestOptions,
+  JiraAssigneeResolution,
   JiraTokens,
 } from "./types.js";
 import {
@@ -93,6 +102,12 @@ interface TransitionFlags {
   readonly id?: string;
 }
 
+interface AssignFlags extends JsonFlags {
+  readonly accountId?: string;
+  readonly me?: boolean;
+  readonly to?: string;
+}
+
 interface WorklogFlags {
   readonly comment?: string;
   readonly minutes?: string;
@@ -132,6 +147,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addLinksCommand(program);
   addTransitionsCommand(program);
   addTransitionCommand(program);
+  addAssignCommand(program);
   addWorklogCommand(program);
   addWorklogsCommand(program);
   addFieldsCommand(program);
@@ -301,6 +317,111 @@ function addTransitionCommand(program: Command): void {
         false,
       );
     });
+}
+
+function addAssignCommand(program: Command): void {
+  program
+    .command("assign")
+    .description("Assign one Jira issue after deterministic assignee resolution")
+    .argument("<key>", "Jira issue key")
+    .option("--me", "Assign to the connected Jira account", false)
+    .option("--to <name-or-query>", "Find an active issue-assignable user by display-name query")
+    .option("--account-id <account-id>", "Assign to a verified issue-assignable account ID")
+    .option("--json", "Print JSON output", false)
+    .action(async (issueKey: string, flags: AssignFlags): Promise<void> => {
+      try {
+        const requestOptions = await toIssueRequestOptions(program, issueKey);
+        const resolution = await resolveAssigneeForFlags(requestOptions, flags);
+        await assignJiraIssue({ ...requestOptions, accountId: resolution.assignee.accountId });
+        const result = {
+          issueKey,
+          assignee: {
+            accountId: resolution.assignee.accountId,
+            displayName: resolution.assignee.displayName,
+          },
+          resolution: resolution.source,
+        };
+        await writeOutputWithOptionalHint(
+          program,
+          requestOptions.cloudId,
+          flags.json === true ? result : `Assigned ${issueKey} to ${resolution.assignee.displayName}.`,
+          flags.json === true,
+        );
+      } catch (error: unknown) {
+        if (error instanceof JiraAssigneeAmbiguityError) {
+          writeAssignmentError(error, flags.json === true);
+          process.exitCode = 1;
+          return;
+        }
+        throw error;
+      }
+    });
+}
+
+async function resolveAssigneeForFlags(
+  requestOptions: JiraRequestOptions & { readonly issueKey: string },
+  flags: AssignFlags,
+): Promise<JiraAssigneeResolution> {
+  const selector = parseAssignSelector(flags);
+  if (selector.kind === "me") {
+    const currentUser = await fetchJiraCurrentUser(requestOptions);
+    if (!currentUser.active) {
+      throw new Error("The current Jira user is inactive; no assignment was changed.");
+    }
+    const candidates = await searchJiraAssignableUsers({ ...requestOptions, accountId: currentUser.accountId });
+    return resolveAssignableUserByAccountId(requestOptions.issueKey, currentUser.accountId, candidates, "me");
+  }
+  const candidates = await searchJiraAssignableUsers({
+    ...requestOptions,
+    ...(selector.kind === "to" ? { query: selector.value } : { accountId: selector.value }),
+  });
+  return selector.kind === "to"
+    ? resolveAssignableUserByQuery(requestOptions.issueKey, selector.value, candidates)
+    : resolveAssignableUserByAccountId(requestOptions.issueKey, selector.value, candidates, "account-id");
+}
+
+function parseAssignSelector(flags: AssignFlags): { readonly kind: "me" } | { readonly kind: "to" | "account-id"; readonly value: string } {
+  const selectors = [
+    ...(flags.me === true ? ["--me"] : []),
+    ...(flags.to === undefined ? [] : ["--to <name-or-query>"]),
+    ...(flags.accountId === undefined ? [] : ["--account-id <account-id>"]),
+  ];
+  if (selectors.length !== 1) {
+    throw new Error("Exactly one assignee selector is required: --me, --to <name-or-query>, or --account-id <account-id>.");
+  }
+  if (flags.me === true) {
+    return { kind: "me" };
+  }
+  if (flags.to !== undefined) {
+    return { kind: "to", value: requireText(flags.to, "--to <name-or-query>") };
+  }
+  return { kind: "account-id", value: requireText(flags.accountId, "--account-id <account-id>") };
+}
+
+function writeAssignmentError(error: JiraAssigneeAmbiguityError, isJson: boolean): void {
+  if (isJson) {
+    writeErrorOutput({
+      error: "ambiguous_assignee",
+      issueKey: error.issueKey,
+      query: error.query,
+      message: "Multiple active assignable Jira users matched; no assignment was changed.",
+      candidates: error.candidates.map((candidate) => ({
+        accountId: candidate.accountId,
+        displayName: candidate.displayName,
+      })),
+    });
+    return;
+  }
+  writeErrorOutput(formatAssigneeAmbiguity(error));
+}
+
+function formatAssigneeAmbiguity(error: JiraAssigneeAmbiguityError): string {
+  return [
+    `Multiple active assignable Jira users match "${error.query}"; no assignment was changed.`,
+    `${error.candidates.length.toString()} candidates:`,
+    ...error.candidates.map((candidate) => `${candidate.displayName}\t${candidate.accountId}`),
+    `Retry with: jira assign ${error.issueKey} --account-id <account-id>`,
+  ].join("\n");
 }
 
 function addWorklogCommand(program: Command): void {
@@ -706,6 +827,12 @@ async function writeOutputWithOptionalHint(
 
 function writeOutput(value: unknown): void {
   process.stdout.write(
+    typeof value === "string" ? `${value}\n` : `${JSON.stringify(value, null, 2)}\n`,
+  );
+}
+
+function writeErrorOutput(value: unknown): void {
+  process.stderr.write(
     typeof value === "string" ? `${value}\n` : `${JSON.stringify(value, null, 2)}\n`,
   );
 }

@@ -6,12 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   addJiraIssueWorklog,
+  assignJiraIssue,
   fetchAssignedJiraIssues,
+  fetchJiraCurrentUser,
   fetchJiraCustomFields,
   fetchJiraIssueEditMetadata,
   fetchJiraIssueDetail,
   fetchJiraIssueRemoteLinks,
   fetchJiraIssueTransitions,
+  searchJiraAssignableUsers,
   transitionJiraIssue,
   updateJiraIssueFields,
 } from "../../src/client.js";
@@ -720,6 +723,69 @@ describe("Jira REST client", () => {
         issueKey: "OPS-123",
       }),
     ).rejects.toThrow("Jira issue transitions response was not valid.");
+  });
+
+  it("fetches current users, issue-scoped assignable users, and assigns by account ID", async () => {
+    const fetchMock = vi.fn(async (input: FetchInput, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/rest/api/3/myself")) {
+        return await Promise.resolve(jsonResponse({ accountId: "account-1", active: true, displayName: "Current User" }));
+      }
+      if (url.includes("/rest/api/3/user/assignable/search")) {
+        return await Promise.resolve(jsonResponse([{ accountId: "account-1", active: true, displayName: "Current User" }]));
+      }
+      expect(init?.method).toBe("PUT");
+      return await Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    await expect(fetchJiraCurrentUser({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+    })).resolves.toMatchObject({ accountId: "account-1" });
+    await expect(searchJiraAssignableUsers({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-123",
+      query: "Current",
+    })).resolves.toHaveLength(1);
+    await expect(assignJiraIssue({
+      accessToken: "secret-access-token",
+      accountId: "account-1",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS/123",
+    })).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/issue/OPS%2F123/assignee",
+      {
+        body: JSON.stringify({ accountId: "account-1" }),
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer secret-access-token",
+          "Content-Type": "application/json",
+        },
+        method: "PUT",
+      },
+    );
+  });
+
+  it.each([400, 401, 403, 404, 429, 500])("throws neutral assignment errors for HTTP %i", async (status) => {
+    const fetchMock = vi.fn(async () => await Promise.resolve(new Response("sensitive body", { status })));
+    await expect(assignJiraIssue({
+      accessToken: "secret-access-token",
+      accountId: "account-1",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-123",
+    })).rejects.toThrow("Jira issue assignee could not be updated.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
