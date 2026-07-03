@@ -13,6 +13,7 @@ export interface LinkWorkspaceResult {
   dependencyAmbiguousCount: number;
   implementationResolvedCount: number;
   implementationAmbiguousCount: number;
+  implementationUnresolvedCount: number;
 }
 export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, string> = {}): LinkWorkspaceResult {
   return db.transaction(() => {
@@ -22,14 +23,14 @@ export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, 
     const callSummary = linkCalls(db, workspaceId, vars, generation);
     const impl = linkImplementations(db, workspaceId, generation);
     db.prepare("UPDATE repositories SET graph_generation=?, graph_stale_reason=NULL, graph_stale_at=NULL WHERE workspace_id=?").run(generation, workspaceId);
-    return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount };
+    return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount, implementationUnresolvedCount: impl.unresolvedCount };
   });
 }
 function nextGraphGeneration(db: Db, workspaceId: number): number {
   const row = db.prepare('SELECT COALESCE(MAX(graph_generation),0) generation FROM repositories WHERE workspace_id=?').get(workspaceId) as { generation?: number } | undefined;
   return Number(row?.generation ?? 0) + 1;
 }
-function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, generation: number): Omit<LinkWorkspaceResult, 'dependencyResolvedCount' | 'dependencyAmbiguousCount' | 'implementationResolvedCount' | 'implementationAmbiguousCount'> {
+function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, generation: number): Omit<LinkWorkspaceResult, 'dependencyResolvedCount' | 'dependencyAmbiguousCount' | 'implementationResolvedCount' | 'implementationAmbiguousCount' | 'implementationUnresolvedCount'> {
   let edgeCount = 0;
   let unresolvedCount = 0;
   let resolvedCount = 0;
@@ -70,15 +71,16 @@ function callEvidence(call: Record<string, unknown>, resolution: { target?: { re
   return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: call.helperChainJson ? (JSON.parse(String(call.helperChainJson)) as unknown) : undefined, candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
 }
 
-function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number } {
-  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
+function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {
+  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage,r.kind modelKind FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
   let edgeCount = 0;
   let resolvedCount = 0;
   let ambiguousCount = 0;
+  let unresolvedCount = 0;
   for (const operation of operations) {
     const candidates = rankedImplementationCandidates(db, workspaceId, operation);
+    if (candidates.length === 0) continue;
     const accepted = candidates.filter((candidate) => candidate.accepted);
-    if (accepted.length === 0) continue;
     const topScore = accepted[0]?.score ?? 0;
     const winners = accepted.filter((candidate) => candidate.score === topScore);
     const unique = winners.length === 1 ? winners[0] : undefined;
@@ -89,12 +91,18 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
       modelPackage: { id: operation.modelRepoId, name: operation.modelRepo, packageName: operation.modelPackage },
       candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
     };
+    if (accepted.length === 0) {
+      db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', 'unresolved', 'operation', graphId(operation.operationId), 'handler_method_candidates', candidates.map((row) => graphId(row.methodId)).join(','), 0, JSON.stringify(evidence), 0, 'No implementation candidate passed policy', generation);
+      edgeCount += 1;
+      unresolvedCount += 1;
+      continue;
+    }
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : winners.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidence), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
     edgeCount += 1;
     if (unique) resolvedCount += 1;
     else ambiguousCount += 1;
   }
-  return { edgeCount, resolvedCount, ambiguousCount };
+  return { edgeCount, resolvedCount, ambiguousCount, unresolvedCount };
 }
 interface ImplementationCandidate extends Record<string, unknown> {
   methodId: number;
@@ -128,6 +136,7 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       ? modelRepoId,
       ? modelRepo,
       ? modelPackage,
+      ? modelKind,
       ? servicePath,
       ? operationPath,
       ? operationName,
@@ -136,6 +145,7 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id AND localService.service_path=?) THEN 1 ELSE 0 END localServicePathMatch,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id) THEN 1 ELSE 0 END applicationHasLocalServices,
+      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON (localClass.id=localReg.handler_class_id OR localClass.class_name=localReg.class_name) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END appDependsOnModel,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(handlerRepo.id AS TEXT)) THEN 1 ELSE 0 END appDependsOnHandler,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END handlerDependsOnModel
@@ -149,12 +159,16 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
         operation.modelRepoId,
         operation.modelRepo,
         operation.modelPackage,
+        operation.modelKind,
         operation.servicePath,
         operation.operationPath,
         operation.operationName,
         operation.modelRepoId,
         operation.modelRepoId,
         operation.servicePath,
+        normalizedOperation(String(operation.operationPath ?? '')),
+        operation.operationName,
+        operation.operationName,
         modelRepoGraphId,
         modelRepoGraphId,
         workspaceId,
@@ -172,9 +186,15 @@ function scoreImplementationCandidate(row: Record<string, unknown>, operation: R
   const localServicePathMatch = flag(row.localServicePathMatch);
   const applicationHasLocalServices = flag(row.applicationHasLocalServices);
   const appDependsOnModel = flag(row.appDependsOnModel);
+  const applicationHasLocalRegistrationForOperation = flag(row.applicationHasLocalRegistrationForOperation);
   const appDependsOnHandler = flag(row.appDependsOnHandler);
   const handlerDependsOnModel = flag(row.handlerDependsOnModel);
   const importSource = typeof row.importSource === 'string' && row.importSource.length > 0;
+  const sameRepoRegistration = flag(row.sameRepoRegistration);
+  const modelOriented = row.modelKind === 'cap-db-model' || !applicationHasLocalRegistrationForOperation;
+  const methodMatches = true;
+  const registeredAndLinked = sameRepoRegistration && importSource;
+  const helperOwned = modelOriented && methodMatches && registeredAndLinked && sameRepoRegistration && !applicationHasLocalServices && !modelIsApplicationRepo && !modelIsHandlerRepo && !localServicePathMatch && !appDependsOnModel && !appDependsOnHandler && !handlerDependsOnModel;
   if (modelIsApplicationRepo) {
     score += 100;
     acceptedReasons.push('model package equals registration package');
@@ -201,6 +221,10 @@ function scoreImplementationCandidate(row: Record<string, unknown>, operation: R
     score += 20;
     acceptedReasons.push('handler package depends on model package');
   }
+  if (helperOwned) {
+    score += 60;
+    acceptedReasons.push('unique registered helper implementation for model-only operation');
+  }
   if (importSource) {
     score += 10;
     acceptedReasons.push('registration imports handler class');
@@ -208,8 +232,8 @@ function scoreImplementationCandidate(row: Record<string, unknown>, operation: R
   const hasOwnership = modelIsApplicationRepo || modelIsHandlerRepo;
   const hasCrossPackage = appDependsOnModel && (modelIsHandlerRepo || appDependsOnHandler || !importSource);
   const contradicted = applicationHasLocalServices && !localServicePathMatch && !appDependsOnModel && !hasOwnership;
-  if (!hasOwnership && !localServicePathMatch && !hasCrossPackage) rejectedReasons.push('missing direct ownership, exact local service path, or validated cross-package dependency evidence');
-  const accepted = !contradicted && (hasOwnership || localServicePathMatch || hasCrossPackage || handlerDependsOnModel);
+  if (!hasOwnership && !localServicePathMatch && !hasCrossPackage && !helperOwned) rejectedReasons.push('missing direct ownership, exact local service path, or validated cross-package dependency evidence');
+  const accepted = !contradicted && (hasOwnership || localServicePathMatch || hasCrossPackage || handlerDependsOnModel || helperOwned);
   if (!accepted && rejectedReasons.length === 0) rejectedReasons.push('candidate did not meet implementation ownership policy');
   return { ...row, methodId: Number(row.methodId), score, accepted, acceptedReasons, rejectedReasons };
 }
@@ -236,6 +260,7 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
       directOwnership: { modelIsApplicationRepo: flag(candidate.modelIsApplicationRepo), modelIsHandlerRepo: flag(candidate.modelIsHandlerRepo) },
       localServicePathMatch: flag(candidate.localServicePathMatch),
       applicationHasLocalServices: flag(candidate.applicationHasLocalServices),
+      applicationHasLocalRegistrationForOperation: flag(candidate.applicationHasLocalRegistrationForOperation),
       appDependsOnModel: flag(candidate.appDependsOnModel),
       appDependsOnHandler: flag(candidate.appDependsOnHandler),
       handlerDependsOnModel: flag(candidate.handlerDependsOnModel),

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { migrate } from './migrations.js';
+import { VERSION } from '../version.js';
 
 type SqlValue = string | number | bigint | Buffer | null | undefined;
 interface NativeStatement {
@@ -58,7 +59,7 @@ function loadSqlite(): NodeSqliteModule {
     return sqlite;
   } catch (error) {
     throw new Error(
-      'service-flow 0.1.8 requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.',
+      `service-flow ${VERSION} requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.`,
       { cause: error },
     );
   }

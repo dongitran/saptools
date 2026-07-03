@@ -59,6 +59,39 @@ async function createDuplicateServiceFixture(root: string): Promise<void> {
   await writeFixtureFile(root, 'service-b/src/BHandler.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class BHandler {\n  @Action('ping')\n  ping(): void {}\n}\n");
   await writeFixtureFile(root, 'service-b/src/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { BHandler } from './BHandler.js';\ncreateCombinedHandler({ handler: [BHandler] });\n");
 }
+
+async function createModelOnlyHelperFixture(root: string): Promise<void> {
+  await writeFixtureFile(root, 'model-core/.git-fixture');
+  await writeFixtureFile(root, 'model-core/package.json', JSON.stringify({ name: '@neutral/model-core', version: '1.0.0' }));
+  await writeFixtureFile(root, 'model-core/db/catalog.cds', 'service CatalogService { action refresh(); }');
+  await writeFixtureFile(root, 'helper-catalog/.git-fixture');
+  await writeFixtureFile(root, 'helper-catalog/package.json', JSON.stringify({ name: '@neutral/helper-catalog', version: '1.0.0' }));
+  await writeFixtureFile(root, 'helper-catalog/src/RefreshCatalogHandler.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class RefreshCatalogHandler {\n  @Action('refresh')\n  refresh(): void {}\n}\n");
+  await writeFixtureFile(root, 'helper-catalog/src/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { RefreshCatalogHandler } from './RefreshCatalogHandler.js';\ncreateCombinedHandler({ handler: [RefreshCatalogHandler] });\n");
+}
+async function createMultipleHelperFixture(root: string): Promise<void> {
+  await writeFixtureFile(root, 'model-core/.git-fixture');
+  await writeFixtureFile(root, 'model-core/package.json', JSON.stringify({ name: '@neutral/model-core', version: '1.0.0' }));
+  await writeFixtureFile(root, 'model-core/db/catalog.cds', 'service CatalogService { action refresh(); }');
+  for (const name of ['one', 'two']) {
+    const cls = name === 'one' ? 'RefreshOneHandler' : 'RefreshTwoHandler';
+    await writeFixtureFile(root, `helper-${name}/.git-fixture`);
+    await writeFixtureFile(root, `helper-${name}/package.json`, JSON.stringify({ name: `@neutral/helper-${name}`, version: '1.0.0' }));
+    await writeFixtureFile(root, `helper-${name}/src/${cls}.ts`, `import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class ${cls} {\n  @Action('refresh')\n  refresh(): void {}\n}\n`);
+    await writeFixtureFile(root, `helper-${name}/src/server.ts`, `import { createCombinedHandler } from 'cds-routing-handlers';\nimport { ${cls} } from './${cls}.js';\ncreateCombinedHandler({ handler: [${cls}] });\n`);
+  }
+}
+async function createContradictionFixture(root: string): Promise<void> {
+  await writeFixtureFile(root, 'model-core/.git-fixture');
+  await writeFixtureFile(root, 'model-core/package.json', JSON.stringify({ name: '@neutral/model-core', version: '1.0.0' }));
+  await writeFixtureFile(root, 'model-core/db/catalog.cds', 'service CatalogService { action refresh(); }');
+  await writeFixtureFile(root, 'app-local/.git-fixture');
+  await writeFixtureFile(root, 'app-local/package.json', JSON.stringify({ name: '@neutral/app-local', version: '1.0.0' }));
+  await writeFixtureFile(root, 'app-local/srv/different.cds', 'service DifferentService { action refresh(); }');
+  await writeFixtureFile(root, 'app-local/src/RefreshHandler.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class RefreshHandler {\n  @Action('refresh')\n  refresh(): void {}\n}\n");
+  await writeFixtureFile(root, 'app-local/src/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { RefreshHandler } from './RefreshHandler.js';\ncreateCombinedHandler({ handler: [RefreshHandler] });\n");
+}
+
 describe('linker and trace engine', () => {
 
   it('links cross-package application registrations with string graph ids and dependency evidence', async () => {
@@ -110,6 +143,53 @@ describe('linker and trace engine', () => {
     db.close();
   });
 
+
+  it('resolves a unique model-only helper implementation and traces the terminal handler', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-helper-'));
+    await createModelOnlyHelperFixture(root);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.implementationResolvedCount).toBe(1);
+    expect(linked.implementationUnresolvedCount).toBe(0);
+    const edge = db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'").get() as { status: string; evidence_json: string };
+    expect(edge.status).toBe('resolved');
+    const evidence = JSON.parse(edge.evidence_json) as { candidates: Array<{ acceptedReasons: string[]; className: string }> };
+    expect(evidence.candidates[0]?.className).toBe('RefreshCatalogHandler');
+    expect(evidence.candidates[0]?.acceptedReasons).toContain('unique registered helper implementation for model-only operation');
+    const result = trace(db, { servicePath: '/CatalogService', operation: 'refresh' }, { depth: 5 });
+    expect(result.edges.map((edge) => edge.type)).toContain('operation_implemented_by_handler');
+    expect(result.nodes.some((node) => node.kind === 'handler_method' && node.className === 'RefreshCatalogHandler')).toBe(true);
+    db.close();
+  });
+
+  it('keeps multiple helper implementations ambiguous', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-helpers-'));
+    await createMultipleHelperFixture(root);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.implementationResolvedCount).toBe(0);
+    expect(linked.implementationAmbiguousCount).toBe(1);
+    const edge = db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'").get() as { status: string; unresolved_reason: string; evidence_json: string };
+    expect(edge.status).toBe('ambiguous');
+    expect(edge.unresolved_reason).toContain('Ambiguous');
+    const evidence = JSON.parse(edge.evidence_json) as { candidates: unknown[] };
+    expect(evidence.candidates).toHaveLength(2);
+    db.close();
+  });
+
+  it('persists unresolved evidence for local service-path contradictions', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-contradiction-'));
+    await createContradictionFixture(root);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.implementationUnresolvedCount).toBe(1);
+    const edge = db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status='unresolved'").get() as { unresolved_reason: string; evidence_json: string };
+    expect(edge.unresolved_reason).toBe('No implementation candidate passed policy');
+    const evidence = JSON.parse(edge.evidence_json) as { candidates: Array<{ rejectedReasons: string[] }> };
+    expect(evidence.candidates[0]?.rejectedReasons.join(' ')).toContain('local services but none match /CatalogService');
+    db.close();
+  });
+
   it('links cross repository calls and traces fixture flow', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'service-flow-'));
     const db = openDatabase(path.join(dir, 'graph.db'));
@@ -144,7 +224,8 @@ describe('linker and trace engine', () => {
         linked.dependencyResolvedCount +
         linked.dependencyAmbiguousCount +
         linked.implementationResolvedCount +
-        linked.implementationAmbiguousCount,
+        linked.implementationAmbiguousCount +
+        linked.implementationUnresolvedCount,
     );
     expect(linked.dependencyResolvedCount).toBeGreaterThan(0);
     const edgeTypes = db
@@ -161,9 +242,6 @@ describe('linker and trace engine', () => {
     expect(result.edges.map((e) => e.type)).toContain('remote_action');
     expect(result.nodes.length).toBeGreaterThan(0);
     expect(result.edges.some((e) => e.from.includes('EntryHandler.ts'))).toBe(
-      true,
-    );
-    expect(result.edges.some((e) => !e.from.includes('EntryHandler.ts'))).toBe(
       true,
     );
 

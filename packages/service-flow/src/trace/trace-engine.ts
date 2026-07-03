@@ -80,9 +80,17 @@ function sourceFilesForStart(
       operation,
       operation,
     ) as Array<{ sourceFile?: string }>;
-  if (start.servicePath && rows.length === 0) return undefined;
-  if (rows.length === 0) return undefined;
-  return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+  if (rows.length > 0) return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+  if (start.servicePath && operation) {
+    const implRows = db.prepare(`SELECT DISTINCT hc.source_file sourceFile
+      FROM cds_services s JOIN cds_operations o ON o.service_id=s.id
+      JOIN graph_edges e ON e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND e.status='resolved' AND e.from_kind='operation' AND e.from_id=CAST(o.id AS TEXT)
+      JOIN handler_methods hm ON hm.id=CAST(e.to_id AS INTEGER)
+      JOIN handler_classes hc ON hc.id=hm.handler_class_id
+      WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?)`).all(repoId, repoId, start.servicePath, operation, operation) as Array<{ sourceFile?: string }>;
+    if (implRows.length > 0) return new Set(implRows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+  }
+  return undefined;
 }
 function startScope(db: Db, start: TraceStart): StartScope {
   const repo = start.repo
@@ -128,11 +136,19 @@ function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
   return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
 }
 
-function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string> } {
-  const edge = db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status='resolved' AND from_kind='operation' AND from_id=? ORDER BY id LIMIT 1").get(operationId) as GraphRow | undefined;
-  if (!edge) return { files: new Set() };
+function implementationEdge(db: Db, operationId: string): GraphRow | undefined {
+  return db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND from_kind='operation' AND from_id=? ORDER BY CASE status WHEN 'resolved' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,id LIMIT 1").get(operationId) as GraphRow | undefined;
+}
+function handlerMethodNode(db: Db, methodId: string): Record<string, unknown> | undefined {
+  const row = db.prepare(`SELECT hm.id methodId,hm.method_name methodName,hm.decorator_value decoratorValue,hm.source_line sourceLine,hc.class_name className,hc.source_file sourceFile,r.name repoName,r.id repoId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id JOIN repositories r ON r.id=hc.repo_id WHERE hm.id=?`).get(methodId) as Record<string, unknown> | undefined;
+  if (!row) return undefined;
+  return { id: `handler_method:${methodId}`, kind: 'handler_method', label: `${String(row.repoName)}:${String(row.className)}.${String(row.methodName)}`, ...row };
+}
+function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string>; edge?: GraphRow } {
+  const edge = implementationEdge(db, operationId);
+  if (!edge || edge.status !== 'resolved') return { files: new Set(), edge };
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string } | undefined;
-  return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []) };
+  return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), edge };
 }
 function includeCall(
   type: string,
@@ -275,6 +291,22 @@ export function trace(
     scope.selectorMatched
       ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, depth: 1 }]
       : [];
+  if (start.servicePath && (start.operation ?? start.operationPath)) {
+    const startOperation = normalizeOperation(start.operation ?? start.operationPath);
+    const row = db.prepare(`SELECT o.id operationId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE s.service_path=? AND (o.operation_path=? OR o.operation_name=?) ORDER BY o.id LIMIT 1`).get(start.servicePath, startOperation, startOperation) as { operationId?: number } | undefined;
+    if (row?.operationId !== undefined) {
+      const opId = String(row.operationId);
+      const op = operationNode(db, opId);
+      const impl = implementationScope(db, opId);
+      if (op) nodes.set(String(op.id), op);
+      if (impl.edge) {
+        const implEvidence = JSON.parse(String(impl.edge.evidence_json || '{}')) as Record<string, unknown>;
+        const handlerNode = impl.edge.status === 'resolved' ? handlerMethodNode(db, impl.edge.to_id) : undefined;
+        if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
+        edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `${start.servicePath}/${startOperation ?? ''}`, to: handlerNode?.label ? String(handlerNode.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: implEvidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: impl.edge.status === 'resolved' ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status) });
+      }
+    }
+  }
   const seenScopes = new Set<string>();
   const seenEdges = new Set<number>();
   while (queue.length > 0) {
@@ -334,10 +366,26 @@ export function trace(
           confidence: Number(effectiveRow.confidence ?? call.confidence),
           unresolvedReason: effective.unresolvedReason,
         });
-        if (effectiveRow.to_kind === 'operation' && current.depth < maxDepth) {
+        if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
+          if (implementation.edge) {
+            const implEvidence = JSON.parse(String(implementation.edge.evidence_json || '{}')) as Record<string, unknown>;
+            const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : undefined;
+            const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
+            if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
+            edges.push({
+              step: current.depth + 1,
+              type: 'operation_implemented_by_handler',
+              from: to,
+              to: implTo,
+              evidence: implEvidence,
+              confidence: Number(implementation.edge.confidence ?? 0),
+              unresolvedReason: implementation.edge.status === 'resolved' ? undefined : String(implementation.edge.unresolved_reason ?? implementation.edge.status),
+            });
+          }
+          if (current.depth >= maxDepth) continue;
           const files = implementation.files.size > 0 ? implementation.files : handlerFilesForOperation(db, effectiveRow.to_id);
-          if (files.size > 0) {
+          if (implementation.edge?.status === 'resolved' && files.size > 0) {
             const targetRepoId = implementation.repoId ?? (db
               .prepare(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',
