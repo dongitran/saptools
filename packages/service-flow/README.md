@@ -74,7 +74,11 @@ Step  Type                 From                                To               
 
 ```json
 {
-  "start": { "repo": "facade-service", "servicePath": "/FacadeService", "operation": "doWork" },
+  "start": {
+    "repo": "facade-service",
+    "servicePath": "/FacadeService",
+    "operation": "doWork"
+  },
   "nodes": [],
   "edges": [],
   "diagnostics": []

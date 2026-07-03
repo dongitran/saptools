@@ -13,7 +13,12 @@ export class EntryHandler {
     await rules.send({ method: 'POST', path: '/checkPayload', data });
     const messaging = await cds.connect.to('messaging');
     await messaging.emit('PayloadChecked', { id: 'sample' });
-    await axios({ method: 'POST', url: 'https://example.invalid', headers: { authorization: 'Bearer value', password: 'hidden' }, data });
+    await axios({
+      method: 'POST',
+      url: 'https://example.invalid',
+      headers: { authorization: 'Bearer value', password: 'hidden' },
+      data
+    });
     return 'ok';
   }
 }

@@ -6,9 +6,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "lib": [
-      "ES2022"
-    ],
+    "lib": ["ES2022"],
     "strict": true,
     "declaration": true,
     "sourceMap": true,
@@ -26,8 +24,5 @@
     "*.config.ts",
     "eslint.config.js"
   ],
-  "exclude": [
-    "tests/fixtures/**",
-    "dist/**"
-  ]
+  "exclude": ["tests/fixtures/**", "dist/**"]
 }

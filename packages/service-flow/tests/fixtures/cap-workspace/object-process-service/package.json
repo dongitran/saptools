@@ -1,1 +1,8 @@
-{"name":"object-process-service","version":"1.0.0","dependencies":{"@sap/cds":"^9.0.0","process-helper-package":"workspace:*"}}
+{
+  "name": "object-process-service",
+  "version": "1.0.0",
+  "dependencies": {
+    "@sap/cds": "^9.0.0",
+    "process-helper-package": "workspace:*"
+  }
+}
