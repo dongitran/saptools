@@ -1,2 +1,15 @@
-export function applyVariables(template: string | undefined, vars: Record<string, string>): string | undefined { if (!template) return undefined; return template.replace(/\$\{\s*(\w+)\s*\}/g, (_m, key: string) => vars[key] ?? `\${${key}}`); }
-export function extractPlaceholders(template: string | undefined): string[] { return [...(template ?? '').matchAll(/\$\{\s*(\w+)\s*\}/g)].map((m) => m[1] ?? '').filter(Boolean); }
+export function applyVariables(
+  template: string | undefined,
+  vars: Record<string, string>
+): string | undefined {
+  if (!template) return undefined;
+  return template.replace(
+    /\$\{\s*(\w+)\s*\}/g,
+    (_m, key: string) => vars[key] ?? `\${${key}}`
+  );
+}
+export function extractPlaceholders(template: string | undefined): string[] {
+  return [...(template ?? '').matchAll(/\$\{\s*(\w+)\s*\}/g)]
+    .map((m) => m[1] ?? '')
+    .filter(Boolean);
+}

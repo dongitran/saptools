@@ -1,1 +1,8 @@
-{"name":"identity-service","version":"1.0.0","dependencies":{"@sap/cds":"^9.0.0","cds-routing-handlers":"^3.0.0"}}
+{
+  "name": "identity-service",
+  "version": "1.0.0",
+  "dependencies": {
+    "@sap/cds": "^9.0.0",
+    "cds-routing-handlers": "^3.0.0"
+  }
+}
