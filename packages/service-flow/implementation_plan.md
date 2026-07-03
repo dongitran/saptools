@@ -1,23 +1,64 @@
-# @saptools/service-flow 0.1.5 hardening implementation plan
+# service-flow GitHub Action Failure Fix Plan
 
-## Source trace baseline
-- Read source, tests, README, changelog, technical note, tsup/tsconfig/vitest config, package metadata, and CLI workflow.
-- Existing baseline: `pnpm --filter @saptools/service-flow test:unit` passed 13 tests.
-- End-to-end flow traced as discovery (`discover-repositories`) -> indexing (`workspace-indexer`, `repository-indexer`) -> persistence (`db/*`) -> linking (`cross-repo-linker`, `service-resolver`) -> runtime variables (`dynamic-edge-resolver`) -> traversal (`trace-engine`) -> rendering (`output/*`).
+## Scope
 
-## Implementation steps
-1. Replace the SQLite CLI-per-statement adapter with a persistent SQLite driver connection, bound parameters, transactions, read-only mode, WAL, busy timeout, and foreign-key enforcement.
-2. Introduce schema user-version migrations with safe additive/backfill behavior for edge status and missing foreign keys where possible; keep creation idempotent.
-3. Add explicit graph edge status semantics (`resolved`, `terminal`, `dynamic`, `ambiguous`, `unresolved`) and update link summaries/counts.
-4. Preserve operation candidate identity in linker evidence and re-resolve dynamic edges at trace/graph read time using substituted alias, destination, service path, and operation path.
-5. Create typed operation nodes from target CDS operation provenance rather than spreading call evidence into operation nodes.
-6. Apply the same `--var` parser/resolution behavior to `graph` and `trace`.
-7. Enforce service-aware trace selectors so `--service` narrows operation/handler matching and nonexistent services do not broaden the trace.
-8. Implement repository-level incremental indexing fingerprints and meaningful `--force` behavior.
-9. Make doctor lower-noise and actionable, including foreign-key checks and run status checks.
-10. Bump package version to 0.1.5 and update docs, technical note, changelog, lockfile, and generated package metadata.
+- Fix the failing `service-flow` GitHub Action on `main`.
+- Preserve unrelated local work:
+  - Do not modify, stage, delete, or move untracked `packages/cf-watch/`.
+- Keep changes scoped to `packages/service-flow` unless workflow configuration is proven to be the root cause.
+- Commit and push the fix, then monitor `.github/workflows/service-flow.yml` with `gh` until the workflow succeeds.
 
-## Verification steps
-- Run focused unit tests for parser/link/trace/runtime resolver/migration/incremental behavior.
-- Run package typecheck, lint, unit, e2e, build, and npm pack dry-run.
-- Install packed tarball in a temporary prefix and run neutral fixture CLI smoke commands, including repeated index, forced index, link, trace/graph with variables, and doctor.
+## Current Findings
+
+- Latest failing push run: `28639045327`.
+- Workflow: `.github/workflows/service-flow.yml`.
+- Commit: `8b44884896db7b4eb5c36ec5a3530b18f029ef7e`.
+- Passing CI steps before failure:
+  - `pnpm --filter @saptools/service-flow lint`
+  - `pnpm --filter @saptools/service-flow typecheck`
+  - `pnpm --filter @saptools/service-flow build`
+  - `pnpm --filter @saptools/service-flow test:unit`
+- Failing CI step:
+  - `pnpm --filter @saptools/service-flow test:e2e:fake`
+- Failure:
+  - `tests/e2e/cli.e2e.test.ts` parses CLI JSON from a helper that returns `stdout + stderr`.
+  - CI fails with `Unexpected non-whitespace character after JSON at position 10338 (line 353 column 1)`.
+  - The workflow verify job uses Node `22.23.1`; the CI log shows `ExperimentalWarning: SQLite is an experimental feature` during tests. Appending stderr to stdout makes otherwise valid JSON unparseable.
+
+## Research Steps
+
+1. Read the e2e test helper and command sequence:
+   - `packages/service-flow/tests/e2e/cli.e2e.test.ts`
+2. Read CLI output behavior:
+   - `packages/service-flow/src/cli.ts`
+   - `packages/service-flow/src/output/json-output.ts`
+   - `packages/service-flow/src/output/mermaid-output.ts`
+3. Reproduce the failing shape by running the e2e test under Node 22, or by injecting stderr while preserving valid stdout in a focused test if Node 22 is unavailable locally.
+4. Confirm whether the CLI itself emits structured output only to stdout and diagnostics only to stderr.
+
+## Intended Code Changes
+
+- Update the e2e helper to keep stdout and stderr separate.
+- Parse machine-readable JSON from stdout only.
+- Preserve stderr in assertion failure messages so real CLI errors remain debuggable.
+- Add a focused test or assertion that JSON commands keep stdout parseable even when stderr contains warnings.
+
+## Verification
+
+- RED: with a synthetic runtime stderr warning preloaded via `node --require`, the existing e2e helper failed JSON parsing with `Unexpected non-whitespace character after JSON`.
+- GREEN: after returning stdout only from the e2e helper, the same e2e flow parsed JSON successfully while stderr warning output remained separate.
+- `git diff --check`
+- `pnpm --filter @saptools/service-flow lint`
+- `pnpm --filter @saptools/service-flow typecheck`
+- `pnpm --filter @saptools/service-flow build`
+- `pnpm --filter @saptools/service-flow test:unit`
+- `pnpm --filter @saptools/service-flow test:e2e:fake`
+- `npm pack --dry-run` from `packages/service-flow`
+
+## Push And Monitoring
+
+- Commit without bypassing hooks.
+- Push `main`.
+- Use `gh run list --workflow service-flow.yml` to find the run for the pushed SHA.
+- Use `gh run watch <run-id> --exit-status`.
+- If it fails, inspect `gh run view <run-id> --log-failed`, update this plan if the hypothesis changes, and repeat until the workflow succeeds.
