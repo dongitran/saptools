@@ -81,7 +81,7 @@ export function createProgram(): Command {
     .description(
       'Trace SAP CAP service-to-service flows across multi-repository workspaces'
     )
-    .version('0.1.1');
+    .version('0.1.2');
   program
     .command('init')
     .argument('<workspace>')

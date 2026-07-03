@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1
+## 0.1.2
 
 - Hardened SQLite CLI access with busy timeouts, retries, and larger read buffers for large graph/link runs.
 - Improved CDS service extraction for annotation placement/whitespace variants and materialized inherited operations for `extend service` declarations.

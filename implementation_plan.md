@@ -1,6 +1,7 @@
 # Service Flow Accuracy/Stability Implementation Plan
 
 ## Intended files
+- `packages/service-flow/package.json` and `packages/service-flow/src/cli.ts`: bump the package and CLI-reported patch version for the requested release update.
 - `packages/service-flow/src/db/*`: harden SQLite shell adapter with busy timeout, retries, output handling, and schema adjustments if needed.
 - `packages/service-flow/src/parsers/*`: improve CDS extraction, TypeScript AST service bindings, outbound/database calls, generated constants integration.
 - `packages/service-flow/src/linker/*`: make remote resolution use scoped bindings, service metadata, decorator/operation evidence, and dynamic candidates.
