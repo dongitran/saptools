@@ -54,9 +54,9 @@ describe('linker and trace engine', () => {
       { depth: 20, includeDb: true, includeAsync: true, includeExternal: true }
     );
     expect(result.edges.map((e) => e.type)).toContain('remote_action');
-    expect(result.edges.every((e) => e.from.includes('EntryHandler.ts'))).toBe(
-      true
-    );
+    expect(result.nodes.length).toBeGreaterThan(0);
+    expect(result.edges.some((e) => e.from.includes('EntryHandler.ts'))).toBe(true);
+    expect(result.edges.some((e) => !e.from.includes('EntryHandler.ts'))).toBe(true);
 
     const handlerResult = trace(
       db,
@@ -70,7 +70,7 @@ describe('linker and trace engine', () => {
       }
     );
     expect(
-      handlerResult.edges.every((e) => e.from.includes('RulesHandler.ts'))
+      handlerResult.edges.some((e) => e.from.includes('RulesHandler.ts'))
     ).toBe(true);
     expect(handlerResult.edges.map((e) => e.to)).toContain(
       '/ThingProcessService/getPaths'

@@ -101,6 +101,7 @@ export function clearRepoFacts(db: Db, repoId: number): void {
     'files'
   ])
     db.prepare(`DELETE FROM ${t} WHERE repo_id=?`).run(repoId);
+  db.prepare('DELETE FROM search_index WHERE repo=?').run(String(repoId));
 }
 export function insertRequires(
   db: Db,
@@ -146,6 +147,12 @@ export function insertService(
   const stmt = db.prepare(
     'INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)'
   );
+  db.prepare('INSERT INTO search_index(kind,name,path,repo) VALUES(?,?,?,?)').run(
+    'service',
+    s.qualifiedName,
+    s.servicePath,
+    String(repoId)
+  );
   for (const o of s.operations)
     stmt.run(
       id,
@@ -157,6 +164,11 @@ export function insertService(
       o.sourceFile,
       o.sourceLine
     );
+  const search = db.prepare(
+    'INSERT INTO search_index(kind,name,path,repo) VALUES(?,?,?,?)'
+  );
+  for (const o of s.operations)
+    search.run('operation', o.operationName, o.operationPath, String(repoId));
   return id;
 }
 export function insertHandler(
@@ -246,7 +258,7 @@ export function insertCalls(
   rows: OutboundCallFact[]
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO outbound_calls(repo_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,service_binding_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? ORDER BY id DESC LIMIT 1))'
+    'INSERT INTO outbound_calls(repo_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,service_binding_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))'
   );
   for (const r of rows)
     stmt.run(
@@ -262,6 +274,9 @@ export function insertCalls(
       r.confidence,
       r.unresolvedReason,
       repoId,
-      r.serviceVariableName
+      r.serviceVariableName,
+      r.sourceFile,
+      r.sourceLine,
+      r.sourceLine
     );
 }

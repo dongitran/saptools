@@ -47,15 +47,27 @@ export async function parseServiceBindings(
     });
   }
   for (const m of text.matchAll(
-    /function\s+(\w+)\s*\([^)]*\)\s*\{[\s\S]*?return\s+cds\.connect\.to\((['"])([^'"]+)\2\)/g
+    /(?:function\s+(\w+)\s*\([^)]*\)\s*\{[\s\S]*?return|const\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>)\s+(?:await\s*)?cds\.connect\.to\((['"`])([^'"`]+)\3\)/g
   ))
     out.push({
-      variableName: m[1] ?? 'connect',
-      alias: m[3],
+      variableName: m[1] ?? m[2] ?? 'connect',
+      alias: m[4],
       isDynamic: false,
       placeholders: [],
       sourceFile: normalizePath(filePath),
       sourceLine: lineOf(text, m.index ?? 0)
     });
+
+  const helperAliases = new Map(out.filter((b) => b.alias).map((b) => [b.variableName, b]));
+  for (const m of text.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(?:await\s*)?(\w+)\s*\(/g)) {
+    const helper = helperAliases.get(m[2] ?? '');
+    if (!helper) continue;
+    out.push({
+      ...helper,
+      variableName: m[1] ?? 'service',
+      sourceFile: normalizePath(filePath),
+      sourceLine: lineOf(text, m.index ?? 0)
+    });
+  }
   return out;
 }

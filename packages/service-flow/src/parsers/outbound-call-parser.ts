@@ -24,7 +24,7 @@ export async function parseOutboundCalls(
       serviceVariableName: m[1],
       method: stripQuotes(firstArg(body, 'method') ?? 'POST'),
       operationPathExpr: op ? stripQuotes(op) : undefined,
-      queryEntity: /SELECT\.from\((\w+)\)/.exec(query ?? '')?.[1],
+      queryEntity: /SELECT(?:\.one)?\.from\(([\w.]+)\)/.exec(query ?? '')?.[1],
       payloadSummary: summarizeExpression(body),
       sourceFile: normalizePath(filePath),
       sourceLine: lineOf(text, m.index ?? 0),
@@ -34,9 +34,7 @@ export async function parseOutboundCalls(
   for (const m of text.matchAll(/cds\.run\s*\(([\s\S]*?)\)/g))
     out.push({
       callType: 'local_db_query',
-      queryEntity: /(?:SELECT\.from|INSERT\.into)\((\w+)\)/.exec(
-        m[1] ?? ''
-      )?.[1],
+      queryEntity: /(?:SELECT(?:\.one)?\.from|INSERT\.into|UPDATE|DELETE\.from)\(([\w.]+)\)/.exec(m[1] ?? '')?.[1],
       payloadSummary: summarizeExpression(m[1] ?? ''),
       sourceFile: normalizePath(filePath),
       sourceLine: lineOf(text, m.index ?? 0),

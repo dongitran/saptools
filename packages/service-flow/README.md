@@ -125,7 +125,11 @@ service-flow link --workspace /path/to/workspace --force
 
 ### 🧵 `service-flow trace`
 
-Trace one starting point and render table, JSON, or Mermaid output.
+Trace one starting point and render table, JSON, or Mermaid output. Trace now
+walks linked `graph_edges`, so a resolved remote operation is followed into the
+target handler up to `--depth` instead of showing only calls in the first file.
+JSON output includes typed nodes for calls, operations, database entities,
+external destinations, and unresolved/dynamic candidates when edges exist.
 
 ```bash
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
@@ -175,7 +179,7 @@ Inspect indexed facts as JSON.
 service-flow list repos --workspace /path/to/workspace
 service-flow list services --workspace /path/to/workspace --repo facade-service
 service-flow list operations --workspace /path/to/workspace --repo facade-service --service /FacadeService
-service-flow list calls --workspace /path/to/workspace --repo facade-service
+service-flow list calls --workspace /path/to/workspace --repo facade-service --operation doWork
 ```
 
 | Command | Description |
@@ -183,7 +187,22 @@ service-flow list calls --workspace /path/to/workspace --repo facade-service
 | `list repos` | Print discovered repositories with kind and package name |
 | `list services` | Print indexed CDS services, optionally filtered by repo |
 | `list operations` | Print indexed actions/functions/events, optionally filtered by repo and service |
-| `list calls` | Print indexed outbound calls, optionally filtered by repo |
+| `list calls` | Print indexed outbound calls, optionally filtered by repo and operation/path |
+
+### Troubleshooting resolution accuracy
+
+- If a remote edge is unresolved, run `service-flow list calls --operation <name>`
+  and `service-flow inspect operation <name>` to compare the captured call path
+  with indexed CDS operations.
+- Service bindings are matched to outbound calls by repository, source file, and
+  variable name to avoid false cross-file matches. If a helper-returned client is
+  not linked, keep the helper local/exported and ensure it returns
+  `cds.connect.to(...)` directly.
+- `SELECT.one.from(Entity)`, `SELECT.from(Entity)`, `INSERT.into(Entity)`,
+  `UPDATE(Entity)`, and `DELETE.from(Entity)` are indexed as local database
+  query entities when statically knowable.
+- `doctor` reports silent quality problems such as services without operations,
+  handler repositories without CDS service facts, and an empty search index.
 
 ### 🔬 `service-flow inspect ...`
 

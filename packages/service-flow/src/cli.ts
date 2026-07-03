@@ -81,7 +81,7 @@ export function createProgram(): Command {
     .description(
       'Trace SAP CAP service-to-service flows across multi-repository workspaces'
     )
-    .version('0.1.1');
+    .version('0.1.2');
   program
     .command('init')
     .argument('<workspace>')
@@ -96,7 +96,6 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .option('--repo <name>')
     .option('--force')
-    .option('--concurrency <n>', 'reserved for future parallel indexing', '1')
     .action(
       (opts: { workspace?: string; repo?: string; force?: boolean }) =>
         void withWorkspace(opts.workspace, async (db, workspaceId) => {
@@ -235,14 +234,14 @@ export function createProgram(): Command {
     .option('--repo <name>')
     .option('--operation <name>')
     .action(
-      (opts: { workspace?: string; repo?: string }) =>
+      (opts: { workspace?: string; repo?: string; operation?: string }) =>
         void withWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
-              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?)'
+              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)'
             )
-            .all(repo?.id, repo?.id);
+            .all(repo?.id, repo?.id, opts.operation, opts.operation, opts.operation ? `/${opts.operation}` : undefined, opts.operation ? `%${opts.operation}%` : undefined);
           process.stdout.write(renderJson(rows));
         }).catch(fail)
     );
@@ -324,10 +323,24 @@ export function createProgram(): Command {
             .prepare(
               'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id'
             )
-            .all();
+            .all() as Array<Record<string, unknown>>;
+          const health = db
+            .prepare(
+              `SELECT 'warning' severity,'service_without_operations' code,'CDS service has no indexed operations' message,s.source_file sourceFile,s.source_line sourceLine
+               FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL
+               UNION ALL
+               SELECT 'warning','handler_without_service','Repository has handlers but no CDS services',hc.source_file,hc.source_line
+               FROM handler_classes hc JOIN repositories r ON r.id=hc.repo_id
+               WHERE r.kind IN ('cap-service','mixed') AND NOT EXISTS (SELECT 1 FROM cds_services s WHERE s.repo_id=hc.repo_id)
+               UNION ALL
+               SELECT 'warning','search_index_empty','Search index is empty after indexing',NULL,NULL
+               WHERE NOT EXISTS (SELECT 1 FROM search_index)`
+            )
+            .all() as Array<Record<string, unknown>>;
+          const allDiagnostics = [...diagnostics, ...health];
           process.stdout.write(
-            diagnostics.length
-              ? renderJson(diagnostics)
+            allDiagnostics.length
+              ? renderJson(allDiagnostics)
               : `${pc.green('No diagnostics recorded')}\n`
           );
         }).catch(fail)
