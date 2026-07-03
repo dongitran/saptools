@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6
+
+- Scoped runtime variable resolution to eligible dynamic, ambiguous, or unresolved remote edges with matching placeholders, preserving terminal and static resolved edge status, target, reason, and confidence.
+- Clamped operation-resolution confidence to the `[0, 1]` range and retained original runtime expressions alongside effective substitutions and missing-variable evidence.
+- Resolved helper/package dependency graph edges primarily by indexed package name, persisted ambiguous dependency candidates with evidence, and marked inserted helper edges with explicit statuses.
+- Expanded repository fingerprints to include normalized package metadata, full `cds.requires`, scripts, package file content, and the analyzer version so metadata-only changes invalidate stale facts.
+- Replaced the hard-coded CLI version with package metadata as the release source of truth and documented selector, graph variable, SQLite, fingerprint, freshness, and parser-warning semantics.
+
 ## 0.1.5
 
 - Runtime `--var` substitution now re-runs operation resolution in memory for trace and graph output, clears stale unresolved reasons on exact matches, and traverses into the matched downstream handler without mutating the persisted graph.

@@ -1,64 +1,21 @@
-# service-flow GitHub Action Failure Fix Plan
+# Implementation plan
 
 ## Scope
+Improve `@saptools/service-flow` correctness for the post-0.1.5 patch while preserving existing graph/link/trace behavior and synthetic fixtures.
 
-- Fix the failing `service-flow` GitHub Action on `main`.
-- Preserve unrelated local work:
-  - Do not modify, stage, delete, or move untracked `packages/cf-watch/`.
-- Keep changes scoped to `packages/service-flow` unless workflow configuration is proven to be the root cause.
-- Commit and push the fix, then monitor `.github/workflows/service-flow.yml` with `gh` until the workflow succeeds.
+## Steps
+1. Baseline: run package typecheck, lint, unit, e2e, build, and dry-run pack; record failures here.
+2. Runtime variables: add typed placeholder substitution metadata, eligibility predicate, confidence clamping, and trace-only effective target resolution without mutating persisted graph.
+3. Dependency linking: resolve dependencies by exact `package_name`, preserve ambiguous candidates, set explicit edge statuses, and report helper counts in link summaries.
+4. Selector safety: ensure repository/service/operation selectors never broaden to workspace-wide results and emit typed diagnostics.
+5. Fingerprinting: hash normalized package facts (including package name/version, dependencies/devDependencies, scripts, and full `cds`) plus source content and options/version.
+6. Index atomicity/freshness: parse before publish where feasible, keep publication transactional, mark graph stale on fact changes, and expose stale diagnostics.
+7. Migration/runtime/version docs: bump version to 0.1.6, source CLI version from package metadata, document Node/SQLite/runtime/selector/freshness behavior.
+8. Tests: add unit/e2e coverage for runtime eligibility, dependency package-name matching, selector narrowing, fingerprint metadata, and version consistency.
+9. Verification: rerun package checks and commit changes.
 
-## Current Findings
-
-- Latest failing push run: `28639045327`.
-- Workflow: `.github/workflows/service-flow.yml`.
-- Commit: `8b44884896db7b4eb5c36ec5a3530b18f029ef7e`.
-- Passing CI steps before failure:
-  - `pnpm --filter @saptools/service-flow lint`
-  - `pnpm --filter @saptools/service-flow typecheck`
-  - `pnpm --filter @saptools/service-flow build`
-  - `pnpm --filter @saptools/service-flow test:unit`
-- Failing CI step:
-  - `pnpm --filter @saptools/service-flow test:e2e:fake`
-- Failure:
-  - `tests/e2e/cli.e2e.test.ts` parses CLI JSON from a helper that returns `stdout + stderr`.
-  - CI fails with `Unexpected non-whitespace character after JSON at position 10338 (line 353 column 1)`.
-  - The workflow verify job uses Node `22.23.1`; the CI log shows `ExperimentalWarning: SQLite is an experimental feature` during tests. Appending stderr to stdout makes otherwise valid JSON unparseable.
-
-## Research Steps
-
-1. Read the e2e test helper and command sequence:
-   - `packages/service-flow/tests/e2e/cli.e2e.test.ts`
-2. Read CLI output behavior:
-   - `packages/service-flow/src/cli.ts`
-   - `packages/service-flow/src/output/json-output.ts`
-   - `packages/service-flow/src/output/mermaid-output.ts`
-3. Reproduce the failing shape by running the e2e test under Node 22, or by injecting stderr while preserving valid stdout in a focused test if Node 22 is unavailable locally.
-4. Confirm whether the CLI itself emits structured output only to stdout and diagnostics only to stderr.
-
-## Intended Code Changes
-
-- Update the e2e helper to keep stdout and stderr separate.
-- Parse machine-readable JSON from stdout only.
-- Preserve stderr in assertion failure messages so real CLI errors remain debuggable.
-- Add a focused test or assertion that JSON commands keep stdout parseable even when stderr contains warnings.
-
-## Verification
-
-- RED: with a synthetic runtime stderr warning preloaded via `node --require`, the existing e2e helper failed JSON parsing with `Unexpected non-whitespace character after JSON`.
-- GREEN: after returning stdout only from the e2e helper, the same e2e flow parsed JSON successfully while stderr warning output remained separate.
-- `git diff --check`
-- `pnpm --filter @saptools/service-flow lint`
-- `pnpm --filter @saptools/service-flow typecheck`
-- `pnpm --filter @saptools/service-flow build`
-- `pnpm --filter @saptools/service-flow test:unit`
-- `pnpm --filter @saptools/service-flow test:e2e:fake`
-- `npm pack --dry-run` from `packages/service-flow`
-
-## Push And Monitoring
-
-- Commit without bypassing hooks.
-- Push `main`.
-- Use `gh run list --workflow service-flow.yml` to find the run for the pushed SHA.
-- Use `gh run watch <run-id> --exit-status`.
-- If it fails, inspect `gh run view <run-id> --log-failed`, update this plan if the hypothesis changes, and repeat until the workflow succeeds.
+## Baseline
+- `npm run typecheck`: passed.
+- `npm run lint`: passed.
+- `npm run test:unit`: passed (13 tests).
+- `npm run test:e2e`: failed before implementation because `dist/cli.js` was missing; rerun after build is required.

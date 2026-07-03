@@ -90,6 +90,7 @@ export function resolveOperation(
       c.reasons.push('explicit_dynamic_override');
     }
   }
+  for (const c of candidates) c.score = Math.max(0, Math.min(1, c.score));
   candidates.sort(
     (a, b) => b.score - a.score || a.repoName.localeCompare(b.repoName),
   );

@@ -26,6 +26,7 @@ import { parseVars } from './trace/selectors.js';
 import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
+import { VERSION } from './version.js';
 async function init(
   workspace: string,
   options: { db?: string; ignore?: string[] },
@@ -95,7 +96,7 @@ export function createProgram(): Command {
     .description(
       'Trace SAP CAP service-to-service flows across multi-repository workspaces',
     )
-    .version('0.1.5');
+    .version(VERSION);
   program
     .command('init')
     .argument('<workspace>')
@@ -217,6 +218,10 @@ export function createProgram(): Command {
       (opts: { workspace?: string; repo?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
+          if (opts.repo && !repo) {
+            process.stdout.write(renderJson([{ severity: 'warning', code: 'selector_repo_not_found', message: `Repository selector not found: ${opts.repo}` }]));
+            return;
+          }
           const rows = db
             .prepare(
               'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
@@ -234,6 +239,10 @@ export function createProgram(): Command {
       (opts: { workspace?: string; repo?: string; service?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
+          if (opts.repo && !repo) {
+            process.stdout.write(renderJson([{ severity: 'warning', code: 'selector_repo_not_found', message: `Repository selector not found: ${opts.repo}` }]));
+            return;
+          }
           const rows = db
             .prepare(
               'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
@@ -251,6 +260,10 @@ export function createProgram(): Command {
       (opts: { workspace?: string; repo?: string; operation?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
+          if (opts.repo && !repo) {
+            process.stdout.write(renderJson([{ severity: 'warning', code: 'selector_repo_not_found', message: `Repository selector not found: ${opts.repo}` }]));
+            return;
+          }
           const rows = db
             .prepare(
               'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)',

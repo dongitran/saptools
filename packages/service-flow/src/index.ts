@@ -7,6 +7,7 @@ export { parseServiceBindings } from './parsers/service-binding-parser.js';
 export { parseOutboundCalls } from './parsers/outbound-call-parser.js';
 export { parseGeneratedConstants } from './parsers/generated-constants-parser.js';
 export { linkWorkspace } from './linker/cross-repo-linker.js';
-export { applyVariables } from './linker/dynamic-edge-resolver.js';
+export { applyVariables, extractPlaceholders, substituteVariables } from './linker/dynamic-edge-resolver.js';
+export type { RuntimeSubstitution } from './linker/dynamic-edge-resolver.js';
 export { trace } from './trace/trace-engine.js';
 export { redactValue, redactText } from './utils/redaction.js';
