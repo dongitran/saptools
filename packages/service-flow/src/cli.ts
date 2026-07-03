@@ -6,7 +6,7 @@ import { DEFAULT_IGNORES } from './config/defaults.js';
 import {
   createWorkspaceConfig,
   loadWorkspaceConfig,
-  saveWorkspaceConfig
+  saveWorkspaceConfig,
 } from './config/workspace-config.js';
 import { openDatabase } from './db/connection.js';
 import {
@@ -14,7 +14,7 @@ import {
   listRepositories,
   repoByName,
   upsertRepository,
-  upsertWorkspace
+  upsertWorkspace,
 } from './db/repositories.js';
 import { discoverRepositories } from './discovery/discover-repositories.js';
 import { parsePackageJson } from './parsers/package-json-parser.js';
@@ -28,12 +28,12 @@ import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
 async function init(
   workspace: string,
-  options: { db?: string; ignore?: string[] }
+  options: { db?: string; ignore?: string[] },
 ): Promise<void> {
   const config = createWorkspaceConfig(
     workspace,
     options.db,
-    options.ignore?.length ? options.ignore : [...DEFAULT_IGNORES]
+    options.ignore?.length ? options.ignore : [...DEFAULT_IGNORES],
   );
   const repos = await discoverRepositories(config.rootPath, config.ignore);
   await saveWorkspaceConfig(config);
@@ -47,12 +47,12 @@ async function init(
       packageName: pkg.packageName,
       packageVersion: pkg.packageVersion,
       dependencies: pkg.dependencies,
-      kind
+      kind,
     });
   }
   db.close();
   process.stdout.write(
-    `Workspace: ${config.rootPath}\nDatabase: ${config.dbPath}\nRepositories: ${repos.length}\nIgnored: ${config.ignore.join(', ')}\nNext: service-flow index --workspace ${config.rootPath}\n`
+    `Workspace: ${config.rootPath}\nDatabase: ${config.dbPath}\nRepositories: ${repos.length}\nIgnored: ${config.ignore.join(', ')}\nNext: service-flow index --workspace ${config.rootPath}\n`,
   );
 }
 async function withWorkspace<T>(
@@ -60,8 +60,8 @@ async function withWorkspace<T>(
   fn: (
     db: ReturnType<typeof openDatabase>,
     workspaceId: number,
-    rootPath: string
-  ) => Promise<T> | T
+    rootPath: string,
+  ) => Promise<T> | T,
 ): Promise<T> {
   const config = await loadWorkspaceConfig(workspace);
   const db = openDatabase(config.dbPath);
@@ -79,9 +79,9 @@ export function createProgram(): Command {
   program
     .name('service-flow')
     .description(
-      'Trace SAP CAP service-to-service flows across multi-repository workspaces'
+      'Trace SAP CAP service-to-service flows across multi-repository workspaces',
     )
-    .version('0.1.2');
+    .version('0.1.3');
   program
     .command('init')
     .argument('<workspace>')
@@ -89,7 +89,7 @@ export function createProgram(): Command {
     .option('--ignore <pattern...>')
     .action(
       (workspace: string, opts: { db?: string; ignore?: string[] }) =>
-        void init(workspace, opts).catch(fail)
+        void init(workspace, opts).catch(fail),
     );
   program
     .command('index')
@@ -101,12 +101,12 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, async (db, workspaceId) => {
           const r = await indexWorkspace(db, workspaceId, {
             repo: opts.repo,
-            force: Boolean(opts.force)
+            force: Boolean(opts.force),
           });
           process.stdout.write(
-            `Indexed ${r.repoCount} repositories, ${r.fileCount} files, ${r.diagnosticCount} diagnostics\n`
+            `Indexed ${r.repoCount} repositories, ${r.fileCount} files, ${r.diagnosticCount} diagnostics\n`,
           );
-        }).catch(fail)
+        }).catch(fail),
     );
   program
     .command('link')
@@ -117,9 +117,9 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
           process.stdout.write(
-            `Linked ${r.edgeCount} edges, ${r.unresolvedCount} unresolved\n`
+            `Linked ${r.edgeCount} edges, ${r.unresolvedCount} unresolved\n`,
           );
-        }).catch(fail)
+        }).catch(fail),
     );
   program
     .command('trace')
@@ -158,24 +158,24 @@ export function createProgram(): Command {
               servicePath: opts.service,
               operation: opts.operation,
               operationPath: opts.path,
-              handler: opts.handler
+              handler: opts.handler,
             },
             {
               depth: Number(opts.depth),
               vars: parseVars(opts.var),
               includeExternal: Boolean(opts.includeExternal),
               includeDb: Boolean(opts.includeDb),
-              includeAsync: Boolean(opts.includeAsync)
-            }
+              includeAsync: Boolean(opts.includeAsync),
+            },
           );
           process.stdout.write(
             opts.format === 'json'
               ? renderTraceJson(result)
               : opts.format === 'mermaid'
                 ? renderMermaid(result)
-                : renderTraceTable(result)
+                : renderTraceTable(result),
           );
-        }).catch(fail)
+        }).catch(fail),
     );
   const list = program.command('list');
   list
@@ -189,11 +189,11 @@ export function createProgram(): Command {
               listRepositories(db).map((r) => ({
                 name: r.name,
                 kind: r.kind,
-                packageName: r.package_name
-              }))
-            )
-          )
-        ).catch(fail)
+                packageName: r.package_name,
+              })),
+            ),
+          ),
+        ).catch(fail),
     );
   list
     .command('services')
@@ -205,11 +205,11 @@ export function createProgram(): Command {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
-              'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path'
+              'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
             )
             .all(repo?.id, repo?.id);
           process.stdout.write(renderJson(rows));
-        }).catch(fail)
+        }).catch(fail),
     );
   list
     .command('operations')
@@ -222,11 +222,11 @@ export function createProgram(): Command {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
-              'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)'
+              'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
             )
             .all(repo?.id, repo?.id, opts.service, opts.service);
           process.stdout.write(renderJson(rows));
-        }).catch(fail)
+        }).catch(fail),
     );
   list
     .command('calls')
@@ -239,11 +239,18 @@ export function createProgram(): Command {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
-              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)'
+              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)',
             )
-            .all(repo?.id, repo?.id, opts.operation, opts.operation, opts.operation ? `/${opts.operation}` : undefined, opts.operation ? `%${opts.operation}%` : undefined);
+            .all(
+              repo?.id,
+              repo?.id,
+              opts.operation,
+              opts.operation,
+              opts.operation ? `/${opts.operation}` : undefined,
+              opts.operation ? `%${opts.operation}%` : undefined,
+            );
           process.stdout.write(renderJson(rows));
-        }).catch(fail)
+        }).catch(fail),
     );
   program
     .command('graph')
@@ -269,21 +276,21 @@ export function createProgram(): Command {
               repo: opts.repo,
               operation: opts.operation,
               servicePath: opts.service,
-              operationPath: opts.path
+              operationPath: opts.path,
             },
             {
               depth: 100,
               includeAsync: true,
               includeDb: true,
-              includeExternal: true
-            }
+              includeExternal: true,
+            },
           );
           process.stdout.write(
             opts.format === 'json'
               ? renderTraceJson(result)
-              : renderMermaid(result)
+              : renderMermaid(result),
           );
-        }).catch(fail)
+        }).catch(fail),
     );
   const inspect = program.command('inspect');
   inspect
@@ -294,9 +301,9 @@ export function createProgram(): Command {
       (name: string, opts: { workspace?: string }) =>
         void withWorkspace(opts.workspace, (db) =>
           process.stdout.write(
-            renderJson(repoByName(db, name) ?? { error: 'repo not found' })
-          )
-        ).catch(fail)
+            renderJson(repoByName(db, name) ?? { error: 'repo not found' }),
+          ),
+        ).catch(fail),
     );
   inspect
     .command('operation')
@@ -307,43 +314,47 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, (db) => {
           const rows = db
             .prepare(
-              'SELECT * FROM cds_operations WHERE operation_name=? OR operation_path=?'
+              'SELECT * FROM cds_operations WHERE operation_name=? OR operation_path=?',
             )
             .all(selector, selector);
           process.stdout.write(renderJson(rows));
-        }).catch(fail)
+        }).catch(fail),
     );
   program
     .command('doctor')
     .option('--workspace <path>')
+    .option('--strict')
     .action(
-      (opts: { workspace?: string }) =>
+      (opts: { workspace?: string; strict?: boolean }) =>
         void withWorkspace(opts.workspace, (db) => {
           const diagnostics = db
             .prepare(
-              'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id'
+              'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id',
             )
-            .all() as Array<Record<string, unknown>>;
+            .all(Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const health = db
             .prepare(
-              `SELECT 'warning' severity,'service_without_operations' code,'CDS service has no indexed operations' message,s.source_file sourceFile,s.source_line sourceLine
-               FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL
+              `SELECT 'info' severity,'entity_only_service' code,'CDS service has no action/function/event operations; this can be valid for entity-only services' message,s.source_file sourceFile,s.source_line sourceLine
+               FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL AND ?
+               UNION ALL
+               SELECT 'warning','extend_service_unresolved_base','Extend service has no indexed local operations; verify base service resolution',s.source_file,s.source_line
+               FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL AND s.is_extend=1
                UNION ALL
                SELECT 'warning','handler_without_service','Repository has handlers but no CDS services',hc.source_file,hc.source_line
                FROM handler_classes hc JOIN repositories r ON r.id=hc.repo_id
                WHERE r.kind IN ('cap-service','mixed') AND NOT EXISTS (SELECT 1 FROM cds_services s WHERE s.repo_id=hc.repo_id)
                UNION ALL
                SELECT 'warning','search_index_empty','Search index is empty after indexing',NULL,NULL
-               WHERE NOT EXISTS (SELECT 1 FROM search_index)`
+               WHERE NOT EXISTS (SELECT 1 FROM search_index)`,
             )
-            .all() as Array<Record<string, unknown>>;
+            .all(Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const allDiagnostics = [...diagnostics, ...health];
           process.stdout.write(
             allDiagnostics.length
               ? renderJson(allDiagnostics)
-              : `${pc.green('No diagnostics recorded')}\n`
+              : `${pc.green('No diagnostics recorded')}\n`,
           );
-        }).catch(fail)
+        }).catch(fail),
     );
   program
     .command('clean')
@@ -353,14 +364,31 @@ export function createProgram(): Command {
       (opts: { workspace?: string; dbOnly?: boolean }) =>
         void (async () => {
           const config = await loadWorkspaceConfig(opts.workspace);
+          const dbDir = path.resolve(path.dirname(config.dbPath));
+          const workspaceRoot = path.resolve(config.rootPath);
           await fs.rm(config.dbPath, { force: true });
-          if (!opts.dbOnly)
-            await fs.rm(path.dirname(config.dbPath), {
-              recursive: true,
-              force: true
-            });
+          if (!opts.dbOnly) {
+            const marker = path.join(dbDir, '.service-flow-state');
+            const dangerous = new Set([
+              path.parse(dbDir).root,
+              '/tmp',
+              process.env.HOME ? path.resolve(process.env.HOME) : '',
+              workspaceRoot,
+            ]);
+            let ownsState: boolean;
+            try {
+              ownsState = (await fs.stat(marker)).isFile();
+            } catch {
+              ownsState = false;
+            }
+            if (!ownsState || dangerous.has(dbDir))
+              throw new Error(
+                `Refusing to recursively delete unowned or dangerous state directory: ${dbDir}. Use --db-only to remove only the database file.`,
+              );
+            await fs.rm(dbDir, { recursive: true, force: true });
+          }
           process.stdout.write('Cleaned service-flow state\n');
-        })().catch(fail)
+        })().catch(fail),
     );
   return program;
 }
@@ -370,7 +398,7 @@ function collect(value: string, previous: string[]): string[] {
 }
 function fail(error: unknown): void {
   process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\n`
+    `${error instanceof Error ? error.message : String(error)}\n`,
   );
   process.exitCode = 1;
 }

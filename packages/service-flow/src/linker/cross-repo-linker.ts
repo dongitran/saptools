@@ -1,18 +1,18 @@
 import type { Db } from '../db/connection.js';
 import { applyVariables } from './dynamic-edge-resolver.js';
-import { findOperation } from './service-resolver.js';
+import { resolveOperation } from './service-resolver.js';
 import { linkHelperPackages } from './helper-package-linker.js';
 export function linkWorkspace(
   db: Db,
   workspaceId: number,
-  vars: Record<string, string> = {}
+  vars: Record<string, string> = {},
 ): { edgeCount: number; unresolvedCount: number } {
   db.prepare('DELETE FROM graph_edges WHERE workspace_id=?').run(workspaceId);
   let edges = linkHelperPackages(db, workspaceId);
   let unresolved = 0;
   const calls = db
     .prepare(
-      `SELECT c.*,r.name repoName,b.alias,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`
+      `SELECT c.*,r.name repoName,b.alias,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,b.helper_chain_json helperChainJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`,
     )
     .all(workspaceId) as Array<Record<string, unknown>>;
   for (const call of calls) {
@@ -21,24 +21,50 @@ export function linkWorkspace(
     const servicePath = applyVariables(
       (call.servicePathExpr as string | undefined) ??
         (call.requireServicePath as string | undefined),
-      vars
+      vars,
     );
-    const target = callType.startsWith('remote')
-      ? findOperation(db, servicePath, op, workspaceId)
-      : undefined;
+    const destination =
+      (call.destinationExpr as string | undefined) ??
+      (call.requireDestination as string | undefined);
+    const isDynamic = Boolean(Number(call.isDynamic ?? 0));
+    const resolution = callType.startsWith('remote')
+      ? resolveOperation(
+          db,
+          {
+            servicePath,
+            operationPath: op,
+            alias: call.alias as string | undefined,
+            destination,
+            isDynamic,
+            hasExplicitOverride: Object.keys(vars).length > 0,
+          },
+          workspaceId,
+        )
+      : { status: 'unresolved' as const, candidates: [], reasons: [] };
+    const target = resolution.target;
     const evidence = {
       sourceFile: call.source_file,
       sourceLine: call.source_line,
+      file: call.source_file,
+      line: call.source_line,
+      repo: call.repoName,
       serviceAlias: call.alias,
-      destination: call.destinationExpr ?? call.requireDestination,
+      destination,
       servicePath,
       operationPath: op,
       targetRepo: target?.repoName,
-      targetOperation: target?.operationName
+      targetOperation: target?.operationName,
+      helperChain: call.helperChainJson
+        ? (JSON.parse(String(call.helperChainJson)) as unknown)
+        : undefined,
+      candidates: resolution.candidates,
+      candidateCount: resolution.candidates.length,
+      resolutionStatus: resolution.status,
+      resolutionReasons: resolution.reasons,
     };
     if (target) {
       db.prepare(
-        'INSERT INTO graph_edges(workspace_id,edge_type,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic) VALUES(?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO graph_edges(workspace_id,edge_type,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic) VALUES(?,?,?,?,?,?,?,?,?)',
       ).run(
         workspaceId,
         'REMOTE_CALL_RESOLVES_TO_OPERATION',
@@ -46,9 +72,9 @@ export function linkWorkspace(
         String(call.id),
         'operation',
         String(target.operationId),
-        call.isDynamic ? 0.6 : 0.9,
+        target.score,
         JSON.stringify(evidence),
-        call.isDynamic ? 1 : 0
+        isDynamic ? 1 : 0,
       );
       edges += 1;
     } else {
@@ -61,11 +87,11 @@ export function linkWorkspace(
               ? 'HANDLER_EMITS_EVENT'
               : callType === 'async_subscribe'
                 ? 'EVENT_CONSUMED_BY_HANDLER'
-                : call.isDynamic
-                ? 'DYNAMIC_EDGE_CANDIDATE'
-                : 'UNRESOLVED_EDGE';
+                : resolution.status === 'dynamic'
+                  ? 'DYNAMIC_EDGE_CANDIDATE'
+                  : 'UNRESOLVED_EDGE';
       db.prepare(
-        'INSERT INTO graph_edges(workspace_id,edge_type,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO graph_edges(workspace_id,edge_type,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?)',
       ).run(
         workspaceId,
         edgeType,
@@ -75,8 +101,15 @@ export function linkWorkspace(
         String(call.event_name_expr ?? call.query_entity ?? op ?? call.id),
         Number(call.confidence ?? 0.2),
         JSON.stringify(evidence),
-        call.isDynamic ? 1 : 0,
-        String(call.unresolved_reason ?? 'No indexed target operation matched')
+        isDynamic || resolution.status === 'dynamic' ? 1 : 0,
+        String(
+          call.unresolved_reason ??
+            (resolution.status === 'ambiguous'
+              ? 'Ambiguous operation candidates require a strong service signal'
+              : resolution.status === 'dynamic'
+                ? 'Dynamic target requires runtime variable overrides'
+                : 'No indexed target operation matched'),
+        ),
       );
       edges += 1;
       unresolved += edgeType === 'UNRESOLVED_EDGE' ? 1 : 0;
