@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   service_bindings: [
     { name: 'helper_chain_json', ddl: 'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT' },
@@ -20,6 +20,18 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   handler_registrations: [
     { name: 'class_name', ddl: 'ALTER TABLE handler_registrations ADD COLUMN class_name TEXT' },
     { name: 'import_source', ddl: 'ALTER TABLE handler_registrations ADD COLUMN import_source TEXT' },
+  ],
+  symbols: [
+    { name: 'start_offset', ddl: 'ALTER TABLE symbols ADD COLUMN start_offset INTEGER' },
+    { name: 'end_offset', ddl: 'ALTER TABLE symbols ADD COLUMN end_offset INTEGER' },
+    { name: 'source_file', ddl: 'ALTER TABLE symbols ADD COLUMN source_file TEXT' },
+    { name: 'exported_name', ddl: 'ALTER TABLE symbols ADD COLUMN exported_name TEXT' },
+    { name: 'evidence_json', ddl: 'ALTER TABLE symbols ADD COLUMN evidence_json TEXT' },
+  ],
+  outbound_calls: [
+    { name: 'local_service_name', ddl: 'ALTER TABLE outbound_calls ADD COLUMN local_service_name TEXT' },
+    { name: 'local_service_lookup', ddl: 'ALTER TABLE outbound_calls ADD COLUMN local_service_lookup TEXT' },
+    { name: 'alias_chain_json', ddl: 'ALTER TABLE outbound_calls ADD COLUMN alias_chain_json TEXT' },
   ],
   index_runs: [
     { name: 'error_message', ddl: 'ALTER TABLE index_runs ADD COLUMN error_message TEXT' },

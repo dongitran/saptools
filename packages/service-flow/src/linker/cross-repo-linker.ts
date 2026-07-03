@@ -55,10 +55,11 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const servicePath = applyVariables((call.servicePathExpr as string | undefined) ?? (call.requireServicePath as string | undefined), vars);
   const destination = (call.destinationExpr as string | undefined) ?? (call.requireDestination as string | undefined);
   const isDynamic = Boolean(Number(call.isDynamic ?? 0));
-  const resolution = callType.startsWith('remote') ? resolveOperation(db, { servicePath, operationPath: op, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
+  const isOperationCall = callType.startsWith('remote') || callType === 'local_service_call';
+  const resolution = isOperationCall ? resolveOperation(db, { servicePath, operationPath: op, serviceName: call.local_service_name as string | undefined, repoId: callType === 'local_service_call' ? Number(call.repo_id) : undefined, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 || callType === 'local_service_call' }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
   const evidence = callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined);
   if (resolution.target) {
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify(evidence), isDynamic ? 1 : 0, generation);
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, callType === 'local_service_call' ? 'LOCAL_CALL_RESOLVES_TO_OPERATION' : 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify(evidence), isDynamic ? 1 : 0, generation);
     return { status: 'resolved' };
   }
   const edgeType = callType === 'local_db_query' ? 'HANDLER_RUNS_DB_QUERY' : callType === 'external_http' ? 'HANDLER_CALLS_EXTERNAL_HTTP' : callType === 'async_emit' ? 'HANDLER_EMITS_EVENT' : callType === 'async_subscribe' ? 'EVENT_CONSUMED_BY_HANDLER' : resolution.status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE';
@@ -68,7 +69,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   return { status };
 }
 function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined): Record<string, unknown> {
-  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: call.helperChainJson ? (JSON.parse(String(call.helperChainJson)) as unknown) : undefined, candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
+  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: call.alias_chain_json ? (JSON.parse(String(call.alias_chain_json)) as unknown) : undefined, transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: call.helperChainJson ? (JSON.parse(String(call.helperChainJson)) as unknown) : undefined, candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
 }
 
 function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {
@@ -106,6 +107,7 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
 }
 interface ImplementationCandidate extends Record<string, unknown> {
   methodId: number;
+  registrations?: Array<Record<string, unknown>>;
   score: number;
   accepted: boolean;
   acceptedReasons: string[];
@@ -113,7 +115,35 @@ interface ImplementationCandidate extends Record<string, unknown> {
 }
 function rankedImplementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): ImplementationCandidate[] {
   const rows = implementationCandidates(db, workspaceId, operation);
-  return rows.map((row) => scoreImplementationCandidate(row, operation)).sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)) || a.methodId - b.methodId);
+  return deduplicateCandidates(rows.map((row) => scoreImplementationCandidate(row, operation))).sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)) || a.methodId - b.methodId);
+}
+
+function deduplicateCandidates(rows: ImplementationCandidate[]): ImplementationCandidate[] {
+  const merged = new Map<string, ImplementationCandidate>();
+  for (const row of rows) {
+    const key = [row.methodId, row.classId, row.applicationRepoId, row.importSource ?? '', row.registrationKind ?? ''].join(':');
+    const registration = { file: row.registrationFile, line: row.registrationLine, kind: row.registrationKind, importSource: row.importSource };
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...row, registrations: [registration] });
+      continue;
+    }
+    existing.registrations = uniqueRegistrations([...(existing.registrations ?? []), registration]);
+    existing.score = Math.max(existing.score, row.score);
+    existing.accepted = existing.accepted || row.accepted;
+    existing.acceptedReasons = [...new Set([...existing.acceptedReasons, ...row.acceptedReasons])];
+    existing.rejectedReasons = [...new Set([...existing.rejectedReasons, ...row.rejectedReasons])];
+  }
+  return [...merged.values()];
+}
+function uniqueRegistrations(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = JSON.stringify(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 function implementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): Array<Record<string, unknown>> {
   const modelRepoGraphId = graphId(operation.modelRepoId);
@@ -250,6 +280,7 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
     sourceFile: candidate.sourceFile,
     sourceLine: candidate.sourceLine,
     registration: { file: candidate.registrationFile, line: candidate.registrationLine, kind: candidate.registrationKind, importSource: candidate.importSource },
+    registrations: candidate.registrations ?? [],
     applicationPackage: { id: candidate.applicationRepoId, name: candidate.applicationRepo, packageName: candidate.applicationPackage },
     handlerPackage: { id: candidate.handlerRepoId, name: candidate.handlerRepo, packageName: candidate.handlerPackage },
     modelPackage: { id: candidate.modelRepoId, name: candidate.modelRepo, packageName: candidate.modelPackage },

@@ -10,6 +10,7 @@ interface RepoRef {
 interface StartScope {
   repo?: RepoRef;
   sourceFiles?: Set<string>;
+  symbolIds?: Set<number>;
   selectorMatched: boolean;
 }
 interface CallRow extends Record<string, unknown> {
@@ -20,6 +21,7 @@ interface CallRow extends Record<string, unknown> {
   source_line: number;
   call_type: string;
   confidence: number;
+  source_symbol_id?: number;
 }
 interface GraphRow extends Record<string, unknown> {
   id: number;
@@ -51,14 +53,14 @@ function sourceFilesForStart(
   db: Db,
   repoId: number | undefined,
   start: TraceStart,
-): Set<string> | undefined {
+): { files?: Set<string>; symbols?: Set<number> } | undefined {
   const handler = start.handler;
   const operation = normalizeOperation(start.operation ?? start.operationPath);
   if (!handler && !operation) return undefined;
   const rows = db
     .prepare(
-      `SELECT DISTINCT hc.source_file sourceFile
-       FROM handler_classes hc LEFT JOIN handler_methods hm ON hm.handler_class_id=hc.id
+      `SELECT DISTINCT hc.source_file sourceFile,s.id symbolId
+       FROM handler_classes hc LEFT JOIN handler_methods hm ON hm.handler_class_id=hc.id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name
        WHERE (? IS NULL OR hc.repo_id=?) AND (? IS NULL OR hc.class_name=? OR hm.method_name=?)
          AND (? IS NULL OR hm.decorator_value=? OR hm.method_name=?)
          AND (? IS NULL OR EXISTS (SELECT 1 FROM cds_services s JOIN cds_operations o ON o.service_id=s.id WHERE s.repo_id=hc.repo_id AND s.service_path=? AND (? IS NULL OR o.operation_path=? OR o.operation_name=? OR hm.decorator_value=? OR hm.method_name=?)))`,
@@ -79,16 +81,17 @@ function sourceFilesForStart(
       operation,
       operation,
       operation,
-    ) as Array<{ sourceFile?: string }>;
-  if (rows.length > 0) return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+    ) as Array<{ sourceFile?: string; symbolId?: number }>;
+  if (rows.length > 0) return { files: new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(rows.map((row) => Number(row.symbolId)).filter(Boolean)) };
   if (start.servicePath && operation) {
-    const implRows = db.prepare(`SELECT DISTINCT hc.source_file sourceFile
+    const implRows = db.prepare(`SELECT DISTINCT hc.source_file sourceFile,sym.id symbolId
       FROM cds_services s JOIN cds_operations o ON o.service_id=s.id
       JOIN graph_edges e ON e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND e.status='resolved' AND e.from_kind='operation' AND e.from_id=CAST(o.id AS TEXT)
       JOIN handler_methods hm ON hm.id=CAST(e.to_id AS INTEGER)
       JOIN handler_classes hc ON hc.id=hm.handler_class_id
-      WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?)`).all(repoId, repoId, start.servicePath, operation, operation) as Array<{ sourceFile?: string }>;
-    if (implRows.length > 0) return new Set(implRows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+      LEFT JOIN symbols sym ON sym.repo_id=hc.repo_id AND sym.source_file=hc.source_file AND sym.name=hm.method_name
+      WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?)`).all(repoId, repoId, start.servicePath, operation, operation) as Array<{ sourceFile?: string; symbolId?: number }>;
+    if (implRows.length > 0) return { files: new Set(implRows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(implRows.map((row) => Number(row.symbolId)).filter(Boolean)) };
   }
   return undefined;
 }
@@ -101,7 +104,8 @@ function startScope(db: Db, start: TraceStart): StartScope {
         .get(start.repo, start.repo) as RepoRef | undefined)
     : undefined;
   if (start.repo && !repo) return { repo, selectorMatched: false };
-  const sourceFiles = sourceFilesForStart(db, repo?.id, start);
+  const sourceScope = sourceFilesForStart(db, repo?.id, start);
+  const sourceFiles = sourceScope?.files;
   const hasSelector = Boolean(
     start.handler ?? start.operation ?? start.operationPath ?? start.servicePath,
   );
@@ -110,6 +114,7 @@ function startScope(db: Db, start: TraceStart): StartScope {
   return {
     repo,
     sourceFiles,
+    symbolIds: sourceScope?.symbols,
     selectorMatched: !hasSelector || sourceFiles !== undefined,
   };
 }
@@ -126,8 +131,9 @@ function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
   const operation = normalizeOperation(op.operationPath ?? op.operationName);
   const rows = db
     .prepare(
-      `SELECT DISTINCT hc.source_file sourceFile FROM handler_classes hc
+      `SELECT DISTINCT hc.source_file sourceFile,sym.id symbolId FROM handler_classes hc
     JOIN handler_methods hm ON hm.handler_class_id=hc.id
+    LEFT JOIN symbols sym ON sym.repo_id=hc.repo_id AND sym.source_file=hc.source_file AND sym.name=hm.method_name
     WHERE hc.repo_id=? AND (hm.decorator_value=? OR hm.method_name=? OR hm.decorator_value=?)`,
     )
     .all(op.repoId, operation, operation, op.operationName) as Array<{
@@ -144,11 +150,11 @@ function handlerMethodNode(db: Db, methodId: string): Record<string, unknown> | 
   if (!row) return undefined;
   return { id: `handler_method:${methodId}`, kind: 'handler_method', label: `${String(row.repoName)}:${String(row.className)}.${String(row.methodName)}`, ...row };
 }
-function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string>; edge?: GraphRow } {
+function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string>; symbolId?: number; edge?: GraphRow } {
   const edge = implementationEdge(db, operationId);
   if (!edge || edge.status !== 'resolved') return { files: new Set(), edge };
-  const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string } | undefined;
-  return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), edge };
+  const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
+  return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
 function includeCall(
   type: string,
@@ -287,13 +293,15 @@ export function trace(
   const maxDepth = positiveDepth(options.depth);
   const edges: TraceEdge[] = [];
   const nodes = new Map<string, Record<string, unknown>>();
-  const queue: Array<{ repoId?: number; files?: Set<string>; depth: number }> =
+  const queue: Array<{ repoId?: number; files?: Set<string>; symbolIds?: Set<number>; depth: number }> =
     scope.selectorMatched
-      ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, depth: 1 }]
+      ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1 }]
       : [];
   if (start.servicePath && (start.operation ?? start.operationPath)) {
     const startOperation = normalizeOperation(start.operation ?? start.operationPath);
-    const row = db.prepare(`SELECT o.id operationId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE s.service_path=? AND (o.operation_path=? OR o.operation_name=?) ORDER BY o.id LIMIT 1`).get(start.servicePath, startOperation, startOperation) as { operationId?: number } | undefined;
+    const startRows = db.prepare(`SELECT o.id operationId,r.name repoName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?) ORDER BY r.name,o.id LIMIT 2`).all(scope.repo?.id, scope.repo?.id, start.servicePath, startOperation, startOperation) as Array<Record<string, unknown>>;
+    if (!scope.repo && startRows.length > 1) diagnostics.unshift({ severity: 'warning', code: 'trace_start_ambiguous', message: 'Service/path trace start matched multiple repositories; add --repo to disambiguate', candidates: startRows });
+    const row = startRows.length === 1 ? startRows[0] : undefined;
     if (row?.operationId !== undefined) {
       const opId = String(row.operationId);
       const op = operationNode(db, opId);
@@ -312,7 +320,7 @@ export function trace(
   while (queue.length > 0) {
     const current = queue.shift();
     if (!current || current.depth > maxDepth) continue;
-    const key = `${current.repoId ?? '*'}:${[...(current.files ?? new Set(['*']))].sort().join(',')}`;
+    const key = `${current.repoId ?? '*'}:${[...(current.symbolIds ?? new Set(['*']))].sort().join(',')}:${[...(current.files ?? new Set(['*']))].sort().join(',')}`;
     if (seenScopes.has(key)) continue;
     seenScopes.add(key);
     const calls = db
@@ -322,9 +330,23 @@ export function trace(
       .all(current.repoId, current.repoId) as CallRow[];
     const filtered = calls.filter(
       (c) =>
-        (!current.files || current.files.has(String(c.source_file))) &&
+        (!current.symbolIds || current.symbolIds.has(Number(c.source_symbol_id))) && (!current.files || current.files.has(String(c.source_file))) &&
         includeCall(String(c.call_type), options),
     );
+
+    if (current.symbolIds && current.symbolIds.size > 0 && current.depth < maxDepth) {
+      const symbolRows = db.prepare(`SELECT sc.*,s.repo_id calleeRepoId,s.source_file calleeFile FROM symbol_calls sc LEFT JOIN symbols s ON s.id=sc.callee_symbol_id WHERE sc.caller_symbol_id IN (${[...current.symbolIds].map(() => '?').join(',')}) ORDER BY sc.source_file,sc.source_line`).all(...current.symbolIds) as Array<Record<string, unknown>>;
+      for (const symbolCall of symbolRows) {
+        if (!symbolCall.callee_symbol_id) continue;
+        const nextSymbols = new Set([Number(symbolCall.callee_symbol_id)]);
+        const nextFiles = new Set([String(symbolCall.calleeFile)]);
+        const nextRepoId = Number(symbolCall.calleeRepoId);
+        const nextKey = `${nextRepoId}:${[...nextSymbols].join(',')}:${[...nextFiles].join(',')}`;
+        edges.push({ step: current.depth, type: 'local_symbol_call', from: String(symbolCall.callee_expression), to: `symbol:${String(symbolCall.callee_symbol_id)}`, evidence: JSON.parse(String(symbolCall.evidence_json || '{}')) as Record<string, unknown>, confidence: Number(symbolCall.confidence ?? 0.8), unresolvedReason: symbolCall.unresolved_reason ? String(symbolCall.unresolved_reason) : undefined });
+        if (seenScopes.has(nextKey)) edges.push({ step: current.depth, type: 'cycle', from: String(symbolCall.callee_expression), to: nextKey, evidence: { cycle: true, symbolCallId: symbolCall.id }, confidence: 1, unresolvedReason: 'Cycle detected; downstream symbol already visited' });
+        else queue.push({ repoId: nextRepoId, files: nextFiles, symbolIds: nextSymbols, depth: current.depth + 1 });
+      }
+    }
     const graph = graphForCalls(
       db,
       filtered.map((c) => Number(c.id)),
@@ -360,7 +382,7 @@ export function trace(
         edges.push({
           step: current.depth,
           type: String(call.call_type),
-          from: `${call.repoName}:${call.source_file}`,
+          from: `${call.repoName}:${call.source_file}:${call.source_line}`,
           to,
           evidence,
           confidence: Number(effectiveRow.confidence ?? call.confidence),
@@ -374,7 +396,7 @@ export function trace(
             const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
             if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
             edges.push({
-              step: current.depth + 1,
+              step: current.depth,
               type: 'operation_implemented_by_handler',
               from: to,
               to: implTo,
@@ -385,16 +407,17 @@ export function trace(
           }
           if (current.depth >= maxDepth) continue;
           const files = implementation.files.size > 0 ? implementation.files : handlerFilesForOperation(db, effectiveRow.to_id);
+          const symbolIds = implementation.symbolId ? new Set([implementation.symbolId]) : undefined;
           if (implementation.edge?.status === 'resolved' && files.size > 0) {
             const targetRepoId = implementation.repoId ?? (db
               .prepare(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',
               )
               .get(effectiveRow.to_id)?.repoId as number | undefined);
-            const nextKey = `${targetRepoId ?? '*'}:${[...files].sort().join(',')}`;
+            const nextKey = `${targetRepoId ?? '*'}:${[...(symbolIds ?? new Set(['*']))].sort().join(',')}:${[...files].sort().join(',')}`;
             if (seenScopes.has(nextKey))
               edges.push({
-                step: current.depth + 1,
+                step: current.depth,
                 type: 'cycle',
                 from: to,
                 to: nextKey,
@@ -407,6 +430,7 @@ export function trace(
               queue.push({
                 repoId: targetRepoId,
                 files,
+                symbolIds,
                 depth: current.depth + 1,
               });
           }

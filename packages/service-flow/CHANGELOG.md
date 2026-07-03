@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.11
+
+- Added repository-owned executable symbols, source-symbol ownership for outbound calls, and local symbol-call facts so traces can follow reachable same-file/imported helpers without including unrelated calls from the same file.
+- Replaced local CAP service call extraction with AST alias tracking for `cds.services` lookups, ignored entity accessors, and linked local calls to exact local operations with explicit local transport evidence.
+- Scoped service/path trace starts by repository, reports ambiguous starts instead of choosing the first row, and queues resolved implementation handlers by their handler repository and symbol identity.
+- Deduplicated operation implementation candidates by logical identity while preserving distinct registration evidence in nested arrays.
+- Link output now reports implementation-unresolved counts, table evidence falls back to nested implementation source locations, and depth `step` values remain within the requested scope depth.
+- Generated-constant claims were removed from runtime documentation until persistence and resolution are fully integrated.
+- Doctor now reports aggregate analyzer-quality diagnostics for systematic local-service, source-symbol, and trace-scope problems.
+
 ## 0.1.10
 
 - Persist unresolved `OPERATION_IMPLEMENTED_BY_HANDLER` audit edges when implementation candidates exist but all are rejected, including ranked candidate evidence and rejected reasons.

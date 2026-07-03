@@ -22,6 +22,7 @@ export type EdgeType =
   | 'HANDLER_USES_SERVICE_ALIAS'
   | 'HANDLER_CALLS_REMOTE_OPERATION'
   | 'REMOTE_CALL_RESOLVES_TO_OPERATION'
+  | 'LOCAL_CALL_RESOLVES_TO_OPERATION'
   | 'HANDLER_RUNS_DB_QUERY'
   | 'HANDLER_CALLS_EXTERNAL_HTTP'
   | 'HANDLER_EMITS_EVENT'
@@ -107,6 +108,10 @@ export interface ServiceBindingFact {
 }
 export interface OutboundCallFact {
   callType: CallType;
+  sourceSymbolQualifiedName?: string;
+  localServiceName?: string;
+  localServiceLookup?: string;
+  aliasChain?: string[];
   serviceVariableName?: string;
   method?: string;
   operationPathExpr?: string;
@@ -117,6 +122,29 @@ export interface OutboundCallFact {
   sourceLine: number;
   confidence: number;
   unresolvedReason?: string;
+}
+export interface ExecutableSymbolFact {
+  kind: string;
+  localName: string;
+  exportedName?: string;
+  qualifiedName: string;
+  sourceFile: string;
+  startLine: number;
+  endLine: number;
+  startOffset: number;
+  endOffset: number;
+  exported: boolean;
+  importExportEvidence?: Record<string, unknown>;
+}
+export interface SymbolCallFact {
+  callerQualifiedName: string;
+  calleeExpression: string;
+  calleeLocalName?: string;
+  receiverLocalName?: string;
+  importSource?: string;
+  sourceFile: string;
+  sourceLine: number;
+  evidence: Record<string, unknown>;
 }
 export interface GeneratedConstantFact {
   name: string;
