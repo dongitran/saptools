@@ -12,9 +12,9 @@ export function linkWorkspace(
   let unresolved = 0;
   const calls = db
     .prepare(
-      `SELECT c.*,r.name repoName,b.alias,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias`
+      `SELECT c.*,r.name repoName,b.alias,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`
     )
-    .all() as Array<Record<string, unknown>>;
+    .all(workspaceId) as Array<Record<string, unknown>>;
   for (const call of calls) {
     const callType = String(call.call_type);
     const op = applyVariables(String(call.operation_path_expr ?? ''), vars);
@@ -24,7 +24,7 @@ export function linkWorkspace(
       vars
     );
     const target = callType.startsWith('remote')
-      ? findOperation(db, servicePath, op)
+      ? findOperation(db, servicePath, op, workspaceId)
       : undefined;
     const evidence = {
       sourceFile: call.source_file,
@@ -59,7 +59,9 @@ export function linkWorkspace(
             ? 'HANDLER_CALLS_EXTERNAL_HTTP'
             : callType === 'async_emit'
               ? 'HANDLER_EMITS_EVENT'
-              : call.isDynamic
+              : callType === 'async_subscribe'
+                ? 'EVENT_CONSUMED_BY_HANDLER'
+                : call.isDynamic
                 ? 'DYNAMIC_EDGE_CANDIDATE'
                 : 'UNRESOLVED_EDGE';
       db.prepare(
@@ -69,7 +71,7 @@ export function linkWorkspace(
         edgeType,
         'call',
         String(call.id),
-        callType === 'async_emit' ? 'event' : 'external',
+        callType.startsWith('async_') ? 'event' : 'external',
         String(call.event_name_expr ?? call.query_entity ?? op ?? call.id),
         Number(call.confidence ?? 0.2),
         JSON.stringify(evidence),

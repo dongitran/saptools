@@ -42,12 +42,49 @@ describe('linker and trace engine', () => {
       objectCode: 'xx'
     });
     expect(linked.edgeCount).toBeGreaterThan(0);
+    const edgeTypes = db
+      .prepare('SELECT edge_type edgeType FROM graph_edges ORDER BY id')
+      .all() as Array<{ edgeType: string }>;
+    expect(edgeTypes.map((edge) => edge.edgeType)).toContain(
+      'EVENT_CONSUMED_BY_HANDLER'
+    );
     const result = trace(
       db,
       { repo: 'facade-service', operation: 'doWork' },
       { depth: 20, includeDb: true, includeAsync: true, includeExternal: true }
     );
     expect(result.edges.map((e) => e.type)).toContain('remote_action');
+    expect(result.edges.every((e) => e.from.includes('EntryHandler.ts'))).toBe(
+      true
+    );
+
+    const handlerResult = trace(
+      db,
+      { repo: 'rules-service', operation: 'checkPayload' },
+      {
+        depth: 20,
+        vars: { objectType: 'Thing', objectCode: 'xx' },
+        includeDb: true,
+        includeAsync: true,
+        includeExternal: true
+      }
+    );
+    expect(
+      handlerResult.edges.every((e) => e.from.includes('RulesHandler.ts'))
+    ).toBe(true);
+    expect(handlerResult.edges.map((e) => e.to)).toContain(
+      '/ThingProcessService/getPaths'
+    );
+
+    const missingOperationResult = trace(
+      db,
+      { repo: 'rules-service', operation: 'notRegistered' },
+      { depth: 20, includeAsync: true }
+    );
+    expect(missingOperationResult.edges).toHaveLength(0);
+    expect(missingOperationResult.diagnostics[0]?.code).toBe(
+      'trace_start_not_found'
+    );
     db.close();
   });
 });

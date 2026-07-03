@@ -1,8 +1,14 @@
 import type { Db } from '../db/connection.js';
 export function linkHelperPackages(db: Db, workspaceId: number): number {
   const repos = db
-    .prepare('SELECT id,name,dependencies_json FROM repositories')
-    .all() as Array<{ id: number; name: string; dependencies_json: string }>;
+    .prepare(
+      'SELECT id,name,dependencies_json FROM repositories WHERE workspace_id=?'
+    )
+    .all(workspaceId) as Array<{
+    id: number;
+    name: string;
+    dependencies_json: string;
+  }>;
   let count = 0;
   for (const repo of repos) {
     const deps = JSON.parse(repo.dependencies_json) as Record<string, string>;

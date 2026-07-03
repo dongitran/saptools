@@ -11,14 +11,25 @@ export interface OperationTarget {
 export function findOperation(
   db: Db,
   servicePath: string | undefined,
-  operationPath: string | undefined
+  operationPath: string | undefined,
+  workspaceId?: number
 ): OperationTarget | undefined {
   if (!operationPath) return undefined;
   const row = db
     .prepare(
-      `SELECT o.id operationId,r.name repoName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.service_path=?) AND (o.operation_path=? OR o.operation_name=?) ORDER BY CASE WHEN s.service_path=? THEN 0 ELSE 1 END LIMIT 1`
+      `SELECT o.id operationId,r.name repoName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine
+       FROM cds_operations o
+       JOIN cds_services s ON s.id=o.service_id
+       JOIN repositories r ON r.id=s.repo_id
+       WHERE (? IS NULL OR r.workspace_id=?)
+         AND (? IS NULL OR s.service_path=?)
+         AND (o.operation_path=? OR o.operation_name=?)
+       ORDER BY CASE WHEN s.service_path=? THEN 0 ELSE 1 END
+       LIMIT 1`
     )
     .get(
+      workspaceId,
+      workspaceId,
       servicePath,
       servicePath,
       operationPath,
