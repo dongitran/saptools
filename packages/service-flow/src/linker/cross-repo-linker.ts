@@ -6,6 +6,8 @@ export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;
   resolvedCount: number;
+  remoteResolvedCount: number;
+  localResolvedCount: number;
   ambiguousCount: number;
   dynamicCount: number;
   terminalCount: number;
@@ -34,6 +36,8 @@ function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, ge
   let edgeCount = 0;
   let unresolvedCount = 0;
   let resolvedCount = 0;
+  let remoteResolvedCount = 0;
+  let localResolvedCount = 0;
   let ambiguousCount = 0;
   let dynamicCount = 0;
   let terminalCount = 0;
@@ -42,14 +46,16 @@ function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, ge
     const result = insertCallEdge(db, workspaceId, call, vars, generation);
     edgeCount += 1;
     resolvedCount += result.status === 'resolved' ? 1 : 0;
+    remoteResolvedCount += result.status === 'resolved' && result.callType !== 'local_service_call' ? 1 : 0;
+    localResolvedCount += result.status === 'resolved' && result.callType === 'local_service_call' ? 1 : 0;
     unresolvedCount += result.status === 'unresolved' ? 1 : 0;
     ambiguousCount += result.status === 'ambiguous' ? 1 : 0;
     dynamicCount += result.status === 'dynamic' ? 1 : 0;
     terminalCount += result.status === 'terminal' ? 1 : 0;
   }
-  return { edgeCount, unresolvedCount, resolvedCount, ambiguousCount, dynamicCount, terminalCount };
+  return { edgeCount, unresolvedCount, resolvedCount, remoteResolvedCount, localResolvedCount, ambiguousCount, dynamicCount, terminalCount };
 }
-function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknown>, vars: Record<string, string>, generation: number): { status: string } {
+function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknown>, vars: Record<string, string>, generation: number): { status: string; callType: string } {
   const callType = String(call.call_type);
   const op = applyVariables(String(call.operation_path_expr ?? ''), vars);
   const servicePath = applyVariables((call.servicePathExpr as string | undefined) ?? (call.requireServicePath as string | undefined), vars);
@@ -60,11 +66,11 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const evidence = callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined);
   if (callType === 'local_service_call' && call.unresolved_reason === 'transport_client_method' && !resolution.target && resolution.candidates.length === 0) {
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_CALLS_EXTERNAL_HTTP', 'terminal', 'call', String(call.id), 'external', String(op || 'transport_client_method'), Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, classification: 'transport_client_method' }), 0, generation);
-    return { status: 'terminal' };
+    return { status: 'terminal', callType };
   }
   if (resolution.target) {
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, callType === 'local_service_call' ? 'LOCAL_CALL_RESOLVES_TO_OPERATION' : 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify(evidence), isDynamic ? 1 : 0, generation);
-    return { status: 'resolved' };
+    return { status: 'resolved', callType };
   }
   const edgeType = callType === 'local_db_query' ? 'HANDLER_RUNS_DB_QUERY' : callType === 'external_http' ? 'HANDLER_CALLS_EXTERNAL_HTTP' : callType === 'async_emit' ? 'HANDLER_EMITS_EVENT' : callType === 'async_subscribe' ? 'EVENT_CONSUMED_BY_HANDLER' : resolution.status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE';
   const status = edgeType === 'DYNAMIC_EDGE_CANDIDATE' ? 'dynamic' : resolution.status === 'ambiguous' ? 'ambiguous' : edgeType === 'UNRESOLVED_EDGE' ? 'unresolved' : 'terminal';
@@ -72,7 +78,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : 'external';
   const targetId = callType === 'local_db_query' ? String(call.query_entity ?? 'unknown') : String(call.event_name_expr ?? op ?? call.id);
   db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(evidence), isDynamic || resolution.status === 'dynamic' ? 1 : 0, unresolvedReason, generation);
-  return { status };
+  return { status, callType };
 }
 function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined): Record<string, unknown> {
   return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: call.alias_chain_json ? (JSON.parse(String(call.alias_chain_json)) as unknown) : undefined, transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: call.helperChainJson ? (JSON.parse(String(call.helperChainJson)) as unknown) : undefined, candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };

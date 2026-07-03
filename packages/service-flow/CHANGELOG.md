@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.16
+
+- Index class property arrow/function members as executable symbols so outbound calls inside handler helper properties receive precise source-symbol ownership.
+- Add conservative synthetic callback symbols for top-level CAP lifecycle, route, and event callbacks that contain supported outbound calls.
+- Harden proxy-member symbol-call resolution with richer evidence and avoid ambiguous repository-wide member-name fallback.
+- Split `service-flow link` operation-call output into remote resolved, local resolved, unresolved, ambiguous, dynamic, and terminal buckets.
+- Extend strict doctor ownership diagnostics with ownerless outbound-call details by call type and syntactic gap.
+- Keep `OutboundCallFact.sourceSymbolQualifiedName` aligned with persistence by preferring explicit qualified names before line-range fallback.
+
 ## 0.1.15
 
 - Fixed `symbol_calls.evidence_json` persistence so inserted rows store the parser evidence object instead of a numeric repository id, with explicit initial resolved/unresolved statuses.

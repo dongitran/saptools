@@ -99,3 +99,13 @@ describe('service-flow CLI', () => {
     expect(strictDiagnostics.some((item) => item.code === 'strict_db_query_quality')).toBe(true);
   });
 });
+
+describe('service-flow CLI link wording', () => {
+  it('splits remote and local operation resolution labels', async () => {
+    const linkResult = await runResult(['link', '--workspace', fixture]);
+    expect(linkResult.stderr).toBe('');
+    expect(linkResult.stdout).toContain('remote operation calls resolved');
+    expect(linkResult.stdout).toContain('local operation calls resolved');
+    expect(linkResult.stdout).not.toContain('remote resolved');
+  });
+});

@@ -6,6 +6,14 @@
 - Trace cycle safety: trace queues carry repository IDs, visited scope keys are independent of depth, graph edge IDs are emitted once, and revisiting an already-seen downstream operation scope creates a cycle marker instead of recursive expansion.
 - SQLite reliability: the package uses a persistent SQLite connection per opened database, bound parameters, transactions, WAL, busy timeouts, read-only openings for query commands, and connection-local foreign-key enforcement. Native driver loading failures produce an actionable startup error before output rendering.
 
+## 0.1.16 audit follow-up notes
+
+- Executable symbol parsing now treats class property arrow functions and function-expression initializers as method-like symbols with `ClassName.memberName` qualified names. Their body ranges are persisted so outbound-call ownership can use the existing shortest enclosing range lookup.
+- Synthetic callback symbols are intentionally narrow: only top-level CAP lifecycle, route, and event-registration callbacks whose bodies contain supported outbound calls/subscriptions are indexed as `module:<relative-file>#callback:<line>`. Ordinary anonymous callbacks remain out of scope to avoid broad call-graph noise.
+- Proxy-member calls record proxy variable, factory expression, factory import source, and candidate strategy. Resolution prefers explicit object-map evidence and treats ambiguous repository-wide member-name matches as ambiguous instead of picking the first symbol row. Full whole-program TypeScript data-flow remains a non-goal.
+- `link` summaries now distinguish remote and local operation-call resolutions, while retaining the aggregate `resolvedCount` in the programmatic result for compatibility.
+- Strict doctor source-ownership diagnostics include ownerless groupings by call type and syntactic gap so remaining ownerless calls can be audited without weakening the threshold.
+
 ## 0.1.15 audit follow-up notes
 
 - Symbol-call rows now require object-shaped parser evidence in strict doctor; this catches numeric JSON regressions that `json_valid()` alone would miss.

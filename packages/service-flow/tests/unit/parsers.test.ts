@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { parseExecutableSymbols } from '../../src/parsers/symbol-parser.js';
 import {
   discoverRepositories,
   parseCdsFile,
@@ -384,5 +385,33 @@ describe('trace output rendering', () => {
     expect(renderTraceTable(result)).toContain('Entity: unknown');
     expect(renderTraceTable(result)).not.toContain(' 1234 ');
     expect(renderMermaid(result)).toContain('Entity: unknown');
+  });
+});
+
+describe('service-flow ownership symbol regressions', () => {
+  it('indexes class property function members and targeted callback symbols', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-owner-symbols-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'handler.ts'), `
+class HandlerClass {
+  public helperMethod = async () => {
+    await cds.run(SELECT.from(EntityName));
+  };
+  private remoteHelper = async function () {
+    await svc.send({ method: 'POST', path: '/doWork' });
+  };
+  ordinary(): void { this.helperMethod(); }
+}
+cds.on('served', async () => {
+  await messaging.on('Changed', async () => undefined);
+});
+`);
+    const parsed = await parseExecutableSymbols(root, 'src/handler.ts');
+    expect(parsed.symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ qualifiedName: 'HandlerClass.helperMethod', kind: 'method' }),
+      expect.objectContaining({ qualifiedName: 'HandlerClass.remoteHelper', kind: 'method' }),
+      expect.objectContaining({ qualifiedName: 'HandlerClass.ordinary', kind: 'method' }),
+    ]));
+    expect(parsed.symbols.some((symbol) => symbol.qualifiedName.startsWith('module:src/handler.ts#callback:'))).toBe(true);
   });
 });

@@ -18,9 +18,9 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 
 ---
 
-## 0.1.15 quality update
+## 0.1.16 quality update
 
-`service-flow` 0.1.15 fixes symbol-call evidence persistence so fresh databases store object-shaped parser evidence, extends strict doctor checks for evidence and parser-quality ratios, and conservatively resolves exported static class-member and exported shorthand object-map helper flows through relative imports without restoring broad symbol-call fallback noise.
+`service-flow` 0.1.16 tightens source ownership and proxy evidence after the 0.1.15 audit. It indexes class property arrow/function members, creates conservative synthetic callback symbols only for top-level framework callbacks containing supported outbound calls, prefers explicit outbound source-symbol names when provided, hardens proxy-member resolution away from ambiguous global name-only matches, and splits link output into remote/local/unresolved/ambiguous/dynamic/terminal operation-call buckets.
 
 ## ✨ Features
 
@@ -135,7 +135,7 @@ service-flow index --workspace /path/to/workspace --repo identity-service --forc
 
 ### 🔗 `service-flow link`
 
-Resolve indexed outbound calls after repositories have been indexed. This rebuilds the `graph_edges` table for the workspace.
+Resolve indexed outbound calls after repositories have been indexed. This rebuilds the `graph_edges` table for the workspace. The summary separates remote operation calls resolved, local operation calls resolved, unresolved operation calls, ambiguous operation calls, dynamic operation calls, and terminal call edges so local CAP service resolutions are not labeled as remote.
 
 ```bash
 service-flow link --workspace /path/to/workspace
@@ -155,7 +155,7 @@ target handler up to `--depth` instead of showing only calls in the first file.
 
 ### Symbol-scoped helper traversal
 
-`service-flow trace` starts from the selected handler method symbol, renders outbound calls owned by that symbol, and follows conservative local helper-call facts. Supported helper edges include same-file functions, `this.method()` calls, and exactly mapped relative imports/exports that resolve to an indexed executable symbol. Calls from unrelated functions in the same source file are not included merely because the file path matches.
+`service-flow trace` starts from the selected handler method symbol, renders outbound calls owned by that symbol, and follows conservative local helper-call facts. Handler helper properties such as `helper = async () => { ... }` and `helper = function () { ... }` are indexed as `ClassName.helper`; top-level CAP lifecycle, route, and event callbacks receive synthetic `module:<file>#callback:<line>` owners only when their body contains a supported outbound call or event subscription. Supported helper edges include same-file functions, `this.method()` calls, and exactly mapped relative imports/exports that resolve to an indexed executable symbol. Proxy-member calls keep factory/import evidence and avoid resolving by repository-wide member name alone when the target is ambiguous. Calls from unrelated functions in the same source file are not included merely because the file path matches.
 
 Local CAP calls through `cds.services.<Service>.<operation>()`, bracket service lookups, and simple aliases are indexed as local operation calls. Linking first stays within the same repository and matches the target operation by exact qualified CDS service name, exact simple service name, exact service path, or an unambiguous service-path suffix. If no same-repository service exists, the linker can use implementation-context evidence to resolve model-package operations for helper packages: a resolved/ambiguous implementation candidate, registration package, or dependency/import edge must tie the caller repository to the model operation. Name-only global matches are preserved as unresolved candidate evidence rather than guessed links. Entity accessors such as `cds.services.db.entities(...)` are treated as entity metadata access, not operation calls.
 
