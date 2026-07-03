@@ -386,13 +386,6 @@ The e2e tests use fixture CAP workspaces and fake-backed flows. They do not need
 
 ---
 
-## 🌐 Related
-
-- ☁️ [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync) — map SAP BTP Cloud Foundry topology and app bindings into local JSON snapshots
-- 🗂️ [saptools monorepo](https://github.com/dongitran/saptools) — the full toolbox
-
----
-
 ## 👨‍💻 Author
 
 **dongtran** ✨
