@@ -46,6 +46,13 @@ export function resolveOperation(
   },
   workspaceId?: number,
 ): OperationResolution {
+  const missing = [signals.servicePath, signals.alias, signals.destination, signals.operationPath].flatMap((value) => [...(value ?? '').matchAll(/\$\{\s*(\w+)\s*\}/g)].map((match) => match[1] ?? '')).filter(Boolean);
+  if (missing.length > 0)
+    return {
+      status: 'dynamic',
+      candidates: signals.operationPath ? rows(db, signals.operationPath, workspaceId) : [],
+      reasons: [...new Set(missing)].map((name) => `missing_variable:${name}`),
+    };
   if (!signals.operationPath)
     return {
       status: 'unresolved',
@@ -103,6 +110,8 @@ export function resolveOperation(
   if (
     best &&
     best.score >= 0.9 &&
+    best.servicePath === signals.servicePath &&
+    (best.operationPath === signals.operationPath || best.operationName === signals.operationPath.replace(/^\//, '')) &&
     (!second || best.score - second.score >= 0.25)
   )
     return {

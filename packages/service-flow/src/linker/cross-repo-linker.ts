@@ -6,10 +6,15 @@ export function linkWorkspace(
   db: Db,
   workspaceId: number,
   vars: Record<string, string> = {},
-): { edgeCount: number; unresolvedCount: number } {
+): { edgeCount: number; unresolvedCount: number; resolvedCount: number; ambiguousCount: number; dynamicCount: number; terminalCount: number } {
+  return db.transaction(() => {
   db.prepare('DELETE FROM graph_edges WHERE workspace_id=?').run(workspaceId);
   let edges = linkHelperPackages(db, workspaceId);
   let unresolved = 0;
+  let resolvedCount = 0;
+  let ambiguousCount = 0;
+  let dynamicCount = 0;
+  let terminalCount = 0;
   const calls = db
     .prepare(
       `SELECT c.*,r.name repoName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,b.helper_chain_json helperChainJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`,
@@ -33,8 +38,8 @@ export function linkWorkspace(
           {
             servicePath,
             operationPath: op,
-            alias: call.alias as string | undefined,
-            destination,
+            alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars),
+            destination: applyVariables(destination, vars),
             isDynamic,
             hasExplicitOverride: Object.keys(vars).length > 0,
           },
@@ -50,7 +55,7 @@ export function linkWorkspace(
       repo: call.repoName,
       serviceAlias: call.alias,
       serviceAliasExpr: call.aliasExpr,
-      destination,
+      destination: applyVariables(destination, vars),
       servicePath,
       operationPath: op,
       targetRepo: target?.repoName,
@@ -65,10 +70,11 @@ export function linkWorkspace(
     };
     if (target) {
       db.prepare(
-        'INSERT INTO graph_edges(workspace_id,edge_type,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic) VALUES(?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic) VALUES(?,?,?,?,?,?,?,?,?,?)',
       ).run(
         workspaceId,
         'REMOTE_CALL_RESOLVES_TO_OPERATION',
+        'resolved',
         'call',
         String(call.id),
         'operation',
@@ -78,6 +84,7 @@ export function linkWorkspace(
         isDynamic ? 1 : 0,
       );
       edges += 1;
+      resolvedCount += 1;
     } else {
       const edgeType =
         callType === 'local_db_query'
@@ -91,11 +98,21 @@ export function linkWorkspace(
                 : resolution.status === 'dynamic'
                   ? 'DYNAMIC_EDGE_CANDIDATE'
                   : 'UNRESOLVED_EDGE';
+      const status = edgeType === 'DYNAMIC_EDGE_CANDIDATE' ? 'dynamic' : resolution.status === 'ambiguous' ? 'ambiguous' : edgeType === 'UNRESOLVED_EDGE' ? 'unresolved' : 'terminal';
+      const unresolvedReason = status === 'terminal' ? null : String(
+          call.unresolved_reason ??
+            (resolution.status === 'ambiguous'
+              ? 'Ambiguous operation candidates require a strong service signal'
+              : resolution.status === 'dynamic'
+                ? `Dynamic target requires runtime variable overrides: ${(resolution.reasons.length ? resolution.reasons : ['missing runtime variables']).join(', ')}`
+                : 'No indexed target operation matched'),
+        );
       db.prepare(
-        'INSERT INTO graph_edges(workspace_id,edge_type,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
       ).run(
         workspaceId,
         edgeType,
+        status,
         'call',
         String(call.id),
         callType.startsWith('async_') ? 'event' : 'external',
@@ -103,18 +120,15 @@ export function linkWorkspace(
         Number(call.confidence ?? 0.2),
         JSON.stringify(evidence),
         isDynamic || resolution.status === 'dynamic' ? 1 : 0,
-        String(
-          call.unresolved_reason ??
-            (resolution.status === 'ambiguous'
-              ? 'Ambiguous operation candidates require a strong service signal'
-              : resolution.status === 'dynamic'
-                ? 'Dynamic target requires runtime variable overrides'
-                : 'No indexed target operation matched'),
-        ),
+        unresolvedReason,
       );
       edges += 1;
-      unresolved += edgeType === 'UNRESOLVED_EDGE' ? 1 : 0;
+      unresolved += status === 'unresolved' ? 1 : 0;
+      ambiguousCount += status === 'ambiguous' ? 1 : 0;
+      dynamicCount += status === 'dynamic' ? 1 : 0;
+      terminalCount += status === 'terminal' ? 1 : 0;
     }
   }
-  return { edgeCount: edges, unresolvedCount: unresolved };
+  return { edgeCount: edges, unresolvedCount: unresolved, resolvedCount, ambiguousCount, dynamicCount, terminalCount };
+  });
 }

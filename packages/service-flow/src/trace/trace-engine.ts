@@ -1,5 +1,6 @@
 import type { Db } from '../db/connection.js';
 import { applyVariables } from '../linker/dynamic-edge-resolver.js';
+import { resolveOperation, type OperationTarget } from '../linker/service-resolver.js';
 import type { TraceEdge, TraceResult, TraceStart } from '../types.js';
 
 interface RepoRef {
@@ -29,6 +30,7 @@ interface GraphRow extends Record<string, unknown> {
   confidence: number;
   evidence_json: string;
   unresolved_reason?: string;
+  status?: string;
 }
 interface Candidate {
   servicePath?: string;
@@ -58,7 +60,8 @@ function sourceFilesForStart(
       `SELECT DISTINCT hc.source_file sourceFile
        FROM handler_classes hc LEFT JOIN handler_methods hm ON hm.handler_class_id=hc.id
        WHERE (? IS NULL OR hc.repo_id=?) AND (? IS NULL OR hc.class_name=? OR hm.method_name=?)
-         AND (? IS NULL OR hm.decorator_value=? OR hm.method_name=?)`,
+         AND (? IS NULL OR hm.decorator_value=? OR hm.method_name=?)
+         AND (? IS NULL OR EXISTS (SELECT 1 FROM cds_services s JOIN cds_operations o ON o.service_id=s.id WHERE s.repo_id=hc.repo_id AND s.service_path=? AND (? IS NULL OR o.operation_path=? OR o.operation_name=? OR hm.decorator_value=? OR hm.method_name=?)))`,
     )
     .all(
       repoId,
@@ -69,7 +72,15 @@ function sourceFilesForStart(
       operation,
       operation,
       operation,
+      start.servicePath,
+      start.servicePath,
+      operation,
+      operation,
+      operation,
+      operation,
+      operation,
     ) as Array<{ sourceFile?: string }>;
+  if (start.servicePath && rows.length === 0) return undefined;
   if (rows.length === 0) return undefined;
   return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
 }
@@ -134,7 +145,7 @@ function graphForCalls(db: Db, callIds: number[]): Map<number, GraphRow[]> {
     .prepare(
       `SELECT * FROM graph_edges WHERE from_kind='call' AND from_id IN (${callIds.map(() => '?').join(',')}) ORDER BY id`,
     )
-    .all(...callIds) as GraphRow[];
+    .all(...callIds.map((id) => String(id))) as GraphRow[];
   for (const row of rows) {
     const id = Number(row.from_id);
     map.set(id, [...(map.get(id) ?? []), row]);
@@ -183,6 +194,31 @@ function evidenceWithRuntimeVariables(
         }
       : undefined,
   };
+}
+
+function operationNode(db: Db, operationId: string): Record<string, unknown> | undefined {
+  const row = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_type operationType,o.operation_path operationPath,o.source_file sourceFile,o.source_line sourceLine,s.id serviceId,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,r.id repoId,r.name repoName FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operationId) as Record<string, unknown> | undefined;
+  if (!row) return undefined;
+  return { id: `operation:${operationId}`, kind: 'operation', label: `${String(row.repoName)}:${String(row.servicePath)}${String(row.operationPath)}`, ...row };
+}
+function workspaceIdForCall(db: Db, callId: string): number | undefined {
+  return (db.prepare('SELECT r.workspace_id workspaceId FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE c.id=?').get(callId) as { workspaceId?: number } | undefined)?.workspaceId;
+}
+function runtimeResolution(db: Db, row: GraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): { row: GraphRow; evidence: Record<string, unknown>; target?: OperationTarget; unresolvedReason?: string } {
+  if (!vars || Object.keys(vars).length === 0) return { row, evidence, unresolvedReason: row.unresolved_reason };
+  const nextEvidence = evidenceWithRuntimeVariables(evidence, vars);
+  const servicePath = typeof nextEvidence.servicePath === 'string' ? nextEvidence.servicePath : undefined;
+  const operationPath = typeof nextEvidence.operationPath === 'string' ? nextEvidence.operationPath : undefined;
+  const alias = typeof nextEvidence.serviceAliasExpr === 'string' ? applyVariables(nextEvidence.serviceAliasExpr, vars) : typeof nextEvidence.serviceAlias === 'string' ? applyVariables(nextEvidence.serviceAlias, vars) : undefined;
+  const destination = typeof nextEvidence.destination === 'string' ? applyVariables(nextEvidence.destination, vars) : undefined;
+  const resolution = resolveOperation(db, { servicePath, operationPath, alias, destination, hasExplicitOverride: true, isDynamic: Boolean(row.status === 'dynamic' || nextEvidence.resolutionStatus === 'dynamic') }, workspaceIdForCall(db, row.from_id));
+  nextEvidence.runtimeResolutionStatus = resolution.status;
+  nextEvidence.runtimeResolutionReasons = resolution.reasons;
+  if (resolution.target) {
+    nextEvidence.runtimeResolvedCandidate = resolution.target;
+    return { row: { ...row, to_kind: 'operation', to_id: String(resolution.target.operationId), unresolved_reason: undefined, confidence: resolution.target.score }, evidence: nextEvidence, target: resolution.target };
+  }
+  return { row, evidence: nextEvidence, unresolvedReason: resolution.status === 'dynamic' ? `Dynamic target is missing runtime variables: ${resolution.reasons.join(', ')}` : resolution.status === 'ambiguous' ? 'Ambiguous runtime operation candidates' : 'No runtime operation candidate matched substituted service and operation path' };
 }
 function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
   const runtimeCandidate = evidence.runtimeResolvedCandidate as
@@ -277,35 +313,34 @@ export function trace(
         const rawEvidence = JSON.parse(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
-        const evidence = evidenceWithRuntimeVariables(
-          rawEvidence,
-          options.vars,
-        );
-        const targetNode = `${row.to_kind}:${row.to_id}`;
-        nodes.set(targetNode, {
+        const effective = runtimeResolution(db, row, rawEvidence, options.vars);
+        const evidence = effective.evidence;
+        const effectiveRow = effective.row;
+        const targetNode = `${effectiveRow.to_kind}:${effectiveRow.to_id}`;
+        const opNode = effectiveRow.to_kind === 'operation' ? operationNode(db, effectiveRow.to_id) : undefined;
+        nodes.set(targetNode, opNode ?? {
           id: targetNode,
-          kind: row.to_kind,
-          label: row.to_id,
-          ...evidence,
+          kind: effectiveRow.to_kind,
+          label: effectiveRow.to_id,
         });
-        const to = edgeTarget(row, evidence);
+        const to = edgeTarget(effectiveRow, evidence);
         edges.push({
           step: current.depth,
           type: String(call.call_type),
           from: `${call.repoName}:${call.source_file}`,
           to,
           evidence,
-          confidence: Number(row.confidence ?? call.confidence),
-          unresolvedReason: row.unresolved_reason,
+          confidence: Number(effectiveRow.confidence ?? call.confidence),
+          unresolvedReason: effective.unresolvedReason,
         });
-        if (row.to_kind === 'operation' && current.depth < maxDepth) {
-          const files = handlerFilesForOperation(db, row.to_id);
+        if (effectiveRow.to_kind === 'operation' && current.depth < maxDepth) {
+          const files = handlerFilesForOperation(db, effectiveRow.to_id);
           if (files.size > 0) {
             const targetRepoId = db
               .prepare(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',
               )
-              .get(row.to_id)?.repoId as number | undefined;
+              .get(effectiveRow.to_id)?.repoId as number | undefined;
             const nextKey = `${targetRepoId ?? '*'}:${[...files].sort().join(',')}`;
             if (seenScopes.has(nextKey))
               edges.push({

@@ -20,19 +20,23 @@ import { parsePackageJson } from '../parsers/package-json-parser.js';
 import { parseServiceBindings } from '../parsers/service-binding-parser.js';
 import { recordFile } from './incremental-index.js';
 import { errorMessage } from '../utils/diagnostics.js';
+import { sha256Text } from '../utils/hashing.js';
 export interface IndexRepoResult {
   fileCount: number;
   diagnosticCount: number;
+  skipped: boolean;
 }
 export async function indexRepository(
   db: Db,
   repo: RepoRow,
   force: boolean
 ): Promise<IndexRepoResult> {
-  void force;
   let diagnostics = 0;
   let files = 0;
+  const sourceFiles = await findSourceFiles(repo.absolute_path);
   const facts = await parsePackageJson(repo.absolute_path);
+  const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, facts.dependencies, Boolean(force));
+  if (!force && repo.fingerprint === fingerprint) return { fileCount: 0, diagnosticCount: 0, skipped: true };
   const kind = await classifyRepository(repo.absolute_path, facts);
   db.prepare(
     'UPDATE repositories SET package_name=?, package_version=?, dependencies_json=?, kind=?, index_status=? WHERE id=?'
@@ -46,7 +50,6 @@ export async function indexRepository(
   );
   clearRepoFacts(db, repo.id);
   insertRequires(db, repo.id, facts.cdsRequires);
-  const sourceFiles = await findSourceFiles(repo.absolute_path);
   for (const file of sourceFiles) {
     try {
       await recordFile(db, repo.id, repo.absolute_path, file);
@@ -81,14 +84,15 @@ export async function indexRepository(
     }
   }
   db.prepare(
-    'UPDATE repositories SET last_indexed_at=?, index_status=?, error_count=? WHERE id=?'
+    'UPDATE repositories SET last_indexed_at=?, index_status=?, error_count=?, fingerprint=? WHERE id=?'
   ).run(
     new Date().toISOString(),
     diagnostics ? 'partial' : 'indexed',
     diagnostics,
+    fingerprint,
     repo.id
   );
-  return { fileCount: files, diagnosticCount: diagnostics };
+  return { fileCount: files, diagnosticCount: diagnostics, skipped: false };
 }
 
 async function findSourceFiles(root: string): Promise<string[]> {
@@ -117,4 +121,14 @@ function isDefaultTestFile(relativeFile: string): boolean {
   if (parts.some((part) => ['test', 'tests', '__tests__'].includes(part)))
     return true;
   return /\.(test|spec)\.[jt]s$/.test(parts.at(-1) ?? '');
+}
+
+async function repositoryFingerprint(root: string, files: string[], dependencies: Record<string, string>, force: boolean): Promise<string> {
+  void force;
+  const entries: string[] = ['schema:2', `deps:${JSON.stringify(Object.entries(dependencies).sort())}`];
+  for (const file of files) {
+    const content = await fs.readFile(path.join(root, file), 'utf8').catch(() => '');
+    entries.push(`${file}:${sha256Text(content)}`);
+  }
+  return sha256Text(entries.join('\n'));
 }

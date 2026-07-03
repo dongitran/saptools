@@ -16,6 +16,7 @@ export interface RepoRow {
   package_version: string | null;
   dependencies_json: string;
   kind: string;
+  fingerprint?: string | null;
 }
 export interface WorkspaceRow {
   id: number;

@@ -5,7 +5,7 @@ export async function indexWorkspace(
   db: Db,
   workspaceId: number,
   options: { repo?: string; force: boolean }
-): Promise<{ repoCount: number; fileCount: number; diagnosticCount: number }> {
+): Promise<{ repoCount: number; indexedCount: number; skippedCount: number; fileCount: number; diagnosticCount: number }> {
   const started = new Date().toISOString();
   const repos = options.repo
     ? [repoByName(db, options.repo)].filter((r) => r !== undefined)
@@ -19,10 +19,12 @@ export async function indexWorkspace(
   );
   let fileCount = 0;
   let diagnosticCount = 0;
+  let skippedCount = 0;
   for (const repo of repos) {
     const result = await indexRepository(db, repo, options.force);
     fileCount += result.fileCount;
     diagnosticCount += result.diagnosticCount;
+    skippedCount += result.skipped ? 1 : 0;
   }
   db.prepare(
     'UPDATE index_runs SET finished_at=?, status=?, file_count=?, diagnostic_count=? WHERE id=?'
@@ -33,5 +35,5 @@ export async function indexWorkspace(
     diagnosticCount,
     runId
   );
-  return { repoCount: repos.length, fileCount, diagnosticCount };
+  return { repoCount: repos.length, indexedCount: repos.length - skippedCount, skippedCount, fileCount, diagnosticCount };
 }
