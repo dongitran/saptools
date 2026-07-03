@@ -61,6 +61,28 @@ export interface JiraIssueKeyRequestOptions extends JiraRequestOptions {
   readonly issueKey: string;
 }
 
+export interface JiraAssignableUser {
+  readonly accountId: string;
+  readonly active: boolean;
+  readonly displayName: string;
+}
+
+export type JiraAssigneeResolutionSource = "me" | "exact" | "single-fuzzy" | "account-id";
+
+export interface JiraAssigneeResolution {
+  readonly assignee: JiraAssignableUser;
+  readonly source: JiraAssigneeResolutionSource;
+}
+
+export interface SearchJiraAssignableUsersOptions extends JiraIssueKeyRequestOptions {
+  readonly accountId?: string;
+  readonly query?: string;
+}
+
+export interface AssignJiraIssueOptions extends JiraIssueKeyRequestOptions {
+  readonly accountId: string;
+}
+
 export interface FetchJiraIssueDetailOptions extends JiraIssueKeyRequestOptions {
   readonly downloadImages?: boolean;
   readonly imageOutputDir?: string;

@@ -135,6 +135,26 @@ async function handleFakeJiraRequest(
     url,
   });
 
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/myself") {
+    writeJson(response, { accountId: "account-me", active: true, displayName: "Current User" });
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/user/assignable/search?")) {
+    handleAssignableSearch(url, response);
+    return;
+  }
+
+  if (method === "PUT" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ASSIGN/assignee") {
+    if (body.includes("permission-denied")) {
+      response.writeHead(403, { "content-type": "text/plain" });
+      response.end("forbidden sensitive detail");
+      return;
+    }
+    response.writeHead(204);
+    response.end();
+    return;
+  }
 
   if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/field/search?type=custom&startAt=0&maxResults=50") {
     writeJson(response, {
@@ -270,6 +290,53 @@ async function handleFakeJiraRequest(
 
   response.writeHead(404, { "content-type": "text/plain" });
   response.end("not found");
+}
+
+function handleAssignableSearch(url: string, response: ServerResponse): void {
+  const parsed = new URL(url, "http://127.0.0.1");
+  expect(parsed.searchParams.get("issueKey")).toBe("OPS-ASSIGN");
+  expect(parsed.searchParams.get("maxResults")).toBe("1000");
+  const accountId = parsed.searchParams.get("accountId");
+  if (accountId === "account-me") {
+    writeJson(response, [{ accountId: "account-me", active: true, displayName: "Current User" }]);
+    return;
+  }
+  if (accountId === "account-known") {
+    writeJson(response, [{ accountId: "account-known", active: true, displayName: "Known User" }]);
+    return;
+  }
+  if (accountId === "permission-denied") {
+    writeJson(response, [{ accountId: "permission-denied", active: true, displayName: "Permission Denied" }]);
+    return;
+  }
+  const query = parsed.searchParams.get("query");
+  if (query === "Fuzzy") {
+    writeJson(response, [{ accountId: "account-fuzzy", active: true, displayName: "Fuzzy Match" }]);
+    return;
+  }
+  if (query === "Example Tran") {
+    writeJson(response, [
+      { accountId: "account-exact", active: true, displayName: "Example Tran" },
+      { accountId: "account-another", active: true, displayName: "Another Tran" },
+      { accountId: "account-third", active: true, displayName: "Third Tran" },
+    ]);
+    return;
+  }
+  if (query === "Exam Tran") {
+    writeJson(response, [
+      { accountId: "account-example", active: true, displayName: "Example Tran" },
+      { accountId: "account-another", active: true, displayName: "Another Tran" },
+    ]);
+    return;
+  }
+  if (query === "Duplicate Name") {
+    writeJson(response, [
+      { accountId: "account-dup-1", active: true, displayName: "Duplicate Name" },
+      { accountId: "account-dup-2", active: true, displayName: "Duplicate Name" },
+    ]);
+    return;
+  }
+  writeJson(response, []);
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
@@ -462,6 +529,103 @@ test.describe("Jira CLI", () => {
       expect(JSON.parse(issueSummary.stdout)).toMatchObject({ minutes: 30 });
       const humanSummary = await ctx.run(["worklogs", "--month", "202605", "--group-by", "issue"]);
       expect(humanSummary.stdout).toContain("OPS-123\t30 minutes\t0.50 hours");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can safely assign issues through deterministic selectors", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const me = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "assign", "OPS-ASSIGN", "--me", "--json"]);
+      expect(JSON.parse(me.stdout)).toMatchObject({ assignee: { accountId: "account-me" }, resolution: "me" });
+
+      const fuzzy = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "assign", "OPS-ASSIGN", "--to", "Fuzzy", "--json"]);
+      expect(JSON.parse(fuzzy.stdout)).toMatchObject({ assignee: { accountId: "account-fuzzy" }, resolution: "single-fuzzy" });
+
+      const exact = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "assign", "OPS-ASSIGN", "--to", "Example Tran"]);
+      expect(exact.stdout).toContain("Assigned OPS-ASSIGN to Example Tran.");
+
+      const known = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "assign", "OPS-ASSIGN", "--account-id", "account-known", "--json"]);
+      expect(JSON.parse(known.stdout)).toMatchObject({ assignee: { accountId: "account-known" }, resolution: "account-id" });
+
+      const puts = ctx.fakeJira.requests().filter((entry) => entry.method === "PUT" && entry.url.endsWith("/assignee"));
+      expect(puts.map((entry) => JSON.parse(entry.body) as Record<string, string>)).toEqual([
+        { accountId: "account-me" },
+        { accountId: "account-fuzzy" },
+        { accountId: "account-exact" },
+        { accountId: "account-known" },
+      ]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Assignment selector validation fails before Jira requests", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const invalidSelectors: readonly (readonly string[])[] = [
+        ["assign", "OPS-ASSIGN"],
+        ["assign", "OPS-ASSIGN", "--me", "--to", "Example"],
+        ["assign", "OPS-ASSIGN", "--me", "--account-id", "account-known"],
+        ["assign", "OPS-ASSIGN", "--to", "Example", "--account-id", "account-known"],
+        ["assign", "OPS-ASSIGN", "--to", "   "],
+        ["assign", "OPS-ASSIGN", "--account-id", "   "],
+      ];
+      for (const args of invalidSelectors) {
+        await expect(ctx.run(["--api-root", ctx.fakeJira.apiRoot, ...args])).rejects.toMatchObject({
+          stderr: expect.stringContaining("Error:"),
+        });
+      }
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Ambiguous assignment candidates are returned without a write", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "assign",
+        "OPS-ASSIGN",
+        "--to",
+        "Exam Tran",
+        "--json",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("\"error\": \"ambiguous_assignee\""),
+      });
+      expect(ctx.fakeJira.requests().some((entry) => entry.method === "PUT")).toBe(false);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Duplicate exact assignment names and permission failures do not retry writes", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "assign",
+        "OPS-ASSIGN",
+        "--to",
+        "Duplicate Name",
+      ])).rejects.toMatchObject({ stderr: expect.stringContaining("no assignment was changed") });
+      expect(ctx.fakeJira.requests().some((entry) => entry.method === "PUT")).toBe(false);
+
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "assign",
+        "OPS-ASSIGN",
+        "--account-id",
+        "permission-denied",
+      ])).rejects.toMatchObject({ stderr: expect.stringContaining("Jira issue assignee could not be updated") });
+      const puts = ctx.fakeJira.requests().filter((entry) => entry.method === "PUT");
+      expect(puts).toHaveLength(1);
     } finally {
       await ctx.cleanup();
     }
