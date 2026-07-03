@@ -8,7 +8,7 @@ import {
   loadWorkspaceConfig,
   saveWorkspaceConfig,
 } from './config/workspace-config.js';
-import { openDatabase } from './db/connection.js';
+import { openDatabase, openReadOnlyDatabase } from './db/connection.js';
 import {
   getWorkspace,
   listRepositories,
@@ -74,6 +74,20 @@ async function withWorkspace<T>(
     db.close();
   }
 }
+async function withReadOnlyWorkspace<T>(
+  workspace: string | undefined,
+  fn: (db: ReturnType<typeof openDatabase>, workspaceId: number, rootPath: string) => Promise<T> | T,
+): Promise<T> {
+  const config = await loadWorkspaceConfig(workspace);
+  const db = openReadOnlyDatabase(config.dbPath);
+  try {
+    const row = getWorkspace(db, config.rootPath);
+    if (!row) throw new Error(`Workspace is not initialized in ${config.dbPath}`);
+    return await fn(db, row.id, config.rootPath);
+  } finally {
+    db.close();
+  }
+}
 export function createProgram(): Command {
   const program = new Command();
   program
@@ -81,7 +95,7 @@ export function createProgram(): Command {
     .description(
       'Trace SAP CAP service-to-service flows across multi-repository workspaces',
     )
-    .version('0.1.3');
+    .version('0.1.5');
   program
     .command('init')
     .argument('<workspace>')
@@ -104,7 +118,7 @@ export function createProgram(): Command {
             force: Boolean(opts.force),
           });
           process.stdout.write(
-            `Indexed ${r.repoCount} repositories, ${r.fileCount} files, ${r.diagnosticCount} diagnostics\n`,
+            `Indexed ${r.indexedCount} repositories, skipped ${r.skippedCount}, ${r.fileCount} files, ${r.diagnosticCount} diagnostics\n`,
           );
         }).catch(fail),
     );
@@ -117,7 +131,7 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
           process.stdout.write(
-            `Linked ${r.edgeCount} edges, ${r.unresolvedCount} unresolved\n`,
+            `Linked ${r.edgeCount} edges: ${r.resolvedCount} remote resolved, ${r.unresolvedCount} remote unresolved, ${r.ambiguousCount} ambiguous, ${r.dynamicCount} dynamic, ${r.terminalCount} terminal\n`,
           );
         }).catch(fail),
     );
@@ -150,7 +164,7 @@ export function createProgram(): Command {
         includeAsync?: boolean;
         var: string[];
       }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const result = trace(
             db,
             {
@@ -183,7 +197,7 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (opts: { workspace?: string }) =>
-        void withWorkspace(opts.workspace, (db) =>
+        void withReadOnlyWorkspace(opts.workspace, (db) =>
           process.stdout.write(
             renderJson(
               listRepositories(db).map((r) => ({
@@ -201,7 +215,7 @@ export function createProgram(): Command {
     .option('--repo <name>')
     .action(
       (opts: { workspace?: string; repo?: string }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
@@ -218,7 +232,7 @@ export function createProgram(): Command {
     .option('--service <path>')
     .action(
       (opts: { workspace?: string; repo?: string; service?: string }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
@@ -235,7 +249,7 @@ export function createProgram(): Command {
     .option('--operation <name>')
     .action(
       (opts: { workspace?: string; repo?: string; operation?: string }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
           const rows = db
             .prepare(
@@ -260,6 +274,7 @@ export function createProgram(): Command {
     .option('--service <path>')
     .option('--path <operationPath>')
     .option('--format <format>', 'mermaid|json', 'mermaid')
+    .option('--var <key=value>', 'dynamic variable', collect, [])
     .action(
       (opts: {
         workspace?: string;
@@ -268,8 +283,9 @@ export function createProgram(): Command {
         service?: string;
         path?: string;
         format: string;
+        var: string[];
       }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const result = trace(
             db,
             {
@@ -283,6 +299,7 @@ export function createProgram(): Command {
               includeAsync: true,
               includeDb: true,
               includeExternal: true,
+              vars: parseVars(opts.var),
             },
           );
           process.stdout.write(
@@ -299,7 +316,7 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (name: string, opts: { workspace?: string }) =>
-        void withWorkspace(opts.workspace, (db) =>
+        void withReadOnlyWorkspace(opts.workspace, (db) =>
           process.stdout.write(
             renderJson(repoByName(db, name) ?? { error: 'repo not found' }),
           ),
@@ -311,7 +328,7 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (selector: string, opts: { workspace?: string }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const rows = db
             .prepare(
               'SELECT * FROM cds_operations WHERE operation_name=? OR operation_path=?',
@@ -326,28 +343,31 @@ export function createProgram(): Command {
     .option('--strict')
     .action(
       (opts: { workspace?: string; strict?: boolean }) =>
-        void withWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db) => {
           const diagnostics = db
             .prepare(
               'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id',
             )
-            .all(Boolean(opts.strict)) as Array<Record<string, unknown>>;
+            .all() as Array<Record<string, unknown>>;
           const health = db
             .prepare(
               `SELECT 'info' severity,'entity_only_service' code,'CDS service has no action/function/event operations; this can be valid for entity-only services' message,s.source_file sourceFile,s.source_line sourceLine
                FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL AND ?
                UNION ALL
                SELECT 'warning','extend_service_unresolved_base','Extend service has no indexed local operations; verify base service resolution',s.source_file,s.source_line
-               FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL AND s.is_extend=1
+               FROM cds_services s LEFT JOIN cds_operations o ON o.service_id=s.id WHERE o.id IS NULL AND s.is_extend=1 AND ?
                UNION ALL
                SELECT 'warning','handler_without_service','Repository has handlers but no CDS services',hc.source_file,hc.source_line
                FROM handler_classes hc JOIN repositories r ON r.id=hc.repo_id
                WHERE r.kind IN ('cap-service','mixed') AND NOT EXISTS (SELECT 1 FROM cds_services s WHERE s.repo_id=hc.repo_id)
                UNION ALL
                SELECT 'warning','search_index_empty','Search index is empty after indexing',NULL,NULL
-               WHERE NOT EXISTS (SELECT 1 FROM search_index)`,
+               WHERE NOT EXISTS (SELECT 1 FROM search_index)
+               UNION ALL
+               SELECT 'error','foreign_key_violation','SQLite foreign_key_check reported integrity failures',NULL,NULL
+               WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)`,
             )
-            .all(Boolean(opts.strict)) as Array<Record<string, unknown>>;
+            .all(Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const allDiagnostics = [...diagnostics, ...health];
           process.stdout.write(
             allDiagnostics.length

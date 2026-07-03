@@ -24,7 +24,7 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 - 🧩 **Static CAP/CDS indexing** — extracts services, actions, functions, events, handler classes, decorator metadata, handler registrations, generated constants, and package-level `cds.requires`
 - 🔗 **Service-to-service linking** — resolves `cds.connect.to(...)`, `remote.send(...)`, `cds.services.*` style calls, helper package imports, dynamic candidates, and unresolved evidence into graph edges
 - 🗄️ **SQLite-backed workspace cache** — stores deterministic facts under `.service-flow/service-flow.db` so large workspaces can be queried repeatedly without reparsing everything
-- 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets traces apply runtime `--var key=value` values
+- 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets trace and graph commands apply runtime `--var key=value` values that can turn dynamic candidates into effective traversable operation edges
 - 📊 **Multiple output modes** — renders human-readable tables, JSON for automation, and Mermaid diagrams for architecture docs
 - 🩺 **Diagnostics-first workflow** — records parse/index issues and exposes them through `service-flow doctor` instead of hiding partial analysis
 - 🧩 **CAP helper-aware binding evidence** — follows imported helpers exported directly or through named export lists and separates alias, destination, and service-path expressions for dynamic `cds.connect.to(alias, options)` calls
@@ -47,7 +47,7 @@ npm install @saptools/service-flow
 ```
 
 > [!NOTE]
-> Requires **Node.js ≥ 20**. The analyzer is static: it reads files and package metadata, but it does not start CAP services, connect to SAP BTP, or execute application code.
+> Requires **Node.js ≥ 20**. Version 0.1.5 uses a persistent SQLite driver (`node:sqlite` in supported Node builds) for bound parameters, transactions, WAL, busy timeouts, and read-only query commands. The analyzer is static: it reads files and package metadata, but it does not start CAP services, connect to SAP BTP, or execute application code.
 
 ---
 
@@ -73,7 +73,7 @@ service-flow graph --workspace /path/to/workspace --service /FacadeService --pat
 service-flow doctor --workspace /path/to/workspace
 ```
 
-After `init`, the workspace configuration and SQLite database live below the selected workspace by default. Run `index` whenever source changes, then run `link` to rebuild the graph edges used by `trace` and `graph`.
+After `init`, the workspace configuration and SQLite database live below the selected workspace by default. Run `index` whenever source changes; unchanged repositories are skipped unless `--force` is supplied. Then run `link` to rebuild the graph edges used by `trace` and `graph`.
 
 ---
 

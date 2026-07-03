@@ -1,7 +1,21 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { migrate } from './migrations.js';
+
+type SqlValue = string | number | bigint | Buffer | null | undefined;
+interface NativeStatement {
+  run: (...params: SqlValue[]) => { changes: number };
+  get: (...params: SqlValue[]) => Record<string, unknown> | undefined;
+  all: (...params: SqlValue[]) => Array<Record<string, unknown>>;
+}
+interface NativeDatabase {
+  exec: (sql: string) => void;
+  prepare: (sql: string) => NativeStatement;
+  close: () => void;
+}
+interface NodeSqliteModule {
+  DatabaseSync: new (location: string, options?: { open?: boolean; readOnly?: boolean }) => NativeDatabase;
+}
 export interface Statement {
   run: (...params: unknown[]) => { changes: number };
   get: (...params: unknown[]) => Record<string, unknown> | undefined;
@@ -9,80 +23,89 @@ export interface Statement {
 }
 export interface Db {
   path: string;
+  readonly: boolean;
   exec: (sql: string) => void;
   prepare: (sql: string) => Statement;
-  pragma: (sql: string) => void;
+  pragma: (sql: string) => Array<Record<string, unknown>>;
+  transaction: <T>(fn: () => T) => T;
   close: () => void;
 }
-function quote(value: unknown): string {
-  if (value === null || value === undefined) return 'NULL';
-  if (typeof value === 'number')
-    return Number.isFinite(value) ? String(value) : 'NULL';
-  if (typeof value === 'boolean') return value ? '1' : '0';
-  return `'${String(value).replaceAll("'", "''")}'`;
+export interface OpenDatabaseOptions {
+  readonly?: boolean;
+  migrate?: boolean;
 }
-function bind(sql: string, params: unknown[]): string {
-  let index = 0;
-  return sql.replaceAll('?', () => quote(params[index++]));
-}
-function isBusy(error: unknown): boolean {
-  return error instanceof Error && /SQLITE_BUSY|database is locked|database is busy/i.test(error.message);
-}
-function sleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-function call(dbPath: string, args: string[], attempt = 0): string {
+function loadSqlite(): NodeSqliteModule {
   try {
-    return execFileSync('sqlite3', [dbPath, ...args], {
-      encoding: 'utf8',
-      maxBuffer: 128 * 1024 * 1024,
-      env: { ...process.env, SQLITE_BUSY_TIMEOUT: '10000' }
-    });
+    return process.getBuiltinModule('node:sqlite') as unknown as NodeSqliteModule;
   } catch (error) {
-    if (isBusy(error) && attempt < 5) {
-      sleep(50 * 2 ** attempt);
-      return call(dbPath, args, attempt + 1);
-    }
-    if (isBusy(error))
-      throw new Error(
-        'SQLite database is busy or locked. Another service-flow writer may be active; retry after it finishes.',
-        { cause: error }
-      );
-    throw error;
+    throw new Error(
+      'service-flow requires a persistent SQLite driver. This build uses node:sqlite; run on Node.js with node:sqlite support or install a package build with its native SQLite dependency.',
+      { cause: error },
+    );
   }
 }
-function jsonRows(dbPath: string, sql: string): Array<Record<string, unknown>> {
-  const out = call(dbPath, ['-json', sql]);
-  if (!out.trim()) return [];
-  return JSON.parse(out) as Array<Record<string, unknown>>;
+function bindParams(params: unknown[]): SqlValue[] {
+  return params.map((param) => {
+    if (param === undefined || param === null) return null;
+    if (typeof param === 'string' || typeof param === 'number' || typeof param === 'bigint' || Buffer.isBuffer(param)) return param;
+    if (typeof param === 'boolean') return param ? 1 : 0;
+    return JSON.stringify(param);
+  });
 }
-export function openDatabase(dbPath: string): Db {
+export function openDatabase(dbPath: string, options: OpenDatabaseOptions = {}): Db {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const sqlite = loadSqlite();
+  const native = new sqlite.DatabaseSync(dbPath, { readOnly: Boolean(options.readonly) });
+  let inTransaction = false;
   const db: Db = {
     path: dbPath,
+    readonly: Boolean(options.readonly),
     exec(sql: string): void {
-      call(dbPath, [sql]);
+      native.exec(sql);
     },
     prepare(sql: string): Statement {
+      const statement = native.prepare(sql);
       return {
-        run: (...params: unknown[]) => {
-          call(dbPath, [bind(sql, params)]);
-          return { changes: 0 };
-        },
-        get: (...params: unknown[]) => jsonRows(dbPath, bind(sql, params))[0],
-        all: (...params: unknown[]) => jsonRows(dbPath, bind(sql, params))
+        run: (...params: unknown[]) => statement.run(...bindParams(params)),
+        get: (...params: unknown[]) => statement.get(...bindParams(params)),
+        all: (...params: unknown[]) => statement.all(...bindParams(params)),
       };
     },
-    pragma(sql: string): void {
-      call(dbPath, [`PRAGMA ${sql}`]);
+    pragma(sql: string): Array<Record<string, unknown>> {
+      const normalized = sql.trim().replace(/;$/, '');
+      if (/=/.test(normalized)) {
+        native.exec(`PRAGMA ${normalized}`);
+        return [];
+      }
+      return native.prepare(`PRAGMA ${normalized}`).all();
+    },
+    transaction<T>(fn: () => T): T {
+      if (inTransaction) return fn();
+      inTransaction = true;
+      native.exec('BEGIN IMMEDIATE');
+      try {
+        const result = fn();
+        native.exec('COMMIT');
+        return result;
+      } catch (error) {
+        native.exec('ROLLBACK');
+        throw error;
+      } finally {
+        inTransaction = false;
+      }
     },
     close(): void {
-      /* sqlite3 CLI opens per statement */
-    }
+      native.close();
+    },
   };
   db.pragma('busy_timeout = 10000');
-  db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
-  migrate(db);
+  if (!options.readonly) {
+    db.pragma('journal_mode = WAL');
+    if (options.migrate !== false) migrate(db);
+  }
   return db;
+}
+export function openReadOnlyDatabase(dbPath: string): Db {
+  return openDatabase(dbPath, { readonly: true, migrate: false });
 }

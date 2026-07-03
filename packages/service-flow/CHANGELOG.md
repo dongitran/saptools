@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5
+
+- Runtime `--var` substitution now re-runs operation resolution in memory for trace and graph output, clears stale unresolved reasons on exact matches, and traverses into the matched downstream handler without mutating the persisted graph.
+- Operation nodes now use target CDS provenance while call-site evidence remains on edges.
+- Graph edges now carry explicit status values for resolved, terminal, dynamic, ambiguous, and unresolved cases; normal DB, external HTTP, and event terminals no longer receive remote-resolution failure text.
+- Replaced per-statement SQLite shelling with a persistent `node:sqlite` connection, bound parameters, transactions, read-only query openings, WAL, busy timeouts, and connection-local foreign-key enforcement.
+- Added schema user-version migration support for edge status and repository fingerprints.
+- Repository indexing now skips unchanged repositories unless `--force` is supplied and reports indexed/skipped counts.
+- `service-flow --version` now matches package metadata for the 0.1.5 release.
+
 ## 0.1.4
 
 - Resolved helper-returned service bindings exported through named export lists, including aliased exports, while preserving helper-chain evidence.
