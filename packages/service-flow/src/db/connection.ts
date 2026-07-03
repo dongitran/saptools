@@ -36,10 +36,16 @@ export interface OpenDatabaseOptions {
 }
 function loadSqlite(): NodeSqliteModule {
   try {
-    return process.getBuiltinModule('node:sqlite') as unknown as NodeSqliteModule;
+    const moduleValue = process.getBuiltinModule('node:sqlite') as unknown;
+    if (!moduleValue || typeof moduleValue !== 'object' || !('DatabaseSync' in moduleValue))
+      throw new Error('node:sqlite DatabaseSync is unavailable');
+    const sqlite = moduleValue as NodeSqliteModule;
+    if (typeof sqlite.DatabaseSync !== 'function')
+      throw new Error('node:sqlite DatabaseSync is not a constructor');
+    return sqlite;
   } catch (error) {
     throw new Error(
-      'service-flow requires a persistent SQLite driver. This build uses node:sqlite; run on Node.js with node:sqlite support or install a package build with its native SQLite dependency.',
+      'service-flow 0.1.6 requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.',
       { cause: error },
     );
   }

@@ -6,7 +6,9 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "strict": true,
     "declaration": true,
     "sourceMap": true,
@@ -15,7 +17,8 @@
     "experimentalDecorators": true,
     "exactOptionalPropertyTypes": false,
     "noPropertyAccessFromIndexSignature": false,
-    "noUncheckedIndexedAccess": false
+    "noUncheckedIndexedAccess": false,
+    "resolveJsonModule": true
   },
   "include": [
     "src/**/*.ts",
@@ -24,5 +27,8 @@
     "*.config.ts",
     "eslint.config.js"
   ],
-  "exclude": ["tests/fixtures/**", "dist/**"]
+  "exclude": [
+    "tests/fixtures/**",
+    "dist/**"
+  ]
 }

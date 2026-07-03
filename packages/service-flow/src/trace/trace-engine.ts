@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { applyVariables } from '../linker/dynamic-edge-resolver.js';
+import { extractPlaceholders, substituteVariables, type RuntimeSubstitution } from '../linker/dynamic-edge-resolver.js';
 import { resolveOperation, type OperationTarget } from '../linker/service-resolver.js';
 import type { TraceEdge, TraceResult, TraceStart } from '../types.js';
 
@@ -152,48 +152,35 @@ function graphForCalls(db: Db, callIds: number[]): Map<number, GraphRow[]> {
   }
   return map;
 }
-function candidatesFromEvidence(
-  evidence: Record<string, unknown>,
-): Candidate[] {
-  return Array.isArray(evidence.candidates)
-    ? evidence.candidates.filter(
-        (candidate): candidate is Candidate =>
-          typeof candidate === 'object' && candidate !== null,
-      )
-    : [];
+function hasRuntimeVariable(value: unknown, vars: Record<string, string>): boolean {
+  return typeof value === 'string' && extractPlaceholders(value).some((key) => Object.hasOwn(vars, key));
 }
+
+function isRemoteRuntimeCandidate(row: GraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): boolean {
+  if (!vars || Object.keys(vars).length === 0) return false;
+  if (!['dynamic', 'ambiguous', 'unresolved'].includes(String(row.status ?? ''))) return false;
+  if (!['DYNAMIC_EDGE_CANDIDATE', 'UNRESOLVED_EDGE', 'REMOTE_CALL_RESOLVES_TO_OPERATION'].includes(row.edge_type)) return false;
+  if (row.status === 'resolved') return false;
+  return ['servicePath', 'operationPath', 'serviceAliasExpr', 'serviceAlias', 'destination'].some((key) => hasRuntimeVariable(evidence[key], vars));
+}
+
 function evidenceWithRuntimeVariables(
   evidence: Record<string, unknown>,
   vars: Record<string, string> | undefined,
 ): Record<string, unknown> {
   if (!vars || Object.keys(vars).length === 0) return evidence;
-  const servicePath =
-    typeof evidence.servicePath === 'string'
-      ? applyVariables(evidence.servicePath, vars)
-      : undefined;
-  const operationPath =
-    typeof evidence.operationPath === 'string'
-      ? applyVariables(evidence.operationPath, vars)
-      : undefined;
-  const candidates = candidatesFromEvidence(evidence);
-  const matched = servicePath
-    ? candidates.find((candidate) => candidate.servicePath === servicePath)
-    : undefined;
-  return {
-    ...evidence,
-    servicePath: servicePath ?? evidence.servicePath,
-    operationPath: operationPath ?? evidence.operationPath,
-    runtimeVariablesApplied: true,
-    runtimeResolvedCandidate: matched
-      ? {
-          repoName: matched.repoName,
-          servicePath: matched.servicePath,
-          operationPath: matched.operationPath,
-          operationName: matched.operationName,
-          score: matched.score,
-        }
-      : undefined,
-  };
+  const substitutions: Record<string, RuntimeSubstitution> = {};
+  for (const key of ['servicePath', 'operationPath', 'serviceAliasExpr', 'serviceAlias', 'destination']) {
+    const substitution = substituteVariables(typeof evidence[key] === 'string' ? String(evidence[key]) : undefined, vars);
+    if (substitution.placeholders.length > 0) substitutions[key] = substitution;
+  }
+  const next: Record<string, unknown> = { ...evidence, runtimeVariablesApplied: true, runtimeSubstitutions: substitutions };
+  for (const [key, value] of Object.entries(substitutions)) {
+    if (value.effective) next[key] = value.effective;
+  }
+  const missing = Object.values(substitutions).flatMap((value) => value.missing);
+  if (missing.length > 0) next.missingRuntimeVariables = [...new Set(missing)];
+  return next;
 }
 
 function operationNode(db: Db, operationId: string): Record<string, unknown> | undefined {
@@ -205,20 +192,22 @@ function workspaceIdForCall(db: Db, callId: string): number | undefined {
   return (db.prepare('SELECT r.workspace_id workspaceId FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE c.id=?').get(callId) as { workspaceId?: number } | undefined)?.workspaceId;
 }
 function runtimeResolution(db: Db, row: GraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): { row: GraphRow; evidence: Record<string, unknown>; target?: OperationTarget; unresolvedReason?: string } {
-  if (!vars || Object.keys(vars).length === 0) return { row, evidence, unresolvedReason: row.unresolved_reason };
+  if (!isRemoteRuntimeCandidate(row, evidence, vars))
+    return { row, evidence, unresolvedReason: row.unresolved_reason };
   const nextEvidence = evidenceWithRuntimeVariables(evidence, vars);
   const servicePath = typeof nextEvidence.servicePath === 'string' ? nextEvidence.servicePath : undefined;
   const operationPath = typeof nextEvidence.operationPath === 'string' ? nextEvidence.operationPath : undefined;
-  const alias = typeof nextEvidence.serviceAliasExpr === 'string' ? applyVariables(nextEvidence.serviceAliasExpr, vars) : typeof nextEvidence.serviceAlias === 'string' ? applyVariables(nextEvidence.serviceAlias, vars) : undefined;
-  const destination = typeof nextEvidence.destination === 'string' ? applyVariables(nextEvidence.destination, vars) : undefined;
-  const resolution = resolveOperation(db, { servicePath, operationPath, alias, destination, hasExplicitOverride: true, isDynamic: Boolean(row.status === 'dynamic' || nextEvidence.resolutionStatus === 'dynamic') }, workspaceIdForCall(db, row.from_id));
+  const alias = typeof nextEvidence.serviceAliasExpr === 'string' ? nextEvidence.serviceAliasExpr : typeof nextEvidence.serviceAlias === 'string' ? nextEvidence.serviceAlias : undefined;
+  const destination = typeof nextEvidence.destination === 'string' ? nextEvidence.destination : undefined;
+  const resolution = resolveOperation(db, { servicePath, operationPath, alias, destination, hasExplicitOverride: true, isDynamic: true }, workspaceIdForCall(db, row.from_id));
   nextEvidence.runtimeResolutionStatus = resolution.status;
   nextEvidence.runtimeResolutionReasons = resolution.reasons;
   if (resolution.target) {
     nextEvidence.runtimeResolvedCandidate = resolution.target;
-    return { row: { ...row, to_kind: 'operation', to_id: String(resolution.target.operationId), unresolved_reason: undefined, confidence: resolution.target.score }, evidence: nextEvidence, target: resolution.target };
+    return { row: { ...row, to_kind: 'operation', to_id: String(resolution.target.operationId), unresolved_reason: undefined, confidence: Math.max(0, Math.min(1, resolution.target.score)) }, evidence: nextEvidence, target: resolution.target };
   }
-  return { row, evidence: nextEvidence, unresolvedReason: resolution.status === 'dynamic' ? `Dynamic target is missing runtime variables: ${resolution.reasons.join(', ')}` : resolution.status === 'ambiguous' ? 'Ambiguous runtime operation candidates' : 'No runtime operation candidate matched substituted service and operation path' };
+  const unresolvedReason = resolution.status === 'dynamic' ? `Dynamic target is missing runtime variables: ${resolution.reasons.join(', ')}` : resolution.status === 'ambiguous' ? 'Ambiguous runtime operation candidates' : 'No runtime operation candidate matched substituted service and operation path';
+  return { row, evidence: nextEvidence, unresolvedReason };
 }
 function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
   const runtimeCandidate = evidence.runtimeResolvedCandidate as

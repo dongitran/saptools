@@ -21,6 +21,7 @@ import { parseServiceBindings } from '../parsers/service-binding-parser.js';
 import { recordFile } from './incremental-index.js';
 import { errorMessage } from '../utils/diagnostics.js';
 import { sha256Text } from '../utils/hashing.js';
+import { ANALYZER_VERSION } from '../version.js';
 export interface IndexRepoResult {
   fileCount: number;
   diagnosticCount: number;
@@ -35,7 +36,7 @@ export async function indexRepository(
   let files = 0;
   const sourceFiles = await findSourceFiles(repo.absolute_path);
   const facts = await parsePackageJson(repo.absolute_path);
-  const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, facts.dependencies, Boolean(force));
+  const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, facts, Boolean(force));
   if (!force && repo.fingerprint === fingerprint) return { fileCount: 0, diagnosticCount: 0, skipped: true };
   const kind = await classifyRepository(repo.absolute_path, facts);
   db.prepare(
@@ -123,9 +124,20 @@ function isDefaultTestFile(relativeFile: string): boolean {
   return /\.(test|spec)\.[jt]s$/.test(parts.at(-1) ?? '');
 }
 
-async function repositoryFingerprint(root: string, files: string[], dependencies: Record<string, string>, force: boolean): Promise<string> {
+async function repositoryFingerprint(root: string, files: string[], facts: Awaited<ReturnType<typeof parsePackageJson>>, force: boolean): Promise<string> {
   void force;
-  const entries: string[] = ['schema:2', `deps:${JSON.stringify(Object.entries(dependencies).sort())}`];
+  const packageJson = await fs.readFile(path.join(root, 'package.json'), 'utf8').catch(() => '');
+  const normalizedFacts = {
+    analyzerVersion: ANALYZER_VERSION,
+    packageName: facts.packageName,
+    packageVersion: facts.packageVersion,
+    dependencies: Object.fromEntries(Object.entries(facts.dependencies).sort()),
+    cdsRequires: [...facts.cdsRequires].sort((a, b) => a.alias.localeCompare(b.alias)),
+    scripts: Object.fromEntries(Object.entries(facts.scripts).sort()),
+    includeTests: false,
+    packageJsonHash: sha256Text(packageJson),
+  };
+  const entries: string[] = [`facts:${JSON.stringify(normalizedFacts)}`];
   for (const file of files) {
     const content = await fs.readFile(path.join(root, file), 'utf8').catch(() => '');
     entries.push(`${file}:${sha256Text(content)}`);
