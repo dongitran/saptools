@@ -38,13 +38,31 @@ function isObjectFunction(node: ts.Node): boolean {
 const commonTerminalMembers = new Set(['push', 'includes', 'find', 'findIndex', 'map', 'filter', 'reduce', 'forEach', 'some', 'every', 'toUpperCase', 'toLowerCase', 'trim', 'split', 'join', 'get', 'set', 'has']);
 const loggerMembers = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'log']);
 const globalObjects = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Math', 'Date', 'Promise', 'Reflect']);
-function callName(expr: ts.Expression): { expression: string; local?: string; member?: string; receiver?: string; importSource?: string } {
+const capDslRoots = new Set(['SELECT', 'INSERT', 'UPSERT', 'UPDATE', 'DELETE']);
+const requestHelpers = new Set(['reject', 'error', 'info', 'warn', 'notify']);
+const transportMembers = new Set(['emit', 'publish', 'send', 'on']);
+function callName(expr: ts.Expression): { expression: string; local?: string; member?: string; receiver?: string } {
   if (ts.isIdentifier(expr)) return { expression: expr.text, local: expr.text };
   if (ts.isPropertyAccessExpression(expr)) {
     const left = expr.expression.getText();
-    return { expression: expr.getText(), local: left === 'this' ? undefined : left, member: expr.name.text, receiver: left };
+    const root = left.split('.')[0];
+    return { expression: expr.getText(), local: left === 'this' ? undefined : root, member: expr.name.text, receiver: left };
   }
   return { expression: expr.getText() };
+}
+function requireSource(expr: ts.Expression): string | undefined {
+  if (!ts.isCallExpression(expr) || !ts.isIdentifier(expr.expression) || expr.expression.text !== 'require') return undefined;
+  const first = expr.arguments[0];
+  return first && ts.isStringLiteral(first) ? first.text : undefined;
+}
+function ignoredFrameworkCall(callee: { expression: string; local?: string; member?: string; receiver?: string }): boolean {
+  if (callee.local && capDslRoots.has(callee.local)) return true;
+  if (callee.expression === 'cds.run' || callee.expression.startsWith('cds.connect.') || callee.expression.startsWith('cds.services.') || callee.expression.startsWith('cds.parse.')) return true;
+  if (callee.local === 'req' && callee.member && requestHelpers.has(callee.member)) return true;
+  if (callee.member && transportMembers.has(callee.member)) return true;
+  if (callee.local && globalObjects.has(callee.local)) return true;
+  if (callee.expression.startsWith('new Date().')) return true;
+  return false;
 }
 function nearest(symbols: ExecutableSymbolFact[], line: number): ExecutableSymbolFact | undefined {
   return symbols.filter((s) => s.startLine <= line && s.endLine >= line).sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0];
@@ -72,6 +90,13 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
       const named = clause?.namedBindings;
       if (named && ts.isNamedImports(named)) for (const el of named.elements) imports.set(el.name.text, sourceText);
       if (named && ts.isNamespaceImport(named)) imports.set(named.name.text, sourceText);
+    }
+    if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        const requiredSource = declaration.initializer ? requireSource(declaration.initializer) : undefined;
+        if (ts.isIdentifier(declaration.name) && requiredSource) imports.set(declaration.name.text, requiredSource);
+        if (ts.isObjectBindingPattern(declaration.name) && requiredSource) for (const element of declaration.name.elements) if (ts.isIdentifier(element.name)) imports.set(element.name.text, requiredSource);
+      }
     }
     ts.forEachChild(node, visitImports);
   };
@@ -121,11 +146,12 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
         const terminalMember = callee.member ? commonTerminalMembers.has(callee.member) || loggerMembers.has(callee.member) : false;
         const provenLocal = Boolean(targetName) && localCallables.has(String(targetName));
         const provenThisMethod = Boolean(thisTarget && localCallables.has(thisTarget));
-        const provenRelativeImport = Boolean(isRelativeImport(importSource));
-        const globalLike = callee.local ? globalObjects.has(callee.local) : false;
+        const provenRelativeImport = Boolean(isRelativeImport(importSource) && targetName);
         const importedFromPackage = Boolean(importSource && !isRelativeImport(importSource));
-        const keep = Boolean(targetName) && !loggerLike && !globalLike && !importedFromPackage && (provenLocal || provenThisMethod || provenRelativeImport || (!terminalMember && !callee.expression.startsWith('this.')));
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: provenThisMethod ? thisTarget : targetName, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : provenLocal ? 'indexed_local_symbol' : 'unresolved_actionable_property_call', caller: caller.qualifiedName, targetName: provenThisMethod ? thisTarget : targetName } });
+        const ignored = loggerLike || terminalMember || importedFromPackage || ignoredFrameworkCall(callee);
+        const resolvedTarget = provenThisMethod ? thisTarget : targetName;
+        const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport);
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget } });
       }
     }
     ts.forEachChild(node, visitCalls);

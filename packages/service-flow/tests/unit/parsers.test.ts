@@ -274,9 +274,12 @@ describe('CAP DB query parser and output labels', () => {
             .where({ id })
         );
         await cds.run(SELECT.from(ItemSections).where({ id }));
+        await cds.run(SELECT.one(Books).columns('ID').where({ id }));
         await cds.run(INSERT.into(AuditLogs).entries({ id }));
+        await cds.run(UPSERT.into(AuditEntries).entries({ id }));
         await cds.run(UPDATE(Items).set({ id }));
-        await cds.run(DELETE.from(ItemSections).where({ id }));
+        await cds.run(UPDATE.entity(ItemDetails).set({ id }));
+        await cds.run(DELETE.from(this.model['ItemSections']).where({ id }));
         await cds.run(buildQuery(id));
       }
     `);
@@ -285,12 +288,15 @@ describe('CAP DB query parser and output labels', () => {
       'Items',
       'ItemVersions',
       'ItemSections',
+      'Books',
       'AuditLogs',
+      'AuditEntries',
       'Items',
+      'ItemDetails',
       'ItemSections',
       undefined,
     ]);
-    expect(dbCalls.at(-1)?.unresolvedReason).toContain('Could not resolve CAP query target entity');
+    expect(dbCalls.at(-1)?.unresolvedReason).toBe('dynamic_entity_expression');
   });
 
   it('filters noisy property symbol calls but keeps local helper evidence', async () => {
@@ -301,13 +307,18 @@ describe('CAP DB query parser and output labels', () => {
       class EntryHandler {
         private logger = { error() {} };
         private cache = new Map<string, string>();
-        async run(items: string[]): Promise<void> {
+        async run(items: string[], req: { reject(code: number, message: string): void }): Promise<void> {
           items.push('x');
           items.includes('x');
           items.findIndex((item) => item === 'x');
           'x'.toUpperCase();
           this.logger.error('failed');
           this.cache.get('x');
+          await cds.run(SELECT.from(Books));
+          req.reject(400, 'bad request');
+          JSON.stringify({ ok: true });
+          Date.now();
+          Promise.all([]);
           validatePayload();
           this.loadDetails();
         }
@@ -329,7 +340,7 @@ describe('trace output rendering', () => {
       start: {},
       nodes: [],
       diagnostics: [],
-      edges: [{ step: 1, type: 'local_db_query', from: 'process-helper-a:src/EntryHandler.ts:10', to: '1234', evidence: { sourceFile: 'src/EntryHandler.ts', sourceLine: 10, parserWarning: { code: 'parser_warning', message: 'dynamic query' } }, confidence: 0.55 }],
+      edges: [{ step: 1, type: 'local_db_query', from: 'process-helper-a:src/EntryHandler.ts:10', to: 'Entity: unknown', evidence: { sourceFile: 'src/EntryHandler.ts', sourceLine: 10, parserWarning: { code: 'parser_warning', message: 'dynamic query' } }, confidence: 0.55 }],
     };
     expect(renderTraceTable(result)).toContain('Entity: unknown');
     expect(renderTraceTable(result)).not.toContain(' 1234 ');

@@ -94,13 +94,36 @@ function localServiceDiagnostics(db: ReturnType<typeof openDatabase>, strict: bo
   const implementationContext = rows.filter((row) => row.status === 'resolved' && String(row.evidenceJson ?? '').includes('implementation_context_caller_ownership')).length;
   const withoutOwnership = rows.filter((row) => row.reason === 'local_service_candidate_without_caller_ownership' || String(row.evidenceJson ?? '').includes('local_service_candidate_without_caller_ownership')).length;
   const unresolved = rows.filter((row) => row.status === 'unresolved').length;
-  const outsideScope = rows.filter((row) => row.status === 'unresolved' && String(row.evidenceJson ?? '').includes('candidateCount')).length;
+  const outsideScope = rows.filter((row) => {
+    if (row.status !== 'unresolved') return false;
+    try {
+      const evidence = JSON.parse(String(row.evidenceJson ?? '{}')) as { candidateCount?: unknown };
+      return Number(evidence.candidateCount ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }).length;
   const out: Array<Record<string, unknown>> = [];
   if (withoutOwnership > 0) out.push({ severity: 'warning', code: 'local_service_candidate_without_caller_ownership', message: `Local service calls have operation candidates but no caller ownership evidence: ${withoutOwnership}` });
   if (outsideScope > 0) out.push({ severity: 'warning', code: 'local_service_candidates_outside_local_scope', message: `Local service calls found candidates outside same-repository scope: ${outsideScope}` });
   if (strict && unresolved > 0) out.push({ severity: 'warning', code: 'local_service_calls_unresolved', message: `Unresolved local service calls: ${unresolved}` });
   if (strict && implementationContext > 0) out.push({ severity: 'info', code: 'local_service_calls_resolved_by_implementation_context', message: `Local service calls resolved by implementation-context ownership: ${implementationContext}` });
   return out;
+}
+
+function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
+  if (!strict) return [];
+  const symbol = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) resolved, SUM(CASE WHEN status='unresolved' THEN 1 ELSE 0 END) unresolved FROM symbol_calls").get() as { total?: number; resolved?: number; unresolved?: number };
+  const top = db.prepare("SELECT callee_expression calleeExpression,COUNT(*) count FROM symbol_calls WHERE status='unresolved' GROUP BY callee_expression ORDER BY count DESC,callee_expression LIMIT 5").all() as Array<Record<string, unknown>>;
+  const dbq = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN query_entity IS NOT NULL THEN 1 ELSE 0 END) known, SUM(CASE WHEN query_entity IS NULL THEN 1 ELSE 0 END) unknown FROM outbound_calls WHERE call_type='local_db_query'").get() as { total?: number; known?: number; unknown?: number };
+  const symbolTotal = Number(symbol.total ?? 0);
+  const symbolUnresolved = Number(symbol.unresolved ?? 0);
+  const queryTotal = Number(dbq.total ?? 0);
+  const queryUnknown = Number(dbq.unknown ?? 0);
+  return [
+    { severity: 'info', code: 'strict_symbol_call_quality', message: 'Symbol-call quality aggregate', total: symbolTotal, resolved: Number(symbol.resolved ?? 0), unresolved: symbolUnresolved, unresolvedRatio: symbolTotal === 0 ? 0 : Number((symbolUnresolved / symbolTotal).toFixed(4)), topUnresolvedCallees: top },
+    { severity: 'info', code: 'strict_db_query_quality', message: 'Local DB query quality aggregate', total: queryTotal, known: Number(dbq.known ?? 0), unknown: queryUnknown, unknownRatio: queryTotal === 0 ? 0 : Number((queryUnknown / queryTotal).toFixed(4)) },
+  ];
 }
 
 export function createProgram(): Command {
@@ -429,7 +452,8 @@ export function createProgram(): Command {
             )
             .all(Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const localServiceHealth = localServiceDiagnostics(db, Boolean(opts.strict));
-          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth];
+          const parserQualityHealth = parserQualityDiagnostics(db, Boolean(opts.strict));
+          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth, ...parserQualityHealth];
           process.stdout.write(
             allDiagnostics.length
               ? renderJson(allDiagnostics)

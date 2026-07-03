@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.14
+
+- Made local symbol-call indexing opt-in: CAP DSL, request helpers, package namespace/CommonJS calls, global runtime APIs, and service-client transport helpers are filtered unless indexed local or relative-import evidence makes the edge actionable.
+- Expanded local DB query entity extraction for `SELECT.one(Entity)`, `UPSERT.into(Entity)`, `UPDATE.entity(Entity)`, static element access such as `this.model['Books']`, and clearer dynamic-query warning reasons.
+- Persisted unknown DB query graph targets as semantic `db_entity:unknown` terminal nodes with source `callId` and parser-warning evidence, so fresh relinks no longer store numeric call ids as DB targets.
+- Classified unresolved local service-client `.send`, `.emit`, `.publish`, and `.on` calls as terminal transport/client calls when the model does not declare a matching operation, while preserving real declared operations.
+- Tightened doctor default local-service warnings and added compact `doctor --strict` symbol-call and DB-query quality aggregates with capped top unresolved examples.
+- Added neutral regression fixtures for symbol-call noise, DB query forms, and local service-client methods.
+
 ## 0.1.13
 
 - Added implementation-context fallback for local `cds.services.*` calls so helper packages can resolve model-package operations only when handler/dependency/registration evidence ties the caller repository to the target operation.

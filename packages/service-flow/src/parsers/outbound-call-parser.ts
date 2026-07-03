@@ -38,6 +38,7 @@ function entityFromExpression(expr: ts.Expression | undefined): string | undefin
   if (!expr) return undefined;
   if (ts.isIdentifier(expr) || ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
   if (ts.isPropertyAccessExpression(expr) && expr.expression.kind === ts.SyntaxKind.ThisKeyword) return expr.name.text;
+  if (ts.isElementAccessExpression(expr) && expr.argumentExpression && (ts.isStringLiteral(expr.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(expr.argumentExpression))) return expr.argumentExpression.text;
   return undefined;
 }
 function expressionName(expr: ts.Expression): string {
@@ -45,28 +46,44 @@ function expressionName(expr: ts.Expression): string {
   if (ts.isPropertyAccessExpression(expr)) return `${expressionName(expr.expression)}.${expr.name.text}`;
   return expr.getText();
 }
-function queryEntityFromAst(expr: ts.Expression): string | undefined {
-  if (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) return queryEntityFromAst(expr.expression);
+function variableInitializers(source: ts.SourceFile): Map<string, ts.Expression> {
+  const initializers = new Map<string, ts.Expression>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (node.parent.flags & ts.NodeFlags.Const) !== 0) initializers.set(node.name.text, node.initializer);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return initializers;
+}
+function queryEntityFromAst(expr: ts.Expression, initializers = new Map<string, ts.Expression>()): string | undefined {
+  if (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) return queryEntityFromAst(expr.expression, initializers);
+  if (ts.isIdentifier(expr) && initializers.has(expr.text)) return queryEntityFromAst(initializers.get(expr.text) as ts.Expression, initializers);
   if (ts.isCallExpression(expr)) {
     const name = expressionName(expr.expression);
-    if (name === 'cds.run') return queryEntityFromAst(expr.arguments[0]);
-    if (name === 'SELECT.one.from' || name === 'SELECT.from' || name === 'INSERT.into' || name === 'DELETE.from') return entityFromExpression(expr.arguments[0]);
+    if (name === 'cds.run') return queryEntityFromAst(expr.arguments[0], initializers);
+    if (['SELECT.one.from', 'SELECT.from', 'SELECT.one', 'INSERT.into', 'UPSERT.into', 'DELETE.from', 'UPDATE.entity'].includes(name)) return entityFromExpression(expr.arguments[0]);
     if (name === 'UPDATE') return entityFromExpression(expr.arguments[0]);
     const receiver = ts.isPropertyAccessExpression(expr.expression) ? expr.expression.expression : undefined;
-    if (receiver) return queryEntityFromAst(receiver);
+    if (receiver) return queryEntityFromAst(receiver, initializers);
   }
   return undefined;
 }
 function extractQueryEntity(expr: string): string | undefined {
   const source = ts.createSourceFile('query.ts', `const __query = (${expr});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const initializers = variableInitializers(source);
   let found: string | undefined;
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if (ts.isParenthesizedExpression(node)) found = queryEntityFromAst(node.expression);
+    if (ts.isParenthesizedExpression(node)) found = queryEntityFromAst(node.expression, initializers);
     ts.forEachChild(node, visit);
   };
   visit(source);
   return found;
+}
+function queryWarning(expr: string): string {
+  if (/^\s*[`'"]/.test(expr)) return 'raw_sql_or_cql_expression';
+  if (/^\s*\w+\s*$/.test(expr)) return 'query_variable_without_static_initializer';
+  return 'dynamic_entity_expression';
 }
 export async function parseOutboundCalls(
   repoPath: string,
@@ -104,9 +121,7 @@ export async function parseOutboundCalls(
       sourceFile: normalizePath(filePath),
       sourceLine: lineOf(text, m.index ?? 0),
       confidence: entity ? 0.9 : 0.55,
-      unresolvedReason: entity
-        ? undefined
-        : 'Could not resolve CAP query target entity from nested expression',
+      unresolvedReason: entity ? undefined : queryWarning(expr),
     });
   }
   for (const m of text.matchAll(
@@ -156,6 +171,7 @@ function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFac
         sourceFile: normalizePath(filePath),
         sourceLine: lineOf(text, node.getStart(source)),
         confidence: 0.9,
+        unresolvedReason: ['send', 'emit', 'publish', 'on'].includes(parsed.operation) ? 'transport_client_method' : undefined,
       });
     }
     ts.forEachChild(node, visit);
