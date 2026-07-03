@@ -1,0 +1,70 @@
+{
+  "name": "@saptools/service-flow",
+  "version": "0.1.0",
+  "description": "Trace SAP CAP service-to-service flows across multi-repository workspaces",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "service-flow": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test:unit": "vitest run tests/unit",
+    "test:e2e": "vitest run tests/e2e",
+    "test:e2e:fake": "vitest run tests/e2e"
+  },
+  "keywords": [
+    "sap",
+    "cap",
+    "cds",
+    "btp",
+    "cli",
+    "service-graph",
+    "call-graph",
+    "sqlite",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/service-flow"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/service-flow#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "commander": "13.1.0",
+    "picocolors": "1.1.1",
+    "typescript": "5.9.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "3.2.4",
+    "tsup": "8.5.1",
+    "vitest": "3.2.4"
+  }
+}
