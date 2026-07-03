@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.12
+
+- Resolved same-repository local CAP service calls by qualified CDS name, simple service name, and service path, with explicit local transport and alias-chain evidence.
+- Made implementation matching decorator-aware so generated `Func*`/`Action*` constants outrank method-name fallback and contradictory decorators are rejected without making edges ambiguous.
+- Cleared stale unresolved reasons from resolved symbol calls and suppressed false trace unresolved reasons for symbol edges with concrete callee ids.
+- Made local symbol-call collection conservative, added named export-list support, and indexed one-level object-literal helper methods as executable symbols so traces can reach helper database queries.
+- Added first-class symbol nodes and readable symbol labels/locations to JSON, table, and Mermaid trace output.
+- Deduplicated implementation candidates by method identity while retaining multiple registration rows as nested evidence, and kept default doctor output from failing on explainable source-ownership gaps.
+- Documented the generated-constant decision: this patch uses deterministic decorator normalization for linking while `parseGeneratedConstants` remains a low-level parser export rather than a persisted graph fact.
+
 ## 0.1.11
 
 - Added repository-owned executable symbols, source-symbol ownership for outbound calls, and local symbol-call facts so traces can follow reachable same-file/imported helpers without including unrelated calls from the same file.

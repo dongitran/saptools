@@ -204,3 +204,50 @@ describe('service-flow parsers', () => {
     ).toBe('/ThingProcessService');
   });
 });
+
+describe('executable symbol parser trace-quality cases', () => {
+  it('keeps only conservative local symbol calls and supports export lists/object helpers', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-symbols-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'helper.ts'), `
+      const loadMetadata = async () => {};
+      const cacheHelper = {
+        getConfiguration: async () => {},
+        getRules() {}
+      };
+      export { loadMetadata as publicLoadMetadata, cacheHelper };
+    `);
+    await fs.writeFile(path.join(root, 'src', 'entry.ts'), `
+      import externalLib from 'external-lib';
+      import { publicLoadMetadata, cacheHelper } from './helper';
+      function localHelper(): void {}
+      class FacadeEntryHandler {
+        public async run(): Promise<void> {
+          JSON.parse('{}');
+          Object.keys({});
+          [1].map((x) => x);
+          localHelper();
+          this.otherMethod();
+          externalLib.doThing();
+          await publicLoadMetadata();
+          await cacheHelper.getConfiguration();
+        }
+        otherMethod(): void {}
+      }
+    `);
+    const helper = await import('../../src/parsers/symbol-parser.js');
+    const parsedHelper = await helper.parseExecutableSymbols(root, 'src/helper.ts');
+    expect(parsedHelper.symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ qualifiedName: 'loadMetadata', exported: true, exportedName: 'publicLoadMetadata' }),
+      expect.objectContaining({ qualifiedName: 'cacheHelper.getConfiguration', exported: true, exportedName: 'cacheHelper.getConfiguration' }),
+      expect.objectContaining({ qualifiedName: 'cacheHelper.getRules', exported: true, exportedName: 'cacheHelper.getRules' }),
+    ]));
+    const parsedEntry = await helper.parseExecutableSymbols(root, 'src/entry.ts');
+    expect(parsedEntry.calls.map((call) => call.calleeExpression).sort()).toEqual([
+      'cacheHelper.getConfiguration',
+      'localHelper',
+      'publicLoadMetadata',
+      'this.otherMethod',
+    ]);
+  });
+});

@@ -18,6 +18,23 @@ function isFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
 function exported(node: ts.Node): boolean {
   return Boolean(ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Export);
 }
+function exportDeclarations(source: ts.SourceFile): Map<string, string> {
+  const exports = new Map<string, string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+      for (const el of node.exportClause.elements) exports.set((el.propertyName ?? el.name).text, el.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return exports;
+}
+function isRelativeImport(value: string | undefined): boolean {
+  return Boolean(value?.startsWith('.'));
+}
+function isObjectFunction(node: ts.Node): boolean {
+  return ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node);
+}
 function callName(expr: ts.Expression): { expression: string; local?: string; member?: string; importSource?: string } {
   if (ts.isIdentifier(expr)) return { expression: expr.text, local: expr.text };
   if (ts.isPropertyAccessExpression(expr)) {
@@ -36,8 +53,13 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   const symbols: ExecutableSymbolFact[] = [];
   const calls: SymbolCallFact[] = [];
   const imports = new Map<string, string>();
+  const exportNames = exportDeclarations(source);
+  const objectExports = new Set<string>();
   const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string): void => {
-    symbols.push({ kind, localName, exportedName, qualifiedName: parentName ? `${parentName}.${localName}` : localName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(exportedName), importExportEvidence: exportedName ? { exportedName } : undefined });
+    const declaredExportName = exportedName ?? exportNames.get(parentName ? parentName.split('.')[0] ?? localName : localName);
+    const qualifiedName = parentName ? `${parentName}.${localName}` : localName;
+    const objectExported = parentName ? objectExports.has(parentName.split('.')[0] ?? '') : false;
+    symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: objectExported ? qualifiedName : declaredExportName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(declaredExportName) || objectExported, importExportEvidence: declaredExportName ? { exportedName: declaredExportName, source: 'export_declaration' } : objectExported ? { exportedName: qualifiedName, source: 'exported_object_literal' } : undefined });
   };
   const visitImports = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -61,20 +83,37 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
       if (localName) addSymbol('method', localName, node, parentClass);
     } else if (ts.isFunctionDeclaration(node) && node.name) addSymbol('function', node.name.text, node, undefined, exported(node) ? node.name.text : undefined);
     else if (ts.isVariableStatement(node)) {
-      for (const d of node.declarationList.declarations) if (d.initializer && isFunctionLike(d.initializer)) {
+      for (const d of node.declarationList.declarations) {
         const localName = nameOf(d.name);
-        if (localName) addSymbol('function', localName, d.initializer, undefined, exported(node) ? localName : undefined);
+        if (!localName || !d.initializer) continue;
+        if (isFunctionLike(d.initializer)) addSymbol('function', localName, d.initializer, undefined, exported(node) ? localName : exportNames.get(localName));
+        if (ts.isObjectLiteralExpression(d.initializer)) {
+          if (exported(node) || exportNames.has(localName)) objectExports.add(localName);
+          for (const prop of d.initializer.properties) {
+            if (ts.isPropertyAssignment(prop) && isObjectFunction(prop.initializer)) {
+              const propName = nameOf(prop.name);
+              if (propName) addSymbol('object_method', propName, prop.initializer, localName);
+            } else if (ts.isMethodDeclaration(prop)) {
+              const propName = nameOf(prop.name);
+              if (propName) addSymbol('object_method', propName, prop, localName);
+            }
+          }
+        }
       }
     } else ts.forEachChild(node, (child) => visitSymbols(child, parentClass));
   };
   visitSymbols(source);
+  const localCallables = new Set(symbols.flatMap((sym) => [sym.localName, sym.qualifiedName]));
   const visitCalls = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const line = lineOf(source, node.getStart(source));
       const caller = nearest(symbols, line);
       if (caller) {
         const callee = callName(node.expression);
-        calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: callee.member ?? callee.local, receiverLocalName: callee.member ? callee.local : undefined, importSource: (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined), sourceFile, sourceLine: line, evidence: { relation: callee.importSource ? 'imported' : callee.expression.startsWith('this.') ? 'this_method' : 'local' } });
+        const importSource = (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
+        const targetName = callee.expression.startsWith('this.') ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
+        const keep = Boolean(targetName) && (localCallables.has(String(targetName)) || callee.expression.startsWith('this.') || isRelativeImport(importSource));
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: targetName, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: importSource ? 'relative_import' : callee.expression.startsWith('this.') ? 'this_method' : 'local', caller: caller.qualifiedName, targetName } });
       }
     }
     ts.forEachChild(node, visitCalls);
