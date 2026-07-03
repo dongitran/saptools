@@ -1,0 +1,22 @@
+export const schemaSql = `
+CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY, root_path TEXT UNIQUE NOT NULL, db_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repositories (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, name TEXT NOT NULL, absolute_path TEXT NOT NULL, relative_path TEXT NOT NULL, package_name TEXT, package_version TEXT, dependencies_json TEXT DEFAULT '{}', kind TEXT NOT NULL, is_git_repo INTEGER NOT NULL, last_indexed_at TEXT, index_status TEXT DEFAULT 'pending', error_count INTEGER DEFAULT 0, UNIQUE(workspace_id, absolute_path));
+CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, relative_path TEXT NOT NULL, extension TEXT NOT NULL, sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL, last_indexed_at TEXT NOT NULL, UNIQUE(repo_id, relative_path));
+CREATE TABLE IF NOT EXISTS cds_requires (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, alias TEXT NOT NULL, kind TEXT, model TEXT, destination TEXT, service_path TEXT, request_timeout INTEGER, raw_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS cds_services (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, namespace TEXT, service_name TEXT NOT NULL, qualified_name TEXT NOT NULL, service_path TEXT NOT NULL, is_extend INTEGER NOT NULL, source_file TEXT NOT NULL, source_line INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS cds_operations (id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, operation_type TEXT NOT NULL, operation_name TEXT NOT NULL, operation_path TEXT NOT NULL, params_json TEXT NOT NULL, return_type TEXT, source_file TEXT NOT NULL, source_line INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, file_id INTEGER, kind TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL, exported INTEGER NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS handler_classes (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, symbol_id INTEGER, class_name TEXT NOT NULL, source_file TEXT NOT NULL, source_line INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS handler_methods (id INTEGER PRIMARY KEY, handler_class_id INTEGER NOT NULL, method_name TEXT NOT NULL, decorator_kind TEXT NOT NULL, decorator_value TEXT, decorator_raw_expression TEXT NOT NULL, source_file TEXT NOT NULL, source_line INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS handler_registrations (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, handler_class_id INTEGER, registration_file TEXT NOT NULL, registration_line INTEGER NOT NULL, registration_kind TEXT NOT NULL, confidence REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS service_bindings (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, symbol_id INTEGER, variable_name TEXT NOT NULL, alias TEXT, destination_expr TEXT, service_path_expr TEXT, is_dynamic INTEGER NOT NULL, placeholders_json TEXT NOT NULL, source_file TEXT NOT NULL, source_line INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS outbound_calls (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, source_symbol_id INTEGER, call_type TEXT NOT NULL, service_binding_id INTEGER, method TEXT, operation_path_expr TEXT, query_entity TEXT, event_name_expr TEXT, payload_summary TEXT, source_file TEXT NOT NULL, source_line INTEGER NOT NULL, confidence REAL NOT NULL, unresolved_reason TEXT);
+CREATE TABLE IF NOT EXISTS graph_edges (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, edge_type TEXT NOT NULL, from_kind TEXT NOT NULL, from_id TEXT NOT NULL, to_kind TEXT NOT NULL, to_id TEXT NOT NULL, confidence REAL NOT NULL, evidence_json TEXT NOT NULL, is_dynamic INTEGER NOT NULL, unresolved_reason TEXT);
+CREATE TABLE IF NOT EXISTS index_runs (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, repo_count INTEGER NOT NULL, file_count INTEGER NOT NULL, diagnostic_count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS diagnostics (id INTEGER PRIMARY KEY, repo_id INTEGER, file_id INTEGER, severity TEXT NOT NULL, code TEXT NOT NULL, message TEXT NOT NULL, source_file TEXT, source_line INTEGER);
+CREATE INDEX IF NOT EXISTS idx_repo_name ON repositories(name);
+CREATE INDEX IF NOT EXISTS idx_service_path ON cds_services(service_path);
+CREATE INDEX IF NOT EXISTS idx_operation_name ON cds_operations(operation_name, operation_path);
+CREATE INDEX IF NOT EXISTS idx_calls_repo ON outbound_calls(repo_id, call_type);
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(kind, name, path, repo);
+`;

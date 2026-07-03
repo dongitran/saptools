@@ -1,0 +1,117 @@
+name: service-flow
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish @saptools/service-flow to npm
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/service-flow.yml"
+      - "packages/service-flow/package.json"
+      - "packages/service-flow/README.md"
+      - "packages/service-flow/CHANGELOG.md"
+      - "packages/service-flow/src/**"
+      - "packages/service-flow/tests/**"
+      - "packages/service-flow/tsconfig.json"
+      - "packages/service-flow/tsup.config.ts"
+      - "packages/service-flow/vitest.config.ts"
+      - "packages/service-flow/eslint.config.js"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/service-flow.yml"
+      - "packages/service-flow/package.json"
+      - "packages/service-flow/README.md"
+      - "packages/service-flow/CHANGELOG.md"
+      - "packages/service-flow/src/**"
+      - "packages/service-flow/tests/**"
+      - "packages/service-flow/tsconfig.json"
+      - "packages/service-flow/tsup.config.ts"
+      - "packages/service-flow/vitest.config.ts"
+      - "packages/service-flow/eslint.config.js"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-flow-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build and verify service-flow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm --filter @saptools/service-flow lint
+      - name: Typecheck
+        run: pnpm --filter @saptools/service-flow typecheck
+      - name: Build
+        run: pnpm --filter @saptools/service-flow build
+      - name: Run unit tests
+        run: pnpm --filter @saptools/service-flow test:unit
+      - name: Run fake-backed e2e tests
+        run: pnpm --filter @saptools/service-flow test:e2e:fake
+      - name: Verify publish tarball
+        run: npm pack --dry-run
+        working-directory: packages/service-flow
+
+  publish:
+    name: Publish service-flow to npm
+    runs-on: ubuntu-latest
+    needs: ci
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm --filter @saptools/service-flow build
+      - name: Check whether version is already published
+        id: publish_check
+        working-directory: packages/service-flow
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish
+        if: steps.publish_check.outputs.should_publish == 'true'
+        run: npm publish --provenance --access public
+        working-directory: packages/service-flow

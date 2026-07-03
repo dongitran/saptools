@@ -1,0 +1,11 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import ts from 'typescript';
+import type { HandlerClassFact } from '../types.js';
+import { createSourceFile } from './ts-project.js';
+import { normalizePath, stripQuotes } from '../utils/path-utils.js';
+function line(sf: ts.SourceFile, pos: number): number { return sf.getLineAndCharacterOfPosition(pos).line + 1; }
+function decs(node: ts.Node): ts.Decorator[] { return ts.canHaveDecorators(node) ? [...(ts.getDecorators(node) ?? [])] : []; }
+function callName(d: ts.Decorator): string { const e = d.expression; return ts.isCallExpression(e) ? e.expression.getText() : e.getText(); }
+function firstArg(d: ts.Decorator): string { const e = d.expression; return ts.isCallExpression(e) && e.arguments[0] ? e.arguments[0].getText() : ''; }
+export async function parseDecorators(repoPath: string, filePath: string): Promise<HandlerClassFact[]> { const text = await fs.readFile(path.join(repoPath, filePath), 'utf8'); const sf = createSourceFile(filePath, text); const constants = new Map<string, string>(); const handlers: HandlerClassFact[] = []; function visit(node: ts.Node): void { if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isStringLiteralLike(node.initializer)) constants.set(node.name.text, node.initializer.text); if (ts.isClassDeclaration(node)) { const className = node.name?.text ?? 'AnonymousHandler'; const hasHandler = decs(node).some((d) => callName(d) === 'Handler'); const methods = node.members.filter(ts.isMethodDeclaration).flatMap((m) => decs(m).filter((d) => ['Func','Action','On','Event'].includes(callName(d))).map((d) => { const raw = firstArg(d); const value = raw.startsWith('"') || raw.startsWith("'") || raw.startsWith('`') ? stripQuotes(raw) : constants.get(raw) ?? (raw.endsWith('.name') ? raw.split('.').at(-2) : undefined); return { methodName: m.name.getText(), decoratorKind: callName(d), decoratorValue: value, decoratorRawExpression: raw, sourceFile: normalizePath(filePath), sourceLine: line(sf, m.getStart()) }; })); if (hasHandler || methods.length > 0) handlers.push({ className, sourceFile: normalizePath(filePath), sourceLine: line(sf, node.getStart()), methods }); } ts.forEachChild(node, visit); } visit(sf); return handlers; }
