@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+
+- Fixed implementation dependency matching by binding graph repository ids as text when comparing against `graph_edges.from_id` and `graph_edges.to_id`, restoring cross-package application-to-model and application-to-handler evidence under `node:sqlite`.
+- Improved implementation candidate ranking with model/application/handler package ownership, exact local service-path evidence, and cross-package dependency/import signals so duplicate operation names in different services resolve to the correct registered handler without false ambiguity.
+- Expanded `OPERATION_IMPLEMENTED_BY_HANDLER` evidence with candidate ranks, scores, accepted/rejected reasons, package identities, service/operation paths, and dependency/ownership signals for auditability.
+- Added neutral regression coverage for cross-package app/model/handler registration, duplicate same-name service operations, and graph-id string comparison behavior.
+
 ## 0.1.8
 
 - Replaced regex-only handler registration extraction with TypeScript AST evidence for direct handler arrays, identifier arrays, spreads, imported arrays, default exports, aliases, and safe relative re-exports.
