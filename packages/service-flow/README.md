@@ -1,38 +1,250 @@
-# @saptools/service-flow
+<div align="center">
 
-`service-flow` is a standalone npm CLI for SAP CAP/CDS TypeScript workspaces made of many independent Git repositories. It statically indexes repositories, stores CAP facts in SQLite, links service-to-service calls across repository boundaries, and traces one exposed operation through handlers, helper packages, database access, remote OData calls, external HTTP calls, and async channels.
+# 🧭 `@saptools/service-flow`
 
-## Installation
+**Trace SAP CAP service-to-service flows across multi-repository TypeScript workspaces.**
+
+Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cross-repo service calls, and explain one operation end-to-end through handlers, helper packages, local database access, remote OData calls, external HTTP calls, and async channels — without running the applications.
+
+[![npm version](https://img.shields.io/npm/v/@saptools/service-flow.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/service-flow)
+[![license](https://img.shields.io/npm/l/@saptools/service-flow.svg?style=flat&color=blue)](./LICENSE)
+[![node](https://img.shields.io/node/v/@saptools/service-flow.svg?style=flat&color=339933&logo=node.js&logoColor=white)](https://nodejs.org)
+[![install size](https://packagephobia.com/badge?p=@saptools/service-flow)](https://packagephobia.com/result?p=@saptools/service-flow)
+[![types](https://img.shields.io/npm/types/@saptools/service-flow.svg?style=flat&color=3178C6&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+
+[Install](#-install) • [Quick Start](#-quick-start) • [CLI](#-cli) • [FAQ](#-faq)
+
+</div>
+
+---
+
+## ✨ Features
+
+- 🧭 **Cross-repository CAP tracing** — starts from a repo, service, operation path, operation name, or handler and follows the indexed flow across workspace boundaries
+- 🧩 **Static CAP/CDS indexing** — extracts services, actions, functions, events, handler classes, decorator metadata, handler registrations, generated constants, and package-level `cds.requires`
+- 🔗 **Service-to-service linking** — resolves `cds.connect.to(...)`, `remote.send(...)`, `cds.services.*` style calls, helper package imports, dynamic candidates, and unresolved evidence into graph edges
+- 🗄️ **SQLite-backed workspace cache** — stores deterministic facts under `.service-flow/service-flow.db` so large workspaces can be queried repeatedly without reparsing everything
+- 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets traces apply runtime `--var key=value` values
+- 📊 **Multiple output modes** — renders human-readable tables, JSON for automation, and Mermaid diagrams for architecture docs
+- 🩺 **Diagnostics-first workflow** — records parse/index issues and exposes them through `service-flow doctor` instead of hiding partial analysis
+- 🔐 **Secret-aware summaries** — redacts sensitive keys in persisted summaries and CLI output while keeping useful source evidence
+- 📦 **Standalone CLI & typed package** — ships as an npm CLI with TypeScript definitions for integration into other saptools workflows
+
+---
+
+## 📦 Install
 
 ```bash
+# Global CLI
 npm install -g @saptools/service-flow
+
+# Or as a dependency
+npm install @saptools/service-flow
+# pnpm add @saptools/service-flow
+# yarn add @saptools/service-flow
 ```
 
-## Quick start
+> [!NOTE]
+> Requires **Node.js ≥ 20**. The analyzer is static: it reads files and package metadata, but it does not start CAP services, connect to SAP BTP, or execute application code.
+
+---
+
+## 🚀 Quick Start
 
 ```bash
+# 1. Initialize a workspace that contains many CAP/helper Git repositories
 service-flow init /path/to/workspace
+
+# 2. Index source facts from every discovered repository
 service-flow index --workspace /path/to/workspace
+
+# 3. Resolve cross-repository edges after all repos have been indexed
 service-flow link --workspace /path/to/workspace
+
+# 4. Trace one operation as a readable table
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
+
+# 5. Generate a Mermaid diagram for documentation
 service-flow graph --workspace /path/to/workspace --service /FacadeService --path /doWork --format mermaid
+
+# 6. Check parse/index diagnostics
 service-flow doctor --workspace /path/to/workspace
 ```
 
-## Phases
+After `init`, the workspace configuration and SQLite database live below the selected workspace by default. Run `index` whenever source changes, then run `link` to rebuild the graph edges used by `trace` and `graph`.
 
-- **init** discovers nested Git repositories, creates `.service-flow/service-flow.db`, saves workspace configuration, and records repository metadata.
-- **index** parses each repository independently. It extracts `package.json#cds.requires`, CDS services and operations, decorator handlers, handler registrations, service bindings, outbound calls, async topics, external HTTP calls, and local database queries.
-- **link** resolves indexed calls after every repository has been indexed. It creates graph edges for resolved remote operations, helper package imports, dynamic candidates, async topics, local DB calls, external destinations, and unresolved calls.
-- **trace** starts from a repository, service path, operation, operation path, or handler selector and renders table, JSON, or Mermaid output.
+---
 
-## Supported CAP patterns
+## 🧰 CLI
 
-The indexer supports CAP projects with `.cds` models, `@sap/cds` package metadata, `cds-routing-handlers` decorators, `cds.connect.to("alias")`, `remote.send({ method, path })`, `remote.send({ query })`, `cds.run(SELECT...)`, `cds.services.Service.operation()`, Event Mesh-style `emit`, `publish`, and `on`, Cloud SDK-style HTTP calls, generated constants, and thin service wrappers that import helper packages.
+### 🏁 `service-flow init <workspace>`
 
-## Dynamic edges
+Discover nested Git repositories, create workspace state, save configuration, and record repository metadata.
 
-Dynamic destinations and service paths are preserved as parameterized edges:
+```bash
+service-flow init /path/to/workspace
+service-flow init /path/to/workspace --db /custom/path/service-flow.db
+service-flow init /path/to/workspace --ignore node_modules dist coverage .git
+```
+
+| Flag | Description |
+| --- | --- |
+| `--db <path>` | Store the SQLite database at a custom path instead of `<workspace>/.service-flow/service-flow.db` |
+| `--ignore <pattern...>` | Override the default discovery ignore patterns |
+
+### 🔎 `service-flow index`
+
+Parse repository files and persist CAP facts. Use `--repo` for a focused refresh or `--force` when you want to re-index unchanged files.
+
+```bash
+service-flow index --workspace /path/to/workspace
+service-flow index --workspace /path/to/workspace --repo facade-service
+service-flow index --workspace /path/to/workspace --repo identity-service --force
+```
+
+| Flag | Description |
+| --- | --- |
+| `--workspace <path>` | Workspace root or a path that can load the saved workspace configuration |
+| `--repo <name>` | Index only one repository by discovered repository name |
+| `--force` | Re-index even when file hashes indicate nothing changed |
+| `--concurrency <n>` | Reserved for future parallel indexing; currently defaults to `1` |
+
+### 🔗 `service-flow link`
+
+Resolve indexed outbound calls after repositories have been indexed. This rebuilds the `graph_edges` table for the workspace.
+
+```bash
+service-flow link --workspace /path/to/workspace
+service-flow link --workspace /path/to/workspace --force
+```
+
+| Flag | Description |
+| --- | --- |
+| `--workspace <path>` | Workspace to link |
+| `--force` | Accepted for workflow symmetry; linking always rebuilds graph edges |
+
+### 🧵 `service-flow trace`
+
+Trace one starting point and render table, JSON, or Mermaid output.
+
+```bash
+service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
+service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --format json
+service-flow trace --workspace /path/to/workspace --handler EntryHandler --include-db --include-external --include-async
+service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
+```
+
+| Flag | Description |
+| --- | --- |
+| `--workspace <path>` | Workspace to read |
+| `--repo <name>` | Start from a repository |
+| `--operation <name>` | Start from an operation/action/function name |
+| `--service <path>` | Start from a CAP service path such as `/FacadeService` |
+| `--path <operationPath>` | Start from an operation path such as `/doWork` |
+| `--handler <name>` | Start from a handler class or handler-like selector |
+| `--depth <n>` | Maximum traversal depth; defaults to `25` |
+| `--format <format>` | `table`, `json`, or `mermaid`; defaults to `table` |
+| `--include-external` | Include external HTTP/destination edges in traversal output |
+| `--include-db` | Include local DB query edges in traversal output |
+| `--include-async` | Include async publish/subscribe edges in traversal output |
+| `--var <key=value>` | Apply runtime values to dynamic destinations/service paths; repeatable |
+
+### 🗺️ `service-flow graph`
+
+Render a deeper architecture graph from the same selector model used by `trace`. Graph output includes DB, async, and external edges by default and uses depth `100`.
+
+```bash
+service-flow graph --workspace /path/to/workspace --service /FacadeService --path /doWork
+service-flow graph --workspace /path/to/workspace --repo facade-service --operation doWork --format json
+```
+
+| Flag | Description |
+| --- | --- |
+| `--workspace <path>` | Workspace to read |
+| `--repo <name>` | Filter/start by repository |
+| `--operation <name>` | Filter/start by operation name |
+| `--service <path>` | Filter/start by service path |
+| `--path <operationPath>` | Filter/start by operation path |
+| `--format <format>` | `mermaid` or `json`; defaults to `mermaid` |
+
+### 📚 `service-flow list ...`
+
+Inspect indexed facts as JSON.
+
+```bash
+service-flow list repos --workspace /path/to/workspace
+service-flow list services --workspace /path/to/workspace --repo facade-service
+service-flow list operations --workspace /path/to/workspace --repo facade-service --service /FacadeService
+service-flow list calls --workspace /path/to/workspace --repo facade-service
+```
+
+| Command | Description |
+| --- | --- |
+| `list repos` | Print discovered repositories with kind and package name |
+| `list services` | Print indexed CDS services, optionally filtered by repo |
+| `list operations` | Print indexed actions/functions/events, optionally filtered by repo and service |
+| `list calls` | Print indexed outbound calls, optionally filtered by repo |
+
+### 🔬 `service-flow inspect ...`
+
+Inspect raw indexed records for a repository or operation selector.
+
+```bash
+service-flow inspect repo facade-service --workspace /path/to/workspace
+service-flow inspect operation doWork --workspace /path/to/workspace
+service-flow inspect operation /doWork --workspace /path/to/workspace
+```
+
+| Command | Description |
+| --- | --- |
+| `inspect repo <name>` | Print one repository database record or `{ "error": "repo not found" }` |
+| `inspect operation <selector>` | Print operations whose name or path equals the selector |
+
+### 🩺 `service-flow doctor`
+
+Print stored diagnostics. A clean workspace prints `No diagnostics recorded`.
+
+```bash
+service-flow doctor --workspace /path/to/workspace
+```
+
+### 🧹 `service-flow clean`
+
+Remove generated service-flow state.
+
+```bash
+service-flow clean --workspace /path/to/workspace --db-only
+service-flow clean --workspace /path/to/workspace
+```
+
+| Flag | Description |
+| --- | --- |
+| `--db-only` | Remove only the configured SQLite database |
+| *(default)* | Remove the whole `.service-flow` state directory for the workspace |
+
+---
+
+## 🧱 What Gets Indexed
+
+`service-flow` favors explainable static facts with source-file evidence and confidence scores.
+
+| Area | Examples |
+| --- | --- |
+| Repository metadata | nested Git repos, package name/version, dependency graph, repository kind |
+| CAP model facts | `.cds` services, service paths, actions, functions, events, parameters, return types |
+| Handler facts | `cds-routing-handlers` decorators, handler classes/methods, server registrations |
+| Service bindings | `cds.connect.to("alias")`, aliases from `package.json#cds.requires`, destination/service path expressions |
+| Outbound calls | `remote.send({ method, path })`, `remote.send({ query })`, `cds.services.Service.operation()`, service wrapper calls |
+| Local data access | `cds.run(SELECT...)` and local entity query evidence |
+| Async channels | Event Mesh-style `emit`, `publish`, and `on` facts |
+| External calls | Cloud SDK-style HTTP/destination calls and external edge evidence |
+| Generated constants | constants used to resolve service paths, operation paths, and thin helper wrappers |
+
+---
+
+## 🧠 Dynamic Edges
+
+Runtime-dependent destinations and paths are preserved as parameterized evidence instead of being discarded.
 
 ```text
 destination: svc_${objectCode}_process
@@ -43,26 +255,45 @@ operationPath: /getPaths
 Pass runtime values during trace:
 
 ```bash
-service-flow trace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
+service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
 ```
 
-The trace shows both the parameterized evidence and the concrete value used for matching when a target operation exists.
+When a concrete target exists after variable substitution, the trace shows both the parameterized evidence and the resolved match. When it does not, `service-flow` keeps the edge as a dynamic candidate or unresolved edge so the missing link remains visible.
 
-## SQLite database location
+---
+
+## 📁 Workspace State
 
 By default, state is stored below the selected workspace:
 
 ```text
-/path/to/workspace/.service-flow/service-flow.db
+/path/to/workspace/.service-flow/service-flow.db      # SQLite fact and graph database
+/path/to/workspace/.service-flow/config.json          # saved workspace configuration
 ```
 
-Use `service-flow init /path/to/workspace --db /custom/path/service-flow.db` to override it.
+Use a custom database path when the workspace is read-only or when you want to keep generated state elsewhere:
 
-## Security and redaction
+```bash
+service-flow init /path/to/workspace --db /custom/path/service-flow.db
+```
 
-The tool stores static source evidence and expression summaries only. It does not execute applications and does not persist runtime payload bodies. Keys matching `authorization`, `cookie`, `token`, `secret`, `password`, `key`, or `credential` are redacted in persisted summaries and CLI output.
+> [!IMPORTANT]
+> Generated state is derived from source code and may reveal internal repository names, service names, endpoints, entity names, and call paths. Do not commit `.service-flow/` or attach the database to public tickets.
 
-## Output examples
+---
+
+## 🔐 Security & Redaction
+
+- The analyzer reads static source files and package metadata only.
+- It does **not** execute CAP services, load `.env` files, call SAP BTP, or connect to remote systems.
+- Persisted summaries and CLI output redact keys that look like credentials, including `authorization`, `cookie`, `token`, `secret`, `password`, `key`, and `credential`.
+- Payload bodies are summarized for traceability; runtime payload values are not required for indexing.
+
+---
+
+## 📤 Output Examples
+
+### Table
 
 ```text
 Start: facade-service /FacadeService doWork
@@ -71,6 +302,8 @@ Step  Type                 From                                To               
 1     local_db_query       facade-service:srv/functions/Entry  Entity: Template                    srv/functions/EntryHandler.ts:8
 2     remote_action        facade-service:srv/functions/Entry  /IdentityService/resolveAccess      srv/functions/EntryHandler.ts:10
 ```
+
+### JSON
 
 ```json
 {
@@ -85,22 +318,89 @@ Step  Type                 From                                To               
 }
 ```
 
+### Mermaid
+
 ```mermaid
 flowchart TD
   EntryHandler -->|remote_action| IdentityService
 ```
 
-## Limitations
+---
 
-- Static analysis cannot know all runtime branches.
-- Dynamic service names may need `--var` values.
-- Unsupported custom frameworks may appear as unresolved edges.
+## ⚠️ Limitations
+
+- Static analysis cannot know every runtime branch, feature flag, or environment-specific destination.
+- Dynamic service names and paths may need `--var key=value` values to resolve concrete targets.
+- Highly customized frameworks can still appear as unresolved edges until parser support is added.
 - Parse failures are stored as diagnostics and reported by `service-flow doctor`.
-- The analysis favors explainable evidence and confidence scores over speculative resolution.
+- The resolver prefers source evidence and confidence scores over speculative matches.
 
-## Troubleshooting
+---
 
-- Run `service-flow doctor --workspace /path/to/workspace` to inspect parse errors and unresolved diagnostics.
-- Run `service-flow list repos --workspace /path/to/workspace` to confirm repository discovery.
-- Run `service-flow list services --repo facade-service` and `service-flow list calls --repo facade-service` to inspect indexed facts.
-- Use `service-flow clean --workspace /path/to/workspace --db-only` and re-run `init`, `index`, and `link` if the database becomes stale.
+## ❓ FAQ
+
+<details>
+<summary><b>Does service-flow run my CAP application?</b></summary>
+
+No. It is a static analyzer. It reads source files, `.cds` models, `package.json`, and TypeScript AST information, then stores derived facts in SQLite.
+
+</details>
+
+<details>
+<summary><b>When should I run index and link again?</b></summary>
+
+Run `service-flow index` after source, CDS, package metadata, or helper-package code changes. Run `service-flow link` after indexing so cross-repository edges are rebuilt from the latest facts.
+
+</details>
+
+<details>
+<summary><b>Why is an expected call unresolved?</b></summary>
+
+Check `service-flow doctor`, then inspect the facts with `service-flow list services`, `service-flow list operations`, and `service-flow list calls`. Dynamic destinations may need `--var key=value`, and custom wrappers may need new parser support.
+
+</details>
+
+<details>
+<summary><b>Is the SQLite database safe to commit?</b></summary>
+
+No. It should not contain runtime secrets by design, but it can expose internal topology, service names, paths, repository names, and source evidence. Keep `.service-flow/` out of git.
+
+</details>
+
+---
+
+## 🛠️ Development
+
+From the monorepo root:
+
+```bash
+pnpm install
+pnpm --filter @saptools/service-flow build
+pnpm --filter @saptools/service-flow typecheck
+pnpm --filter @saptools/service-flow lint
+pnpm --filter @saptools/service-flow test:unit
+pnpm --filter @saptools/service-flow test:e2e
+```
+
+The e2e tests use fixture CAP workspaces and fake-backed flows. They do not need live SAP BTP credentials.
+
+---
+
+## 🌐 Related
+
+- ☁️ [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync) — map SAP BTP Cloud Foundry topology and app bindings into local JSON snapshots
+- 🗂️ [saptools monorepo](https://github.com/dongitran/saptools) — the full toolbox
+
+---
+
+## 👨‍💻 Author
+
+**dongtran** ✨
+
+## 📄 License
+
+MIT
+
+---
+
+Made with ❤️ to make your work life easier!
