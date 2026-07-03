@@ -1,17 +1,62 @@
+# Dependencies
 node_modules/
+.pnp
+.pnp.*
+
+# Build outputs
 dist/
+build/
+out/
 coverage/
+*.tsbuildinfo
+
+# Monorepo/tool caches
 .turbo/
-.DS_Store
-*.log
-.env
-.env.local
-.env.*.local
-test-regions.json
+.nx/
+.vite/
+.vitest/
+.eslintcache
+
+# Test and browser reports
 playwright-report/
 test-results/
-# Agent implementation plans
-implementation_plan.md
+blob-report/
+coverage-final.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+default-env.json
+hana-credentials.json
+
+# SAP tools local/generated state
+.service-flow/
+.saptools/
+test-regions.json
 .bruno/
 notes/
 privates/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+
+# Agent implementation plans
+implementation_plan.md
