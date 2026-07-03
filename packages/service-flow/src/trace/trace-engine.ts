@@ -95,8 +95,10 @@ function startScope(db: Db, start: TraceStart): StartScope {
   if (start.repo && !repo) return { repo, selectorMatched: false };
   const sourceFiles = sourceFilesForStart(db, repo?.id, start);
   const hasSelector = Boolean(
-    start.handler ?? start.operation ?? start.operationPath,
+    start.handler ?? start.operation ?? start.operationPath ?? start.servicePath,
   );
+  if (start.servicePath && !start.operation && !start.operationPath && !start.handler)
+    return { repo, selectorMatched: false };
   return {
     repo,
     sourceFiles,
@@ -124,6 +126,13 @@ function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
     sourceFile?: string;
   }>;
   return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+}
+
+function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string> } {
+  const edge = db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status='resolved' AND from_kind='operation' AND from_id=? ORDER BY id LIMIT 1").get(operationId) as GraphRow | undefined;
+  if (!edge) return { files: new Set() };
+  const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string } | undefined;
+  return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []) };
 }
 function includeCall(
   type: string,
@@ -250,11 +259,14 @@ export function trace(
       'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics WHERE (? IS NULL OR repo_id=?)',
     )
     .all(scope.repo?.id, scope.repo?.id) as Array<Record<string, unknown>>;
+  const stale = db.prepare('SELECT name,graph_stale_reason reason FROM repositories WHERE graph_stale_reason IS NOT NULL AND (? IS NULL OR id=?)').all(scope.repo?.id, scope.repo?.id) as Array<{ name?: string; reason?: string }>;
+  for (const row of stale)
+    diagnostics.unshift({ severity: 'warning', code: 'graph_stale', message: `Graph is stale for ${row.name ?? 'repository'}: ${row.reason ?? 'facts_changed'}. Run service-flow link.` });
   if (!scope.selectorMatched)
     diagnostics.unshift({
       severity: 'warning',
       code: 'trace_start_not_found',
-      message: 'No handler source matched the requested trace start selector',
+      message: start.servicePath && !start.operation && !start.operationPath && !start.handler ? 'Service-only trace requires --operation or --path and will not broaden to the whole workspace' : 'No handler source matched the requested trace start selector',
     });
   const maxDepth = positiveDepth(options.depth);
   const edges: TraceEdge[] = [];
@@ -323,13 +335,14 @@ export function trace(
           unresolvedReason: effective.unresolvedReason,
         });
         if (effectiveRow.to_kind === 'operation' && current.depth < maxDepth) {
-          const files = handlerFilesForOperation(db, effectiveRow.to_id);
+          const implementation = implementationScope(db, effectiveRow.to_id);
+          const files = implementation.files.size > 0 ? implementation.files : handlerFilesForOperation(db, effectiveRow.to_id);
           if (files.size > 0) {
-            const targetRepoId = db
+            const targetRepoId = implementation.repoId ?? (db
               .prepare(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',
               )
-              .get(effectiveRow.to_id)?.repoId as number | undefined;
+              .get(effectiveRow.to_id)?.repoId as number | undefined);
             const nextKey = `${targetRepoId ?? '*'}:${[...files].sort().join(',')}`;
             if (seenScopes.has(nextKey))
               edges.push({

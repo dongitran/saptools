@@ -87,6 +87,7 @@ export interface HandlerMethodFact {
 }
 export interface HandlerRegistrationFact {
   className?: string;
+  importSource?: string;
   registrationFile: string;
   registrationLine: number;
   registrationKind: string;

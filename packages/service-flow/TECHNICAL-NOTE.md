@@ -1,4 +1,4 @@
-# Service Flow 0.1.6 Resolution Notes
+# Service Flow 0.1.7 Resolution Notes
 
 - Imported helper bindings: TypeScript imports are resolved for relative modules. When a caller assigns `const client = await connectToService()`, the analyzer follows the imported symbol to an exported helper that returns `cds.connect.to(...)` and persists caller-variable evidence plus the helper source/export chain.
 - Candidate ranking: operation-path matches start as weak candidates. A resolved operation edge requires a strong signal such as exact service path, CDS alias/destination context, or explicit dynamic variable overrides. Otherwise candidates are preserved in edge evidence as ambiguous or unresolved.
@@ -21,7 +21,7 @@
 - Repository-level fingerprints include source paths/hashes, package dependencies, and analyzer schema version. Unchanged repositories are skipped unless `--force` is used.
 
 
-## 0.1.6 correctness additions
+## 0.1.7 correctness additions
 
 - Runtime resolution now has an explicit eligibility gate: only remote dynamic/ambiguous/unresolved graph edges with affected placeholders are re-resolved in memory. Terminal and resolved static edges are copied through unchanged, and substitutions keep original expressions, effective values, supplied variables, and missing variables separate.
 - Operation candidate scores are clamped into `[0, 1]` before graph or trace rendering.

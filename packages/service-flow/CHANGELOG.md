@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7
+
+- Added atomic last-good repository publication so failed source reads preserve the previous complete snapshot and fingerprint.
+- Added explicit graph freshness metadata and stale diagnostics after successful fact changes until relink.
+- Persisted handler registration class/import evidence and linked registered cross-package implementation handlers through application dependency evidence.
+- Made service-only trace selectors return a typed narrowing diagnostic instead of workspace-wide traversal.
+- Expanded link summaries with dependency and implementation categories whose totals reconcile with persisted graph edges.
+- Preserved terminal parser warning evidence separately from routing status.
+
+
 ## 0.1.6
 
 - Scoped runtime variable resolution to eligible dynamic, ambiguous, or unresolved remote edges with matching placeholders, preserving terminal and static resolved edge status, target, reason, and confidence.

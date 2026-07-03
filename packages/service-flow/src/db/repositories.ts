@@ -17,6 +17,9 @@ export interface RepoRow {
   dependencies_json: string;
   kind: string;
   fingerprint?: string | null;
+  fact_generation?: number;
+  graph_generation?: number;
+  graph_stale_reason?: string | null;
 }
 export interface WorkspaceRow {
   id: number;
@@ -217,17 +220,27 @@ export function insertRegistrations(
   rows: HandlerRegistrationFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO handler_registrations(repo_id,handler_class_id,registration_file,registration_line,registration_kind,confidence) VALUES(?,?,?,?,?,?)',
+    'INSERT INTO handler_registrations(repo_id,handler_class_id,class_name,import_source,registration_file,registration_line,registration_kind,confidence) VALUES(?,?,?,?,?,?,?,?)',
   );
-  for (const r of rows)
+  for (const r of rows) {
+    const handlerClass = r.className
+      ? (db
+          .prepare(
+            'SELECT id FROM handler_classes WHERE repo_id=? AND class_name=? ORDER BY id',
+          )
+          .all(repoId, r.className) as Array<{ id: number }>)
+      : [];
     stmt.run(
       repoId,
-      null,
+      handlerClass.length === 1 ? handlerClass[0]?.id : null,
+      r.className,
+      r.importSource,
       r.registrationFile,
       r.registrationLine,
       r.registrationKind,
       r.confidence,
     );
+  }
 }
 export function insertBindings(
   db: Db,

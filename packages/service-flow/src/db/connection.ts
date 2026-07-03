@@ -45,7 +45,7 @@ function loadSqlite(): NodeSqliteModule {
     return sqlite;
   } catch (error) {
     throw new Error(
-      'service-flow 0.1.6 requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.',
+      'service-flow 0.1.7 requires Node.js >=24 with node:sqlite DatabaseSync support. Upgrade Node.js or install a service-flow build with a compatible SQLite driver.',
       { cause: error },
     );
   }
