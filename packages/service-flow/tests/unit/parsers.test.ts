@@ -251,3 +251,88 @@ describe('executable symbol parser trace-quality cases', () => {
     ]);
   });
 });
+
+describe('CAP DB query parser and output labels', () => {
+  async function callsFor(source: string): Promise<Awaited<ReturnType<typeof parseOutboundCalls>>> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-db-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'handler.ts'), source);
+    return parseOutboundCalls(root, 'src/handler.ts');
+  }
+
+  it('extracts entities from chained cds.run query forms', async () => {
+    const calls = await callsFor(`
+      export async function run(id: string): Promise<void> {
+        await cds.run(SELECT.one.from(Items).columns((col) => col('*')).where({ id }));
+        await cds.run(
+          SELECT.one
+            .from(ItemVersions)
+            .columns((col) => {
+              col('*');
+              col.children((child) => child('*'));
+            })
+            .where({ id })
+        );
+        await cds.run(SELECT.from(ItemSections).where({ id }));
+        await cds.run(INSERT.into(AuditLogs).entries({ id }));
+        await cds.run(UPDATE(Items).set({ id }));
+        await cds.run(DELETE.from(ItemSections).where({ id }));
+        await cds.run(buildQuery(id));
+      }
+    `);
+    const dbCalls = calls.filter((call) => call.callType === 'local_db_query');
+    expect(dbCalls.map((call) => call.queryEntity)).toEqual([
+      'Items',
+      'ItemVersions',
+      'ItemSections',
+      'AuditLogs',
+      'Items',
+      'ItemSections',
+      undefined,
+    ]);
+    expect(dbCalls.at(-1)?.unresolvedReason).toContain('Could not resolve CAP query target entity');
+  });
+
+  it('filters noisy property symbol calls but keeps local helper evidence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-symbol-filter-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'handler.ts'), `
+      function validatePayload(): void {}
+      class EntryHandler {
+        private logger = { error() {} };
+        private cache = new Map<string, string>();
+        async run(items: string[]): Promise<void> {
+          items.push('x');
+          items.includes('x');
+          items.findIndex((item) => item === 'x');
+          'x'.toUpperCase();
+          this.logger.error('failed');
+          this.cache.get('x');
+          validatePayload();
+          this.loadDetails();
+        }
+        loadDetails(): void {}
+      }
+    `);
+    const { parseExecutableSymbols } = await import('../../src/parsers/symbol-parser.js');
+    const parsed = await parseExecutableSymbols(root, 'src/handler.ts');
+    expect(parsed.calls.map((call) => call.calleeExpression).sort()).toEqual(['this.loadDetails', 'validatePayload']);
+    expect(parsed.calls.find((call) => call.calleeExpression === 'this.loadDetails')?.evidence.relation).toBe('indexed_this_method');
+  });
+});
+
+describe('trace output rendering', () => {
+  it('renders unknown DB parser warnings without numeric entity labels', async () => {
+    const { renderTraceTable } = await import('../../src/output/table-output.js');
+    const { renderMermaid } = await import('../../src/output/mermaid-output.js');
+    const result = {
+      start: {},
+      nodes: [],
+      diagnostics: [],
+      edges: [{ step: 1, type: 'local_db_query', from: 'process-helper-a:src/EntryHandler.ts:10', to: '1234', evidence: { sourceFile: 'src/EntryHandler.ts', sourceLine: 10, parserWarning: { code: 'parser_warning', message: 'dynamic query' } }, confidence: 0.55 }],
+    };
+    expect(renderTraceTable(result)).toContain('Entity: unknown');
+    expect(renderTraceTable(result)).not.toContain(' 1234 ');
+    expect(renderMermaid(result)).toContain('Entity: unknown');
+  });
+});

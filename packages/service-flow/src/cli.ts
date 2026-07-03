@@ -89,6 +89,20 @@ async function withReadOnlyWorkspace<T>(
     db.close();
   }
 }
+function localServiceDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
+  const rows = db.prepare(`SELECT e.status status,e.unresolved_reason reason,e.evidence_json evidenceJson FROM graph_edges e JOIN outbound_calls c ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER) WHERE c.call_type='local_service_call'`).all() as Array<{ status?: string; reason?: string | null; evidenceJson?: string }>;
+  const implementationContext = rows.filter((row) => row.status === 'resolved' && String(row.evidenceJson ?? '').includes('implementation_context_caller_ownership')).length;
+  const withoutOwnership = rows.filter((row) => row.reason === 'local_service_candidate_without_caller_ownership' || String(row.evidenceJson ?? '').includes('local_service_candidate_without_caller_ownership')).length;
+  const unresolved = rows.filter((row) => row.status === 'unresolved').length;
+  const outsideScope = rows.filter((row) => row.status === 'unresolved' && String(row.evidenceJson ?? '').includes('candidateCount')).length;
+  const out: Array<Record<string, unknown>> = [];
+  if (withoutOwnership > 0) out.push({ severity: 'warning', code: 'local_service_candidate_without_caller_ownership', message: `Local service calls have operation candidates but no caller ownership evidence: ${withoutOwnership}` });
+  if (outsideScope > 0) out.push({ severity: 'warning', code: 'local_service_candidates_outside_local_scope', message: `Local service calls found candidates outside same-repository scope: ${outsideScope}` });
+  if (strict && unresolved > 0) out.push({ severity: 'warning', code: 'local_service_calls_unresolved', message: `Unresolved local service calls: ${unresolved}` });
+  if (strict && implementationContext > 0) out.push({ severity: 'info', code: 'local_service_calls_resolved_by_implementation_context', message: `Local service calls resolved by implementation-context ownership: ${implementationContext}` });
+  return out;
+}
+
 export function createProgram(): Command {
   const program = new Command();
   program
@@ -414,7 +428,8 @@ export function createProgram(): Command {
                FROM index_runs WHERE status='running' AND datetime(started_at) < datetime('now','-60 minutes')`,
             )
             .all(Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
-          const allDiagnostics = [...diagnostics, ...health];
+          const localServiceHealth = localServiceDiagnostics(db, Boolean(opts.strict));
+          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth];
           process.stdout.write(
             allDiagnostics.length
               ? renderJson(allDiagnostics)

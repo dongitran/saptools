@@ -35,11 +35,14 @@ function isRelativeImport(value: string | undefined): boolean {
 function isObjectFunction(node: ts.Node): boolean {
   return ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node);
 }
-function callName(expr: ts.Expression): { expression: string; local?: string; member?: string; importSource?: string } {
+const commonTerminalMembers = new Set(['push', 'includes', 'find', 'findIndex', 'map', 'filter', 'reduce', 'forEach', 'some', 'every', 'toUpperCase', 'toLowerCase', 'trim', 'split', 'join', 'get', 'set', 'has']);
+const loggerMembers = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'log']);
+const globalObjects = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Math', 'Date', 'Promise', 'Reflect']);
+function callName(expr: ts.Expression): { expression: string; local?: string; member?: string; receiver?: string; importSource?: string } {
   if (ts.isIdentifier(expr)) return { expression: expr.text, local: expr.text };
   if (ts.isPropertyAccessExpression(expr)) {
     const left = expr.expression.getText();
-    return { expression: expr.getText(), local: left === 'this' ? undefined : left, member: expr.name.text };
+    return { expression: expr.getText(), local: left === 'this' ? undefined : left, member: expr.name.text, receiver: left };
   }
   return { expression: expr.getText() };
 }
@@ -112,8 +115,17 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
         const callee = callName(node.expression);
         const importSource = (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
         const targetName = callee.expression.startsWith('this.') ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
-        const keep = Boolean(targetName) && (localCallables.has(String(targetName)) || callee.expression.startsWith('this.') || isRelativeImport(importSource));
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: targetName, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: importSource ? 'relative_import' : callee.expression.startsWith('this.') ? 'this_method' : 'local', caller: caller.qualifiedName, targetName } });
+        const className = caller.qualifiedName.includes('.') ? caller.qualifiedName.split('.')[0] : undefined;
+        const thisTarget = className && callee.member ? `${className}.${callee.member}` : undefined;
+        const loggerLike = callee.receiver?.endsWith('.logger') || callee.local === 'logger' || (callee.expression.startsWith('this.logger.') && callee.member ? loggerMembers.has(callee.member) : false);
+        const terminalMember = callee.member ? commonTerminalMembers.has(callee.member) || loggerMembers.has(callee.member) : false;
+        const provenLocal = Boolean(targetName) && localCallables.has(String(targetName));
+        const provenThisMethod = Boolean(thisTarget && localCallables.has(thisTarget));
+        const provenRelativeImport = Boolean(isRelativeImport(importSource));
+        const globalLike = callee.local ? globalObjects.has(callee.local) : false;
+        const importedFromPackage = Boolean(importSource && !isRelativeImport(importSource));
+        const keep = Boolean(targetName) && !loggerLike && !globalLike && !importedFromPackage && (provenLocal || provenThisMethod || provenRelativeImport || (!terminalMember && !callee.expression.startsWith('this.')));
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: provenThisMethod ? thisTarget : targetName, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : provenLocal ? 'indexed_local_symbol' : 'unresolved_actionable_property_call', caller: caller.qualifiedName, targetName: provenThisMethod ? thisTarget : targetName } });
       }
     }
     ts.forEachChild(node, visitCalls);

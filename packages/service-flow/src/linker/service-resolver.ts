@@ -9,6 +9,8 @@ export interface OperationTarget {
   operationName: string;
   sourceFile: string;
   sourceLine: number;
+  repoId?: number;
+  packageName?: string | null;
   score: number;
   reasons: string[];
 }
@@ -25,7 +27,7 @@ function rows(
 ): OperationTarget[] {
   return db
     .prepare(
-      `SELECT o.id operationId,r.name repoName,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score,'' reasons
+      `SELECT o.id operationId,r.id repoId,r.name repoName,r.package_name packageName,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score,'' reasons
        FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
        WHERE (? IS NULL OR r.workspace_id=?) AND (o.operation_path=? OR o.operation_name=?) ORDER BY r.name,s.service_path,o.operation_name`,
     )
@@ -64,11 +66,21 @@ export function resolveOperation(
       candidates: [],
       reasons: ['missing_operation_path'],
     };
-  const candidates = rows(db, signals.operationPath, workspaceId).filter((c) => matchesLocalRepo(db, c.operationId, signals.repoId)).map((c) => ({
+  const allCandidates = rows(db, signals.operationPath, workspaceId).map((c) => ({
     ...c,
     score: 0.2,
     reasons: ['operation_path_match'],
   }));
+  let candidates = allCandidates.filter((c) => matchesLocalRepo(db, c.operationId, signals.repoId));
+  if (candidates.length === 0 && signals.repoId !== undefined && signals.serviceName) {
+    candidates = implementationContextCandidates(db, allCandidates, signals.repoId, signals.serviceName);
+    if (candidates.length === 0)
+      return {
+        status: 'unresolved',
+        candidates: allCandidates.filter((c) => serviceMatches(c, signals.serviceName)),
+        reasons: allCandidates.some((c) => serviceMatches(c, signals.serviceName)) ? ['local_service_candidate_without_caller_ownership'] : ['no_operation_candidates'],
+      };
+  }
   if (candidates.length === 0)
     return {
       status: 'unresolved',
@@ -149,6 +161,35 @@ export function resolveOperation(
     reasons: ['candidate_score_below_resolution_threshold'],
   };
 }
+function serviceMatches(candidate: OperationTarget, serviceName: string | undefined): boolean {
+  if (!serviceName) return false;
+  const simple = serviceName.split('.').at(-1) ?? serviceName;
+  return candidate.qualifiedName === serviceName || candidate.serviceName === serviceName || candidate.serviceName === simple || candidate.servicePath === serviceName || candidate.servicePath === `/${serviceName}` || candidate.servicePath === `/${simple}` || candidate.servicePath.endsWith(`/${simple}`);
+}
+function implementationContextCandidates(db: Db, candidates: OperationTarget[], callerRepoId: number, serviceName: string): OperationTarget[] {
+  const matching = candidates.filter((candidate) => serviceMatches(candidate, serviceName));
+  const owned = matching.map((candidate) => ownershipReason(db, candidate, callerRepoId)).filter((item): item is { candidate: OperationTarget; reason: string } => Boolean(item));
+  if (owned.length === 0) return [];
+  const direct = owned.filter((item) => item.reason !== 'caller_depends_on_model_package');
+  const chosen = direct.length > 0 ? direct : owned.length === 1 ? owned : [];
+  return chosen.map((item) => ({ ...item.candidate, score: 0.95, reasons: [...item.candidate.reasons, 'implementation_context_caller_ownership', item.reason] }));
+}
+function ownershipReason(db: Db, candidate: OperationTarget, callerRepoId: number): { candidate: OperationTarget; reason: string } | undefined {
+  const edge = db.prepare("SELECT status,evidence_json,to_id FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND from_kind='operation' AND from_id=? ORDER BY CASE status WHEN 'resolved' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END LIMIT 1").get(String(candidate.operationId)) as { status?: string; evidence_json?: string; to_id?: string } | undefined;
+  if (edge?.status === 'resolved') {
+    const row = db.prepare('SELECT hc.repo_id repoId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id WHERE hm.id=?').get(edge.to_id) as { repoId?: number } | undefined;
+    if (row?.repoId === callerRepoId) return { candidate, reason: 'resolved_implementation_handler_repo_matches_caller' };
+  }
+  if (edge?.evidence_json) {
+    const evidence = JSON.parse(edge.evidence_json) as { candidates?: Array<{ accepted?: boolean; handlerPackage?: { id?: number }; applicationPackage?: { id?: number } }> };
+    const hit = evidence.candidates?.find((item) => item.accepted && (Number(item.handlerPackage?.id) === callerRepoId || Number(item.applicationPackage?.id) === callerRepoId));
+    if (hit) return { candidate, reason: edge.status === 'ambiguous' ? 'ambiguous_implementation_candidate_repo_matches_caller' : 'registration_package_matches_caller' };
+  }
+  const dep = db.prepare("SELECT 1 FROM graph_edges WHERE edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND status='resolved' AND from_kind='repo' AND from_id=? AND to_id=?").get(String(callerRepoId), String(candidate.repoId));
+  if (dep) return { candidate, reason: 'caller_depends_on_model_package' };
+  return undefined;
+}
+
 function matchesLocalRepo(db: Db, operationId: number, repoId: number | undefined): boolean {
   if (repoId === undefined) return true;
   const row = db.prepare('SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?').get(operationId) as { repoId?: number } | undefined;

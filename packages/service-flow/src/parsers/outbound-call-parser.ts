@@ -34,28 +34,39 @@ function matchingParen(text: string, open: number): number {
   }
   return -1;
 }
-function argumentForCall(expr: string, marker: string): string | undefined {
-  const idx = expr.indexOf(marker);
-  if (idx < 0) return undefined;
-  const open = expr.indexOf('(', idx + marker.length);
-  if (open < 0) return undefined;
-  const close = matchingParen(expr, open);
-  return close > open ? expr.slice(open + 1, close).trim() : undefined;
+function entityFromExpression(expr: ts.Expression | undefined): string | undefined {
+  if (!expr) return undefined;
+  if (ts.isIdentifier(expr) || ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr) && expr.expression.kind === ts.SyntaxKind.ThisKeyword) return expr.name.text;
+  return undefined;
 }
-function entityFromArg(arg: string | undefined): string | undefined {
-  if (!arg) return undefined;
-  const first = arg.split(',')[0]?.trim();
-  if (!first) return undefined;
-  return stripQuotes(first).replace(/^this\./, '');
+function expressionName(expr: ts.Expression): string {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr)) return `${expressionName(expr.expression)}.${expr.name.text}`;
+  return expr.getText();
+}
+function queryEntityFromAst(expr: ts.Expression): string | undefined {
+  if (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) return queryEntityFromAst(expr.expression);
+  if (ts.isCallExpression(expr)) {
+    const name = expressionName(expr.expression);
+    if (name === 'cds.run') return queryEntityFromAst(expr.arguments[0]);
+    if (name === 'SELECT.one.from' || name === 'SELECT.from' || name === 'INSERT.into' || name === 'DELETE.from') return entityFromExpression(expr.arguments[0]);
+    if (name === 'UPDATE') return entityFromExpression(expr.arguments[0]);
+    const receiver = ts.isPropertyAccessExpression(expr.expression) ? expr.expression.expression : undefined;
+    if (receiver) return queryEntityFromAst(receiver);
+  }
+  return undefined;
 }
 function extractQueryEntity(expr: string): string | undefined {
-  return (
-    entityFromArg(argumentForCall(expr, 'SELECT.one.from')) ??
-    entityFromArg(argumentForCall(expr, 'SELECT.from')) ??
-    entityFromArg(argumentForCall(expr, 'INSERT.into')) ??
-    entityFromArg(argumentForCall(expr, 'UPDATE')) ??
-    entityFromArg(argumentForCall(expr, 'DELETE.from'))
-  );
+  const source = ts.createSourceFile('query.ts', `const __query = (${expr});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let found: string | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isParenthesizedExpression(node)) found = queryEntityFromAst(node.expression);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
 }
 export async function parseOutboundCalls(
   repoPath: string,

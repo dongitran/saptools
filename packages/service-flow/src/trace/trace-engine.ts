@@ -156,6 +156,18 @@ function implementationScope(db: Db, operationId: string): { repoId?: number; fi
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
   return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
+function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined): string | undefined {
+  if (!edge || edge.status !== 'ambiguous' || callerRepoId === undefined) return undefined;
+  const evidence = JSON.parse(String(edge.evidence_json || '{}')) as { candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { id?: number }; applicationPackage?: { id?: number } }> };
+  const candidate = evidence.candidates?.find((item) => item.accepted && (Number(item.handlerPackage?.id) === callerRepoId || Number(item.applicationPackage?.id) === callerRepoId));
+  return candidate?.methodId === undefined ? undefined : String(candidate.methodId);
+}
+function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<string>; symbolId?: number } | undefined {
+  const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(methodId) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
+  if (!row) return undefined;
+  return { repoId: row.repoId, files: new Set(row.sourceFile ? [row.sourceFile] : []), symbolId: row.symbolId };
+}
+
 function includeCall(
   type: string,
   options: {
@@ -266,6 +278,7 @@ function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
       : undefined;
   const targetRepo =
     typeof evidence.targetRepo === 'string' ? evidence.targetRepo : '';
+  if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return /^\d+$/.test(row.to_id) ? 'Entity: unknown' : `Entity: ${row.to_id}`;
   return servicePath && operationPath
     ? `${servicePath}${operationPath}`
     : targetOperation
@@ -401,9 +414,11 @@ export function trace(
         });
         if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
+          const contextMethodId = contextImplementationMethodId(implementation.edge, current.repoId);
+          const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
           if (implementation.edge) {
             const implEvidence = JSON.parse(String(implementation.edge.evidence_json || '{}')) as Record<string, unknown>;
-            const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : undefined;
+            const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : contextNode;
             const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
             if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
             edges.push({
@@ -417,10 +432,11 @@ export function trace(
             });
           }
           if (current.depth >= maxDepth) continue;
-          const files = implementation.files.size > 0 ? implementation.files : handlerFilesForOperation(db, effectiveRow.to_id);
-          const symbolIds = implementation.symbolId ? new Set([implementation.symbolId]) : undefined;
-          if (implementation.edge?.status === 'resolved' && files.size > 0) {
-            const targetRepoId = implementation.repoId ?? (db
+          const contextScope = contextMethodId ? handlerScope(db, contextMethodId) : undefined;
+          const files = contextScope?.files ?? (implementation.files.size > 0 ? implementation.files : handlerFilesForOperation(db, effectiveRow.to_id));
+          const symbolIds = contextScope?.symbolId ? new Set([contextScope.symbolId]) : implementation.symbolId ? new Set([implementation.symbolId]) : undefined;
+          if ((implementation.edge?.status === 'resolved' || contextScope) && files.size > 0) {
+            const targetRepoId = contextScope?.repoId ?? implementation.repoId ?? (db
               .prepare(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',
               )
