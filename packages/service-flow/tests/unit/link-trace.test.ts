@@ -386,3 +386,62 @@ describe('local service model fallback', () => {
     db.close();
   });
 });
+
+describe('0.1.14 audit regressions', () => {
+  it('stores unknown DB query graph targets as semantic db entities', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-db-semantic-'));
+    await writeFixtureFile(root, 'app-service/.git-fixture');
+    await writeFixtureFile(root, 'app-service/package.json', JSON.stringify({ name: 'app-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'app-service/srv/service.cds', 'service BusinessProcessService { action runEntry(); }');
+    await writeFixtureFile(root, 'app-service/srv/EntryHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class EntryHandler {
+  @Action('runEntry')
+  async runEntry(entityName: string): Promise<void> {
+    await cds.run(SELECT.from(this.model['Books']).where({ ID: 1 }));
+    await cds.run(SELECT.from(this.model[entityName]).where({ ID: 2 }));
+  }
+}
+`);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const edges = db.prepare("SELECT to_kind toKind,to_id toId,evidence_json evidenceJson FROM graph_edges WHERE edge_type='HANDLER_RUNS_DB_QUERY' ORDER BY id").all() as Array<{ toKind: string; toId: string; evidenceJson: string }>;
+    expect(edges.map((edge) => `${edge.toKind}:${edge.toId}`)).toEqual(['db_entity:Books', 'db_entity:unknown']);
+    expect(edges.every((edge) => !/^\d+$/.test(edge.toId))).toBe(true);
+    const unknownEvidence = JSON.parse(edges[1]?.evidenceJson ?? '{}') as { callId?: number; parserWarning?: { message?: string } };
+    expect(unknownEvidence.callId).toEqual(expect.any(Number));
+    expect(unknownEvidence.parserWarning?.message).toBe('dynamic_entity_expression');
+    const result = trace(db, { repo: 'app-service', handler: 'EntryHandler' }, { depth: 5, includeDb: true });
+    expect(result.nodes.some((node) => node.kind === 'db_entity' && node.label === 'Entity: unknown')).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'local_db_query' && edge.to === 'Entity: unknown')).toBe(true);
+    db.close();
+  });
+
+  it('terminalizes local service client transport methods without noisy unresolved operation edges', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-client-methods-'));
+    await createLocalServiceModelFallbackFixture(root);
+    await writeFixtureFile(root, 'process-helper-a/src/EntryHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class EntryHandler {
+  @Action('runEntry')
+  async runEntry(): Promise<void> {
+    const client = cds.services.BusinessProcessService;
+    await client.loadRemoteData('42');
+    await client.send({ path: '/notify', method: 'POST' });
+  }
+}
+`);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const rows = db.prepare("SELECT c.operation_path_expr path,e.edge_type edgeType,e.status status,e.unresolved_reason reason,e.evidence_json evidenceJson FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) WHERE c.call_type='local_service_call' ORDER BY c.operation_path_expr").all() as Array<{ path: string; edgeType: string; status: string; reason: string | null; evidenceJson: string }>;
+    expect(rows.find((row) => row.path === '/loadRemoteData')?.status).toBe('resolved');
+    const send = rows.find((row) => row.path === '/send');
+    expect(send?.edgeType).toBe('HANDLER_CALLS_EXTERNAL_HTTP');
+    expect(send?.status).toBe('terminal');
+    expect(send?.reason).toBeNull();
+    expect(JSON.parse(send?.evidenceJson ?? '{}')).toMatchObject({ classification: 'transport_client_method' });
+    db.close();
+  });
+});

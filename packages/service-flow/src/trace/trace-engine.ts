@@ -278,7 +278,7 @@ function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
       : undefined;
   const targetRepo =
     typeof evidence.targetRepo === 'string' ? evidence.targetRepo : '';
-  if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return /^\d+$/.test(row.to_id) ? 'Entity: unknown' : `Entity: ${row.to_id}`;
+  if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return `Entity: ${row.to_id || 'unknown'}`;
   return servicePath && operationPath
     ? `${servicePath}${operationPath}`
     : targetOperation
@@ -400,7 +400,7 @@ export function trace(
         nodes.set(targetNode, opNode ?? {
           id: targetNode,
           kind: effectiveRow.to_kind,
-          label: effectiveRow.to_id,
+          label: effectiveRow.to_kind === 'db_entity' ? `Entity: ${effectiveRow.to_id || 'unknown'}` : effectiveRow.to_id,
         });
         const to = edgeTarget(effectiveRow, evidence);
         edges.push({

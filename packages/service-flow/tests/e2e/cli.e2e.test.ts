@@ -92,5 +92,10 @@ describe('service-flow CLI', () => {
     const doctorResult = await runResult(['doctor', '--workspace', fixture]);
     expect(doctorResult.stderr).toBe('');
     expect(doctorResult.stdout).toMatch(/No diagnostics|\[/);
+    const strictDoctorResult = await runResult(['doctor', '--workspace', fixture, '--strict']);
+    expect(strictDoctorResult.stderr).toBe('');
+    const strictDiagnostics = JSON.parse(strictDoctorResult.stdout) as Array<{ code?: string; topUnresolvedCallees?: unknown[] }>;
+    expect(strictDiagnostics.some((item) => item.code === 'strict_symbol_call_quality' && Array.isArray(item.topUnresolvedCallees))).toBe(true);
+    expect(strictDiagnostics.some((item) => item.code === 'strict_db_query_quality')).toBe(true);
   });
 });

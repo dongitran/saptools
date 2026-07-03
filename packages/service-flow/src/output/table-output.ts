@@ -11,14 +11,10 @@ function location(evidence: Record<string, unknown>): string {
   }
   return ':';
 }
-function displayTarget(value: string, evidence: Record<string, unknown>): string {
-  if (/^\d+$/.test(value) && evidence.parserWarning) return 'Entity: unknown';
-  return value;
-}
 export function renderTraceTable(result: TraceResult): string {
   const lines = ['Step  Type                 From                                To                                  Evidence'];
   for (const e of result.edges) {
-    lines.push(`${String(e.step).padEnd(5)} ${e.type.padEnd(20)} ${e.from.slice(0, 34).padEnd(35)} ${displayTarget(e.to, e.evidence).slice(0, 35).padEnd(36)} ${location(e.evidence)}`);
+    lines.push(`${String(e.step).padEnd(5)} ${e.type.padEnd(20)} ${e.from.slice(0, 34).padEnd(35)} ${e.to.slice(0, 35).padEnd(36)} ${location(e.evidence)}`);
   }
   if (result.diagnostics.length > 0) lines.push('', 'Diagnostics:', ...result.diagnostics.map((d) => `${String(d.severity ?? 'info')} ${String(d.code ?? 'diagnostic')} ${String(d.message ?? '')}`));
   return `${lines.join('\n')}\n`;
