@@ -113,16 +113,28 @@ function localServiceDiagnostics(db: ReturnType<typeof openDatabase>, strict: bo
 
 function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
   if (!strict) return [];
+  const symbolUnresolvedThreshold = 0.05;
+  const dbUnknownThreshold = 0.25;
+  const outboundUnownedThreshold = 0.01;
   const symbol = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) resolved, SUM(CASE WHEN status='unresolved' THEN 1 ELSE 0 END) unresolved FROM symbol_calls").get() as { total?: number; resolved?: number; unresolved?: number };
   const top = db.prepare("SELECT callee_expression calleeExpression,COUNT(*) count FROM symbol_calls WHERE status='unresolved' GROUP BY callee_expression ORDER BY count DESC,callee_expression LIMIT 5").all() as Array<Record<string, unknown>>;
+  const evidence = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN json_valid(evidence_json)=0 OR json_type(evidence_json) <> 'object' THEN 1 ELSE 0 END) nonObject FROM symbol_calls").get() as { total?: number; nonObject?: number };
   const dbq = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN query_entity IS NOT NULL THEN 1 ELSE 0 END) known, SUM(CASE WHEN query_entity IS NULL THEN 1 ELSE 0 END) unknown FROM outbound_calls WHERE call_type='local_db_query'").get() as { total?: number; known?: number; unknown?: number };
+  const outbound = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN source_symbol_id IS NULL THEN 1 ELSE 0 END) withoutOwnership FROM outbound_calls").get() as { total?: number; withoutOwnership?: number };
   const symbolTotal = Number(symbol.total ?? 0);
   const symbolUnresolved = Number(symbol.unresolved ?? 0);
+  const symbolUnresolvedRatio = symbolTotal === 0 ? 0 : Number((symbolUnresolved / symbolTotal).toFixed(4));
   const queryTotal = Number(dbq.total ?? 0);
   const queryUnknown = Number(dbq.unknown ?? 0);
+  const queryUnknownRatio = queryTotal === 0 ? 0 : Number((queryUnknown / queryTotal).toFixed(4));
+  const outboundTotal = Number(outbound.total ?? 0);
+  const outboundWithoutOwnership = Number(outbound.withoutOwnership ?? 0);
+  const outboundWithoutOwnershipRatio = outboundTotal === 0 ? 0 : Number((outboundWithoutOwnership / outboundTotal).toFixed(4));
   return [
-    { severity: 'info', code: 'strict_symbol_call_quality', message: 'Symbol-call quality aggregate', total: symbolTotal, resolved: Number(symbol.resolved ?? 0), unresolved: symbolUnresolved, unresolvedRatio: symbolTotal === 0 ? 0 : Number((symbolUnresolved / symbolTotal).toFixed(4)), topUnresolvedCallees: top },
-    { severity: 'info', code: 'strict_db_query_quality', message: 'Local DB query quality aggregate', total: queryTotal, known: Number(dbq.known ?? 0), unknown: queryUnknown, unknownRatio: queryTotal === 0 ? 0 : Number((queryUnknown / queryTotal).toFixed(4)) },
+    { severity: Number(evidence.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_symbol_call_evidence_quality', message: 'Symbol-call evidence JSON object aggregate', total: Number(evidence.total ?? 0), nonObject: Number(evidence.nonObject ?? 0) },
+    { severity: symbolUnresolvedRatio > symbolUnresolvedThreshold ? 'warning' : 'info', code: 'strict_symbol_call_quality', message: 'Symbol-call quality aggregate', total: symbolTotal, resolved: Number(symbol.resolved ?? 0), unresolved: symbolUnresolved, unresolvedRatio: symbolUnresolvedRatio, unresolvedRatioThreshold: symbolUnresolvedThreshold, topUnresolvedCallees: top },
+    { severity: queryUnknownRatio > dbUnknownThreshold ? 'warning' : 'info', code: 'strict_db_query_quality', message: 'Local DB query quality aggregate', total: queryTotal, known: Number(dbq.known ?? 0), unknown: queryUnknown, unknownRatio: queryUnknownRatio, unknownRatioThreshold: dbUnknownThreshold },
+    { severity: outboundWithoutOwnershipRatio > outboundUnownedThreshold ? 'warning' : 'info', code: 'strict_outbound_source_ownership_quality', message: 'Outbound call source-symbol ownership aggregate', total: outboundTotal, withoutOwnership: outboundWithoutOwnership, withoutOwnershipRatio: outboundWithoutOwnershipRatio, withoutOwnershipRatioThreshold: outboundUnownedThreshold },
   ];
 }
 
