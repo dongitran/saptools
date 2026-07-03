@@ -132,7 +132,7 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
           process.stdout.write(
-            `Linked ${r.edgeCount} edges: ${r.resolvedCount} remote resolved, ${r.unresolvedCount} remote unresolved, ${r.ambiguousCount} ambiguous, ${r.dynamicCount} dynamic, ${r.terminalCount} terminal\n`,
+            `Linked ${r.edgeCount} edges: ${r.resolvedCount} remote resolved, ${r.unresolvedCount} remote unresolved, ${r.ambiguousCount} remote ambiguous, ${r.dynamicCount} dynamic, ${r.terminalCount} terminal, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous\n`,
           );
         }).catch(fail),
     );
@@ -378,7 +378,13 @@ export function createProgram(): Command {
                WHERE NOT EXISTS (SELECT 1 FROM search_index)
                UNION ALL
                SELECT 'error','foreign_key_violation','SQLite foreign_key_check reported integrity failures',NULL,NULL
-               WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)`,
+               WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)
+               UNION ALL
+               SELECT 'warning','graph_stale','Graph is stale after repository fact changes; run service-flow link',NULL,NULL
+               WHERE EXISTS (SELECT 1 FROM repositories WHERE graph_stale_reason IS NOT NULL)
+               UNION ALL
+               SELECT 'warning','index_run_abandoned','An index run is still marked running',NULL,NULL
+               WHERE EXISTS (SELECT 1 FROM index_runs WHERE status='running')`,
             )
             .all(Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const allDiagnostics = [...diagnostics, ...health];

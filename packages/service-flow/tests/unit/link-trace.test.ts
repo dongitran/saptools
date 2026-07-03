@@ -39,6 +39,18 @@ describe('linker and trace engine', () => {
     expect(indexed.repoCount).toBe(5);
     const linked = linkWorkspace(db, workspaceId);
     expect(linked.edgeCount).toBeGreaterThan(0);
+    expect(linked.edgeCount).toBe(
+      linked.resolvedCount +
+        linked.unresolvedCount +
+        linked.ambiguousCount +
+        linked.dynamicCount +
+        linked.terminalCount +
+        linked.dependencyResolvedCount +
+        linked.dependencyAmbiguousCount +
+        linked.implementationResolvedCount +
+        linked.implementationAmbiguousCount,
+    );
+    expect(linked.dependencyResolvedCount).toBeGreaterThan(0);
     const edgeTypes = db
       .prepare('SELECT edge_type edgeType FROM graph_edges ORDER BY id')
       .all() as Array<{ edgeType: string }>;
@@ -76,6 +88,15 @@ describe('linker and trace engine', () => {
     expect(handlerResult.edges.map((e) => e.to)).toContain(
       '/ThingProcessService/getPaths',
     );
+
+    const serviceOnlyResult = trace(
+      db,
+      { servicePath: '/RulesService' },
+      { depth: 20, includeAsync: true },
+    );
+    expect(serviceOnlyResult.edges).toHaveLength(0);
+    expect(serviceOnlyResult.diagnostics[0]?.code).toBe('trace_start_not_found');
+    expect(String(serviceOnlyResult.diagnostics[0]?.message)).toContain('Service-only trace requires');
 
     const missingOperationResult = trace(
       db,
