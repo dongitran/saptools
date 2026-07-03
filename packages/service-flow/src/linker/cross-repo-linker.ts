@@ -69,24 +69,47 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
 function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined): Record<string, unknown> {
   return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, targetRepo: resolution.target?.repoName, targetOperation: resolution.target?.operationName, helperChain: call.helperChainJson ? (JSON.parse(String(call.helperChainJson)) as unknown) : undefined, candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
 }
+
 function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number } {
-  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,s.service_path servicePath,s.repo_id modelRepoId,r.package_name modelPackage FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
+  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
   let edgeCount = 0;
   let resolvedCount = 0;
   let ambiguousCount = 0;
   for (const operation of operations) {
-    const rows = implementationCandidates(db, workspaceId, operation);
-    if (rows.length === 0) continue;
-    const unique = rows.length === 1 ? rows[0] : undefined;
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', String(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? String(unique.methodId) : rows.map((row) => row.methodId).join(','), unique ? 0.95 : 0.5, JSON.stringify({ servicePath: operation.servicePath, operationPath: operation.operationPath, operationName: operation.operationName, candidates: rows, evidence: 'registered_application_dependency' }), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
+    const candidates = rankedImplementationCandidates(db, workspaceId, operation);
+    const accepted = candidates.filter((candidate) => candidate.accepted);
+    if (accepted.length === 0) continue;
+    const topScore = accepted[0]?.score ?? 0;
+    const winners = accepted.filter((candidate) => candidate.score === topScore);
+    const unique = winners.length === 1 ? winners[0] : undefined;
+    const evidence = {
+      servicePath: operation.servicePath,
+      operationPath: operation.operationPath,
+      operationName: operation.operationName,
+      modelPackage: { id: operation.modelRepoId, name: operation.modelRepo, packageName: operation.modelPackage },
+      candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
+    };
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : winners.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidence), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
     edgeCount += 1;
     if (unique) resolvedCount += 1;
     else ambiguousCount += 1;
   }
   return { edgeCount, resolvedCount, ambiguousCount };
 }
+interface ImplementationCandidate extends Record<string, unknown> {
+  methodId: number;
+  score: number;
+  accepted: boolean;
+  acceptedReasons: string[];
+  rejectedReasons: string[];
+}
+function rankedImplementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): ImplementationCandidate[] {
+  const rows = implementationCandidates(db, workspaceId, operation);
+  return rows.map((row) => scoreImplementationCandidate(row, operation)).sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)) || a.methodId - b.methodId);
+}
 function implementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): Array<Record<string, unknown>> {
-  const rows = db.prepare(`SELECT DISTINCT
+  const modelRepoGraphId = graphId(operation.modelRepoId);
+  return db.prepare(`SELECT DISTINCT
       hm.id methodId,
       hc.id classId,
       hc.class_name className,
@@ -95,21 +118,136 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       hr.repo_id applicationRepoId,
       hr.registration_file registrationFile,
       hr.registration_line registrationLine,
+      hr.registration_kind registrationKind,
       hr.import_source importSource,
       handlerRepo.id handlerRepoId,
       handlerRepo.name handlerRepo,
+      handlerRepo.package_name handlerPackage,
       appRepo.name applicationRepo,
+      appRepo.package_name applicationPackage,
+      ? modelRepoId,
+      ? modelRepo,
+      ? modelPackage,
+      ? servicePath,
+      ? operationPath,
+      ? operationName,
+      CASE WHEN appRepo.id=? THEN 1 ELSE 0 END modelIsApplicationRepo,
+      CASE WHEN handlerRepo.id=? THEN 1 ELSE 0 END modelIsHandlerRepo,
       CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
-      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(? AS TEXT)) THEN 1 ELSE 0 END appDependsOnModel,
-      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=CAST(? AS TEXT)) THEN 1 ELSE 0 END handlerDependsOnModel
+      CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id AND localService.service_path=?) THEN 1 ELSE 0 END localServicePathMatch,
+      CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id) THEN 1 ELSE 0 END applicationHasLocalServices,
+      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END appDependsOnModel,
+      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(handlerRepo.id AS TEXT)) THEN 1 ELSE 0 END appDependsOnHandler,
+      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END handlerDependsOnModel
     FROM handler_methods hm
     JOIN handler_classes hc ON hc.id=hm.handler_class_id
     JOIN repositories handlerRepo ON handlerRepo.id=hc.repo_id
     JOIN handler_registrations hr ON (hr.handler_class_id=hc.id OR (hr.class_name=hc.class_name AND (hr.repo_id=hc.repo_id OR hr.import_source IS NOT NULL)))
     JOIN repositories appRepo ON appRepo.id=hr.repo_id
     WHERE appRepo.workspace_id=?
-      AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=?)`).all(operation.modelRepoId, operation.modelRepoId, workspaceId, normalizedOperation(String(operation.operationPath ?? '')), operation.operationName, operation.operationName) as Array<Record<string, unknown>>;
-  return rows.filter((row) => Boolean(Number(row.sameRepoRegistration)) || Boolean(Number(row.appDependsOnModel)) || Boolean(Number(row.handlerDependsOnModel)));
+      AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=?)`).all(
+        operation.modelRepoId,
+        operation.modelRepo,
+        operation.modelPackage,
+        operation.servicePath,
+        operation.operationPath,
+        operation.operationName,
+        operation.modelRepoId,
+        operation.modelRepoId,
+        operation.servicePath,
+        modelRepoGraphId,
+        modelRepoGraphId,
+        workspaceId,
+        normalizedOperation(String(operation.operationPath ?? '')),
+        operation.operationName,
+        operation.operationName,
+      ) as Array<Record<string, unknown>>;
+}
+function scoreImplementationCandidate(row: Record<string, unknown>, operation: Record<string, unknown>): ImplementationCandidate {
+  const acceptedReasons: string[] = [];
+  const rejectedReasons: string[] = [];
+  let score = 0;
+  const modelIsApplicationRepo = flag(row.modelIsApplicationRepo);
+  const modelIsHandlerRepo = flag(row.modelIsHandlerRepo);
+  const localServicePathMatch = flag(row.localServicePathMatch);
+  const applicationHasLocalServices = flag(row.applicationHasLocalServices);
+  const appDependsOnModel = flag(row.appDependsOnModel);
+  const appDependsOnHandler = flag(row.appDependsOnHandler);
+  const handlerDependsOnModel = flag(row.handlerDependsOnModel);
+  const importSource = typeof row.importSource === 'string' && row.importSource.length > 0;
+  if (modelIsApplicationRepo) {
+    score += 100;
+    acceptedReasons.push('model package equals registration package');
+  }
+  if (modelIsHandlerRepo) {
+    score += 100;
+    acceptedReasons.push('model package equals handler package');
+  }
+  if (localServicePathMatch) {
+    score += 80;
+    acceptedReasons.push('registration package contains exact local service path');
+  } else if (applicationHasLocalServices && !appDependsOnModel && !modelIsApplicationRepo) {
+    rejectedReasons.push(`registration package has local services but none match ${String(operation.servicePath ?? '')}`);
+  }
+  if (appDependsOnModel) {
+    score += 70;
+    acceptedReasons.push('registration package depends on model package');
+  }
+  if (appDependsOnHandler) {
+    score += 30;
+    acceptedReasons.push('registration package depends on handler package');
+  }
+  if (handlerDependsOnModel) {
+    score += 20;
+    acceptedReasons.push('handler package depends on model package');
+  }
+  if (importSource) {
+    score += 10;
+    acceptedReasons.push('registration imports handler class');
+  }
+  const hasOwnership = modelIsApplicationRepo || modelIsHandlerRepo;
+  const hasCrossPackage = appDependsOnModel && (modelIsHandlerRepo || appDependsOnHandler || !importSource);
+  const contradicted = applicationHasLocalServices && !localServicePathMatch && !appDependsOnModel && !hasOwnership;
+  if (!hasOwnership && !localServicePathMatch && !hasCrossPackage) rejectedReasons.push('missing direct ownership, exact local service path, or validated cross-package dependency evidence');
+  const accepted = !contradicted && (hasOwnership || localServicePathMatch || hasCrossPackage || handlerDependsOnModel);
+  if (!accepted && rejectedReasons.length === 0) rejectedReasons.push('candidate did not meet implementation ownership policy');
+  return { ...row, methodId: Number(row.methodId), score, accepted, acceptedReasons, rejectedReasons };
+}
+function candidateEvidence(candidate: ImplementationCandidate, rank: number): Record<string, unknown> {
+  return {
+    rank,
+    score: candidate.score,
+    accepted: candidate.accepted,
+    acceptedReasons: candidate.acceptedReasons,
+    rejectedReasons: candidate.rejectedReasons,
+    methodId: candidate.methodId,
+    classId: candidate.classId,
+    className: candidate.className,
+    sourceFile: candidate.sourceFile,
+    sourceLine: candidate.sourceLine,
+    registration: { file: candidate.registrationFile, line: candidate.registrationLine, kind: candidate.registrationKind, importSource: candidate.importSource },
+    applicationPackage: { id: candidate.applicationRepoId, name: candidate.applicationRepo, packageName: candidate.applicationPackage },
+    handlerPackage: { id: candidate.handlerRepoId, name: candidate.handlerRepo, packageName: candidate.handlerPackage },
+    modelPackage: { id: candidate.modelRepoId, name: candidate.modelRepo, packageName: candidate.modelPackage },
+    servicePath: candidate.servicePath,
+    operationPath: candidate.operationPath,
+    operationName: candidate.operationName,
+    signals: {
+      directOwnership: { modelIsApplicationRepo: flag(candidate.modelIsApplicationRepo), modelIsHandlerRepo: flag(candidate.modelIsHandlerRepo) },
+      localServicePathMatch: flag(candidate.localServicePathMatch),
+      applicationHasLocalServices: flag(candidate.applicationHasLocalServices),
+      appDependsOnModel: flag(candidate.appDependsOnModel),
+      appDependsOnHandler: flag(candidate.appDependsOnHandler),
+      handlerDependsOnModel: flag(candidate.handlerDependsOnModel),
+      sameRepoRegistration: flag(candidate.sameRepoRegistration),
+    },
+  };
+}
+function flag(value: unknown): boolean {
+  return Boolean(Number(value ?? 0));
+}
+function graphId(value: unknown): string {
+  return String(value);
 }
 function normalizedOperation(value: string): string {
   return value.startsWith('/') ? value.slice(1) : value;

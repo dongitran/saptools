@@ -1,28 +1,23 @@
 # Implementation plan
 
 ## Scope
-Produce `@saptools/service-flow` 0.1.8 with neutral fixtures only. Preserve the 0.1.7 fixes while improving handler registration evidence, implementation edge linking, trace continuation through runtime-resolved operations, read/fingerprint failure diagnostics, schema-v3 migration integrity, warning-free supported-runtime CLI output, and active index-run doctor policy.
+Prepare `@saptools/service-flow` 0.1.9 by fixing implementation-edge linking after the 0.1.8 audit. Keep the public CLI unchanged while making graph-id comparisons deterministic, improving implementation candidate scoring/evidence, and adding neutral regression coverage.
 
 ## Files to review before edits
-- `src/parsers/handler-registration-parser.ts` for current registration extraction.
-- `src/db/repositories.ts`, `src/db/schema.ts`, and `src/db/migrations.ts` for persistence and schema behavior.
-- `src/linker/cross-repo-linker.ts` and `src/linker/helper-package-linker.ts` for implementation and dependency edge construction.
-- `src/trace/trace-engine.ts` for implementation-scope traversal after static and runtime resolution.
-- `src/indexer/repository-indexer.ts` and `src/cli.ts` for protected indexing and warning suppression.
-- Existing unit/e2e fixtures to extend with neutral service and handler names.
+- `src/linker/cross-repo-linker.ts` for implementation candidate SQL, graph-id binds, scoring, and evidence.
+- `src/linker/helper-package-linker.ts` and other `src/**` SQL call sites for graph-edge id comparison patterns.
+- `src/trace/trace-engine.ts` to confirm resolved implementation edges remain traceable.
+- Existing `tests/**` integration helpers and fixtures to add neutral cross-package and duplicate-service regressions.
+- `package.json`, lock metadata, and `CHANGELOG.md` for the 0.1.9 release update.
 
 ## Intended changes
-1. Replace regex-only handler registration parsing with TypeScript AST registration evidence for direct arrays, identifier arrays, spreads, relative imports, default/named exports, and safe relative re-exports.
-2. Persist class-level registration facts with source/import evidence and link unique same-repository classes; preserve ambiguous evidence instead of silently dropping candidates.
-3. Relax and score implementation edge linking so same-repository registrations, handler-owned registrations, and application registrations can produce resolved or ambiguous `OPERATION_IMPLEMENTED_BY_HANDLER` graph edges.
-4. Ensure trace implementation scope consumes persisted implementation edges for both static and runtime-resolved operation scopes while retaining fallback matching and depth/cycle safeguards.
-5. Move read/fingerprint failures into repository-level protected indexing so last-good facts/fingerprints are preserved and actionable diagnostics/statuses appear in doctor.
-6. Strengthen or diagnose schema-v3 migration constraints for `graph_edges`, `index_runs`, and `diagnostics`; validate with `PRAGMA foreign_key_check`.
-7. Suppress the `node:sqlite` experimental warning before database loading without hiding real application errors, and add packed CLI stderr assertions.
-8. Update abandoned index-run policy to use a documented age threshold with run id/start time.
-9. Bump version metadata to 0.1.8 and update README, technical note, changelog, and lock metadata.
+1. Add a small graph-id normalization helper for SQL comparisons against `graph_edges.from_id`/`to_id` and remove numeric `CAST(? AS TEXT)` binds from implementation candidate dependency checks.
+2. Expand implementation candidate rows with model/application/handler package context, import/dependency evidence, local service-path evidence, and accepted/rejected ranking reasons.
+3. Score candidates using direct ownership, exact local service-path matches, and validated cross-package dependency/import relationships; keep true ties ambiguous.
+4. Add neutral integration tests for cross-package app/model/handler linking, duplicate same-name service operations, and graph-id string binding behavior.
+5. Update changelog/version metadata to 0.1.9 and run package test/build/pack checks.
 
 ## Verification plan
-- Run focused unit tests for parser, linker, trace, migration, doctor, and snapshot behavior.
-- Run e2e tests for packed CLI and neutral multi-repository trace fixtures where supported by the local Node runtime.
-- Run `pnpm --filter @saptools/service-flow typecheck`, `lint`, `test:unit`, `test:e2e`, `build`, and package dry-run/smoke checks.
+- Run focused `service-flow` tests for the new regression coverage and existing implementation linking/trace suites.
+- Run `npm test`, `npm run build`, and `npm pack --dry-run` in `packages/service-flow`.
+- Inspect `rg` results for remaining unsafe `CAST(? AS TEXT)` graph-id comparisons.

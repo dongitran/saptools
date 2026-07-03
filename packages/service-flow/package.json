@@ -1,6 +1,6 @@
 {
   "name": "@saptools/service-flow",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Trace SAP CAP service-to-service flows across multi-repository workspaces with runtime-aware graph resolution",
   "type": "module",
   "publishConfig": {
@@ -31,6 +31,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",
+    "test": "vitest run tests/unit",
     "test:unit": "vitest run tests/unit",
     "test:e2e": "vitest run tests/e2e",
     "test:e2e:fake": "vitest run tests/e2e"
