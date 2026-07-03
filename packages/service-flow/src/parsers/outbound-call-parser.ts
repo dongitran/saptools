@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import ts from 'typescript';
 import type { OutboundCallFact } from '../types.js';
 import { normalizePath, stripQuotes } from '../utils/path-utils.js';
 import { summarizeExpression } from '../utils/redaction.js';
@@ -120,16 +121,47 @@ export async function parseOutboundCalls(
       unresolvedReason:
         'External HTTP destination is outside indexed CAP services',
     });
-  for (const m of text.matchAll(
-    /cds\.services(?:\[['"]([^'"]+)['"]\]|\.(\w+))\.(\w+)\s*\(/g,
-  ))
-    out.push({
-      callType: 'local_service_call',
-      operationPathExpr: `/${m[3] ?? ''}`,
-      payloadSummary: m[1] ?? m[2],
-      sourceFile: normalizePath(filePath),
-      sourceLine: lineOf(text, m.index ?? 0),
-      confidence: 0.75,
-    });
+  out.push(...parseLocalServiceCalls(text, filePath));
   return out;
+}
+function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFact[] {
+  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+  const aliases = new Map<string, { service: string; lookup: string; chain: string[] }>();
+  const calls: OutboundCallFact[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const origin = serviceLookup(node.initializer, aliases);
+      if (origin) aliases.set(node.name.text, { ...origin, chain: [...origin.chain, node.name.text] });
+    }
+    if (ts.isCallExpression(node)) {
+      const parsed = serviceOperationCall(node.expression, aliases);
+      if (parsed && parsed.operation !== 'entities') calls.push({
+        callType: 'local_service_call',
+        operationPathExpr: `/${parsed.operation}`,
+        payloadSummary: parsed.service,
+        localServiceName: parsed.service,
+        localServiceLookup: parsed.lookup,
+        aliasChain: parsed.chain,
+        sourceFile: normalizePath(filePath),
+        sourceLine: lineOf(text, node.getStart(source)),
+        confidence: 0.9,
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return calls;
+}
+function serviceLookup(expr: ts.Expression, aliases: Map<string, { service: string; lookup: string; chain: string[] }>): { service: string; lookup: string; chain: string[] } | undefined {
+  if (ts.isIdentifier(expr)) return aliases.get(expr.text);
+  if (ts.isPropertyAccessExpression(expr) && expr.expression.getText() === 'cds.services') return { service: expr.name.text, lookup: expr.getText(), chain: [expr.getText()] };
+  if (ts.isElementAccessExpression(expr) && expr.expression.getText() === 'cds.services' && ts.isStringLiteral(expr.argumentExpression)) return { service: expr.argumentExpression.text, lookup: expr.getText(), chain: [expr.getText()] };
+  return undefined;
+}
+function serviceOperationCall(expr: ts.Expression, aliases: Map<string, { service: string; lookup: string; chain: string[] }>): { service: string; lookup: string; chain: string[]; operation: string } | undefined {
+  if (!ts.isPropertyAccessExpression(expr)) return undefined;
+  const operation = expr.name.text;
+  const origin = serviceLookup(expr.expression, aliases);
+  if (!origin) return undefined;
+  return { ...origin, operation };
 }

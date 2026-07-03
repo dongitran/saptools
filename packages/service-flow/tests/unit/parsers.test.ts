@@ -168,6 +168,26 @@ describe('service-flow parsers', () => {
       returnedProperty: 'processClient',
     });
   });
+
+  it('parses aliased local service calls and ignores entity accessors', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-local-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      import cds from '@sap/cds';
+      export async function run() {
+        const service = cds.services["acme.catalog.CatalogService"];
+        cds.services.db.entities("Catalog.Items");
+        cds.services.CatalogService.entities;
+        await service.loadSummary({ id: '1' });
+        await cds.services.CatalogService.refresh({ id: '1' });
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/handler.ts');
+    const local = calls.filter((call) => call.callType === 'local_service_call');
+    expect(local.map((call) => call.operationPathExpr).sort()).toEqual(['/loadSummary', '/refresh']);
+    expect(local.every((call) => call.operationPathExpr !== '/entities')).toBe(true);
+    expect(local.find((call) => call.operationPathExpr === '/loadSummary')?.localServiceName).toBe('acme.catalog.CatalogService');
+  });
   it('parses generated constants and redacts secrets', async () => {
     const constants = await parseGeneratedConstants(
       path.join(fixture, 'facade-service'),

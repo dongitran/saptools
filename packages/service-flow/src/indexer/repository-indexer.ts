@@ -5,8 +5,10 @@ import {
   clearRepoFacts,
   insertBindings,
   insertCalls,
+  insertExecutableSymbols,
   insertHandler,
   insertRegistrations,
+  insertSymbolCalls,
   insertRequires,
   insertService,
   type RepoRow,
@@ -16,6 +18,7 @@ import { parseCdsFile } from '../parsers/cds-parser.js';
 import { parseDecorators } from '../parsers/decorator-parser.js';
 import { parseHandlerRegistrations } from '../parsers/handler-registration-parser.js';
 import { parseOutboundCalls } from '../parsers/outbound-call-parser.js';
+import { parseExecutableSymbols } from '../parsers/symbol-parser.js';
 import { parsePackageJson } from '../parsers/package-json-parser.js';
 import { parseServiceBindings } from '../parsers/service-binding-parser.js';
 import { sha256File } from '../utils/hashing.js';
@@ -23,7 +26,7 @@ import { normalizePath } from '../utils/path-utils.js';
 import { errorMessage } from '../utils/diagnostics.js';
 import { sha256Text } from '../utils/hashing.js';
 import { ANALYZER_VERSION } from '../version.js';
-import type { CdsServiceFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, ServiceBindingFact } from '../types.js';
+import type { CdsServiceFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, ServiceBindingFact, ExecutableSymbolFact, SymbolCallFact } from '../types.js';
 export interface IndexRepoResult {
   fileCount: number;
   diagnosticCount: number;
@@ -35,6 +38,8 @@ interface ParsedFacts {
   registrations: HandlerRegistrationFact[];
   bindings: ServiceBindingFact[];
   calls: OutboundCallFact[];
+  symbols: ExecutableSymbolFact[];
+  symbolCalls: SymbolCallFact[];
   fileRecords: Array<{ relativePath: string; extension: string; sha256: string; sizeBytes: number }>;
 }
 export async function indexRepository(
@@ -57,6 +62,8 @@ export async function indexRepository(
       for (const file of parsed.fileRecords) fileStmt.run(repo.id, file.relativePath, file.extension, file.sha256, file.sizeBytes, new Date().toISOString());
       for (const s of parsed.services) insertService(db, repo.id, s);
       for (const h of parsed.handlers) insertHandler(db, repo.id, h);
+      insertExecutableSymbols(db, repo.id, parsed.symbols);
+      insertSymbolCalls(db, repo.id, parsed.symbolCalls);
       insertRegistrations(db, repo.id, parsed.registrations);
       insertBindings(db, repo.id, parsed.bindings);
       insertCalls(db, repo.id, parsed.calls);
@@ -72,7 +79,7 @@ export async function indexRepository(
   }
 }
 async function parseAllSourceFacts(root: string, files: string[]): Promise<ParsedFacts> {
-  const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], fileRecords: [] };
+  const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], fileRecords: [] };
   for (const file of files) {
     const abs = path.join(root, file);
     const stat = await fs.stat(abs);
@@ -82,6 +89,9 @@ async function parseAllSourceFacts(root: string, files: string[]): Promise<Parse
       facts.handlers.push(...(await parseDecorators(root, file)));
       facts.registrations.push(...(await parseHandlerRegistrations(root, file)));
       facts.bindings.push(...(await parseServiceBindings(root, file)));
+      const symbolFacts = await parseExecutableSymbols(root, file);
+      facts.symbols.push(...symbolFacts.symbols);
+      facts.symbolCalls.push(...symbolFacts.calls);
       facts.calls.push(...(await parseOutboundCalls(root, file)));
     }
   }

@@ -41,6 +41,8 @@ export function resolveOperation(
     alias?: string;
     destination?: string;
     operationPath?: string;
+    serviceName?: string;
+    repoId?: number;
     hasExplicitOverride?: boolean;
     isDynamic?: boolean;
   },
@@ -59,7 +61,7 @@ export function resolveOperation(
       candidates: [],
       reasons: ['missing_operation_path'],
     };
-  const candidates = rows(db, signals.operationPath, workspaceId).map((c) => ({
+  const candidates = rows(db, signals.operationPath, workspaceId).filter((c) => matchesLocalRepo(db, c.operationId, signals.repoId)).map((c) => ({
     ...c,
     score: 0.2,
     reasons: ['operation_path_match'],
@@ -85,6 +87,11 @@ export function resolveOperation(
       c.score -= 0.1;
       c.reasons.push('service_path_mismatch');
     }
+    if (signals.serviceName && (c.servicePath === `/${signals.serviceName}` || c.servicePath.endsWith(`/${signals.serviceName}`))) {
+      c.score += 0.7;
+      c.reasons.push('exact_local_service_name');
+    }
+    if (signals.serviceName && c.servicePath !== `/${signals.serviceName}` && !c.servicePath.endsWith(`/${signals.serviceName}`)) c.reasons.push('local_service_name_mismatch');
     if (signals.hasExplicitOverride) {
       c.score += 0.2;
       c.reasons.push('explicit_dynamic_override');
@@ -111,7 +118,7 @@ export function resolveOperation(
   if (
     best &&
     best.score >= 0.9 &&
-    best.servicePath === signals.servicePath &&
+    (best.servicePath === signals.servicePath || Boolean(signals.serviceName && (best.servicePath === `/${signals.serviceName}` || best.servicePath.endsWith(`/${signals.serviceName}`)))) &&
     (best.operationPath === signals.operationPath || best.operationName === signals.operationPath.replace(/^\//, '')) &&
     (!second || best.score - second.score >= 0.25)
   )
@@ -126,6 +133,11 @@ export function resolveOperation(
     candidates,
     reasons: ['candidate_score_below_resolution_threshold'],
   };
+}
+function matchesLocalRepo(db: Db, operationId: number, repoId: number | undefined): boolean {
+  if (repoId === undefined) return true;
+  const row = db.prepare('SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?').get(operationId) as { repoId?: number } | undefined;
+  return row?.repoId === repoId;
 }
 export function findOperation(
   db: Db,

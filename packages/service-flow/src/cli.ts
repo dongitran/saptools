@@ -132,7 +132,7 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
           process.stdout.write(
-            `Linked ${r.edgeCount} edges: ${r.resolvedCount} remote resolved, ${r.unresolvedCount} remote unresolved, ${r.ambiguousCount} remote ambiguous, ${r.dynamicCount} dynamic, ${r.terminalCount} terminal, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous\n`,
+            `Linked ${r.edgeCount} edges: ${r.resolvedCount} remote resolved, ${r.unresolvedCount} remote unresolved, ${r.ambiguousCount} remote ambiguous, ${r.dynamicCount} dynamic, ${r.terminalCount} terminal, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved\n`,
           );
         }).catch(fail),
     );
@@ -395,13 +395,25 @@ export function createProgram(): Command {
                JOIN cds_services s ON s.id=o.service_id
                WHERE remote.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' AND remote.to_kind='operation' AND NOT EXISTS (SELECT 1 FROM graph_edges impl WHERE impl.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND impl.from_kind='operation' AND impl.from_id=remote.to_id) AND ?
                UNION ALL
+               SELECT CASE WHEN ? THEN 'warning' ELSE 'error' END,'local_service_calls_all_unresolved','All local service calls are unresolved; verify local service alias parsing and linking',NULL,NULL
+               WHERE EXISTS (SELECT 1 FROM outbound_calls WHERE call_type='local_service_call') AND NOT EXISTS (SELECT 1 FROM graph_edges e JOIN outbound_calls c ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER) WHERE c.call_type='local_service_call' AND e.status='resolved')
+               UNION ALL
+               SELECT 'error','local_service_accessor_misclassified','Entity accessor calls were indexed as /entities operations',source_file,source_line
+               FROM outbound_calls WHERE call_type='local_service_call' AND operation_path_expr='/entities' AND (? OR 1)
+               UNION ALL
+               SELECT CASE WHEN ? THEN 'warning' ELSE 'error' END,'outbound_calls_without_source_symbol','Outbound calls lack source symbol ownership: ' || COUNT(*),NULL,NULL
+               FROM outbound_calls WHERE source_symbol_id IS NULL HAVING COUNT(*) >= CASE WHEN ? THEN 1 ELSE 10 END
+               UNION ALL
+               SELECT 'warning','trace_scope_fell_back_to_file','Trace may fall back to source-file scope for calls without symbols',NULL,NULL
+               WHERE EXISTS (SELECT 1 FROM outbound_calls WHERE source_symbol_id IS NULL) AND ?
+               UNION ALL
                SELECT 'warning','graph_stale','Graph is stale after repository fact changes; run service-flow link',NULL,NULL
                WHERE EXISTS (SELECT 1 FROM repositories WHERE graph_stale_reason IS NOT NULL)
                UNION ALL
                SELECT 'warning','index_run_abandoned','Index run ' || id || ' started at ' || started_at || ' is still running after the 60 minute abandonment threshold',NULL,NULL
                FROM index_runs WHERE status='running' AND datetime(started_at) < datetime('now','-60 minutes')`,
             )
-            .all(Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
+            .all(Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const allDiagnostics = [...diagnostics, ...health];
           process.stdout.write(
             allDiagnostics.length

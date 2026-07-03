@@ -6,6 +6,8 @@ import type {
   HandlerRegistrationFact,
   OutboundCallFact,
   ServiceBindingFact,
+  ExecutableSymbolFact,
+  SymbolCallFact,
 } from '../types.js';
 export interface RepoRow {
   id: number;
@@ -96,11 +98,12 @@ export function clearRepoFacts(db: Db, repoId: number): void {
   for (const t of [
     'cds_requires',
     'cds_services',
-    'symbols',
     'handler_classes',
+    'outbound_calls',
+    'symbol_calls',
     'handler_registrations',
     'service_bindings',
-    'outbound_calls',
+    'symbols',
     'diagnostics',
     'files',
   ])
@@ -265,17 +268,30 @@ export function insertBindings(
       r.helperChain ? JSON.stringify(r.helperChain) : null,
     );
 }
+export function insertExecutableSymbols(db: Db, repoId: number, rows: ExecutableSymbolFact[]): void {
+  const stmt = db.prepare('INSERT INTO symbols(repo_id,file_id,kind,name,qualified_name,exported,start_line,end_line,start_offset,end_offset,source_file,exported_name,evidence_json) VALUES(?,(SELECT id FROM files WHERE repo_id=? AND relative_path=?),?,?,?,?,?,?,?,?,?,?,?)');
+  for (const r of rows) stmt.run(repoId, repoId, r.sourceFile, r.kind, r.localName, r.qualifiedName, r.exported ? 1 : 0, r.startLine, r.endLine, r.startOffset, r.endOffset, r.sourceFile, r.exportedName, r.importExportEvidence ? JSON.stringify(r.importExportEvidence) : null);
+}
+export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]): void {
+  const stmt = db.prepare(`INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,status,confidence,evidence_json,unresolved_reason) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND ((source_file=? AND (name=? OR qualified_name=?)) OR (source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?))) ORDER BY CASE WHEN source_file=? THEN 0 ELSE 1 END,id LIMIT 1),?,?,?,?,?,0.8,?,CASE WHEN (SELECT id FROM symbols WHERE repo_id=? AND ((source_file=? AND (name=? OR qualified_name=?)) OR (source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?))) ORDER BY CASE WHEN source_file=? THEN 0 ELSE 1 END,id LIMIT 1) IS NULL THEN 'No local symbol target matched exactly' ELSE NULL END)`);
+  for (const r of rows) stmt.run(repoId, repoId, r.sourceFile, r.callerQualifiedName, repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeExpression, r.importSource, r.sourceFile, r.sourceLine, JSON.stringify(r.evidence), repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName, r.sourceFile);
+  db.prepare("UPDATE symbol_calls SET status=CASE WHEN callee_symbol_id IS NULL THEN 'unresolved' ELSE 'resolved' END WHERE repo_id=?").run(repoId);
+}
 export function insertCalls(
   db: Db,
   repoId: number,
   rows: OutboundCallFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO outbound_calls(repo_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,service_binding_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
+    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,service_binding_id) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1),?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
   );
   for (const r of rows)
     stmt.run(
       repoId,
+      repoId,
+      r.sourceFile,
+      r.sourceLine,
+      r.sourceLine,
       r.callType,
       r.method,
       r.operationPathExpr,
@@ -286,6 +302,9 @@ export function insertCalls(
       r.sourceLine,
       r.confidence,
       r.unresolvedReason,
+      r.localServiceName,
+      r.localServiceLookup,
+      r.aliasChain ? JSON.stringify(r.aliasChain) : null,
       repoId,
       r.serviceVariableName,
       r.sourceFile,

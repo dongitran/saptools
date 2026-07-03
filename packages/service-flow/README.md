@@ -21,7 +21,7 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 ## ✨ Features
 
 - 🧭 **Cross-repository CAP tracing** — starts from a repo, service, operation path, operation name, or handler and follows the indexed flow across workspace boundaries
-- 🧩 **Static CAP/CDS indexing** — extracts services, actions, functions, events, handler classes, decorator metadata, handler registrations, generated constants, and package-level `cds.requires`
+- 🧩 **Static CAP/CDS indexing** — extracts services, actions, functions, events, handler classes, decorator metadata, handler registrations, executable symbols, local helper calls, and package-level `cds.requires`
 - 🔗 **Service-to-service linking** — resolves `cds.connect.to(...)`, `remote.send(...)`, `cds.services.*` style calls, helper package imports, dynamic candidates, and unresolved evidence into graph edges
 - 🗄️ **SQLite-backed workspace cache** — stores deterministic facts under `.service-flow/service-flow.db` so large workspaces can be queried repeatedly without reparsing everything
 - 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets trace and graph commands apply runtime `--var key=value` values that can turn dynamic candidates into effective traversable operation edges
@@ -147,6 +147,12 @@ service-flow link --workspace /path/to/workspace --force
 Trace one starting point and render table, JSON, or Mermaid output. Trace now
 walks linked `graph_edges`, so a resolved remote operation is followed into the
 target handler up to `--depth` instead of showing only calls in the first file.
+
+### Symbol-scoped helper traversal
+
+`service-flow trace` starts from the selected handler method symbol, renders outbound calls owned by that symbol, and follows conservative local helper-call facts. Supported helper edges include same-file functions, `this.method()` calls, and exactly mapped relative imports/exports that resolve to an indexed executable symbol. Calls from unrelated functions in the same source file are not included merely because the file path matches.
+
+Local CAP calls through `cds.services.<Service>.<operation>()`, bracket service lookups, and simple aliases are indexed as local operation calls. Entity accessors such as `cds.services.db.entities(...)` are treated as entity metadata access, not operation calls.
 JSON output includes typed nodes for calls, operations, database entities,
 external destinations, and unresolved/dynamic candidates when edges exist.
 
@@ -166,7 +172,7 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 | `--service <path>` | Start from a CAP service path such as `/FacadeService` |
 | `--path <operationPath>` | Start from an operation path such as `/doWork` |
 | `--handler <name>` | Start from a handler class or handler-like selector |
-| `--depth <n>` | Maximum traversal depth; defaults to `25` |
+| `--depth <n>` | Maximum executable/service scope depth; defaults to `25`. Implementation hops are rendered at the current scope depth, while downstream handler bodies consume the next depth. The `step` field never exceeds the requested depth. |
 | `--format <format>` | `table`, `json`, or `mermaid`; defaults to `table` |
 | `--include-external` | Include external HTTP/destination edges in traversal output |
 | `--include-db` | Include local DB query edges in traversal output |
