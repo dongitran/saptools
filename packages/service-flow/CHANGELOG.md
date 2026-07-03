@@ -1,14 +1,15 @@
 # Changelog
 
-## 0.1.7
+## 0.1.8
 
-- Added atomic last-good repository publication so failed source reads preserve the previous complete snapshot and fingerprint.
-- Added explicit graph freshness metadata and stale diagnostics after successful fact changes until relink.
-- Persisted handler registration class/import evidence and linked registered cross-package implementation handlers through application dependency evidence.
-- Made service-only trace selectors return a typed narrowing diagnostic instead of workspace-wide traversal.
-- Expanded link summaries with dependency and implementation categories whose totals reconcile with persisted graph edges.
-- Preserved terminal parser warning evidence separately from routing status.
-
+- Replaced regex-only handler registration extraction with TypeScript AST evidence for direct handler arrays, identifier arrays, spreads, imported arrays, default exports, aliases, and safe relative re-exports.
+- Persisted class-level `handler_registrations` rows with registration file/line and import evidence so registered handlers can be resolved across same-repository and cross-package layouts.
+- Relaxed implementation linking to support same-repository registrations, handler-package-owned registrations, and application registrations while preserving ambiguous candidate evidence.
+- Continued trace traversal from static and runtime-resolved operations into registered implementation handlers via `OPERATION_IMPLEMENTED_BY_HANDLER` edges.
+- Moved source discovery, reads, and fingerprinting into the protected repository indexing flow so failed reads preserve last-good facts/fingerprints and produce doctor-visible diagnostics.
+- Added a legacy-schema doctor warning when migrated stores lack fresh foreign-key metadata for key tables.
+- Suppressed the known `node:sqlite` experimental warning for normal supported-runtime database commands without suppressing application errors.
+- Changed `index_run_abandoned` doctor policy to report only running index runs older than the documented 60-minute threshold, including run id and start time.
 
 ## 0.1.6
 

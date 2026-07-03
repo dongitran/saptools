@@ -380,11 +380,14 @@ export function createProgram(): Command {
                SELECT 'error','foreign_key_violation','SQLite foreign_key_check reported integrity failures',NULL,NULL
                WHERE EXISTS (SELECT 1 FROM pragma_foreign_key_check)
                UNION ALL
+               SELECT 'warning','legacy_schema_weaker_foreign_keys','Legacy table lacks fresh-schema foreign-key metadata; rebuild the database or re-run init/index in a new database',NULL,NULL
+               WHERE (SELECT COUNT(*) FROM pragma_foreign_key_list('graph_edges'))=0 OR (SELECT COUNT(*) FROM pragma_foreign_key_list('index_runs'))=0 OR (SELECT COUNT(*) FROM pragma_foreign_key_list('diagnostics'))=0
+               UNION ALL
                SELECT 'warning','graph_stale','Graph is stale after repository fact changes; run service-flow link',NULL,NULL
                WHERE EXISTS (SELECT 1 FROM repositories WHERE graph_stale_reason IS NOT NULL)
                UNION ALL
-               SELECT 'warning','index_run_abandoned','An index run is still marked running',NULL,NULL
-               WHERE EXISTS (SELECT 1 FROM index_runs WHERE status='running')`,
+               SELECT 'warning','index_run_abandoned','Index run ' || id || ' started at ' || started_at || ' is still running after the 60 minute abandonment threshold',NULL,NULL
+               FROM index_runs WHERE status='running' AND datetime(started_at) < datetime('now','-60 minutes')`,
             )
             .all(Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const allDiagnostics = [...diagnostics, ...health];

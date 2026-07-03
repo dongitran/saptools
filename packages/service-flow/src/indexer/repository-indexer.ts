@@ -42,12 +42,12 @@ export async function indexRepository(
   repo: RepoRow,
   force: boolean,
 ): Promise<IndexRepoResult> {
-  const sourceFiles = await findSourceFiles(repo.absolute_path);
-  const packageFacts = await parsePackageJson(repo.absolute_path);
-  const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, packageFacts);
-  if (!force && repo.fingerprint === fingerprint) return { fileCount: 0, diagnosticCount: 0, skipped: true };
-  const kind = await classifyRepository(repo.absolute_path, packageFacts);
   try {
+    const sourceFiles = await findSourceFiles(repo.absolute_path);
+    const packageFacts = await parsePackageJson(repo.absolute_path);
+    const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, packageFacts);
+    if (!force && repo.fingerprint === fingerprint) return { fileCount: 0, diagnosticCount: 0, skipped: true };
+    const kind = await classifyRepository(repo.absolute_path, packageFacts);
     const parsed = await parseAllSourceFacts(repo.absolute_path, sourceFiles);
     db.transaction(() => {
       db.prepare('UPDATE repositories SET package_name=?, package_version=?, dependencies_json=?, kind=?, index_status=? WHERE id=?').run(packageFacts.packageName, packageFacts.packageVersion, JSON.stringify(packageFacts.dependencies), kind, 'indexing', repo.id);
@@ -66,7 +66,8 @@ export async function indexRepository(
   } catch (error) {
     const message = errorMessage(error);
     db.prepare("UPDATE repositories SET index_status='failed', error_count=1 WHERE id=?").run(repo.id);
-    db.prepare('INSERT INTO diagnostics(repo_id,severity,code,message) VALUES(?,?,?,?)').run(repo.id, 'error', 'index_failed_snapshot_preserved', message);
+    db.prepare("DELETE FROM diagnostics WHERE repo_id=? AND code IN ('index_failed_snapshot_preserved','source_read_failed')").run(repo.id);
+    db.prepare('INSERT INTO diagnostics(repo_id,severity,code,message) VALUES(?,?,?,?)').run(repo.id, 'error', 'source_read_failed', `Index failed before publication; previous facts and fingerprint were preserved. ${message}`);
     return { fileCount: 0, diagnosticCount: 1, skipped: false };
   }
 }

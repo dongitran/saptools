@@ -51,6 +51,7 @@ describe('linker and trace engine', () => {
         linked.implementationAmbiguousCount,
     );
     expect(linked.dependencyResolvedCount).toBeGreaterThan(0);
+    expect(linked.implementationResolvedCount + linked.implementationAmbiguousCount).toBeGreaterThan(0);
     const edgeTypes = db
       .prepare('SELECT edge_type edgeType FROM graph_edges ORDER BY id')
       .all() as Array<{ edgeType: string }>;
