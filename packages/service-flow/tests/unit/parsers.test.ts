@@ -250,6 +250,45 @@ describe('executable symbol parser trace-quality cases', () => {
       'this.otherMethod',
     ]);
   });
+
+
+  it('exports only public static members of exported classes and indexes shorthand object aliases', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-exported-class-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'worker.ts'), `
+      import { runHeavyCheck } from './run-heavy-check';
+      export const workerFunctions = { runHeavyCheck };
+      export class DomainWorker {
+        static instance(): unknown { return DomainWorker.singleton.pool; }
+        public runInstance(): void {}
+        private static hidden(): void {}
+      }
+      class InternalWorker { static instance(): void {} }
+    `);
+    await fs.writeFile(path.join(root, 'src', 'handler.ts'), `
+      import { DomainWorker } from './worker';
+      import { PackageWorker } from '@scope/worker';
+      export async function handle(): Promise<void> {
+        const worker = DomainWorker.instance();
+        await worker.runHeavyCheck({});
+        PackageWorker.instance();
+      }
+    `);
+    const { parseExecutableSymbols } = await import('../../src/parsers/symbol-parser.js');
+    const parsedWorker = await parseExecutableSymbols(root, 'src/worker.ts');
+    const staticMember = parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'DomainWorker.instance');
+    expect(staticMember).toMatchObject({ exported: true, exportedName: 'DomainWorker.instance' });
+    expect(staticMember?.importExportEvidence).toMatchObject({ source: 'exported_class_member', memberKind: 'static_method' });
+    const objectAlias = parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'workerFunctions.runHeavyCheck');
+    expect(objectAlias).toMatchObject({ kind: 'object_alias', exportedName: 'runHeavyCheck' });
+    expect(objectAlias?.importExportEvidence).toMatchObject({ source: 'exported_object_shorthand', targetImportSource: './run-heavy-check' });
+    expect(parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'DomainWorker.runInstance')?.exported).toBe(false);
+    expect(parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'DomainWorker.hidden')?.exported).toBe(false);
+    expect(parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'InternalWorker.instance')?.exported).toBe(false);
+    const parsedHandler = await parseExecutableSymbols(root, 'src/handler.ts');
+    expect(parsedHandler.calls.map((call) => call.calleeExpression).sort()).toEqual(['DomainWorker.instance', 'worker.runHeavyCheck']);
+    expect(parsedHandler.calls.find((call) => call.calleeExpression === 'worker.runHeavyCheck')?.evidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'handle', targetName: 'runHeavyCheck', factory: 'DomainWorker.instance' });
+  });
 });
 
 describe('CAP DB query parser and output labels', () => {

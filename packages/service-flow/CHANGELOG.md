@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.15
+
+- Fixed `symbol_calls.evidence_json` persistence so inserted rows store the parser evidence object instead of a numeric repository id, with explicit initial resolved/unresolved statuses.
+- Added strict doctor diagnostics for non-object symbol-call evidence, documented unresolved/unknown parser-quality thresholds, and outbound-call source-symbol ownership ratios.
+- Made exported public static class methods addressable through relative imports while keeping non-exported, private/protected, and package-imported class member calls conservative.
+- Indexed exported shorthand object maps as alias symbols and added conservative proxy-variable evidence for `const worker = ExportedClass.staticFactory(); worker.method()` flows when the factory comes from a relative import.
+- Preserved 0.1.14 symbol-call noise filtering, semantic unknown DB targets, terminal transport-client classification, and strict parser-quality aggregates.
+
 ## 0.1.14
 
 - Made local symbol-call indexing opt-in: CAP DSL, request helpers, package namespace/CommonJS calls, global runtime APIs, and service-client transport helpers are filtered unless indexed local or relative-import evidence makes the edge actionable.

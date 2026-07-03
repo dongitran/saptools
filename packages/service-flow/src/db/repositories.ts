@@ -273,9 +273,25 @@ export function insertExecutableSymbols(db: Db, repoId: number, rows: Executable
   for (const r of rows) stmt.run(repoId, repoId, r.sourceFile, r.kind, r.localName, r.qualifiedName, r.exported ? 1 : 0, r.startLine, r.endLine, r.startOffset, r.endOffset, r.sourceFile, r.exportedName, r.importExportEvidence ? JSON.stringify(r.importExportEvidence) : null);
 }
 export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]): void {
-  const stmt = db.prepare(`INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,status,confidence,evidence_json,unresolved_reason) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND ((source_file=? AND (name=? OR qualified_name=?)) OR (source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?))) ORDER BY CASE WHEN source_file=? THEN 0 ELSE 1 END,id LIMIT 1),?,?,?,?,?,0.8,?,CASE WHEN (SELECT id FROM symbols WHERE repo_id=? AND ((source_file=? AND (name=? OR qualified_name=?)) OR (source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?))) ORDER BY CASE WHEN source_file=? THEN 0 ELSE 1 END,id LIMIT 1) IS NULL THEN 'No local symbol target matched exactly' ELSE NULL END)`);
-  for (const r of rows) stmt.run(repoId, repoId, r.sourceFile, r.callerQualifiedName, repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeExpression, r.importSource, r.sourceFile, r.sourceLine, JSON.stringify(r.evidence), repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName, r.sourceFile);
-  db.prepare("UPDATE symbol_calls SET status=CASE WHEN callee_symbol_id IS NULL THEN 'unresolved' ELSE 'resolved' END, unresolved_reason=CASE WHEN callee_symbol_id IS NULL THEN COALESCE(unresolved_reason,'No local symbol target matched exactly') ELSE NULL END WHERE repo_id=?").run(repoId);
+  const findTarget = `(SELECT id FROM symbols WHERE repo_id=? AND ((source_file=? AND (name=? OR qualified_name=?)) OR (source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?))) ORDER BY CASE WHEN source_file=? THEN 0 ELSE 1 END,id LIMIT 1)`;
+  const stmt = db.prepare(`INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,status,confidence,evidence_json,unresolved_reason) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),${findTarget},?,?,?,?,CASE WHEN ${findTarget} IS NULL THEN 'unresolved' ELSE 'resolved' END,0.8,?,CASE WHEN ${findTarget} IS NULL THEN 'No local symbol target matched exactly' ELSE NULL END)`);
+  for (const r of rows) {
+    const targetArgs = [repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName, r.sourceFile];
+    stmt.run(
+      repoId,
+      repoId,
+      r.sourceFile,
+      r.callerQualifiedName,
+      ...targetArgs,
+      r.calleeExpression,
+      r.importSource,
+      r.sourceFile,
+      r.sourceLine,
+      ...targetArgs,
+      JSON.stringify(r.evidence),
+      ...targetArgs,
+    );
+  }
 }
 export function insertCalls(
   db: Db,

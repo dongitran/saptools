@@ -18,6 +18,10 @@ function isFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
 function exported(node: ts.Node): boolean {
   return Boolean(ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Export);
 }
+function isPublicStaticMethod(node: ts.MethodDeclaration): boolean {
+  const flags = ts.getCombinedModifierFlags(node);
+  return (flags & ts.ModifierFlags.Static) !== 0 && (flags & ts.ModifierFlags.Private) === 0 && (flags & ts.ModifierFlags.Protected) === 0;
+}
 function exportDeclarations(source: ts.SourceFile): Map<string, string> {
   const exports = new Map<string, string>();
   const visit = (node: ts.Node): void => {
@@ -76,11 +80,20 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   const imports = new Map<string, string>();
   const exportNames = exportDeclarations(source);
   const objectExports = new Set<string>();
-  const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string): void => {
-    const declaredExportName = exportedName ?? exportNames.get(parentName ? parentName.split('.')[0] ?? localName : localName);
+  const exportedClasses = new Set<string>();
+  const proxyVariables = new Map<string, { importSource: string; factory: string }>();
+  const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string, evidence?: Record<string, unknown>): void => {
+    const parentRoot = parentName?.split('.')[0] ?? '';
+    const declaredExportName = exportedName ?? exportNames.get(parentName ? parentRoot : localName);
     const qualifiedName = parentName ? `${parentName}.${localName}` : localName;
-    const objectExported = parentName ? objectExports.has(parentName.split('.')[0] ?? '') : false;
-    symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: objectExported ? qualifiedName : declaredExportName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(declaredExportName) || objectExported, importExportEvidence: declaredExportName ? { exportedName: declaredExportName, source: 'export_declaration' } : objectExported ? { exportedName: qualifiedName, source: 'exported_object_literal' } : undefined });
+    const objectExported = parentName ? objectExports.has(parentRoot) : false;
+    const classMemberExported = kind === 'method' && parentName ? exportedClasses.has(parentRoot) && ts.isMethodDeclaration(node) && isPublicStaticMethod(node) : false;
+    const effectiveExportedName = classMemberExported || objectExported ? qualifiedName : declaredExportName;
+    const sourceEvidence = evidence ?? (classMemberExported ? { source: 'exported_class_member', exportedClass: parentRoot, memberKind: 'static_method' } : declaredExportName ? { exportedName: declaredExportName, source: 'export_declaration' } : objectExported ? { exportedName: qualifiedName, source: 'exported_object_literal' } : undefined);
+    symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: effectiveExportedName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(effectiveExportedName), importExportEvidence: sourceEvidence });
+  };
+  const addAliasSymbol = (objectName: string, propertyName: string, node: ts.Node, targetImportSource?: string): void => {
+    symbols.push({ kind: 'object_alias', localName: propertyName, exportedName: propertyName, qualifiedName: `${objectName}.${propertyName}`, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: true, importExportEvidence: { source: 'exported_object_shorthand', objectName, propertyName, targetImportSource } });
   };
   const visitImports = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -103,6 +116,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   visitImports(source);
   const visitSymbols = (node: ts.Node, parentClass?: string): void => {
     if (ts.isClassDeclaration(node) && node.name) {
+      if (exported(node) || exportNames.has(node.name.text)) exportedClasses.add(node.name.text);
       for (const member of node.members) visitSymbols(member, node.name.text);
       return;
     }
@@ -116,8 +130,10 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
         if (!localName || !d.initializer) continue;
         if (isFunctionLike(d.initializer)) addSymbol('function', localName, d.initializer, undefined, exported(node) ? localName : exportNames.get(localName));
         if (ts.isObjectLiteralExpression(d.initializer)) {
-          if (exported(node) || exportNames.has(localName)) objectExports.add(localName);
+          const objectIsExported = exported(node) || exportNames.has(localName);
+          if (objectIsExported) objectExports.add(localName);
           for (const prop of d.initializer.properties) {
+            if (objectIsExported && ts.isShorthandPropertyAssignment(prop)) addAliasSymbol(localName, prop.name.text, prop.name, imports.get(prop.name.text));
             if (ts.isPropertyAssignment(prop) && isObjectFunction(prop.initializer)) {
               const propName = nameOf(prop.name);
               if (propName) addSymbol('object_method', propName, prop.initializer, localName);
@@ -131,6 +147,15 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     } else ts.forEachChild(node, (child) => visitSymbols(child, parentClass));
   };
   visitSymbols(source);
+  const visitProxyVariables = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isCallExpression(node.initializer) && ts.isPropertyAccessExpression(node.initializer.expression)) {
+      const callee = callName(node.initializer.expression);
+      const importSource = callee.local ? imports.get(callee.local) : undefined;
+      if (callee.member && importSource && isRelativeImport(importSource)) proxyVariables.set(node.name.text, { importSource, factory: callee.expression });
+    }
+    ts.forEachChild(node, visitProxyVariables);
+  };
+  visitProxyVariables(source);
   const localCallables = new Set(symbols.flatMap((sym) => [sym.localName, sym.qualifiedName]));
   const visitCalls = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -138,8 +163,9 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
       const caller = nearest(symbols, line);
       if (caller) {
         const callee = callName(node.expression);
-        const importSource = (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
-        const targetName = callee.expression.startsWith('this.') ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
+        const proxy = callee.local ? proxyVariables.get(callee.local) : undefined;
+        const importSource = proxy?.importSource ?? (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
+        const targetName = proxy && callee.member ? callee.member : callee.expression.startsWith('this.') ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
         const className = caller.qualifiedName.includes('.') ? caller.qualifiedName.split('.')[0] : undefined;
         const thisTarget = className && callee.member ? `${className}.${callee.member}` : undefined;
         const loggerLike = callee.receiver?.endsWith('.logger') || callee.local === 'logger' || (callee.expression.startsWith('this.logger.') && callee.member ? loggerMembers.has(callee.member) : false);
@@ -151,7 +177,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
         const ignored = loggerLike || terminalMember || importedFromPackage || ignoredFrameworkCall(callee);
         const resolvedTarget = provenThisMethod ? thisTarget : targetName;
         const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport);
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget } });
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: proxy ? 'relative_import_proxy_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, factory: proxy?.factory } });
       }
     }
     ts.forEachChild(node, visitCalls);

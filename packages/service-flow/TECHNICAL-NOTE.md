@@ -6,6 +6,12 @@
 - Trace cycle safety: trace queues carry repository IDs, visited scope keys are independent of depth, graph edge IDs are emitted once, and revisiting an already-seen downstream operation scope creates a cycle marker instead of recursive expansion.
 - SQLite reliability: the package uses a persistent SQLite connection per opened database, bound parameters, transactions, WAL, busy timeouts, read-only openings for query commands, and connection-local foreign-key enforcement. Native driver loading failures produce an actionable startup error before output rendering.
 
+## 0.1.15 audit follow-up notes
+
+- Symbol-call rows now require object-shaped parser evidence in strict doctor; this catches numeric JSON regressions that `json_valid()` alone would miss.
+- Relative-import symbol resolution remains opt-in, but exported public static class members and exported shorthand object-map aliases are now addressable with explicit evidence (`exported_class_member`, `exported_object_shorthand`, and `relative_import_proxy_member`).
+- Strict parser-quality aggregates document thresholds for symbol-call unresolved ratio (5%), local DB query unknown ratio (25%), and outbound calls without source-symbol ownership (1%).
+
 ## 0.1.14 audit follow-up notes
 
 - Local CAP service calls keep same-repository service ownership as the strongest resolution path. When the caller repository does not own the CDS service model, the linker searches workspace operations by service identity and operation name/path, then requires caller ownership evidence from implementation edges, ambiguous implementation candidates, registration packages, or resolved dependency/import edges before resolving. Candidate operations without caller evidence are retained with `local_service_candidate_without_caller_ownership` rather than guessed.

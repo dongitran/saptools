@@ -18,6 +18,10 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 
 ---
 
+## 0.1.15 quality update
+
+`service-flow` 0.1.15 fixes symbol-call evidence persistence so fresh databases store object-shaped parser evidence, extends strict doctor checks for evidence and parser-quality ratios, and conservatively resolves exported static class-member and exported shorthand object-map helper flows through relative imports without restoring broad symbol-call fallback noise.
+
 ## ✨ Features
 
 - 🧭 **Cross-repository CAP tracing** — starts from a repo, service, operation path, operation name, or handler and follows the indexed flow across workspace boundaries

@@ -123,6 +123,10 @@ export function resolveOperation(
       c.score += 0.2;
       c.reasons.push(signals.repoId !== undefined ? 'explicit_local_service_call' : 'explicit_dynamic_override');
     }
+    if (signals.repoId !== undefined && candidates.length === 1 && signals.serviceName && c.reasons.includes('local_service_name_mismatch') && (c.operationPath === signals.operationPath || c.operationName === signals.operationPath.replace(/^\//, ''))) {
+      c.score = Math.max(c.score, 0.9);
+      c.reasons.push('same_repo_unique_operation_path_with_lookup_mismatch');
+    }
   }
   for (const c of candidates) c.score = Math.max(0, Math.min(1, c.score));
   candidates.sort(
@@ -145,7 +149,7 @@ export function resolveOperation(
   if (
     best &&
     best.score >= 0.9 &&
-    (best.servicePath === signals.servicePath || Boolean(signals.serviceName && !best.reasons.includes('local_service_name_mismatch'))) &&
+    (best.servicePath === signals.servicePath || Boolean(signals.serviceName && (!best.reasons.includes('local_service_name_mismatch') || best.reasons.includes('same_repo_unique_operation_path_with_lookup_mismatch')))) &&
     (best.operationPath === signals.operationPath || best.operationName === signals.operationPath.replace(/^\//, '')) &&
     (!second || best.score - second.score >= 0.25)
   )

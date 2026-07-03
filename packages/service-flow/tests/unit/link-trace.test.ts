@@ -365,6 +365,53 @@ export class EntryHandler {
 `);
 }
 
+
+
+  it('persists symbol-call evidence as objects and resolves exported static/proxy helper calls', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-symbol-evidence-'));
+    await writeFixtureFile(root, 'app/.git-fixture');
+    await writeFixtureFile(root, 'app/package.json', JSON.stringify({ name: 'app', version: '1.0.0' }));
+    await writeFixtureFile(root, 'app/srv/service.cds', 'service AppService { action runEntry(); }');
+    await writeFixtureFile(root, 'app/srv/run-heavy-check.ts', `import cds from '@sap/cds';
+export async function runHeavyCheck(): Promise<void> { await cds.run(SELECT.from(HeavyChecks)); }
+`);
+    await writeFixtureFile(root, 'app/srv/work-map.ts', `import { runHeavyCheck } from './run-heavy-check';
+export const workerFunctions = { runHeavyCheck };
+export class DomainWorker { static instance(): unknown { return DomainWorker.singleton.pool; } }
+`);
+    await writeFixtureFile(root, 'app/srv/EntryHandler.ts', `import { Handler, Action } from 'cds-routing-handlers';
+import { DomainWorker } from './work-map';
+@Handler()
+export class EntryHandler {
+  @Action('runEntry')
+  async runEntry(): Promise<void> {
+    const worker = DomainWorker.instance();
+    await worker.runHeavyCheck();
+  }
+}
+`);
+    await writeFixtureFile(root, 'app/srv/server.ts', `import { createCombinedHandler } from 'cds-routing-handlers';
+import { EntryHandler } from './EntryHandler.js';
+createCombinedHandler({ handler: [EntryHandler] });
+`);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const nonObject = db.prepare("SELECT COUNT(*) count FROM symbol_calls WHERE json_type(evidence_json) != 'object'").get() as { count: number };
+    expect(nonObject.count).toBe(0);
+    const evidenceRows = db.prepare("SELECT callee_expression expression,status,evidence_json evidenceJson FROM symbol_calls ORDER BY callee_expression").all() as Array<{ expression: string; status: string; evidenceJson: string }>;
+    expect(evidenceRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ expression: 'DomainWorker.instance', status: 'resolved' }),
+      expect.objectContaining({ expression: 'worker.runHeavyCheck', status: 'resolved' }),
+    ]));
+    const proxyEvidence = JSON.parse(evidenceRows.find((row) => row.expression === 'worker.runHeavyCheck')?.evidenceJson ?? '{}') as { relation?: string; caller?: string; targetName?: string };
+    expect(proxyEvidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'EntryHandler.runEntry', targetName: 'runHeavyCheck' });
+    const result = trace(db, { repo: 'app', handler: 'EntryHandler' }, { depth: 8, includeDb: true });
+    expect(result.edges.some((edge) => edge.type === 'local_symbol_call' && String(edge.to).includes('DomainWorker.instance'))).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'local_symbol_call' && String(edge.to).includes('runHeavyCheck'))).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'local_db_query' && String(edge.to).includes('HeavyChecks'))).toBe(true);
+    db.close();
+  });
+
 describe('local service model fallback', () => {
   it('resolves model-package local service calls using caller implementation context', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-local-model-'));
