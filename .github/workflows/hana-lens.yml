@@ -1,0 +1,144 @@
+name: hana-lens
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish @saptools/hana-lens to npm
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/hana-lens.yml"
+      - "packages/hana-lens/package.json"
+      - "packages/hana-lens/README.md"
+      - "packages/hana-lens/LICENSE"
+      - "packages/hana-lens/src/**"
+      - "packages/hana-lens/tests/**"
+      - "packages/hana-lens/tsconfig.json"
+      - "packages/hana-lens/tsconfig.build.json"
+      - "packages/hana-lens/tsconfig.test.json"
+      - "pnpm-lock.yaml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/hana-lens.yml"
+      - "packages/hana-lens/package.json"
+      - "packages/hana-lens/README.md"
+      - "packages/hana-lens/LICENSE"
+      - "packages/hana-lens/src/**"
+      - "packages/hana-lens/tests/**"
+      - "packages/hana-lens/tsconfig.json"
+      - "packages/hana-lens/tsconfig.build.json"
+      - "packages/hana-lens/tsconfig.test.json"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hana-lens-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build and verify hana-lens
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @saptools/hana-lens lint
+
+      - name: Typecheck
+        run: pnpm --filter @saptools/hana-lens typecheck
+
+      - name: Build
+        run: pnpm --filter @saptools/hana-lens build
+
+      - name: Run unit tests
+        run: pnpm --filter @saptools/hana-lens test:unit
+
+      - name: Run mock CAP e2e tests
+        run: pnpm --filter @saptools/hana-lens test:e2e
+
+      - name: Verify publish tarball
+        run: npm pack --dry-run
+        working-directory: packages/hana-lens
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hana-lens-coverage
+          path: packages/hana-lens/coverage
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish hana-lens to npm
+    runs-on: ubuntu-latest
+    needs: ci
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm --filter @saptools/hana-lens build
+
+      - name: Check whether version is already published
+        id: publish_check
+        working-directory: packages/hana-lens
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${package_version} is already published. Skipping npm publish."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.publish_check.outputs.should_publish == 'true'
+        run: npm publish --provenance --access public
+        working-directory: packages/hana-lens

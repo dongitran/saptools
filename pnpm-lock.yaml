@@ -430,6 +430,8 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@26.0.1)(yaml@2.9.0)
 
+  packages/hana-lens: {}
+
   packages/jira:
     dependencies:
       commander:
