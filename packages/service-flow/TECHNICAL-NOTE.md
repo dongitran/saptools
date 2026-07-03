@@ -1,5 +1,13 @@
 # Service Flow Resolution Notes
 
+## 0.1.18 auditability notes
+
+- CAP async event parsing treats `.emit()`, `.publish()`, and `.on()` consistently: a row is indexed only when the direct or chained root receiver has explicit CAP service or messaging evidence such as `cds` or a variable initialized from `cds.connect.to(...)`. Generic realtime/socket/EventEmitter receivers are ignored for CAP graph purposes by default.
+- Local CAP service calls now carry TypeScript AST evidence with classifier, source offsets, service lookup/name, operation, and alias chain.
+- Call-derived graph evidence nests persisted outbound parser evidence as `outboundEvidence`, allowing JSON trace output to explain parser classification without colliding with linker fields.
+- `graph_edges.is_dynamic` means the edge itself requires runtime operation-target resolution. Terminal database, external HTTP, and async event edges keep `is_dynamic=0`; dynamic binding provenance remains in `evidence_json.bindingHasDynamicExpression`.
+- Strict doctor adds aggregate checks for outbound evidence JSON quality, graph evidence propagation, event receiver classification, and dynamic terminal-edge consistency.
+
 - Imported helper bindings: TypeScript imports are resolved for relative modules. When a caller assigns `const client = await connectToService()`, the analyzer follows the imported symbol to an exported helper that returns `cds.connect.to(...)` and persists caller-variable evidence plus the helper source/export chain.
 - Candidate ranking: operation-path matches start as weak candidates. A resolved operation edge requires a strong signal such as exact service path, CDS alias/destination context, or explicit dynamic variable overrides. Otherwise candidates are preserved in edge evidence as ambiguous or unresolved.
 - Edge states: `REMOTE_CALL_RESOLVES_TO_OPERATION` is used only above the resolution threshold; `DYNAMIC_EDGE_CANDIDATE` preserves runtime-dependent service paths/destinations; `UNRESOLVED_EDGE` carries candidate counts and reasons when static evidence is insufficient.

@@ -189,6 +189,51 @@ describe('service-flow parsers', () => {
     expect(local.every((call) => call.operationPathExpr !== '/entities')).toBe(true);
     expect(local.find((call) => call.operationPathExpr === '/loadSummary')?.localServiceName).toBe('acme.catalog.CatalogService');
   });
+
+  it('keeps CAP event emits conservative and ignores generic realtime emitters', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-events-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'events.ts'), `
+      import cds from '@sap/cds';
+      export async function run(userId: string) {
+        const realtime = getRealtimeServer();
+        const socket = getSocket();
+        realtime.emit("room-message", {});
+        realtime.to(userId).emit("direct-message", {});
+        socket.broadcast.emit("typing", {});
+        const messaging = await cds.connect.to("message-bus");
+        await messaging.emit("DomainEvent", {});
+        await messaging.publish("PublishedEvent", {});
+        await cds.emit("CdsEvent", {});
+        await messaging.on("SubscribedEvent", () => undefined);
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/events.ts');
+    const events = calls.filter((call) => call.callType === 'async_emit' || call.callType === 'async_subscribe');
+    expect(events.map((call) => call.eventNameExpr).sort()).toEqual(['CdsEvent', 'DomainEvent', 'PublishedEvent', 'SubscribedEvent']);
+    expect(events.some((call) => call.eventNameExpr === 'room-message')).toBe(false);
+    expect(events.every((call) => call.evidence?.receiverClassification === 'cap_evidence')).toBe(true);
+  });
+
+  it('adds object-shaped evidence to local CAP service calls including aliases', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-local-evidence-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      import cds from '@sap/cds';
+      export async function run() {
+        const catalog = cds.services.CatalogService;
+        await catalog.refresh({ id: '1' });
+        await cds.services.AdminService.rebuild({ id: '1' });
+      }
+    `);
+    const local = (await parseOutboundCalls(root, 'srv/handler.ts')).filter((call) => call.callType === 'local_service_call');
+    expect(local).toHaveLength(2);
+    const aliasCall = local.find((call) => call.localServiceName === 'CatalogService');
+    expect(aliasCall?.evidence).toMatchObject({ parser: 'typescript_ast', classifier: 'local_cap_service_call', localServiceName: 'CatalogService', operation: 'refresh', aliasChain: ['cds.services.CatalogService', 'catalog'] });
+    const directCall = local.find((call) => call.localServiceName === 'AdminService');
+    expect(directCall?.evidence).toMatchObject({ parser: 'typescript_ast', classifier: 'local_cap_service_call', localServiceLookup: 'cds.services.AdminService', operation: 'rebuild' });
+  });
+
   it('parses generated constants and redacts secrets', async () => {
     const constants = await parseGeneratedConstants(
       path.join(fixture, 'facade-service'),

@@ -85,7 +85,7 @@ function collectServiceVariables(source: ts.SourceFile): Set<string> {
   const visit = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const text = node.initializer.getText(source);
-      if (/cds\.connect\.(to|messaging)\s*\(/.test(text) || /create.*(Client|Remote|Service|Messaging)/.test(text)) vars.add(node.name.text);
+      if (/cds\.connect\.(to|messaging)\s*\(/.test(text)) vars.add(node.name.text);
     }
     ts.forEachChild(node, visit);
   };
@@ -94,14 +94,25 @@ function collectServiceVariables(source: ts.SourceFile): Set<string> {
 }
 function receiverName(expr: ts.Expression): string | undefined {
   if (ts.isIdentifier(expr)) return expr.text;
-  if (ts.isPropertyAccessExpression(expr)) return expr.getText();
+  if (ts.isPropertyAccessExpression(expr)) return expr.getText(sourceOf(expr));
   return undefined;
 }
-function isSupportedEventReceiver(receiver: string | undefined, serviceVariables: Set<string>): boolean {
-  if (!receiver) return false;
-  if (receiver === 'cds') return true;
-  if (serviceVariables.has(receiver)) return true;
-  if (/^(srv|service|serviceClient|messaging|messageClient|eventClient|.*Client)$/.test(receiver)) return true;
+function sourceOf(node: ts.Node): ts.SourceFile {
+  return node.getSourceFile();
+}
+function rootReceiverName(expr: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr)) return rootReceiverName(expr.expression);
+  if (ts.isCallExpression(expr)) return rootReceiverName(expr.expression);
+  return undefined;
+}
+function isSupportedEventReceiver(receiver: string | undefined, rootReceiver: string | undefined, serviceVariables: Set<string>): boolean {
+  const candidate = rootReceiver ?? receiver;
+  if (!candidate) return false;
+  if (candidate === 'cds') return true;
+  if (serviceVariables.has(candidate)) return true;
+  if (receiver && serviceVariables.has(receiver)) return true;
+  if (/^(srv|service|serviceClient|messaging|messageClient|eventClient)$/.test(candidate)) return true;
   return false;
 }
 export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: string): ClassifiedOutboundCall[] {
@@ -131,9 +142,10 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);
-        if (expr.name.text !== 'on' || isSupportedEventReceiver(receiver, serviceVariables)) {
+        const rootReceiver = rootReceiverName(expr.expression);
+        if (isSupportedEventReceiver(receiver, rootReceiver, serviceVariables)) {
           const eventName = literalText(node.arguments[0]);
-          if (eventName) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: receiver, eventNameExpr: eventName }, { receiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit' });
+          if (eventName) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: rootReceiver ?? receiver, eventNameExpr: eventName }, { receiver, rootReceiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit', receiverClassification: 'cap_evidence' });
         }
       } else if (exprText === 'axios' || exprText === 'executeHttpRequest' || exprText === 'useOrFetchDestination') {
         add(node, { callType: 'external_http', payloadSummary: summarizeExpression(node.arguments.map((arg) => arg.getText(source)).join(', ')), confidence: 0.7, unresolvedReason: 'External HTTP destination is outside indexed CAP services' });
@@ -180,6 +192,13 @@ function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFac
         sourceLine: lineOf(text, node.getStart(source)),
         confidence: 0.9,
         unresolvedReason: ['send', 'emit', 'publish', 'on'].includes(parsed.operation) ? 'transport_client_method' : undefined,
+        evidence: parserEvidence(source, node, {
+          classifier: 'local_cap_service_call',
+          localServiceLookup: parsed.lookup,
+          localServiceName: parsed.service,
+          operation: parsed.operation,
+          aliasChain: parsed.chain,
+        }),
       });
     }
     ts.forEachChild(node, visit);

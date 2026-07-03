@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.18
+
+- Applied conservative CAP receiver eligibility to `.emit()` and `.publish()` so generic realtime, socket, DOM, and EventEmitter-style calls no longer become CAP async event facts without explicit CAP messaging/service evidence.
+- Added structured parser evidence for local CAP service calls, including source offsets, service lookup/name, operation, and alias chain.
+- Propagated outbound parser evidence into call-derived graph and JSON trace evidence under `outboundEvidence` for remote, local, DB, external, and async edges.
+- Clarified graph-level dynamic flags so terminal DB, external, and event edges stay static while dynamic binding details remain in edge evidence.
+- Expanded `doctor --strict` with outbound evidence, graph evidence propagation, event receiver classification, and dynamic terminal-edge consistency aggregates.
+
 ## 0.1.17
 
 - Replaced remaining raw-text outbound call detection with TypeScript AST classification so comments and strings do not create outbound facts or graph edges.
