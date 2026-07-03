@@ -11,6 +11,7 @@ interface RepoRef {
 interface StartScope {
   repo?: RepoRef;
   sourceFiles?: Set<string>;
+  selectorMatched: boolean;
 }
 
 function normalizeOperation(value: string | undefined): string | undefined {
@@ -40,12 +41,21 @@ function sourceFilesForStart(
          AND (? IS NULL OR hc.class_name=? OR hm.method_name=?)
          AND (? IS NULL OR hm.decorator_value=? OR hm.method_name=?)`
     )
-    .all(repoId, repoId, handler, handler, handler, operation, operation, operation) as Array<{
-    sourceFile?: string;
-  }>;
+    .all(
+      repoId,
+      repoId,
+      handler,
+      handler,
+      handler,
+      operation,
+      operation,
+      operation
+    ) as Array<{ sourceFile?: string }>;
 
   if (rows.length === 0) return undefined;
-  return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
+  return new Set(
+    rows.map((row) => row.sourceFile).filter(Boolean) as string[]
+  );
 }
 
 function startScope(db: Db, start: TraceStart): StartScope {
@@ -56,9 +66,19 @@ function startScope(db: Db, start: TraceStart): StartScope {
         )
         .get(start.repo, start.repo) as RepoRef | undefined)
     : undefined;
+  if (start.repo && !repo)
+    return {
+      repo,
+      selectorMatched: false
+    };
+  const sourceFiles = sourceFilesForStart(db, repo?.id, start);
+  const hasSelector = Boolean(
+    start.handler ?? start.operation ?? start.operationPath
+  );
   return {
     repo,
-    sourceFiles: sourceFilesForStart(db, repo?.id, start)
+    sourceFiles,
+    selectorMatched: !hasSelector || sourceFiles !== undefined
   };
 }
 
@@ -81,6 +101,7 @@ export function trace(
     .all(scope.repo?.id, scope.repo?.id) as Array<Record<string, unknown>>;
   const vars = options.vars ?? {};
   const filtered = calls.filter((c) => {
+    if (!scope.selectorMatched) return false;
     if (scope.sourceFiles && !scope.sourceFiles.has(String(c.source_file)))
       return false;
     const type = String(c.call_type);
@@ -135,6 +156,12 @@ export function trace(
       'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics WHERE (? IS NULL OR repo_id=?)'
     )
     .all(scope.repo?.id, scope.repo?.id) as Array<Record<string, unknown>>;
+  if (!scope.selectorMatched)
+    diagnostics.unshift({
+      severity: 'warning',
+      code: 'trace_start_not_found',
+      message: 'No handler source matched the requested trace start selector'
+    });
   return {
     start,
     nodes: [],
