@@ -107,7 +107,6 @@ service-flow index --workspace /path/to/workspace --repo identity-service --forc
 | `--workspace <path>` | Workspace root or a path that can load the saved workspace configuration |
 | `--repo <name>` | Index only one repository by discovered repository name |
 | `--force` | Re-index even when file hashes indicate nothing changed |
-| `--concurrency <n>` | Reserved for future parallel indexing; currently defaults to `1` |
 
 ### 🔗 `service-flow link`
 
@@ -134,7 +133,8 @@ external destinations, and unresolved/dynamic candidates when edges exist.
 ```bash
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
 service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --format json
-service-flow trace --workspace /path/to/workspace --handler EntryHandler --include-db --include-external --include-async
+service-flow trace --workspace /path/to/workspace --handler EntryHandler --depth 1 --format json
+service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --depth 2
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
 ```
 
@@ -193,11 +193,11 @@ service-flow list calls --workspace /path/to/workspace --repo facade-service --o
 
 - If a remote edge is unresolved, run `service-flow list calls --operation <name>`
   and `service-flow inspect operation <name>` to compare the captured call path
-  with indexed CDS operations.
+  with indexed CDS operations. Operation-path-only matches are shown as ambiguous/unresolved with candidate counts instead of high-confidence cross-repo links.
 - Service bindings are matched to outbound calls by repository, source file, and
   variable name to avoid false cross-file matches. If a helper-returned client is
-  not linked, keep the helper local/exported and ensure it returns
-  `cds.connect.to(...)` directly.
+  not linked, export the helper from a relative import target and ensure it returns
+  `cds.connect.to(...)` directly or through a simple wrapper. Trace evidence includes the caller variable, imported helper, source file, and exported symbol.
 - `SELECT.one.from(Entity)`, `SELECT.from(Entity)`, `INSERT.into(Entity)`,
   `UPDATE(Entity)`, and `DELETE.from(Entity)` are indexed as local database
   query entities when statically knowable.
@@ -221,10 +221,11 @@ service-flow inspect operation /doWork --workspace /path/to/workspace
 
 ### 🩺 `service-flow doctor`
 
-Print stored diagnostics. A clean workspace prints `No diagnostics recorded`.
+Print stored diagnostics. Default output suppresses high-noise entity-only service checks; `--strict` includes them. A clean workspace prints `No diagnostics recorded`.
 
 ```bash
 service-flow doctor --workspace /path/to/workspace
+service-flow doctor --workspace /path/to/workspace --strict
 ```
 
 ### 🧹 `service-flow clean`
@@ -239,7 +240,7 @@ service-flow clean --workspace /path/to/workspace
 | Flag | Description |
 | --- | --- |
 | `--db-only` | Remove only the configured SQLite database |
-| *(default)* | Remove the whole `.service-flow` state directory for the workspace |
+| *(default)* | Remove the marker-owned `.service-flow` state directory; custom/unowned or dangerous parent directories are refused |
 
 ---
 

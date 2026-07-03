@@ -101,6 +101,7 @@ export interface ServiceBindingFact {
   placeholders: string[];
   sourceFile: string;
   sourceLine: number;
+  helperChain?: Array<Record<string, unknown>>;
 }
 export interface OutboundCallFact {
   callType: CallType;

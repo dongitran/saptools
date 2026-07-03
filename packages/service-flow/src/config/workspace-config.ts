@@ -5,14 +5,14 @@ import {
   CONFIG_DIR,
   CONFIG_FILE,
   DEFAULT_DB_FILE,
-  DEFAULT_IGNORES
+  DEFAULT_IGNORES,
 } from './defaults.js';
 const schema = z.object({
   rootPath: z.string(),
   dbPath: z.string(),
   ignore: z.array(z.string()),
   createdAt: z.string(),
-  updatedAt: z.string()
+  updatedAt: z.string(),
 });
 export type WorkspaceConfig = z.infer<typeof schema>;
 export function configPath(rootPath: string): string {
@@ -22,18 +22,23 @@ export function defaultDbPath(rootPath: string): string {
   return path.join(rootPath, CONFIG_DIR, DEFAULT_DB_FILE);
 }
 export async function saveWorkspaceConfig(
-  config: WorkspaceConfig
+  config: WorkspaceConfig,
 ): Promise<void> {
   await fs.mkdir(path.dirname(configPath(config.rootPath)), {
-    recursive: true
+    recursive: true,
   });
   await fs.writeFile(
     configPath(config.rootPath),
-    `${JSON.stringify(config, null, 2)}\n`
+    `${JSON.stringify(config, null, 2)}\n`,
   );
+  if (path.dirname(config.dbPath) === path.dirname(configPath(config.rootPath)))
+    await fs.writeFile(
+      path.join(path.dirname(config.dbPath), '.service-flow-state'),
+      'service-flow\n',
+    );
 }
 export async function loadWorkspaceConfig(
-  workspace?: string
+  workspace?: string,
 ): Promise<WorkspaceConfig> {
   const root = path.resolve(workspace ?? process.cwd());
   const data = await fs.readFile(configPath(root), 'utf8');
@@ -42,7 +47,7 @@ export async function loadWorkspaceConfig(
 export function createWorkspaceConfig(
   rootPath: string,
   dbPath?: string,
-  ignore: string[] = [...DEFAULT_IGNORES]
+  ignore: string[] = [...DEFAULT_IGNORES],
 ): WorkspaceConfig {
   const now = new Date().toISOString();
   const root = path.resolve(rootPath);
@@ -51,6 +56,6 @@ export function createWorkspaceConfig(
     dbPath: path.resolve(dbPath ?? defaultDbPath(root)),
     ignore,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }

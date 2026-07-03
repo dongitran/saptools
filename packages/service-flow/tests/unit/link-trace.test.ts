@@ -6,7 +6,7 @@ import { openDatabase } from '../../src/db/connection.js';
 import { discoverRepositories } from '../../src/discovery/discover-repositories.js';
 import {
   upsertRepository,
-  upsertWorkspace
+  upsertWorkspace,
 } from '../../src/db/repositories.js';
 import { parsePackageJson } from '../../src/parsers/package-json-parser.js';
 import { classifyRepository } from '../../src/discovery/classify-repository.js';
@@ -20,11 +20,11 @@ describe('linker and trace engine', () => {
     const workspaceId = upsertWorkspace(
       db,
       fixture,
-      path.join(dir, 'graph.db')
+      path.join(dir, 'graph.db'),
     );
     for (const repo of await discoverRepositories(fixture, [
       'node_modules',
-      '.git'
+      '.git',
     ])) {
       const pkg = await parsePackageJson(repo.absolutePath);
       upsertRepository(db, workspaceId, {
@@ -32,31 +32,32 @@ describe('linker and trace engine', () => {
         packageName: pkg.packageName,
         packageVersion: pkg.packageVersion,
         dependencies: pkg.dependencies,
-        kind: await classifyRepository(repo.absolutePath, pkg)
+        kind: await classifyRepository(repo.absolutePath, pkg),
       });
     }
     const indexed = await indexWorkspace(db, workspaceId, { force: true });
     expect(indexed.repoCount).toBe(5);
-    const linked = linkWorkspace(db, workspaceId, {
-      objectType: 'Thing',
-      objectCode: 'xx'
-    });
+    const linked = linkWorkspace(db, workspaceId);
     expect(linked.edgeCount).toBeGreaterThan(0);
     const edgeTypes = db
       .prepare('SELECT edge_type edgeType FROM graph_edges ORDER BY id')
       .all() as Array<{ edgeType: string }>;
     expect(edgeTypes.map((edge) => edge.edgeType)).toContain(
-      'EVENT_CONSUMED_BY_HANDLER'
+      'EVENT_CONSUMED_BY_HANDLER',
     );
     const result = trace(
       db,
       { repo: 'facade-service', operation: 'doWork' },
-      { depth: 20, includeDb: true, includeAsync: true, includeExternal: true }
+      { depth: 20, includeDb: true, includeAsync: true, includeExternal: true },
     );
     expect(result.edges.map((e) => e.type)).toContain('remote_action');
     expect(result.nodes.length).toBeGreaterThan(0);
-    expect(result.edges.some((e) => e.from.includes('EntryHandler.ts'))).toBe(true);
-    expect(result.edges.some((e) => !e.from.includes('EntryHandler.ts'))).toBe(true);
+    expect(result.edges.some((e) => e.from.includes('EntryHandler.ts'))).toBe(
+      true,
+    );
+    expect(result.edges.some((e) => !e.from.includes('EntryHandler.ts'))).toBe(
+      true,
+    );
 
     const handlerResult = trace(
       db,
@@ -66,24 +67,24 @@ describe('linker and trace engine', () => {
         vars: { objectType: 'Thing', objectCode: 'xx' },
         includeDb: true,
         includeAsync: true,
-        includeExternal: true
-      }
+        includeExternal: true,
+      },
     );
     expect(
-      handlerResult.edges.some((e) => e.from.includes('RulesHandler.ts'))
+      handlerResult.edges.some((e) => e.from.includes('RulesHandler.ts')),
     ).toBe(true);
     expect(handlerResult.edges.map((e) => e.to)).toContain(
-      '/ThingProcessService/getPaths'
+      '/ThingProcessService/getPaths',
     );
 
     const missingOperationResult = trace(
       db,
       { repo: 'rules-service', operation: 'notRegistered' },
-      { depth: 20, includeAsync: true }
+      { depth: 20, includeAsync: true },
     );
     expect(missingOperationResult.edges).toHaveLength(0);
     expect(missingOperationResult.diagnostics[0]?.code).toBe(
-      'trace_start_not_found'
+      'trace_start_not_found',
     );
     db.close();
   });
