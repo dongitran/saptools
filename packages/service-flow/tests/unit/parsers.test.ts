@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {
   discoverRepositories,
@@ -18,6 +20,33 @@ describe('service-flow parsers', () => {
     const repos = await discoverRepositories(fixture, ['node_modules', '.git']);
     expect(repos.map((r) => r.name)).toContain('facade-service');
     expect(repos).toHaveLength(5);
+  });
+  it('continues scanning nested repositories when the selected root has a git marker', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-roots-'));
+    await fs.mkdir(path.join(root, '.git'));
+    await fs.writeFile(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    await fs.mkdir(path.join(root, 'apps', 'nested', '.git'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(root, 'apps', 'nested', '.git', 'config'),
+      '[core]\n',
+    );
+    const repos = await discoverRepositories(root, ['node_modules']);
+    expect(repos.map((r) => r.relativePath)).toEqual(['.', 'apps/nested']);
+  });
+  it('ignores empty root git markers while scanning nested repositories', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-empty-git-'));
+    await fs.mkdir(path.join(root, '.git'));
+    await fs.mkdir(path.join(root, 'apps', 'nested', '.git'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(root, 'apps', 'nested', '.git', 'HEAD'),
+      'ref: refs/heads/main\n',
+    );
+    const repos = await discoverRepositories(root, ['node_modules']);
+    expect(repos.map((r) => r.relativePath)).toEqual(['apps/nested']);
   });
   it('parses package cds requires', async () => {
     const pkg = await parsePackageJson(path.join(fixture, 'facade-service'));
@@ -66,6 +95,47 @@ describe('service-flow parsers', () => {
     expect(
       bindings.some((b) => b.variableName === 'rules' && b.alias === 'rules'),
     ).toBe(true);
+    const identity = bindings.find((b) => b.variableName === 'identity');
+    expect(identity?.helperChain?.[0]).toMatchObject({
+      importedHelper: 'createIdentityClient',
+      exportedSymbol: 'createIdentityClient',
+      helperSourceFile: 'srv/functions/connection-helper.ts',
+    });
+    const rules = bindings.find((b) => b.variableName === 'rules');
+    expect(rules?.helperChain?.[0]).toMatchObject({
+      importedHelper: 'createRulesRemote',
+      exportedSymbol: 'createRulesRemote',
+      helperSourceFile: 'srv/functions/connection-helper.ts',
+    });
+  });
+  it('parses two-argument cds.connect.to without confusing alias and service path', async () => {
+    const root = path.join(fixture, 'rules-service');
+    const bindings = await parseServiceBindings(
+      root,
+      'srv/functions/RulesHandler.ts',
+    );
+    const process = bindings.find((b) => b.variableName === 'process');
+    expect(process?.aliasExpr).toBe('svc_${objectCode}_process');
+    expect(process?.destinationExpr).toBe('svc_${objectCode}_process');
+    expect(process?.servicePathExpr).toBe('/${objectType}ProcessService');
+    expect(process?.placeholders).toEqual(
+      expect.arrayContaining(['objectCode', 'objectType']),
+    );
+  });
+  it('propagates class-field helper object returns to destructured caller locals', async () => {
+    const root = path.join(fixture, 'rules-service');
+    const bindings = await parseServiceBindings(
+      root,
+      'srv/functions/ClassHelperHandler.ts',
+    );
+    const process = bindings.find((b) => b.variableName === 'processClient');
+    expect(process?.aliasExpr).toBe('svc_${objectCode}_process');
+    expect(process?.servicePathExpr).toBe('/${objectType}ProcessService');
+    expect(process?.helperChain?.[0]).toMatchObject({
+      className: 'ClassHelperHandler',
+      classHelper: 'createProcessClient',
+      returnedProperty: 'processClient',
+    });
   });
   it('parses generated constants and redacts secrets', async () => {
     const constants = await parseGeneratedConstants(

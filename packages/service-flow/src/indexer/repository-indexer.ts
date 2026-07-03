@@ -104,9 +104,17 @@ async function findSourceFiles(root: string): Promise<string[]> {
           !['node_modules', 'dist', 'gen', 'coverage', '.git'].includes(e.name)
         )
           await walk(path.join(dir, e.name), rel);
-      } else if (/\.(cds|ts|js)$/.test(e.name)) out.push(rel);
+      } else if (/\.(cds|ts|js)$/.test(e.name) && !isDefaultTestFile(rel))
+        out.push(rel);
     }
   }
   await walk(root);
   return out.sort();
+}
+
+function isDefaultTestFile(relativeFile: string): boolean {
+  const parts = relativeFile.split('/');
+  if (parts.some((part) => ['test', 'tests', '__tests__'].includes(part)))
+    return true;
+  return /\.(test|spec)\.[jt]s$/.test(parts.at(-1) ?? '');
 }

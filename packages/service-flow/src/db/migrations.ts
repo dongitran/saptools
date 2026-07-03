@@ -9,4 +9,6 @@ export function migrate(db: Db): void {
     db.prepare(
       'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT',
     ).run();
+  if (!columns.some((column) => column.name === 'alias_expr'))
+    db.prepare('ALTER TABLE service_bindings ADD COLUMN alias_expr TEXT').run();
 }

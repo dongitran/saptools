@@ -4,7 +4,7 @@ import { Handler, Func } from 'cds-routing-handlers';
 export class RulesHandler {
   @Func('checkPayload')
   async checkPayload(objectCode: string, objectType: string): Promise<boolean> {
-    const process = await cds.connect.to({
+    const process = await cds.connect.to(`svc_${objectCode}_process`, {
       kind: 'odata',
       credentials: {
         destination: `svc_${objectCode}_process`,

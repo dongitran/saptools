@@ -12,7 +12,7 @@ export function linkWorkspace(
   let unresolved = 0;
   const calls = db
     .prepare(
-      `SELECT c.*,r.name repoName,b.alias,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,b.helper_chain_json helperChainJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`,
+      `SELECT c.*,r.name repoName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,b.helper_chain_json helperChainJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`,
     )
     .all(workspaceId) as Array<Record<string, unknown>>;
   for (const call of calls) {
@@ -49,6 +49,7 @@ export function linkWorkspace(
       line: call.source_line,
       repo: call.repoName,
       serviceAlias: call.alias,
+      serviceAliasExpr: call.aliasExpr,
       destination,
       servicePath,
       operationPath: op,

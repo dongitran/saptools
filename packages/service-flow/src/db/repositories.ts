@@ -234,13 +234,14 @@ export function insertBindings(
   rows: ServiceBindingFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO service_bindings(repo_id,variable_name,alias,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,helper_chain_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO service_bindings(repo_id,variable_name,alias,alias_expr,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,helper_chain_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
   );
   for (const r of rows)
     stmt.run(
       repoId,
       r.variableName,
       r.alias,
+      r.aliasExpr,
       r.destinationExpr,
       r.servicePathExpr,
       r.isDynamic ? 1 : 0,
