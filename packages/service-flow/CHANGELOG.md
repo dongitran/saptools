@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13
+
+- Added implementation-context fallback for local `cds.services.*` calls so helper packages can resolve model-package operations only when handler/dependency/registration evidence ties the caller repository to the target operation.
+- Preserved same-repository local service resolution as the strongest path and added explicit evidence/reasons for implementation-context ownership, rejected candidates, and candidate-without-caller-ownership cases.
+- Replaced fragile CAP DB query string extraction with AST traversal for chained `cds.run(SELECT/INSERT/UPDATE/DELETE...)` forms, including multiline `columns(...).where(...)` chains and `this.EntityName` targets.
+- Kept genuinely dynamic DB queries terminal while exposing parser-warning evidence and rendering unknown targets as `Entity: unknown` instead of raw numeric call ids in table/Mermaid output.
+- Further reduced symbol-call noise by filtering built-in collection/string methods, logger calls, global built-ins, third-party package property calls, and unindexed `this.container.method()` calls while retaining indexed local helpers and relative object-literal helper imports.
+- Added doctor aggregate visibility for local service calls resolved by implementation context and calls left unresolved because candidates lack caller ownership.
+- Updated README and technical notes to clarify generated constants remain low-level parser output rather than persisted graph facts.
+
 ## 0.1.12
 
 - Resolved same-repository local CAP service calls by qualified CDS name, simple service name, and service path, with explicit local transport and alias-chain evidence.

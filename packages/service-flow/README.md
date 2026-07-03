@@ -152,11 +152,11 @@ target handler up to `--depth` instead of showing only calls in the first file.
 
 `service-flow trace` starts from the selected handler method symbol, renders outbound calls owned by that symbol, and follows conservative local helper-call facts. Supported helper edges include same-file functions, `this.method()` calls, and exactly mapped relative imports/exports that resolve to an indexed executable symbol. Calls from unrelated functions in the same source file are not included merely because the file path matches.
 
-Local CAP calls through `cds.services.<Service>.<operation>()`, bracket service lookups, and simple aliases are indexed as local operation calls. Linking stays within the same repository by default and matches the target operation by exact qualified CDS service name, exact simple service name, exact service path, or an unambiguous service-path suffix. Entity accessors such as `cds.services.db.entities(...)` are treated as entity metadata access, not operation calls.
+Local CAP calls through `cds.services.<Service>.<operation>()`, bracket service lookups, and simple aliases are indexed as local operation calls. Linking first stays within the same repository and matches the target operation by exact qualified CDS service name, exact simple service name, exact service path, or an unambiguous service-path suffix. If no same-repository service exists, the linker can use implementation-context evidence to resolve model-package operations for helper packages: a resolved/ambiguous implementation candidate, registration package, or dependency/import edge must tie the caller repository to the model operation. Name-only global matches are preserved as unresolved candidate evidence rather than guessed links. Entity accessors such as `cds.services.db.entities(...)` are treated as entity metadata access, not operation calls.
 
 Conservative local symbol traversal intentionally excludes decorators, built-ins such as `JSON.parse`, collection methods, third-party APIs, and arbitrary property chains unless the callee can plausibly resolve to an indexed local symbol. Named export lists such as `export { loadTemplate as publicLoadTemplate }` are indexed with the public exported name so relative imports can resolve. One-level object-literal helpers are indexed as symbols named like `cacheHelper.getConfiguration`; nested object literals are not yet expanded beyond the first helper level. `parseGeneratedConstants` remains a public low-level parser export for callers that need it, but generated constants are not persisted as graph facts in this patch; linking uses the deterministic decorator normalizer described above.
 JSON output includes typed nodes for calls, operations, database entities,
-external destinations, and unresolved/dynamic candidates when edges exist.
+external destinations, and unresolved/dynamic candidates when edges exist. Chained CAP DB queries inside `cds.run(...)` are parsed with TypeScript AST evidence for `SELECT`, `INSERT`, `UPDATE`, and `DELETE` forms. When the query target is genuinely dynamic, graph status remains terminal and JSON retains `parserWarning` evidence, while table and Mermaid render the target as `Entity: unknown` rather than a numeric call id.
 
 ```bash
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
@@ -287,7 +287,7 @@ service-flow clean --workspace /path/to/workspace
 | Local data access | `cds.run(SELECT...)` and local entity query evidence |
 | Async channels | Event Mesh-style `emit`, `publish`, and `on` facts |
 | External calls | Cloud SDK-style HTTP/destination calls and external edge evidence |
-| Generated constants | constants used to resolve service paths, operation paths, and thin helper wrappers |
+| Generated constants | low-level `parseGeneratedConstants` parser output for integrations; not persisted as first-class graph facts in this patch |
 
 ---
 

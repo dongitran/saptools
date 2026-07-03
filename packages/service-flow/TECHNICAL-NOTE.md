@@ -1,10 +1,19 @@
-# Service Flow 0.1.8 Resolution Notes
+# Service Flow Resolution Notes
 
 - Imported helper bindings: TypeScript imports are resolved for relative modules. When a caller assigns `const client = await connectToService()`, the analyzer follows the imported symbol to an exported helper that returns `cds.connect.to(...)` and persists caller-variable evidence plus the helper source/export chain.
 - Candidate ranking: operation-path matches start as weak candidates. A resolved operation edge requires a strong signal such as exact service path, CDS alias/destination context, or explicit dynamic variable overrides. Otherwise candidates are preserved in edge evidence as ambiguous or unresolved.
 - Edge states: `REMOTE_CALL_RESOLVES_TO_OPERATION` is used only above the resolution threshold; `DYNAMIC_EDGE_CANDIDATE` preserves runtime-dependent service paths/destinations; `UNRESOLVED_EDGE` carries candidate counts and reasons when static evidence is insufficient.
 - Trace cycle safety: trace queues carry repository IDs, visited scope keys are independent of depth, graph edge IDs are emitted once, and revisiting an already-seen downstream operation scope creates a cycle marker instead of recursive expansion.
 - SQLite reliability: the package uses a persistent SQLite connection per opened database, bound parameters, transactions, WAL, busy timeouts, read-only openings for query commands, and connection-local foreign-key enforcement. Native driver loading failures produce an actionable startup error before output rendering.
+
+## 0.1.13 audit follow-up notes
+
+- Local CAP service calls keep same-repository service ownership as the strongest resolution path. When the caller repository does not own the CDS service model, the linker searches workspace operations by service identity and operation name/path, then requires caller ownership evidence from implementation edges, ambiguous implementation candidates, registration packages, or resolved dependency/import edges before resolving. Candidate operations without caller evidence are retained with `local_service_candidate_without_caller_ownership` rather than guessed.
+- Trace traversal can use local-call context to choose the caller repository's handler from an otherwise ambiguous global implementation edge. This is scoped to the local call and does not rewrite the global `OPERATION_IMPLEMENTED_BY_HANDLER` ambiguity.
+- CAP DB entity extraction for local `cds.run(...)` calls uses TypeScript AST traversal across chained query expressions, including `SELECT.one.from(Entity).columns(...).where(...)`, `INSERT.into(Entity)`, `UPDATE(Entity)`, and `DELETE.from(Entity)`. Dynamic or unknowable query targets remain terminal graph edges with parser-warning evidence.
+- Human output never labels an unknown DB query target with the raw call id. Table and Mermaid output use `Entity: unknown`; JSON keeps the parser warning and call id evidence for machines.
+- Symbol-call indexing is intentionally conservative for property accesses. Built-in collection/string calls, global built-ins, logger calls, third-party package properties, and unindexed `this.someContainer.method()` calls are filtered unless indexed local helper or relative import evidence makes the edge actionable.
+- Generated constants remain low-level parser output through `parseGeneratedConstants`. They are not persisted as graph facts; implementation linking only uses deterministic decorator normalization for common generated action/function names.
 
 ## 0.1.4 trace-correctness additions
 

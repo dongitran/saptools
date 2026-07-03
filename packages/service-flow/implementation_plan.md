@@ -1,19 +1,24 @@
 # Implementation plan
 
 ## Scope
-Prepare `@saptools/service-flow` 0.1.12 as a focused correctness and trace-quality patch for CAP/CDS TypeScript static analysis.
+Implement `@saptools/service-flow` 0.1.13 as a focused audit follow-up for local CAP service calls, chained CAP query parsing, symbol-call noise, output labels, doctor visibility, and docs.
 
 ## Intended files and reasons
-- `src/parsers/symbol-parser.ts`: make symbol-call collection conservative, mark export-list symbols, index object-literal helper methods, and preserve readable symbol evidence.
-- `src/parsers/outbound-call-parser.ts`: preserve local CAP service alias-chain evidence and rely on object-literal symbols for source ownership.
-- `src/db/repositories.ts`: clear stale unresolved reasons for resolved symbol calls and support exported-name/object-helper symbol resolution.
-- `src/linker/service-resolver.ts`, `src/linker/cross-repo-linker.ts`: resolve same-repository local CAP service calls by qualified/simple/path identity, make implementation matching decorator-aware, and deduplicate method candidates by method identity with nested registration evidence.
-- `src/trace/trace-engine.ts`, `src/output/table-output.ts`, `src/output/mermaid-output.ts`: add first-class symbol nodes, readable labels/locations, suppress false symbol unresolved reasons, and traverse local service calls into implementation handlers.
-- `src/cli.ts`: keep doctor diagnostics actionable while avoiding default failures for explainable top-level calls.
-- Tests/fixtures under `packages/service-flow/tests`: add unit and fake-workspace regression coverage for local service resolution, symbol calls, export-list helpers, object-literal helpers, implementation collision handling, doctor behavior, and trace output.
-- `README.md`, `CHANGELOG.md`, `package.json`, lock metadata/version source: document the 0.1.12 behavior and bump the patch version.
+- `package.json` and root lock metadata: bump `@saptools/service-flow` to `0.1.13`.
+- `src/parsers/outbound-call-parser.ts`: replace string-only CAP query entity extraction with TypeScript AST query traversal for chained `cds.run(...)` forms while keeping warnings for dynamic queries.
+- `src/parsers/symbol-parser.ts`: filter noisy built-in/property calls unless local symbol/import evidence proves they are actionable.
+- `src/linker/service-resolver.ts` and `src/linker/cross-repo-linker.ts`: keep same-repository local service resolution first, then add implementation-context fallback with explicit evidence and unresolved ownership reasons.
+- `src/trace/trace-engine.ts`: use local-call implementation-context evidence to trace from model operations into the caller repository's handler when global implementation edges are ambiguous.
+- `src/output/table-output.ts` and `src/output/mermaid-output.ts`: show `Entity: unknown`/safe labels for unknown DB query targets and preserve parser-warning semantics.
+- `src/cli.ts` or doctor helpers: surface aggregate local-service resolution statuses without failing explainably unresolved cases.
+- `tests/unit/*` and `tests/e2e/*`: add neutral regression coverage for CAP query parsing, symbol-call filtering, output labels, and local service model-package fallback.
+- `README.md`, `CHANGELOG.md`, and `TECHNICAL-NOTE.md`: document 0.1.13 behavior, generated-constant limitations, parser-warning output, and implementation-context local service resolution.
 
 ## Verification plan
-- Run package build, typecheck, lint, unit tests, and fake e2e tests using existing package scripts.
-- Run focused CLI fake-workspace flow: init, index --force, link --force, trace --handler FacadeEntryHandler --include-db --format json.
-- Confirm no private/customer-specific names were introduced.
+- `pnpm --filter @saptools/service-flow lint`
+- `pnpm --filter @saptools/service-flow typecheck`
+- `pnpm --filter @saptools/service-flow test:unit`
+- `pnpm --filter @saptools/service-flow test:e2e`
+- `pnpm --filter @saptools/service-flow build`
+- `cd packages/service-flow && npm pack --dry-run`
+- Run the neutral fixture flow with init, index, link, trace, doctor, and strict doctor.

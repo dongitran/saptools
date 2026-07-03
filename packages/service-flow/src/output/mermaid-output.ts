@@ -3,6 +3,8 @@ function safe(value: string): string {
   return value.replace(/[^\w-]/g, '_').slice(0, 60);
 }
 function label(trace: TraceResult, idOrLabel: string): string {
+  const edge = trace.edges.find((item) => item.to === idOrLabel);
+  if (/^\d+$/.test(idOrLabel) && edge?.evidence.parserWarning) return 'Entity: unknown';
   const node = trace.nodes.find((item) => item.id === idOrLabel || item.label === idOrLabel);
   return String(node?.label ?? idOrLabel);
 }

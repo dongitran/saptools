@@ -329,3 +329,60 @@ describe('0.1.12 local service and symbol trace regressions', () => {
     db.close();
   });
 });
+
+async function createLocalServiceModelFallbackFixture(root: string): Promise<void> {
+  await writeFixtureFile(root, 'model-package/.git-fixture');
+  await writeFixtureFile(root, 'model-package/package.json', JSON.stringify({ name: 'model-package', version: '1.0.0' }));
+  await writeFixtureFile(root, 'model-package/db/business-process-service.cds', 'service BusinessProcessService { action loadRemoteData(id: String) returns String; action syncData(id: String) returns String; }');
+  for (const suffix of ['a', 'b']) {
+    const repo = `process-helper-${suffix}`;
+    await writeFixtureFile(root, `${repo}/.git-fixture`);
+    await writeFixtureFile(root, `${repo}/package.json`, JSON.stringify({ name: repo, version: '1.0.0' }));
+    await writeFixtureFile(root, `${repo}/src/LoadRemoteDataHandler.ts`, `import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class LoadRemoteDataHandler {
+  @Action('loadRemoteData')
+  async loadRemoteData(): Promise<string> {
+    return '${suffix}';
+  }
+}
+`);
+    await writeFixtureFile(root, `${repo}/src/server.ts`, `import { createCombinedHandler } from 'cds-routing-handlers';
+import { LoadRemoteDataHandler } from './LoadRemoteDataHandler.js';
+createCombinedHandler({ handler: [LoadRemoteDataHandler] });
+`);
+  }
+  await writeFixtureFile(root, 'process-helper-a/src/EntryHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class EntryHandler {
+  @Action('runEntry')
+  async runEntry(): Promise<void> {
+    const service = cds.services.BusinessProcessService;
+    await service.loadRemoteData('42');
+  }
+}
+`);
+}
+
+describe('local service model fallback', () => {
+  it('resolves model-package local service calls using caller implementation context', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-local-model-'));
+    await createLocalServiceModelFallbackFixture(root);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const indexedDiagnostics = db.prepare('SELECT * FROM diagnostics').all();
+    expect(indexedDiagnostics).toHaveLength(0);
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.ambiguousCount).toBe(0);
+    const edge = db.prepare("SELECT e.* FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.edge_type='LOCAL_CALL_RESOLVES_TO_OPERATION' AND c.source_file='src/EntryHandler.ts'").get() as { status: string; evidence_json: string };
+    expect(edge.status).toBe('resolved');
+    const evidence = JSON.parse(edge.evidence_json) as { resolutionReasons: string[]; candidates: Array<{ repoName: string; operationName: string }> };
+    expect(evidence.resolutionReasons).toEqual(expect.arrayContaining(['implementation_context_caller_ownership', 'ambiguous_implementation_candidate_repo_matches_caller']));
+    expect(evidence.candidates[0]?.repoName).toBe('model-package');
+    const result = trace(db, { repo: 'process-helper-a', handler: 'EntryHandler' }, { depth: 10, includeDb: true });
+    expect(result.edges.some((item) => item.type === 'local_service_call' && item.to.includes('loadRemoteData'))).toBe(true);
+    expect(result.nodes.some((node) => node.kind === 'handler_method' && node.className === 'LoadRemoteDataHandler' && node.repoName === 'process-helper-a')).toBe(true);
+    expect(result.nodes.some((node) => node.kind === 'handler_method' && node.className === 'LoadRemoteDataHandler' && node.repoName === 'process-helper-b')).toBe(false);
+    db.close();
+  });
+});
