@@ -284,3 +284,48 @@ describe('linker and trace engine', () => {
     db.close();
   });
 });
+
+async function createLocalServiceTraceFixture(root: string): Promise<void> {
+  await writeFixtureFile(root, 'runtime-service/.git-fixture');
+  await writeFixtureFile(root, 'runtime-service/package.json', JSON.stringify({ name: '@neutral/runtime-service', version: '1.0.0' }));
+  await writeFixtureFile(root, 'runtime-service/srv/runtime-service.cds', 'namespace fixture.runtime; service RuntimeService { function getConfiguration() returns String; action rejectConfiguration(); }');
+  await writeFixtureFile(root, 'runtime-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { FacadeEntryHandler } from './FacadeEntryHandler.js';\nimport { ActionHandlerA } from './ActionHandlerA.js';\nimport { ActionHandlerB } from './ActionHandlerB.js';\ncreateCombinedHandler({ handler: [FacadeEntryHandler, ActionHandlerA, ActionHandlerB] });\n");
+  await writeFixtureFile(root, 'runtime-service/srv/helpers.ts', "import cds from '@sap/cds';\nconst loadTemplate = async (): Promise<void> => { await cds.run(SELECT.from(TemplateRules)); };\nconst cacheHelper = {\n  getConfiguration: async (): Promise<void> => { await cds.run(SELECT.from(ConfigurationRules)); },\n  getRules: async (): Promise<void> => { await cds.run(SELECT.from(ValidationRules)); }\n};\nexport { loadTemplate, cacheHelper };\n");
+  await writeFixtureFile(root, 'runtime-service/srv/FacadeEntryHandler.ts', "import cds from '@sap/cds';\nimport { Handler, Action } from 'cds-routing-handlers';\nimport { loadTemplate, cacheHelper } from './helpers.js';\n@Handler()\nexport class FacadeEntryHandler {\n  @Action('start')\n  public async start(): Promise<void> {\n    const root = cds.services[\"fixture.runtime.RuntimeService\"];\n    const svc = root;\n    await svc.getConfiguration({});\n    await cds.services.RuntimeService.getConfiguration({});\n    cds.services.db.entities('Books');\n    await loadTemplate();\n    await cacheHelper.getConfiguration();\n  }\n}\n");
+  await writeFixtureFile(root, 'runtime-service/srv/ActionHandlerA.ts', "import cds from '@sap/cds';\nimport { Handler, Func } from 'cds-routing-handlers';\n@Handler()\nexport class ActionHandlerA {\n  @Func(RuntimeService.FuncGetConfiguration.name)\n  public async getConfiguration(): Promise<void> { await cds.run(SELECT.from(ConfigurationRules)); }\n}\n");
+  await writeFixtureFile(root, 'runtime-service/srv/ActionHandlerB.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class ActionHandlerB {\n  @Action(RuntimeService.ActionRejectConfiguration.name)\n  public async getConfiguration(): Promise<void> {}\n}\n");
+  await writeFixtureFile(root, 'facade-service/.git-fixture');
+  await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0' }));
+  await writeFixtureFile(root, 'facade-service/srv/facade-service.cds', 'service RuntimeService { function getConfiguration() returns String; }');
+}
+
+describe('0.1.12 local service and symbol trace regressions', () => {
+  it('resolves local CAP service calls, decorator collisions, export-list helpers, and object helpers', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-local-trace-'));
+    await createLocalServiceTraceFixture(root);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.resolvedCount).toBeGreaterThanOrEqual(2);
+    const localEdges = db.prepare("SELECT e.* FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE c.call_type='local_service_call'").all() as Array<{ status: string; to_id: string; evidence_json: string }>;
+    expect(localEdges.length).toBeGreaterThanOrEqual(2);
+    expect(localEdges.every((edge) => edge.status === 'resolved')).toBe(true);
+    const localEvidence = localEdges.map((edge) => JSON.parse(edge.evidence_json) as { resolutionReasons?: string[] });
+    expect(localEvidence.some((evidence) => evidence.resolutionReasons?.includes('explicit_local_service_call') === true)).toBe(true);
+    const impl = db.prepare("SELECT e.* FROM graph_edges e JOIN cds_operations o ON o.id=CAST(e.from_id AS INTEGER) WHERE e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND o.operation_name='getConfiguration'").get() as { status: string; to_id: string; evidence_json: string };
+    expect(impl.status).toBe('resolved');
+    const implEvidence = JSON.parse(impl.evidence_json) as { candidates: Array<{ className: string; accepted: boolean; rejectedReasons: string[]; registrations: unknown[] }> };
+    expect(implEvidence.candidates.find((candidate) => candidate.className === 'ActionHandlerA')?.accepted).toBe(true);
+    expect(implEvidence.candidates.find((candidate) => candidate.className === 'ActionHandlerB')?.rejectedReasons).toContain('method_name_matches_but_decorator_targets_different_operation');
+    const symbolCalls = db.prepare("SELECT status,callee_symbol_id calleeSymbolId,unresolved_reason unresolvedReason FROM symbol_calls WHERE callee_symbol_id IS NOT NULL").all() as Array<{ status: string; calleeSymbolId: number; unresolvedReason?: string | null }>;
+    expect(symbolCalls.length).toBeGreaterThan(0);
+    expect(symbolCalls.every((call) => call.status === 'resolved' && call.unresolvedReason === null)).toBe(true);
+    const result = trace(db, { repo: 'runtime-service', handler: 'FacadeEntryHandler' }, { depth: 10, includeDb: true });
+    expect(result.edges.some((edge) => edge.type === 'local_service_call' && !edge.unresolvedReason)).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'operation_implemented_by_handler' && String(edge.to).includes('ActionHandlerA.getConfiguration'))).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'local_db_query' && String(edge.to).includes('ConfigurationRules'))).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'local_db_query' && String(edge.to).includes('TemplateRules'))).toBe(true);
+    expect(result.nodes.some((node) => node.kind === 'symbol' && String(node.label).includes('cacheHelper.getConfiguration') && node.sourceFile === 'srv/helpers.ts')).toBe(true);
+    expect(result.edges.filter((edge) => edge.type === 'local_symbol_call').every((edge) => !edge.unresolvedReason)).toBe(true);
+    db.close();
+  });
+});

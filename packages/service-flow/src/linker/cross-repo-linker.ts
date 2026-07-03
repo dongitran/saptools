@@ -121,7 +121,7 @@ function rankedImplementationCandidates(db: Db, workspaceId: number, operation: 
 function deduplicateCandidates(rows: ImplementationCandidate[]): ImplementationCandidate[] {
   const merged = new Map<string, ImplementationCandidate>();
   for (const row of rows) {
-    const key = [row.methodId, row.classId, row.applicationRepoId, row.importSource ?? '', row.registrationKind ?? ''].join(':');
+    const key = [row.methodId, row.classId, row.handlerRepoId].join(':');
     const registration = { file: row.registrationFile, line: row.registrationLine, kind: row.registrationKind, importSource: row.importSource };
     const existing = merged.get(key);
     if (!existing) {
@@ -149,6 +149,9 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
   const modelRepoGraphId = graphId(operation.modelRepoId);
   return db.prepare(`SELECT DISTINCT
       hm.id methodId,
+      hm.method_name methodName,
+      hm.decorator_value decoratorValue,
+      hm.decorator_raw_expression decoratorRawExpression,
       hc.id classId,
       hc.class_name className,
       hc.source_file sourceFile,
@@ -175,7 +178,7 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id AND localService.service_path=?) THEN 1 ELSE 0 END localServicePathMatch,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id) THEN 1 ELSE 0 END applicationHasLocalServices,
-      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON (localClass.id=localReg.handler_class_id OR localClass.class_name=localReg.class_name) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
+      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON (localClass.id=localReg.handler_class_id OR localClass.class_name=localReg.class_name) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=? OR localMethod.decorator_raw_expression LIKE ?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END appDependsOnModel,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(handlerRepo.id AS TEXT)) THEN 1 ELSE 0 END appDependsOnHandler,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END handlerDependsOnModel
@@ -185,7 +188,7 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
     JOIN handler_registrations hr ON (hr.handler_class_id=hc.id OR (hr.class_name=hc.class_name AND (hr.repo_id=hc.repo_id OR hr.import_source IS NOT NULL)))
     JOIN repositories appRepo ON appRepo.id=hr.repo_id
     WHERE appRepo.workspace_id=?
-      AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=?)`).all(
+      AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=? OR hm.decorator_raw_expression LIKE ?)`).all(
         operation.modelRepoId,
         operation.modelRepo,
         operation.modelPackage,
@@ -199,12 +202,14 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
         normalizedOperation(String(operation.operationPath ?? '')),
         operation.operationName,
         operation.operationName,
+        `%${upperFirst(normalizedOperation(String(operation.operationPath ?? operation.operationName ?? '')))}%`,
         modelRepoGraphId,
         modelRepoGraphId,
         workspaceId,
         normalizedOperation(String(operation.operationPath ?? '')),
         operation.operationName,
         operation.operationName,
+        `%${upperFirst(normalizedOperation(String(operation.operationPath ?? operation.operationName ?? '')))}%`,
       ) as Array<Record<string, unknown>>;
 }
 function scoreImplementationCandidate(row: Record<string, unknown>, operation: Record<string, unknown>): ImplementationCandidate {
@@ -222,7 +227,10 @@ function scoreImplementationCandidate(row: Record<string, unknown>, operation: R
   const importSource = typeof row.importSource === 'string' && row.importSource.length > 0;
   const sameRepoRegistration = flag(row.sameRepoRegistration);
   const modelOriented = row.modelKind === 'cap-db-model' || !applicationHasLocalRegistrationForOperation;
-  const methodMatches = true;
+  const methodSignal = implementationMethodSignal(row, operation);
+  const methodMatches = methodSignal.matches;
+  acceptedReasons.push(...methodSignal.acceptedReasons);
+  rejectedReasons.push(...methodSignal.rejectedReasons);
   const registeredAndLinked = sameRepoRegistration && importSource;
   const helperOwned = modelOriented && methodMatches && registeredAndLinked && sameRepoRegistration && !applicationHasLocalServices && !modelIsApplicationRepo && !modelIsHandlerRepo && !localServicePathMatch && !appDependsOnModel && !appDependsOnHandler && !handlerDependsOnModel;
   if (modelIsApplicationRepo) {
@@ -263,7 +271,7 @@ function scoreImplementationCandidate(row: Record<string, unknown>, operation: R
   const hasCrossPackage = appDependsOnModel && (modelIsHandlerRepo || appDependsOnHandler || !importSource);
   const contradicted = applicationHasLocalServices && !localServicePathMatch && !appDependsOnModel && !hasOwnership;
   if (!hasOwnership && !localServicePathMatch && !hasCrossPackage && !helperOwned) rejectedReasons.push('missing direct ownership, exact local service path, or validated cross-package dependency evidence');
-  const accepted = !contradicted && (hasOwnership || localServicePathMatch || hasCrossPackage || handlerDependsOnModel || helperOwned);
+  const accepted = methodMatches && !methodSignal.contradicted && !contradicted && (hasOwnership || localServicePathMatch || hasCrossPackage || handlerDependsOnModel || helperOwned);
   if (!accepted && rejectedReasons.length === 0) rejectedReasons.push('candidate did not meet implementation ownership policy');
   return { ...row, methodId: Number(row.methodId), score, accepted, acceptedReasons, rejectedReasons };
 }
@@ -298,6 +306,29 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
       sameRepoRegistration: flag(candidate.sameRepoRegistration),
     },
   };
+}
+function implementationMethodSignal(row: Record<string, unknown>, operation: Record<string, unknown>): { matches: boolean; contradicted: boolean; acceptedReasons: string[]; rejectedReasons: string[] } {
+  const op = normalizedOperation(String(operation.operationPath ?? operation.operationName ?? ''));
+  const decorator = normalizeDecoratorOperation(typeof row.decoratorValue === 'string' ? row.decoratorValue : undefined, typeof row.decoratorRawExpression === 'string' ? row.decoratorRawExpression : undefined);
+  if (decorator && decorator === op) return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };
+  if (decorator && decorator !== op) return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['method_name_matches_but_decorator_targets_different_operation'] };
+  if (String(row.methodName ?? '') === op) return { matches: true, contradicted: false, acceptedReasons: ['method name fallback matched operation'], rejectedReasons: [] };
+  return { matches: false, contradicted: false, acceptedReasons: [], rejectedReasons: ['method name does not match operation'] };
+}
+function normalizeDecoratorOperation(value: string | undefined, raw: string | undefined): string | undefined {
+  const candidate = value ?? raw?.split('.').filter(Boolean).at(-2);
+  if (!candidate) return undefined;
+  const cleaned = candidate.replace(/^['"`]|['"`]$/g, '');
+  for (const prefix of ['Func', 'Action']) {
+    if (cleaned.startsWith(prefix) && cleaned.length > prefix.length) return lowerFirst(cleaned.slice(prefix.length));
+  }
+  return normalizedOperation(cleaned);
+}
+function upperFirst(value: string): string {
+  return value ? `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}` : value;
+}
+function lowerFirst(value: string): string {
+  return value ? `${value[0]?.toLowerCase() ?? ''}${value.slice(1)}` : value;
 }
 function flag(value: unknown): boolean {
   return Boolean(Number(value ?? 0));

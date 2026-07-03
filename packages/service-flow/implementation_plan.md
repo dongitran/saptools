@@ -1,19 +1,19 @@
 # Implementation plan
 
 ## Scope
-Prepare `@saptools/service-flow` 0.1.11 with a focused static-analysis patch for symbol-scoped traces, local CAP service calls, repository-scoped starts, deduplicated implementation evidence, diagnostics, and documentation/version consistency.
+Prepare `@saptools/service-flow` 0.1.12 as a focused correctness and trace-quality patch for CAP/CDS TypeScript static analysis.
 
 ## Intended files and reasons
-- `src/db/schema.ts`, `src/db/migrations.ts`, `src/db/repositories.ts`: add executable symbol and local symbol-call persistence and wire source-symbol ids into calls.
-- `src/parsers/outbound-call-parser.ts` plus new parser helpers: use TypeScript AST ownership and local-service alias extraction instead of broad regular expressions.
-- `src/indexer/repository-indexer.ts`: pass file ids and insert executable symbols/symbol calls before outbound calls.
-- `src/linker/cross-repo-linker.ts`, `src/linker/service-resolver.ts`: resolve local service calls with exact repository/service evidence and deduplicate implementation candidates.
-- `src/trace/trace-engine.ts`, `src/output/table-output.ts`: queue repository+symbol identities, follow local helper edges, preserve handler repository identity, normalize implementation evidence, and keep depth/step semantics coherent.
-- `src/cli.ts`: print implementation-unresolved link summary and add aggregate doctor diagnostics.
-- `README.md`, `CHANGELOG.md`, `package.json`, lock metadata, tests: document and verify 0.1.11 behavior with neutral fixtures.
+- `src/parsers/symbol-parser.ts`: make symbol-call collection conservative, mark export-list symbols, index object-literal helper methods, and preserve readable symbol evidence.
+- `src/parsers/outbound-call-parser.ts`: preserve local CAP service alias-chain evidence and rely on object-literal symbols for source ownership.
+- `src/db/repositories.ts`: clear stale unresolved reasons for resolved symbol calls and support exported-name/object-helper symbol resolution.
+- `src/linker/service-resolver.ts`, `src/linker/cross-repo-linker.ts`: resolve same-repository local CAP service calls by qualified/simple/path identity, make implementation matching decorator-aware, and deduplicate method candidates by method identity with nested registration evidence.
+- `src/trace/trace-engine.ts`, `src/output/table-output.ts`, `src/output/mermaid-output.ts`: add first-class symbol nodes, readable labels/locations, suppress false symbol unresolved reasons, and traverse local service calls into implementation handlers.
+- `src/cli.ts`: keep doctor diagnostics actionable while avoiding default failures for explainable top-level calls.
+- Tests/fixtures under `packages/service-flow/tests`: add unit and fake-workspace regression coverage for local service resolution, symbol calls, export-list helpers, object-literal helpers, implementation collision handling, doctor behavior, and trace output.
+- `README.md`, `CHANGELOG.md`, `package.json`, lock metadata/version source: document the 0.1.12 behavior and bump the patch version.
 
 ## Verification plan
-- Run package build, typecheck, lint, unit tests, and e2e tests.
-- Run requested source-quality `rg` checks.
-- Pack/install the package where feasible and run fresh-cycle smoke commands against neutral fixtures.
-- Check SQLite foreign-key/integrity invariants on generated fixture databases.
+- Run package build, typecheck, lint, unit tests, and fake e2e tests using existing package scripts.
+- Run focused CLI fake-workspace flow: init, index --force, link --force, trace --handler FacadeEntryHandler --include-db --format json.
+- Confirm no private/customer-specific names were introduced.

@@ -214,6 +214,14 @@ function evidenceWithRuntimeVariables(
   return next;
 }
 
+
+function symbolNode(db: Db, symbolId: number): Record<string, unknown> | undefined {
+  const row = db.prepare(`SELECT s.id symbolId,s.name symbolName,s.qualified_name qualifiedName,s.source_file sourceFile,s.start_line startLine,s.end_line endLine,r.name repoName,r.id repoId FROM symbols s JOIN repositories r ON r.id=s.repo_id WHERE s.id=?`).get(symbolId) as Record<string, unknown> | undefined;
+  if (!row) return undefined;
+  const fileName = String(row.sourceFile ?? '').split('/').at(-1) ?? String(row.sourceFile ?? '');
+  return { id: `symbol:${symbolId}`, kind: 'symbol', label: `${fileName}:${String(row.qualifiedName ?? row.symbolName)}`, ...row };
+}
+
 function operationNode(db: Db, operationId: string): Record<string, unknown> | undefined {
   const row = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_type operationType,o.operation_path operationPath,o.source_file sourceFile,o.source_line sourceLine,s.id serviceId,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,r.id repoId,r.name repoName FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operationId) as Record<string, unknown> | undefined;
   if (!row) return undefined;
@@ -342,7 +350,10 @@ export function trace(
         const nextFiles = new Set([String(symbolCall.calleeFile)]);
         const nextRepoId = Number(symbolCall.calleeRepoId);
         const nextKey = `${nextRepoId}:${[...nextSymbols].join(',')}:${[...nextFiles].join(',')}`;
-        edges.push({ step: current.depth, type: 'local_symbol_call', from: String(symbolCall.callee_expression), to: `symbol:${String(symbolCall.callee_symbol_id)}`, evidence: JSON.parse(String(symbolCall.evidence_json || '{}')) as Record<string, unknown>, confidence: Number(symbolCall.confidence ?? 0.8), unresolvedReason: symbolCall.unresolved_reason ? String(symbolCall.unresolved_reason) : undefined });
+        const calleeNode = symbolNode(db, Number(symbolCall.callee_symbol_id));
+        if (calleeNode) nodes.set(String(calleeNode.id), calleeNode);
+        const evidence = { ...(JSON.parse(String(symbolCall.evidence_json || '{}')) as Record<string, unknown>), sourceFile: symbolCall.source_file, sourceLine: symbolCall.source_line, calleeSymbolId: symbolCall.callee_symbol_id, calleeSymbolName: calleeNode?.symbolName, calleeSymbolFile: calleeNode?.sourceFile, resolutionStatus: symbolCall.status };
+        edges.push({ step: current.depth, type: 'local_symbol_call', from: String(symbolCall.callee_expression), to: calleeNode?.label ? String(calleeNode.label) : `symbol:${String(symbolCall.callee_symbol_id)}`, evidence, confidence: Number(symbolCall.confidence ?? 0.8), unresolvedReason: String(symbolCall.status) === 'resolved' ? undefined : symbolCall.unresolved_reason ? String(symbolCall.unresolved_reason) : undefined });
         if (seenScopes.has(nextKey)) edges.push({ step: current.depth, type: 'cycle', from: String(symbolCall.callee_expression), to: nextKey, evidence: { cycle: true, symbolCallId: symbolCall.id }, confidence: 1, unresolvedReason: 'Cycle detected; downstream symbol already visited' });
         else queue.push({ repoId: nextRepoId, files: nextFiles, symbolIds: nextSymbols, depth: current.depth + 1 });
       }

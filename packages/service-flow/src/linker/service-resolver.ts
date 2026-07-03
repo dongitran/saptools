@@ -2,6 +2,8 @@ import type { Db } from '../db/connection.js';
 export interface OperationTarget {
   operationId: number;
   repoName: string;
+  serviceName: string;
+  qualifiedName: string;
   servicePath: string;
   operationPath: string;
   operationName: string;
@@ -23,7 +25,7 @@ function rows(
 ): OperationTarget[] {
   return db
     .prepare(
-      `SELECT o.id operationId,r.name repoName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score,'' reasons
+      `SELECT o.id operationId,r.name repoName,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score,'' reasons
        FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
        WHERE (? IS NULL OR r.workspace_id=?) AND (o.operation_path=? OR o.operation_name=?) ORDER BY r.name,s.service_path,o.operation_name`,
     )
@@ -45,6 +47,7 @@ export function resolveOperation(
     repoId?: number;
     hasExplicitOverride?: boolean;
     isDynamic?: boolean;
+    localServiceLookup?: string;
   },
   workspaceId?: number,
 ): OperationResolution {
@@ -74,6 +77,7 @@ export function resolveOperation(
     };
   const hasStrongSignal = Boolean(
     signals.servicePath ||
+    signals.serviceName ||
     signals.alias ||
     signals.destination ||
     signals.hasExplicitOverride,
@@ -87,14 +91,25 @@ export function resolveOperation(
       c.score -= 0.1;
       c.reasons.push('service_path_mismatch');
     }
-    if (signals.serviceName && (c.servicePath === `/${signals.serviceName}` || c.servicePath.endsWith(`/${signals.serviceName}`))) {
-      c.score += 0.7;
-      c.reasons.push('exact_local_service_name');
+    if (signals.serviceName) {
+      const simple = signals.serviceName.split('.').at(-1) ?? signals.serviceName;
+      if (c.qualifiedName === signals.serviceName) {
+        c.score += 0.8;
+        c.reasons.push('exact_local_qualified_service_name');
+      } else if (c.serviceName === signals.serviceName || c.serviceName === simple) {
+        c.score += 0.75;
+        c.reasons.push('exact_local_simple_service_name');
+      } else if (c.servicePath === signals.serviceName || c.servicePath === `/${signals.serviceName}` || c.servicePath === `/${simple}`) {
+        c.score += 0.7;
+        c.reasons.push('exact_local_service_path');
+      } else if (c.servicePath.endsWith(`/${simple}`)) {
+        c.score += candidates.filter((candidate) => candidate.servicePath.endsWith(`/${simple}`)).length === 1 ? 0.65 : 0.2;
+        c.reasons.push('suffix_local_service_path');
+      } else c.reasons.push('local_service_name_mismatch');
     }
-    if (signals.serviceName && c.servicePath !== `/${signals.serviceName}` && !c.servicePath.endsWith(`/${signals.serviceName}`)) c.reasons.push('local_service_name_mismatch');
     if (signals.hasExplicitOverride) {
       c.score += 0.2;
-      c.reasons.push('explicit_dynamic_override');
+      c.reasons.push(signals.repoId !== undefined ? 'explicit_local_service_call' : 'explicit_dynamic_override');
     }
   }
   for (const c of candidates) c.score = Math.max(0, Math.min(1, c.score));
@@ -118,7 +133,7 @@ export function resolveOperation(
   if (
     best &&
     best.score >= 0.9 &&
-    (best.servicePath === signals.servicePath || Boolean(signals.serviceName && (best.servicePath === `/${signals.serviceName}` || best.servicePath.endsWith(`/${signals.serviceName}`)))) &&
+    (best.servicePath === signals.servicePath || Boolean(signals.serviceName && !best.reasons.includes('local_service_name_mismatch'))) &&
     (best.operationPath === signals.operationPath || best.operationName === signals.operationPath.replace(/^\//, '')) &&
     (!second || best.score - second.score >= 0.25)
   )
