@@ -7,6 +7,7 @@ import type { HanaLensDefinition, HanaLensElement } from "./types.js";
 import { isRecord } from "./validation.js";
 
 type CdsCompile = (models: readonly string[]) => Promise<unknown>;
+const IGNORED_MODEL_DIRECTORIES = new Set(["node_modules", ".git", "dist", "gen"]);
 
 function isCdsCompile(value: unknown): value is CdsCompile {
   return typeof value === "function";
@@ -29,6 +30,9 @@ async function findCdsFiles(directory: string): Promise<readonly string[]> {
   const files = await Promise.all(entries.map(async (entry) => {
     const fullPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
+      if (IGNORED_MODEL_DIRECTORIES.has(entry.name)) {
+        return [];
+      }
       return await findCdsFiles(fullPath);
     }
     return entry.isFile() && entry.name.endsWith(".cds") ? [fullPath] : [];

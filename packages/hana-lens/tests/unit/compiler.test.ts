@@ -10,6 +10,13 @@ describe("parseCompileResult", () => {
     });
   });
 
+  it("parses the JSON payload when workers print trailing diagnostics", () => {
+    expect(parseCompileResult("{\"packageName\":\"@demo/a\",\"definitions\":{\"A\":{}}}\ntrailing diagnostic\n", "@demo/a")).toEqual({
+      packageName: "@demo/a",
+      definitions: { A: {} },
+    });
+  });
+
   it("rejects empty, malformed, wrong-package, and invalid-definition payloads", () => {
     expect(() => parseCompileResult("", "@demo/a")).toThrow("returned no JSON payload");
     expect(() => parseCompileResult("not-json", "@demo/a")).toThrow("returned malformed JSON");

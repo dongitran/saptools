@@ -14,4 +14,11 @@ describe("parseCsn", () => {
     expect(() => parseCsn({ definitions: { Entity: { elements: [] } } })).toThrow("invalid CSN definition");
     expect(() => parseCsn({ definitions: { Entity: { elements: { ID: "bad" } } } })).toThrow("invalid CSN definition");
   });
+
+  it("rejects invalid element property types", () => {
+    expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { type: 123 } } } } })).toThrow("invalid CSN definition");
+    expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { length: "36" } } } } })).toThrow("invalid CSN definition");
+    expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { key: "true" } } } } })).toThrow("invalid CSN definition");
+    expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { target: false } } } } })).toThrow("invalid CSN definition");
+  });
 });

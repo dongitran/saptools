@@ -34,6 +34,16 @@ describe("package scanning and linking", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("rejects duplicate matching package names", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-duplicate-package-"));
+    await fsMkdir(path.join(root, "first"));
+    await fsMkdir(path.join(root, "second"));
+    await writeFile(path.join(root, "first", "package.json"), JSON.stringify({ name: "@demo/shared" }));
+    await writeFile(path.join(root, "second", "package.json"), JSON.stringify({ name: "@demo/shared" }));
+    await expect(scanForPackages(root, "@demo/")).rejects.toThrow("Duplicate package name @demo/shared");
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("returns an empty package list for missing workspaces", async () => {
     await expect(scanForPackages(path.join(os.tmpdir(), "hana-lens-does-not-exist"), "@demo/")).resolves.toEqual([]);
   });

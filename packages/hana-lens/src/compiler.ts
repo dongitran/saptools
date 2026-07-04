@@ -10,20 +10,23 @@ function workerPath(): string {
 }
 
 export function parseCompileResult(raw: string, packageName: string): CompileResult {
-  const payload = raw.trim().split("\n").findLast((line) => line.trim().length > 0);
-  if (payload === undefined) {
+  const payloads = raw.trim().split("\n").filter((line) => line.trim().length > 0).reverse();
+  if (payloads.length === 0) {
     throw new Error(`Compile worker for ${packageName} returned no JSON payload`);
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch (error) {
-    throw new Error(`Compile worker for ${packageName} returned malformed JSON`, { cause: error });
+  for (const payload of payloads) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || parsed["packageName"] !== packageName || !isRecord(parsed["definitions"])) {
+      throw new Error(`Compile worker for ${packageName} returned an invalid payload`);
+    }
+    return { packageName, definitions: parsed["definitions"] as CompileResult["definitions"] };
   }
-  if (!isRecord(parsed) || parsed["packageName"] !== packageName || !isRecord(parsed["definitions"])) {
-    throw new Error(`Compile worker for ${packageName} returned an invalid payload`);
-  }
-  return { packageName, definitions: parsed["definitions"] as CompileResult["definitions"] };
+  throw new Error(`Compile worker for ${packageName} returned malformed JSON`);
 }
 
 export async function compilePackage(targetPackage: SapPackage): Promise<CompileResult> {

@@ -69,14 +69,19 @@ export async function scanForPackages(workspaceDirectory: string, prefix: string
     }
 
     if (entries.some((entry) => entry.isFile() && entry.name === "package.json")) {
+      let name: string | undefined;
       try {
-        const name = await readPackageName(path.join(directory, "package.json"));
-        if (name?.startsWith(normalizedPrefix) === true) {
-          found.set(name, directory);
-          return;
-        }
+        name = await readPackageName(path.join(directory, "package.json"));
       } catch (error) {
         throw new Error(`Malformed package.json in ${directory}`, { cause: error });
+      }
+      if (name?.startsWith(normalizedPrefix) === true) {
+        const existingDirectory = found.get(name);
+        if (existingDirectory !== undefined) {
+          throw new Error(`Duplicate package name ${name} in ${existingDirectory} and ${directory}`);
+        }
+        found.set(name, directory);
+        return;
       }
     }
 

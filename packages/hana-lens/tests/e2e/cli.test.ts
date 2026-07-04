@@ -46,6 +46,10 @@ describe("hana-lens CLI e2e", () => {
       await writeCapPackage(path.join(root, "packages", "sales"), "@demo/sales", "namespace demo.sales; entity BusinessRequest { key reqID: String(36); customer: Association to demo.master.Customer; }");
       await writeCapPackage(path.join(root, "packages", "master"), "@demo/master", "namespace demo.master; entity Customer { key ID: Integer; name: String(80); requests: Association to many demo.sales.BusinessRequest; }");
       await writeCapPackage(path.join(root, "gen", "ignored"), "@demo/ignored", "this is deliberately invalid cds and must never be compiled");
+      await mkdir(path.join(root, "packages", "sales", "node_modules", "stray", "srv"), { recursive: true });
+      await writeFile(path.join(root, "packages", "sales", "node_modules", "stray", "srv", "model.cds"), "namespace stray; entity DependencyEntity { key ID: Integer; }");
+      await mkdir(path.join(root, "packages", "sales", "dist", "srv"), { recursive: true });
+      await writeFile(path.join(root, "packages", "sales", "dist", "srv", "model.cds"), "namespace built; entity BuildEntity { key ID: Integer; }");
 
       const build = runCli(["build-cache", "--dir", root, "--prefix", "@demo/"], root);
       expect(build.status).toBe(0);
@@ -58,6 +62,8 @@ describe("hana-lens CLI e2e", () => {
       const parsed = JSON.parse(rawCache) as HanaLensCsn;
       expect(parsed.definitions["demo.sales.BusinessRequest"]?.[PACKAGE_ANNOTATION]).toBe("@demo/sales");
       expect(parsed.definitions["demo.master.Customer"]?.[PACKAGE_ANNOTATION]).toBe("@demo/master");
+      expect(parsed.definitions["stray.DependencyEntity"]).toBe(undefined);
+      expect(parsed.definitions["built.BuildEntity"]).toBe(undefined);
 
       const salesToMaster = path.join(root, "packages", "sales", "node_modules", "@demo", "master");
       expect((await lstat(salesToMaster)).isSymbolicLink()).toBe(true);
@@ -96,7 +102,7 @@ describe("hana-lens CLI e2e", () => {
   it("describe reads an existing cache offline, prints dense fields, expands associations, and guards circular or missing targets", async () => {
     await withTempWorkspace(async (root) => {
       await writeCache(root, { definitions: {
-        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, customer: { type: "cds.Association", target: "demo.master.Customer" }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
+        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, customer: { type: "cds.Association", target: "Customer" }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
         "demo.empty.EmptyEntity": { [PACKAGE_ANNOTATION]: "@demo/empty" },
       } });
@@ -111,6 +117,7 @@ describe("hana-lens CLI e2e", () => {
       const expanded = runCli(["describe", "demo.sales.BusinessRequest", "--expand"], root);
       expect(expanded.status).toBe(0);
       expect(expanded.stdout).toContain("- [PK] ID: cds.Integer");
+      expect(expanded.stdout.includes("- Customer: missing")).toBe(false);
       expect(expanded.stdout).toContain("-- demo.sales.BusinessRequest: circular");
       expect(expanded.stdout).toContain("- demo.master.Missing: missing");
 

@@ -1,7 +1,17 @@
-import type { HanaLensCsn, HanaLensDefinition, HanaLensElement } from "./types.js";
+import { PACKAGE_ANNOTATION, type HanaLensCsn, type HanaLensDefinition, type HanaLensElement } from "./types.js";
 
 const ASSOCIATION_TYPES = new Set(["cds.Association", "cds.Composition"]);
 const MAX_EXPAND_DEPTH = 2;
+
+interface ResolvedTarget {
+  readonly name: string;
+  readonly definition: HanaLensDefinition;
+}
+
+type TargetResolution =
+  | { readonly status: "resolved"; readonly target: ResolvedTarget }
+  | { readonly status: "missing" }
+  | { readonly status: "ambiguous" };
 
 function typeText(element: HanaLensElement): string {
   const base = element.type ?? "unknown";
@@ -18,6 +28,79 @@ function formatElement(name: string, element: HanaLensElement, depth: number): s
   return `${prefix}${marker}${name}: ${typeText(element)}`;
 }
 
+function nestedPrefix(depth: number): string {
+  return `${"-".repeat(depth + 1)} `;
+}
+
+function packageNameOf(definition: HanaLensDefinition): string | undefined {
+  return definition[PACKAGE_ANNOTATION];
+}
+
+function isTargetNameMatch(definitionName: string, targetName: string): boolean {
+  return definitionName === targetName || definitionName.endsWith(`.${targetName}`);
+}
+
+function findTargetCandidates(csn: HanaLensCsn, targetName: string): readonly ResolvedTarget[] {
+  return Object.entries(csn.definitions)
+    .filter(([definitionName]) => isTargetNameMatch(definitionName, targetName))
+    .map(([name, definition]) => ({ name, definition }));
+}
+
+function resolved(target: ResolvedTarget): TargetResolution {
+  return { status: "resolved", target };
+}
+
+function singleCandidate(candidates: readonly ResolvedTarget[]): ResolvedTarget | undefined {
+  const [candidate, ...rest] = candidates;
+  return candidate !== undefined && rest.length === 0 ? candidate : undefined;
+}
+
+function resolveTarget(csn: HanaLensCsn, targetName: string, sourceDefinition: HanaLensDefinition): TargetResolution {
+  const exact = csn.definitions[targetName];
+  if (exact !== undefined) {
+    return resolved({ name: targetName, definition: exact });
+  }
+
+  const candidates = findTargetCandidates(csn, targetName);
+  if (candidates.length === 0) {
+    return { status: "missing" };
+  }
+  const onlyCandidate = singleCandidate(candidates);
+  if (onlyCandidate !== undefined) {
+    return resolved(onlyCandidate);
+  }
+
+  const sourcePackage = packageNameOf(sourceDefinition);
+  if (sourcePackage === undefined) {
+    return { status: "ambiguous" };
+  }
+
+  const samePackage = candidates.filter((candidate) => packageNameOf(candidate.definition) === sourcePackage);
+  const onlySamePackage = singleCandidate(samePackage);
+  return onlySamePackage === undefined ? { status: "ambiguous" } : resolved(onlySamePackage);
+}
+
+function describeExpandedTarget(csn: HanaLensCsn, definition: HanaLensDefinition, element: HanaLensElement, expand: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
+  if (!expand || depth >= MAX_EXPAND_DEPTH || element.target === undefined || !ASSOCIATION_TYPES.has(element.type ?? "")) {
+    return [];
+  }
+
+  const resolution = resolveTarget(csn, element.target, definition);
+  if (resolution.status === "missing") {
+    return [`${nestedPrefix(depth)}${element.target}: missing`];
+  }
+  if (resolution.status === "ambiguous") {
+    return [`${nestedPrefix(depth)}${element.target}: ambiguous`];
+  }
+  if (seen.has(resolution.target.name)) {
+    return [`${nestedPrefix(depth)}${resolution.target.name}: circular`];
+  }
+
+  const nextSeen = new Set(seen);
+  nextSeen.add(resolution.target.name);
+  return describeDefinition(csn, resolution.target.definition, expand, depth + 1, nextSeen);
+}
+
 function describeDefinition(csn: HanaLensCsn, definition: HanaLensDefinition, expand: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
   const elements = definition.elements;
   if (elements === undefined) {
@@ -25,22 +108,7 @@ function describeDefinition(csn: HanaLensCsn, definition: HanaLensDefinition, ex
   }
   const lines: string[] = [];
   for (const [name, element] of Object.entries(elements)) {
-    lines.push(formatElement(name, element, depth));
-    if (!expand || depth >= MAX_EXPAND_DEPTH || element.target === undefined || !ASSOCIATION_TYPES.has(element.type ?? "")) {
-      continue;
-    }
-    if (seen.has(element.target)) {
-      lines.push(`${"-".repeat(depth + 1)} ${element.target}: circular`);
-      continue;
-    }
-    const target = csn.definitions[element.target];
-    if (target === undefined) {
-      lines.push(`${"-".repeat(depth + 1)} ${element.target}: missing`);
-      continue;
-    }
-    const nextSeen = new Set(seen);
-    nextSeen.add(element.target);
-    lines.push(...describeDefinition(csn, target, expand, depth + 1, nextSeen));
+    lines.push(formatElement(name, element, depth), ...describeExpandedTarget(csn, definition, element, expand, depth, seen));
   }
   return lines;
 }
