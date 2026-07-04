@@ -12,6 +12,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/jira.yml"
       - "packages/jira/package.json"
       - "packages/jira/README.md"
@@ -26,6 +27,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/jira.yml"
       - "packages/jira/package.json"
       - "packages/jira/README.md"

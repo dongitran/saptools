@@ -12,6 +12,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-request-runner.yml"
       - "packages/cf-request-runner/package.json"
       - "packages/cf-request-runner/README.md"
@@ -25,6 +26,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-request-runner.yml"
       - "packages/cf-request-runner/package.json"
       - "packages/cf-request-runner/README.md"

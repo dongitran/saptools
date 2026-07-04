@@ -12,6 +12,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/sharepoint-check.yml"
       - "packages/sharepoint-check/package.json"
       - "packages/sharepoint-check/README.md"
@@ -25,6 +26,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/sharepoint-check.yml"
       - "packages/sharepoint-check/package.json"
       - "packages/sharepoint-check/README.md"

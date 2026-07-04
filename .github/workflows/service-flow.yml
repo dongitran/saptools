@@ -12,6 +12,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/service-flow.yml"
       - "packages/service-flow/package.json"
       - "packages/service-flow/README.md"
@@ -26,6 +27,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/service-flow.yml"
       - "packages/service-flow/package.json"
       - "packages/service-flow/README.md"

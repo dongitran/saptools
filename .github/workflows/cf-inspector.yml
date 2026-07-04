@@ -12,6 +12,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-inspector.yml"
       - "packages/cf-inspector/package.json"
       - "packages/cf-inspector/README.md"
@@ -25,6 +26,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-inspector.yml"
       - "packages/cf-inspector/package.json"
       - "packages/cf-inspector/README.md"

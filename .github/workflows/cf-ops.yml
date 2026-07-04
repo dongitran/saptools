@@ -12,6 +12,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-ops.yml"
       - "packages/cf-ops/package.json"
       - "packages/cf-ops/README.md"
@@ -26,6 +27,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-ops.yml"
       - "packages/cf-ops/package.json"
       - "packages/cf-ops/README.md"

@@ -13,6 +13,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-event-mesh.yml"
       - "packages/cf-event-mesh/package.json"
       - "packages/cf-event-mesh/README.md"
@@ -26,6 +27,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-event-mesh.yml"
       - "packages/cf-event-mesh/package.json"
       - "packages/cf-event-mesh/README.md"

@@ -13,6 +13,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-explorer.yml"
       - "packages/cf-explorer/package.json"
       - "packages/cf-explorer/README.md"
@@ -27,6 +28,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-explorer.yml"
       - "packages/cf-explorer/package.json"
       - "packages/cf-explorer/README.md"

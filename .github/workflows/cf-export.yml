@@ -13,6 +13,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-export.yml"
       - "packages/cf-export/package.json"
       - "packages/cf-export/README.md"
@@ -26,6 +27,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-export.yml"
       - "packages/cf-export/package.json"
       - "packages/cf-export/README.md"

@@ -6,6 +6,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-sync-e2e.yml"
       - "packages/cf-sync/package.json"
       - "packages/cf-sync/src/**"
@@ -18,6 +19,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-sync-e2e.yml"
       - "packages/cf-sync/package.json"
       - "packages/cf-sync/src/**"

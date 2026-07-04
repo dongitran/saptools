@@ -6,6 +6,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-hana-e2e.yml"
       - "packages/cf-hana/package.json"
       - "packages/cf-hana/src/**"
@@ -18,6 +19,7 @@ on:
     branches:
       - main
     paths:
+      - "pnpm-lock.yaml"
       - ".github/workflows/cf-hana-e2e.yml"
       - "packages/cf-hana/package.json"
       - "packages/cf-hana/src/**"
