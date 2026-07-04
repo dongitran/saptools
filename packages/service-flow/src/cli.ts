@@ -251,13 +251,38 @@ function contextualBindingPropagationQuality(db: ReturnType<typeof openDatabase>
     WHERE json_extract(sc.evidence_json,'$.callArguments[0].kind')='object_literal'
       AND json_extract(s.evidence_json,'$.parameterBindings[0].kind')='object_pattern'
       AND json_array_length(json_extract(sc.evidence_json,'$.callArguments[0].properties')) > json_array_length(json_extract(s.evidence_json,'$.parameterBindings[0].properties'))`).get() as { count?: number };
-  const opportunities = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,json_extract(c.evidence_json,'$.receiver') receiverName,c.operation_path_expr operationPath,'trace_time_contextual_binding_candidate' opportunity
-    FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
-    WHERE c.call_type='remote_action' AND c.service_binding_id IS NULL AND json_extract(c.evidence_json,'$.receiver') IS NOT NULL
-      AND (e.status IS NULL OR e.status!='resolved')
+  const opportunities = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,json_extract(c.evidence_json,'$.receiver') receiverName,c.operation_path_expr operationPath,b.alias bindingAlias,b.alias_expr bindingAliasExpr,b.service_path_expr servicePathExpr,b.destination_expr destinationExpr,req.service_path requireServicePath,req.destination requireDestination,COALESCE(e.status,'missing_edge') persistedStatus,
+      CASE
+        WHEN (b.alias_expr LIKE '%$%' OR b.service_path_expr LIKE '%$%' OR b.destination_expr LIKE '%$%') THEN 'runtime_variables_required'
+        WHEN b.alias IS NOT NULL AND req.id IS NULL AND b.service_path_expr IS NULL THEN 'alias_without_matching_cds_requires'
+        WHEN req.id IS NOT NULL AND COALESCE(e.status,'missing_edge')!='resolved' THEN 'cds_requires_present_but_persisted_resolution_unresolved'
+        ELSE 'trace_time_contextual_binding_candidate'
+      END contextualStatus
+    FROM outbound_calls c
+    LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    LEFT JOIN service_bindings b ON b.id=c.service_binding_id
+    LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias
+    WHERE c.call_type='remote_action' AND json_extract(c.evidence_json,'$.receiver') IS NOT NULL
+      AND (c.service_binding_id IS NULL OR e.status IS NULL OR e.status!='resolved')
       AND EXISTS (SELECT 1 FROM symbol_calls sc WHERE sc.status='resolved' AND sc.source_file=c.source_file)
     ORDER BY c.source_file,c.source_line LIMIT 8`).all() as Array<Record<string, unknown>>;
-  return { severity: Number(missingMetadata.count ?? 0) + Number(destructuredUnmapped.count ?? 0) + opportunities.length > 0 ? 'warning' : 'info', code: 'strict_contextual_binding_propagation_quality', message: 'Contextual service-client propagation opportunities for trace-time helper resolution', localSymbolCallsWithServiceClientArguments: Number(serviceClientCalls.count ?? 0), calleeSymbolsMissingParameterMetadata: Number(missingMetadata.count ?? 0), destructuredObjectParametersPossiblyUnmapped: Number(destructuredUnmapped.count ?? 0), traceTimeContextualOpportunities: opportunities.length, examples: opportunities };
+  const statusRows = db.prepare(`SELECT contextualStatus,COUNT(*) count FROM (
+    SELECT CASE
+        WHEN (b.alias_expr LIKE '%$%' OR b.service_path_expr LIKE '%$%' OR b.destination_expr LIKE '%$%') THEN 'runtime_variables_required'
+        WHEN b.alias IS NOT NULL AND req.id IS NULL AND b.service_path_expr IS NULL THEN 'alias_without_matching_cds_requires'
+        WHEN req.id IS NOT NULL AND COALESCE(e.status,'missing_edge')!='resolved' THEN 'cds_requires_present_but_persisted_resolution_unresolved'
+        ELSE 'trace_time_contextual_binding_candidate'
+      END contextualStatus
+    FROM outbound_calls c
+    LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    LEFT JOIN service_bindings b ON b.id=c.service_binding_id
+    LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias
+    WHERE c.call_type='remote_action' AND json_extract(c.evidence_json,'$.receiver') IS NOT NULL
+      AND (c.service_binding_id IS NULL OR e.status IS NULL OR e.status!='resolved')
+      AND EXISTS (SELECT 1 FROM symbol_calls sc WHERE sc.status='resolved' AND sc.source_file=c.source_file)
+  ) GROUP BY contextualStatus ORDER BY count DESC,contextualStatus`).all() as Array<Record<string, unknown>>;
+  const resolvedContextual = db.prepare(`SELECT COUNT(*) count FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) WHERE c.call_type='remote_action' AND e.status='resolved' AND c.service_binding_id IS NOT NULL`).get() as { count?: number };
+  return { severity: Number(missingMetadata.count ?? 0) + Number(destructuredUnmapped.count ?? 0) + opportunities.length > 0 ? 'warning' : 'info', code: 'strict_contextual_binding_propagation_quality', message: 'Contextual service-client propagation opportunities for trace-time helper resolution', localSymbolCallsWithServiceClientArguments: Number(serviceClientCalls.count ?? 0), calleeSymbolsMissingParameterMetadata: Number(missingMetadata.count ?? 0), destructuredObjectParametersPossiblyUnmapped: Number(destructuredUnmapped.count ?? 0), contextualHelperSendsResolvedDuringPersistedLink: Number(resolvedContextual.count ?? 0), traceTimeContextualOpportunities: opportunities.length, traceTimeContextualOpportunityBreakdown: statusRows.length > 0 ? statusRows : [{ contextualStatus: 'no_contextual_opportunity', count: 0 }], examples: opportunities };
 }
 
 function nestedThisReceiverQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
