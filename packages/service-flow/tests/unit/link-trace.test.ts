@@ -548,6 +548,91 @@ export class EntryHandler {
     expect(JSON.parse(send?.evidenceJson ?? '{}')).toMatchObject({ classification: 'transport_client_method' });
     db.close();
   });
+
+  it('propagates service binding context into helper class method parameters', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-class-context-'));
+    await writeFixtureFile(root, 'facade-service/.git-fixture');
+    await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0', dependencies: { '@neutral/model-service': '1.0.0' } }));
+    await writeFixtureFile(root, 'facade-service/srv/facade.cds', 'service FacadeService { action runFlow(); }');
+    await writeFixtureFile(root, 'facade-service/srv/WorkflowHelper.ts', `
+export class WorkflowHelper {
+  async loadMetadata(serviceClient: { send(input: unknown): Promise<unknown> }): Promise<void> {
+    await serviceClient.send({ method: 'GET', path: '/readMetadata' });
+  }
+  async validate({ configClient, client: serviceClient }: { configClient: { send(input: unknown): Promise<unknown> }; client: { send(input: unknown): Promise<unknown> } }): Promise<void> {
+    await configClient.send({ method: 'POST', path: '/validatePayload' });
+    await serviceClient.send({ method: 'POST', path: '/checkAuthorization' });
+  }
+}
+`);
+    await writeFixtureFile(root, 'facade-service/srv/FlowHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+import { WorkflowHelper } from './WorkflowHelper.js';
+@Handler()
+export class FlowHandler {
+  @Action('runFlow')
+  public async runFlow(): Promise<void> {
+    const helper = new WorkflowHelper();
+    const configClient = await cds.connect.to('ConfigRemote', { path: '/ConfigService', destination: 'neutral-destination' });
+    await helper.loadMetadata(configClient);
+    await helper.validate({ configClient, client: configClient });
+  }
+}
+`);
+    await writeFixtureFile(root, 'facade-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { FlowHandler } from './FlowHandler.js';\ncreateCombinedHandler({ handler: [FlowHandler] });\n");
+    await writeFixtureFile(root, 'model-service/.git-fixture');
+    await writeFixtureFile(root, 'model-service/package.json', JSON.stringify({ name: '@neutral/model-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'model-service/srv/config.cds', 'service ConfigService { action readMetadata(); action validatePayload(); action checkAuthorization(); }');
+
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'facade-service', servicePath: '/FacadeService', operation: 'runFlow' }, { depth: 10 });
+    const contextualEdges = result.edges.filter((edge) => edge.evidence && typeof edge.evidence === 'object' && 'contextualServiceBindingSelected' in edge.evidence);
+    expect(contextualEdges).toHaveLength(3);
+    expect(contextualEdges.map((edge) => (edge.evidence as { contextualBinding?: { source?: string } }).contextualBinding?.source).sort()).toEqual([
+      'local_symbol_argument',
+      'local_symbol_destructured_object_argument',
+      'local_symbol_destructured_object_argument',
+    ]);
+    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/readMetadata'))).toBe(true);
+    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/validatePayload'))).toBe(true);
+    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/checkAuthorization'))).toBe(true);
+    db.close();
+  });
+
+  it('renders distinct unresolved operation candidate reasons', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-reasons-'));
+    await writeFixtureFile(root, 'app-service/.git-fixture');
+    await writeFixtureFile(root, 'app-service/package.json', JSON.stringify({ name: '@neutral/app-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'app-service/srv/app.cds', 'service AppService { action runFlow(); }');
+    await writeFixtureFile(root, 'app-service/srv/FlowHandler.ts', `import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class FlowHandler {
+  @Action('runFlow')
+  public async runFlow(configClient: { send(input: unknown): Promise<unknown> }): Promise<void> {
+    await configClient.send({ method: 'POST', path: '/missingOperation' });
+    await configClient.send({ method: 'POST', path: '/sharedOperation' });
+    await configClient.send({ method: 'POST', path: '/knownOperation' });
+  }
+}
+`);
+    await writeFixtureFile(root, 'model-a/.git-fixture');
+    await writeFixtureFile(root, 'model-a/package.json', JSON.stringify({ name: '@neutral/model-a', version: '1.0.0' }));
+    await writeFixtureFile(root, 'model-a/srv/a.cds', 'service AService { action sharedOperation(); action knownOperation(); }');
+    await writeFixtureFile(root, 'model-b/.git-fixture');
+    await writeFixtureFile(root, 'model-b/package.json', JSON.stringify({ name: '@neutral/model-b', version: '1.0.0' }));
+    await writeFixtureFile(root, 'model-b/srv/b.cds', 'service BService { action sharedOperation(); }');
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const rows = db.prepare(`SELECT c.operation_path_expr operationPath,e.unresolved_reason unresolvedReason,e.evidence_json evidenceJson
+      FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+      WHERE c.call_type='remote_action' ORDER BY c.operation_path_expr`).all() as Array<{ operationPath: string; unresolvedReason: string; evidenceJson: string }>;
+    expect(rows.find((row) => row.operationPath === '/missingOperation')?.unresolvedReason).toBe('No indexed target operation matched');
+    expect(rows.find((row) => row.operationPath === '/sharedOperation')?.unresolvedReason).toBe('Operation candidates found but no strong service signal is available');
+    expect(rows.find((row) => row.operationPath === '/knownOperation')?.unresolvedReason).toBe('Operation candidates found but no strong service signal is available');
+    for (const row of rows) expect(JSON.parse(row.evidenceJson)).toHaveProperty('candidateCount');
+    db.close();
+  });
 });
 
 describe('remote OData invocation and remote query semantics', () => {

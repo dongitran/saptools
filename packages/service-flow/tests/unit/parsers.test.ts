@@ -367,6 +367,55 @@ describe('executable symbol parser trace-quality cases', () => {
     expect(parsed.calls.map((call) => call.calleeExpression).sort()).toEqual(['imported.run', 'local.check', 'other.run']);
     expect(parsed.calls.find((call) => call.calleeExpression === 'local.check')?.evidence).toMatchObject({ relation: 'class_instance_method', instanceVariable: 'local', className: 'LocalHelper', methodName: 'check', candidateStrategy: 'same_file_class_instance_method' });
     expect(parsed.calls.find((call) => call.calleeExpression === 'imported.run')?.evidence).toMatchObject({ relation: 'class_instance_method', instanceVariable: 'imported', className: 'ImportedHelper', methodName: 'run', classImportSource: './helper', candidateStrategy: 'relative_import_class_instance_method' });
+    expect(parsed.symbols.find((symbol) => symbol.qualifiedName === 'LocalHelper.check')?.importExportEvidence).toMatchObject({ parameterBindings: [{ index: 0, kind: 'identifier', name: 'primaryClient' }] });
+  });
+
+  it('does not collect JavaScript built-in instances as class instance symbol calls', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-builtins-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'entry.ts'), `
+      class LocalHelper { run(value: string): string { return value; } }
+      export async function start(value: string): Promise<void> {
+        const local = new LocalHelper();
+        const seen = new Set<string>();
+        const mapping = new Map<string, string>();
+        const d = new Date();
+        const re = new RegExp(value);
+        local.run(value);
+        seen.add(value);
+        mapping.entries();
+        d.getTime();
+        re.test(value);
+      }
+    `);
+    const parsed = await parseExecutableSymbols(root, 'src/entry.ts');
+    expect(parsed.calls.map((call) => call.calleeExpression)).toEqual(['local.run']);
+  });
+
+  it('records destructured object parameter metadata for class methods', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-destructured-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'entry.ts'), `
+      export class WorkflowHelper {
+        async validate({ configClient, client: serviceClient, optionalClient = fallbackClient }: { configClient: unknown; client: unknown; optionalClient?: unknown }): Promise<void> {
+          await configClient.send({ method: 'POST', path: '/validatePayload' });
+          await serviceClient.send({ method: 'POST', path: '/checkAuthorization' });
+        }
+      }
+    `);
+    const parsed = await parseExecutableSymbols(root, 'src/entry.ts');
+    expect(parsed.symbols.find((symbol) => symbol.qualifiedName === 'WorkflowHelper.validate')?.importExportEvidence).toMatchObject({
+      parameters: [],
+      parameterBindings: [{
+        index: 0,
+        kind: 'object_pattern',
+        properties: [
+          { property: 'configClient', local: 'configClient' },
+          { property: 'client', local: 'serviceClient' },
+          { property: 'optionalClient', local: 'optionalClient' },
+        ],
+      }],
+    });
   });
 });
 

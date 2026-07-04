@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.25
+
+- Make class-instance symbol-call indexing conservative so only same-file and relatively imported helper classes are traced, while built-in collection, date, URL, error, typed-array, promise, and abort-controller instances are ignored.
+- Persist identifier and one-level destructured object parameter metadata for executable symbols, including class methods, so contextual service-client binding propagation can map helper arguments to callee receiver names.
+- Propagate contextual service bindings through positional helper arguments and destructured object helper parameters with auditable caller and callee evidence.
+- Refine unresolved operation diagnostics when indexed candidates exist but service context is absent or the resolution score is below threshold.
+
 ## 0.1.24
 
 - Add conservative class instance method symbol-call resolution for same-file and relatively imported helper classes, with auditable class-instance evidence.
