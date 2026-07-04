@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.20
+
+- Preserve service-binding evidence when helpers return connected clients inside object properties and callers destructure or create simple transaction aliases.
+- Track full template-expression placeholder keys such as `${domainInfo.serviceName}`, `${domainInfo.shortName?.toLowerCase()}`, and `${items[0].service}` for runtime `--var` substitution without evaluating JavaScript.
+- Render unresolved remote actions with unknown or dynamic paths as semantic targets instead of numeric call ids, with parser evidence for shorthand `path` identifiers.
+- Expand strict doctor aggregates for normalized OData invocation ambiguity and remote-action unresolved target quality.
+
 ## 0.1.19
 
 - Normalize balanced top-level OData action/function invocation paths before remote operation resolution, including namespace-qualified invocation lookup, while preserving raw and normalized evidence.

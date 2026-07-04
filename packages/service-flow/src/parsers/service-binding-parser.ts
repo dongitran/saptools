@@ -6,6 +6,7 @@ import { normalizePath } from '../utils/path-utils.js';
 
 interface HelperBinding {
   exportedName: string;
+  returnedProperty?: string;
   alias?: string;
   aliasExpr?: string;
   destinationExpr?: string;
@@ -41,8 +42,8 @@ function stringValue(node: ts.Expression | undefined): string | undefined {
   return node.getText();
 }
 function placeholders(value?: string): string[] {
-  return [...(value ?? '').matchAll(/\$\{\s*(\w+)\s*\}/g)]
-    .map((m) => m[1] ?? '')
+  return [...(value ?? '').matchAll(/\$\{([^}]*)\}/g)]
+    .map((m) => (m[1] ?? '').trim())
     .filter(Boolean);
 }
 function connectFactFromCall(
@@ -220,6 +221,36 @@ async function importsFor(
   }
   return imports;
 }
+function collectReturnedObjectBindings(
+  fn: ts.FunctionLikeDeclaration,
+): Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>> {
+  const bindings = new Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>>();
+  const returns = new Map<string, string>();
+  function visit(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const fact = findConnectInExpression(node.initializer);
+      if (fact) bindings.set(node.name.text, fact);
+    }
+    if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
+      for (const prop of node.expression.properties) {
+        if (ts.isShorthandPropertyAssignment(prop)) returns.set(prop.name.text, prop.name.text);
+        if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) {
+          const propertyName = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : undefined;
+          if (propertyName) returns.set(propertyName, prop.initializer.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(fn);
+  const out = new Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>>();
+  for (const [propertyName, variableName] of returns) {
+    const fact = bindings.get(variableName);
+    if (fact) out.set(propertyName, fact);
+  }
+  return out;
+}
+
 function exportedLocalNames(sf: ts.SourceFile): Map<string, string> {
   const exports = new Map<string, string>();
   for (const stmt of sf.statements) {
@@ -268,6 +299,8 @@ async function helperBindings(
         if (!fact) ts.forEachChild(node, visit);
       });
       if (fact) factsByLocal.set(stmt.name.text, { ...fact, sourceLine: lineOf(sf, stmt) });
+      for (const [returnedProperty, objectFact] of collectReturnedObjectBindings(stmt))
+        factsByLocal.set(`${stmt.name.text}#${returnedProperty}`, { ...objectFact, returnedProperty, sourceLine: lineOf(sf, stmt) });
     }
     if (ts.isVariableStatement(stmt))
       for (const decl of stmt.declarationList.declarations) {
@@ -290,6 +323,14 @@ async function helperBindings(
         sourceLine: fact.sourceLine,
       });
   }
+  for (const [key, fact] of factsByLocal) {
+    const [localName, returnedProperty] = key.split('#');
+    if (!returnedProperty) continue;
+    for (const [exportedName, exportedLocal] of exportedLocals) {
+      if (exportedLocal !== localName) continue;
+      out.push({ ...fact, exportedName, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: fact.sourceLine });
+    }
+  }
   return out;
 }
 
@@ -304,6 +345,14 @@ export async function parseServiceBindings(
   const imports = await importsFor(repoPath, filePath, sf);
   const helperCache = new Map<string, HelperBinding[]>();
   const classHelpers = collectClassHelpers(sourceFileAst);
+  const localObjectHelpers = new Map<string, HelperBinding[]>();
+  for (const stmt of sourceFileAst.statements) {
+    if (!ts.isFunctionDeclaration(stmt) || !stmt.name) continue;
+    const rows: HelperBinding[] = [];
+    for (const [returnedProperty, fact] of collectReturnedObjectBindings(stmt))
+      rows.push({ ...fact, exportedName: stmt.name.text, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, stmt) });
+    if (rows.length > 0) localObjectHelpers.set(stmt.name.text, rows);
+  }
   async function importedHelper(
     localName: string,
   ): Promise<{ imp: ImportBinding; helper: HelperBinding } | undefined> {
@@ -357,6 +406,38 @@ export async function parseServiceBindings(
         });
     }
   }
+
+  async function helperForCall(call: ts.CallExpression): Promise<{ helper: HelperBinding; imp?: ImportBinding } | undefined> {
+    if (!ts.isIdentifier(call.expression)) return undefined;
+    const local = localObjectHelpers.get(call.expression.text)?.[0];
+    if (local) return { helper: local };
+    const resolved = await importedHelper(call.expression.text);
+    return resolved ? { helper: resolved.helper, imp: resolved.imp } : undefined;
+  }
+  async function recordDestructuredHelper(decl: ts.VariableDeclaration): Promise<void> {
+    if (!ts.isObjectBindingPattern(decl.name) || !decl.initializer) return;
+    const call = unwrapCall(decl.initializer);
+    if (!call) return;
+    const resolved = await helperForCall(call);
+    if (!resolved) return;
+    for (const el of decl.name.elements) {
+      if (!ts.isIdentifier(el.name)) continue;
+      const propertyName = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
+      if (resolved.helper.returnedProperty !== propertyName) continue;
+      out.push({
+        variableName: el.name.text,
+        alias: resolved.helper.alias,
+        aliasExpr: resolved.helper.aliasExpr,
+        destinationExpr: resolved.helper.destinationExpr,
+        servicePathExpr: resolved.helper.servicePathExpr,
+        isDynamic: resolved.helper.isDynamic,
+        placeholders: resolved.helper.placeholders,
+        sourceFile: normalizePath(filePath),
+        sourceLine: lineOf(sourceFileAst, decl),
+        helperChain: [{ callerVariable: el.name.text, helperFunction: call.expression.getText(sourceFileAst), returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
+      });
+    }
+  }
   function recordDestructuredClassHelper(decl: ts.VariableDeclaration): void {
     if (!ts.isObjectBindingPattern(decl.name) || !decl.initializer) return;
     const call = unwrapCall(decl.initializer);
@@ -398,8 +479,14 @@ export async function parseServiceBindings(
   }
   collectDeclarations(sourceFileAst);
   for (const decl of declarations) {
+    await recordDestructuredHelper(decl);
     recordDestructuredClassHelper(decl);
     await recordVariable(decl);
+    if (ts.isIdentifier(decl.name) && decl.initializer && ts.isCallExpression(decl.initializer) && ts.isPropertyAccessExpression(decl.initializer.expression) && decl.initializer.expression.name.text === 'tx' && ts.isIdentifier(decl.initializer.expression.expression)) {
+      const sourceName = decl.initializer.expression.expression.text;
+      const existing = out.find((row) => row.variableName === sourceName && row.sourceFile === normalizePath(filePath));
+      if (existing) out.push({ ...existing, variableName: decl.name.text, sourceLine: lineOf(sourceFileAst, decl), helperChain: [...(existing.helperChain ?? []), { callerVariable: decl.name.text, aliasOf: sourceName, aliasKind: 'transaction' }] });
+    }
   }
   return out;
 }

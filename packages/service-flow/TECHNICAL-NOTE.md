@@ -1,5 +1,12 @@
 # Service Flow Resolution Notes
 
+## 0.1.20 helper object clients, expression placeholders, and remote-action target notes
+
+- Helper-return binding analysis now follows concrete `cds.connect.to(...)` clients returned through object shorthand or explicit properties. Callers that destructure those properties, rename them, or assign a simple `.tx()` transaction alias keep helper-chain evidence including caller variable, returned property, helper source, destination expression, service-path expression, and placeholders. Arbitrary object returns are ignored.
+- Template placeholders use the full trimmed expression inside `${...}` as the runtime key. Examples include `domain`, `domainInfo.serviceName`, `domainInfo.shortName?.toLowerCase()`, and `items[0].service`. Runtime `--var` substitution matches these keys literally and does not execute or partially evaluate JavaScript. Missing expression keys keep edges dynamic.
+- Remote action calls that do not expose a static path now use semantic unresolved targets such as `Remote action: unknown path` or `Remote action: dynamic path`; shorthand `path` properties retain `operationPathExpression` and `dynamic_operation_path_identifier` parser evidence.
+- Strict doctor reports normalized OData invocation totals by resolved/dynamic/ambiguous/unresolved status and remote-action target quality, including numeric unresolved targets and semantic unknown/dynamic target counts.
+
 ## 0.1.19 remote invocation and query notes
 
 - Remote action/function paths are scanned for a balanced top-level OData invocation suffix. Single-segment operation imports like `/readConfig(...)` normalize to `/readConfig`; namespace-qualified operation imports keep the qualified request segment for evidence and can resolve against the indexed simple CDS operation when service signals are strong. Navigation/property paths like `/Orders(id='123')/items` are left unchanged. Graph evidence keeps both `rawOperationPath` and `normalizedOperationPath` when normalization occurs.

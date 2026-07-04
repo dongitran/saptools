@@ -54,7 +54,7 @@ npm install @saptools/service-flow
 
 ### Correctness notes
 
-- Runtime `--var` values are considered only for dynamic, ambiguous, or unresolved **remote** graph edges whose alias, destination, service path, or operation path expressions contain supplied placeholders. Local database, external HTTP, event, and already resolved static edges keep their persisted status, target, reason, and confidence. Partial substitutions remain dynamic and report the missing placeholder names.
+- Runtime `--var` values are considered only for dynamic, ambiguous, or unresolved **remote** graph edges whose alias, destination, service path, or operation path expressions contain supplied placeholders. Placeholder keys are the full trimmed expression inside `${...}`, so keys such as `domainInfo.serviceName`, `domainInfo.shortName?.toLowerCase()`, and `items[0].service` can be supplied literally without JavaScript evaluation. Local database, external HTTP, event, and already resolved static edges keep their persisted status, target, reason, and confidence. Partial substitutions remain dynamic and report the missing placeholder names.
 - `trace` and `graph` both accept repeatable `--var key=value` options. Effective substitutions are rendered in trace evidence without mutating the persisted graph. Confidence values are bounded to `[0, 1]`.
 - Repository selectors on list, trace, graph, and inspect commands narrow scope. Unknown selectors return empty machine-readable diagnostics instead of falling back to the whole workspace.
 - Helper-package dependency edges prefer exact indexed package names. Duplicate package-name candidates are persisted as ambiguous evidence rather than silently selecting one repository.
@@ -310,7 +310,7 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 
 When a concrete target exists after variable substitution, the trace shows both the parameterized evidence and the resolved match. When it does not, `service-flow` keeps the edge as a dynamic candidate or unresolved edge so the missing link remains visible.
 
-Service-binding evidence keeps these fields distinct: service alias, alias expression, destination expression, service-path expression, operation-path expression, and runtime placeholders. This is important for common CAP helpers such as `cds.connect.to(`remote_${code}`, { credentials: { destination: `remote_${code}`, path: `/${entityType}ProcessService` } })`, where the alias is not the service path.
+Service-binding evidence keeps these fields distinct: service alias, alias expression, destination expression, service-path expression, operation-path expression, and runtime placeholders. Helpers that return concrete connected clients inside object properties are followed through destructuring and simple transaction aliases while preserving helper-chain evidence. This is important for common CAP helpers such as `cds.connect.to(`remote_${code}`, { credentials: { destination: `remote_${code}`, path: `/${entityType}ProcessService` } })`, where the alias is not the service path.
 
 By default, production traces should be built from production source files. Keep generated credentials and local state out of git, and use explicit fixture/test workspaces when validating test-only mocked service clients so they do not pollute production graph interpretation.
 
@@ -411,7 +411,7 @@ Run `service-flow index` after source, CDS, package metadata, or helper-package 
 <summary><b>Why is an expected call unresolved?</b></summary>
 
 Check `service-flow doctor`, then inspect the facts with `service-flow list services`, `service-flow list operations`, and `service-flow list calls`. Dynamic destinations may need `--var key=value`, and custom wrappers may need new parser support.
-Default doctor output is intended to focus on actionable indexing or trace-impacting issues; use `--strict` when you need exhaustive model-shape diagnostics for entity-only or extension-heavy CDS models.
+Default doctor output is intended to focus on actionable indexing or trace-impacting issues; use `--strict` when you need exhaustive model-shape diagnostics for entity-only or extension-heavy CDS models. Strict mode also reports normalized OData invocation ambiguity and remote-action target quality, including whether unresolved unknown/dynamic paths are semantic instead of numeric call ids.
 
 </details>
 

@@ -66,7 +66,7 @@ export function resolveOperation(
   },
   workspaceId?: number,
 ): OperationResolution {
-  const missing = [signals.servicePath, signals.alias, signals.destination, signals.operationPath].flatMap((value) => [...(value ?? '').matchAll(/\$\{\s*(\w+)\s*\}/g)].map((match) => match[1] ?? '')).filter(Boolean);
+  const missing = [signals.servicePath, signals.alias, signals.destination, signals.operationPath].flatMap((value) => [...(value ?? '').matchAll(/\$\{([^}]*)\}/g)].map((match) => (match[1] ?? '').trim())).filter(Boolean);
   if (missing.length > 0)
     return {
       status: 'dynamic',

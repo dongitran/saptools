@@ -7,7 +7,7 @@ export interface RuntimeSubstitution {
   changed: boolean;
 }
 
-const PLACEHOLDER = /\$\{\s*(\w+)\s*\}/g;
+const PLACEHOLDER = /\$\{([^}]*)\}/g;
 
 export function applyVariables(
   template: string | undefined,
@@ -18,7 +18,7 @@ export function applyVariables(
 
 export function extractPlaceholders(template: string | undefined): string[] {
   return [...(template ?? '').matchAll(PLACEHOLDER)]
-    .map((m) => m[1] ?? '')
+    .map((m) => (m[1] ?? '').trim())
     .filter(Boolean);
 }
 
@@ -30,9 +30,10 @@ export function substituteVariables(
   const placeholders = [...new Set(extractPlaceholders(template))];
   const supplied = placeholders.filter((key) => Object.hasOwn(vars, key));
   const missing = placeholders.filter((key) => !Object.hasOwn(vars, key));
-  const effective = template.replace(PLACEHOLDER, (_m, key: string) =>
-    Object.hasOwn(vars, key) ? vars[key] ?? '' : `\${${key}}`,
-  );
+  const effective = template.replace(PLACEHOLDER, (_m, key: string) => {
+    const trimmed = key.trim();
+    return Object.hasOwn(vars, trimmed) ? vars[trimmed] ?? '' : `\${${trimmed}}`;
+  });
   return {
     original: template,
     effective,
