@@ -281,11 +281,19 @@ export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]
     insertStmt.run(repoId, caller?.id, target.id, r.calleeExpression, r.importSource, r.sourceFile, r.sourceLine, target.status, 0.8, JSON.stringify({ ...r.evidence, candidateStrategy: target.strategy, candidateCount: target.candidateCount }), target.reason);
   }
 }
+function isRelativeImportedSymbolCall(r: SymbolCallFact): boolean {
+  return Boolean(r.importSource?.startsWith('.'));
+}
 function resolveSymbolCallTarget(db: Db, repoId: number, r: SymbolCallFact): { id: number | null; status: string; reason: string | null; strategy: string; candidateCount: number } {
   const evidence = r.evidence as { relation?: unknown };
   const localRows = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND (name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName) as Array<{ id: number }>;
   if (localRows.length === 1) return { id: localRows[0]?.id ?? null, status: 'resolved', reason: null, strategy: 'same_file_exact', candidateCount: 1 };
   if (localRows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple same-file symbol targets matched exactly', strategy: 'same_file_exact', candidateCount: localRows.length };
+  if (evidence.relation === 'class_instance_method' && isRelativeImportedSymbolCall(r)) {
+    const classRows = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file<>? AND qualified_name=? ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName) as Array<{ id: number }>;
+    if (classRows.length === 1) return { id: classRows[0]?.id ?? null, status: 'resolved', reason: null, strategy: 'relative_import_class_instance_method', candidateCount: 1 };
+    if (classRows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple relative class instance method targets matched exactly', strategy: 'relative_import_class_instance_method', candidateCount: classRows.length };
+  }
   const rows = db.prepare('SELECT id,kind,evidence_json evidenceJson FROM symbols WHERE repo_id=? AND source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName) as Array<{ id: number; kind?: string; evidenceJson?: string | null }>;
   if (evidence.relation === 'relative_import_proxy_member' && rows.length > 1) {
     const objectMapRows = rows.filter((row) => String(row.evidenceJson ?? '').includes('exported_object_shorthand') || String(row.evidenceJson ?? '').includes('exported_object_literal'));

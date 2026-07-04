@@ -335,6 +335,39 @@ describe('executable symbol parser trace-quality cases', () => {
     expect(parsedHandler.calls.map((call) => call.calleeExpression).sort()).toEqual(['DomainWorker.instance', 'worker.runHeavyCheck']);
     expect(parsedHandler.calls.find((call) => call.calleeExpression === 'worker.runHeavyCheck')?.evidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'handle', targetName: 'runHeavyCheck', factory: 'DomainWorker.instance' });
   });
+
+
+  it('resolves conservative class instance method calls for same-file and relative helper classes', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-class-instance-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'helper.ts'), `
+      export class ImportedHelper {
+        async run(primaryClient: unknown): Promise<void> { await primaryClient.send({ method: 'POST', path: '/run', data: {} }); }
+      }
+      export class OtherHelper {
+        async run(primaryClient: unknown): Promise<void> { await primaryClient.send({ method: 'POST', path: '/other', data: {} }); }
+      }
+    `);
+    await fs.writeFile(path.join(root, 'src', 'entry.ts'), `
+      import { ImportedHelper, OtherHelper } from './helper';
+      class LocalHelper { async check(primaryClient: unknown): Promise<void> { await primaryClient.send({ method: 'POST', path: '/check', data: {} }); } }
+      export async function start(primaryClient: unknown, secondaryClient: unknown): Promise<void> {
+        const local = new LocalHelper();
+        const imported = new ImportedHelper();
+        const other = new OtherHelper();
+        await local.check(primaryClient);
+        await imported.run(primaryClient);
+        await other.run(secondaryClient);
+        const dynamicName = 'run';
+        await imported[dynamicName](primaryClient);
+      }
+    `);
+    const { parseExecutableSymbols } = await import('../../src/parsers/symbol-parser.js');
+    const parsed = await parseExecutableSymbols(root, 'src/entry.ts');
+    expect(parsed.calls.map((call) => call.calleeExpression).sort()).toEqual(['imported.run', 'local.check', 'other.run']);
+    expect(parsed.calls.find((call) => call.calleeExpression === 'local.check')?.evidence).toMatchObject({ relation: 'class_instance_method', instanceVariable: 'local', className: 'LocalHelper', methodName: 'check', candidateStrategy: 'same_file_class_instance_method' });
+    expect(parsed.calls.find((call) => call.calleeExpression === 'imported.run')?.evidence).toMatchObject({ relation: 'class_instance_method', instanceVariable: 'imported', className: 'ImportedHelper', methodName: 'run', classImportSource: './helper', candidateStrategy: 'relative_import_class_instance_method' });
+  });
 });
 
 describe('CAP DB query parser and output labels', () => {

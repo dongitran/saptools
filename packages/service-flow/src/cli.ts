@@ -193,23 +193,35 @@ function identityAliasBindingQuality(db: ReturnType<typeof openDatabase>): Recor
 }
 
 function remoteActionNoBindingQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
-  const rows = db.prepare(`SELECT COALESCE(json_extract(c.evidence_json,'$.receiver'),'unknown') receiverName,COALESCE(e.status,'missing_edge') status,CASE WHEN operation_path_expr LIKE '%(%' THEN 1 ELSE 0 END isODataInvocation,COUNT(*) count
+  const categoryCase = `CASE
+    WHEN c.unresolved_reason='dynamic_operation_path_identifier' THEN 'dynamic_path_identifier'
+    WHEN json_extract(c.evidence_json,'$.classifier')='higher_order_wrapper_literal_path' OR json_extract(c.evidence_json,'$.operationPathExpression') IS NOT NULL THEN 'likely_higher_order_wrapper_path_needed'
+    WHEN json_extract(c.evidence_json,'$.receiver') LIKE '%.%' THEN 'likely_parameter_context_needed'
+    WHEN EXISTS (SELECT 1 FROM symbol_calls sc WHERE sc.status='resolved' AND json_extract(sc.evidence_json,'$.relation')='class_instance_method' AND sc.source_file=c.source_file) THEN 'likely_instance_method_context_needed'
+    WHEN EXISTS (SELECT 1 FROM service_bindings b WHERE b.repo_id=c.repo_id AND b.source_file=c.source_file AND ABS(b.source_line-c.source_line) < 50) THEN 'likely_missing_assignment_binding'
+    WHEN e.status='unresolved' AND COALESCE(e.unresolved_reason,'') LIKE '%No indexed target operation%' THEN 'no_indexed_target_operation'
+    WHEN c.operation_path_expr IS NOT NULL AND (c.operation_path_expr LIKE '/%' OR c.operation_path_expr NOT LIKE '%/%') THEN 'operation_path_only_no_static_service_signal'
+    ELSE 'external_or_entity_path_not_action' END`;
+  const rows = db.prepare(`SELECT ${categoryCase} category,COALESCE(e.status,'missing_edge') status,COUNT(*) count
     FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
     WHERE c.call_type='remote_action' AND c.operation_path_expr IS NOT NULL AND c.service_binding_id IS NULL
-    GROUP BY receiverName,status,isODataInvocation ORDER BY count DESC,receiverName,status`).all() as Array<Record<string, unknown>>;
-  const examples = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,json_extract(c.evidence_json,'$.receiver') receiverName,c.operation_path_expr operationPath,COALESCE(e.status,'missing_edge') status,
-    CASE WHEN EXISTS (SELECT 1 FROM service_bindings b WHERE b.repo_id=c.repo_id AND b.source_file=c.source_file AND COALESCE(b.helper_chain_json,'') LIKE '%' || '"aliasOf":"' || json_extract(c.evidence_json,'$.receiver') || '"' || '%') THEN 'likely_missed_alias_or_helper_propagation' ELSE 'operation_path_only_call' END category
+    GROUP BY category,status ORDER BY count DESC,category,status`).all() as Array<Record<string, unknown>>;
+  const examples = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,json_extract(c.evidence_json,'$.receiver') receiverName,c.operation_path_expr operationPath,COALESCE(e.status,'missing_edge') status,${categoryCase} category
     FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
-    WHERE c.call_type='remote_action' AND c.operation_path_expr IS NOT NULL AND c.service_binding_id IS NULL ORDER BY c.source_file,c.source_line LIMIT 5`).all() as Array<Record<string, unknown>>;
+    WHERE c.call_type='remote_action' AND c.operation_path_expr IS NOT NULL AND c.service_binding_id IS NULL ORDER BY c.source_file,c.source_line LIMIT 8`).all() as Array<Record<string, unknown>>;
   const total = rows.reduce((sum, row) => sum + Number(row.count ?? 0), 0);
   return { severity: total > 0 ? 'warning' : 'info', code: 'strict_remote_action_no_binding_quality', message: 'Remote actions with operation paths but no service binding id', total, breakdown: rows, examples };
 }
 
 function contextualImplementationQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
-  const rows = db.prepare(`SELECT COALESCE(json_extract(evidence_json,'$.contextualImplementation.status'),'not_applicable') status,COUNT(*) count
-    FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status IN ('ambiguous','unresolved') GROUP BY status ORDER BY count DESC,status`).all() as Array<Record<string, unknown>>;
+  const rows = db.prepare(`SELECT status,COALESCE(unresolved_reason,status) reason,COUNT(*) count
+    FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status IN ('ambiguous','unresolved') GROUP BY status,reason ORDER BY status,count DESC,reason`).all() as Array<Record<string, unknown>>;
+  const examples = db.prepare(`SELECT json_extract(evidence_json,'$.servicePath') servicePath,json_extract(evidence_json,'$.operationPath') operationPath,status,unresolved_reason unresolvedReason,
+      json_extract(evidence_json,'$.candidates[0].rejectedReasons[0]') topRejectedReason,
+      json_extract(evidence_json,'$.candidates[0].acceptedReasons[0]') topAcceptedReason
+    FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status IN ('ambiguous','unresolved') ORDER BY status,id LIMIT 6`).all() as Array<Record<string, unknown>>;
   const total = rows.reduce((sum, row) => sum + Number(row.count ?? 0), 0);
-  return { severity: total > 0 ? 'warning' : 'info', code: 'strict_contextual_implementation_quality', message: 'Runtime-resolved implementation hops stopped by ambiguous or unresolved implementation edges', total, breakdown: rows };
+  return { severity: total > 0 ? 'warning' : 'info', code: 'strict_contextual_implementation_quality', message: 'Implementation hops stopped by ambiguous or unresolved implementation edges', total, breakdown: rows, examples };
 }
 
 function wrapperPathPropagationQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
