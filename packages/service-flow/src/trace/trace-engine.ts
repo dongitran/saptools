@@ -306,6 +306,22 @@ function knownBindingsForCalls(db: Db, calls: CallRow[]): Map<string, ContextBin
   }
   return map;
 }
+function knownBindingsForScope(db: Db, repoId: number | undefined, symbolIds: Set<number> | undefined, files: Set<string> | undefined): Map<string, ContextBinding> {
+  const map = new Map<string, ContextBinding>();
+  if (repoId === undefined) return map;
+  type BindingRow = Omit<ContextBinding, 'bindingId' | 'source' | 'calleeReceiver'> & { id?: number; variableName?: string };
+  const rows = db.prepare('SELECT id,variable_name variableName,alias,alias_expr aliasExpr,destination_expr destinationExpr,service_path_expr servicePathExpr,source_file sourceFile,source_line sourceLine FROM service_bindings WHERE repo_id=?').all(repoId) as BindingRow[];
+  for (const row of rows) {
+    if (!row.variableName) continue;
+    if (files && !files.has(String(row.sourceFile))) continue;
+    if (symbolIds && symbolIds.size > 0) {
+      const owner = db.prepare('SELECT id FROM symbols WHERE id IN (' + [...symbolIds].map(() => '?').join(',') + ') AND source_file=? AND start_line<=? AND end_line>=? LIMIT 1').get(...symbolIds, row.sourceFile, row.sourceLine, row.sourceLine) as { id?: number } | undefined;
+      if (!owner) continue;
+    }
+    map.set(row.variableName, { ...row, bindingId: Number(row.id), source: 'local_service_binding', calleeReceiver: row.variableName });
+  }
+  return map;
+}
 function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, callerBindings: Map<string, ContextBinding>): Map<string, ContextBinding> {
   const next = new Map<string, ContextBinding>();
   if (callerBindings.size === 0) return next;
@@ -313,19 +329,25 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
   const callee = db.prepare('SELECT evidence_json evidenceJson FROM symbols WHERE id=?').get(symbolCall.callee_symbol_id) as { evidenceJson?: string } | undefined;
   const calleeEvidence = parseEvidence(callee?.evidenceJson);
   const params = Array.isArray(calleeEvidence.parameters) ? calleeEvidence.parameters.filter((item): item is string => typeof item === 'string') : [];
+  const parameterBindings = Array.isArray(calleeEvidence.parameterBindings) ? calleeEvidence.parameterBindings.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
   const args = Array.isArray(callEvidence.callArguments) ? callEvidence.callArguments as Array<Record<string, unknown>> : [];
   args.forEach((arg, index) => {
-    const param = params[index];
-    if (!param) return;
+    const paramBinding = parameterBindings.find((binding) => binding.index === index);
+    const param = paramBinding?.kind === 'identifier' && typeof paramBinding.name === 'string' ? paramBinding.name : params[index];
     if (arg.kind === 'identifier' && typeof arg.name === 'string') {
       const binding = callerBindings.get(arg.name);
-      if (binding) next.set(param, { ...binding, source: 'local_symbol_argument', callerArgument: arg.name, calleeParameter: param, calleeReceiver: param });
+      if (binding && param) next.set(param, { ...binding, source: 'local_symbol_argument', callerArgument: arg.name, calleeParameter: param, calleeReceiver: param });
     }
     if (arg.kind === 'object_literal' && Array.isArray(arg.properties)) {
       for (const prop of arg.properties as Array<Record<string, unknown>>) {
         if (typeof prop.property !== 'string' || typeof prop.argument !== 'string') continue;
         const binding = callerBindings.get(prop.argument);
-        if (binding) next.set(`${param}.${prop.property}`, { ...binding, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
+        if (!binding) continue;
+        const destructured = paramBinding?.kind === 'object_pattern' && Array.isArray(paramBinding.properties)
+          ? (paramBinding.properties as Array<Record<string, unknown>>).find((item) => item.property === prop.property && typeof item.local === 'string')
+          : undefined;
+        if (destructured && typeof destructured.local === 'string') next.set(destructured.local, { ...binding, source: 'local_symbol_destructured_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: String(index), calleeReceiver: destructured.local });
+        else if (param) next.set(`${param}.${prop.property}`, { ...binding, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
       }
     }
   });
@@ -440,7 +462,7 @@ export function trace(
         (!current.symbolIds || current.symbolIds.has(Number(c.source_symbol_id))) && (!current.files || current.files.has(String(c.source_file))) &&
         includeCall(String(c.call_type), options),
     );
-    const callerBindings = new Map<string, ContextBinding>([...(current.context ?? new Map<string, ContextBinding>()), ...knownBindingsForCalls(db, filtered)]);
+    const callerBindings = new Map<string, ContextBinding>([...(current.context ?? new Map<string, ContextBinding>()), ...knownBindingsForScope(db, current.repoId, current.symbolIds, current.files), ...knownBindingsForCalls(db, filtered)]);
 
     if (current.symbolIds && current.symbolIds.size > 0 && current.depth < maxDepth) {
       const symbolRows = db.prepare(`SELECT sc.*,s.repo_id calleeRepoId,s.source_file calleeFile FROM symbol_calls sc LEFT JOIN symbols s ON s.id=sc.callee_symbol_id WHERE sc.caller_symbol_id IN (${[...current.symbolIds].map(() => '?').join(',')}) ORDER BY sc.source_file,sc.source_line`).all(...current.symbolIds) as Array<Record<string, unknown>>;

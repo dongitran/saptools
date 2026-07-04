@@ -40,9 +40,21 @@ function isRelativeImport(value: string | undefined): boolean {
 function isObjectFunction(node: ts.Node): boolean {
   return ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node);
 }
+type ParameterBinding =
+  | { index: number; kind: 'identifier'; name: string }
+  | { index: number; kind: 'object_pattern'; properties: Array<{ property: string; local: string }> };
 const commonTerminalMembers = new Set(['push', 'includes', 'find', 'findIndex', 'map', 'filter', 'reduce', 'forEach', 'some', 'every', 'toUpperCase', 'toLowerCase', 'trim', 'split', 'join', 'get', 'set', 'has']);
 const loggerMembers = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'log']);
 const globalObjects = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Math', 'Date', 'Promise', 'Reflect']);
+const builtInConstructors = new Set([
+  'Set', 'Map', 'WeakSet', 'WeakMap',
+  'Date', 'RegExp', 'URL', 'URLSearchParams',
+  'Error', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'AggregateError',
+  'ArrayBuffer', 'SharedArrayBuffer', 'DataView',
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
+  'Promise', 'AbortController',
+]);
 const capDslRoots = new Set(['SELECT', 'INSERT', 'UPSERT', 'UPDATE', 'DELETE']);
 const requestHelpers = new Set(['reject', 'error', 'info', 'warn', 'notify']);
 const transportMembers = new Set(['emit', 'publish', 'send', 'on']);
@@ -89,6 +101,25 @@ function argumentEvidence(args: ts.NodeArray<ts.Expression>, source: ts.SourceFi
     return { kind: 'unsupported', expression: arg.getText(source) };
   });
 }
+function bindingLocalName(name: ts.BindingName, initializer?: ts.Expression): string | undefined {
+  if (ts.isIdentifier(name)) return name.text;
+  if (initializer && ts.isIdentifier(initializer)) return initializer.text;
+  return undefined;
+}
+function parameterBindings(params: ts.NodeArray<ts.ParameterDeclaration>): ParameterBinding[] {
+  return params.flatMap((param, index): ParameterBinding[] => {
+    if (ts.isIdentifier(param.name)) return [{ index, kind: 'identifier', name: param.name.text }];
+    if (!ts.isObjectBindingPattern(param.name)) return [];
+    const properties = param.name.elements.flatMap((element): Array<{ property: string; local: string }> => {
+      if (element.dotDotDotToken || ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) return [];
+      const property = element.propertyName ? nameOf(element.propertyName) : nameOf(element.name);
+      if (!property) return [];
+      const local = bindingLocalName(element.name, element.initializer);
+      return local ? [{ property, local }] : [];
+    });
+    return properties.length > 0 ? [{ index, kind: 'object_pattern', properties }] : [];
+  });
+}
 export async function parseExecutableSymbols(repoPath: string, filePath: string): Promise<{ symbols: ExecutableSymbolFact[]; calls: SymbolCallFact[] }> {
   const text = await fs.readFile(path.join(repoPath, filePath), 'utf8');
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
@@ -99,6 +130,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   const exportNames = exportDeclarations(source);
   const objectExports = new Set<string>();
   const exportedClasses = new Set<string>();
+  const declaredClasses = new Set<string>();
   const proxyVariables = new Map<string, { importSource: string; factory: string; variableName: string }>();
   const classInstances = new Map<string, { className: string; importSource?: string }>();
   const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string, evidence?: Record<string, unknown>): void => {
@@ -108,9 +140,11 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     const objectExported = parentName ? objectExports.has(parentRoot) : false;
     const classMemberExported = kind === 'method' && parentName ? exportedClasses.has(parentRoot) && ts.isMethodDeclaration(node) && (ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Static) !== 0 && isPublicClassMethod(node) : false;
     const effectiveExportedName = classMemberExported || objectExported ? qualifiedName : declaredExportName;
-    const params = isFunctionLike(node) ? node.parameters.map((param) => nameOf(param.name)).filter((name): name is string => Boolean(name)) : undefined;
+    const bindings = isFunctionLike(node) ? parameterBindings(node.parameters) : undefined;
+    const params = bindings?.flatMap((binding) => binding.kind === 'identifier' ? [binding.name] : []);
     const sourceEvidence = evidence ?? (classMemberExported ? { source: 'exported_class_member', exportedClass: parentRoot, memberKind: (ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Static) !== 0 ? 'static_method' : 'class_method', parameters: params } : declaredExportName ? { exportedName: declaredExportName, source: 'export_declaration' } : objectExported ? { exportedName: qualifiedName, source: 'exported_object_literal' } : undefined);
-    symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: effectiveExportedName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(effectiveExportedName), importExportEvidence: params && sourceEvidence ? { ...sourceEvidence, parameters: params } : sourceEvidence });
+    const parameterEvidence = bindings && bindings.length > 0 ? { parameters: params, parameterBindings: bindings } : {};
+    symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: effectiveExportedName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(effectiveExportedName), importExportEvidence: sourceEvidence ? { ...sourceEvidence, ...parameterEvidence } : bindings && bindings.length > 0 ? parameterEvidence : undefined });
   };
   const addAliasSymbol = (objectName: string, propertyName: string, node: ts.Node, targetImportSource?: string): void => {
     symbols.push({ kind: 'object_alias', localName: propertyName, exportedName: propertyName, qualifiedName: `${objectName}.${propertyName}`, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: true, importExportEvidence: { source: 'exported_object_shorthand', objectName, propertyName, targetImportSource } });
@@ -136,6 +170,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   visitImports(source);
   const visitSymbols = (node: ts.Node, parentClass?: string): void => {
     if (ts.isClassDeclaration(node) && node.name) {
+      declaredClasses.add(node.name.text);
       if (exported(node) || exportNames.has(node.name.text)) exportedClasses.add(node.name.text);
       for (const member of node.members) visitSymbols(member, node.name.text);
       return;
@@ -215,7 +250,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression)) {
       const className = node.initializer.expression.text;
       const importSource = imports.get(className);
-      if (!importSource || isRelativeImport(importSource)) classInstances.set(node.name.text, { className, importSource });
+      if (!builtInConstructors.has(className) && ((importSource && isRelativeImport(importSource)) || declaredClasses.has(className))) classInstances.set(node.name.text, { className, importSource });
     }
     ts.forEachChild(node, visitClassInstances);
   };

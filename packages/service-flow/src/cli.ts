@@ -162,11 +162,15 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const aliasQuality = identityAliasBindingQuality(db);
   const noBindingQuality = remoteActionNoBindingQuality(db);
   const contextualQuality = contextualImplementationQuality(db);
+  const classInstanceQuality = classInstanceNoiseQuality(db);
+  const bindingPropagationQuality = contextualBindingPropagationQuality(db);
   const wrapperQuality = wrapperPathPropagationQuality(db);
   return [
     aliasQuality,
     noBindingQuality,
     contextualQuality,
+    classInstanceQuality,
+    bindingPropagationQuality,
     wrapperQuality,
     remoteQuery,
     invocation,
@@ -197,7 +201,16 @@ function remoteActionNoBindingQuality(db: ReturnType<typeof openDatabase>): Reco
     WHEN c.unresolved_reason='dynamic_operation_path_identifier' THEN 'dynamic_path_identifier'
     WHEN json_extract(c.evidence_json,'$.classifier')='higher_order_wrapper_literal_path' OR json_extract(c.evidence_json,'$.operationPathExpression') IS NOT NULL THEN 'likely_higher_order_wrapper_path_needed'
     WHEN json_extract(c.evidence_json,'$.receiver') LIKE '%.%' THEN 'likely_parameter_context_needed'
-    WHEN EXISTS (SELECT 1 FROM symbol_calls sc WHERE sc.status='resolved' AND json_extract(sc.evidence_json,'$.relation')='class_instance_method' AND sc.source_file=c.source_file) THEN 'likely_instance_method_context_needed'
+    WHEN EXISTS (
+      SELECT 1 FROM symbol_calls sc
+      JOIN symbols caller ON caller.id=sc.caller_symbol_id
+      JOIN symbols callee ON callee.id=sc.callee_symbol_id
+      WHERE sc.status='resolved'
+        AND sc.source_file=c.source_file
+        AND caller.id=c.source_symbol_id
+        AND json_extract(sc.evidence_json,'$.relation')='class_instance_method'
+        AND (callee.evidence_json IS NULL OR json_extract(callee.evidence_json,'$.parameterBindings') IS NULL)
+    ) THEN 'likely_instance_method_parameter_metadata_needed'
     WHEN EXISTS (SELECT 1 FROM service_bindings b WHERE b.repo_id=c.repo_id AND b.source_file=c.source_file AND ABS(b.source_line-c.source_line) < 50) THEN 'likely_missing_assignment_binding'
     WHEN e.status='unresolved' AND COALESCE(e.unresolved_reason,'') LIKE '%No indexed target operation%' THEN 'no_indexed_target_operation'
     WHEN c.operation_path_expr IS NOT NULL AND (c.operation_path_expr LIKE '/%' OR c.operation_path_expr NOT LIKE '%/%') THEN 'operation_path_only_no_static_service_signal'
@@ -211,6 +224,33 @@ function remoteActionNoBindingQuality(db: ReturnType<typeof openDatabase>): Reco
     WHERE c.call_type='remote_action' AND c.operation_path_expr IS NOT NULL AND c.service_binding_id IS NULL ORDER BY c.source_file,c.source_line LIMIT 8`).all() as Array<Record<string, unknown>>;
   const total = rows.reduce((sum, row) => sum + Number(row.count ?? 0), 0);
   return { severity: total > 0 ? 'warning' : 'info', code: 'strict_remote_action_no_binding_quality', message: 'Remote actions with operation paths but no service binding id', total, breakdown: rows, examples };
+}
+
+function classInstanceNoiseQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const builtIns = ['Set', 'Map', 'WeakSet', 'WeakMap', 'Date', 'RegExp', 'URL', 'URLSearchParams', 'Error', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'AggregateError', 'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'Promise', 'AbortController'];
+  const placeholders = builtIns.map(() => '?').join(',');
+  const aggregate = db.prepare(`SELECT COUNT(*) total,
+      SUM(CASE WHEN status='unresolved' THEN 1 ELSE 0 END) unresolved,
+      SUM(CASE WHEN status='unresolved' AND json_extract(evidence_json,'$.className') IN (${placeholders}) THEN 1 ELSE 0 END) unresolvedBuiltIn
+    FROM symbol_calls WHERE json_extract(evidence_json,'$.relation')='class_instance_method'`).get(...builtIns) as { total?: number; unresolved?: number; unresolvedBuiltIn?: number };
+  const byConstructor = db.prepare(`SELECT json_extract(evidence_json,'$.className') constructorName,COUNT(*) unresolvedCount
+    FROM symbol_calls WHERE status='unresolved' AND json_extract(evidence_json,'$.relation')='class_instance_method'
+    GROUP BY constructorName ORDER BY unresolvedCount DESC,constructorName LIMIT 10`).all() as Array<Record<string, unknown>>;
+  return { severity: Number(aggregate.unresolvedBuiltIn ?? 0) > 0 ? 'warning' : 'info', code: 'strict_class_instance_noise_quality', message: 'Class-instance symbol-call aggregate with built-in constructor guard', totalClassInstanceCalls: Number(aggregate.total ?? 0), unresolvedClassInstanceCalls: Number(aggregate.unresolved ?? 0), unresolvedBuiltInClassInstanceCalls: Number(aggregate.unresolvedBuiltIn ?? 0), unresolvedByConstructor: byConstructor };
+}
+
+function contextualBindingPropagationQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const serviceClientCalls = db.prepare(`SELECT COUNT(*) count FROM symbol_calls sc
+    WHERE json_extract(sc.evidence_json,'$.callArguments[0].kind') IN ('identifier','object_literal')`).get() as { count?: number };
+  const missingMetadata = db.prepare(`SELECT COUNT(*) count FROM symbol_calls sc JOIN symbols s ON s.id=sc.callee_symbol_id
+    WHERE sc.status='resolved' AND json_extract(sc.evidence_json,'$.callArguments[0].kind') IN ('identifier','object_literal')
+      AND (s.evidence_json IS NULL OR json_extract(s.evidence_json,'$.parameterBindings') IS NULL)`).get() as { count?: number };
+  const destructuredUnmapped = db.prepare(`SELECT COUNT(*) count FROM symbol_calls sc JOIN symbols s ON s.id=sc.callee_symbol_id
+    WHERE json_extract(sc.evidence_json,'$.callArguments[0].kind')='object_literal'
+      AND json_extract(s.evidence_json,'$.parameterBindings[0].kind')='object_pattern'
+      AND json_array_length(json_extract(sc.evidence_json,'$.callArguments[0].properties')) > json_array_length(json_extract(s.evidence_json,'$.parameterBindings[0].properties'))`).get() as { count?: number };
+  const contextualResolved = db.prepare(`SELECT COUNT(*) count FROM graph_edges WHERE json_extract(evidence_json,'$.contextualServiceBindingSelected')=1 AND status='resolved'`).get() as { count?: number };
+  return { severity: Number(missingMetadata.count ?? 0) + Number(destructuredUnmapped.count ?? 0) > 0 ? 'warning' : 'info', code: 'strict_contextual_binding_propagation_quality', message: 'Contextual service-client propagation aggregate', localSymbolCallsWithServiceClientArguments: Number(serviceClientCalls.count ?? 0), calleeSymbolsMissingParameterMetadata: Number(missingMetadata.count ?? 0), destructuredObjectParametersPossiblyUnmapped: Number(destructuredUnmapped.count ?? 0), contextualRemoteActionsResolved: Number(contextualResolved.count ?? 0) };
 }
 
 function contextualImplementationQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {

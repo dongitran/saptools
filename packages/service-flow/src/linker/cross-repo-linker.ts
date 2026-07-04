@@ -83,12 +83,20 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   }
   const edgeType = callType === 'local_db_query' ? 'HANDLER_RUNS_DB_QUERY' : callType === 'external_http' ? 'HANDLER_CALLS_EXTERNAL_HTTP' : callType === 'async_emit' ? 'HANDLER_EMITS_EVENT' : callType === 'async_subscribe' ? 'EVENT_CONSUMED_BY_HANDLER' : resolution.status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE';
   const status = edgeType === 'DYNAMIC_EDGE_CANDIDATE' ? 'dynamic' : resolution.status === 'ambiguous' ? 'ambiguous' : edgeType === 'UNRESOLVED_EDGE' ? 'unresolved' : 'terminal';
-  const unresolvedReason = status === 'terminal' ? null : String(call.unresolved_reason ?? (resolution.status === 'ambiguous' ? 'Ambiguous operation candidates require a strong service signal' : resolution.status === 'dynamic' ? `Dynamic target requires runtime variable overrides: ${(resolution.reasons.length ? resolution.reasons : ['missing runtime variables']).join(', ')}` : 'No indexed target operation matched'));
+  const unresolvedReason = status === 'terminal' ? null : String(call.unresolved_reason ?? unresolvedOperationReason(resolution));
   const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : 'external';
   const targetId = callType === 'local_db_query' ? String(call.query_entity ?? 'unknown') : callType === 'remote_action' ? (op ? `Remote action: ${op}` : (call.unresolved_reason === 'dynamic_operation_path_identifier' ? 'Remote action: dynamic path' : 'Remote action: unknown path')) : String(call.event_name_expr ?? op ?? call.id);
   const graphLevelDynamic = edgeType === 'DYNAMIC_EDGE_CANDIDATE' && resolution.status === 'dynamic';
   db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(evidence), graphLevelDynamic ? 1 : 0, unresolvedReason, generation);
   return { status, callType };
+}
+function unresolvedOperationReason(resolution: { candidates: unknown[]; status: string; reasons: string[] }): string {
+  if (resolution.status === 'dynamic') return `Dynamic target requires runtime variable overrides: ${(resolution.reasons.length ? resolution.reasons : ['missing runtime variables']).join(', ')}`;
+  if (resolution.candidates.length === 0) return 'No indexed target operation matched';
+  if (resolution.reasons.includes('operation_path_only_has_no_strong_target_signal')) return 'Operation candidates found but no strong service signal is available';
+  if (resolution.reasons.includes('candidate_score_below_resolution_threshold')) return 'Operation candidates found but resolution score is below threshold';
+  if (resolution.status === 'ambiguous') return 'Ambiguous operation candidates require a strong service signal';
+  return 'Operation candidates found but resolution could not select a target';
 }
 function parseJson(value: unknown): unknown {
   if (!value) return undefined;
