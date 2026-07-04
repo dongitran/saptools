@@ -4,8 +4,8 @@ import { describe, it } from "../helpers/test.js";
 
 describe("parseCsn", () => {
   it("accepts typed CSN definitions with valid elements", () => {
-    expect(parseCsn({ definitions: { Entity: { elements: { ID: { key: true, type: "cds.String" } } } } })).toEqual({
-      definitions: { Entity: { elements: { ID: { key: true, type: "cds.String" } } } },
+    expect(parseCsn({ definitions: { Entity: { elements: { ID: { key: true, type: "cds.String" }, parent: { type: "cds.Association", target: "Parent", on: [{ ref: ["parent", "ID"] }, "=", { ref: ["parentID"] }] } } } } })).toEqual({
+      definitions: { Entity: { elements: { ID: { key: true, type: "cds.String" }, parent: { type: "cds.Association", target: "Parent", on: [{ ref: ["parent", "ID"] }, "=", { ref: ["parentID"] }] } } } },
     });
   });
 
@@ -20,5 +20,6 @@ describe("parseCsn", () => {
     expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { length: "36" } } } } })).toThrow("invalid CSN definition");
     expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { key: "true" } } } } })).toThrow("invalid CSN definition");
     expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { target: false } } } } })).toThrow("invalid CSN definition");
+    expect(() => parseCsn({ definitions: { Entity: { elements: { parent: { on: "parent.ID = parentID" } } } } })).toThrow("invalid CSN definition");
   });
 });

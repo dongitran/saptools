@@ -7,6 +7,7 @@ export interface HanaLensElement {
   readonly key?: boolean;
   readonly target?: string;
   readonly "@Core.Computed"?: boolean;
+  readonly on?: readonly unknown[];
 }
 
 export interface HanaLensDefinition {
