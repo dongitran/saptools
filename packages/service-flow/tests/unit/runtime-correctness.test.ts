@@ -31,3 +31,37 @@ describe('runtime substitution and resolution correctness', () => {
     db.close();
   });
 });
+
+import ts from 'typescript';
+import { classifyOutboundCallsInSource } from '../../src/parsers/outbound-call-parser.js';
+
+describe('expression placeholder substitution', () => {
+  it('supports simple and expression placeholder keys without evaluating expressions', () => {
+    const result = substituteVariables('/${domain}/${domainInfo.serviceName}/${domainInfo.shortName?.toLowerCase()}/${items[0].service}/${makeKey()}/${domainInfo.serviceName}', {
+      domain: 'main',
+      'domainInfo.serviceName': 'Catalog',
+      'domainInfo.shortName?.toLowerCase()': 'cat',
+      'items[0].service': 'Item',
+      'makeKey()': 'made',
+    });
+    expect(result.placeholders).toEqual(['domain', 'domainInfo.serviceName', 'domainInfo.shortName?.toLowerCase()', 'items[0].service', 'makeKey()']);
+    expect(result.missing).toEqual([]);
+    expect(result.effective).toBe('/main/Catalog/cat/Item/made/Catalog');
+  });
+
+  it('reports missing expression placeholder keys', () => {
+    const result = substituteVariables('/${domainInfo.serviceName}Service', {});
+    expect(result.missing).toEqual(['domainInfo.serviceName']);
+    expect(result.effective).toBe('/${domainInfo.serviceName}Service');
+  });
+});
+
+describe('remote action dynamic path parser evidence', () => {
+  it('records shorthand path as a dynamic operation path identifier', () => {
+    const source = ts.createSourceFile('handler.ts', `async function run(client, path) { await client.send({ method: 'GET', path }); }`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const [call] = classifyOutboundCallsInSource(source, 'handler.ts');
+    expect(call?.fact.operationPathExpr).toBeUndefined();
+    expect(call?.fact.unresolvedReason).toBe('dynamic_operation_path_identifier');
+    expect(call?.fact.evidence).toMatchObject({ operationPathExpression: 'path', parserWarning: 'dynamic_operation_path_identifier' });
+  });
+});

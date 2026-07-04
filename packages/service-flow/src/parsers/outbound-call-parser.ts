@@ -73,8 +73,14 @@ function literalText(expr: ts.Expression | undefined): string | undefined {
   return undefined;
 }
 function objectPropertyText(object: ts.ObjectLiteralExpression, key: string): string | undefined {
-  const prop = object.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property) && nameOfProperty(property.name) === key);
-  return prop ? prop.initializer.getText() : undefined;
+  const prop = object.properties.find((property): property is ts.PropertyAssignment | ts.ShorthandPropertyAssignment =>
+    (ts.isPropertyAssignment(property) && nameOfProperty(property.name) === key) || (ts.isShorthandPropertyAssignment(property) && property.name.text === key),
+  );
+  if (!prop) return undefined;
+  return ts.isShorthandPropertyAssignment(prop) ? prop.name.text : prop.initializer.getText();
+}
+function objectPropertyIsShorthand(object: ts.ObjectLiteralExpression, key: string): boolean {
+  return object.properties.some((property) => ts.isShorthandPropertyAssignment(property) && property.name.text === key);
 }
 function nameOfProperty(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
@@ -138,7 +144,8 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const receiver = expr.expression.text;
           const query = objectPropertyText(objectArg, 'query');
           const op = objectPropertyText(objectArg, 'path') ?? objectPropertyText(objectArg, 'event');
-          add(node, { callType: query ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method: stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST'), operationPathExpr: op ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined, queryEntity: query ? extractQueryEntity(query) : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4 }, { receiver, classifier: 'service_client_send_object' });
+          const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
+          add(node, { callType: query ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method: stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST'), operationPathExpr: op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined, queryEntity: query ? extractQueryEntity(query) : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);
