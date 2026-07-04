@@ -14,9 +14,9 @@ import type { ExplorerCredentials, ExplorerRuntimeOptions, ExplorerTarget } from
 
 import { resolveApiEndpoint, resolveCredentials } from "./target.js";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
-const RESTART_TIMEOUT_MS = 120_000;
+const RESTART_TIMEOUT_MS = 180_000;
 
 export interface CfCommandContext {
   readonly cfBin?: string;
@@ -29,6 +29,7 @@ export interface CfCommandContext {
 export interface CfRunOptions {
   readonly timeoutMs?: number;
   readonly maxBytes?: number;
+  readonly retries?: number;
   readonly redactValues?: readonly string[];
   readonly envOverrides?: NodeJS.ProcessEnv;
 }
@@ -138,11 +139,20 @@ function appendBounded(
   chunk: Buffer | string,
   maxBytes: number,
 ): { readonly text: string; readonly truncated: boolean } {
-  const next = `${current}${chunk.toString()}`;
-  if (Buffer.byteLength(next, "utf8") <= maxBytes) {
-    return { text: next, truncated: false };
+  const currentBytes = Buffer.byteLength(current, "utf8");
+  if (currentBytes >= maxBytes) {
+    return { text: current, truncated: true };
   }
-  return { text: truncateUtf8(next, maxBytes), truncated: true };
+  const chunkStr = chunk.toString();
+  const chunkBytes = Buffer.byteLength(chunkStr, "utf8");
+  if (currentBytes + chunkBytes <= maxBytes) {
+    return { text: current + chunkStr, truncated: false };
+  }
+  const allowedBytes = maxBytes - currentBytes;
+  return {
+    text: current + truncateUtf8(chunkStr, allowedBytes),
+    truncated: true,
+  };
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
@@ -171,6 +181,49 @@ export async function runCfCommand(
   args: readonly string[],
   context: CfCommandContext,
   options: CfRunOptions = {},
+): Promise<CfRunResult> {
+  const retries = options.retries ?? 2;
+  const initialDelay = 1000;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await doRunCfCommand(args, context, options);
+    } catch (error: unknown) {
+      if (attempt >= retries || !isRetryableError(error) || context.signal?.aborted === true) {
+        throw error;
+      }
+      const delayMs = initialDelay * Math.pow(2, attempt);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, delayMs);
+        const abort = (): void => {
+          clearTimeout(timer);
+          reject(new CfExplorerError("ABORTED", "Operation aborted by caller."));
+        };
+        const cleanup = (): void => {
+          context.signal?.removeEventListener("abort", abort);
+        };
+        context.signal?.addEventListener("abort", abort, { once: true });
+        if (context.signal?.aborted === true) { abort(); }
+      });
+    }
+  }
+  throw new Error("Unreachable");
+}
+
+function isRetryableError(error: unknown): boolean {
+  if (error instanceof CfExplorerError) {
+    const detail = (error.detail ?? error.message).toLowerCase();
+    return /timeout|timed out|error performing request|dial tcp|connection refused|connection reset|502 bad gateway|503 service unavailable|504 gateway timeout/.test(detail);
+  }
+  return false;
+}
+
+async function doRunCfCommand(
+  args: readonly string[],
+  context: CfCommandContext,
+  options: CfRunOptions,
 ): Promise<CfRunResult> {
   const command = resolveSpawnCommand(context);
   const startedAt = Date.now();

@@ -1,0 +1,342 @@
+import type { EventMeshBinding } from './eventMeshBindings.js';
+
+export interface NormalizedEventMessage {
+  readonly body: Buffer;
+  readonly contentType: string;
+  readonly topic: string | null;
+  readonly messageId: string | null;
+  readonly headers: Record<string, unknown>;
+}
+
+export interface EventMeshAmqpCallbacks {
+  readonly onMessage: (message: NormalizedEventMessage, rawMessage: unknown) => void;
+  readonly onError: (message: string) => void;
+  readonly onConnected?: (description: string) => void;
+}
+
+// --- Minimal structural typing over the untyped AMQP module ------------------
+
+interface AmqpEmitter {
+  on(event: string, listener: (...args: unknown[]) => void): void;
+  once(event: string, listener: (...args: unknown[]) => void): void;
+}
+interface AmqpStream extends AmqpEmitter {
+  receiver?: () => { detach: () => void };
+}
+interface AmqpReceiver extends AmqpEmitter {
+  attach(source: string): AmqpStream;
+}
+interface AmqpClient extends AmqpEmitter {
+  receiver(name: string): AmqpReceiver;
+  connect(): void;
+  disconnect(): void;
+}
+interface AmqpModule {
+  Client: new (options: unknown) => AmqpClient;
+}
+interface AmqpIncomingMessage {
+  readonly payload?: unknown;
+  readonly source?: unknown;
+  readonly done?: () => void;
+}
+
+const DEFAULT_AMQP_STARTUP_TIMEOUT_MS = 30000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return typeof error === 'string' ? error : String(error);
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(describeError(error));
+}
+
+function firstString(record: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function extractTopic(source: Record<string, unknown>): string | null {
+  const direct = firstString(source, ['to', 'subject', 'address', 'topic']);
+  if (direct !== null) {
+    return direct;
+  }
+  const props = source['properties'];
+  if (isRecord(props)) {
+    return firstString(props, ['to', 'subject', 'address', 'topic']);
+  }
+  return null;
+}
+
+function extractMessageId(source: Record<string, unknown>): string | null {
+  const props = source['properties'];
+  if (isRecord(props)) {
+    const id = firstString(props, ['messageID', 'messageId']);
+    if (id !== null) {
+      return id;
+    }
+  }
+  const tag = source['deliveryTag'];
+  if (typeof tag === 'string' && tag.length > 0) {
+    return tag;
+  }
+  if (typeof tag === 'number') {
+    return String(tag);
+  }
+  return null;
+}
+
+function chunkToBuffer(chunk: unknown): Buffer {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk;
+  }
+  if (typeof chunk === 'string') {
+    return Buffer.from(chunk);
+  }
+  return Buffer.from(chunk as Uint8Array);
+}
+
+function normalizePayload(payload: unknown): { body: Buffer; contentType: string } {
+  if (Buffer.isBuffer(payload)) {
+    return { body: payload, contentType: 'application/octet-stream' };
+  }
+  if (isRecord(payload)) {
+    const rawType = payload['type'];
+    const type = typeof rawType === 'string' ? rawType : null;
+    const chunks = payload['chunks'];
+    if (Array.isArray(chunks) && chunks.length > 0) {
+      return {
+        body: Buffer.concat(chunks.map(chunkToBuffer)),
+        contentType: type ?? 'application/octet-stream',
+      };
+    }
+    const data = payload['data'];
+    if (data !== undefined && data !== null) {
+      return { body: Buffer.from(JSON.stringify(data)), contentType: type ?? 'application/json' };
+    }
+    return { body: Buffer.alloc(0), contentType: type ?? 'application/octet-stream' };
+  }
+  return { body: Buffer.alloc(0), contentType: 'application/octet-stream' };
+}
+
+function normalizeAmqpMessage(message: AmqpIncomingMessage): NormalizedEventMessage {
+  const payload = normalizePayload(message.payload);
+  const source = isRecord(message.source) ? message.source : {};
+  const payloadProperties =
+    isRecord(message.payload) && isRecord(message.payload['properties'])
+      ? message.payload['properties']
+      : {};
+  return {
+    body: payload.body,
+    contentType: payload.contentType,
+    topic: extractTopic(source),
+    messageId: extractMessageId(source),
+    headers: { source, payloadProperties },
+  };
+}
+
+function buildAmqpOptions(binding: EventMeshBinding, queueName: string): Record<string, unknown> {
+  const uri = new URL(binding.amqp.uri);
+  return {
+    uri: binding.amqp.uri,
+    oa2: {
+      endpoint: binding.amqp.oa2.tokenendpoint,
+      client: binding.amqp.oa2.clientid,
+      secret: binding.amqp.oa2.clientsecret,
+      flow: binding.amqp.oa2.granttype ?? 'client_credentials',
+    },
+    sasl: { mechanism: 'ANONYMOUS', identity: 'saptools-cf-event-mesh' },
+    amqp: {
+      containerID: `saptools-event-${String(process.pid)}-${String(binding.index)}`,
+      maxReceiverLinkCredit: 20,
+      minReceiverLinkCredit: 10,
+    },
+    data: { source: `queue:${queueName}`, host: uri.host },
+  };
+}
+
+export class EventMeshAmqpListener {
+  private client: AmqpClient | null = null;
+  private stream: AmqpStream | null = null;
+  private closed = false;
+  private startupResolve: (() => void) | null = null;
+  private startupReject: ((error: Error) => void) | null = null;
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly binding: EventMeshBinding,
+    private readonly queueName: string,
+    private readonly callbacks: EventMeshAmqpCallbacks,
+    private readonly amqpModule: AmqpModule,
+    private readonly options: { readonly startupTimeoutMs?: number; readonly autoAck?: boolean } = {}
+  ) {}
+
+  start(): Promise<void> {
+    if (this.startupReject !== null) {
+      return Promise.reject(new Error('Event Mesh AMQP listener is already starting.'));
+    }
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const { Client } = this.amqpModule;
+        const client = new Client(buildAmqpOptions(this.binding, this.queueName));
+        const stream = client
+          .receiver(`saptools-listener-${String(this.binding.index)}`)
+          .attach(`queue:${this.queueName}`);
+        this.client = client;
+        this.stream = stream;
+        this.closed = false;
+        this.startupResolve = resolve;
+        this.startupReject = reject;
+        this.scheduleStartupTimeout();
+        this.attachHandlers(client, stream);
+        client.connect();
+      } catch (error) {
+        this.rejectStartup(error, reject);
+      }
+    });
+  }
+
+  private attachHandlers(client: AmqpClient, stream: AmqpStream): void {
+    stream.once('subscribed', () => { this.settleStartup(); });
+    stream.once('error', (error: unknown) => { this.rejectStartup(error); });
+    stream.on('data', (message: unknown) => { this.handleMessage(message); });
+    stream.on('error', (error: unknown) => {
+      if (!this.closed) {
+        this.callbacks.onError(`stream error: ${describeError(error)}`);
+      }
+    });
+    stream.on('close', () => {
+      const wasStarting = this.startupReject !== null;
+      this.closed = true;
+      if (wasStarting) {
+        this.settleStartup(
+          new Error(`Event Mesh AMQP stream closed before subscription became active for queue ${this.queueName}.`)
+        );
+      }
+    });
+    client.once('error', (error: unknown) => { this.rejectStartup(error); });
+    client.on('error', (error: unknown) => {
+      if (!this.closed) {
+        this.callbacks.onError(`client error: ${describeError(error)}`);
+      }
+    });
+    client.on('connected', (...args: unknown[]) => { this.notifyConnected(args); });
+    client.on('disconnected', () => {
+      const wasStarting = this.startupReject !== null;
+      this.closed = true;
+      if (wasStarting) {
+        this.settleStartup(
+          new Error(`Event Mesh AMQP client disconnected before subscription became active for queue ${this.queueName}.`)
+        );
+      }
+    });
+  }
+
+  private notifyConnected(args: readonly unknown[]): void {
+    const peerInfo = args[1];
+    const peerDescription = isRecord(peerInfo) ? peerInfo['description'] : undefined;
+    const description = typeof peerDescription === 'string' ? peerDescription : '';
+    this.callbacks.onConnected?.(description);
+  }
+
+  private scheduleStartupTimeout(): void {
+    const timeout = this.options.startupTimeoutMs ?? DEFAULT_AMQP_STARTUP_TIMEOUT_MS;
+    if (timeout <= 0) {
+      return;
+    }
+    this.startupTimer = setTimeout(() => {
+      this.settleStartup(
+        new Error(
+          `Event Mesh AMQP subscription timed out after ${String(timeout)} ms for queue ${this.queueName}.`
+        )
+      );
+      this.closeTransport();
+    }, this.startupTimeoutMs);
+  }
+
+  private rejectStartup(error: unknown, fallbackReject?: (error: Error) => void): void {
+    const normalized = toError(error);
+    if (this.startupReject !== null) {
+      this.settleStartup(normalized);
+      return;
+    }
+    fallbackReject?.(normalized);
+  }
+
+  private settleStartup(error?: Error): void {
+    const resolve = this.startupResolve;
+    const reject = this.startupReject;
+    if (resolve === null || reject === null) {
+      return;
+    }
+    this.clearStartupTimer();
+    this.startupResolve = null;
+    this.startupReject = null;
+    if (error === undefined) {
+      resolve();
+    } else {
+      reject(error);
+    }
+  }
+
+  private clearStartupTimer(): void {
+    if (this.startupTimer === null) {
+      return;
+    }
+    clearTimeout(this.startupTimer as unknown as number);
+    this.startupTimer = null;
+  }
+
+  private handleMessage(raw: unknown): void {
+    const message = raw as AmqpIncomingMessage;
+    try {
+      this.callbacks.onMessage(normalizeAmqpMessage(message), raw);
+    } catch (error) {
+      this.callbacks.onError(`message handling failed: ${describeError(error)}`);
+    } finally {
+      if (this.options.autoAck) {
+        try {
+          message.done?.();
+        } catch {
+          // Best-effort ack.
+        }
+      }
+    }
+  }
+
+  stop(): void {
+    this.closed = true;
+    if (this.startupReject !== null) {
+      this.settleStartup(
+        new Error(`Event Mesh AMQP listener stopped before subscription became active for queue ${this.queueName}.`)
+      );
+    }
+    this.closeTransport();
+  }
+
+  private closeTransport(): void {
+    try {
+      this.stream?.receiver?.().detach();
+    } catch {
+      // Best-effort detach before disconnect.
+    }
+    try {
+      this.client?.disconnect();
+    } catch {
+      // Best-effort disconnect.
+    }
+    this.stream = null;
+    this.client = null;
+  }
+}

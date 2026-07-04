@@ -153,27 +153,28 @@ describe("CF command runner", () => {
         credentials: { email: "user@example.com", password: "secret" },
         env: { CF_PASSWORD: "secret" },
       },
+      { retries: 0 }
     )).rejects.toMatchObject({
       code: "CF_LOGIN_FAILED",
       message: expect.not.stringContaining("secret"),
     });
-    await expect(runCfCommand(["app", "missing"], { cfBin, cfHomeDir }))
+    await expect(runCfCommand(["app", "missing"], { cfBin, cfHomeDir }, { retries: 0 }))
       .rejects.toMatchObject({ code: "APP_NOT_FOUND" });
-    await expect(runCfCommand(["target", "-o", "org"], { cfBin, cfHomeDir }))
+    await expect(runCfCommand(["target", "-o", "org"], { cfBin, cfHomeDir }, { retries: 0 }))
       .rejects.toMatchObject({ code: "CF_TARGET_FAILED" });
-    await expect(runCfCommand(["api", "https://api.example.test"], { cfBin, cfHomeDir }))
+    await expect(runCfCommand(["api", "https://api.example.test"], { cfBin, cfHomeDir }, { retries: 0 }))
       .rejects.toMatchObject({ code: "CF_LOGIN_FAILED" });
-    await expect(runCfCommand(["ssh", "demo-app"], { cfBin, cfHomeDir }))
+    await expect(runCfCommand(["ssh", "demo-app"], { cfBin, cfHomeDir }, { retries: 0 }))
       .rejects.toMatchObject({ code: "SSH_DISABLED" });
     await expect(runCfCommand(["ssh", "demo-app"], {
       cfBin,
       cfHomeDir,
       credentials: { email: "user@example.com", password: "disabled" },
-    })).rejects.toMatchObject({
+    }, { retries: 0 })).rejects.toMatchObject({
       code: "SSH_DISABLED",
       message: expect.not.stringContaining("disabled"),
     });
-    await expect(runCfCommand(["ssh", "demo-app", "-i", "9"], { cfBin, cfHomeDir }))
+    await expect(runCfCommand(["ssh", "demo-app", "-i", "9"], { cfBin, cfHomeDir }, { retries: 0 }))
       .rejects.toMatchObject({ code: "INSTANCE_NOT_FOUND" });
     await expect(cfSshOneShot(
       { region: "ap10", org: "org", space: "dev", app: "demo-app" },
@@ -181,6 +182,7 @@ describe("CF command runner", () => {
       { cfBin, cfHomeDir },
       "web",
       0,
+      { retries: 0 }
     )).rejects.toMatchObject({
       code: "REMOTE_COMMAND_FAILED",
       message: expect.not.stringContaining("private-needle"),
@@ -189,31 +191,81 @@ describe("CF command runner", () => {
 
   it("handles truncation, aborts, timeouts, and spawn errors", async () => {
     const cfBin = await writeFakeCf();
-    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: 0 }))
+    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: 0, retries: 0 }))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
-    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: MAX_TIMER_MS + 1 }))
+    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { timeoutMs: MAX_TIMER_MS + 1, retries: 0 }))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
-    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { maxBytes: 0 }))
+    await expect(runCfCommand(["--version"], { cfBin, cfHomeDir }, { maxBytes: 0, retries: 0 }))
       .rejects.toMatchObject({ code: "UNSAFE_INPUT" });
     await expect(runCfCommand(["big"], { cfBin, cfHomeDir }, { maxBytes: 4 }))
+      .resolves.toMatchObject({ stdout: "0123", truncated: true });
+    await expect(runCfCommand(["multibig"], { cfBin, cfHomeDir }, { maxBytes: 4 }))
       .resolves.toMatchObject({ stdout: "0123", truncated: true });
     await expect(runCfCommand(["unicode"], { cfBin, cfHomeDir }, { maxBytes: 4 }))
       .resolves.toMatchObject({ stdout: "éé", truncated: true });
 
     const controller = new AbortController();
-    const aborted = runCfCommand(["hang"], { cfBin, cfHomeDir, signal: controller.signal });
+    const aborted = runCfCommand(["hang"], { cfBin, cfHomeDir, signal: controller.signal }, { retries: 0 });
     controller.abort();
     await expect(aborted).rejects.toMatchObject({ code: "ABORTED" });
 
     const alreadyAborted = new AbortController();
     alreadyAborted.abort();
-    await expect(runCfCommand(["hang"], { cfBin, cfHomeDir, signal: alreadyAborted.signal }))
+    await expect(runCfCommand(["hang"], { cfBin, cfHomeDir, signal: alreadyAborted.signal }, { retries: 0 }))
       .rejects.toMatchObject({ code: "ABORTED" });
 
-    await expect(runCfCommand(["hang"], { cfBin, cfHomeDir }, { timeoutMs: 5 }))
+    await expect(runCfCommand(["hang"], { cfBin, cfHomeDir }, { timeoutMs: 5, retries: 0 }))
       .rejects.toMatchObject({ code: "REMOTE_COMMAND_FAILED" });
-    await expect(runCfCommand(["--version"], { cfBin: join(cfHomeDir, "missing-bin"), cfHomeDir }))
+    await expect(runCfCommand(["--version"], { cfBin: join(cfHomeDir, "missing-bin"), cfHomeDir }, { retries: 0 }))
       .rejects.toMatchObject({ code: "REMOTE_COMMAND_FAILED" });
+  });
+
+  it("retries commands automatically for retryable errors", async () => {
+    const cfBin = join(cfHomeDir, "flaky-cf.mjs");
+    await writeFile(cfBin, [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      "const counterPath = join(process.env.CF_HOME, 'counter.txt');",
+      "let attempt = 0;",
+      "try { attempt = parseInt(readFileSync(counterPath, 'utf8')); } catch {}",
+      "attempt++;",
+      "writeFileSync(counterPath, attempt.toString());",
+      "if (attempt === 1) { process.stderr.write('timeout error\\n'); process.exit(1); }",
+      "if (process.argv[2] === 'app') process.stdout.write('instances: 1/1\\n');",
+    ].join("\n"), "utf8");
+
+    const startedAt = Date.now();
+    await expect(runCfCommand(["app"], { cfBin, cfHomeDir }, { retries: 1 }))
+      .resolves.toMatchObject({ stdout: "instances: 1/1\n" });
+    const duration = Date.now() - startedAt;
+    expect(duration).toBeGreaterThanOrEqual(1000); // Because of the 1s delay
+  });
+
+  it("aborts retry delay immediately if signal is fired", async () => {
+    const cfBin = join(cfHomeDir, "flaky-cf2.mjs");
+    await writeFile(cfBin, [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      "const counterPath = join(process.env.CF_HOME, 'counter2.txt');",
+      "let attempt = 0;",
+      "try { attempt = parseInt(readFileSync(counterPath, 'utf8')); } catch {}",
+      "attempt++;",
+      "writeFileSync(counterPath, attempt.toString());",
+      "process.stderr.write('timeout error\\n');",
+      "process.exit(1);",
+    ].join("\n"), "utf8");
+
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const promise = runCfCommand(["app"], { cfBin, cfHomeDir, signal: controller.signal }, { retries: 2 });
+    
+    // Abort after 200ms, which is during the first 1s delay
+    setTimeout(() => { controller.abort(); }, 200);
+    
+    await expect(promise).rejects.toMatchObject({ code: "ABORTED" });
+    const duration = Date.now() - startedAt;
+    // Should take ~200ms, not the full 1s delay
+    expect(duration).toBeLessThan(900);
   });
 
   it("describes auth and generic commands without leaking auth arguments", () => {
@@ -247,6 +299,7 @@ describe("CF command runner", () => {
       "else if (command === 'ssh' && process.argv.at(-1) === 'sh') setInterval(() => {}, 1000);",
       "else if (command === 'ssh') process.stdout.write('remote ok\\n');",
       "else if (command === 'big') process.stdout.write('0123456789');",
+      "else if (command === 'multibig') { process.stdout.write('0123456789'); setTimeout(() => process.stdout.write('0123456789'), 50); }",
       "else if (command === 'unicode') process.stdout.write('ééé');",
       "else if (command === 'hang') setInterval(() => {}, 1000);",
       "else process.exit(2);",
