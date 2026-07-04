@@ -1,6 +1,6 @@
 {
   "name": "@saptools/hana-lens",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Static AST analysis CLI for SAP CAP workspaces",
   "type": "module",
   "publishConfig": {
@@ -27,6 +27,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
+    "prepack": "npm run build",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",
