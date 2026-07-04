@@ -165,6 +165,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const classInstanceQuality = classInstanceNoiseQuality(db);
   const bindingPropagationQuality = contextualBindingPropagationQuality(db);
   const wrapperQuality = wrapperPathPropagationQuality(db);
+  const nestedThisQuality = nestedThisReceiverQuality(db);
   return [
     aliasQuality,
     noBindingQuality,
@@ -172,6 +173,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
     classInstanceQuality,
     bindingPropagationQuality,
     wrapperQuality,
+    nestedThisQuality,
     remoteQuery,
     invocation,
     remoteAction,
@@ -249,8 +251,24 @@ function contextualBindingPropagationQuality(db: ReturnType<typeof openDatabase>
     WHERE json_extract(sc.evidence_json,'$.callArguments[0].kind')='object_literal'
       AND json_extract(s.evidence_json,'$.parameterBindings[0].kind')='object_pattern'
       AND json_array_length(json_extract(sc.evidence_json,'$.callArguments[0].properties')) > json_array_length(json_extract(s.evidence_json,'$.parameterBindings[0].properties'))`).get() as { count?: number };
-  const contextualResolved = db.prepare(`SELECT COUNT(*) count FROM graph_edges WHERE json_extract(evidence_json,'$.contextualServiceBindingSelected')=1 AND status='resolved'`).get() as { count?: number };
-  return { severity: Number(missingMetadata.count ?? 0) + Number(destructuredUnmapped.count ?? 0) > 0 ? 'warning' : 'info', code: 'strict_contextual_binding_propagation_quality', message: 'Contextual service-client propagation aggregate', localSymbolCallsWithServiceClientArguments: Number(serviceClientCalls.count ?? 0), calleeSymbolsMissingParameterMetadata: Number(missingMetadata.count ?? 0), destructuredObjectParametersPossiblyUnmapped: Number(destructuredUnmapped.count ?? 0), contextualRemoteActionsResolved: Number(contextualResolved.count ?? 0) };
+  const opportunities = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,json_extract(c.evidence_json,'$.receiver') receiverName,c.operation_path_expr operationPath,'trace_time_contextual_binding_candidate' opportunity
+    FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type='remote_action' AND c.service_binding_id IS NULL AND json_extract(c.evidence_json,'$.receiver') IS NOT NULL
+      AND (e.status IS NULL OR e.status!='resolved')
+      AND EXISTS (SELECT 1 FROM symbol_calls sc WHERE sc.status='resolved' AND sc.source_file=c.source_file)
+    ORDER BY c.source_file,c.source_line LIMIT 8`).all() as Array<Record<string, unknown>>;
+  return { severity: Number(missingMetadata.count ?? 0) + Number(destructuredUnmapped.count ?? 0) + opportunities.length > 0 ? 'warning' : 'info', code: 'strict_contextual_binding_propagation_quality', message: 'Contextual service-client propagation opportunities for trace-time helper resolution', localSymbolCallsWithServiceClientArguments: Number(serviceClientCalls.count ?? 0), calleeSymbolsMissingParameterMetadata: Number(missingMetadata.count ?? 0), destructuredObjectParametersPossiblyUnmapped: Number(destructuredUnmapped.count ?? 0), traceTimeContextualOpportunities: opportunities.length, examples: opportunities };
+}
+
+function nestedThisReceiverQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const aggregate = db.prepare(`SELECT COUNT(*) total,
+      SUM(CASE WHEN json_extract(evidence_json,'$.relation')='indexed_this_method' THEN 1 ELSE 0 END) resolvedToCurrentClass,
+      SUM(CASE WHEN json_extract(evidence_json,'$.relation')='class_instance_method' THEN 1 ELSE 0 END) withExplicitHelperInstanceEvidence
+    FROM symbol_calls WHERE callee_expression LIKE 'this.%.%'`).get() as { total?: number; resolvedToCurrentClass?: number; withExplicitHelperInstanceEvidence?: number };
+  const examples = db.prepare(`SELECT source_file sourceFile,source_line sourceLine,callee_expression calleeExpression,json_extract(evidence_json,'$.relation') relation,json_extract(evidence_json,'$.targetName') targetName
+    FROM symbol_calls WHERE callee_expression LIKE 'this.%.%' AND json_extract(evidence_json,'$.relation')='indexed_this_method'
+    ORDER BY source_file,source_line LIMIT 8`).all() as Array<Record<string, unknown>>;
+  return { severity: Number(aggregate.resolvedToCurrentClass ?? 0) > 0 ? 'warning' : 'info', code: 'strict_nested_this_receiver_quality', message: 'Nested this receiver symbol-call aggregate', nestedThisReceiverCallsConsidered: Number(aggregate.total ?? 0), nestedThisResolvedToCurrentClass: Number(aggregate.resolvedToCurrentClass ?? 0), nestedThisWithExplicitHelperInstanceEvidence: Number(aggregate.withExplicitHelperInstanceEvidence ?? 0), warningExamples: examples };
 }
 
 function contextualImplementationQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
