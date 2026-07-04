@@ -8,6 +8,8 @@ export interface HanaLensElement {
   readonly target?: string;
   readonly "@Core.Computed"?: boolean;
   readonly on?: readonly unknown[];
+  readonly enum?: Readonly<Record<string, unknown>>;
+  readonly [key: `@${string}`]: unknown;
 }
 
 export interface HanaLensDefinition {
@@ -23,6 +25,18 @@ export interface HanaLensCsn {
 export interface SapPackage {
   readonly name: string;
   readonly directory: string;
+}
+
+export interface FieldSearchResult {
+  readonly entityName: string;
+  readonly exact: boolean;
+  readonly matchedField: string;
+  readonly score: number;
+}
+
+export interface IncomingReference {
+  readonly entityName: string;
+  readonly fieldName: string;
 }
 
 export interface SearchResult {
