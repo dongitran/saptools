@@ -18,9 +18,19 @@ export async function connectImportedContext(domainInfo) {
   const client = await cds.connect.to({ credentials: { destination: ` + '`' + `svc_\${domainInfo.shortName?.toLowerCase()}` + '`' + `, path: ` + '`' + `/\${domainInfo.serviceName}Service` + '`' + ` } });
   return { serviceClient: client, domainInfo };
 }
+const connectCatalog = async (domainInfo) => {
+  const client = await cds.connect.to({ credentials: { destination: ` + '`' + `catalog_\${domainInfo.shortName.toLowerCase()}` + '`' + `, path: '/CatalogService' } });
+  return { client, domainInfo };
+};
+const connectProcess = function (domainInfo) {
+  const client = cds.connect.to({ credentials: { destination: 'process', path: ` + '`' + `/\${domainInfo.serviceName}ProcessService` + '`' + ` } });
+  return { serviceClient: client, domainInfo };
+};
+const connectDirect = () => cds.connect.to('catalog-direct');
+export { connectCatalog, connectProcess as createProcessClient, connectDirect };
 `);
     await write(root, 'handler.ts', String.raw`import cds from '@sap/cds';
-import { connectImportedContext } from './helper.js';
+import { connectImportedContext, connectCatalog, createProcessClient, connectDirect } from './helper.js';
 async function connectDomainContext(domain) {
   const client = await cds.connect.to({ credentials: { path: ` + '`' + `/\${domain}Service` + '`' + ` } });
   return { client };
@@ -32,21 +42,32 @@ async function connectExplicitContext(domain) {
 async function unrelated() { return { client: {} }; }
 async function run(domain, domainInfo) {
   const direct = await cds.connect.to('DirectService');
+  const directFromHelper = await connectDirect();
   const { client: domainClient } = await connectDomainContext(domain);
   const { serviceClient } = await connectExplicitContext(domain);
   const { serviceClient: importedClient } = await connectImportedContext(domainInfo);
+  const { client: catalogClient } = await connectCatalog(domainInfo);
+  const { serviceClient: processClient } = await createProcessClient(domainInfo);
+  const catalogObject = await connectCatalog(domainInfo);
   const { client: ignoredClient } = await unrelated();
   const tx = domainClient.tx();
-  return { direct, domainClient, serviceClient, importedClient, ignoredClient, tx };
+  const catalogTx = catalogClient.tx();
+  return { direct, directFromHelper, domainClient, serviceClient, importedClient, catalogClient, processClient, catalogObject, ignoredClient, tx, catalogTx };
 }
 `);
     const rows = await parseServiceBindings(root, 'handler.ts');
     expect(rows.find((row) => row.variableName === 'direct')?.alias).toBe('DirectService');
+    expect(rows.find((row) => row.variableName === 'directFromHelper')?.alias).toBe('catalog-direct');
     expect(rows.find((row) => row.variableName === 'domainClient')?.helperChain?.[0]).toMatchObject({ returnedProperty: 'client' });
     expect(rows.find((row) => row.variableName === 'serviceClient')?.helperChain?.[0]).toMatchObject({ returnedProperty: 'serviceClient' });
     expect(rows.find((row) => row.variableName === 'importedClient')?.placeholders).toContain('domainInfo.serviceName');
     expect(rows.find((row) => row.variableName === 'importedClient')?.placeholders).toContain('domainInfo.shortName?.toLowerCase()');
+    expect(rows.find((row) => row.variableName === 'catalogClient')?.placeholders).toContain('domainInfo.shortName.toLowerCase()');
+    expect(rows.find((row) => row.variableName === 'processClient')?.placeholders).toContain('domainInfo.serviceName');
+    expect(rows.find((row) => row.variableName === 'processClient')?.helperChain?.[0]).toMatchObject({ exportedSymbol: 'createProcessClient', returnedProperty: 'serviceClient' });
     expect(rows.find((row) => row.variableName === 'tx')?.helperChain?.at(-1)).toMatchObject({ aliasOf: 'domainClient', aliasKind: 'transaction' });
+    expect(rows.find((row) => row.variableName === 'catalogTx')?.helperChain?.at(-1)).toMatchObject({ aliasOf: 'catalogClient', aliasKind: 'transaction' });
+    expect(rows.some((row) => row.variableName === 'catalogObject')).toBe(false);
     expect(rows.some((row) => row.variableName === 'ignoredClient')).toBe(false);
   });
 });
