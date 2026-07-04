@@ -25,18 +25,31 @@ function rows(
   operationPath: string,
   workspaceId?: number,
 ): OperationTarget[] {
+  const names = operationLookupNames(operationPath);
   return db
     .prepare(
       `SELECT o.id operationId,r.id repoId,r.name repoName,r.package_name packageName,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score,'' reasons
        FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
-       WHERE (? IS NULL OR r.workspace_id=?) AND (o.operation_path=? OR o.operation_name=?) ORDER BY r.name,s.service_path,o.operation_name`,
+       WHERE (? IS NULL OR r.workspace_id=?) AND (o.operation_path IN (?,?) OR o.operation_name IN (?,?)) ORDER BY r.name,s.service_path,o.operation_name`,
     )
     .all(
       workspaceId,
       workspaceId,
-      operationPath,
-      operationPath.replace(/^\//, ''),
+      names.path,
+      names.simplePath,
+      names.name,
+      names.simpleName,
     ) as unknown as OperationTarget[];
+}
+function operationLookupNames(operationPath: string): { path: string; simplePath: string; name: string; simpleName: string } {
+  const name = operationPath.replace(/^\//, '');
+  const simpleName = name.split('.').at(-1) ?? name;
+  return { path: operationPath, simplePath: `/${simpleName}`, name, simpleName };
+}
+function operationMatches(candidate: OperationTarget, operationPath: string | undefined): boolean {
+  if (!operationPath) return false;
+  const names = operationLookupNames(operationPath);
+  return candidate.operationPath === names.path || candidate.operationPath === names.simplePath || candidate.operationName === names.name || candidate.operationName === names.simpleName;
 }
 export function resolveOperation(
   db: Db,
@@ -123,7 +136,7 @@ export function resolveOperation(
       c.score += 0.2;
       c.reasons.push(signals.repoId !== undefined ? 'explicit_local_service_call' : 'explicit_dynamic_override');
     }
-    if (signals.repoId !== undefined && candidates.length === 1 && signals.serviceName && c.reasons.includes('local_service_name_mismatch') && (c.operationPath === signals.operationPath || c.operationName === signals.operationPath.replace(/^\//, ''))) {
+    if (signals.repoId !== undefined && candidates.length === 1 && signals.serviceName && c.reasons.includes('local_service_name_mismatch') && operationMatches(c, signals.operationPath)) {
       c.score = Math.max(c.score, 0.9);
       c.reasons.push('same_repo_unique_operation_path_with_lookup_mismatch');
     }
@@ -150,7 +163,7 @@ export function resolveOperation(
     best &&
     best.score >= 0.9 &&
     (best.servicePath === signals.servicePath || Boolean(signals.serviceName && (!best.reasons.includes('local_service_name_mismatch') || best.reasons.includes('same_repo_unique_operation_path_with_lookup_mismatch')))) &&
-    (best.operationPath === signals.operationPath || best.operationName === signals.operationPath.replace(/^\//, '')) &&
+    operationMatches(best, signals.operationPath) &&
     (!second || best.score - second.score >= 0.25)
   )
     return {

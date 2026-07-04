@@ -1,5 +1,11 @@
 # Service Flow Resolution Notes
 
+## 0.1.19 remote invocation and query notes
+
+- Remote action/function paths are scanned for a balanced top-level OData invocation suffix. Single-segment operation imports like `/readConfig(...)` normalize to `/readConfig`; namespace-qualified operation imports keep the qualified request segment for evidence and can resolve against the indexed simple CDS operation when service signals are strong. Navigation/property paths like `/Orders(id='123')/items` are left unchanged. Graph evidence keeps both `rawOperationPath` and `normalizedOperationPath` when normalization occurs.
+- Remote `send({ query })` calls without explicit operation-path evidence now become `HANDLER_RUNS_REMOTE_QUERY` terminal edges. Static entities produce `Remote entity: ...` targets; dynamic or unknown entities produce `Remote query: unknown` with parser-warning evidence.
+- Strict doctor includes remote-query target-quality and OData invocation-resolution aggregates to catch numeric query targets and unresolved normalized invocation paths.
+
 ## 0.1.18 auditability notes
 
 - CAP async event parsing treats `.emit()`, `.publish()`, and `.on()` consistently: a row is indexed only when the direct or chained root receiver has explicit CAP service or messaging evidence such as `cds` or a variable initialized from `cds.connect.to(...)`. Generic realtime/socket/EventEmitter receivers are ignored for CAP graph purposes by default.

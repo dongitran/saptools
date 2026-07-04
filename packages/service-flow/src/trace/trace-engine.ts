@@ -247,7 +247,7 @@ function runtimeResolution(db: Db, row: GraphRow, evidence: Record<string, unkno
     return { row, evidence, unresolvedReason: row.unresolved_reason };
   const nextEvidence = evidenceWithRuntimeVariables(evidence, vars);
   const servicePath = typeof nextEvidence.servicePath === 'string' ? nextEvidence.servicePath : undefined;
-  const operationPath = typeof nextEvidence.operationPath === 'string' ? nextEvidence.operationPath : undefined;
+  const operationPath = typeof nextEvidence.normalizedOperationPath === 'string' ? nextEvidence.normalizedOperationPath : typeof nextEvidence.operationPath === 'string' ? nextEvidence.operationPath : undefined;
   const alias = typeof nextEvidence.serviceAliasExpr === 'string' ? nextEvidence.serviceAliasExpr : typeof nextEvidence.serviceAlias === 'string' ? nextEvidence.serviceAlias : undefined;
   const destination = typeof nextEvidence.destination === 'string' ? nextEvidence.destination : undefined;
   const resolution = resolveOperation(db, { servicePath, operationPath, alias, destination, hasExplicitOverride: true, isDynamic: true }, workspaceIdForCall(db, row.from_id));
@@ -266,6 +266,9 @@ function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
     | undefined;
   if (runtimeCandidate?.servicePath && runtimeCandidate.operationPath)
     return `${runtimeCandidate.servicePath}${runtimeCandidate.operationPath}`;
+  const targetServicePath = typeof evidence.targetServicePath === 'string' ? evidence.targetServicePath : undefined;
+  const targetOperationPath = typeof evidence.targetOperationPath === 'string' ? evidence.targetOperationPath : undefined;
+  if (targetServicePath && targetOperationPath) return `${targetServicePath}${targetOperationPath}`;
   const servicePath =
     typeof evidence.servicePath === 'string' ? evidence.servicePath : undefined;
   const operationPath =
@@ -279,6 +282,7 @@ function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
   const targetRepo =
     typeof evidence.targetRepo === 'string' ? evidence.targetRepo : '';
   if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return `Entity: ${row.to_id || 'unknown'}`;
+  if (row.edge_type === 'HANDLER_RUNS_REMOTE_QUERY') return typeof evidence.remoteQueryTarget === 'string' ? evidence.remoteQueryTarget : `Remote query: ${row.to_id || 'unknown'}`;
   return servicePath && operationPath
     ? `${servicePath}${operationPath}`
     : targetOperation

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19
+
+- Normalize balanced top-level OData action/function invocation paths before remote operation resolution, including namespace-qualified invocation lookup, while preserving raw and normalized evidence.
+- Model remote service-client queries as terminal remote-query edges with stable semantic targets instead of unresolved operation calls.
+- Add strict doctor aggregates for remote-query target quality and OData invocation resolution quality.
+- Document remote query terminal semantics and normalized invocation resolution behavior.
+
 ## 0.1.18
 
 - Applied conservative CAP receiver eligibility to `.emit()` and `.publish()` so generic realtime, socket, DOM, and EventEmitter-style calls no longer become CAP async event facts without explicit CAP messaging/service evidence.

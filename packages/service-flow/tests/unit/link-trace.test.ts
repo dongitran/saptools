@@ -549,3 +549,64 @@ export class EntryHandler {
     db.close();
   });
 });
+
+describe('remote OData invocation and remote query semantics', () => {
+  it('resolves normalized OData invocation paths and emits terminal remote query targets', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-remote-quality-'));
+    await writeFixtureFile(root, 'facade-service/.git-fixture');
+    await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0', dependencies: { '@neutral/model-service': '1.0.0', '@neutral/implementation-service': '1.0.0' } }));
+    await writeFixtureFile(root, 'facade-service/srv/facade.cds', 'service FacadeService { action runFlow(); }');
+    await writeFixtureFile(root, 'facade-service/srv/FlowHandler.ts', `import cds from '@sap/cds';
+import { Handler, Action } from 'cds-routing-handlers';
+@Handler()
+export class FlowHandler {
+  @Action('runFlow')
+  public async runFlow(id: string): Promise<void> {
+    const remoteClient = await cds.connect.to('ConfigRemote', { path: '/ConfigService', destination: 'neutral-destination' });
+    await remoteClient.send({ method: 'GET', path: "/readConfig(id='\${encodeURIComponent(id)}',version=0)" });
+    await remoteClient.send({ method: 'GET', path: "/ConfigService.readConfig(id='123')" });
+    await remoteClient.send({ query: SELECT.one.from(RemoteEntity).where({ ID: id }) });
+    await remoteClient.send({ method: 'POST', path: "/\${operationName}" });
+  }
+}
+`);
+    await writeFixtureFile(root, 'facade-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { FlowHandler } from './FlowHandler.js';\ncreateCombinedHandler({ handler: [FlowHandler] });\n");
+    await writeFixtureFile(root, 'model-service/.git-fixture');
+    await writeFixtureFile(root, 'model-service/package.json', JSON.stringify({ name: '@neutral/model-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'model-service/srv/config.cds', 'service ConfigService { function readConfig(id: String, version: Integer) returns String; action dynamicOperation(); }');
+    await writeFixtureFile(root, 'implementation-service/.git-fixture');
+    await writeFixtureFile(root, 'implementation-service/package.json', JSON.stringify({ name: '@neutral/implementation-service', version: '1.0.0' }));
+    await writeFixtureFile(root, 'implementation-service/src/ConfigHandler.ts', "import { Handler, Func } from 'cds-routing-handlers';\n@Handler()\nexport class ConfigHandler {\n  @Func('readConfig')\n  readConfig(): void {}\n}\n");
+    await writeFixtureFile(root, 'implementation-service/src/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { ConfigHandler } from './ConfigHandler.js';\ncreateCombinedHandler({ handler: [ConfigHandler] });\n");
+
+    const { db, workspaceId } = await prepareWorkspace(root);
+    expect(db.prepare('SELECT COUNT(*) count FROM diagnostics').get()).toMatchObject({ count: 0 });
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.remoteResolvedCount).toBeGreaterThanOrEqual(1);
+    expect(linked.terminalCount).toBeGreaterThanOrEqual(1);
+    expect(linked.dynamicCount).toBeGreaterThanOrEqual(1);
+    const remoteAction = db.prepare("SELECT e.evidence_json evidenceJson,e.status status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.call_type='remote_action' AND c.operation_path_expr LIKE '/readConfig(%'").get() as { evidenceJson: string; status: string };
+    expect(remoteAction.status).toBe('resolved');
+    expect(JSON.parse(remoteAction.evidenceJson)).toMatchObject({ rawOperationPath: "/readConfig(id='${encodeURIComponent(id)}',version=0)", normalizedOperationPath: '/readConfig' });
+    const namespaceAction = db.prepare("SELECT e.evidence_json evidenceJson,e.status status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.call_type='remote_action' AND c.operation_path_expr LIKE '/ConfigService.readConfig(%'").get() as { evidenceJson: string; status: string };
+    expect(namespaceAction.status).toBe('resolved');
+    expect(JSON.parse(namespaceAction.evidenceJson)).toMatchObject({ normalizedOperationPath: '/ConfigService.readConfig', targetOperationPath: '/readConfig' });
+    const remoteQuery = db.prepare("SELECT e.* FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.call_type='remote_query'").get() as { edge_type: string; status: string; to_id: string; unresolved_reason: string | null; evidence_json: string };
+    expect(remoteQuery.edge_type).toBe('HANDLER_RUNS_REMOTE_QUERY');
+    expect(remoteQuery.status).toBe('terminal');
+    expect(remoteQuery.to_id).toContain('RemoteEntity');
+    expect(remoteQuery.to_id).not.toMatch(/^\d+$/);
+    expect(remoteQuery.unresolved_reason).toBeNull();
+    expect(JSON.parse(remoteQuery.evidence_json)).toMatchObject({ queryEntity: 'RemoteEntity', remoteQueryTarget: 'Remote entity: /ConfigService:RemoteEntity' });
+    const result = trace(db, { repo: 'facade-service', servicePath: '/FacadeService', operation: 'runFlow' }, { depth: 10, includeExternal: true });
+    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/readConfig'))).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'operation_implemented_by_handler' && String(edge.to).includes('ConfigHandler.readConfig'))).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'remote_query' && String(edge.to).includes('Remote entity: /ConfigService:RemoteEntity'))).toBe(true);
+    const before = db.prepare("SELECT status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.operation_path_expr='/${operationName}'").get() as { status: string };
+    expect(before.status).toBe('dynamic');
+    trace(db, { repo: 'facade-service', servicePath: '/FacadeService', operation: 'runFlow' }, { depth: 10, vars: { operationName: 'dynamicOperation' } });
+    const after = db.prepare("SELECT status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.operation_path_expr='/${operationName}'").get() as { status: string };
+    expect(after.status).toBe('dynamic');
+    db.close();
+  });
+});
