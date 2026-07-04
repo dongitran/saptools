@@ -21,5 +21,6 @@ describe("parseCsn", () => {
     expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { key: "true" } } } } })).toThrow("invalid CSN definition");
     expect(() => parseCsn({ definitions: { Entity: { elements: { ID: { target: false } } } } })).toThrow("invalid CSN definition");
     expect(() => parseCsn({ definitions: { Entity: { elements: { parent: { on: "parent.ID = parentID" } } } } })).toThrow("invalid CSN definition");
+    expect(() => parseCsn({ definitions: { Entity: { elements: { status: { enum: ["ACTIVE"] } } } } })).toThrow("invalid CSN definition");
   });
 });

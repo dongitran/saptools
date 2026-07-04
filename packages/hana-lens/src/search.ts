@@ -1,6 +1,7 @@
 import { levenshtein } from "./levenshtein.js";
+import { findTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
 import { PACKAGE_ANNOTATION } from "./types.js";
-import type { HanaLensCsn, SearchResult } from "./types.js";
+import type { FieldSearchResult, HanaLensCsn, IncomingReference, SearchResult } from "./types.js";
 
 function packageNameOf(definition: HanaLensCsn["definitions"][string]): string {
   return definition[PACKAGE_ANNOTATION] ?? "unknown";
@@ -29,11 +30,16 @@ function assertSafeRegexPattern(pattern: string): void {
   }
 }
 
-export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly SearchResult[] {
+function assertKeyword(keyword: string): string {
   const trimmedKeyword = keyword.trim();
   if (trimmedKeyword.length === 0) {
     throw new Error("Search keyword must not be empty");
   }
+  return trimmedKeyword;
+}
+
+export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly SearchResult[] {
+  const trimmedKeyword = assertKeyword(keyword);
   const entries = Object.entries(csn.definitions);
   if (regexMode) {
     assertSafeRegexPattern(trimmedKeyword);
@@ -54,6 +60,82 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
     .slice(0, 10);
 }
 
+export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly FieldSearchResult[] {
+  const trimmedKeyword = assertKeyword(keyword);
+  const normalizedKeyword = trimmedKeyword.toLowerCase();
+  if (regexMode) {
+    assertSafeRegexPattern(trimmedKeyword);
+  }
+  const pattern = regexMode ? new RegExp(trimmedKeyword, "iu") : undefined;
+
+  const results: FieldSearchResult[] = [];
+  for (const [entityName, definition] of Object.entries(csn.definitions)) {
+    const elements = definition.elements;
+    if (elements === undefined) {
+      continue;
+    }
+    const matches = Object.keys(elements)
+      .map((fieldName) => {
+        const exact = fieldName.toLowerCase() === normalizedKeyword;
+        if (pattern !== undefined) {
+          return pattern.test(fieldName) ? { entityName, exact, matchedField: fieldName, score: exact ? -1000 : 0 } : undefined;
+        }
+        const score = fuzzyScore(normalizedKeyword, fieldName);
+        return exact || fieldName.toLowerCase().includes(normalizedKeyword) || score <= Math.max(2, Math.ceil(normalizedKeyword.length / 3))
+          ? { entityName, exact, matchedField: fieldName, score }
+          : undefined;
+      })
+      .filter((match): match is FieldSearchResult => match !== undefined)
+      .sort((a, b) => a.score - b.score || a.matchedField.localeCompare(b.matchedField));
+    const best = matches[0];
+    if (best !== undefined) {
+      results.push(best);
+    }
+  }
+  return results.sort((a, b) => a.score - b.score || a.entityName.localeCompare(b.entityName)).slice(0, 25);
+}
+
+export function findIncomingReferences(csn: HanaLensCsn, entityName: string): readonly IncomingReference[] {
+  const requestedTargets = new Set(findTargetCandidates(csn, entityName).map((candidate) => candidate.name));
+  if (requestedTargets.size === 0) {
+    return [];
+  }
+
+  const references: IncomingReference[] = [];
+  for (const [sourceName, definition] of Object.entries(csn.definitions)) {
+    const elements = definition.elements;
+    if (elements === undefined) {
+      continue;
+    }
+    for (const [fieldName, element] of Object.entries(elements)) {
+      const targetName = element.target;
+      if (!isAssociationElement(element) || targetName === undefined) {
+        continue;
+      }
+      const resolution = resolveTarget(csn, targetName, definition);
+      if (resolution.status === "resolved" && requestedTargets.has(resolution.target.name)) {
+        references.push({ entityName: sourceName, fieldName });
+      }
+    }
+  }
+  return references.sort((a, b) => a.entityName.localeCompare(b.entityName) || a.fieldName.localeCompare(b.fieldName));
+}
+
 export function formatSearchResults(results: readonly SearchResult[]): string {
   return results.map((result) => `${result.name}|${result.packageName}`).join("\n");
+}
+
+export function formatFieldSearchResults(keyword: string, results: readonly FieldSearchResult[]): string {
+  const lines = [`Field matching ${JSON.stringify(keyword)} found in:`];
+  for (const result of results) {
+    const suffix = result.exact ? "exact match" : `matched: ${result.matchedField}`;
+    lines.push(`- ${result.entityName} (${suffix})`);
+  }
+  return lines.join("\n");
+}
+
+export function formatIncomingReferences(entityName: string, references: readonly IncomingReference[]): string {
+  const lines = [`Incoming References to [${entityName}]:`];
+  lines.push(...references.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`));
+  return lines.join("\n");
 }

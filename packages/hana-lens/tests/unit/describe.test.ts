@@ -14,6 +14,17 @@ describe("describeEntity", () => {
     expect(describeEntity(ast, "A", false)).toBe("[PK] ID: cds.String(36)\n[PK] computed: cds.Timestamp\ntoB: cds.Association");
   });
 
+  it("always prints enum keys and gates element annotations behind an option", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Project: { elements: {
+        status: { type: "cds.String", enum: { ACTIVE: {}, INACTIVE: {} }, "@readonly": true, "@title": "Status", "@Common.ValueList": { CollectionPath: "Statuses" } },
+      } },
+    } };
+
+    expect(describeEntity(csn, "Project", false)).toBe("status: cds.String enum[ACTIVE, INACTIVE]");
+    expect(describeEntity(csn, "Project", false, true)).toBe('status: cds.String enum[ACTIVE, INACTIVE] @Common.ValueList={"CollectionPath":"Statuses"} @readonly=true @title="Status"');
+  });
+
   it("expands associations with circular and missing target guards", () => {
     const output = describeEntity(ast, "A", true);
     expect(output).toContain("-- A: circular");

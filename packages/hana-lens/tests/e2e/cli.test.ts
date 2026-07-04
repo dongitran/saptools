@@ -102,7 +102,7 @@ describe("hana-lens CLI e2e", () => {
   it("describe reads an existing cache offline, prints dense fields, expands associations, and guards circular or missing targets", async () => {
     await withTempWorkspace(async (root) => {
       await writeCache(root, { definitions: {
-        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
+        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, status: { type: "cds.String", enum: { ACTIVE: {}, INACTIVE: {} }, "@readonly": true, "@title": "Status" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
         "demo.empty.EmptyEntity": { [PACKAGE_ANNOTATION]: "@demo/empty" },
       } });
@@ -112,8 +112,22 @@ describe("hana-lens CLI e2e", () => {
       expect(compact.stdout).toContain("[PK] reqID: cds.String(36)");
       expect(compact.stdout).toContain("[PK] tenantID: cds.String(36)");
       expect(compact.stdout).toContain("[PK] createdAt: cds.Timestamp");
+      expect(compact.stdout).toContain("status: cds.String enum[ACTIVE, INACTIVE]");
+      expect(compact.stdout.includes("@readonly=true")).toBe(false);
       expect(compact.stdout).toContain("customer: cds.Association ON [customer.ID = customerID and customer.tenantID = tenantID]");
       expect(compact.stdout.includes("- [PK] ID")).toBe(false);
+
+      const annotated = runCli(["describe", "demo.sales.BusinessRequest", "--with-annotations"], root);
+      expect(annotated.status).toBe(0);
+      expect(annotated.stdout).toContain('status: cds.String enum[ACTIVE, INACTIVE] @readonly=true @title="Status"');
+
+      const references = runCli(["references", "demo.sales.BusinessRequest"], root);
+      expect(references.status).toBe(0);
+      expect(references.stdout).toBe("Incoming References to [demo.sales.BusinessRequest]:\n- demo.master.Customer (via field: request)\n");
+
+      const fieldSearch = runCli(["search-field", "status"], root);
+      expect(fieldSearch.status).toBe(0);
+      expect(fieldSearch.stdout).toBe('Field matching "status" found in:\n- demo.sales.BusinessRequest (exact match)\n');
 
       const expanded = runCli(["describe", "demo.sales.BusinessRequest", "--expand"], root);
       expect(expanded.status).toBe(0);

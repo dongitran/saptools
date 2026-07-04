@@ -27,6 +27,9 @@ function asElement(value: unknown): HanaLensElement | undefined {
   if (value["on"] !== undefined && !Array.isArray(value["on"])) {
     return undefined;
   }
+  if (value["enum"] !== undefined && !isRecord(value["enum"])) {
+    return undefined;
+  }
   return value as HanaLensElement;
 }
 
