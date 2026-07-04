@@ -18,14 +18,6 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 
 ---
 
-## 0.1.18 quality update
-
-`service-flow` 0.1.18 hardens auditability after the 0.1.17 audit. Event `.emit()` and `.publish()` parsing now requires conservative CAP receiver evidence, local CAP service calls persist structured parser evidence, call-derived graph and JSON trace evidence include nested outbound parser evidence, terminal DB/external/event edges are not marked graph-dynamic, and `doctor --strict` reports outbound evidence, graph evidence propagation, event receiver classification, and dynamic flag consistency.
-
-## 0.1.17 quality update
-
-`service-flow` 0.1.17 hardens outbound extraction after the 0.1.16 audit. Outbound calls are classified from the TypeScript AST, so comments and strings are ignored; CAP/service lifecycle registrations that remain indexed receive synthetic event-registration owners; generic event emitters and response `.send()` calls are not treated as CAP service-flow edges; and `doctor --strict` reports actionable ownerless categories. The previous 0.1.16 source ownership and proxy-evidence improvements remain in place. It indexes class property arrow/function members, creates conservative synthetic callback symbols only for top-level framework callbacks containing supported outbound calls, prefers explicit outbound source-symbol names when provided, hardens proxy-member resolution away from ambiguous global name-only matches, and splits link output into remote/local/unresolved/ambiguous/dynamic/terminal operation-call buckets.
-
 ## ✨ Features
 
 - 🧭 **Cross-repository CAP tracing** — starts from a repo, service, operation path, operation name, or handler and follows the indexed flow across workspace boundaries

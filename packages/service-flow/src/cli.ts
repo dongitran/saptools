@@ -21,6 +21,7 @@ import { parsePackageJson } from './parsers/package-json-parser.js';
 import { classifyRepository } from './discovery/classify-repository.js';
 import { indexWorkspace } from './indexer/workspace-indexer.js';
 import { linkWorkspace } from './linker/cross-repo-linker.js';
+import { normalizeODataOperationInvocationPath } from './linker/odata-path-normalizer.js';
 import { trace } from './trace/trace-engine.js';
 import { parseVars } from './trace/selectors.js';
 import { renderTraceTable } from './output/table-output.js';
@@ -155,7 +156,11 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const outboundTotal = Number(outbound.total ?? 0);
   const outboundWithoutOwnership = Number(outbound.withoutOwnership ?? 0);
   const outboundWithoutOwnershipRatio = outboundTotal === 0 ? 0 : Number((outboundWithoutOwnership / outboundTotal).toFixed(4));
+  const remoteQuery = remoteQueryTargetQuality(db);
+  const invocation = odataInvocationResolutionQuality(db);
   return [
+    remoteQuery,
+    invocation,
     { severity: Number(evidence.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_symbol_call_evidence_quality', message: 'Symbol-call evidence JSON object aggregate', total: Number(evidence.total ?? 0), nonObject: Number(evidence.nonObject ?? 0) },
     { severity: Number(outboundEvidence.missing ?? 0) + Number(outboundEvidence.invalid ?? 0) + Number(outboundEvidence.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_outbound_evidence_quality', message: 'Outbound parser evidence JSON object aggregate', total: Number(outboundEvidence.total ?? 0), missing: Number(outboundEvidence.missing ?? 0), invalid: Number(outboundEvidence.invalid ?? 0), nonObject: Number(outboundEvidence.nonObject ?? 0), examples: outboundEvidenceExamples },
     { severity: Number(graphEvidence.nonObject ?? 0) > 0 || Number(graphEvidence.withOutboundEvidence ?? 0) < Number(graphEvidence.total ?? 0) ? 'warning' : 'info', code: 'strict_graph_evidence_quality', message: 'Call-derived graph evidence and parser-evidence propagation aggregate', total: Number(graphEvidence.total ?? 0), nonObject: Number(graphEvidence.nonObject ?? 0), withOutboundEvidence: Number(graphEvidence.withOutboundEvidence ?? 0), examples: graphEvidenceExamples },
@@ -165,6 +170,43 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
     { severity: queryUnknownRatio > dbUnknownThreshold ? 'warning' : 'info', code: 'strict_db_query_quality', message: 'Local DB query quality aggregate', total: queryTotal, known: Number(dbq.known ?? 0), unknown: queryUnknown, unknownRatio: queryUnknownRatio, unknownRatioThreshold: dbUnknownThreshold },
     { severity: outboundWithoutOwnershipRatio > outboundUnownedThreshold ? 'warning' : 'info', code: 'strict_outbound_source_ownership_quality', message: 'Outbound call source-symbol ownership aggregate', total: outboundTotal, withoutOwnership: outboundWithoutOwnership, withoutOwnershipRatio: outboundWithoutOwnershipRatio, withoutOwnershipRatioThreshold: outboundUnownedThreshold, ownerlessByType, ownerlessByCategory, ownerlessExamples },
   ];
+}
+
+function remoteQueryTargetQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const aggregate = db.prepare(`SELECT COUNT(*) total,
+    SUM(CASE WHEN e.edge_type='HANDLER_RUNS_REMOTE_QUERY' AND e.status='terminal' THEN 1 ELSE 0 END) terminal,
+    SUM(CASE WHEN e.edge_type='HANDLER_RUNS_REMOTE_QUERY' AND e.to_id GLOB '[0-9]*' THEN 1 ELSE 0 END) numericTargets,
+    SUM(CASE WHEN e.edge_type='UNRESOLVED_EDGE' OR e.status='unresolved' THEN 1 ELSE 0 END) unresolved
+    FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) WHERE c.call_type='remote_query'`).get() as { total?: number; terminal?: number; numericTargets?: number; unresolved?: number };
+  const examples = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,c.query_entity queryEntity,e.edge_type edgeType,e.status status,e.to_id target
+    FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type='remote_query' AND (e.id IS NULL OR e.edge_type<>'HANDLER_RUNS_REMOTE_QUERY' OR e.status<>'terminal' OR e.to_id GLOB '[0-9]*')
+    ORDER BY c.source_file,c.source_line LIMIT 5`).all() as Array<Record<string, unknown>>;
+  const numericTargets = Number(aggregate.numericTargets ?? 0);
+  const unresolved = Number(aggregate.unresolved ?? 0);
+  return { severity: numericTargets + unresolved > 0 ? 'warning' : 'info', code: 'strict_remote_query_target_quality', message: 'Remote query terminal target quality aggregate', totalRemoteQueryCalls: Number(aggregate.total ?? 0), terminalRemoteQueryEdges: Number(aggregate.terminal ?? 0), numericTargetCount: numericTargets, unresolvedRemoteQueryCount: unresolved, examples };
+}
+
+function odataInvocationResolutionQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const rows = db.prepare(`SELECT c.id id,c.operation_path_expr operationPathExpr,c.source_file sourceFile,c.source_line sourceLine,e.status status,e.unresolved_reason unresolvedReason
+    FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type='remote_action' AND e.status='unresolved' AND c.operation_path_expr LIKE '%(%'
+    ORDER BY c.source_file,c.source_line LIMIT 100`).all() as Array<{ id?: number; operationPathExpr?: string; sourceFile?: string; sourceLine?: number; status?: string; unresolvedReason?: string }>;
+  const examples: Array<Record<string, unknown>> = [];
+  let unresolvedMatchingIndexedOperation = 0;
+  let ambiguousInvocationPaths = 0;
+  for (const row of rows) {
+    const normalized = normalizeODataOperationInvocationPath(row.operationPathExpr);
+    if (!normalized?.wasInvocation) continue;
+    const normalizedName = normalized.normalizedOperationPath.replace(/^\//, '');
+    const simpleName = normalizedName.split('.').at(-1) ?? normalizedName;
+    const candidates = db.prepare('SELECT s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.operation_path IN (?,?) OR o.operation_name IN (?,?) ORDER BY s.service_path,o.operation_name LIMIT 5').all(normalized.normalizedOperationPath, `/${simpleName}`, normalizedName, simpleName) as Array<Record<string, unknown>>;
+    if (candidates.length === 0) continue;
+    unresolvedMatchingIndexedOperation += 1;
+    if (candidates.length > 1) ambiguousInvocationPaths += 1;
+    if (examples.length < 5) examples.push({ sourceFile: row.sourceFile, sourceLine: row.sourceLine, rawOperationPath: row.operationPathExpr, normalizedOperationPath: normalized.normalizedOperationPath, candidateCount: candidates.length, candidates });
+  }
+  return { severity: unresolvedMatchingIndexedOperation > 0 ? 'warning' : 'info', code: 'strict_odata_invocation_resolution_quality', message: 'OData invocation-path resolution quality aggregate', unresolvedRemoteActionsWithIndexedNormalizedOperation: unresolvedMatchingIndexedOperation, ambiguousInvocationPaths, examples };
 }
 
 export function createProgram(): Command {
