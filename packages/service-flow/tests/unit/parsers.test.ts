@@ -370,6 +370,44 @@ describe('executable symbol parser trace-quality cases', () => {
     expect(parsed.symbols.find((symbol) => symbol.qualifiedName === 'LocalHelper.check')?.importExportEvidence).toMatchObject({ parameterBindings: [{ index: 0, kind: 'identifier', name: 'primaryClient' }] });
   });
 
+
+  it('keeps nested this receiver calls conservative unless helper instance evidence exists', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-nested-this-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'imported.ts'), "export class ImportedHelper { run(): void {} }\n");
+    await fs.writeFile(path.join(root, 'src', 'handler.ts'), `
+      import { ImportedHelper } from './imported';
+      class LocalHelper { run(): void {} }
+      class CurrentClass {
+        private localHelper = new LocalHelper();
+        private importedHelper = new ImportedHelper();
+        private helper = { run(): void {} };
+        private cache = { clear(): void {} };
+        private graphs: Record<string, { findPath(input: string): void }> = {};
+        run(): void {}
+        clear(): void {}
+        findPath(input: string): void {}
+        execute(input: string): void {
+          this.run();
+          this.helper.run();
+          this.cache.clear();
+          this.graphs[input].findPath(input);
+          this.localHelper.run();
+          this.importedHelper.run();
+        }
+      }
+    `);
+    const parsed = await parseExecutableSymbols(root, 'src/handler.ts');
+    const expressions = parsed.calls.map((call) => call.calleeExpression).sort();
+    expect(expressions).toEqual(['this.importedHelper.run', 'this.localHelper.run', 'this.run']);
+    expect(parsed.calls.find((call) => call.calleeExpression === 'this.run')?.calleeLocalName).toBe('CurrentClass.run');
+    expect(parsed.calls.find((call) => call.calleeExpression === 'this.localHelper.run')?.calleeLocalName).toBe('LocalHelper.run');
+    expect(parsed.calls.find((call) => call.calleeExpression === 'this.importedHelper.run')?.calleeLocalName).toBe('ImportedHelper.run');
+    expect(expressions).not.toContain('this.helper.run');
+    expect(expressions).not.toContain('this.cache.clear');
+    expect(expressions).not.toContain('this.graphs[input].findPath');
+  });
+
   it('does not collect JavaScript built-in instances as class instance symbol calls', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-builtins-'));
     await fs.mkdir(path.join(root, 'src'), { recursive: true });

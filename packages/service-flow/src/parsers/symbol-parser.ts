@@ -132,7 +132,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
   const exportedClasses = new Set<string>();
   const declaredClasses = new Set<string>();
   const proxyVariables = new Map<string, { importSource: string; factory: string; variableName: string }>();
-  const classInstances = new Map<string, { className: string; importSource?: string }>();
+  const classInstances = new Map<string, { className: string; importSource?: string; propertyName?: string }>();
   const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string, evidence?: Record<string, unknown>): void => {
     const parentRoot = parentName?.split('.')[0] ?? '';
     const declaredExportName = exportedName ?? exportNames.get(parentName ? parentRoot : localName);
@@ -246,11 +246,17 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     ts.forEachChild(node, visitProxyVariables);
   };
   visitProxyVariables(source);
+  const rememberClassInstance = (variableName: string, className: string, propertyName?: string): void => {
+    const importSource = imports.get(className);
+    if (!builtInConstructors.has(className) && ((importSource && isRelativeImport(importSource)) || declaredClasses.has(className))) classInstances.set(variableName, { className, importSource, propertyName });
+  };
   const visitClassInstances = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression)) {
-      const className = node.initializer.expression.text;
-      const importSource = imports.get(className);
-      if (!builtInConstructors.has(className) && ((importSource && isRelativeImport(importSource)) || declaredClasses.has(className))) classInstances.set(node.name.text, { className, importSource });
+      rememberClassInstance(node.name.text, node.initializer.expression.text);
+    }
+    if (ts.isPropertyDeclaration(node) && node.initializer && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression)) {
+      const propertyName = nameOf(node.name);
+      if (propertyName) rememberClassInstance(`this.${propertyName}`, node.initializer.expression.text, propertyName);
     }
     ts.forEachChild(node, visitClassInstances);
   };
@@ -263,11 +269,12 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
       if (caller) {
         const callee = callName(node.expression);
         const proxy = callee.local ? proxyVariables.get(callee.local) : undefined;
-        const instance = callee.local ? classInstances.get(callee.local) : undefined;
+        const instance = (callee.local ? classInstances.get(callee.local) : undefined) ?? (callee.receiver ? classInstances.get(callee.receiver) : undefined);
         const importSource = instance?.importSource ?? proxy?.importSource ?? (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
-        const targetName = instance && callee.member ? `${instance.className}.${callee.member}` : proxy && callee.member ? callee.member : callee.expression.startsWith('this.') ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
+        const directThisMethod = callee.receiver === 'this';
+        const targetName = instance && callee.member ? `${instance.className}.${callee.member}` : proxy && callee.member ? callee.member : directThisMethod ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
         const className = caller.qualifiedName.includes('.') ? caller.qualifiedName.split('.')[0] : undefined;
-        const thisTarget = className && callee.member ? `${className}.${callee.member}` : undefined;
+        const thisTarget = directThisMethod && className && callee.member ? `${className}.${callee.member}` : undefined;
         const loggerLike = callee.receiver?.endsWith('.logger') || callee.local === 'logger' || (callee.expression.startsWith('this.logger.') && callee.member ? loggerMembers.has(callee.member) : false);
         const terminalMember = callee.member ? commonTerminalMembers.has(callee.member) || loggerMembers.has(callee.member) : false;
         const provenLocal = Boolean(targetName) && localCallables.has(String(targetName));
@@ -278,7 +285,7 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
         const ignored = loggerLike || terminalMember || importedFromPackage || ignoredFrameworkCall(callee);
         const resolvedTarget = provenThisMethod ? thisTarget : targetName;
         const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport || provenClassInstance);
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? callee.local : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? callee.local : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? (callee.local ?? callee.receiver) : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? (instance.propertyName ?? callee.local) : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
       }
     }
     ts.forEachChild(node, visitCalls);

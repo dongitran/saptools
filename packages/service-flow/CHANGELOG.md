@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.26
+
+- Resolve helper-internal remote sends contextually in trace output when service clients are passed through positional arguments or one-level destructured object parameters.
+- Add auditable contextual binding evidence for propagated helper client receivers, including caller argument, caller object property, callee parameter, callee receiver, and propagation source.
+- Keep nested `this.<property>.<method>()` symbol-call resolution conservative unless explicit same-file or relative-import helper instance evidence exists.
+- Update strict doctor diagnostics for trace-time contextual propagation opportunities and nested `this` receiver quality signals.
+
 ## 0.1.25
 
 - Make class-instance symbol-call indexing conservative so only same-file and relatively imported helper classes are traced, while built-in collection, date, URL, error, typed-array, promise, and abort-controller instances are ignored.

@@ -449,7 +449,8 @@ export function trace(
   while (queue.length > 0) {
     const current = queue.shift();
     if (!current || current.depth > maxDepth) continue;
-    const key = `${current.repoId ?? '*'}:${[...(current.symbolIds ?? new Set(['*']))].sort().join(',')}:${[...(current.files ?? new Set(['*']))].sort().join(',')}`;
+    const contextKey = [...(current.context ?? new Map<string, ContextBinding>()).keys()].sort().join(',');
+    const key = `${current.repoId ?? '*'}:${[...(current.symbolIds ?? new Set(['*']))].sort().join(',')}:${[...(current.files ?? new Set(['*']))].sort().join(',')}:${contextKey}`;
     if (seenScopes.has(key)) continue;
     seenScopes.add(key);
     const calls = db
@@ -494,7 +495,7 @@ export function trace(
         line: call.source_line,
         callType: call.call_type,
       });
-      const contextual = contextualRuntimeResolution(db, call, (current.context ?? new Map<string, ContextBinding>()).get(receiverFromEvidence(call.evidence_json) ?? ''), workspaceIdForCall(db, String(call.id)));
+      const contextual = contextualRuntimeResolution(db, call, callerBindings.get(receiverFromEvidence(call.evidence_json) ?? ''), workspaceIdForCall(db, String(call.id)));
       const graphRows = contextual.row ? [contextual.row] : (graph.get(Number(call.id)) ?? []);
       for (const row of graphRows) {
         if (seenEdges.has(Number(row.id))) continue;
