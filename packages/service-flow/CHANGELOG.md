@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.24
+
+- Add conservative class instance method symbol-call resolution for same-file and relatively imported helper classes, with auditable class-instance evidence.
+- Propagate service-client binding context through resolved local symbol calls for explicit positional and object-literal helper arguments during trace rendering.
+- Harden one-hop higher-order send wrapper literal path propagation for returned async closures and expose wrapper definition evidence.
+- Refine strict doctor categories for no-binding remote actions and split ambiguous versus unresolved implementation diagnostics with capped examples.
+
+## 0.1.23
+
+- Retrospective note: preserve same-file late-assignment service binding extraction for connected clients, `cds.connect.to(...)` assignments, identity aliases, and simple transaction aliases before outbound `send(...)` calls.
+- Retrospective note: preserve explicit object destructuring from safe helper-returned client objects so binding rows remain available for downstream remote action linking.
+
 ## 0.1.22
 
 - Propagate conservative same-file identity aliases of connected service clients, including typed, `as`, `satisfies`, helper-returned, and transitive aliases, while preserving `.tx()` alias evidence.

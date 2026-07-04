@@ -22,7 +22,7 @@ describe('local wrapper path propagation', () => {
       }
     `);
     const calls = await parseOutboundCalls(root, 'handler.ts');
-    expect(calls.some((call) => call.operationPathExpr === '/loadCatalog()' && call.evidence?.classifier === 'local_wrapper_literal_path')).toBe(true);
+    expect(calls.some((call) => call.operationPathExpr === '/loadCatalog()' && call.evidence?.classifier === 'higher_order_wrapper_literal_path')).toBe(true);
     expect(calls.some((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toBe(true);
   });
 });

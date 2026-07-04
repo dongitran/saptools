@@ -121,39 +121,46 @@ function isSupportedEventReceiver(receiver: string | undefined, rootReceiver: st
   if (/^(srv|service|serviceClient|messaging|messageClient|eventClient)$/.test(candidate)) return true;
   return false;
 }
-interface WrapperSpec { clientIndex: number; pathIndex: number; methodIndex?: number }
+interface WrapperSpec { clientIndex: number; pathIndex: number; methodIndex?: number; definitionLine: number }
 function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   const specs = new Map<string, WrapperSpec>();
   const scanFunction = (name: string, fn: ts.FunctionLikeDeclaration): void => {
     const params = fn.parameters.map((param) => ts.isIdentifier(param.name) ? param.name.text : undefined);
-    let found: { client: string; path: string; method?: string } | undefined;
+    const closure = returnedClosure(fn) ?? fn;
+    const sends: Array<{ client: string; path: string; method?: string }> = [];
     const visit = (node: ts.Node): void => {
-      if (found) return;
-      if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node))) {
-        ts.forEachChild(node, visit);
-        return;
-      }
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send' && ts.isIdentifier(node.expression.expression)) {
         const objectArg = node.arguments[0];
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
           const pathProp = objectArg.properties.find((property): property is ts.ShorthandPropertyAssignment => ts.isShorthandPropertyAssignment(property) && property.name.text === 'path');
-          if (pathProp) found = { client: node.expression.expression.text, path: pathProp.name.text, method: objectPropertyText(objectArg, 'method') };
+          if (pathProp) sends.push({ client: node.expression.expression.text, path: pathProp.name.text, method: objectPropertyText(objectArg, 'method') });
         }
       }
       ts.forEachChild(node, visit);
     };
-    visit(fn);
-    if (!found) return;
+    visit(closure);
+    if (sends.length !== 1) return;
+    const found = sends[0];
     const clientIndex = params.indexOf(found.client);
     const pathIndex = params.indexOf(found.path);
     const methodIndex = found.method && params.includes(found.method) ? params.indexOf(found.method) : undefined;
-    if (clientIndex >= 0 && pathIndex >= 0) specs.set(name, { clientIndex, pathIndex, methodIndex });
+    if (clientIndex >= 0 && pathIndex >= 0) specs.set(name, { clientIndex, pathIndex, methodIndex, definitionLine: lineOf(source.text, fn.getStart(source)) });
   };
   for (const stmt of source.statements) {
     if (ts.isFunctionDeclaration(stmt) && stmt.name) scanFunction(stmt.name.text, stmt);
     if (ts.isVariableStatement(stmt)) for (const decl of stmt.declarationList.declarations) if (ts.isIdentifier(decl.name) && decl.initializer && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) scanFunction(decl.name.text, decl.initializer);
   }
   return specs;
+}
+function returnedClosure(fn: ts.FunctionLikeDeclaration): ts.ArrowFunction | ts.FunctionExpression | undefined {
+  const body = fn.body;
+  if (!body) return undefined;
+  if (ts.isArrowFunction(fn) && !ts.isBlock(body)) return ts.isArrowFunction(body) || ts.isFunctionExpression(body) ? body : undefined;
+  if (!ts.isBlock(body)) return undefined;
+  const returns = body.statements.filter(ts.isReturnStatement);
+  if (returns.length !== 1) return undefined;
+  const expr = returns[0]?.expression;
+  return expr && (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) ? expr : undefined;
 }
 
 export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: string): ClassifiedOutboundCall[] {
@@ -174,22 +181,24 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const entity = arg ? queryEntityFromAst(arg, initializers) : undefined;
         const payload = arg?.getText(source) ?? '';
         add(node, { callType: 'local_db_query', queryEntity: entity, payloadSummary: summarizeExpression(payload), confidence: entity ? 0.9 : 0.55, unresolvedReason: entity ? undefined : queryWarning(payload) });
-      } else if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'send' && ts.isIdentifier(expr.expression)) {
+      } else if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'send' && (ts.isIdentifier(expr.expression) || ts.isPropertyAccessExpression(expr.expression))) {
         const objectArg = node.arguments[0];
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
-          const receiver = expr.expression.text;
+          const receiver = receiverName(expr.expression);
           const query = objectPropertyText(objectArg, 'query');
           const op = objectPropertyText(objectArg, 'path') ?? objectPropertyText(objectArg, 'event');
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
           add(node, { callType: query ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method: stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST'), operationPathExpr: op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined, queryEntity: query ? extractQueryEntity(query) : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
         }
-      } else if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) {
-        const spec = wrapperSpecs.get(expr.expression.text);
-        const clientArg = spec ? expr.arguments[spec.clientIndex] : undefined;
-        const pathArg = spec ? expr.arguments[spec.pathIndex] : undefined;
-        const methodArg = spec?.methodIndex === undefined ? undefined : expr.arguments[spec.methodIndex];
+      } else if (((ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) || (ts.isIdentifier(expr) && wrapperSpecs.has(expr.text)))) {
+        const wrapperName = ts.isIdentifier(expr) ? expr.text : ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) ? expr.expression.text : '';
+        const wrapperArgs = ts.isIdentifier(expr) ? node.arguments : ts.isCallExpression(expr) ? expr.arguments : node.arguments;
+        const spec = wrapperSpecs.get(wrapperName);
+        const clientArg = spec ? wrapperArgs[spec.clientIndex] : undefined;
+        const pathArg = spec ? wrapperArgs[spec.pathIndex] : undefined;
+        const methodArg = spec?.methodIndex === undefined ? undefined : wrapperArgs[spec.methodIndex];
         if (spec && clientArg && ts.isIdentifier(clientArg) && isStringLike(pathArg)) {
-          add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), operationPathExpr: `/${pathArg.text.replace(/^\//, '')}`, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver: clientArg.text, classifier: 'local_wrapper_literal_path', wrapperFunction: expr.expression.text, literalCallerArgumentDetected: true });
+          add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), operationPathExpr: `/${pathArg.text.replace(/^\//, '')}`, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver: clientArg.text, classifier: 'higher_order_wrapper_literal_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, literalCallerArgumentDetected: true });
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);

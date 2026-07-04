@@ -34,6 +34,20 @@ interface GraphRow extends Record<string, unknown> {
   unresolved_reason?: string;
   status?: string;
 }
+interface ContextBinding {
+  bindingId: number;
+  alias?: string;
+  aliasExpr?: string;
+  destinationExpr?: string;
+  servicePathExpr?: string;
+  sourceFile?: string;
+  sourceLine?: number;
+  source: string;
+  callerArgument?: string;
+  callerProperty?: string;
+  calleeParameter?: string;
+  calleeReceiver: string;
+}
 interface Candidate {
   servicePath?: string;
   operationPath?: string;
@@ -269,6 +283,65 @@ function runtimeResolution(db: Db, row: GraphRow, evidence: Record<string, unkno
   const unresolvedReason = resolution.status === 'dynamic' ? `Dynamic target is missing runtime variables: ${resolution.reasons.join(', ')}` : resolution.status === 'ambiguous' ? 'Ambiguous runtime operation candidates' : 'No runtime operation candidate matched substituted service and operation path';
   return { row, evidence: nextEvidence, unresolvedReason };
 }
+function parseEvidence(value: unknown): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(String(value || '{}')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+function receiverFromEvidence(value: unknown): string | undefined {
+  const evidence = parseEvidence(value);
+  return typeof evidence.receiver === 'string' ? evidence.receiver : undefined;
+}
+function knownBindingsForCalls(db: Db, calls: CallRow[]): Map<string, ContextBinding> {
+  const map = new Map<string, ContextBinding>();
+  for (const call of calls) {
+    const receiver = receiverFromEvidence(call.evidence_json);
+    const bindingId = Number(call.service_binding_id ?? 0);
+    if (!receiver || !bindingId) continue;
+    const row = db.prepare('SELECT id,alias,alias_expr aliasExpr,destination_expr destinationExpr,service_path_expr servicePathExpr,source_file sourceFile,source_line sourceLine FROM service_bindings WHERE id=?').get(bindingId) as ContextBinding | undefined;
+    if (row) map.set(receiver, { ...row, bindingId, source: 'local_service_binding', calleeReceiver: receiver });
+  }
+  return map;
+}
+function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, callerBindings: Map<string, ContextBinding>): Map<string, ContextBinding> {
+  const next = new Map<string, ContextBinding>();
+  if (callerBindings.size === 0) return next;
+  const callEvidence = parseEvidence(symbolCall.evidence_json);
+  const callee = db.prepare('SELECT evidence_json evidenceJson FROM symbols WHERE id=?').get(symbolCall.callee_symbol_id) as { evidenceJson?: string } | undefined;
+  const calleeEvidence = parseEvidence(callee?.evidenceJson);
+  const params = Array.isArray(calleeEvidence.parameters) ? calleeEvidence.parameters.filter((item): item is string => typeof item === 'string') : [];
+  const args = Array.isArray(callEvidence.callArguments) ? callEvidence.callArguments as Array<Record<string, unknown>> : [];
+  args.forEach((arg, index) => {
+    const param = params[index];
+    if (!param) return;
+    if (arg.kind === 'identifier' && typeof arg.name === 'string') {
+      const binding = callerBindings.get(arg.name);
+      if (binding) next.set(param, { ...binding, source: 'local_symbol_argument', callerArgument: arg.name, calleeParameter: param, calleeReceiver: param });
+    }
+    if (arg.kind === 'object_literal' && Array.isArray(arg.properties)) {
+      for (const prop of arg.properties as Array<Record<string, unknown>>) {
+        if (typeof prop.property !== 'string' || typeof prop.argument !== 'string') continue;
+        const binding = callerBindings.get(prop.argument);
+        if (binding) next.set(`${param}.${prop.property}`, { ...binding, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
+      }
+    }
+  });
+  return next;
+}
+function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
+  if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
+  const op = normalizeODataOperationInvocationPathForTrace(String(call.operation_path_expr));
+  const resolution = resolveOperation(db, { servicePath: binding.servicePathExpr, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination: binding.destinationExpr, hasExplicitOverride: true, isDynamic: false }, workspaceId);
+  const evidence: Record<string, unknown> = { contextualServiceBindingSelected: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine }, operationPath: op, servicePath: binding.servicePathExpr, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination: binding.destinationExpr, contextualResolutionStatus: resolution.status, candidates: resolution.candidates, resolutionReasons: resolution.reasons };
+  if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : 'No contextual operation candidate matched' };
+  return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(evidence), status: 'resolved' }, evidence: { ...evidence, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName }, unresolvedReason: undefined };
+}
+function normalizeODataOperationInvocationPathForTrace(raw: string): string {
+  return raw.startsWith('/') ? raw : `/${raw}`;
+}
 function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
   const runtimeCandidate = evidence.runtimeResolvedCandidate as
     | Candidate
@@ -327,9 +400,9 @@ export function trace(
   const maxDepth = positiveDepth(options.depth);
   const edges: TraceEdge[] = [];
   const nodes = new Map<string, Record<string, unknown>>();
-  const queue: Array<{ repoId?: number; files?: Set<string>; symbolIds?: Set<number>; depth: number }> =
+  const queue: Array<{ repoId?: number; files?: Set<string>; symbolIds?: Set<number>; depth: number; context?: Map<string, ContextBinding> }> =
     scope.selectorMatched
-      ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1 }]
+      ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1, context: new Map() }]
       : [];
   if (start.servicePath && (start.operation ?? start.operationPath)) {
     const startOperation = normalizeOperation(start.operation ?? start.operationPath);
@@ -367,6 +440,7 @@ export function trace(
         (!current.symbolIds || current.symbolIds.has(Number(c.source_symbol_id))) && (!current.files || current.files.has(String(c.source_file))) &&
         includeCall(String(c.call_type), options),
     );
+    const callerBindings = new Map<string, ContextBinding>([...(current.context ?? new Map<string, ContextBinding>()), ...knownBindingsForCalls(db, filtered)]);
 
     if (current.symbolIds && current.symbolIds.size > 0 && current.depth < maxDepth) {
       const symbolRows = db.prepare(`SELECT sc.*,s.repo_id calleeRepoId,s.source_file calleeFile FROM symbol_calls sc LEFT JOIN symbols s ON s.id=sc.callee_symbol_id WHERE sc.caller_symbol_id IN (${[...current.symbolIds].map(() => '?').join(',')}) ORDER BY sc.source_file,sc.source_line`).all(...current.symbolIds) as Array<Record<string, unknown>>;
@@ -381,7 +455,7 @@ export function trace(
         const evidence = { ...(JSON.parse(String(symbolCall.evidence_json || '{}')) as Record<string, unknown>), sourceFile: symbolCall.source_file, sourceLine: symbolCall.source_line, calleeSymbolId: symbolCall.callee_symbol_id, calleeSymbolName: calleeNode?.symbolName, calleeSymbolFile: calleeNode?.sourceFile, resolutionStatus: symbolCall.status };
         edges.push({ step: current.depth, type: 'local_symbol_call', from: String(symbolCall.callee_expression), to: calleeNode?.label ? String(calleeNode.label) : `symbol:${String(symbolCall.callee_symbol_id)}`, evidence, confidence: Number(symbolCall.confidence ?? 0.8), unresolvedReason: String(symbolCall.status) === 'resolved' ? undefined : symbolCall.unresolved_reason ? String(symbolCall.unresolved_reason) : undefined });
         if (seenScopes.has(nextKey)) edges.push({ step: current.depth, type: 'cycle', from: String(symbolCall.callee_expression), to: nextKey, evidence: { cycle: true, symbolCallId: symbolCall.id }, confidence: 1, unresolvedReason: 'Cycle detected; downstream symbol already visited' });
-        else queue.push({ repoId: nextRepoId, files: nextFiles, symbolIds: nextSymbols, depth: current.depth + 1 });
+        else queue.push({ repoId: nextRepoId, files: nextFiles, symbolIds: nextSymbols, depth: current.depth + 1, context: contextForSymbolCall(db, symbolCall, callerBindings) });
       }
     }
     const graph = graphForCalls(
@@ -398,11 +472,12 @@ export function trace(
         line: call.source_line,
         callType: call.call_type,
       });
-      const graphRows = graph.get(Number(call.id)) ?? [];
+      const contextual = contextualRuntimeResolution(db, call, (current.context ?? new Map<string, ContextBinding>()).get(receiverFromEvidence(call.evidence_json) ?? ''), workspaceIdForCall(db, String(call.id)));
+      const graphRows = contextual.row ? [contextual.row] : (graph.get(Number(call.id)) ?? []);
       for (const row of graphRows) {
         if (seenEdges.has(Number(row.id))) continue;
         seenEdges.add(Number(row.id));
-        const rawEvidence = JSON.parse(
+        const rawEvidence = contextual.evidence && row.id < 0 ? contextual.evidence : JSON.parse(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
         const effective = runtimeResolution(db, row, rawEvidence, options.vars);
