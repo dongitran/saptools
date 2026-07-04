@@ -12,6 +12,8 @@ import { parsePackageJson } from '../../src/parsers/package-json-parser.js';
 import { classifyRepository } from '../../src/discovery/classify-repository.js';
 import { indexWorkspace } from '../../src/indexer/workspace-indexer.js';
 import { linkWorkspace, trace } from '../../src/index.js';
+import { renderTraceTable } from '../../src/output/table-output.js';
+import { renderMermaid } from '../../src/output/mermaid-output.js';
 const fixture = path.resolve('tests/fixtures/cap-workspace');
 
 async function writeFixtureFile(root: string, relative: string, content = ''): Promise<void> {
@@ -552,51 +554,74 @@ export class EntryHandler {
   it('propagates service binding context into helper class method parameters', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-class-context-'));
     await writeFixtureFile(root, 'facade-service/.git-fixture');
-    await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0', dependencies: { '@neutral/model-service': '1.0.0' } }));
+    await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0', dependencies: { '@neutral/model-service': '1.0.0' }, cds: { requires: { target_config_api: { kind: 'odata-v4', credentials: { destination: 'target-config-destination', path: '/TargetConfigService' } }, target_user_api: { kind: 'odata-v4', credentials: { destination: 'target-user-destination', path: '/TargetUserService' } } } } }));
     await writeFixtureFile(root, 'facade-service/srv/facade.cds', 'service FacadeService { action runFlow(); }');
     await writeFixtureFile(root, 'facade-service/srv/WorkflowHelper.ts', `
 export class WorkflowHelper {
-  async loadMetadata(serviceClient: { send(input: unknown): Promise<unknown> }): Promise<void> {
-    await serviceClient.send({ method: 'GET', path: '/readMetadata' });
+  async loadMetadata(configClient: { send(input: unknown): Promise<unknown> }, headers: Record<string, string>): Promise<void> {
+    await configClient.send({ method: 'GET', path: '/loadMetadata', headers });
   }
-  async validate({ configClient, client: serviceClient }: { configClient: { send(input: unknown): Promise<unknown> }; client: { send(input: unknown): Promise<unknown> } }): Promise<void> {
-    await configClient.send({ method: 'POST', path: '/validatePayload' });
-    await serviceClient.send({ method: 'POST', path: '/checkAuthorization' });
+  async checkPayload({ configClient, userClient, headers }: { configClient: { send(input: unknown): Promise<unknown> }; userClient: { send(input: unknown): Promise<unknown> }; headers: Record<string, string> }): Promise<void> {
+    await configClient.send({ method: 'POST', path: '/checkPayload', headers });
+    await userClient.send({ method: 'POST', path: '/checkAuthorization', headers });
+  }
+  async checkRenamed({ config: serviceClient }: { config: { send(input: unknown): Promise<unknown> } }): Promise<void> {
+    await serviceClient.send({ method: 'POST', path: '/checkPayload' });
   }
 }
 `);
-    await writeFixtureFile(root, 'facade-service/srv/FlowHandler.ts', `import cds from '@sap/cds';
-import { Handler, Action } from 'cds-routing-handlers';
+    await writeFixtureFile(root, 'facade-service/srv/FlowHandler.ts', `import { Handler, Action } from 'cds-routing-handlers';
 import { WorkflowHelper } from './WorkflowHelper.js';
+import { connectConfigClient, connectUserClient } from './connections.js';
 @Handler()
 export class FlowHandler {
   @Action('runFlow')
   public async runFlow(): Promise<void> {
+    let configClient;
+    let userClient;
+    configClient = await connectConfigClient();
+    userClient = await connectUserClient();
+    const headers = { accept: 'application/json' };
     const helper = new WorkflowHelper();
-    const configClient = await cds.connect.to('ConfigRemote', { path: '/ConfigService', destination: 'neutral-destination' });
-    await helper.loadMetadata(configClient);
-    await helper.validate({ configClient, client: configClient });
+    await helper.loadMetadata(configClient, headers);
+    await helper.checkPayload({ configClient, userClient, headers });
+    await helper.checkRenamed({ config: configClient });
   }
+}
+`);
+    await writeFixtureFile(root, 'facade-service/srv/connections.ts', `import cds from '@sap/cds';
+export async function connectConfigClient(): Promise<{ send(input: unknown): Promise<unknown> }> {
+  return cds.connect.to('target_config_api');
+}
+export async function connectUserClient(): Promise<{ send(input: unknown): Promise<unknown> }> {
+  return cds.connect.to('target_user_api');
 }
 `);
     await writeFixtureFile(root, 'facade-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { FlowHandler } from './FlowHandler.js';\ncreateCombinedHandler({ handler: [FlowHandler] });\n");
     await writeFixtureFile(root, 'model-service/.git-fixture');
     await writeFixtureFile(root, 'model-service/package.json', JSON.stringify({ name: '@neutral/model-service', version: '1.0.0' }));
-    await writeFixtureFile(root, 'model-service/srv/config.cds', 'service ConfigService { action readMetadata(); action validatePayload(); action checkAuthorization(); }');
+    await writeFixtureFile(root, 'model-service/srv/config.cds', `service TargetConfigService @(path: '/TargetConfigService') { action loadMetadata(); action checkPayload(); }
+service TargetUserService @(path: '/TargetUserService') { action checkAuthorization(); }`);
 
     const { db, workspaceId } = await prepareWorkspace(root);
     linkWorkspace(db, workspaceId);
     const result = trace(db, { repo: 'facade-service', servicePath: '/FacadeService', operation: 'runFlow' }, { depth: 10 });
     const contextualEdges = result.edges.filter((edge) => edge.evidence && typeof edge.evidence === 'object' && 'contextualServiceBindingSelected' in edge.evidence);
-    expect(contextualEdges).toHaveLength(3);
+    expect(contextualEdges).toHaveLength(4);
     expect(contextualEdges.map((edge) => (edge.evidence as { contextualBinding?: { source?: string } }).contextualBinding?.source).sort()).toEqual([
       'local_symbol_argument',
       'local_symbol_destructured_object_argument',
       'local_symbol_destructured_object_argument',
+      'local_symbol_destructured_object_argument',
     ]);
-    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/readMetadata'))).toBe(true);
-    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/validatePayload'))).toBe(true);
-    expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/checkAuthorization'))).toBe(true);
+    for (const edge of contextualEdges) {
+      expect(edge.evidence).toMatchObject({ contextualServiceBindingSelected: true, contextualServiceBindingAttempted: true });
+    }
+    expect(result.edges.some((edge) => String(edge.to).includes('/TargetConfigService/loadMetadata'))).toBe(true);
+    expect(result.edges.some((edge) => String(edge.to).includes('/TargetConfigService/checkPayload'))).toBe(true);
+    expect(result.edges.some((edge) => String(edge.to).includes('/TargetUserService/checkAuthorization'))).toBe(true);
+    expect(renderTraceTable(result)).toContain('/TargetConfigService/loadMetadata');
+    expect(renderMermaid(result)).toContain('/TargetUserService/checkAuthorization');
     db.close();
   });
 

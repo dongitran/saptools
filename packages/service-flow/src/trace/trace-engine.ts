@@ -40,6 +40,10 @@ interface ContextBinding {
   aliasExpr?: string;
   destinationExpr?: string;
   servicePathExpr?: string;
+  requireServicePath?: string;
+  requireDestination?: string;
+  effectiveServicePath?: string;
+  effectiveDestination?: string;
   sourceFile?: string;
   sourceLine?: number;
   source: string;
@@ -295,14 +299,24 @@ function receiverFromEvidence(value: unknown): string | undefined {
   const evidence = parseEvidence(value);
   return typeof evidence.receiver === 'string' ? evidence.receiver : undefined;
 }
+function hasDynamicPlaceholder(value: string | undefined): boolean {
+  return extractPlaceholders(value).length > 0;
+}
+function enrichBinding(row: ContextBinding): ContextBinding {
+  const effectiveServicePath = row.servicePathExpr && !hasDynamicPlaceholder(row.servicePathExpr) ? row.servicePathExpr : !row.servicePathExpr ? row.requireServicePath : undefined;
+  const effectiveDestination = row.destinationExpr && !hasDynamicPlaceholder(row.destinationExpr) ? row.destinationExpr : !row.destinationExpr ? row.requireDestination : undefined;
+  return { ...row, effectiveServicePath, effectiveDestination };
+}
 function knownBindingsForCalls(db: Db, calls: CallRow[]): Map<string, ContextBinding> {
   const map = new Map<string, ContextBinding>();
   for (const call of calls) {
     const receiver = receiverFromEvidence(call.evidence_json);
     const bindingId = Number(call.service_binding_id ?? 0);
     if (!receiver || !bindingId) continue;
-    const row = db.prepare('SELECT id,alias,alias_expr aliasExpr,destination_expr destinationExpr,service_path_expr servicePathExpr,source_file sourceFile,source_line sourceLine FROM service_bindings WHERE id=?').get(bindingId) as ContextBinding | undefined;
-    if (row) map.set(receiver, { ...row, bindingId, source: 'local_service_binding', calleeReceiver: receiver });
+    const row = db.prepare(`SELECT b.id,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.source_file sourceFile,b.source_line sourceLine,req.service_path requireServicePath,req.destination requireDestination
+      FROM service_bindings b LEFT JOIN cds_requires req ON req.repo_id=b.repo_id AND req.alias=b.alias
+      WHERE b.id=?`).get(bindingId) as ContextBinding | undefined;
+    if (row) map.set(receiver, enrichBinding({ ...row, bindingId, source: 'local_service_binding', calleeReceiver: receiver }));
   }
   return map;
 }
@@ -310,7 +324,9 @@ function knownBindingsForScope(db: Db, repoId: number | undefined, symbolIds: Se
   const map = new Map<string, ContextBinding>();
   if (repoId === undefined) return map;
   type BindingRow = Omit<ContextBinding, 'bindingId' | 'source' | 'calleeReceiver'> & { id?: number; variableName?: string };
-  const rows = db.prepare('SELECT id,variable_name variableName,alias,alias_expr aliasExpr,destination_expr destinationExpr,service_path_expr servicePathExpr,source_file sourceFile,source_line sourceLine FROM service_bindings WHERE repo_id=?').all(repoId) as BindingRow[];
+  const rows = db.prepare(`SELECT b.id,b.variable_name variableName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.source_file sourceFile,b.source_line sourceLine,req.service_path requireServicePath,req.destination requireDestination
+    FROM service_bindings b LEFT JOIN cds_requires req ON req.repo_id=b.repo_id AND req.alias=b.alias
+    WHERE b.repo_id=?`).all(repoId) as BindingRow[];
   for (const row of rows) {
     if (!row.variableName) continue;
     if (files && !files.has(String(row.sourceFile))) continue;
@@ -318,7 +334,7 @@ function knownBindingsForScope(db: Db, repoId: number | undefined, symbolIds: Se
       const owner = db.prepare('SELECT id FROM symbols WHERE id IN (' + [...symbolIds].map(() => '?').join(',') + ') AND source_file=? AND start_line<=? AND end_line>=? LIMIT 1').get(...symbolIds, row.sourceFile, row.sourceLine, row.sourceLine) as { id?: number } | undefined;
       if (!owner) continue;
     }
-    map.set(row.variableName, { ...row, bindingId: Number(row.id), source: 'local_service_binding', calleeReceiver: row.variableName });
+    map.set(row.variableName, enrichBinding({ ...row, bindingId: Number(row.id), source: 'local_service_binding', calleeReceiver: row.variableName }));
   }
   return map;
 }
@@ -356,10 +372,13 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
 function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
   if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
   const op = normalizeODataOperationInvocationPathForTrace(String(call.operation_path_expr));
-  const resolution = resolveOperation(db, { servicePath: binding.servicePathExpr, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination: binding.destinationExpr, hasExplicitOverride: true, isDynamic: false }, workspaceId);
-  const evidence: Record<string, unknown> = { contextualServiceBindingSelected: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine }, operationPath: op, servicePath: binding.servicePathExpr, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination: binding.destinationExpr, contextualResolutionStatus: resolution.status, candidates: resolution.candidates, resolutionReasons: resolution.reasons };
-  if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : 'No contextual operation candidate matched' };
-  return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(evidence), status: 'resolved' }, evidence: { ...evidence, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName }, unresolvedReason: undefined };
+  const servicePath = binding.effectiveServicePath ?? binding.servicePathExpr ?? binding.requireServicePath;
+  const destination = binding.effectiveDestination ?? binding.destinationExpr ?? binding.requireDestination;
+  const resolution = resolveOperation(db, { servicePath, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination, hasExplicitOverride: true, isDynamic: false }, workspaceId);
+  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
+  if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : resolution.status === 'dynamic' ? `Dynamic contextual target is missing runtime variables: ${resolution.reasons.join(', ')}` : 'No contextual operation candidate matched' };
+  const resolvedEvidence = { ...evidence, contextualServiceBindingSelected: true, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName };
+  return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(resolvedEvidence), status: 'resolved' }, evidence: resolvedEvidence, unresolvedReason: undefined };
 }
 function normalizeODataOperationInvocationPathForTrace(raw: string): string {
   return raw.startsWith('/') ? raw : `/${raw}`;
@@ -500,9 +519,10 @@ export function trace(
       for (const row of graphRows) {
         if (seenEdges.has(Number(row.id))) continue;
         seenEdges.add(Number(row.id));
-        const rawEvidence = contextual.evidence && row.id < 0 ? contextual.evidence : JSON.parse(
+        const persistedEvidence = JSON.parse(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
+        const rawEvidence = contextual.evidence ? { ...persistedEvidence, ...contextual.evidence } : persistedEvidence;
         const effective = runtimeResolution(db, row, rawEvidence, options.vars);
         const evidence = effective.evidence;
         const effectiveRow = effective.row;

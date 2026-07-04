@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.27
+
+- Enrich trace-time contextual service-client bindings from package-level CAP `cds.requires` aliases so helper-internal sends resolve through require-derived service paths and destinations.
+- Preserve contextual binding attempt evidence for unresolved helper sends, including effective service path, destination, candidate counts, and resolution reasons.
+- Refine strict doctor diagnostics for contextual helper sends to distinguish resolved contextual opportunities, missing `cds.requires` rows, require-backed unresolved sends, remaining runtime variables, and workspaces with no contextual opportunity.
+- Expand neutral CAP coverage for positional helper arguments, destructured object helper parameters, renamed properties, late assignments, table output, Mermaid output, and require-derived target operations.
+
 ## 0.1.26
 
 - Resolve helper-internal remote sends contextually in trace output when service clients are passed through positional arguments or one-level destructured object parameters.
