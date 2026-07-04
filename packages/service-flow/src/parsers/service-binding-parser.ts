@@ -120,13 +120,17 @@ function connectFactFromCall(
 }
 function unwrapCall(expr: ts.Expression): ts.CallExpression | undefined {
   if (ts.isAwaitExpression(expr)) return unwrapCall(expr.expression);
+  if (ts.isParenthesizedExpression(expr)) return unwrapCall(expr.expression);
   if (ts.isAsExpression(expr) || ts.isSatisfiesExpression(expr)) return unwrapCall(expr.expression);
+  if (ts.isTypeAssertionExpression(expr)) return unwrapCall(expr.expression);
   if (ts.isCallExpression(expr)) return expr;
   return undefined;
 }
 function unwrapIdentityExpression(expr: ts.Expression): ts.Expression {
   if (ts.isAwaitExpression(expr)) return unwrapIdentityExpression(expr.expression);
+  if (ts.isParenthesizedExpression(expr)) return unwrapIdentityExpression(expr.expression);
   if (ts.isAsExpression(expr) || ts.isSatisfiesExpression(expr)) return unwrapIdentityExpression(expr.expression);
+  if (ts.isTypeAssertionExpression(expr)) return unwrapIdentityExpression(expr.expression);
   return expr;
 }
 function findConnectInExpression(
@@ -445,18 +449,17 @@ export async function parseServiceBindings(
       .reverse()
       .find((row) => row.variableName === variableName && row.sourceFile === sourceFile);
   }
-  function cloneAliasBinding(decl: ts.VariableDeclaration, sourceName: string, aliasKind: 'identity' | 'transaction'): void {
-    if (!ts.isIdentifier(decl.name)) return;
+  function cloneAliasBinding(targetName: string, sourceName: string, aliasKind: 'identity' | 'identity-assignment' | 'transaction', node: ts.Node): void {
     const existing = bindingForVariable(sourceName);
     if (!existing) return;
     out.push({
       ...existing,
-      variableName: decl.name.text,
-      sourceLine: lineOf(sourceFileAst, decl),
+      variableName: targetName,
+      sourceLine: lineOf(sourceFileAst, node),
       helperChain: [
         ...(existing.helperChain ?? []),
         {
-          callerVariable: decl.name.text,
+          callerVariable: targetName,
           aliasOf: sourceName,
           aliasKind,
           scopeRule: 'same-file-source-order',
@@ -468,26 +471,28 @@ export async function parseServiceBindings(
     if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
     const unwrapped = unwrapIdentityExpression(decl.initializer);
     if (!ts.isIdentifier(unwrapped)) return;
-    cloneAliasBinding(decl, unwrapped.text, 'identity');
+    cloneAliasBinding(decl.name.text, unwrapped.text, 'identity', decl);
   }
 
-  async function recordVariable(decl: ts.VariableDeclaration): Promise<void> {
-    if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
-    const call = unwrapCall(decl.initializer);
+  async function recordBindingFromExpression(targetName: string, expr: ts.Expression, node: ts.Node, aliasKind: 'declaration' | 'assignment'): Promise<void> {
+    const call = unwrapCall(expr);
     if (!call) return;
     const direct = connectFactFromCall(call);
     if (direct)
       out.push({
-        variableName: decl.name.text,
+        variableName: targetName,
         ...direct,
         sourceFile: normalizePath(filePath),
-        sourceLine: lineOf(sourceFileAst, decl),
+        sourceLine: lineOf(sourceFileAst, node),
+        helperChain: aliasKind === 'assignment'
+          ? [{ callerVariable: targetName, assignedFrom: call.expression.getText(sourceFileAst), aliasKind, scopeRule: 'same-file-source-order' }]
+          : undefined,
       });
     else if (ts.isIdentifier(call.expression)) {
       const resolved = await importedHelper(call.expression.text);
       if (resolved)
         out.push({
-          variableName: decl.name.text,
+          variableName: targetName,
           alias: resolved.helper.alias,
           aliasExpr: resolved.helper.aliasExpr,
           destinationExpr: resolved.helper.destinationExpr,
@@ -495,10 +500,11 @@ export async function parseServiceBindings(
           isDynamic: resolved.helper.isDynamic,
           placeholders: resolved.helper.placeholders,
           sourceFile: normalizePath(filePath),
-          sourceLine: lineOf(sourceFileAst, decl),
+          sourceLine: lineOf(sourceFileAst, node),
           helperChain: [
             {
-              callerVariable: decl.name.text,
+              callerVariable: targetName,
+              ...(aliasKind === 'assignment' ? { assignedFrom: call.expression.text, aliasKind, scopeRule: 'same-file-source-order' } : {}),
               importedHelper: call.expression.text,
               importSource: resolved.imp.sourceFile,
               exportedSymbol: resolved.imp.exportedName,
@@ -508,6 +514,10 @@ export async function parseServiceBindings(
           ],
         });
     }
+  }
+  async function recordVariable(decl: ts.VariableDeclaration): Promise<void> {
+    if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
+    await recordBindingFromExpression(decl.name.text, decl.initializer, decl, 'declaration');
   }
 
   async function helpersForCall(call: ts.CallExpression): Promise<Array<{ helper: HelperBinding; imp?: ImportBinding }>> {
@@ -539,6 +549,39 @@ export async function parseServiceBindings(
         sourceFile: normalizePath(filePath),
         sourceLine: lineOf(sourceFileAst, decl),
         helperChain: [{ callerVariable: el.name.text, helperFunction: call.expression.getText(sourceFileAst), returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
+      });
+    }
+  }
+  async function recordDestructuredAssignment(pattern: ts.ObjectLiteralExpression, expr: ts.Expression, node: ts.Node): Promise<void> {
+    const call = unwrapCall(expr);
+    if (!call) return;
+    const helpers = await helpersForCall(call);
+    if (helpers.length === 0) return;
+    for (const prop of pattern.properties) {
+      let propertyName: string | undefined;
+      let targetName: string | undefined;
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        propertyName = prop.name.text;
+        targetName = prop.name.text;
+      } else if (ts.isPropertyAssignment(prop)) {
+        propertyName = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : undefined;
+        targetName = ts.isIdentifier(prop.initializer) ? prop.initializer.text : undefined;
+      }
+      if (!propertyName || !targetName) continue;
+      const matches = helpers.filter((row) => row.helper.returnedProperty === propertyName);
+      if (matches.length !== 1) continue;
+      const resolved = matches[0];
+      out.push({
+        variableName: targetName,
+        alias: resolved.helper.alias,
+        aliasExpr: resolved.helper.aliasExpr,
+        destinationExpr: resolved.helper.destinationExpr,
+        servicePathExpr: resolved.helper.servicePathExpr,
+        isDynamic: resolved.helper.isDynamic,
+        placeholders: resolved.helper.placeholders,
+        sourceFile: normalizePath(filePath),
+        sourceLine: lineOf(sourceFileAst, node),
+        helperChain: [{ callerVariable: targetName, assignedFrom: call.expression.getText(sourceFileAst), aliasKind: 'assignment', scopeRule: 'same-file-source-order', returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
       });
     }
   }
@@ -576,20 +619,40 @@ export async function parseServiceBindings(
       });
     }
   }
-  const declarations: ts.VariableDeclaration[] = [];
-  function collectDeclarations(node: ts.Node): void {
-    if (ts.isVariableDeclaration(node)) declarations.push(node);
-    ts.forEachChild(node, collectDeclarations);
+  const events: Array<{ pos: number; node: ts.VariableDeclaration | ts.BinaryExpression }> = [];
+  function collectEvents(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node)) events.push({ pos: node.getStart(sourceFileAst), node });
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+      events.push({ pos: node.getStart(sourceFileAst), node });
+    ts.forEachChild(node, collectEvents);
   }
-  collectDeclarations(sourceFileAst);
-  for (const decl of declarations) {
-    await recordDestructuredHelper(decl);
-    recordDestructuredClassHelper(decl);
-    await recordVariable(decl);
-    recordIdentityAlias(decl);
-    if (ts.isIdentifier(decl.name) && decl.initializer && ts.isCallExpression(decl.initializer) && ts.isPropertyAccessExpression(decl.initializer.expression) && decl.initializer.expression.name.text === 'tx' && ts.isIdentifier(decl.initializer.expression.expression)) {
-      cloneAliasBinding(decl, decl.initializer.expression.expression.text, 'transaction');
+  collectEvents(sourceFileAst);
+  events.sort((a, b) => a.pos - b.pos);
+  for (const event of events) {
+    if (ts.isVariableDeclaration(event.node)) {
+      const decl = event.node;
+      await recordDestructuredHelper(decl);
+      recordDestructuredClassHelper(decl);
+      await recordVariable(decl);
+      recordIdentityAlias(decl);
+      if (ts.isIdentifier(decl.name) && decl.initializer && ts.isCallExpression(decl.initializer) && ts.isPropertyAccessExpression(decl.initializer.expression) && decl.initializer.expression.name.text === 'tx' && ts.isIdentifier(decl.initializer.expression.expression)) {
+        cloneAliasBinding(decl.name.text, decl.initializer.expression.expression.text, 'transaction', decl);
+      }
+      continue;
     }
+    const assignment = event.node;
+    if (ts.isIdentifier(assignment.left)) {
+      const rhs = unwrapIdentityExpression(assignment.right);
+      if (ts.isIdentifier(rhs)) {
+        cloneAliasBinding(assignment.left.text, rhs.text, 'identity-assignment', assignment);
+        continue;
+      }
+      await recordBindingFromExpression(assignment.left.text, assignment.right, assignment, 'assignment');
+      continue;
+    }
+    const left = ts.isParenthesizedExpression(assignment.left) ? assignment.left.expression : assignment.left;
+    if (ts.isObjectLiteralExpression(left))
+      await recordDestructuredAssignment(left, assignment.right, assignment);
   }
   return out;
 }
