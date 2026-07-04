@@ -13,7 +13,7 @@ test.describe('CLI commands', () => {
       expect(output).toContain('Usage: cf-event-mesh');
       expect(output).toContain('publish [options] <app> <destination> <payload>');
       expect(output).toContain('listen <app> <queue>');
-    } catch (e) {
+    } catch {
       // In case dist/cli.js is not built yet, we skip or pass.
       process.stdout.write('Skipping e2e because CLI is not built\\n');
     }
