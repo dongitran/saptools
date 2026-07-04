@@ -1,5 +1,13 @@
 # Service Flow Resolution Notes
 
+## 0.1.22 alias, wrapper, contextual trace, and strict doctor notes
+
+- Same-file service-client identity aliases now create their own service binding rows when the right-hand side is a known connected client variable. The parser accepts direct identifier aliases plus typed, `as`, and `satisfies` forms, supports source-order transitive aliases, and records `aliasKind: identity` helper-chain evidence. It still does not infer aliases from property reads, indexed access, function calls, object metadata, or cross-scope guesses.
+- Outbound calls through identity aliases can attach to the closest alias binding row in the same source file, preserving alias, destination, service path, placeholder, and helper-chain evidence for link and trace.
+- Wrapper path propagation is intentionally narrow: same-file wrappers can resolve literal caller paths only when a wrapper client parameter is passed directly to `.send(...)` and a wrapper path parameter is passed as `send({ path })`. Dynamic caller paths remain dynamic with parser-warning evidence.
+- Contextual implementation selection now records selected/tied score evidence. When trace selects a unique contextual handler, the implementation hop sets `contextualImplementationSelected` and no longer renders the original ambiguous reason as a failure.
+- Strict doctor adds compact aggregates for likely missed identity aliases, remote actions with operation paths but no binding id, contextual implementation stops, and wrapper dynamic-path candidates.
+
 ## 0.1.21 helper-return propagation and contextual trace notes
 
 - Helper-return binding analysis uses the same returned-object scanner for `function` declarations, `async function` declarations, arrow-function variables, async arrow-function variables, and function-expression variables. Named export lists and aliases are resolved, so `export { connectCatalog as createCatalogClient }` can be destructured by callers without losing evidence.
