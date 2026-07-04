@@ -103,6 +103,31 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@26.0.1)(yaml@2.9.0)
 
+  packages/cf-event-mesh:
+    dependencies:
+      '@sap/xb-msg-amqp-v100':
+        specifier: ^0.9.58
+        version: 0.9.58
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+      ora:
+        specifier: ^9.3.0
+        version: 9.3.0
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.59.1
+      '@vitest/coverage-v8':
+        specifier: ^3.0.0
+        version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
+      tsup:
+        specifier: ^8.3.0
+        version: 8.5.1(postcss@8.5.16)(typescript@5.9.3)(yaml@2.9.0)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@26.0.1)(yaml@2.9.0)
+
   packages/cf-events:
     dependencies:
       commander:
@@ -1937,6 +1962,10 @@ packages:
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
+
+  '@sap/xb-msg-amqp-v100@0.9.58':
+    resolution: {integrity: sha512-RDvURglGPVhaufJGy1NJ2g1RsFOHAkhJza/RZTVOf2O3YXAfqs+0yHmGD/LCP61ZN0h8LzA2qPVMAxoezDLjHw==}
+    engines: {node: '>=6.9.1'}
 
   '@smithy/core@3.26.0':
     resolution: {integrity: sha512-mLUktFAn+Pa2agl1J7VgtYNFWCX8/b4GMJSK1hCu4YCvtBfM6F8Os3EP4ry+DFFlXOf3wyvlgXhuUdFoy52D3g==}
@@ -6530,6 +6559,8 @@ snapshots:
 
   '@rtsao/scc@1.1.0':
     optional: true
+
+  '@sap/xb-msg-amqp-v100@0.9.58': {}
 
   '@smithy/core@3.26.0':
     dependencies:
