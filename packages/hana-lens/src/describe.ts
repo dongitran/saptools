@@ -13,9 +13,98 @@ type TargetResolution =
   | { readonly status: "missing" }
   | { readonly status: "ambiguous" };
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function typeText(element: HanaLensElement): string {
   const base = element.type ?? "unknown";
   return element.length === undefined ? base : `${base}(${element.length.toString()})`;
+}
+
+function formatUnknownExpressionNode(node: unknown): string {
+  if (node === undefined || typeof node === "function" || typeof node === "symbol") {
+    return String(node);
+  }
+  if (typeof node === "bigint") {
+    return node.toString();
+  }
+  try {
+    const serialized: unknown = JSON.stringify(node);
+    return typeof serialized === "string" ? serialized : "[unserializable]";
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function formatExpressionRefSegment(segment: unknown): string {
+  if (typeof segment === "string") {
+    return segment;
+  }
+  if (isRecord(segment) && typeof segment["id"] === "string") {
+    const where = Array.isArray(segment["where"]) ? `[${formatCsnExpression(segment["where"])}]` : "";
+    return `${segment["id"]}${where}`;
+  }
+  return formatUnknownExpressionNode(segment);
+}
+
+function formatExpressionRef(ref: readonly unknown[]): string {
+  return ref.map(formatExpressionRefSegment).join(".");
+}
+
+function formatExpressionValue(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint" || value === null) {
+    return String(value);
+  }
+  return formatUnknownExpressionNode(value);
+}
+
+function formatExpressionArguments(args: readonly unknown[]): string {
+  return args.map((arg) => Array.isArray(arg) ? formatCsnExpression(arg) : formatCsnExpressionToken(arg)).join(", ");
+}
+
+function formatCsnExpressionToken(token: unknown): string {
+  if (typeof token === "string") {
+    return token;
+  }
+  if (Array.isArray(token)) {
+    return `(${formatCsnExpression(token)})`;
+  }
+  if (!isRecord(token)) {
+    return formatUnknownExpressionNode(token);
+  }
+  if (Array.isArray(token["ref"])) {
+    return formatExpressionRef(token["ref"]);
+  }
+  if ("val" in token) {
+    return formatExpressionValue(token["val"]);
+  }
+  if (Array.isArray(token["xpr"])) {
+    return `(${formatCsnExpression(token["xpr"])})`;
+  }
+  if (typeof token["func"] === "string") {
+    const args = Array.isArray(token["args"]) ? formatExpressionArguments(token["args"]) : "";
+    return `${token["func"]}(${args})`;
+  }
+  if (Array.isArray(token["list"])) {
+    return `(${formatExpressionArguments(token["list"])})`;
+  }
+  return formatUnknownExpressionNode(token);
+}
+
+export function formatCsnExpression(expression: readonly unknown[]): string {
+  return expression.map(formatCsnExpressionToken).join(" ");
+}
+
+function typeTextWithCondition(element: HanaLensElement): string {
+  const text = typeText(element);
+  if (!ASSOCIATION_TYPES.has(element.type ?? "") || element.on === undefined || element.on.length === 0) {
+    return text;
+  }
+  return `${text} ON [${formatCsnExpression(element.on)}]`;
 }
 
 function isPrimary(element: HanaLensElement): boolean {
@@ -25,7 +114,7 @@ function isPrimary(element: HanaLensElement): boolean {
 function formatElement(name: string, element: HanaLensElement, depth: number): string {
   const prefix = depth === 0 ? "" : `${"-".repeat(depth)} `;
   const marker = isPrimary(element) ? "[PK] " : "";
-  return `${prefix}${marker}${name}: ${typeText(element)}`;
+  return `${prefix}${marker}${name}: ${typeTextWithCondition(element)}`;
 }
 
 function nestedPrefix(depth: number): string {

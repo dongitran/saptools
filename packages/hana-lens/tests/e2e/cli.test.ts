@@ -102,7 +102,7 @@ describe("hana-lens CLI e2e", () => {
   it("describe reads an existing cache offline, prints dense fields, expands associations, and guards circular or missing targets", async () => {
     await withTempWorkspace(async (root) => {
       await writeCache(root, { definitions: {
-        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, customer: { type: "cds.Association", target: "Customer" }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
+        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
         "demo.empty.EmptyEntity": { [PACKAGE_ANNOTATION]: "@demo/empty" },
       } });
@@ -110,8 +110,9 @@ describe("hana-lens CLI e2e", () => {
       const compact = runCli(["describe", "demo.sales.BusinessRequest"], root);
       expect(compact.status).toBe(0);
       expect(compact.stdout).toContain("[PK] reqID: cds.String(36)");
+      expect(compact.stdout).toContain("[PK] tenantID: cds.String(36)");
       expect(compact.stdout).toContain("[PK] createdAt: cds.Timestamp");
-      expect(compact.stdout).toContain("customer: cds.Association");
+      expect(compact.stdout).toContain("customer: cds.Association ON [customer.ID = customerID and customer.tenantID = tenantID]");
       expect(compact.stdout.includes("- [PK] ID")).toBe(false);
 
       const expanded = runCli(["describe", "demo.sales.BusinessRequest", "--expand"], root);

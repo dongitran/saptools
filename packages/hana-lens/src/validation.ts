@@ -24,6 +24,9 @@ function asElement(value: unknown): HanaLensElement | undefined {
   if (value["@Core.Computed"] !== undefined && typeof value["@Core.Computed"] !== "boolean") {
     return undefined;
   }
+  if (value["on"] !== undefined && !Array.isArray(value["on"])) {
+    return undefined;
+  }
   return value as HanaLensElement;
 }
 
