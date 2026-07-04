@@ -57,6 +57,30 @@ function errorDetailFrom(err: unknown): string {
   return String(err);
 }
 
+
+const MAX_RETRIES = 3;
+
+function isTransientNetworkError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) {return false;}
+  const e = err as { code?: string; stderr?: string | Buffer; stdout?: string | Buffer; message?: string; killed?: boolean };
+  if (e.killed && !e.code) {return true;}
+  const code = e.code ?? "";
+  const networkCodes = ["ETIMEDOUT", "ECONNRESET", "ENOTFOUND", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH"];
+  if (networkCodes.includes(code)) {return true;}
+  const stderrStr = Buffer.isBuffer(e.stderr) ? e.stderr.toString("utf8") : (e.stderr ?? "");
+  const stdoutStr = Buffer.isBuffer(e.stdout) ? e.stdout.toString("utf8") : (e.stdout ?? "");
+  const msgStr = e.message ?? "";
+  const output = `${msgStr} ${stderrStr} ${stdoutStr}`.toLowerCase();
+  
+  const transientPhrases = [
+    "error performing request", "timeout exceeded", "connection reset by peer",
+    "service unavailable", "bad gateway", "gateway timeout", "dial tcp", "i/o timeout"
+  ];
+  if (transientPhrases.some((phrase) => output.includes(phrase))) {return true;}
+  const transientRegexes = [/\b502\b/, /\b503\b/, /\b504\b/, /\btimeout\b/];
+  return transientRegexes.some((regex) => regex.test(output));
+}
+
 function withSensitiveEnv(
   context: CfExecContext | undefined,
   env: NodeJS.ProcessEnv,
@@ -74,16 +98,25 @@ async function runCf(args: readonly string[], context?: CfExecContext): Promise<
   const isScript = cmd.endsWith(".mjs") || cmd.endsWith(".js");
   const file = isScript ? "node" : cmd;
   const allArgs = isScript ? [cmd, ...args] : [...args];
-  try {
-    const { stdout } = await execFileAsync(file, allArgs, {
-      env: resolveCfEnv(context),
-      maxBuffer: MAX_BUFFER,
-    });
-    return stdout;
-  } catch (err) {
-    const command = describeCfCommand(args);
-    const detail = sanitizeCfErrorDetail(errorDetailFrom(err), args, context?.sensitiveValues);
-    throw new Error(`${command} failed: ${detail}`, { cause: err });
+  let attempt = 0;
+  for (;;) {
+    try {
+      const { stdout } = await execFileAsync(file, allArgs, {
+        env: resolveCfEnv(context),
+        maxBuffer: MAX_BUFFER,
+      });
+      return stdout;
+    } catch (err) {
+      attempt++;
+      if (isTransientNetworkError(err) && attempt <= MAX_RETRIES) {
+        const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 10000);
+        await new Promise((resolve) => { setTimeout(resolve, delayMs); });
+        continue;
+      }
+      const command = describeCfCommand(args);
+      const detail = sanitizeCfErrorDetail(errorDetailFrom(err), args, context?.sensitiveValues);
+      throw new Error(`${command} failed: ${detail}`, { cause: err });
+    }
   }
 }
 
@@ -100,13 +133,22 @@ async function runCfBuffer(
     maxBuffer: MAX_BUFFER,
     encoding: "buffer",
   };
-  try {
-    const { stdout } = await execFileAsync(file, allArgs, options);
-    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
-  } catch (err) {
-    const command = describeCfCommand(args);
-    const detail = sanitizeCfErrorDetail(errorDetailFrom(err), args, context?.sensitiveValues);
-    throw new Error(`${command} failed: ${detail}`, { cause: err });
+  let attempt = 0;
+  for (;;) {
+    try {
+      const { stdout } = await execFileAsync(file, allArgs, options);
+      return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+    } catch (err) {
+      attempt++;
+      if (isTransientNetworkError(err) && attempt <= MAX_RETRIES) {
+        const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 10000);
+        await new Promise((resolve) => { setTimeout(resolve, delayMs); });
+        continue;
+      }
+      const command = describeCfCommand(args);
+      const detail = sanitizeCfErrorDetail(errorDetailFrom(err), args, context?.sensitiveValues);
+      throw new Error(`${command} failed: ${detail}`, { cause: err });
+    }
   }
 }
 
