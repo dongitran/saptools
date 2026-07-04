@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.21
+
+- Propagate helper-returned connected clients from function declarations, arrow-function variables, function-expression variables, named export lists, and aliased exports into caller destructuring and transaction aliases.
+- Preserve conservative object-return analysis by binding only returned properties backed by local `cds.connect.to(...)` client variables, while ignoring unrelated metadata fields.
+- Document contextual implementation selection evidence and strict doctor checks for operation-path-only remote actions.
+
 ## 0.1.20
 
 - Preserve service-binding evidence when helpers return connected clients inside object properties and callers destructure or create simple transaction aliases.

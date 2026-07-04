@@ -227,7 +227,15 @@ service-flow list calls --workspace /path/to/workspace --repo facade-service --o
 - Service bindings are matched to outbound calls by repository, source file, and
   variable name to avoid false cross-file matches. If a helper-returned client is
   not linked, export the helper from a relative import target and ensure it returns
-  `cds.connect.to(...)` directly or through a simple wrapper. Trace evidence includes the caller variable, imported helper, source file, and exported symbol.
+  `cds.connect.to(...)` directly or returns an object property backed by a local
+  connected-client variable. Supported helper shapes include function declarations,
+  arrow-function variables, function-expression variables, named export lists, and
+  aliased exports such as `export { connectCatalog as createCatalogClient }`.
+  Shorthand returns like `return { client }` and explicit returns like
+  `return { serviceClient: client }` are followed only when the returned value is
+  a concrete client. Trace evidence includes the caller variable, returned
+  property, imported helper, source file, exported symbol, placeholders, and
+  transaction alias steps.
 - `SELECT.one.from(Entity)`, `SELECT.from(Entity)`, `INSERT.into(Entity)`,
   `UPDATE(Entity)`, and `DELETE.from(Entity)` are indexed as local database
   query entities when statically knowable.
@@ -410,7 +418,7 @@ Run `service-flow index` after source, CDS, package metadata, or helper-package 
 <details>
 <summary><b>Why is an expected call unresolved?</b></summary>
 
-Check `service-flow doctor`, then inspect the facts with `service-flow list services`, `service-flow list operations`, and `service-flow list calls`. Dynamic destinations may need `--var key=value`, and custom wrappers may need new parser support.
+Check `service-flow doctor`, then inspect the facts with `service-flow list services`, `service-flow list operations`, and `service-flow list calls`. Dynamic destinations may need `--var key=value`; the key is the full trimmed expression inside `${...}` and is matched literally without JavaScript evaluation. Operation-path-only ambiguous remote actions usually mean the call had no service binding id; inspect `list calls`, `inspect operation`, and `doctor --strict` to determine whether helper-return propagation or wrapper support is missing. Contextual implementation selection only continues into a handler when static evidence such as caller repository, resolved service path, destination/alias expression, dependency edges, registration package, and local service ownership makes exactly one candidate stronger; ties remain ambiguous with reasons.
 Default doctor output is intended to focus on actionable indexing or trace-impacting issues; use `--strict` when you need exhaustive model-shape diagnostics for entity-only or extension-heavy CDS models. Strict mode also reports normalized OData invocation ambiguity and remote-action target quality, including whether unresolved unknown/dynamic paths are semantic instead of numeric call ids.
 
 </details>

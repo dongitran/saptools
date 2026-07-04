@@ -1,5 +1,12 @@
 # Service Flow Resolution Notes
 
+## 0.1.21 helper-return propagation and contextual trace notes
+
+- Helper-return binding analysis uses the same returned-object scanner for `function` declarations, `async function` declarations, arrow-function variables, async arrow-function variables, and function-expression variables. Named export lists and aliases are resolved, so `export { connectCatalog as createCatalogClient }` can be destructured by callers without losing evidence.
+- Returned object properties are bound only when their value is a local variable initialized from `cds.connect.to(...)`. Shorthand properties and explicit property assignments are supported; unrelated strings, codes, and metadata fields are ignored. Destructuring renames and `.tx()` aliases append helper-chain evidence instead of replacing the original binding evidence.
+- Trace-time contextual implementation selection may use caller repository, runtime-resolved service path, destination or alias expression, package dependency evidence, handler and registration packages, and local service ownership to continue from an ambiguous operation edge into one handler. If candidates tie or no static signal is strong enough, trace keeps the ambiguous edge and reports the tie or unresolved reason.
+- `doctor --strict` is the intended place for broad regression aggregates, including helper-return coverage, contextual implementation ambiguity, and remote actions that have an operation path but no service binding id.
+
 ## 0.1.20 helper object clients, expression placeholders, and remote-action target notes
 
 - Helper-return binding analysis now follows concrete `cds.connect.to(...)` clients returned through object shorthand or explicit properties. Callers that destructure those properties, rename them, or assign a simple `.tx()` transaction alias keep helper-chain evidence including caller variable, returned property, helper source, destination expression, service-path expression, and placeholders. Arbitrary object returns are ignored.
