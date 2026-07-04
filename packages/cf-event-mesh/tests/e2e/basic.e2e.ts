@@ -15,7 +15,7 @@ test.describe('CLI commands', () => {
       expect(output).toContain('listen <app> <queue>');
     } catch (e) {
       // In case dist/cli.js is not built yet, we skip or pass.
-      process.stdout.write('Skipping e2e because CLI is not built', e);
+      process.stdout.write('Skipping e2e because CLI is not built\\n');
     }
   });
 });
