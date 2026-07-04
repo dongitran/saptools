@@ -120,8 +120,14 @@ function connectFactFromCall(
 }
 function unwrapCall(expr: ts.Expression): ts.CallExpression | undefined {
   if (ts.isAwaitExpression(expr)) return unwrapCall(expr.expression);
+  if (ts.isAsExpression(expr) || ts.isSatisfiesExpression(expr)) return unwrapCall(expr.expression);
   if (ts.isCallExpression(expr)) return expr;
   return undefined;
+}
+function unwrapIdentityExpression(expr: ts.Expression): ts.Expression {
+  if (ts.isAwaitExpression(expr)) return unwrapIdentityExpression(expr.expression);
+  if (ts.isAsExpression(expr) || ts.isSatisfiesExpression(expr)) return unwrapIdentityExpression(expr.expression);
+  return expr;
 }
 function findConnectInExpression(
   expr: ts.Expression,
@@ -433,6 +439,38 @@ export async function parseServiceBindings(
   ): Promise<{ imp: ImportBinding; helper: HelperBinding } | undefined> {
     return (await importedHelpers(localName)).find((row) => !row.helper.returnedProperty);
   }
+  function bindingForVariable(variableName: string): ServiceBindingFact | undefined {
+    const sourceFile = normalizePath(filePath);
+    return [...out]
+      .reverse()
+      .find((row) => row.variableName === variableName && row.sourceFile === sourceFile);
+  }
+  function cloneAliasBinding(decl: ts.VariableDeclaration, sourceName: string, aliasKind: 'identity' | 'transaction'): void {
+    if (!ts.isIdentifier(decl.name)) return;
+    const existing = bindingForVariable(sourceName);
+    if (!existing) return;
+    out.push({
+      ...existing,
+      variableName: decl.name.text,
+      sourceLine: lineOf(sourceFileAst, decl),
+      helperChain: [
+        ...(existing.helperChain ?? []),
+        {
+          callerVariable: decl.name.text,
+          aliasOf: sourceName,
+          aliasKind,
+          scopeRule: 'same-file-source-order',
+        },
+      ],
+    });
+  }
+  function recordIdentityAlias(decl: ts.VariableDeclaration): void {
+    if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
+    const unwrapped = unwrapIdentityExpression(decl.initializer);
+    if (!ts.isIdentifier(unwrapped)) return;
+    cloneAliasBinding(decl, unwrapped.text, 'identity');
+  }
+
   async function recordVariable(decl: ts.VariableDeclaration): Promise<void> {
     if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
     const call = unwrapCall(decl.initializer);
@@ -548,10 +586,9 @@ export async function parseServiceBindings(
     await recordDestructuredHelper(decl);
     recordDestructuredClassHelper(decl);
     await recordVariable(decl);
+    recordIdentityAlias(decl);
     if (ts.isIdentifier(decl.name) && decl.initializer && ts.isCallExpression(decl.initializer) && ts.isPropertyAccessExpression(decl.initializer.expression) && decl.initializer.expression.name.text === 'tx' && ts.isIdentifier(decl.initializer.expression.expression)) {
-      const sourceName = decl.initializer.expression.expression.text;
-      const existing = out.find((row) => row.variableName === sourceName && row.sourceFile === normalizePath(filePath));
-      if (existing) out.push({ ...existing, variableName: decl.name.text, sourceLine: lineOf(sourceFileAst, decl), helperChain: [...(existing.helperChain ?? []), { callerVariable: decl.name.text, aliasOf: sourceName, aliasKind: 'transaction' }] });
+      cloneAliasBinding(decl, decl.initializer.expression.expression.text, 'transaction');
     }
   }
   return out;

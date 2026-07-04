@@ -121,11 +121,47 @@ function isSupportedEventReceiver(receiver: string | undefined, rootReceiver: st
   if (/^(srv|service|serviceClient|messaging|messageClient|eventClient)$/.test(candidate)) return true;
   return false;
 }
+interface WrapperSpec { clientIndex: number; pathIndex: number; methodIndex?: number }
+function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
+  const specs = new Map<string, WrapperSpec>();
+  const scanFunction = (name: string, fn: ts.FunctionLikeDeclaration): void => {
+    const params = fn.parameters.map((param) => ts.isIdentifier(param.name) ? param.name.text : undefined);
+    let found: { client: string; path: string; method?: string } | undefined;
+    const visit = (node: ts.Node): void => {
+      if (found) return;
+      if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node))) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send' && ts.isIdentifier(node.expression.expression)) {
+        const objectArg = node.arguments[0];
+        if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
+          const pathProp = objectArg.properties.find((property): property is ts.ShorthandPropertyAssignment => ts.isShorthandPropertyAssignment(property) && property.name.text === 'path');
+          if (pathProp) found = { client: node.expression.expression.text, path: pathProp.name.text, method: objectPropertyText(objectArg, 'method') };
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(fn);
+    if (!found) return;
+    const clientIndex = params.indexOf(found.client);
+    const pathIndex = params.indexOf(found.path);
+    const methodIndex = found.method && params.includes(found.method) ? params.indexOf(found.method) : undefined;
+    if (clientIndex >= 0 && pathIndex >= 0) specs.set(name, { clientIndex, pathIndex, methodIndex });
+  };
+  for (const stmt of source.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) scanFunction(stmt.name.text, stmt);
+    if (ts.isVariableStatement(stmt)) for (const decl of stmt.declarationList.declarations) if (ts.isIdentifier(decl.name) && decl.initializer && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) scanFunction(decl.name.text, decl.initializer);
+  }
+  return specs;
+}
+
 export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: string): ClassifiedOutboundCall[] {
   const calls: ClassifiedOutboundCall[] = [];
   const sourceFile = normalizePath(filePath);
   const initializers = variableInitializers(source);
   const serviceVariables = collectServiceVariables(source);
+  const wrapperSpecs = collectWrapperSpecs(source);
   const add = (node: ts.CallExpression, fact: Omit<OutboundCallFact, 'sourceFile' | 'sourceLine' | 'confidence'> & { confidence?: number }, extra?: Record<string, unknown>): void => {
     calls.push({ node, fact: { ...fact, sourceFile, sourceLine: lineOf(source.text, node.getStart(source)), confidence: fact.confidence ?? 0.8, evidence: parserEvidence(source, node, extra) } });
   };
@@ -146,6 +182,14 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const op = objectPropertyText(objectArg, 'path') ?? objectPropertyText(objectArg, 'event');
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
           add(node, { callType: query ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method: stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST'), operationPathExpr: op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined, queryEntity: query ? extractQueryEntity(query) : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
+        }
+      } else if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) {
+        const spec = wrapperSpecs.get(expr.expression.text);
+        const clientArg = spec ? expr.arguments[spec.clientIndex] : undefined;
+        const pathArg = spec ? expr.arguments[spec.pathIndex] : undefined;
+        const methodArg = spec?.methodIndex === undefined ? undefined : expr.arguments[spec.methodIndex];
+        if (spec && clientArg && ts.isIdentifier(clientArg) && isStringLike(pathArg)) {
+          add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), operationPathExpr: `/${pathArg.text.replace(/^\//, '')}`, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver: clientArg.text, classifier: 'local_wrapper_literal_path', wrapperFunction: expr.expression.text, literalCallerArgumentDetected: true });
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.22
+
+- Propagate conservative same-file identity aliases of connected service clients, including typed, `as`, `satisfies`, helper-returned, and transitive aliases, while preserving `.tx()` alias evidence.
+- Link outbound `send(...)` calls through identity aliases to the closest same-file binding row so destination, service-path, placeholder, and helper-chain evidence remains available.
+- Add narrow same-file wrapper literal-path propagation for wrappers that pass a client parameter directly to `send({ path })`; dynamic wrapper paths remain semantic dynamic targets with parser warnings.
+- Improve trace-time contextual implementation selection evidence and suppress stale ambiguous unresolved reasons when a unique contextual handler is selected.
+- Expand `doctor --strict` with alias-binding, no-binding remote-action, contextual implementation, and wrapper path propagation quality aggregates.
+
 ## 0.1.21
 
 - Propagate helper-returned connected clients from function declarations, arrow-function variables, function-expression variables, named export lists, and aliased exports into caller destructuring and transaction aliases.
