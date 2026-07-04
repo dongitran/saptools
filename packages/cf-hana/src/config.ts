@@ -2,8 +2,8 @@ export const CLI_NAME = "cf-hana";
 export const CLI_VERSION = "0.3.4";
 export const ENV_PREFIX = "CF_HANA";
 
-export const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
-export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+export const DEFAULT_QUERY_TIMEOUT_MS = 60_000;
+export const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 export const DEFAULT_POOL_MAX = 4;
 export const DEFAULT_POOL_IDLE_MS = 60_000;
 export const DEFAULT_AUTO_LIMIT = 100;

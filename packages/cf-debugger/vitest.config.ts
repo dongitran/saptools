@@ -4,8 +4,11 @@ export default defineConfig({
   test: {
     include: ["tests/unit/**/*.test.ts"],
     environment: "node",
+    pool: "forks",
+    poolOptions: { forks: { singleFork: true } },
     coverage: {
       provider: "v8",
+      reportsDirectory: "./coverage-reports",
       include: ["src/**/*.ts"],
       exclude: [
         "src/cli.ts",

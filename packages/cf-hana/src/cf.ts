@@ -9,9 +9,9 @@ import type { HanaBinding } from "./types.js";
 const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 16 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 const CF_RETRY_ATTEMPTS = 3;
-const CF_RETRY_BASE_DELAY_MS = 120;
+const CF_RETRY_BASE_DELAY_MS = 500;
 
 /** Minimal context for an isolated CF CLI invocation. */
 export interface CfExecContext {
@@ -163,6 +163,54 @@ function buildEnv(ctx: CfExecContext, overrides: Record<string, string> = {}): N
   return env;
 }
 
+async function execWithRetries(
+  bin: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < CF_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const { stdout } = await execFileAsync(bin, args, {
+        env,
+        maxBuffer: MAX_BUFFER,
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+      });
+      return stdout;
+    } catch (err) {
+      lastErr = err;
+      
+      const e = err as { killed?: boolean; code?: number | string; stderr?: string | Buffer; message?: string };
+      const output = `${e.message ?? ""} ${e.stderr ? String(e.stderr) : ""}`.toLowerCase();
+      
+      const isTimeout = e.killed === true; 
+      const isNetworkFlake = 
+        output.includes("error performing request") ||
+        output.includes("timeout") ||
+        output.includes("connection reset") ||
+        output.includes("connection refused") ||
+        output.includes("eof") ||
+        output.includes("502 bad gateway") ||
+        output.includes("503 service unavailable") ||
+        output.includes("504 gateway timeout") ||
+        output.includes("dial tcp") ||
+        output.includes("no such host");
+        
+      const isEnoent = e.code === "ENOENT";
+      if (isEnoent || (!isTimeout && !isNetworkFlake)) {
+        throw err; // Fail fast for user errors or missing binary
+      }
+
+      if (attempt < CF_RETRY_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, CF_RETRY_BASE_DELAY_MS * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function runCf(
   args: readonly string[],
   ctx: CfExecContext,
@@ -171,28 +219,14 @@ async function runCf(
   const { bin, argsPrefix } = resolveCfBin();
   const env = buildEnv(ctx, overrides);
 
-  let lastErr: unknown;
-
-  for (let attempt = 0; attempt < CF_RETRY_ATTEMPTS; attempt++) {
-    try {
-      const { stdout } = await execFileAsync(bin, [...argsPrefix, ...args], {
-        env,
-        maxBuffer: MAX_BUFFER,
-        timeout: DEFAULT_TIMEOUT_MS,
-      });
-      return stdout;
-    } catch (err) {
-      lastErr = err;
-      if (attempt < CF_RETRY_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, CF_RETRY_BASE_DELAY_MS * (attempt + 1)));
-      }
-    }
+  try {
+    return await execWithRetries(bin, [...argsPrefix, ...args], env);
+  } catch (lastErr) {
+    const e = lastErr as { stderr?: string | Buffer; message?: string } | undefined;
+    const detail = e?.stderr ? String(e.stderr) : (e?.message ?? "");
+    const cmd = args[0] === "auth" ? "cf auth" : `cf ${args.join(" ")}`;
+    throw new Error(`${cmd} failed: ${detail}`.trim(), { cause: lastErr });
   }
-
-  const e = lastErr as { stderr?: string | Buffer; message?: string } | undefined;
-  const detail = e?.stderr ? String(e.stderr) : (e?.message ?? "");
-  const cmd = args[0] === "auth" ? "cf auth" : `cf ${args.join(" ")}`;
-  throw new Error(`${cmd} failed: ${detail}`.trim(), { cause: lastErr });
 }
 
 export async function cfApi(apiEndpoint: string, ctx: CfExecContext): Promise<void> {
@@ -228,12 +262,7 @@ export async function cfEnvDirect(appName: string): Promise<string> {
   const env = { ...process.env };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
-  const { stdout } = await execFileAsync(bin, [...argsPrefix, "env", appName], {
-    env,
-    maxBuffer: MAX_BUFFER,
-    timeout: DEFAULT_TIMEOUT_MS,
-  });
-  return stdout;
+  return await execWithRetries(bin, [...argsPrefix, "env", appName], env);
 }
 
 export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined> {
@@ -243,11 +272,7 @@ export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined
   delete env["SAP_PASSWORD"];
 
   try {
-    const { stdout } = await execFileAsync(bin, [...argsPrefix, "target"], {
-      env,
-      maxBuffer: MAX_BUFFER,
-      timeout: 10_000,
-    });
+    const stdout = await execWithRetries(bin, [...argsPrefix, "target"], env);
     return parseCfTargetOutput(stdout);
   } catch {
     return undefined;

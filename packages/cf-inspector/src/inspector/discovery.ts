@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { performance } from "node:perf_hooks";
 
 import { CfInspectorError } from "../types.js";
 
@@ -26,36 +27,60 @@ interface NodeSystemError extends Error {
 }
 
 async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
-  return await new Promise<T>((resolve, reject) => {
-    const req = request(url, { method: "GET" }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => {
-        chunks.push(chunk);
+  const deadline = performance.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (performance.now() < deadline) {
+    try {
+      const remainingMs = deadline - performance.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      return await new Promise<T>((resolve, reject) => {
+        const req = request(url, { method: "GET" }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => {
+            chunks.push(chunk);
+          });
+          res.on("end", () => {
+            try {
+              resolve(parseJsonResponse(chunks) as T);
+            } catch (err: unknown) {
+              reject(parseDiscoveryError(url, err));
+            }
+          });
+          res.on("error", (err) => {
+            reject(newDiscoveryError(`Inspector discovery response error: ${err.message}`));
+          });
+        });
+        const attemptTimeoutMs = Math.min(2000, remainingMs);
+        req.setTimeout(attemptTimeoutMs, () => {
+          req.destroy(
+            new CfInspectorError(
+              "INSPECTOR_DISCOVERY_FAILED",
+              `Inspector discovery at ${url} timed out after ${timeoutMs.toString()}ms`,
+            ),
+          );
+        });
+        req.on("error", (err) => {
+          reject(err instanceof CfInspectorError ? err : formatDiscoveryRequestError(url, err));
+        });
+        req.end();
       });
-      res.on("end", () => {
-        try {
-          resolve(parseJsonResponse(chunks) as T);
-        } catch (err: unknown) {
-          reject(parseDiscoveryError(url, err));
-        }
-      });
-      res.on("error", (err) => {
-        reject(newDiscoveryError(`Inspector discovery response error: ${err.message}`));
-      });
-    });
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(
-        new CfInspectorError(
-          "INSPECTOR_DISCOVERY_FAILED",
-          `Inspector discovery at ${url} timed out after ${timeoutMs.toString()}ms`,
-        ),
-      );
-    });
-    req.on("error", (err) => {
-      reject(err instanceof CfInspectorError ? err : formatDiscoveryRequestError(url, err));
-    });
-    req.end();
-  });
+    } catch (err: unknown) {
+      lastError = err;
+      const now = performance.now();
+      if (now < deadline) {
+        const sleepMs = Math.min(1000, deadline - now);
+        await new Promise((r) => setTimeout(r, sleepMs));
+      }
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new CfInspectorError("INSPECTOR_DISCOVERY_FAILED", `Inspector discovery at ${url} timed out after ${timeoutMs.toString()}ms`);
 }
 
 function isNodeSystemError(err: unknown): err is NodeSystemError {
