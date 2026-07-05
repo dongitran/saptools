@@ -1,6 +1,6 @@
 import type { Db } from '../db/connection.js';
 import { applyVariables } from './dynamic-edge-resolver.js';
-import { normalizeODataOperationInvocationPath } from './odata-path-normalizer.js';
+import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from './odata-path-normalizer.js';
 import { buildRemoteQueryTarget } from './remote-query-target.js';
 import { resolveOperation } from './service-resolver.js';
 import { linkHelperPackages } from './helper-package-linker.js';
@@ -60,15 +60,18 @@ function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, ge
 function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknown>, vars: Record<string, string>, generation: number): { status: string; callType: string } {
   const callType = String(call.call_type);
   const rawOp = applyVariables(String(call.operation_path_expr ?? ''), vars);
-  const normalized = normalizeODataOperationInvocationPath(rawOp);
-  const op = normalized?.normalizedOperationPath ?? rawOp;
+  const intent = classifyODataPathIntent(rawOp, call.method as string | undefined);
+  const isEntityQueryIntent = ['entity_query', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
+  const resolutionRawOp = callType === 'remote_query' && isEntityQueryIntent ? intent.pathWithoutQuery : rawOp;
+  const normalized = normalizeODataOperationInvocationPath(resolutionRawOp);
+  const op = normalized?.normalizedOperationPath ?? resolutionRawOp;
   const servicePath = applyVariables((call.servicePathExpr as string | undefined) ?? (call.requireServicePath as string | undefined), vars);
   const destination = (call.destinationExpr as string | undefined) ?? (call.requireDestination as string | undefined);
   const isDynamic = Boolean(Number(call.isDynamic ?? 0));
   const isOperationCall = (callType === 'remote_action' || callType === 'local_service_call') || (callType === 'remote_query' && Boolean(op));
   const resolution = isOperationCall ? resolveOperation(db, { servicePath, operationPath: op, serviceName: call.local_service_name as string | undefined, repoId: callType === 'local_service_call' ? Number(call.repo_id) : undefined, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 || callType === 'local_service_call' }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
-  const evidence = callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized);
-  if (callType === 'remote_query' && !op) {
+  const evidence = callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent);
+  if (callType === 'remote_query' && (isEntityQueryIntent || !op) && !resolution.target) {
     const target = buildRemoteQueryTarget({ queryEntity: call.query_entity, servicePath, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, parserWarning: evidence.parserWarning });
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_RUNS_REMOTE_QUERY', 'terminal', 'call', String(call.id), target.toKind, target.toId, Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, ...target.evidence }), 0, generation);
     return { status: 'terminal', callType };
@@ -110,9 +113,9 @@ function objectJson(value: unknown): Record<string, unknown> | undefined {
   const parsed = parseJson(value);
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
 }
-function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; servicePath?: string; operationPath?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined, normalized?: { rawOperationPath: string; normalizedOperationPath: string; wasInvocation: boolean }): Record<string, unknown> {
+function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; servicePath?: string; operationPath?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined, normalized?: { rawOperationPath: string; normalizedOperationPath: string; wasInvocation: boolean }, odataPathIntent?: ReturnType<typeof classifyODataPathIntent>): Record<string, unknown> {
   const bindingHasDynamicExpression = Boolean(Number(call.isDynamic ?? 0));
-  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, rawOperationPath: normalized?.wasInvocation ? normalized.rawOperationPath : undefined, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: parseJson(call.alias_chain_json), transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetServicePath: resolution.target?.servicePath, targetOperationPath: resolution.target?.operationPath, targetOperation: resolution.target?.operationName, helperChain: parseJson(call.helperChainJson), candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, bindingHasDynamicExpression: bindingHasDynamicExpression || undefined, outboundEvidence: objectJson(call.evidence_json), analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
+  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, rawOperationPath: normalized?.wasInvocation ? normalized.rawOperationPath : odataPathIntent?.rawPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: parseJson(call.alias_chain_json), transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetServicePath: resolution.target?.servicePath, targetOperationPath: resolution.target?.operationPath, targetOperation: resolution.target?.operationName, helperChain: parseJson(call.helperChainJson), candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, odataPathIntent, queryStringPresent: odataPathIntent?.hasQueryString || undefined, queryPlaceholderKeys: odataPathIntent?.placeholderKeys.length ? odataPathIntent.placeholderKeys : undefined, bindingHasDynamicExpression: bindingHasDynamicExpression || undefined, outboundEvidence: objectJson(call.evidence_json), analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
 }
 
 function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {

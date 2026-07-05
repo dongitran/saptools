@@ -4,6 +4,7 @@ import ts from 'typescript';
 import type { OutboundCallFact } from '../types.js';
 import { normalizePath, stripQuotes } from '../utils/path-utils.js';
 import { summarizeExpression } from '../utils/redaction.js';
+import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
 function lineOf(text: string, idx: number): number {
   return text.slice(0, idx).split('\n').length;
 }
@@ -191,9 +192,13 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
           const receiver = receiverName(expr.expression);
           const query = objectPropertyText(objectArg, 'query');
+          const method = stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST');
           const op = objectPropertyText(objectArg, 'path') ?? objectPropertyText(objectArg, 'event');
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
-          add(node, { callType: query ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method: stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST'), operationPathExpr: op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined, queryEntity: query ? extractQueryEntity(query) : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
+          const operationPathExpr = op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined;
+          const intent = classifyODataPathIntent(operationPathExpr, method);
+          const isODataQueryRead = method.toUpperCase() === 'GET' && ['entity_query', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
+          add(node, { callType: query || isODataQueryRead ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
         }
       } else if (((ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) || (ts.isIdentifier(expr) && wrapperSpecs.has(expr.text)))) {
         const wrapperName = ts.isIdentifier(expr) ? expr.text : ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) ? expr.expression.text : '';
