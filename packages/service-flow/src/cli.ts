@@ -159,6 +159,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const remoteQuery = remoteQueryTargetQuality(db);
   const invocation = odataInvocationResolutionQuality(db);
   const remoteAction = remoteActionTargetQuality(db);
+  const externalHttp = externalHttpTargetQuality(db);
   const aliasQuality = identityAliasBindingQuality(db);
   const noBindingQuality = remoteActionNoBindingQuality(db);
   const contextualQuality = contextualImplementationQuality(db);
@@ -177,6 +178,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
     remoteQuery,
     invocation,
     remoteAction,
+    externalHttp,
     { severity: Number(evidence.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_symbol_call_evidence_quality', message: 'Symbol-call evidence JSON object aggregate', total: Number(evidence.total ?? 0), nonObject: Number(evidence.nonObject ?? 0) },
     { severity: Number(outboundEvidence.missing ?? 0) + Number(outboundEvidence.invalid ?? 0) + Number(outboundEvidence.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_outbound_evidence_quality', message: 'Outbound parser evidence JSON object aggregate', total: Number(outboundEvidence.total ?? 0), missing: Number(outboundEvidence.missing ?? 0), invalid: Number(outboundEvidence.invalid ?? 0), nonObject: Number(outboundEvidence.nonObject ?? 0), examples: outboundEvidenceExamples },
     { severity: Number(graphEvidence.nonObject ?? 0) > 0 || Number(graphEvidence.withOutboundEvidence ?? 0) < Number(graphEvidence.total ?? 0) ? 'warning' : 'info', code: 'strict_graph_evidence_quality', message: 'Call-derived graph evidence and parser-evidence propagation aggregate', total: Number(graphEvidence.total ?? 0), nonObject: Number(graphEvidence.nonObject ?? 0), withOutboundEvidence: Number(graphEvidence.withOutboundEvidence ?? 0), examples: graphEvidenceExamples },
@@ -344,6 +346,25 @@ function remoteActionTargetQuality(db: ReturnType<typeof openDatabase>): Record<
     WHERE c.call_type='remote_action' AND e.status='unresolved' AND e.to_id GLOB '[0-9]*' ORDER BY c.source_file,c.source_line LIMIT 5`).all() as Array<Record<string, unknown>>;
   const numericTargets = Number(aggregate.numericTargets ?? 0);
   return { severity: numericTargets > 0 ? 'warning' : 'info', code: 'strict_remote_action_target_quality', message: 'Remote action unresolved target quality aggregate', totalRemoteActionCalls: Number(aggregate.total ?? 0), unresolvedRemoteActionCalls: Number(aggregate.unresolved ?? 0), numericUnresolvedTargetCount: numericTargets, semanticUnknownOrDynamicTargetCount: Number(aggregate.semanticTargets ?? 0), examples };
+}
+
+
+function externalHttpTargetQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const aggregate = db.prepare(`SELECT COUNT(*) total,
+    SUM(CASE WHEN e.to_kind='external_destination' THEN 1 ELSE 0 END) destinationTargets,
+    SUM(CASE WHEN e.to_kind='external_endpoint' AND json_extract(e.evidence_json,'$.externalTarget.kind')='static_url' THEN 1 ELSE 0 END) staticEndpointTargets,
+    SUM(CASE WHEN e.to_kind='external_endpoint' AND json_extract(e.evidence_json,'$.externalTarget.dynamic')=1 THEN 1 ELSE 0 END) dynamicEndpointTargets,
+    SUM(CASE WHEN e.to_kind='external_endpoint' AND json_extract(e.evidence_json,'$.externalTarget.kind')='unknown' THEN 1 ELSE 0 END) unknownEndpointTargets,
+    SUM(CASE WHEN e.to_id GLOB '[0-9]*' THEN 1 ELSE 0 END) numericTargets,
+    SUM(CASE WHEN e.evidence_json IS NULL OR json_valid(e.evidence_json)=0 OR json_extract(e.evidence_json,'$.externalTarget.kind') IS NULL THEN 1 ELSE 0 END) invalidEvidence
+    FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) WHERE c.call_type='external_http'`).get() as Record<string, unknown>;
+  const examples = db.prepare(`SELECT c.source_file sourceFile,c.source_line sourceLine,e.to_kind targetKind,e.to_id targetId,json_extract(e.evidence_json,'$.externalTarget.label') label,json_extract(e.evidence_json,'$.externalTarget.kind') kind
+    FROM outbound_calls c LEFT JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type='external_http' AND (e.to_id GLOB '[0-9]*' OR e.evidence_json IS NULL OR json_valid(e.evidence_json)=0 OR json_extract(e.evidence_json,'$.externalTarget.kind') IS NULL)
+    ORDER BY c.source_file,c.source_line LIMIT 5`).all() as Array<Record<string, unknown>>;
+  const numericTargets = Number(aggregate.numericTargets ?? 0);
+  const invalidEvidence = Number(aggregate.invalidEvidence ?? 0);
+  return { severity: numericTargets + invalidEvidence > 0 ? 'warning' : 'info', code: 'strict_external_http_target_quality', message: 'External HTTP semantic target aggregate', totalExternalHttpCalls: Number(aggregate.total ?? 0), semanticDestinationTargets: Number(aggregate.destinationTargets ?? 0), semanticStaticEndpointTargets: Number(aggregate.staticEndpointTargets ?? 0), dynamicEndpointTargets: Number(aggregate.dynamicEndpointTargets ?? 0), unknownEndpointTargets: Number(aggregate.unknownEndpointTargets ?? 0), numericTargetCount: numericTargets, invalidOrMissingExternalTargetEvidence: invalidEvidence, examples };
 }
 
 function odataInvocationResolutionQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {

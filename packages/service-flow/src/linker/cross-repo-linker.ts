@@ -4,6 +4,8 @@ import { classifyODataPathIntent, normalizeODataOperationInvocationPath, type No
 import { buildRemoteQueryTarget } from './remote-query-target.js';
 import { resolveOperation } from './service-resolver.js';
 import { linkHelperPackages } from './helper-package-linker.js';
+import { normalizeDecoratorOperation, normalizedOperationName } from './operation-decorator-normalizer.js';
+import { externalHttpTarget } from './external-http-target.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;
@@ -87,10 +89,12 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const edgeType = callType === 'local_db_query' ? 'HANDLER_RUNS_DB_QUERY' : callType === 'external_http' ? 'HANDLER_CALLS_EXTERNAL_HTTP' : callType === 'async_emit' ? 'HANDLER_EMITS_EVENT' : callType === 'async_subscribe' ? 'EVENT_CONSUMED_BY_HANDLER' : resolution.status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE';
   const status = edgeType === 'DYNAMIC_EDGE_CANDIDATE' ? 'dynamic' : resolution.status === 'ambiguous' ? 'ambiguous' : edgeType === 'UNRESOLVED_EDGE' ? 'unresolved' : 'terminal';
   const unresolvedReason = status === 'terminal' ? null : String(call.unresolved_reason ?? unresolvedOperationReason(resolution));
-  const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : 'external';
-  const targetId = callType === 'local_db_query' ? String(call.query_entity ?? 'unknown') : callType === 'remote_action' ? (op ? `Remote action: ${op}` : (call.unresolved_reason === 'dynamic_operation_path_identifier' ? 'Remote action: dynamic path' : 'Remote action: unknown path')) : String(call.event_name_expr ?? op ?? call.id);
+  const externalTarget = callType === 'external_http' ? externalHttpTarget(call) : undefined;
+  const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : externalTarget?.toKind ?? 'external_endpoint';
+  const targetId = callType === 'local_db_query' ? String(call.query_entity ?? 'unknown') : callType === 'remote_action' ? (op ? `Remote action: ${op}` : (call.unresolved_reason === 'dynamic_operation_path_identifier' ? 'Remote action: dynamic path' : 'Remote action: unknown path')) : callType === 'external_http' ? String(externalTarget?.toId ?? 'unknown') : String(call.event_name_expr ?? op ?? 'unknown');
   const graphLevelDynamic = edgeType === 'DYNAMIC_EDGE_CANDIDATE' && resolution.status === 'dynamic';
-  db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(evidence), graphLevelDynamic ? 1 : 0, unresolvedReason, generation);
+  const finalEvidence = externalTarget ? { ...evidence, externalTarget } : evidence;
+  db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(finalEvidence), graphLevelDynamic ? 1 : 0, unresolvedReason, generation);
   return { status, callType };
 }
 function unresolvedOperationReason(resolution: { candidates: unknown[]; status: string; reasons: string[] }): string {
@@ -354,27 +358,15 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
   };
 }
 function implementationMethodSignal(row: Record<string, unknown>, operation: Record<string, unknown>): { matches: boolean; contradicted: boolean; acceptedReasons: string[]; rejectedReasons: string[] } {
-  const op = normalizedOperation(String(operation.operationPath ?? operation.operationName ?? ''));
+  const op = normalizedOperationName(String(operation.operationPath ?? operation.operationName ?? ''));
   const decorator = normalizeDecoratorOperation(typeof row.decoratorValue === 'string' ? row.decoratorValue : undefined, typeof row.decoratorRawExpression === 'string' ? row.decoratorRawExpression : undefined);
   if (decorator && decorator === op) return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };
   if (decorator && decorator !== op) return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['method_name_matches_but_decorator_targets_different_operation'] };
   if (String(row.methodName ?? '') === op) return { matches: true, contradicted: false, acceptedReasons: ['method name fallback matched operation'], rejectedReasons: [] };
   return { matches: false, contradicted: false, acceptedReasons: [], rejectedReasons: ['method name does not match operation'] };
 }
-function normalizeDecoratorOperation(value: string | undefined, raw: string | undefined): string | undefined {
-  const candidate = value ?? raw?.split('.').filter(Boolean).at(-2);
-  if (!candidate) return undefined;
-  const cleaned = candidate.replace(/^['"`]|['"`]$/g, '');
-  for (const prefix of ['Func', 'Action']) {
-    if (cleaned.startsWith(prefix) && cleaned.length > prefix.length) return lowerFirst(cleaned.slice(prefix.length));
-  }
-  return normalizedOperation(cleaned);
-}
 function upperFirst(value: string): string {
   return value ? `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}` : value;
-}
-function lowerFirst(value: string): string {
-  return value ? `${value[0]?.toLowerCase() ?? ''}${value.slice(1)}` : value;
 }
 function flag(value: unknown): boolean {
   return Boolean(Number(value ?? 0));

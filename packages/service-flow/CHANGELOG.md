@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.31
+
+- Resolve operation and path trace selectors from indexed CDS operations and persisted implementation edges before conservative handler fallback, including generated `Action<Name>` and `Func<Name>` decorator constants whose method names differ from public operation names.
+- Emit the selected start operation and initial implementation hop once, with structured start-resolution evidence and ambiguity/not-found diagnostics that point to the operation, implementation edge, or handler-scope stage.
+- Replace numeric external HTTP terminal targets with semantic external destination and endpoint nodes, preserving redacted structured target evidence for destinations, static URLs, dynamic URL expressions, and unknown calls.
+- Add schema version 6 migration columns for queryable external target metadata and a strict doctor aggregate for external HTTP target quality.
+
 ## 0.1.30
 
 - Normalize balanced OData operation invocations when multiline template placeholders appear inside function/action argument lists.

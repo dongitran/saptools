@@ -219,7 +219,15 @@ service-flow list calls --workspace /path/to/workspace --repo facade-service --o
 | `list operations` | Print indexed actions/functions/events, optionally filtered by repo and service |
 | `list calls` | Print indexed outbound calls, optionally filtered by repo and operation/path |
 
-### Troubleshooting resolution accuracy
+### Operation selector resolution
+
+Operation-based trace starts first resolve indexed CDS operations, then follow the persisted `OPERATION_IMPLEMENTED_BY_HANDLER` graph edge to the exact handler method symbol. Generated decorator constants such as `ActionPublishRecord.name` and `FuncLookupRecord.name` are normalized through the same shared helper used by linking and diagnostics, so public operations like `/publishRecord` can trace into methods such as `executePublish`. If the same operation name exists in multiple services or repositories, `service-flow` returns `trace_start_ambiguous`; add `--service /CatalogService` or `--repo catalog-api` to disambiguate. Unique operation selectors emit the initial operation node and implementation hop exactly once before traversing handler-owned calls.
+
+### External HTTP targets
+
+External HTTP facts use semantic terminal nodes instead of outbound-call row ids. Literal destinations render as `External destination: ANALYTICS_API`; static absolute or relative URLs render as redacted `External endpoint` labels; dynamic URL expressions render as `External endpoint: dynamic URL`; unavailable target evidence renders as `External endpoint: unknown`. URL user information, query-string values, credentials, tokens, cookies, headers, and payload bodies are not stored in labels. Run `service-flow link` after schema migration so legacy numeric targets are rebuilt from the current parser evidence. `service-flow doctor --strict` reports `strict_external_http_target_quality` with semantic, dynamic, unknown, numeric, and malformed-evidence counts.
+
+## Troubleshooting resolution accuracy
 
 - If a remote edge is unresolved, run `service-flow list calls --operation <name>`
   and `service-flow inspect operation <name>` to compare the captured call path

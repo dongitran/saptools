@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   service_bindings: [
     { name: 'helper_chain_json', ddl: 'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT' },
@@ -33,6 +33,10 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'local_service_lookup', ddl: 'ALTER TABLE outbound_calls ADD COLUMN local_service_lookup TEXT' },
     { name: 'alias_chain_json', ddl: 'ALTER TABLE outbound_calls ADD COLUMN alias_chain_json TEXT' },
     { name: 'evidence_json', ddl: 'ALTER TABLE outbound_calls ADD COLUMN evidence_json TEXT' },
+    { name: 'external_target_kind', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_kind TEXT' },
+    { name: 'external_target_id', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_id TEXT' },
+    { name: 'external_target_label', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_label TEXT' },
+    { name: 'external_target_dynamic', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_dynamic INTEGER NOT NULL DEFAULT 0' },
   ],
   index_runs: [
     { name: 'error_message', ddl: 'ALTER TABLE index_runs ADD COLUMN error_message TEXT' },
