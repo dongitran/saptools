@@ -697,3 +697,66 @@ describe('OData send parser evidence', () => {
     expect(operation?.evidence).toMatchObject({ odataPathIntent: { kind: 'operation_invocation', invocationArgumentPlaceholderKeys: ['request.ID'], keyPredicatePlaceholderKeys: [] } });
   });
 });
+
+describe('0.1.42 parser regressions', () => {
+  it('ignores commented CDS usings and preserves the live module specifier', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-cds-comments-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'extension.cds'), `
+      using { SharedService } from '@neutral/right-model/db/service';
+      /*
+      using { SharedService } from '@neutral/wrong-model/db/service';
+      */
+      extend service SharedService @(path: '/concrete-api') {}
+    `);
+    const services = await parseCdsFile(root, 'srv/extension.cds');
+    expect(services[0]?.extension).toMatchObject({
+      importedSymbol: 'SharedService',
+      moduleSpecifier: '@neutral/right-model/db/service',
+      importKind: 'package',
+    });
+  });
+
+  it('resolves catch and loop shadowing back to the outer immutable path', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-lexical-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      const ROUTE = '/outer';
+      export async function run(client) {
+        try { await work(); } catch (ROUTE) { void ROUTE; }
+        await client.send({ method: 'POST', path: ROUTE });
+        for (let LOOP_ROUTE = 0; LOOP_ROUTE < 1; LOOP_ROUTE += 1) { void LOOP_ROUTE; }
+        const LOOP_PATH = '/loop-outer';
+        for (let LOOP_PATH = 0; LOOP_PATH < 1; LOOP_PATH += 1) { void LOOP_PATH; }
+        await client.send({ method: 'POST', path: LOOP_PATH });
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/handler.ts');
+    expect(calls.map((call) => call.operationPathExpr)).toEqual(['/outer', '/loop-outer']);
+    expect(calls.every((call) => call.evidence?.literalPathSource === 'same_scope_const_initializer')).toBe(true);
+  });
+
+  it('classifies positional remote CAP send only for proven connected clients', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-positional-send-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      export async function run(response, socket, customTransport) {
+        const remote = await cds.connect.to('remote_catalog');
+        const PATH = '/performWork';
+        await remote.send('POST', PATH, { ok: true }, { Authorization: 'hidden' });
+        response.send('OK');
+        socket.send('payload');
+        customTransport.send('dispatchJob', {});
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/handler.ts');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      callType: 'remote_action',
+      serviceVariableName: 'remote',
+      method: 'POST',
+      operationPathExpr: '/performWork',
+    });
+    expect(calls[0]?.evidence).toMatchObject({ classifier: 'service_client_send_method_path' });
+  });
+});

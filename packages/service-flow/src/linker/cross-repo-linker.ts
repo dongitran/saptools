@@ -150,13 +150,14 @@ function callEvidence(call: Record<string, unknown>, resolution: { target?: { re
 }
 
 function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {
-  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage,r.kind modelKind FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
+  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage,r.kind modelKind FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
   let edgeCount = 0;
   let resolvedCount = 0;
   let ambiguousCount = 0;
   let unresolvedCount = 0;
   for (const operation of operations) {
-    const candidates = rankedImplementationCandidates(db, workspaceId, operation);
+    const implementationContext = implementationContextForOperation(db, operation);
+    const candidates = rankedImplementationCandidates(db, workspaceId, implementationContext);
     if (candidates.length === 0) continue;
     const accepted = candidates.filter((candidate) => candidate.accepted);
     const topScore = accepted[0]?.score ?? 0;
@@ -167,6 +168,9 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
       operationPath: operation.operationPath,
       operationName: operation.operationName,
       modelPackage: { id: operation.modelRepoId, name: operation.modelRepo, packageName: operation.modelPackage },
+      implementationSource: implementationContext.operationId === operation.operationId ? 'direct_or_concrete_override' : 'inherited_from_base_operation',
+      baseOperationId: operation.baseOperationId,
+      implementationOperationId: implementationContext.operationId,
       candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
     };
     if (accepted.length === 0) {
@@ -189,6 +193,12 @@ interface ImplementationCandidate extends Record<string, unknown> {
   accepted: boolean;
   acceptedReasons: string[];
   rejectedReasons: string[];
+}
+function implementationContextForOperation(db: Db, operation: Record<string, unknown>): Record<string, unknown> {
+  if (operation.provenance !== 'inherited' || !operation.baseOperationId) return operation;
+  const base = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage,r.kind modelKind FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operation.baseOperationId) as Record<string, unknown> | undefined;
+  if (!base) return operation;
+  return { ...base, effectiveOperationId: operation.operationId, effectiveServicePath: operation.servicePath, effectiveOperationPath: operation.operationPath };
 }
 function rankedImplementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): ImplementationCandidate[] {
   const rows = implementationCandidates(db, workspaceId, operation);
