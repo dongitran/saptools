@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.42
+
+- Continued inherited CDS extension operations into the selected base implementation while retaining concrete routing evidence.
+- Reconciled materialized inherited operations on reindex so renamed or removed base operations do not leave stale effective rows.
+- Kept ambiguous or unresolved extension bases without a selected base id and ignored commented CDS `using` declarations.
+- Added positional remote CAP `Service.send(method, path, ...)` classification for proven CAP clients and tightened catch/loop lexical constant resolution.
+
 ## 0.1.41
 
 - Added imported CDS extension provenance and materialized inherited operations at concrete extension paths without guessing by simple service name.

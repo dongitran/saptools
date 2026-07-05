@@ -45,6 +45,23 @@ function maskCommentsAndStrings(text: string): string {
   return out;
 }
 
+function maskComments(text: string): string {
+  let out = '';
+  let mode: 'code' | 'line' | 'block' | 'single' | 'double' | 'template' = 'code';
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i] ?? '';
+    const n = text[i + 1] ?? '';
+    if (mode === 'code' && c === '/' && n === '/') { mode = 'line'; out += '  '; i += 1; continue; }
+    if (mode === 'code' && c === '/' && n === '*') { mode = 'block'; out += '  '; i += 1; continue; }
+    if (mode === 'line' && c === '\n') mode = 'code';
+    if (mode === 'block' && c === '*' && n === '/') { mode = 'code'; out += '  '; i += 1; continue; }
+    if (mode === 'code' && (c === "'" || c === '"' || c === '`')) mode = c === "'" ? 'single' : c === '"' ? 'double' : 'template';
+    else if ((mode === 'single' && c === "'") || (mode === 'double' && c === '"') || (mode === 'template' && c === '`')) mode = 'code';
+    out += mode === 'line' || mode === 'block' ? (c === '\n' ? '\n' : ' ') : c;
+  }
+  return out;
+}
+
 function readAnnotation(text: string, index: number): { end: number; raw: string } | undefined {
   if (text[index] !== '@') return undefined;
   let i = index + 1;
@@ -126,7 +143,7 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
   const namespace = /namespace\s+([\w.]+)\s*;/.exec(masked)?.[1];
   const services: CdsServiceFact[] = [];
   const pendingAnnotations: Array<{ end: number; raw: string }> = [];
-  const usings = collectUsings(text);
+  const usings = collectUsings(maskComments(text));
   for (const a of masked.matchAll(/@\s*\(/g)) pendingAnnotations.push(annotationRawAt(text, masked, a.index ?? 0));
   const serviceRegex = /\b(?:(extend)\s+)?(?:(service)\s+)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\b/g;
   let match: RegExpExecArray | null;
