@@ -96,3 +96,54 @@ describe('0.1.39 audit regressions', () => {
     expect(services.filter((service) => service.isExtend).map((service) => service.serviceName)).toEqual(['PrefixService', 'SuffixService']);
   });
 });
+
+describe('0.1.40 CAP flow regressions', () => {
+  it('resolves module constants and excludes inaccessible block-shadowed candidates', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-lexical-block-'));
+    await write(root, 'handler.ts', `
+      interface Client { send(input: unknown): Promise<unknown> }
+      const MODULE_PATH = "/moduleWork";
+      const MODULE_DESTINATION = "REMOTE_SYSTEM";
+      declare function useOrFetchDestination(input: unknown): Promise<unknown>;
+      declare function chooseAtRuntime(): string;
+      async function moduleConstants(client: Client): Promise<void> {
+        await client.send({ method: "POST", path: MODULE_PATH });
+        await useOrFetchDestination({ destinationName: MODULE_DESTINATION });
+      }
+      async function siblingBlock(client: Client, flag: boolean): Promise<void> {
+        let path = chooseAtRuntime();
+        if (flag) { const path = "/inaccessible"; void path; }
+        await client.send({ method: "POST", path });
+      }
+      async function shadowedWrites(client: Client, flag: boolean): Promise<void> {
+        let path = chooseAtRuntime();
+        if (flag) { let path = "/nested-a"; path = "/nested-b"; void path; }
+        await client.send({ method: "POST", path });
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'handler.ts');
+    expect(calls.find((call) => call.operationPathExpr === '/moduleWork')).toBeTruthy();
+    expect(JSON.stringify(calls.find((call) => call.callType === 'external_http'))).toContain('REMOTE_SYSTEM');
+    expect(JSON.stringify(calls)).not.toContain('/inaccessible');
+    expect(JSON.stringify(calls)).not.toContain('/nested-a');
+    expect(JSON.stringify(calls)).not.toContain('/nested-b');
+  });
+
+  it('classifies positional CAP service send only for proven cds.services receivers', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-send-'));
+    await write(root, 'handler.ts', `
+      declare const cds: { services: Record<string, { send(...args: unknown[]): Promise<unknown> }> };
+      async function run(response: { send(input: string): void }, socket: { send(input: string): void }, customTransport: { send(name: string, data: unknown): void }, payload: unknown): Promise<void> {
+        const local = cds.services["neutral.LocalService"];
+        await local.send("dispatchJob", payload);
+        response.send("OK");
+        socket.send("payload");
+        customTransport.send("dispatchJob", payload);
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'handler.ts');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ callType: 'local_service_call', operationPathExpr: '/dispatchJob', localServiceName: 'neutral.LocalService' });
+    expect(calls[0]?.evidence).toMatchObject({ classifier: 'cap_service_send_local_dispatch' });
+  });
+});

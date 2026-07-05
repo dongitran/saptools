@@ -805,3 +805,46 @@ describe('service-flow OData entity and operation precedence hardening', () => {
     db.close();
   });
 });
+
+describe('cross-package imported CDS extensions', () => {
+  it('materializes inherited operations at concrete extension paths with base provenance', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-extension-'));
+    await writeFixtureFile(root, 'model-lib/.git-fixture');
+    await writeFixtureFile(root, 'model-lib/package.json', JSON.stringify({ name: '@neutral/model', version: '1.0.0' }));
+    await writeFixtureFile(root, 'model-lib/srv/core.cds', 'service CoreService { action performWork(input: String) returns String; }');
+    await writeFixtureFile(root, 'variant-service/.git-fixture');
+    await writeFixtureFile(root, 'variant-service/package.json', JSON.stringify({ name: '@neutral/variant-service', version: '1.0.0', dependencies: { '@neutral/model': '1.0.0' } }));
+    await writeFixtureFile(root, 'variant-service/srv/extension.cds', "using { CoreService as ImportedCore } from '@neutral/model/srv/core';\nextend service ImportedCore @(path: '/variant-api') { action localOnly(); }\nextend ImportedCore @(path: '/second-api') {}\nusing { MissingService } from '@neutral/missing/srv/core';\nextend service MissingService @(path: '/missing-api') {}");
+    await writeFixtureFile(root, 'variant-service/srv/WorkHandler.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class WorkHandler {\n  @Action('performWork')\n  performWork(): void { this.afterWork(); }\n  afterWork(): void {}\n}\n");
+    await writeFixtureFile(root, 'variant-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { WorkHandler } from './WorkHandler.js';\ncreateCombinedHandler({ handler: [WorkHandler] });\n");
+    await writeFixtureFile(root, 'facade-service/.git-fixture');
+    await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0', cds: { requires: { variant_api: { kind: 'odata-v4', credentials: { path: '/variant-api' } } } } }));
+    await writeFixtureFile(root, 'facade-service/srv/facade.cds', 'service FacadeService { action startFlow(); }');
+    await writeFixtureFile(root, 'facade-service/srv/FacadeHandler.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class FacadeHandler {\n  @Action('startFlow')\n  async startFlow(): Promise<void> { const client = await cds.connect.to('variant_api'); await client.send({ method: 'POST', path: '/performWork' }); }\n}\n");
+    await writeFixtureFile(root, 'facade-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { FacadeHandler } from './FacadeHandler.js';\ncreateCombinedHandler({ handler: [FacadeHandler] });\n");
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const inherited = db.prepare("SELECT o.*,s.service_path servicePath,s.extension_base_status status,s.extension_base_service_id baseServiceId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE s.service_path='/variant-api' AND o.operation_name='performWork'").get() as { provenance: string; base_operation_id: number; status: string; baseServiceId: number } | undefined;
+    expect(inherited).toMatchObject({ provenance: 'inherited', status: 'resolved' });
+    expect(inherited?.base_operation_id).toBeGreaterThan(0);
+    expect(inherited?.baseServiceId).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) count FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE s.service_path='/second-api' AND o.operation_name='performWork'").get()).toMatchObject({ count: 1 });
+    expect(db.prepare("SELECT extension_base_status status FROM cds_services WHERE service_path='/missing-api'").get()).toMatchObject({ status: 'unresolved' });
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked.remoteResolvedCount).toBeGreaterThan(0);
+    const edge = db.prepare("SELECT ge.status,ge.evidence_json evidenceJson FROM graph_edges ge JOIN outbound_calls c ON c.id=CAST(ge.from_id AS INTEGER) WHERE c.operation_path_expr='/performWork' AND ge.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION'").get() as { status: string; evidenceJson: string } | undefined;
+    expect(edge?.status).toBe('resolved');
+    expect(JSON.parse(edge?.evidenceJson ?? '{}')).toMatchObject({ targetServicePath: '/variant-api' });
+    db.close();
+  });
+});
+
+it('materializes relative imported CDS extensions without package-name fallback', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-relative-extension-'));
+  await writeFixtureFile(root, 'app/.git-fixture');
+  await writeFixtureFile(root, 'app/package.json', JSON.stringify({ name: '@neutral/relative-app', version: '1.0.0' }));
+  await writeFixtureFile(root, 'app/srv/base.cds', 'service RelativeBase { action relativeWork(); }');
+  await writeFixtureFile(root, 'app/srv/ext/extension.cds', "using { RelativeBase } from '../base';\nextend RelativeBase @(path: '/relative-api') {}");
+  const { db } = await prepareWorkspace(root);
+  expect(db.prepare("SELECT o.provenance FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE s.service_path='/relative-api' AND o.operation_name='relativeWork'").get()).toMatchObject({ provenance: 'inherited' });
+  db.close();
+});
