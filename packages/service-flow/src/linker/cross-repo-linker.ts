@@ -4,7 +4,7 @@ import { classifyODataPathIntent, normalizeODataOperationInvocationPath, type No
 import { buildRemoteQueryTarget } from './remote-query-target.js';
 import { resolveOperation } from './service-resolver.js';
 import { linkHelperPackages } from './helper-package-linker.js';
-import { normalizeDecoratorOperation, normalizedOperationName } from './operation-decorator-normalizer.js';
+import { normalizeDecoratorOperationSignal, normalizedOperationName } from './operation-decorator-normalizer.js';
 import { externalHttpTarget } from './external-http-target.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
@@ -79,7 +79,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
     return { status: 'terminal', callType };
   }
   if (callType === 'local_service_call' && call.unresolved_reason === 'transport_client_method' && !resolution.target && resolution.candidates.length === 0) {
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_CALLS_EXTERNAL_HTTP', 'terminal', 'call', String(call.id), 'external', String(op || 'transport_client_method'), Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, classification: 'transport_client_method' }), 0, generation);
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_CALLS_TRANSPORT_METHOD', 'terminal', 'call', String(call.id), 'transport_method', String(op || 'transport_client_method'), Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, classification: 'transport_client_method' }), 0, generation);
     return { status: 'terminal', callType };
   }
   if (resolution.target) {
@@ -90,7 +90,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const status = edgeType === 'DYNAMIC_EDGE_CANDIDATE' ? 'dynamic' : resolution.status === 'ambiguous' ? 'ambiguous' : edgeType === 'UNRESOLVED_EDGE' ? 'unresolved' : 'terminal';
   const unresolvedReason = status === 'terminal' ? null : String(call.unresolved_reason ?? unresolvedOperationReason(resolution));
   const externalTarget = callType === 'external_http' ? externalHttpTarget(call) : undefined;
-  const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : externalTarget?.toKind ?? 'external_endpoint';
+  const targetKind = callType === 'local_db_query' ? 'db_entity' : callType.startsWith('async_') ? 'event' : callType === 'external_http' ? (externalTarget?.toKind ?? 'external_endpoint') : 'operation_candidate';
   const targetId = callType === 'local_db_query' ? String(call.query_entity ?? 'unknown') : callType === 'remote_action' ? (op ? `Remote action: ${op}` : (call.unresolved_reason === 'dynamic_operation_path_identifier' ? 'Remote action: dynamic path' : 'Remote action: unknown path')) : callType === 'external_http' ? String(externalTarget?.toId ?? 'unknown') : String(call.event_name_expr ?? op ?? 'unknown');
   const graphLevelDynamic = edgeType === 'DYNAMIC_EDGE_CANDIDATE' && resolution.status === 'dynamic';
   const finalEvidence = externalTarget ? { ...evidence, externalTarget } : evidence;
@@ -359,9 +359,9 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
 }
 function implementationMethodSignal(row: Record<string, unknown>, operation: Record<string, unknown>): { matches: boolean; contradicted: boolean; acceptedReasons: string[]; rejectedReasons: string[] } {
   const op = normalizedOperationName(String(operation.operationPath ?? operation.operationName ?? ''));
-  const decorator = normalizeDecoratorOperation(typeof row.decoratorValue === 'string' ? row.decoratorValue : undefined, typeof row.decoratorRawExpression === 'string' ? row.decoratorRawExpression : undefined);
-  if (decorator && decorator === op) return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };
-  if (decorator && decorator !== op) return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['method_name_matches_but_decorator_targets_different_operation'] };
+  const decorator = normalizeDecoratorOperationSignal(typeof row.decoratorValue === 'string' ? row.decoratorValue : undefined, typeof row.decoratorRawExpression === 'string' ? row.decoratorRawExpression : undefined, op);
+  if (decorator.status === 'resolved' && decorator.operationName === op) return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };
+  if (decorator.status === 'resolved' && decorator.operationName !== op) return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['method_name_matches_but_decorator_targets_different_operation'] };
   if (String(row.methodName ?? '') === op) return { matches: true, contradicted: false, acceptedReasons: ['method name fallback matched operation'], rejectedReasons: [] };
   return { matches: false, contradicted: false, acceptedReasons: [], rejectedReasons: ['method name does not match operation'] };
 }

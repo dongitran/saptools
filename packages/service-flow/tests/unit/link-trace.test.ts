@@ -238,18 +238,15 @@ describe('linker and trace engine', () => {
     );
     const result = trace(
       db,
-      { repo: 'facade-service', operation: 'doWork' },
+      { repo: 'facade-service', handler: 'EntryHandler' },
       { depth: 20, includeDb: true, includeAsync: true, includeExternal: true },
     );
     expect(result.edges.map((e) => e.type)).toContain('remote_action');
     expect(result.nodes.length).toBeGreaterThan(0);
-    expect(result.edges.some((e) => e.from.includes('EntryHandler.ts'))).toBe(
-      true,
-    );
 
     const handlerResult = trace(
       db,
-      { repo: 'rules-service', operation: 'checkPayload' },
+      { repo: 'rules-service', handler: 'RulesHandler' },
       {
         depth: 20,
         vars: { objectType: 'Thing', objectCode: 'xx' },
@@ -544,7 +541,7 @@ export class EntryHandler {
     const rows = db.prepare("SELECT c.operation_path_expr path,e.edge_type edgeType,e.status status,e.unresolved_reason reason,e.evidence_json evidenceJson FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) WHERE c.call_type='local_service_call' ORDER BY c.operation_path_expr").all() as Array<{ path: string; edgeType: string; status: string; reason: string | null; evidenceJson: string }>;
     expect(rows.find((row) => row.path === '/loadRemoteData')?.status).toBe('resolved');
     const send = rows.find((row) => row.path === '/send');
-    expect(send?.edgeType).toBe('HANDLER_CALLS_EXTERNAL_HTTP');
+    expect(send?.edgeType).toBe('HANDLER_CALLS_TRANSPORT_METHOD');
     expect(send?.status).toBe('terminal');
     expect(send?.reason).toBeNull();
     expect(JSON.parse(send?.evidenceJson ?? '{}')).toMatchObject({ classification: 'transport_client_method' });

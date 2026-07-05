@@ -82,17 +82,17 @@ function operationStartScope(db: Db, repoId: number | undefined, start: TraceSta
     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
     WHERE (? IS NULL OR r.id=?) AND (? IS NULL OR s.service_path=?) AND (o.operation_name=? OR o.operation_path=? OR o.operation_path=?)
     ORDER BY r.name,s.service_path,o.operation_name,o.id`).all(repoId, repoId, start.servicePath, start.servicePath, requested, requested, requested.startsWith('/') ? requested : `/${requested}`) as Array<Record<string, unknown>>;
-  if (rows.length === 0) return { diagnostics: [{ severity: 'warning', code: 'trace_start_not_found', message: 'No indexed operation matched the requested trace selector', normalizedSelectorValue: requested }] };
+  if (rows.length === 0) return undefined;
   const repoCount = new Set(rows.map((row) => String(row.repoName))).size;
   const serviceCount = new Set(rows.map((row) => `${String(row.repoName)}:${String(row.servicePath)}`)).size;
-  if (!repoId && repoCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple repositories; add --repo to disambiguate', normalizedSelectorValue: requested, candidates: rows }] };
-  if (!start.servicePath && serviceCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple services; add --service to disambiguate', normalizedSelectorValue: requested, candidates: rows }] };
-  if (rows.length !== 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple indexed operations', normalizedSelectorValue: requested, candidates: rows }] };
+  if (!repoId && repoCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple repositories; add --repo to disambiguate', normalizedSelectorValue: requested, resolutionStage: 'operation', resolutionStatus: 'ambiguous_operation', candidates: rows }] };
+  if (!start.servicePath && serviceCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple services; add --service to disambiguate', normalizedSelectorValue: requested, resolutionStage: 'operation', resolutionStatus: 'ambiguous_operation', candidates: rows }] };
+  if (rows.length !== 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple indexed operations', normalizedSelectorValue: requested, resolutionStage: 'operation', resolutionStatus: 'ambiguous_operation', candidates: rows }] };
   const operationId = String(rows[0]?.operationId);
   const impl = implementationScope(db, operationId);
   if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, operationId, diagnostics: [] };
-  if (impl.edge) return { operationId, diagnostics: [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_not_found', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, candidates: parseEvidence(impl.edge.evidence_json).candidates }] };
-  return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_not_found', message: 'Indexed operation matched but no implementation candidate exists' }] };
+  if (impl.edge) return { operationId, diagnostics: [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, candidates: parseEvidence(impl.edge.evidence_json).candidates }] };
+  return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_implementation_unresolved', message: 'Indexed operation matched but no implementation candidate exists', resolutionStage: 'implementation', resolutionStatus: 'operation_without_implementation' }] };
 }
 
 function sourceFilesForStart(
@@ -151,7 +151,8 @@ function startScope(db: Db, start: TraceStart): StartScope {
     : undefined;
   if (start.repo && !repo) return { repo, selectorMatched: false };
   const operationScope = operationStartScope(db, repo?.id, start);
-  const sourceScope = operationScope?.files ? operationScope : sourceFilesForStart(db, repo?.id, start);
+  const terminalOperationScope = operationScope && !operationScope.files && (operationScope.diagnostics ?? []).some((d) => d.resolutionStage === 'operation' || d.resolutionStage === 'implementation');
+  const sourceScope = operationScope?.files || terminalOperationScope ? operationScope : sourceFilesForStart(db, repo?.id, start);
   const sourceFiles = sourceScope?.files;
   const hasSelector = Boolean(
     start.handler ?? start.operation ?? start.operationPath ?? start.servicePath,
@@ -162,7 +163,7 @@ function startScope(db: Db, start: TraceStart): StartScope {
     repo,
     sourceFiles,
     symbolIds: sourceScope?.symbols,
-    selectorMatched: !hasSelector || sourceFiles !== undefined,
+    selectorMatched: !terminalOperationScope && (!hasSelector || sourceFiles !== undefined),
     startOperationId: operationScope?.operationId,
     startDiagnostics: operationScope?.diagnostics,
   };
@@ -491,7 +492,7 @@ export function trace(
     const op = operationNode(db, scope.startOperationId);
     const impl = implementationScope(db, scope.startOperationId);
     if (op) nodes.set(String(op.id), op);
-    if (impl.edge) {
+    if (impl.edge && impl.edge.status === 'resolved') {
       const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: impl.edge.status === 'resolved' ? impl.edge.to_id : undefined } };
       const handlerNode = impl.edge.status === 'resolved' ? handlerMethodNode(db, impl.edge.to_id) : undefined;
       if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
