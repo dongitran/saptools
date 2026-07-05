@@ -62,3 +62,26 @@ export async function connectWorkflow(req: unknown) {
     expect(rows.find((row) => row.variableName === 'workflowTx')?.helperChain).toEqual(expect.arrayContaining([expect.objectContaining({ aliasKind: 'transaction', transactionAliasSource: 'workflowClient' }), expect.objectContaining({ returnedProperty: 'workflowTx' })]));
   });
 });
+
+it('captures transaction aliases from transaction calls and conditionals without unknown receivers', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-transaction-binding-'));
+  await write(root, 'helper.ts', String.raw`import cds from '@sap/cds';
+export async function connectRemote(request?: unknown) {
+  const baseClient = await cds.connect.to('remote_service');
+  const txClient = request ? baseClient.transaction(request) : baseClient.transaction();
+  const legacyTx = baseClient.tx(request);
+  const unknownTx = unknownClient.transaction(request);
+  return { baseClient, txClient, legacyTx, unknownTx };
+}
+`);
+  await write(root, 'handler.ts', "import { connectRemote } from './helper.js';\nasync function run(req: unknown): Promise<void> {\n  const { txClient, legacyTx, unknownTx } = await connectRemote(req);\n  await txClient.send({ method: 'POST', path: '/someAction' });\n  await legacyTx.send({ method: 'POST', path: '/otherAction' });\n  await unknownTx.send({ method: 'POST', path: '/ignoredAction' });\n}\n");
+  const helperRows = await parseServiceBindings(root, 'helper.ts');
+  expect(helperRows.find((row) => row.variableName === 'txClient')?.helperChain).toEqual(expect.arrayContaining([expect.objectContaining({ aliasKind: 'transaction', transactionAliasSource: 'baseClient' })]));
+  expect(helperRows.find((row) => row.variableName === 'legacyTx')?.helperChain).toEqual(expect.arrayContaining([expect.objectContaining({ aliasKind: 'transaction', transactionAliasSource: 'baseClient' })]));
+  expect(helperRows.some((row) => row.variableName === 'unknownTx')).toBe(false);
+  const handlerRows = await parseServiceBindings(root, 'handler.ts');
+  expect(handlerRows.find((row) => row.variableName === 'txClient')?.alias).toBe('remote_service');
+  expect(handlerRows.find((row) => row.variableName === 'txClient')?.helperChain).toEqual(expect.arrayContaining([expect.objectContaining({ returnedProperty: 'txClient' })]));
+  expect(handlerRows.find((row) => row.variableName === 'legacyTx')?.alias).toBe('remote_service');
+  expect(handlerRows.some((row) => row.variableName === 'unknownTx')).toBe(false);
+});

@@ -210,49 +210,54 @@ function isSupportedEventReceiver(receiver: string | undefined, rootReceiver: st
   if (/^(srv|service|serviceClient|messaging|messageClient|eventClient)$/.test(candidate)) return true;
   return false;
 }
-interface WrapperSpec { clientIndex: number; pathIndex: number; methodIndex?: number; definitionLine: number; internalStart: number; internalEnd: number }
+interface WrapperSpec { clientIndex?: number; clientName?: string; pathIndex: number; methodIndex?: number; methodName?: string; methodLiteral?: string; definitionLine: number; internalStart: number; internalEnd: number }
 function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   const specs = new Map<string, WrapperSpec>();
+  const serviceVariables = collectServiceVariables(source);
+  const calledNames = new Set<string>();
+  const collectCalls = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression)) calledNames.add(node.expression.text);
+      if (ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression)) calledNames.add(node.expression.expression.text);
+    }
+    ts.forEachChild(node, collectCalls);
+  };
+  collectCalls(source);
   const scanFunction = (name: string, fn: ts.FunctionLikeDeclaration): void => {
+    if (!calledNames.has(name)) return;
     const params = fn.parameters.map((param) => ts.isIdentifier(param.name) ? param.name.text : undefined);
-    const closure = returnedClosure(fn);
-    if (!closure) return;
-    const sends: Array<{ client: string; path: string; method?: string }> = [];
+    const sends: Array<{ client: string; path: string; method?: string; methodLiteral?: string; start: number; end: number }> = [];
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send' && ts.isIdentifier(node.expression.expression)) {
         const objectArg = node.arguments[0];
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
-          const pathProp = objectArg.properties.find((property): property is ts.ShorthandPropertyAssignment => ts.isShorthandPropertyAssignment(property) && property.name.text === 'path');
-          if (pathProp) sends.push({ client: node.expression.expression.text, path: pathProp.name.text, method: objectPropertyText(objectArg, 'method') });
+          const pathProp = propertyInitializer(objectArg, 'path');
+          const methodProp = propertyInitializer(objectArg, 'method');
+          const pathName = pathProp && ts.isIdentifier(pathProp) ? pathProp.text : undefined;
+          const methodName = methodProp && ts.isIdentifier(methodProp) ? methodProp.text : undefined;
+          const methodLiteral = staticExpressionText(methodProp, variableInitializers(source));
+          if (pathName) sends.push({ client: node.expression.expression.text, path: pathName, method: methodName, methodLiteral, start: node.getStart(source), end: node.getEnd() });
         }
       }
       ts.forEachChild(node, visit);
     };
-    visit(closure);
+    visit(fn);
     if (sends.length !== 1) return;
     const found = sends[0];
     const clientIndex = params.indexOf(found.client);
     const pathIndex = params.indexOf(found.path);
-    const methodIndex = found.method && params.includes(found.method) ? params.indexOf(found.method) : undefined;
-    if (clientIndex >= 0 && pathIndex >= 0) specs.set(name, { clientIndex, pathIndex, methodIndex, definitionLine: lineOf(source.text, fn.getStart(source)), internalStart: closure.getStart(source), internalEnd: closure.getEnd() });
+    const methodIndex = found.method ? params.indexOf(found.method) : -1;
+    const capturesKnownClient = serviceVariables.has(found.client) || /^(srv|service|serviceClient|client|.*Client)$/.test(found.client);
+    if (pathIndex >= 0 && (clientIndex >= 0 || capturesKnownClient)) specs.set(name, { clientIndex: clientIndex >= 0 ? clientIndex : undefined, clientName: clientIndex >= 0 ? undefined : found.client, pathIndex, methodIndex: methodIndex >= 0 ? methodIndex : undefined, methodName: found.method, methodLiteral: found.methodLiteral, definitionLine: lineOf(source.text, fn.getStart(source)), internalStart: found.start, internalEnd: found.end });
   };
-  for (const stmt of source.statements) {
-    if (ts.isFunctionDeclaration(stmt) && stmt.name) scanFunction(stmt.name.text, stmt);
-    if (ts.isVariableStatement(stmt)) for (const decl of stmt.declarationList.declarations) if (ts.isIdentifier(decl.name) && decl.initializer && (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))) scanFunction(decl.name.text, decl.initializer);
-  }
+  const visitTop = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name) scanFunction(node.name.text, node);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) scanFunction(node.name.text, node.initializer);
+    ts.forEachChild(node, visitTop);
+  };
+  visitTop(source);
   return specs;
 }
-function returnedClosure(fn: ts.FunctionLikeDeclaration): ts.ArrowFunction | ts.FunctionExpression | undefined {
-  const body = fn.body;
-  if (!body) return undefined;
-  if (ts.isArrowFunction(fn) && !ts.isBlock(body)) return ts.isArrowFunction(body) || ts.isFunctionExpression(body) ? body : undefined;
-  if (!ts.isBlock(body)) return undefined;
-  const returns = body.statements.filter(ts.isReturnStatement);
-  if (returns.length !== 1) return undefined;
-  const expr = returns[0]?.expression;
-  return expr && (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) ? expr : undefined;
-}
-
 export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: string): ClassifiedOutboundCall[] {
   const calls: ClassifiedOutboundCall[] = [];
   const sourceFile = normalizePath(filePath);
@@ -281,26 +286,31 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const receiver = receiverName(expr.expression);
           const query = objectPropertyText(objectArg, 'query');
           const method = stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST');
-          const op = objectPropertyText(objectArg, 'path') ?? objectPropertyText(objectArg, 'event');
+          const pathExpr = propertyInitializer(objectArg, 'path') ?? propertyInitializer(objectArg, 'event');
+          const op = pathExpr ? staticExpressionText(pathExpr, initializers) ?? pathExpr.getText(source) : undefined;
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
-          const operationPathExpr = op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined;
+          const staticPath = staticExpressionText(pathExpr, initializers);
+          const literalPath = isStringLike(pathExpr) ? pathExpr.text : pathExpr && ts.isTemplateExpression(pathExpr) ? pathExpr.getText(source) : undefined;
+          const operationPathExpr = staticPath ? `/${stripQuotes(staticPath).replace(/^\//, '')}` : literalPath ? `/${stripQuotes(literalPath).replace(/^\//, '')}` : undefined;
           const intent = classifyODataPathIntent(operationPathExpr, method);
           const entityCallTypes: Record<string, OutboundCallFact['callType']> = { entity_mutation: 'remote_entity_mutation', entity_delete: 'remote_entity_delete', entity_media: 'remote_entity_media', entity_candidate: 'remote_entity_candidate' };
           const entityCallType = entityCallTypes[intent.kind];
           const isODataQueryRead = method.toUpperCase() === 'GET' && ['entity_query', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
-          add(node, { callType: query ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
+          add(node, { callType: query ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && pathExpr && !operationPathExpr ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, literalPathSource: shorthandPath && staticPath ? 'same_scope_const_initializer' : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: !query && pathExpr && !operationPathExpr ? 'dynamic_operation_path_identifier' : undefined });
         }
       } else if (((ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) || (ts.isIdentifier(expr) && wrapperSpecs.has(expr.text)))) {
         const wrapperName = ts.isIdentifier(expr) ? expr.text : ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) ? expr.expression.text : '';
         const wrapperArgs = ts.isIdentifier(expr) ? node.arguments : ts.isCallExpression(expr) ? expr.arguments : node.arguments;
         const spec = wrapperSpecs.get(wrapperName);
-        const clientArg = spec ? wrapperArgs[spec.clientIndex] : undefined;
+        const clientArg = spec?.clientIndex === undefined ? undefined : wrapperArgs[spec.clientIndex];
         const pathArg = spec ? wrapperArgs[spec.pathIndex] : undefined;
         const methodArg = spec?.methodIndex === undefined ? undefined : wrapperArgs[spec.methodIndex];
-        if (spec && clientArg && ts.isIdentifier(clientArg) && isStringLike(pathArg)) {
-          add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), operationPathExpr: `/${pathArg.text.replace(/^\//, '')}`, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver: clientArg.text, classifier: 'higher_order_wrapper_literal_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, literalCallerArgumentDetected: true });
-        } else if (spec && clientArg && ts.isIdentifier(clientArg)) {
-          add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.45, unresolvedReason: 'dynamic_operation_path_identifier' }, { receiver: clientArg.text, classifier: 'higher_order_wrapper_dynamic_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, parserWarning: 'dynamic_operation_path_identifier' });
+        const receiver = clientArg && ts.isIdentifier(clientArg) ? clientArg.text : spec?.clientName;
+        const method = stripQuotes(staticExpressionText(methodArg, initializers) ?? spec?.methodLiteral ?? 'POST');
+        if (spec && receiver && isStringLike(pathArg)) {
+          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, operationPathExpr: `/${pathArg.text.replace(/^\//, '')}`, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver, classifier: 'higher_order_wrapper_literal_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), literalPathSource: 'wrapper_call_argument', literalCallerArgumentDetected: true });
+        } else if (spec && receiver) {
+          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.45, unresolvedReason: 'dynamic_operation_path_identifier' }, { receiver, classifier: 'higher_order_wrapper_dynamic_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), parserWarning: 'dynamic_operation_path_identifier' });
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);

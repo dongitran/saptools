@@ -134,6 +134,19 @@ function unwrapIdentityExpression(expr: ts.Expression): ts.Expression {
   if (ts.isTypeAssertionExpression(expr)) return unwrapIdentityExpression(expr.expression);
   return expr;
 }
+
+function transactionReceiverName(expr: ts.Expression): string | undefined {
+  const call = unwrapCall(expr);
+  if (call && ts.isPropertyAccessExpression(call.expression) && ['tx', 'transaction'].includes(call.expression.name.text) && ts.isIdentifier(call.expression.expression)) return call.expression.expression.text;
+  const unwrapped = unwrapIdentityExpression(expr);
+  if (ts.isConditionalExpression(unwrapped)) {
+    const left = transactionReceiverName(unwrapped.whenTrue);
+    const right = transactionReceiverName(unwrapped.whenFalse);
+    return left && left === right ? left : undefined;
+  }
+  return undefined;
+}
+
 function findConnectInExpression(
   expr: ts.Expression,
 ):
@@ -242,9 +255,8 @@ function collectLocalBindingFacts(
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const fact = findConnectInExpression(node.initializer);
       if (fact) bindings.set(node.name.text, fact);
-      const call = unwrapCall(node.initializer);
-      if (call && ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'tx' && ts.isIdentifier(call.expression.expression)) {
-        const sourceName = call.expression.expression.text;
+      const sourceName = transactionReceiverName(node.initializer);
+      if (sourceName) {
         const source = bindings.get(sourceName);
         if (source) bindings.set(node.name.text, { ...source, helperChain: [...(source.helperChain ?? []), { aliasOf: sourceName, callerVariable: node.name.text, aliasKind: 'transaction', transactionAliasSource: sourceName }] });
       }
@@ -484,6 +496,7 @@ export async function parseServiceBindings(
           aliasOf: sourceName,
           aliasKind,
           scopeRule: 'same-file-source-order',
+          ...(aliasKind === 'transaction' ? { transactionAliasSource: sourceName } : {}),
         },
       ],
     });
@@ -726,8 +739,9 @@ export async function parseServiceBindings(
       recordDestructuredClassHelper(decl);
       await recordVariable(decl);
       recordIdentityAlias(decl);
-      if (ts.isIdentifier(decl.name) && decl.initializer && ts.isCallExpression(decl.initializer) && ts.isPropertyAccessExpression(decl.initializer.expression) && decl.initializer.expression.name.text === 'tx' && ts.isIdentifier(decl.initializer.expression.expression)) {
-        cloneAliasBinding(decl.name.text, decl.initializer.expression.expression.text, 'transaction', decl);
+      if (ts.isIdentifier(decl.name) && decl.initializer) {
+        const sourceName = transactionReceiverName(decl.initializer);
+        if (sourceName) cloneAliasBinding(decl.name.text, sourceName, 'transaction', decl);
       }
       continue;
     }

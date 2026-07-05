@@ -1,6 +1,6 @@
 {
   "name": "@saptools/service-flow",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "Trace SAP CAP service-to-service flows across multi-repository workspaces with runtime-aware graph resolution",
   "type": "module",
   "publishConfig": {
