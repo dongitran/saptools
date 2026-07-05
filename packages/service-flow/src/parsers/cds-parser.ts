@@ -73,17 +73,21 @@ function collectAnnotations(text: string, index: number): { end: number; raw: st
 }
 
 function pathAnnotation(raw: string): string | undefined {
-  return /path\s*:\s*['"]([^'"]+)['"]/s.exec(raw)?.[1];
+  return /path\s*:\s*(['"])(.*?)\1/s.exec(raw)?.[2];
 }
 
-function matchingBrace(text: string, open: number): number {
+function matchingBrace(maskedText: string, open: number): number {
   let depth = 0;
-  for (let i = open; i < text.length; i += 1) {
-    if (text[i] === '{') depth += 1;
-    if (text[i] === '}') depth -= 1;
+  for (let i = open; i < maskedText.length; i += 1) {
+    if (maskedText[i] === '{') depth += 1;
+    if (maskedText[i] === '}') depth -= 1;
     if (depth === 0) return i;
   }
-  return text.length - 1;
+  return maskedText.length - 1;
+}
+function annotationRawAt(original: string, masked: string, index: number): { end: number; raw: string } {
+  const collected = collectAnnotations(masked, index);
+  return { end: collected.end, raw: original.slice(index, collected.end) };
 }
 
 function operationsFromBody(text: string, maskedBody: string, bodyOffset: number, filePath: string): CdsOperationFact[] {
@@ -105,16 +109,18 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
   const namespace = /namespace\s+([\w.]+)\s*;/.exec(masked)?.[1];
   const services: CdsServiceFact[] = [];
   const pendingAnnotations: Array<{ end: number; raw: string }> = [];
-  for (const a of masked.matchAll(/@\s*\(/g)) {
-    const annotation = collectAnnotations(masked, a.index ?? 0);
-    pendingAnnotations.push(annotation);
-  }
-  const serviceRegex = /\b(extend\s+)?service\s+([\w.]+)\b/g;
+  for (const a of masked.matchAll(/@\s*\(/g)) pendingAnnotations.push(annotationRawAt(text, masked, a.index ?? 0));
+  const serviceRegex = /\b(?:(extend)\s+)?(?:(service)\s+)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\b/g;
   let match: RegExpExecArray | null;
   while ((match = serviceRegex.exec(masked))) {
-    const afterName = collectAnnotations(masked, serviceRegex.lastIndex);
+    const isExtend = match[1] === 'extend';
+    const hasServiceKeyword = match[2] === 'service';
+    if (!isExtend && !hasServiceKeyword) continue;
+    const afterName = annotationRawAt(text, masked, serviceRegex.lastIndex);
     const open = masked.indexOf('{', afterName.end);
     if (open === -1) continue;
+    const between = masked.slice(afterName.end, open).trim();
+    if (between.length > 0) continue;
     const matchIndex = match.index;
     const prefix = pendingAnnotations
       .filter((a) => a.end <= matchIndex && matchIndex - a.end < 8)
@@ -123,7 +129,7 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
     const annotations = `${prefix}${afterName.raw}`;
     const end = matchingBrace(masked, open);
     const body = masked.slice(open + 1, end);
-    const name = match[2] ?? 'UnknownService';
+    const name = match[3] ?? 'UnknownService';
     const serviceName = name.split('.').pop() ?? name;
     const servicePath = ensureLeadingSlash(pathAnnotation(annotations) ?? serviceName);
     services.push({
@@ -131,7 +137,7 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
       serviceName,
       qualifiedName: name.includes('.') ? name : namespace ? `${namespace}.${name}` : name,
       servicePath,
-      isExtend: Boolean(match[1]),
+      isExtend,
       sourceFile: normalizePath(filePath),
       sourceLine: lineOf(text, match.index),
       operations: operationsFromBody(text, body, open + 1, filePath)

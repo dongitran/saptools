@@ -505,3 +505,7 @@ Decorator signals are interpreted as resolved, absent, unsupported, or malformed
 External HTTP facts persist queryable target kind, stable id, safe label, and dynamic flag on `outbound_calls`; graph evidence uses the same sanitized model. URL user info, fragments, query values, headers, cookies, credentials, tokens, API keys, and request/response bodies are not persisted. Legacy workspaces may relink from old evidence when possible, but full semantic enrichment requires re-index plus relink when old parser facts did not contain safe target metadata.
 
 Graph taxonomy now keeps CAP operation candidates separate from external HTTP targets. Dynamic, ambiguous, and unresolved CAP calls use operation-candidate semantics, external destinations/endpoints are produced only by `external_http` calls, and terminal local transport-client methods use transport-method semantics rather than external HTTP edges. `doctor --strict` reports external target quality and taxonomy consistency.
+### Runtime and parser hardening
+
+`service-flow` treats URL and destination templates with substitutions as dynamic external targets, preserves operation-path template evidence without promoting unrelated variables, and parses CDS `@(path: ...)` annotations from original source text. Service extension declarations using both `extend Name` and `extend service Name` are recognized for routing provenance.
+
