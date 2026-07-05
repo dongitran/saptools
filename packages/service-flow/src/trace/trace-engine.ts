@@ -1,5 +1,6 @@
 import type { Db } from '../db/connection.js';
 import { extractPlaceholders, substituteVariables, type RuntimeSubstitution } from '../linker/dynamic-edge-resolver.js';
+import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { resolveOperation, type OperationTarget } from '../linker/service-resolver.js';
 import type { TraceEdge, TraceResult, TraceStart } from '../types.js';
 
@@ -382,17 +383,15 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
 }
 function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
   if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
-  const op = normalizeODataOperationInvocationPathForTrace(String(call.operation_path_expr));
+  const normalized = normalizeODataOperationInvocationPath(String(call.operation_path_expr));
+  const op = normalized?.normalizedOperationPath ?? (String(call.operation_path_expr).startsWith('/') ? String(call.operation_path_expr) : `/${String(call.operation_path_expr)}`);
   const servicePath = binding.effectiveServicePath ?? binding.servicePathExpr ?? binding.requireServicePath;
   const destination = binding.effectiveDestination ?? binding.destinationExpr ?? binding.requireDestination;
   const resolution = resolveOperation(db, { servicePath, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination, hasExplicitOverride: true, isDynamic: false }, workspaceId);
-  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
+  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
   if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : resolution.status === 'dynamic' ? `Dynamic contextual target is missing runtime variables: ${resolution.reasons.join(', ')}` : 'No contextual operation candidate matched' };
   const resolvedEvidence = { ...evidence, contextualServiceBindingSelected: true, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName };
   return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(resolvedEvidence), status: 'resolved' }, evidence: resolvedEvidence, unresolvedReason: undefined };
-}
-function normalizeODataOperationInvocationPathForTrace(raw: string): string {
-  return raw.startsWith('/') ? raw : `/${raw}`;
 }
 function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
   const runtimeCandidate = evidence.runtimeResolvedCandidate as

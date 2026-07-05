@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.30
+
+- Normalize balanced OData operation invocations when multiline template placeholders appear inside function/action argument lists.
+- Preserve invocation argument placeholders as non-routing evidence instead of treating them as missing operation-target runtime variables.
+- Reuse the shared OData invocation normalizer during contextual trace resolution so persisted links and trace-time helper propagation handle the same path shapes.
+- Keep GET entity key reads, navigation reads, and collection queries terminal unless strong indexed operation evidence resolves them.
+
 ## 0.1.29
 
 - Classify GET OData entity/query paths with query strings, filter functions, key predicates, navigation reads, and query placeholders as terminal remote query/entity edges when no strong indexed CDS operation candidate resolves them.
