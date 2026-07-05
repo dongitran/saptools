@@ -408,7 +408,7 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
   });
   return next;
 }
-function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
+function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined, persistedRows: GraphRow[] = []): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
   if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
   const normalized = normalizeODataOperationInvocationPath(String(call.operation_path_expr));
   const op = normalized?.normalizedOperationPath ?? (String(call.operation_path_expr).startsWith('/') ? String(call.operation_path_expr) : `/${String(call.operation_path_expr)}`);
@@ -418,6 +418,8 @@ function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBind
   const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
   if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : resolution.status === 'dynamic' ? `Dynamic contextual target is missing runtime variables: ${resolution.reasons.join(', ')}` : 'No contextual operation candidate matched' };
   const resolvedEvidence = { ...evidence, contextualServiceBindingSelected: true, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName };
+  const persistedResolved = persistedRows.find((item) => item.status === 'resolved');
+  if (persistedResolved) return { row: undefined, evidence: { ...resolvedEvidence, contextualPreservedPersistedResolvedEdge: true }, unresolvedReason: undefined };
   return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(resolvedEvidence), status: 'resolved' }, evidence: resolvedEvidence, unresolvedReason: undefined };
 }
 function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
@@ -488,7 +490,7 @@ export function trace(
     scope.selectorMatched
       ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1, context: new Map() }]
       : [];
-  if (scope.startOperationId) {
+  if (scope.startOperationId && scope.selectorMatched) {
     const op = operationNode(db, scope.startOperationId);
     const impl = implementationScope(db, scope.startOperationId);
     if (op) nodes.set(String(op.id), op);
@@ -550,15 +552,16 @@ export function trace(
         line: call.source_line,
         callType: call.call_type,
       });
-      const contextual = contextualRuntimeResolution(db, call, callerBindings.get(receiverFromEvidence(call.evidence_json) ?? ''), workspaceIdForCall(db, String(call.id)));
-      const graphRows = contextual.row ? [contextual.row] : (graph.get(Number(call.id)) ?? []);
+      const persistedRowsForCall = graph.get(Number(call.id)) ?? [];
+      const contextual = contextualRuntimeResolution(db, call, callerBindings.get(receiverFromEvidence(call.evidence_json) ?? ''), workspaceIdForCall(db, String(call.id)), persistedRowsForCall);
+      const graphRows = contextual.row ? [contextual.row] : persistedRowsForCall;
       for (const row of graphRows) {
         if (seenEdges.has(Number(row.id))) continue;
         seenEdges.add(Number(row.id));
         const persistedEvidence = JSON.parse(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
-        const rawEvidence = contextual.evidence ? { ...persistedEvidence, ...contextual.evidence } : persistedEvidence;
+        const rawEvidence = { ...persistedEvidence, ...(contextual.evidence ?? {}), graphEdgeId: row.id, persistedGraphEdgeId: row.id > 0 ? row.id : undefined, outboundCallId: call.id, callSite: { sourceFile: call.source_file, sourceLine: call.source_line }, sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, linker: { status: row.status, confidence: row.confidence, reason: row.unresolved_reason, edgeType: row.edge_type }, persistedTarget: { kind: row.to_kind, id: row.to_id }, contextualResolutionParticipated: Boolean(contextual.evidence?.contextualServiceBindingAttempted) };
         const effective = runtimeResolution(db, row, rawEvidence, options.vars);
         const evidence = effective.evidence;
         const effectiveRow = effective.row;

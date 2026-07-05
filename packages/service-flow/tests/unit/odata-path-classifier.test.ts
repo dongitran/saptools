@@ -21,4 +21,19 @@ describe('classifyODataPathIntent', () => {
       reason: 'get_collection_path_has_query_string',
     });
   });
+it.each([
+  ['/Documents', 'GET', 'entity_candidate', 'Documents'],
+  ['/Documents', 'POST', 'entity_mutation', 'Documents'],
+  ["/Documents('${id}')", 'PATCH', 'entity_mutation', 'Documents'],
+  ['/Documents(${document.ID})/content', 'PUT', 'entity_media', 'Documents'],
+  ["/Documents('${id}')", 'DELETE', 'entity_delete', 'Documents'],
+  ["/Documents('${id}')/items", 'GET', 'entity_navigation_query', 'Documents'],
+  ['/submitOrder', 'POST', 'operation_invocation', 'submitOrder'],
+  ['/calculatePrice', 'GET', 'unknown', 'calculatePrice'],
+  ['/UnknownThings', 'POST', 'entity_mutation', 'UnknownThings'],
+  ['/unknownThing', 'POST', 'operation_invocation', 'unknownThing'],
+])('classifies service-client path %s %s conservatively', (path, method, kind, entitySegment) => {
+  expect(classifyODataPathIntent(path, method)).toMatchObject({ kind, entitySegment });
+});
+
 });

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.33
+
+- Preserved persisted graph decisions and call-site evidence during trace and graph rendering while keeping contextual runtime resolution as enrichment.
+- Classified OData entity reads, mutations, deletes, navigation, media streams, and uppercase entity candidates as terminal remote entity edges instead of unresolved operation candidates.
+- Kept dynamic external HTTP destinations dynamic with stable synthetic ids, neutral labels, bounded safe candidates, and sanitized URL evidence.
+- Bumped the SQLite schema capability to version 7 and added strict doctor diagnostics for legacy schema drift and reindex-required external metadata.
+- Standardized terminal trace-start diagnostics so non-traversable starts return zero graph nodes and edges by default.
+
 ## 0.1.32
 
 - Hardened operation-first trace starts to fail closed on ambiguous, rejected, or non-executable implementation evidence.

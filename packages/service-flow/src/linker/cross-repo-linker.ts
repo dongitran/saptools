@@ -70,9 +70,16 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const servicePath = applyVariables((call.servicePathExpr as string | undefined) ?? (call.requireServicePath as string | undefined), vars);
   const destination = (call.destinationExpr as string | undefined) ?? (call.requireDestination as string | undefined);
   const isDynamic = Boolean(Number(call.isDynamic ?? 0));
-  const isOperationCall = (callType === 'remote_action' || callType === 'local_service_call') || (callType === 'remote_query' && Boolean(op));
+  const isRemoteEntityCall = callType.startsWith('remote_entity_');
+  const isOperationCall = !isRemoteEntityCall && ((callType === 'remote_action' || callType === 'local_service_call') || (callType === 'remote_query' && Boolean(op)));
   const resolution = isOperationCall ? resolveOperation(db, { servicePath, operationPath: op, serviceName: call.local_service_name as string | undefined, repoId: callType === 'local_service_call' ? Number(call.repo_id) : undefined, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 || callType === 'local_service_call' }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
   const evidence = callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent);
+  if (isRemoteEntityCall) {
+    const target = buildRemoteQueryTarget({ queryEntity: intent.entitySegment ?? call.query_entity, servicePath, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, parserWarning: evidence.parserWarning });
+    const entityKind = callType.replace('remote_entity_', 'remote_entity_');
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_ACCESSES_REMOTE_ENTITY', 'terminal', 'call', String(call.id), target.toKind, target.toId, Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, ...target.evidence, remoteEntityAccess: entityKind }), 0, generation);
+    return { status: 'terminal', callType };
+  }
   if (callType === 'remote_query' && (isEntityQueryIntent || !op) && !resolution.target) {
     const target = buildRemoteQueryTarget({ queryEntity: call.query_entity, servicePath, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, parserWarning: evidence.parserWarning });
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_RUNS_REMOTE_QUERY', 'terminal', 'call', String(call.id), target.toKind, target.toId, Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, ...target.evidence }), 0, generation);

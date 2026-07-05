@@ -7,7 +7,7 @@ export interface NormalizedODataOperationPath {
   normalizationRejectedReason?: string;
 }
 
-export type ODataPathIntentKind = 'operation_invocation' | 'entity_query' | 'entity_key_read' | 'entity_navigation_query' | 'unknown';
+export type ODataPathIntentKind = 'operation_invocation' | 'entity_query' | 'entity_key_read' | 'entity_navigation_query' | 'entity_mutation' | 'entity_delete' | 'entity_media' | 'entity_candidate' | 'unknown';
 
 export interface ODataPathIntent {
   kind: ODataPathIntentKind;
@@ -59,18 +59,25 @@ export function classifyODataPathIntent(path: string | undefined, method: string
   const placeholderKeys = [...new Set(extractTemplatePlaceholders(rawPath))];
   const base = { rawPath, method: normalizedMethod, pathWithoutQuery, queryString, hasQueryString: queryIndex >= 0, entitySegment, placeholderKeys };
   if (!rawPath || !rawPath.startsWith('/')) return { ...base, kind: 'unknown', reason: 'path_missing_or_not_absolute' };
-  if (normalizedMethod !== 'GET') return { ...base, kind: 'operation_invocation', reason: 'non_get_service_send_defaults_to_operation' };
+  const upperEntityLike = /^[A-Z][A-Za-z0-9_]*$/.test(entitySegment ?? firstSegment);
+  const mediaLike = ['content', '$value'].includes((segments.at(-1) ?? '').toLowerCase());
+  if (normalizedMethod !== 'GET') {
+    if (mediaLike) return { ...base, kind: 'entity_media', reason: 'non_get_entity_media_stream_path' };
+    if (upperEntityLike || firstSegment.includes('(') || hasNavigationSegments) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: 'non_get_entity_path_shape' };
+    return { ...base, kind: 'operation_invocation', reason: 'non_get_lowercase_path_may_be_operation' };
+  }
   if (queryIndex >= 0) {
     if (hasNavigationSegments) return { ...base, kind: 'entity_navigation_query', reason: 'get_path_has_navigation_and_query_string' };
     if (looksLikeLowerCamelInvocation(firstSegment)) return { ...base, kind: 'unknown', reason: 'get_invocation_with_query_string_requires_indexed_operation_evidence' };
     return { ...base, kind: 'entity_query', reason: 'get_collection_path_has_query_string' };
   }
-  if (hasNavigationSegments) return { ...base, kind: 'entity_navigation_query', reason: 'get_path_has_navigation_segments' };
+  if (hasNavigationSegments) return mediaLike ? { ...base, kind: 'entity_media', reason: 'get_entity_media_stream_path' } : { ...base, kind: 'entity_navigation_query', reason: 'get_path_has_navigation_segments' };
   if (firstSegment.includes('(')) {
     return looksLikeLowerCamelInvocation(firstSegment)
       ? { ...base, kind: 'operation_invocation', reason: 'get_single_lower_camel_segment_has_top_level_invocation' }
       : { ...base, kind: 'entity_key_read', reason: 'get_entity_segment_has_key_predicate' };
   }
+  if (/^[A-Z][A-Za-z0-9_]*$/.test(firstSegment)) return { ...base, kind: 'entity_candidate', reason: 'uppercase_collection_segment_without_indexed_entity_evidence' };
   return { ...base, kind: 'unknown', reason: 'get_path_has_no_query_key_or_navigation_signal' };
 }
 

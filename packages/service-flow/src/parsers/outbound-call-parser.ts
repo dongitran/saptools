@@ -95,6 +95,24 @@ function staticExpressionText(expr: ts.Expression | undefined, initializers: Map
   if (ts.isIdentifier(expr) && initializers.has(expr.text)) return staticExpressionText(initializers.get(expr.text), initializers);
   return undefined;
 }
+function destinationExpressionShape(expr: ts.Expression | undefined): string | undefined {
+  if (!expr) return undefined;
+  if (ts.isIdentifier(expr)) return 'identifier';
+  if (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr)) return 'property_read';
+  if (ts.isCallExpression(expr)) return 'function_call';
+  if (ts.isConditionalExpression(expr)) return 'conditional';
+  if (ts.isBinaryExpression(expr)) return 'binary_expression';
+  if (ts.isTemplateExpression(expr)) return 'template_expression';
+  return ts.SyntaxKind[expr.kind] ?? 'expression';
+}
+function staticConditionalCandidates(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): string[] | undefined {
+  const resolved = expr && ts.isIdentifier(expr) && initializers.has(expr.text) ? initializers.get(expr.text) : expr;
+  if (!resolved || !ts.isConditionalExpression(resolved)) return undefined;
+  const left = staticExpressionText(resolved.whenTrue, initializers);
+  const right = staticExpressionText(resolved.whenFalse, initializers);
+  if (!left || !right) return undefined;
+  return [...new Set([left, right])];
+}
 function propertyInitializer(object: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined {
   for (const property of object.properties) {
     if (ts.isPropertyAssignment(property) && nameOfProperty(property.name) === key) return property.initializer;
@@ -115,7 +133,10 @@ function urlTargetFromExpression(expr: ts.Expression | undefined, initializers: 
 function destinationTargetFromExpression(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): Record<string, unknown> | undefined {
   const text = staticExpressionText(expr, initializers);
   if (text) return { kind: 'destination', expression: text, dynamic: false };
-  if (expr && ts.isIdentifier(expr)) return { kind: 'destination', expression: expr.text, dynamic: true };
+  const candidates = staticConditionalCandidates(expr, initializers);
+  if (candidates) return { kind: 'destination', dynamic: true, expressionShape: 'conditional', candidateLiterals: candidates };
+  const shape = destinationExpressionShape(expr);
+  if (shape) return { kind: 'destination', dynamic: true, expressionShape: shape };
   return undefined;
 }
 function externalHttpEvidence(node: ts.CallExpression, source: ts.SourceFile, initializers: Map<string, ts.Expression>): { method?: string; externalTarget: Record<string, unknown>; classifier: string; sourceCallShape: string } | undefined {
@@ -264,8 +285,10 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
           const operationPathExpr = op && !shorthandPath ? `/${stripQuotes(op).replace(/^\//, '')}` : undefined;
           const intent = classifyODataPathIntent(operationPathExpr, method);
+          const entityCallTypes: Record<string, OutboundCallFact['callType']> = { entity_mutation: 'remote_entity_mutation', entity_delete: 'remote_entity_delete', entity_media: 'remote_entity_media', entity_candidate: 'remote_entity_candidate' };
+          const entityCallType = entityCallTypes[intent.kind];
           const isODataQueryRead = method.toUpperCase() === 'GET' && ['entity_query', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
-          add(node, { callType: query || isODataQueryRead ? 'remote_query' : 'remote_action', serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
+          add(node, { callType: query ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && shorthandPath ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: shorthandPath ? 'dynamic_operation_path_identifier' : undefined });
         }
       } else if (((ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) || (ts.isIdentifier(expr) && wrapperSpecs.has(expr.text)))) {
         const wrapperName = ts.isIdentifier(expr) ? expr.text : ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) ? expr.expression.text : '';
