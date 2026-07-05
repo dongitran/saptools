@@ -26,6 +26,7 @@ export type EdgeType =
   | 'HANDLER_RUNS_DB_QUERY'
   | 'HANDLER_RUNS_REMOTE_QUERY'
   | 'HANDLER_CALLS_EXTERNAL_HTTP'
+  | 'HANDLER_CALLS_TRANSPORT_METHOD'
   | 'HANDLER_EMITS_EVENT'
   | 'EVENT_CONSUMED_BY_HANDLER'
   | 'REPO_IMPORTS_HELPER_PACKAGE'
@@ -124,6 +125,7 @@ export interface OutboundCallFact {
   confidence: number;
   unresolvedReason?: string;
   evidence?: Record<string, unknown>;
+  externalTarget?: { kind: string; stableId: string; label: string; dynamic: boolean };
 }
 export interface ExecutableSymbolFact {
   kind: string;

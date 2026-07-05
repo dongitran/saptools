@@ -490,3 +490,14 @@ The `graph` command accepts repeatable `--var key=value` options, matching `trac
 ### 0.1.17 parser ownership policy
 
 Outbound call extraction is AST-based and ignores comments, block comments, and string literals. CAP/service `.on(...)` registrations are indexed only when the receiver has CAP/service evidence, and top-level registrations receive `module:<relative-file>#event:<event-name>:<line>` synthetic owners. Generic event emitters such as desktop or window events are ignored by default rather than guessed as CAP async edges. Unsupported source shapes are surfaced through diagnostics and strict doctor ownerless categories instead of guessed graph edges.
+
+
+## 0.1.32 hardening notes
+
+Operation trace starts resolve indexed CDS operations before handler fallback. Ambiguous operation matches, ambiguous/rejected implementation edges, and resolved edges without an executable handler scope now fail closed with structured `resolutionStage` and `resolutionStatus` diagnostics and no speculative traversal. Handler fallback is only considered when no indexed CDS operation matches and the fallback is unique under the existing registration and ownership policy.
+
+Decorator signals are interpreted as resolved, absent, unsupported, or malformed. Only resolved string/template values, generated `Action<Name>.name`/`Func<Name>.name` constants, qualified generated constants ending in `.name`, and narrow safe `String(identifier)` wrappers can contradict method-name fallback. Unsupported expressions are preserved as evidence but are not treated as proof that a handler targets another operation.
+
+External HTTP facts persist queryable target kind, stable id, safe label, and dynamic flag on `outbound_calls`; graph evidence uses the same sanitized model. URL user info, fragments, query values, headers, cookies, credentials, tokens, API keys, and request/response bodies are not persisted. Legacy workspaces may relink from old evidence when possible, but full semantic enrichment requires re-index plus relink when old parser facts did not contain safe target metadata.
+
+Graph taxonomy now keeps CAP operation candidates separate from external HTTP targets. Dynamic, ambiguous, and unresolved CAP calls use operation-candidate semantics, external destinations/endpoints are produced only by `external_http` calls, and terminal local transport-client methods use transport-method semantics rather than external HTTP edges. `doctor --strict` reports external target quality and taxonomy consistency.

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
+import { externalHttpTarget } from '../linker/external-http-target.js';
 import type { OutboundCallFact } from '../types.js';
 import { normalizePath, stripQuotes } from '../utils/path-utils.js';
 import { summarizeExpression } from '../utils/redaction.js';
@@ -287,7 +288,11 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         }
       } else {
         const external = externalHttpEvidence(node, source, initializers);
-        if (external) add(node, { callType: 'external_http', method: external.method, payloadSummary: summarizeExpression(node.arguments.map((arg) => arg.getText(source)).join(', ')), confidence: 0.7, unresolvedReason: 'External HTTP destination is outside indexed CAP services' }, { classifier: external.classifier, externalTarget: { ...external.externalTarget, method: external.method, parserClassifier: external.classifier, sourceCallShape: external.sourceCallShape }, sourceCallShape: external.sourceCallShape });
+        if (external) {
+          const evidenceTarget = { ...external.externalTarget, method: external.method, parserClassifier: external.classifier, sourceCallShape: external.sourceCallShape };
+          const safeTarget = externalHttpTarget({ method: external.method, evidence_json: JSON.stringify({ externalTarget: evidenceTarget }) });
+          add(node, { callType: 'external_http', method: external.method, payloadSummary: undefined, confidence: 0.7, unresolvedReason: 'External HTTP destination is outside indexed CAP services', externalTarget: { kind: safeTarget.kind, stableId: safeTarget.toId, label: safeTarget.label, dynamic: safeTarget.dynamic } }, { classifier: external.classifier, externalTarget: safeTarget, sourceCallShape: external.sourceCallShape });
+        }
       }
     }
     ts.forEachChild(node, visit);

@@ -313,7 +313,7 @@ export function insertCalls(
   rows: OutboundCallFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,evidence_json,service_binding_id) VALUES(?,COALESCE((SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1)),?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
+    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,evidence_json,external_target_kind,external_target_id,external_target_label,external_target_dynamic,service_binding_id) VALUES(?,COALESCE((SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1)),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
   );
   for (const r of rows)
     stmt.run(
@@ -339,6 +339,10 @@ export function insertCalls(
       r.localServiceLookup,
       r.aliasChain ? JSON.stringify(r.aliasChain) : null,
       r.evidence ? JSON.stringify(r.evidence) : null,
+      r.externalTarget?.kind ?? null,
+      r.externalTarget?.stableId ?? null,
+      r.externalTarget?.label ?? null,
+      r.externalTarget?.dynamic ? 1 : 0,
       repoId,
       r.serviceVariableName,
       r.sourceFile,

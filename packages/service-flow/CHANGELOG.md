@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.32
+
+- Hardened operation-first trace starts to fail closed on ambiguous, rejected, or non-executable implementation evidence.
+- Made decorator normalization explicit and conservative for unsupported expressions.
+- Populated queryable external HTTP target metadata with sanitized labels and kept CAP candidates distinct from HTTP endpoints.
+- Removed accidental fresh-schema external-target columns from symbols and documented migration/re-index expectations.
+
 ## 0.1.31
 
 - Resolve operation and path trace selectors from indexed CDS operations and persisted implementation edges before conservative handler fallback, including generated `Action<Name>` and `Func<Name>` decorator constants whose method names differ from public operation names.
