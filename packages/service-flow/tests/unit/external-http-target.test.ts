@@ -19,3 +19,17 @@ describe('external HTTP target normalization', () => {
     expect(dynamic.label).toBe('External endpoint: dynamic URL');
   });
 });
+
+it('keeps unknown destination identifiers dynamic and neutral', () => {
+  const target = externalHttpTarget({ evidence_json: JSON.stringify({ externalTarget: { kind: 'destination', dynamic: true, expressionShape: 'identifier' } }) });
+  expect(target.dynamic).toBe(true);
+  expect(target.toId).toMatch(/^destination:dynamic:/);
+  expect(target.label).toBe('External destination: dynamic destination');
+  expect(target.label).not.toContain('destinationName');
+});
+
+it('exposes only safe conditional destination candidates', () => {
+  const target = externalHttpTarget({ evidence_json: JSON.stringify({ externalTarget: { kind: 'destination', dynamic: true, expressionShape: 'conditional', candidateLiterals: ['EXTERNAL_PRIMARY', 'EXTERNAL_SECONDARY'] } }) });
+  expect(target.dynamic).toBe(true);
+  expect(target.expression).toBe('candidates:EXTERNAL_PRIMARY|EXTERNAL_SECONDARY');
+});

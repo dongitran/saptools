@@ -1,6 +1,14 @@
 # Service Flow Resolution Notes
 
 
+## 0.1.33 trace, entity, destination, and upgrade notes
+
+- Trace and graph rendering use persisted resolved graph rows as authoritative base edges. Runtime/contextual resolution may add evidence such as substitutions or binding propagation, but persisted graph edge ids, outbound call ids, call-site file/line, parser evidence, linker status, selected target id, and target evidence remain present in effective edges.
+- The trace-start machine contract is fail-closed: terminal start diagnostics produce zero graph nodes and zero graph edges by default. Candidate operations, implementation candidates, rejected edges, and selected ids are diagnostics-only evidence.
+- Service-client OData entity paths are separated from action/function invocations. Entity reads, mutations, deletes, navigation, media stream calls, and uppercase entity-set candidates become terminal remote entity graph edges; lowercase operation-looking paths still go through operation resolution when indexed evidence exists.
+- External HTTP destination extraction uses conservative static evaluation. Literals and safe local const literals are static; all other expressions stay dynamic unless a conditional has all-static branches, in which case only the candidate literals and sanitized expression shape are persisted.
+- Schema version 7 follows an explicit reindex-required upgrade policy. Legacy external-target columns on `symbols` or missing queryable external metadata are strict doctor warnings with rebuild/reindex remediation instead of silent relink-only drift.
+
 ## 0.1.31 selector and external target notes
 
 Operation trace selectors are resolved from CDS operation facts before handler-source fallback. The start resolver scopes by repository and service path, requires disambiguation when multiple repositories or services match, and only queues traversal from a resolved implementation edge. Generated operation decorator constants are normalized in `operation-decorator-normalizer` so linker, trace fallback, diagnostics, and tests share one conservative implementation.

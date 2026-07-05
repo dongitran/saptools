@@ -740,6 +740,12 @@ export class FlowHandler {
     expect(JSON.parse(calculateScore.evidenceJson)).toMatchObject({ targetOperationPath: '/calculateScore' });
     const result = trace(db, { repo: 'facade-service', servicePath: '/FacadeService', operation: 'runFlow' }, { depth: 10, includeExternal: true });
     expect(result.edges.some((edge) => String(edge.to).includes('/ConfigService/readConfig'))).toBe(true);
+    const persistedRemoteEdge = result.edges.find((edge) => edge.type === 'remote_action' && String(edge.to).includes('/ConfigService/readConfig'));
+    expect(typeof persistedRemoteEdge?.evidence.outboundCallId).toBe('number');
+    expect(typeof persistedRemoteEdge?.evidence.graphEdgeId).toBe('number');
+    expect(persistedRemoteEdge?.evidence).toMatchObject({ callSite: { sourceFile: 'srv/FlowHandler.ts' }, linker: { status: 'resolved' }, persistedTarget: { kind: 'operation' }, contextualResolutionParticipated: true });
+    expect(typeof (persistedRemoteEdge?.evidence.callSite as { sourceLine?: unknown } | undefined)?.sourceLine).toBe('number');
+    expect(persistedRemoteEdge?.evidence.outboundEvidence).toMatchObject({ parser: 'typescript_ast' });
     expect(result.edges.some((edge) => edge.type === 'operation_implemented_by_handler' && String(edge.to).includes('ConfigHandler.readConfig'))).toBe(true);
     expect(result.edges.some((edge) => edge.type === 'remote_query' && String(edge.to).includes('Remote entity: /ConfigService:UserGroups'))).toBe(true);
     const before = db.prepare("SELECT status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.operation_path_expr='/${operationName}'").get() as { status: string };

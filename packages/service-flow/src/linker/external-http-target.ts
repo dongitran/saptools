@@ -22,6 +22,11 @@ export function externalHttpTarget(call: Record<string, unknown>): ExternalHttpT
   const method = typeof call.method === 'string' ? call.method : typeof target.method === 'string' ? target.method : undefined;
   const kind = typeof target.kind === 'string' ? target.kind : 'unknown';
   const expression = typeof target.expression === 'string' ? target.expression : undefined;
+  if (kind === 'destination' && target.dynamic === true) {
+    const shape = typeof target.expressionShape === 'string' ? target.expressionShape : 'expression';
+    const candidates = Array.isArray(target.candidateLiterals) ? target.candidateLiterals.filter((item): item is string => typeof item === 'string') : [];
+    return { kind, toKind: 'external_destination', toId: `destination:dynamic:${hash(`${shape}:${candidates.join('|')}`)}`, label: 'External destination: dynamic destination', method, dynamic: true, expression: candidates.length ? `candidates:${candidates.join('|')}` : `shape:${shape}` };
+  }
   if (kind === 'destination' && expression) return { kind, toKind: 'external_destination', toId: `destination:${expression}`, label: `External destination: ${expression}`, method, dynamic: false, expression };
   if (kind === 'static_url' && expression) {
     const redacted = redactUrl(expression);

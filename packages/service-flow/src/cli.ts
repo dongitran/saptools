@@ -90,6 +90,21 @@ async function withReadOnlyWorkspace<T>(
     db.close();
   }
 }
+function schemaDriftDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
+  if (!strict) return [];
+  const symbolColumns = db.prepare("PRAGMA table_info(symbols)").all() as Array<{ name?: string }>;
+  const legacy = symbolColumns.filter((row) => ['external_target_kind','external_target_id','external_target_label','external_target_dynamic'].includes(String(row.name))).map((row) => row.name);
+  const missingExternal = db.prepare("SELECT id id,source_file sourceFile,source_line sourceLine FROM outbound_calls WHERE call_type='external_http' AND (external_target_id IS NULL OR external_target_label IS NULL OR external_target_kind IS NULL) LIMIT 20").all() as Array<Record<string, unknown>>;
+  const diagnostics: Array<Record<string, unknown>> = [];
+  if (legacy.length > 0) diagnostics.push({ severity: 'warning', code: 'schema_legacy_columns_present', message: 'Legacy external-target columns are present on symbols; run service-flow clean --db-only, then init/index/link to rebuild with the current schema.', scope: 'workspace', affectedColumns: legacy, remediation: 'service-flow clean --db-only && service-flow init <workspace> && service-flow index && service-flow link' });
+  if (missingExternal.length > 0) diagnostics.push({ severity: 'warning', code: 'external_target_columns_missing_data', message: 'External HTTP calls are missing queryable external target metadata; reindex is required after upgrade.', scope: 'workspace', affectedRows: missingExternal, remediation: 'service-flow index --force && service-flow link' });
+  if (legacy.length > 0 || missingExternal.length > 0) diagnostics.push({ severity: 'warning', code: 'reindex_required_after_upgrade', message: 'This database cannot be made equivalent to a fresh index by relink alone.', scope: 'workspace', remediation: 'Rebuild or force reindex the workspace, then run service-flow doctor --strict.' });
+  return diagnostics;
+}
+function linkUpgradeWarnings(db: ReturnType<typeof openDatabase>): Array<Record<string, unknown>> {
+  return schemaDriftDiagnostics(db, true).filter((item) => ['schema_legacy_columns_present','external_target_columns_missing_data','reindex_required_after_upgrade'].includes(String(item.code)));
+}
+
 function localServiceDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
   const rows = db.prepare(`SELECT e.status status,e.unresolved_reason reason,e.evidence_json evidenceJson FROM graph_edges e JOIN outbound_calls c ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER) WHERE c.call_type='local_service_call'`).all() as Array<{ status?: string; reason?: string | null; evidenceJson?: string }>;
   const implementationContext = rows.filter((row) => row.status === 'resolved' && String(row.evidenceJson ?? '').includes('implementation_context_caller_ownership')).length;
@@ -438,8 +453,9 @@ export function createProgram(): Command {
       (opts: { workspace?: string }) =>
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
+          const upgradeWarnings = linkUpgradeWarnings(db);
           process.stdout.write(
-            `Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved\n`,
+            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved\n`,
           );
         }).catch(fail),
     );
@@ -723,7 +739,8 @@ export function createProgram(): Command {
             .all(Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict), Boolean(opts.strict)) as Array<Record<string, unknown>>;
           const localServiceHealth = localServiceDiagnostics(db, Boolean(opts.strict));
           const parserQualityHealth = parserQualityDiagnostics(db, Boolean(opts.strict));
-          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth, ...parserQualityHealth];
+          const schemaDriftHealth = schemaDriftDiagnostics(db, Boolean(opts.strict));
+          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth, ...schemaDriftHealth, ...parserQualityHealth];
           process.stdout.write(
             allDiagnostics.length
               ? renderJson(allDiagnostics)
