@@ -27,7 +27,7 @@ it.each([
   ["/Documents('${id}')", 'PATCH', 'entity_mutation', 'Documents'],
   ['/Documents(${document.ID})/content', 'PUT', 'entity_media', 'Documents'],
   ["/Documents('${id}')", 'DELETE', 'entity_delete', 'Documents'],
-  ["/Documents('${id}')/items", 'GET', 'entity_navigation_query', 'Documents'],
+  ["/Documents('${id}')/items", 'GET', 'entity_media', 'Documents'],
   ['/submitOrder', 'POST', 'operation_invocation', 'submitOrder'],
   ['/calculatePrice', 'GET', 'unknown', 'calculatePrice'],
   ['/UnknownThings', 'POST', 'entity_mutation', 'UnknownThings'],
@@ -36,4 +36,19 @@ it.each([
   expect(classifyODataPathIntent(path, method)).toMatchObject({ kind, entitySegment });
 });
 
+});
+
+describe('entity-key placeholders versus operation arguments', () => {
+  it.each([
+    ['/DocumentAttachment(${attachment.ID})/file', 'PUT', 'entity_media', ['attachment.ID'], 'file'],
+    ["/DocumentAttachment('${file.ID}')/content", 'PUT', 'entity_media', ['file.ID'], 'content'],
+    ['/DocumentAttachment(${attachmentID})', 'GET', 'entity_key_read', ['attachmentID'], undefined],
+    ['/refreshCache(id=${request.ID})', 'POST', 'operation_invocation', [], undefined],
+  ])('separates placeholder evidence for %s', (path, method, kind, keyPlaceholders, suffix) => {
+    expect(classifyODataPathIntent(path, method)).toMatchObject({
+      kind,
+      keyPredicatePlaceholderKeys: keyPlaceholders,
+      mediaOrPropertySuffix: suffix,
+    });
+  });
 });

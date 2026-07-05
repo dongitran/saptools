@@ -71,17 +71,20 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const destination = (call.destinationExpr as string | undefined) ?? (call.requireDestination as string | undefined);
   const isDynamic = Boolean(Number(call.isDynamic ?? 0));
   const isRemoteEntityCall = callType.startsWith('remote_entity_');
-  const operationLikeRemoteEntity = isRemoteEntityCall && Boolean(op) && !['entity_media', 'entity_delete', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
+  const indexedOperationCandidateCount = operationCandidateCount(db, workspaceId, op, intent.topLevelOperationName);
+  const credibleOperationSignal = Boolean(normalized?.wasInvocation) || (Boolean(intent.topLevelOperationNameCandidate) && indexedOperationCandidateCount > 0);
+  const strongEntitySignal = ['entity_media', 'entity_delete', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind) || (intent.kind === 'entity_mutation' && (intent.hasEntityKeyPredicate || intent.hasNavigationSuffix));
+  const operationLikeRemoteEntity = isRemoteEntityCall && Boolean(op) && credibleOperationSignal && (!strongEntitySignal || indexedOperationCandidateCount > 0);
   const isOperationCall = operationLikeRemoteEntity || ((callType === 'remote_action' || callType === 'local_service_call') || (callType === 'remote_query' && Boolean(op)));
   const resolution = isOperationCall ? resolveOperation(db, { servicePath, operationPath: op, serviceName: call.local_service_name as string | undefined, repoId: callType === 'local_service_call' ? Number(call.repo_id) : undefined, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 || callType === 'local_service_call' }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
-  const evidence = callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent);
+  const evidence: Record<string, unknown> = { ...callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent), indexedOperationCandidateCount, parserCallType: callType };
   if (isRemoteEntityCall && (resolution.target || resolution.candidates.length > 0 || resolution.status === 'dynamic')) {
     if (resolution.target) {
       db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify({ ...evidence, operationEntityPrecedence: 'indexed_operation_over_parser_entity' }), 0, generation);
       return { status: 'resolved', callType };
     }
     const status = resolution.status === 'dynamic' ? 'dynamic' : resolution.status === 'ambiguous' ? 'ambiguous' : 'unresolved';
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE', status, 'call', String(call.id), 'operation_candidate', op ? `Remote action: ${op}` : 'Remote action: unknown path', Number(call.confidence ?? 0.2), JSON.stringify({ ...evidence, operationEntityPrecedence: 'parser_entity_with_indexed_operation_candidates' }), status === 'dynamic' ? 1 : 0, unresolvedOperationReason(resolution), generation);
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, status === 'dynamic' ? 'DYNAMIC_EDGE_CANDIDATE' : 'UNRESOLVED_EDGE', status, 'call', String(call.id), 'operation_candidate', op ? `Remote action: ${op}` : 'Remote action: unknown path', Number(call.confidence ?? 0.2), JSON.stringify({ ...evidence, operationEntityPrecedence: resolution.candidates.length > 0 ? 'parser_entity_with_indexed_operation_candidates' : 'parser_entity_operation_candidate_without_indexed_match' }), status === 'dynamic' ? 1 : 0, unresolvedOperationReason(resolution), generation);
     return { status, callType };
   }
   if (isRemoteEntityCall) {
@@ -114,6 +117,13 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, edgeType, status, 'call', String(call.id), targetKind, targetId, Number(call.confidence ?? 0.2), JSON.stringify(finalEvidence), graphLevelDynamic ? 1 : 0, unresolvedReason, generation);
   return { status, callType };
 }
+function operationCandidateCount(db: Db, workspaceId: number, operationPath: string | undefined, operationName: string | undefined): number {
+  if (!operationPath && !operationName) return 0;
+  const normalizedName = operationName ?? operationPath?.replace(/^\//, '').split('.').at(-1);
+  const row = db.prepare(`SELECT COUNT(*) count FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_path=? OR o.operation_path=? OR o.operation_name=?)`).get(workspaceId, operationPath, normalizedName ? `/${normalizedName}` : operationPath, normalizedName) as { count?: number } | undefined;
+  return Number(row?.count ?? 0);
+}
+
 function unresolvedOperationReason(resolution: { candidates: unknown[]; status: string; reasons: string[] }): string {
   if (resolution.status === 'dynamic') return `Dynamic target requires runtime variable overrides: ${(resolution.reasons.length ? resolution.reasons : ['missing runtime variables']).join(', ')}`;
   if (resolution.candidates.length === 0) return 'No indexed target operation matched';

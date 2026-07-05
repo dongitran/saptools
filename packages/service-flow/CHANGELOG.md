@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.35
+
+- Hardened OData path precedence so entity key, navigation, and media/property paths with placeholders remain terminal entity evidence instead of dynamic operation candidates.
+- Preserved separate evidence for service-routing placeholders, operation invocation argument placeholders, and entity key placeholders.
+- Render operation-resolved parser entity calls as operation calls in traces while retaining the original parser call type for auditability.
+- Added strict doctor coverage for dynamic remote-entity false positives without indexed operation evidence.
+
 ## 0.1.34
 
 - Prefer indexed CDS operation evidence over heuristic remote-entity classification for service-client operation invocations, while keeping true collection, entity, delete, navigation, and media paths terminal.

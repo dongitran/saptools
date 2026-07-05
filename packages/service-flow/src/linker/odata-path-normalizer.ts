@@ -18,6 +18,16 @@ export interface ODataPathIntent {
   hasQueryString: boolean;
   entitySegment?: string;
   placeholderKeys: string[];
+  keyPredicatePlaceholderKeys: string[];
+  invocationArgumentPlaceholderKeys: string[];
+  navigationSuffix?: string;
+  mediaOrPropertySuffix?: string;
+  hasEntityKeyPredicate: boolean;
+  hasNavigationSuffix: boolean;
+  hasMediaOrPropertySuffix: boolean;
+  topLevelOperationName?: string;
+  topLevelOperationNameCandidate: boolean;
+  topLevelOperationInvocation: boolean;
   reason: string;
 }
 
@@ -57,15 +67,28 @@ export function classifyODataPathIntent(path: string | undefined, method: string
   const hasNavigationSegments = segments.length > 1;
   const entitySegment = entitySegmentFromPath(pathWithoutQuery);
   const placeholderKeys = [...new Set(extractTemplatePlaceholders(rawPath))];
-  const base = { rawPath, method: normalizedMethod, pathWithoutQuery, queryString, hasQueryString: queryIndex >= 0, entitySegment, placeholderKeys };
+  const firstOpen = firstSegment.indexOf('(');
+  const firstClose = firstOpen >= 0 ? matchingClose(firstSegment, firstOpen) : undefined;
+  const keyPredicateText = firstOpen >= 0 && firstClose !== undefined ? firstSegment.slice(firstOpen + 1, firstClose) : '';
+  const rawKeyPredicatePlaceholderKeys = [...new Set(extractTemplatePlaceholders(keyPredicateText))];
+  const navigationSuffix = hasNavigationSegments ? segments.slice(1).join('/') : undefined;
+  const lastSegment = segments.at(-1) ?? '';
+  const mediaOrPropertySuffix = hasNavigationSegments ? lastSegment : undefined;
+  const invocation = normalizeODataOperationInvocationPath(pathWithoutQuery);
+  const operationNameFromInvocation = invocation?.wasInvocation ? invocation.normalizedOperationPath.replace(/^\//, '').split('.').at(-1) : undefined;
+  const topLevelName = firstSegment.split('(')[0]?.replace(/^\//, '');
+  const topLevelOperationName = operationNameFromInvocation ?? (!hasNavigationSegments && !firstSegment.includes('(') ? topLevelName : undefined);
+  const topLevelOperationInvocation = Boolean(invocation?.wasInvocation && looksLikeLowerCamelInvocation(firstSegment));
+  const keyPredicatePlaceholderKeys = topLevelOperationInvocation ? [] : rawKeyPredicatePlaceholderKeys;
+  const topLevelOperationNameCandidate = Boolean(topLevelOperationName && !hasNavigationSegments && !firstSegment.includes('('));
+  const base = { rawPath, method: normalizedMethod, pathWithoutQuery, queryString, hasQueryString: queryIndex >= 0, entitySegment, placeholderKeys, keyPredicatePlaceholderKeys, invocationArgumentPlaceholderKeys: invocation?.invocationArgumentPlaceholderKeys ?? [], navigationSuffix, mediaOrPropertySuffix, hasEntityKeyPredicate: firstOpen >= 0 && firstClose !== undefined, hasNavigationSuffix: hasNavigationSegments, hasMediaOrPropertySuffix: Boolean(mediaOrPropertySuffix && isMediaOrPropertySuffix(mediaOrPropertySuffix)), topLevelOperationName, topLevelOperationNameCandidate, topLevelOperationInvocation };
   if (!rawPath || !rawPath.startsWith('/')) return { ...base, kind: 'unknown', reason: 'path_missing_or_not_absolute' };
   const upperEntityLike = /^[A-Z][A-Za-z0-9_]*$/.test(entitySegment ?? firstSegment);
-  const mediaLike = ['content', '$value'].includes((segments.at(-1) ?? '').toLowerCase());
-  const invocation = normalizeODataOperationInvocationPath(pathWithoutQuery);
+  const mediaLike = isMediaOrPropertySuffix(segments.at(-1) ?? '');
   if (normalizedMethod !== 'GET') {
     if (invocation?.wasInvocation && looksLikeLowerCamelInvocation(firstSegment)) return { ...base, kind: 'operation_invocation', reason: 'non_get_balanced_top_level_operation_invocation' };
     if (mediaLike) return { ...base, kind: 'entity_media', reason: 'non_get_entity_media_stream_path' };
-    if (hasNavigationSegments || firstSegment.includes('(')) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: 'non_get_entity_path_shape' };
+    if (hasNavigationSegments || firstSegment.includes('(')) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: firstSegment.includes('(') ? 'non_get_entity_key_or_navigation_path_shape' : 'non_get_entity_navigation_path_shape' };
     if (upperEntityLike) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: 'non_get_entity_path_shape' };
     return { ...base, kind: 'operation_invocation', reason: 'non_get_lowercase_path_may_be_operation' };
   }
@@ -91,6 +114,10 @@ function entitySegmentFromPath(path: string): string | undefined {
   const open = first.indexOf('(');
   const entity = (open >= 0 ? first.slice(0, open) : first).trim();
   return entity || undefined;
+}
+
+function isMediaOrPropertySuffix(segment: string): boolean {
+  return ['file', 'content', '$value', 'metadata', 'items'].includes(segment.toLowerCase());
 }
 
 function looksLikeLowerCamelInvocation(segment: string): boolean {

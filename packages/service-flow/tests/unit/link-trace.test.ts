@@ -778,3 +778,30 @@ export class FlowHandler {
     db.close();
   });
 });
+
+describe('service-flow OData entity and operation precedence hardening', () => {
+  it('keeps entity key and media placeholders terminal while resolving explicit operations', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-documents-link-'));
+    const dbPath = path.join(root, 'graph.db');
+    const db = openDatabase(dbPath);
+    const workspaceId = upsertWorkspace(db, root, dbPath);
+    const documentsRepo = upsertRepository(db, workspaceId, { name: 'documents-api', absolutePath: path.join(root, 'documents-api'), relativePath: 'documents-api', isGitRepo: false, packageName: 'documents-api', kind: 'cap-service' });
+    const callerRepo = upsertRepository(db, workspaceId, { name: 'workflow-api', absolutePath: path.join(root, 'workflow-api'), relativePath: 'workflow-api', isGitRepo: false, packageName: 'workflow-api', kind: 'cap-service' });
+    const serviceId = Number(db.prepare("INSERT INTO cds_services(repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?) RETURNING id").get(documentsRepo, 'DocumentService', 'DocumentService', '/DocumentService', 0, 'srv/service.cds', 1)?.id);
+    db.prepare("INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)").run(serviceId, 'action', 'refreshCache', '/refreshCache', '[]', 'String', 'srv/service.cds', 8);
+    const bindingId = Number(db.prepare("INSERT INTO service_bindings(repo_id,variable_name,alias,service_path_expr,is_dynamic,placeholders_json,source_file,source_line) VALUES(?,?,?,?,?,?,?,?) RETURNING id").get(callerRepo, 'documentService', 'documents-api', '/DocumentService', 0, '[]', 'srv/handler.ts', 3)?.id);
+    const insertCall = db.prepare("INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?)");
+    insertCall.run(callerRepo, 'remote_entity_mutation', bindingId, 'POST', '/DocumentAttachment', 'DocumentAttachment', 'srv/handler.ts', 4, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    insertCall.run(callerRepo, 'remote_entity_media', bindingId, 'PUT', '/DocumentAttachment(${attachment.ID})/file', 'DocumentAttachment', 'srv/handler.ts', 5, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    insertCall.run(callerRepo, 'remote_query', bindingId, 'GET', '/DocumentAttachment(${attachmentID})', 'DocumentAttachment', 'srv/handler.ts', 6, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    insertCall.run(callerRepo, 'remote_entity_mutation', bindingId, 'POST', '/refreshCache()', 'refreshCache', 'srv/handler.ts', 7, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    linkWorkspace(db, workspaceId);
+    const rows = db.prepare("SELECT c.operation_path_expr path,e.edge_type edgeType,e.status status,e.to_kind toKind,e.unresolved_reason unresolvedReason,e.evidence_json evidenceJson FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) ORDER BY c.source_line").all() as Array<{ path: string; edgeType: string; status: string; toKind: string; unresolvedReason: string | null; evidenceJson: string }>;
+    expect(rows.find((row) => row.path.includes('/file'))).toMatchObject({ edgeType: 'HANDLER_ACCESSES_REMOTE_ENTITY', status: 'terminal', toKind: 'remote_entity', unresolvedReason: null });
+    expect(JSON.parse(rows.find((row) => row.path.includes('/file'))?.evidenceJson ?? '{}')).toMatchObject({ odataPathIntent: { kind: 'entity_media', keyPredicatePlaceholderKeys: ['attachment.ID'] }, indexedOperationCandidateCount: 0 });
+    expect(rows.find((row) => row.path.includes('attachmentID'))).toMatchObject({ edgeType: 'HANDLER_RUNS_REMOTE_QUERY', status: 'terminal', unresolvedReason: null });
+    expect(rows.find((row) => row.path === '/refreshCache()')).toMatchObject({ edgeType: 'REMOTE_CALL_RESOLVES_TO_OPERATION', status: 'resolved', toKind: 'operation' });
+    expect(rows.some((row) => row.unresolvedReason?.includes('attachment.ID'))).toBe(false);
+    db.close();
+  });
+});
