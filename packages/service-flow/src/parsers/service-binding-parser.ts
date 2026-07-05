@@ -13,6 +13,7 @@ interface HelperBinding {
   servicePathExpr?: string;
   isDynamic: boolean;
   placeholders: string[];
+  helperChain?: Array<Record<string, unknown>>;
   sourceFile: string;
   sourceLine: number;
 }
@@ -231,18 +232,37 @@ async function importsFor(
   }
   return imports;
 }
-function collectReturnedObjectBindings(
+function collectLocalBindingFacts(
   fn: ts.FunctionLikeDeclaration,
 ): Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>> {
   const bindings = new Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>>();
-  const returns = new Map<string, string>();
   function visit(node: ts.Node): void {
     if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
       return;
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const fact = findConnectInExpression(node.initializer);
       if (fact) bindings.set(node.name.text, fact);
+      const call = unwrapCall(node.initializer);
+      if (call && ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'tx' && ts.isIdentifier(call.expression.expression)) {
+        const sourceName = call.expression.expression.text;
+        const source = bindings.get(sourceName);
+        if (source) bindings.set(node.name.text, { ...source, helperChain: [...(source.helperChain ?? []), { aliasOf: sourceName, callerVariable: node.name.text, aliasKind: 'transaction', transactionAliasSource: sourceName }] });
+      }
     }
+    ts.forEachChild(node, visit);
+  }
+  visit(fn);
+  return bindings;
+}
+
+function collectReturnedObjectBindings(
+  fn: ts.FunctionLikeDeclaration,
+): Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>> {
+  const bindings = collectLocalBindingFacts(fn);
+  const returns = new Map<string, string>();
+  function visit(node: ts.Node): void {
+    if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
+      return;
     if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
       for (const prop of node.expression.properties) {
         if (ts.isShorthandPropertyAssignment(prop)) returns.set(prop.name.text, prop.name.text);
@@ -274,15 +294,11 @@ function functionLikeInitializer(
 function directReturnConnectFact(
   fn: ts.FunctionLikeDeclaration,
 ): Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'> | undefined {
-  const localBindings = new Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>>();
+  const localBindings = collectLocalBindingFacts(fn);
   let returned: ts.Expression | undefined;
   function visit(node: ts.Node): void {
     if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
       return;
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const fact = findConnectInExpression(node.initializer);
-      if (fact) localBindings.set(node.name.text, fact);
-    }
     if (!returned && ts.isReturnStatement(node) && node.expression)
       returned = node.expression;
     if (!returned) ts.forEachChild(node, visit);
@@ -405,8 +421,11 @@ export async function parseServiceBindings(
   const helperCache = new Map<string, HelperBinding[]>();
   const classHelpers = collectClassHelpers(sourceFileAst);
   const localObjectHelpers = new Map<string, HelperBinding[]>();
+  const localDirectHelpers = new Map<string, HelperBinding>();
   for (const stmt of sourceFileAst.statements) {
     if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      const directFact = directConnectFactFromFunctionLike(stmt);
+      if (directFact) localDirectHelpers.set(stmt.name.text, { ...directFact, exportedName: stmt.name.text, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, stmt) });
       const rows: HelperBinding[] = [];
       for (const [returnedProperty, fact] of collectReturnedObjectBindings(stmt))
         rows.push({ ...fact, exportedName: stmt.name.text, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, stmt) });
@@ -417,6 +436,8 @@ export async function parseServiceBindings(
         if (!ts.isIdentifier(decl.name)) continue;
         const helper = functionLikeInitializer(decl.initializer);
         if (!helper) continue;
+        const directFact = directConnectFactFromFunctionLike(helper);
+        if (directFact) localDirectHelpers.set(decl.name.text, { ...directFact, exportedName: decl.name.text, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, decl) });
         const rows: HelperBinding[] = [];
         for (const [returnedProperty, fact] of collectReturnedObjectBindings(helper))
           rows.push({ ...fact, exportedName: decl.name.text, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, decl) });
@@ -489,7 +510,8 @@ export async function parseServiceBindings(
           : undefined,
       });
     else if (ts.isIdentifier(call.expression)) {
-      const resolved = await importedHelper(call.expression.text);
+      const localDirect = localDirectHelpers.get(call.expression.text);
+      const resolved = localDirect ? { helper: localDirect, imp: undefined } : await importedHelper(call.expression.text);
       if (resolved)
         out.push({
           variableName: targetName,
@@ -502,12 +524,13 @@ export async function parseServiceBindings(
           sourceFile: normalizePath(filePath),
           sourceLine: lineOf(sourceFileAst, node),
           helperChain: [
+            ...(resolved.helper.helperChain ?? []),
             {
               callerVariable: targetName,
               ...(aliasKind === 'assignment' ? { assignedFrom: call.expression.text, aliasKind, scopeRule: 'same-file-source-order' } : {}),
               importedHelper: call.expression.text,
-              importSource: resolved.imp.sourceFile,
-              exportedSymbol: resolved.imp.exportedName,
+              importSource: resolved.imp?.sourceFile,
+              exportedSymbol: resolved.imp?.exportedName ?? resolved.helper.exportedName,
               helperSourceFile: resolved.helper.sourceFile,
               helperSourceLine: resolved.helper.sourceLine,
             },
@@ -548,7 +571,7 @@ export async function parseServiceBindings(
         placeholders: resolved.helper.placeholders,
         sourceFile: normalizePath(filePath),
         sourceLine: lineOf(sourceFileAst, decl),
-        helperChain: [{ callerVariable: el.name.text, helperFunction: call.expression.getText(sourceFileAst), returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
+        helperChain: [...(resolved.helper.helperChain ?? []), { callerVariable: el.name.text, helperFunction: call.expression.getText(sourceFileAst), returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
       });
     }
   }
@@ -581,7 +604,7 @@ export async function parseServiceBindings(
         placeholders: resolved.helper.placeholders,
         sourceFile: normalizePath(filePath),
         sourceLine: lineOf(sourceFileAst, node),
-        helperChain: [{ callerVariable: targetName, assignedFrom: call.expression.getText(sourceFileAst), aliasKind: 'assignment', scopeRule: 'same-file-source-order', returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
+        helperChain: [...(resolved.helper.helperChain ?? []), { callerVariable: targetName, assignedFrom: call.expression.getText(sourceFileAst), aliasKind: 'assignment', scopeRule: 'same-file-source-order', returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
       });
     }
   }
@@ -619,6 +642,73 @@ export async function parseServiceBindings(
       });
     }
   }
+
+  function arrayElementsFromExpression(expr: ts.Expression): { elements: ts.NodeArray<ts.Expression>; promiseAll: boolean } | undefined {
+    const unwrapped = unwrapIdentityExpression(expr);
+    if (ts.isArrayLiteralExpression(unwrapped)) return { elements: unwrapped.elements, promiseAll: false };
+    const call = unwrapCall(expr);
+    if (!call) return undefined;
+    if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== 'all' || call.expression.expression.getText(sourceFileAst) !== 'Promise') return undefined;
+    const first = call.arguments[0];
+    if (!first) return undefined;
+    const container = unwrapIdentityExpression(first);
+    if (!ts.isArrayLiteralExpression(container)) return undefined;
+    return { elements: container.elements, promiseAll: true };
+  }
+
+  async function recordArrayElementBinding(targetName: string, expr: ts.Expression, node: ts.Node, arrayIndex: number, promiseAll: boolean): Promise<void> {
+    const before = out.length;
+    await recordBindingFromExpression(targetName, expr, node, 'declaration');
+    if (out.length > before) {
+      const row = out[out.length - 1];
+      row.helperChain = [
+        ...(row.helperChain ?? []),
+        { callerVariable: targetName, targetVariable: targetName, arrayIndex, promiseAll, arrayContainer: promiseAll ? 'Promise.all' : 'array_literal' },
+      ];
+      return;
+    }
+    const unwrapped = unwrapIdentityExpression(expr);
+    if (ts.isIdentifier(unwrapped)) {
+      const existing = bindingForVariable(unwrapped.text);
+      if (!existing) return;
+      out.push({
+        ...existing,
+        variableName: targetName,
+        sourceLine: lineOf(sourceFileAst, node),
+        helperChain: [
+          ...(existing.helperChain ?? []),
+          { callerVariable: targetName, targetVariable: targetName, sourceVariable: unwrapped.text, aliasKind: 'array-destructuring', arrayIndex, promiseAll, arrayContainer: promiseAll ? 'Promise.all' : 'array_literal' },
+        ],
+      });
+    }
+  }
+
+  async function recordArrayDestructuredVariable(decl: ts.VariableDeclaration): Promise<void> {
+    if (!ts.isArrayBindingPattern(decl.name) || !decl.initializer) return;
+    const container = arrayElementsFromExpression(decl.initializer);
+    if (!container) return;
+    for (let index = 0; index < decl.name.elements.length; index += 1) {
+      const el = decl.name.elements[index];
+      if (!el || ts.isOmittedExpression(el) || ts.isBindingElement(el) && el.dotDotDotToken) continue;
+      if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+      const source = container.elements[index];
+      if (!source || ts.isOmittedExpression(source)) continue;
+      await recordArrayElementBinding(el.name.text, source, decl, index, container.promiseAll);
+    }
+  }
+
+  async function recordArrayDestructuredAssignment(pattern: ts.ArrayLiteralExpression, expr: ts.Expression, node: ts.Node): Promise<void> {
+    const container = arrayElementsFromExpression(expr);
+    if (!container) return;
+    for (let index = 0; index < pattern.elements.length; index += 1) {
+      const el = pattern.elements[index];
+      if (!el || ts.isOmittedExpression(el) || ts.isSpreadElement(el) || !ts.isIdentifier(el)) continue;
+      const source = container.elements[index];
+      if (!source || ts.isOmittedExpression(source)) continue;
+      await recordArrayElementBinding(el.text, source, node, index, container.promiseAll);
+    }
+  }
+
   const events: Array<{ pos: number; node: ts.VariableDeclaration | ts.BinaryExpression }> = [];
   function collectEvents(node: ts.Node): void {
     if (ts.isVariableDeclaration(node)) events.push({ pos: node.getStart(sourceFileAst), node });
@@ -632,6 +722,7 @@ export async function parseServiceBindings(
     if (ts.isVariableDeclaration(event.node)) {
       const decl = event.node;
       await recordDestructuredHelper(decl);
+      await recordArrayDestructuredVariable(decl);
       recordDestructuredClassHelper(decl);
       await recordVariable(decl);
       recordIdentityAlias(decl);
@@ -653,6 +744,8 @@ export async function parseServiceBindings(
     const left = ts.isParenthesizedExpression(assignment.left) ? assignment.left.expression : assignment.left;
     if (ts.isObjectLiteralExpression(left))
       await recordDestructuredAssignment(left, assignment.right, assignment);
+    if (ts.isArrayLiteralExpression(left))
+      await recordArrayDestructuredAssignment(left, assignment.right, assignment);
   }
   return out;
 }
