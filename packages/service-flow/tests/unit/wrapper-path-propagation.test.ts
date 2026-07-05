@@ -50,6 +50,15 @@ describe('local wrapper path propagation', () => {
     expect(calls.some((call) => call.evidence?.classifier === 'service_client_send_object' && call.evidence?.operationPathExpression === 'path')).toBe(false);
   });
 
+  it('resolves wrapper const and template path arguments with evidence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-wrapper-static-'));
+    await write(root, "\n      const sendWithClient = (client: unknown, method: string, path: string, headers: unknown) => client.send({ method, path, headers });\n      export async function runFlow(catalogClient: unknown, headers: unknown, id: string): Promise<void> {\n        const actionPath = '/someAction';\n        await sendWithClient(catalogClient, 'POST', actionPath, headers);\n        await sendWithClient(catalogClient, 'GET', `/someAction(id='${id}')`, headers);\n      }\n    ");
+    const calls = await parseOutboundCalls(root, 'handler.ts');
+    expect(calls.find((call) => call.operationPathExpr === '/someAction')?.evidence).toMatchObject({ wrapperFunction: 'sendWithClient', wrapperPathSourceKind: 'const', literalPathSource: 'same_scope_const_initializer' });
+    expect(calls.find((call) => call.operationPathExpr === "/someAction(id='${id}')")?.evidence).toMatchObject({ wrapperFunction: 'sendWithClient', wrapperPathSourceKind: 'template', normalizedOperationPath: 'someAction' });
+    expect(calls).toHaveLength(2);
+  });
+
   it('resolves direct shorthand path from static initializer and leaves dynamic shorthand unresolved', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-shorthand-path-'));
     await write(root, `
@@ -63,6 +72,26 @@ describe('local wrapper path propagation', () => {
     `);
     const calls = await parseOutboundCalls(root, 'handler.ts');
     expect(calls.find((call) => call.operationPathExpr === '/someAction')?.evidence?.literalPathSource).toBe('same_scope_const_initializer');
+    expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(2);
+  });
+
+  it('records branch candidate evidence without guessing across incompatible paths', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-path-candidates-'));
+    await write(root, `
+      export async function runFlow(serviceClient: { send(input: unknown): Promise<unknown> }, condition: boolean, input: { value: string }): Promise<void> {
+        let path = '/defaultAction';
+        if (condition) path = '/alternateAction';
+        await serviceClient.send({ method: 'POST', path });
+        let computedPath = '/initialAction';
+        computedPath = input.value;
+        await serviceClient.send({ method: 'POST', path: computedPath });
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'handler.ts');
+    const branch = calls.find((call) => call.evidence?.staticPathCandidates);
+    expect(branch?.operationPathExpr).toBeUndefined();
+    expect(branch?.unresolvedReason).toBe('dynamic_operation_path_identifier');
+    expect(branch?.evidence?.staticPathCandidates).toMatchObject({ candidatePaths: ['/defaultAction', '/alternateAction'], normalizedCandidateOperations: ['defaultAction', 'alternateAction'] });
     expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(2);
   });
 });
