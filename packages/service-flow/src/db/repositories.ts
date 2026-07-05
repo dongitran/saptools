@@ -22,6 +22,7 @@ export interface RepoRow {
   fact_generation?: number;
   graph_generation?: number;
   graph_stale_reason?: string | null;
+  fact_analyzer_version?: string | null;
 }
 export interface WorkspaceRow {
   id: number;

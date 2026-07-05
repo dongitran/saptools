@@ -67,7 +67,7 @@ export async function indexRepository(
       insertRegistrations(db, repo.id, parsed.registrations);
       insertBindings(db, repo.id, parsed.bindings);
       insertCalls(db, repo.id, parsed.calls);
-      db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=? WHERE id=?").run(new Date().toISOString(), fingerprint, new Date().toISOString(), repo.id);
+      db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(new Date().toISOString(), fingerprint, new Date().toISOString(), ANALYZER_VERSION, repo.id);
     });
     return { fileCount: sourceFiles.length, diagnosticCount: 0, skipped: false };
   } catch (error) {

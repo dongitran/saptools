@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   service_bindings: [
     { name: 'helper_chain_json', ddl: 'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT' },
@@ -12,6 +12,7 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'graph_generation', ddl: 'ALTER TABLE repositories ADD COLUMN graph_generation INTEGER NOT NULL DEFAULT 0' },
     { name: 'graph_stale_reason', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_reason TEXT' },
     { name: 'graph_stale_at', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_at TEXT' },
+    { name: 'fact_analyzer_version', ddl: "ALTER TABLE repositories ADD COLUMN fact_analyzer_version TEXT DEFAULT 'legacy'" },
   ],
   graph_edges: [
     { name: 'status', ddl: "ALTER TABLE graph_edges ADD COLUMN status TEXT NOT NULL DEFAULT 'unresolved'" },
