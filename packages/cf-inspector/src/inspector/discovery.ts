@@ -68,9 +68,6 @@ async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
         req.end();
       });
     } catch (err: unknown) {
-      if (err instanceof CfInspectorError && err.message.startsWith('Failed to parse inspector discovery response')) {
-        throw err;
-      }
       lastError = err;
       const now = performance.now();
       if (now < deadline) {
