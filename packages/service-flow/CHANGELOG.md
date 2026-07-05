@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.34
+
+- Prefer indexed CDS operation evidence over heuristic remote-entity classification for service-client operation invocations, while keeping true collection, entity, delete, navigation, and media paths terminal.
+- Added strict doctor collision diagnostics for terminal remote entity edges that look like operation invocations with indexed operation candidates.
+- Persist repository fact analyzer versions and warn during link/strict doctor when force reindex is required after an analyzer upgrade.
+
 ## 0.1.33
 
 - Preserved persisted graph decisions and call-site evidence during trace and graph rendering while keeping contextual runtime resolution as enrichment.

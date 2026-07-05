@@ -61,9 +61,12 @@ export function classifyODataPathIntent(path: string | undefined, method: string
   if (!rawPath || !rawPath.startsWith('/')) return { ...base, kind: 'unknown', reason: 'path_missing_or_not_absolute' };
   const upperEntityLike = /^[A-Z][A-Za-z0-9_]*$/.test(entitySegment ?? firstSegment);
   const mediaLike = ['content', '$value'].includes((segments.at(-1) ?? '').toLowerCase());
+  const invocation = normalizeODataOperationInvocationPath(pathWithoutQuery);
   if (normalizedMethod !== 'GET') {
+    if (invocation?.wasInvocation && looksLikeLowerCamelInvocation(firstSegment)) return { ...base, kind: 'operation_invocation', reason: 'non_get_balanced_top_level_operation_invocation' };
     if (mediaLike) return { ...base, kind: 'entity_media', reason: 'non_get_entity_media_stream_path' };
-    if (upperEntityLike || firstSegment.includes('(') || hasNavigationSegments) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: 'non_get_entity_path_shape' };
+    if (hasNavigationSegments || firstSegment.includes('(')) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: 'non_get_entity_path_shape' };
+    if (upperEntityLike) return { ...base, kind: normalizedMethod === 'DELETE' ? 'entity_delete' : 'entity_mutation', reason: 'non_get_entity_path_shape' };
     return { ...base, kind: 'operation_invocation', reason: 'non_get_lowercase_path_may_be_operation' };
   }
   if (queryIndex >= 0) {
@@ -73,6 +76,7 @@ export function classifyODataPathIntent(path: string | undefined, method: string
   }
   if (hasNavigationSegments) return mediaLike ? { ...base, kind: 'entity_media', reason: 'get_entity_media_stream_path' } : { ...base, kind: 'entity_navigation_query', reason: 'get_path_has_navigation_segments' };
   if (firstSegment.includes('(')) {
+    if (invocation?.wasInvocation && looksLikeLowerCamelInvocation(firstSegment)) return { ...base, kind: 'operation_invocation', reason: 'get_balanced_top_level_operation_invocation' };
     return looksLikeLowerCamelInvocation(firstSegment)
       ? { ...base, kind: 'operation_invocation', reason: 'get_single_lower_camel_segment_has_top_level_invocation' }
       : { ...base, kind: 'entity_key_read', reason: 'get_entity_segment_has_key_predicate' };

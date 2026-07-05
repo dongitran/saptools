@@ -27,7 +27,7 @@ import { parseVars } from './trace/selectors.js';
 import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
-import { VERSION } from './version.js';
+import { ANALYZER_VERSION, VERSION } from './version.js';
 async function init(
   workspace: string,
   options: { db?: string; ignore?: string[] },
@@ -102,7 +102,42 @@ function schemaDriftDiagnostics(db: ReturnType<typeof openDatabase>, strict: boo
   return diagnostics;
 }
 function linkUpgradeWarnings(db: ReturnType<typeof openDatabase>): Array<Record<string, unknown>> {
-  return schemaDriftDiagnostics(db, true).filter((item) => ['schema_legacy_columns_present','external_target_columns_missing_data','reindex_required_after_upgrade'].includes(String(item.code)));
+  return [...schemaDriftDiagnostics(db, true), ...analyzerVersionDiagnostics(db, true)].filter((item) => ['schema_legacy_columns_present','external_target_columns_missing_data','reindex_required_after_upgrade','reindex_required_after_analyzer_upgrade'].includes(String(item.code)));
+}
+
+function analyzerVersionDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
+  if (!strict) return [];
+  const rows = db.prepare("SELECT name,COALESCE(fact_analyzer_version,'legacy') factAnalyzerVersion FROM repositories WHERE index_status='indexed' AND COALESCE(fact_analyzer_version,'legacy')<>?").all(ANALYZER_VERSION) as Array<Record<string, unknown>>;
+  if (rows.length === 0) return [];
+  return [{ severity: 'warning', code: 'reindex_required_after_analyzer_upgrade', message: 'Repository facts were produced by an older or unknown analyzer; run service-flow index --force before relink to apply current parser semantics.', scope: 'workspace', affectedRepositoryCount: rows.length, currentAnalyzerVersion: ANALYZER_VERSION, repositories: rows, remediation: 'service-flow index --force && service-flow link' }];
+}
+
+function remoteEntityOperationCollisionQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const rows = db.prepare(`SELECT c.id callId,c.source_file sourceFile,c.source_line sourceLine,c.method method,c.operation_path_expr rawPath,c.query_entity entitySegment,e.to_id selectedTerminalEntityTarget,e.evidence_json evidenceJson
+    FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type LIKE 'remote_entity_%' AND e.edge_type='HANDLER_ACCESSES_REMOTE_ENTITY' AND e.status='terminal'
+    ORDER BY c.source_file,c.source_line LIMIT 100`).all() as Array<Record<string, unknown>>;
+  const examples: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const normalized = normalizeODataOperationInvocationPath(String(row.rawPath ?? ''));
+    const rawPath = String(row.rawPath ?? '');
+    const candidatePath = normalized?.wasInvocation ? normalized.normalizedOperationPath : rawPath;
+    const name = candidatePath.replace(/^\//, '');
+    const simple = name.split('.').at(-1) ?? name;
+    const candidates = db.prepare('SELECT COUNT(*) count FROM cds_operations WHERE operation_path IN (?,?) OR operation_name IN (?,?)').get(candidatePath, `/${simple}`, name, simple) as { count?: number };
+    const candidateCount = Number(candidates.count ?? 0);
+    const operationLike = Boolean(normalized?.wasInvocation) || candidateCount > 0;
+    if (!operationLike) continue;
+    let classifierReason: unknown;
+    try {
+      const evidence = JSON.parse(String(row.evidenceJson ?? '{}')) as { odataPathIntent?: { reason?: unknown } };
+      classifierReason = evidence.odataPathIntent?.reason;
+    } catch {
+      classifierReason = undefined;
+    }
+    examples.push({ callId: row.callId, sourceFile: row.sourceFile, sourceLine: row.sourceLine, method: row.method, rawPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : candidatePath, entitySegment: row.entitySegment, operationCandidateCount: candidateCount, selectedTerminalEntityTarget: row.selectedTerminalEntityTarget, classifierReason });
+  }
+  return { severity: examples.length > 0 ? 'warning' : 'info', code: 'strict_remote_entity_operation_collision_quality', message: 'Terminal remote entity edges that look like indexed operation invocations', collisionCount: examples.length, examples: examples.slice(0, 10) };
 }
 
 function localServiceDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
@@ -174,6 +209,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const remoteQuery = remoteQueryTargetQuality(db);
   const invocation = odataInvocationResolutionQuality(db);
   const remoteAction = remoteActionTargetQuality(db);
+  const entityOperationCollision = remoteEntityOperationCollisionQuality(db);
   const externalHttp = externalHttpTargetQuality(db);
   const aliasQuality = identityAliasBindingQuality(db);
   const noBindingQuality = remoteActionNoBindingQuality(db);
@@ -191,6 +227,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
     wrapperQuality,
     nestedThisQuality,
     remoteQuery,
+    entityOperationCollision,
     invocation,
     remoteAction,
     externalHttp,
@@ -740,7 +777,8 @@ export function createProgram(): Command {
           const localServiceHealth = localServiceDiagnostics(db, Boolean(opts.strict));
           const parserQualityHealth = parserQualityDiagnostics(db, Boolean(opts.strict));
           const schemaDriftHealth = schemaDriftDiagnostics(db, Boolean(opts.strict));
-          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth, ...schemaDriftHealth, ...parserQualityHealth];
+          const analyzerVersionHealth = analyzerVersionDiagnostics(db, Boolean(opts.strict));
+          const allDiagnostics = [...diagnostics, ...health, ...localServiceHealth, ...schemaDriftHealth, ...analyzerVersionHealth, ...parserQualityHealth];
           process.stdout.write(
             allDiagnostics.length
               ? renderJson(allDiagnostics)

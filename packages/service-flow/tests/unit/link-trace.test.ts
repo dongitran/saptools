@@ -755,4 +755,26 @@ export class FlowHandler {
     expect(after.status).toBe('dynamic');
     db.close();
   });
+
+  it('prefers indexed operation evidence over legacy remote entity classification for operation-like sends', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-operation-entity-'));
+    const dbPath = path.join(root, 'graph.db');
+    const db = openDatabase(dbPath);
+    const workspaceId = upsertWorkspace(db, root, dbPath);
+    const adminRepo = upsertRepository(db, workspaceId, { name: 'admin-api', absolutePath: path.join(root, 'admin-api'), relativePath: 'admin-api', isGitRepo: false, packageName: 'admin-api', kind: 'cap-service' });
+    const facadeRepo = upsertRepository(db, workspaceId, { name: 'facade-api', absolutePath: path.join(root, 'facade-api'), relativePath: 'facade-api', isGitRepo: false, packageName: 'facade-api', kind: 'cap-service' });
+    const serviceId = Number(db.prepare("INSERT INTO cds_services(repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?) RETURNING id").get(adminRepo, 'AdminService', 'AdminService', '/AdminService', 0, 'srv/admin.cds', 1)?.id);
+    db.prepare("INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)").run(serviceId, 'action', 'refreshCache', '/refreshCache', '[]', 'String', 'srv/admin.cds', 2);
+    const bindingId = Number(db.prepare("INSERT INTO service_bindings(repo_id,variable_name,alias,service_path_expr,is_dynamic,placeholders_json,source_file,source_line) VALUES(?,?,?,?,?,?,?,?) RETURNING id").get(facadeRepo, 'adminService', 'admin-api', '/AdminService', 0, '[]', 'srv/facade.ts', 3)?.id);
+    db.prepare("INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?)").run(facadeRepo, 'remote_entity_mutation', bindingId, 'POST', '/refreshCache()', 'refreshCache', 'srv/facade.ts', 4, 0.8, JSON.stringify({ parser: 'legacy_remote_entity_fixture' }));
+    linkWorkspace(db, workspaceId);
+    const edge = db.prepare("SELECT edge_type edgeType,status,to_kind toKind,evidence_json evidenceJson FROM graph_edges WHERE from_kind='call'").get() as { edgeType: string; status: string; toKind: string; evidenceJson: string };
+    expect(edge).toMatchObject({ edgeType: 'REMOTE_CALL_RESOLVES_TO_OPERATION', status: 'resolved', toKind: 'operation' });
+    const evidence = JSON.parse(edge.evidenceJson) as { rawOperationPath?: string; normalizedOperationPath?: string; outboundEvidence?: unknown; operationEntityPrecedence?: string };
+    expect(evidence.rawOperationPath).toBe('/refreshCache()');
+    expect(evidence.normalizedOperationPath).toBe('/refreshCache');
+    expect(evidence.outboundEvidence).toMatchObject({ parser: 'legacy_remote_entity_fixture' });
+    expect(evidence.operationEntityPrecedence).toBe('indexed_operation_over_parser_entity');
+    db.close();
+  });
 });

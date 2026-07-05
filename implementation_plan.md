@@ -1,27 +1,49 @@
-# @saptools/service-flow 0.1.33 hardening implementation plan
+# Implementation plan: service-flow 0.1.34 hardening
 
 ## Files and schema objects to change
 
-- `packages/service-flow/src/trace/trace-engine.ts`: enforce persisted graph edge precedence during trace traversal, merge contextual/runtime evidence without replacing resolved persisted rows, stamp call-edge evidence with graph edge id, outbound call id, call site, linker status/reason, persisted target, and contextual participation; keep terminal trace-start diagnostics at zero nodes/edges.
-- `packages/service-flow/src/parsers/outbound-call-parser.ts`: make OData entity path classification conservative for service-client `send` calls and make external destination expression evaluation safe (static literals/const literals only, bounded dynamic candidates for static conditional branches, otherwise dynamic sanitized expression shape).
-- `packages/service-flow/src/linker/cross-repo-linker.ts`: persist terminal remote entity graph edges for OData entity read/mutation/delete/media/candidate calls and keep real action/function resolution intact.
-- `packages/service-flow/src/linker/external-http-target.ts`: render dynamic destination targets using stable synthetic ids and neutral labels; never use identifier names as static destination labels; sanitize URL evidence.
-- `packages/service-flow/src/types.ts`: extend call/edge taxonomy for remote entity classifications without breaking existing public shapes.
-- `packages/service-flow/src/db/migrations.ts`: bump SQLite `user_version` and use the explicit reindex-required policy for legacy drift/missing external metadata.
-- `packages/service-flow/src/cli.ts`: add strict doctor diagnostics for schema drift, missing external metadata, call-site evidence loss, contextual override risks, OData entity misclassification, fake static destinations, terminal trace-start contract, and target taxonomy mismatches; warn link users when relink cannot fully clean upgraded schema drift.
-- `packages/service-flow/src/output/*.ts`: ensure table, JSON graph, and Mermaid graph use effective trace-edge semantics and prefer call-site location for call edges.
-- `packages/service-flow/tests/unit/*.test.ts` and `tests/e2e/cli.e2e.test.ts`: add neutral regression tests for persisted evidence preservation, dynamic routing, OData entity terminal edges, dynamic destination sanitization, migration/doctor policy, terminal start contract, public ESM exports, pack dry-run, and SQLite checks.
-- `packages/service-flow/package.json`, root `pnpm-lock.yaml`, `packages/service-flow/CHANGELOG.md`, `README.md`, `TECHNICAL-NOTE.md`, and generated `dist/**`: bump to 0.1.33 and document user-visible behavior.
+- `packages/service-flow/src/linker/odata-path-normalizer.ts`
+  - Expose normalized top-level operation invocation evidence independently from entity intent.
+  - Stop treating parenthesized operation segments and uppercase first segments as strong entity evidence by themselves.
+  - Verify with unit tests for `/refreshCache()`, `/SyncCatalog`, `/submitDocument(documentId='123')`, and true entity/media/delete paths.
 
-## Schema policy
+- `packages/service-flow/src/linker/cross-repo-linker.ts`
+  - Make operation-vs-entity precedence explicit during linking.
+  - For persisted `remote_entity_*` facts, consult indexed operation candidates before inserting terminal entity edges.
+  - Preserve parser, call-site, outbound, normalized operation, selected target, and linker evidence in every branch.
+  - Emit ambiguous/unresolved operation edges rather than terminal entity edges when operation evidence exists without a strong entity selection.
+  - Verify through link/trace tests and graph edge assertions.
 
-Use option B (explicit reindex-required policy). Bump `user_version` to 7, detect legacy external-target columns on `symbols` and missing queryable external metadata on `outbound_calls`, and surface `doctor --strict` diagnostics plus link warnings/remediation. Fresh databases keep the current clean table layout with external target columns only on `outbound_calls`.
+- `packages/service-flow/src/linker/service-resolver.ts`
+  - Reuse existing operation path/name matching to ensure normalized invocation paths and bare operation names resolve consistently.
+  - Verify by tracing operation, handler, and service/path selectors against the same unique operation.
 
-## Verification criteria
+- `packages/service-flow/src/db/schema.ts`, `packages/service-flow/src/db/migrations.ts`, `packages/service-flow/src/db/repositories.ts`
+  - Add `repositories.fact_analyzer_version` to persist the analyzer version that produced repository facts.
+  - Bump schema version and initialize legacy rows as `legacy`/unknown through migration defaulting.
+  - Write the current analyzer version on successful index publication.
+  - Verify migration compatibility, SQLite `integrity_check`, and `foreign_key_check`.
 
-- Trace and graph outputs retain persisted graph edge ids, outbound call ids, call-site file/line, parser/outbound/linker/target evidence, and contextual participation without replacing resolved persisted targets.
-- Remote OData entity reads, mutations, deletes, navigation, media, and uppercase candidates are terminal remote entity edges, not unresolved operation candidates; real `/submitOrder` and `/calculatePrice` operations still resolve.
-- Static destinations resolve only from safe literals/local const literals; conditionals become bounded dynamic candidates; identifiers/property reads/function calls are dynamic with stable synthetic ids and sanitized evidence.
-- `doctor --strict` reports actionable diagnostics for upgrade drift and quality regressions; reindex path produces queryable external metadata.
-- Terminal trace-start diagnostics return zero nodes and zero edges by default, with candidates/evidence in diagnostics only.
-- `pnpm --filter @saptools/service-flow build`, typecheck, lint, unit/e2e tests, generated JS `node --check`, public ESM import smoke test, `npm pack --dry-run --json`, and SQLite integrity/foreign-key checks pass or are documented with environment limitations.
+- `packages/service-flow/src/cli.ts`
+  - Warn during `link` when repository facts were produced by an older/unknown analyzer.
+  - Add strict doctor diagnostics: `strict_remote_entity_operation_collision_quality` and `reindex_required_after_analyzer_upgrade`.
+  - Preserve default doctor behavior except documented quietness for strict-only quality checks.
+  - Verify with CLI e2e/unit tests.
+
+- `packages/service-flow/tests/unit/odata-path-normalizer.test.ts`, `packages/service-flow/tests/unit/odata-path-classifier.test.ts`, `packages/service-flow/tests/unit/link-trace.test.ts`, and/or `packages/service-flow/tests/e2e/cli.e2e.test.ts`
+  - Add neutral operation/entity precedence, strict doctor collision, analyzer-version warning, and migration-style tests.
+  - Verify every outbound call owns one graph edge and JSON/table/Mermaid evidence stays consistent.
+
+- `packages/service-flow/package.json`, `packages/service-flow/CHANGELOG.md`, generated `packages/service-flow/dist/**`, root `pnpm-lock.yaml`
+  - Bump the package from 0.1.33 to 0.1.34 and document operation/entity precedence, strict doctor guard, and analyzer-version reindex warning.
+  - Verify build, node checks, ESM import, and dry-run pack.
+
+## End-to-end fact trace to verify
+
+1. TypeScript AST extraction keeps service-client sends as outbound facts with call-site and parser evidence.
+2. CDS extraction indexes service operation facts used by operation resolution.
+3. Persistence stores outbound facts and repository analyzer version.
+4. Linking prefers indexed operation evidence over heuristic terminal entity classification unless strong entity evidence applies.
+5. Trace traversal follows `REMOTE_CALL_RESOLVES_TO_OPERATION` into implementation handlers.
+6. Doctor strict mode reports collision and analyzer-version remediation diagnostics.
+7. JSON/table/Mermaid output agree on effective edge type while preserving call-site evidence.
