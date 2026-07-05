@@ -111,6 +111,7 @@ function nodeContains(parent: ts.Node, child: ts.Node): boolean {
 }
 function declarationScope(node: ts.VariableDeclaration | ts.ParameterDeclaration): ts.Node {
   if (ts.isParameter(node)) return node.parent;
+  if (ts.isCatchClause(node.parent) && node.parent.variableDeclaration === node) return node.parent;
   const list = node.parent;
   const blockScoped = (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) !== 0;
   let current: ts.Node = list.parent;
@@ -118,26 +119,23 @@ function declarationScope(node: ts.VariableDeclaration | ts.ParameterDeclaration
     while (current.parent && !isFunctionLikeScope(current)) current = current.parent;
     return current;
   }
-  while (current.parent && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isModuleBlock(current) && !ts.isCaseBlock(current) && !ts.isCatchClause(current) && !ts.isForStatement(current) && !ts.isForInStatement(current) && !ts.isForOfStatement(current) && !isFunctionLikeScope(current)) current = current.parent;
+  while (current.parent && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isModuleBlock(current) && !ts.isCaseBlock(current) && !isLoopInitializerScope(node, current) && !isFunctionLikeScope(current)) current = current.parent;
   return current;
 }
-function declarationScopedAncestor(node: ts.Node): ts.Node | undefined {
-  let current: ts.Node | undefined = node.parent;
-  while (current) {
-    if (ts.isCatchClause(current) || ts.isForStatement(current) || ts.isForInStatement(current) || ts.isForOfStatement(current)) return current;
-    if (ts.isSourceFile(current) || ts.isFunctionLike(current)) return undefined;
-    current = current.parent;
-  }
-  return undefined;
+function isLoopInitializerScope(declaration: ts.VariableDeclaration, scope: ts.Node): boolean {
+  const list = declaration.parent;
+  return (ts.isForStatement(scope) && scope.initializer === list) || ((ts.isForInStatement(scope) || ts.isForOfStatement(scope)) && scope.initializer === list);
+}
+function catchBindingScope(declaration: ts.VariableDeclaration | ts.ParameterDeclaration): ts.CatchClause | undefined {
+  if (ts.isParameter(declaration)) return undefined;
+  return ts.isCatchClause(declaration.parent) && declaration.parent.variableDeclaration === declaration ? declaration.parent : undefined;
 }
 function isAccessibleDeclaration(declaration: ts.VariableDeclaration | ts.ParameterDeclaration, use: ts.Node): boolean {
   const source = use.getSourceFile();
   if (declaration.name.getStart(source) >= use.getStart(source)) return false;
-  const scopedAncestor = declarationScopedAncestor(declaration);
-  if (scopedAncestor && ts.isCatchClause(scopedAncestor)) return nodeContains(scopedAncestor.block, use);
-  if (scopedAncestor && (ts.isForStatement(scopedAncestor) || ts.isForInStatement(scopedAncestor) || ts.isForOfStatement(scopedAncestor))) return nodeContains(scopedAncestor.statement, use);
+  const catchScope = catchBindingScope(declaration);
+  if (catchScope) return nodeContains(catchScope.block, use);
   const scope = declarationScope(declaration);
-  if (ts.isCatchClause(scope)) return nodeContains(scope.block, use);
   if (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) return nodeContains(scope.statement, use);
   return ts.isSourceFile(scope) || nodeContains(scope, use);
 }
@@ -246,6 +244,11 @@ function propertyInitializer(object: ts.ObjectLiteralExpression, key: string): t
 function httpMethodFromObject(object: ts.ObjectLiteralExpression, use: ts.Node): string | undefined {
   const text = resolveExpression(propertyInitializer(object, 'method'), use, 'literal').value;
   return text ? stripQuotes(text).toUpperCase() : undefined;
+}
+const supportedHttpMethods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
+function safeOperationName(value: string | undefined): string | undefined {
+  if (!value || !/^[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$]*)*$/.test(value)) return undefined;
+  return operationPathFromStatic(value);
 }
 function hasTemplatePlaceholder(value: string): boolean { return /\$\{|%7B|%7D/i.test(value); }
 function urlTargetFromExpression(expr: ts.Expression | undefined, use: ts.Node): Record<string, unknown> {
@@ -426,16 +429,18 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         } else {
           const receiver = receiverName(expr.expression);
           const rootReceiver = rootReceiverName(expr.expression);
-          const method = resolveExpression(node.arguments[0], node, 'literal').value?.toUpperCase();
+          const firstArg = resolveExpression(node.arguments[0], node, 'literal');
+          const method = firstArg.value?.toUpperCase();
           const pathArg = node.arguments[1];
-          const supported = method && ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].includes(method);
+          const supported = method && supportedHttpMethods.has(method);
           if (receiver && supported && serviceVariables.has(rootReceiver ?? receiver)) {
             const resolvedPath = staticPathExpression(pathArg, node);
             const operationPathExpr = operationPathFromStatic(resolvedPath.text);
             const intent = classifyODataPathIntent(operationPathExpr, method);
             add(node, { callType: 'remote_action', serviceVariableName: rootReceiver ?? receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: operationPathExpr ? 0.8 : 0.45, unresolvedReason: operationPathExpr ? undefined : 'dynamic_operation_path_identifier' }, { receiver, rootReceiver, classifier: 'service_client_send_method_path', rawPathExpression: resolvedPath.rawExpression, literalPathSource: resolvedPath.text ? (resolvedPath.sourceKind === 'const' ? 'same_scope_const_initializer' : resolvedPath.sourceKind) : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: operationPathExpr ? undefined : 'dynamic_operation_path_identifier' });
           } else if (receiver && serviceVariables.has(rootReceiver ?? receiver)) {
-            add(node, { callType: 'remote_action', serviceVariableName: rootReceiver ?? receiver, method, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.35, unresolvedReason: 'unsupported_cap_send_signature' }, { receiver, rootReceiver, classifier: 'service_client_send_unsupported_signature' });
+            const operationPathExpr = safeOperationName(firstArg.value);
+            add(node, { callType: 'remote_action', serviceVariableName: rootReceiver ?? receiver, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: operationPathExpr ? 0.75 : 0.35, unresolvedReason: operationPathExpr ? undefined : 'unsupported_cap_send_signature' }, { receiver, rootReceiver, classifier: operationPathExpr ? 'service_client_send_operation_event' : 'service_client_send_unsupported_signature', rawOperationExpression: firstArg.rawExpression, literalOperationSource: firstArg.value ? firstArg.sourceKind : undefined, parserWarning: operationPathExpr ? undefined : 'unsupported_cap_send_signature' });
           }
         }
       } else if (((ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && wrapperSpecs.has(expr.expression.text)) || (ts.isIdentifier(expr) && wrapperSpecs.has(expr.text)))) {
