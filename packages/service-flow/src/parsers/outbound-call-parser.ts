@@ -23,11 +23,12 @@ function expressionName(expr: ts.Expression): string {
 }
 function variableInitializers(source: ts.SourceFile): Map<string, ts.Expression> {
   const initializers = new Map<string, ts.Expression>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (node.parent.flags & ts.NodeFlags.Const) !== 0) initializers.set(node.name.text, node.initializer);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement) || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.initializer) initializers.set(declaration.name.text, declaration.initializer);
+    }
+  }
   return initializers;
 }
 function queryEntityFromAst(expr: ts.Expression, initializers = new Map<string, ts.Expression>()): string | undefined {
@@ -89,50 +90,114 @@ function nameOfProperty(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
+type ExpressionStatus = 'static' | 'dynamic' | 'ambiguous' | 'unknown';
+type ExpressionSourceKind = 'string_literal' | 'no_substitution_template' | 'template_with_substitutions' | 'const_alias' | 'conditional_candidates' | 'dynamic_expression';
+interface ExpressionResolution { status: ExpressionStatus; sourceKind: ExpressionSourceKind; value?: string; rawExpression?: string; placeholderKeys: string[]; evidence: string[]; constName?: string }
+interface BindingResolution { declaration?: ts.VariableDeclaration | ts.ParameterDeclaration; initializer?: ts.Expression; immutable: boolean; evidence: string[] }
+const maxAliasDepth = 5;
+function safeRaw(expr: ts.Expression): string | undefined {
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr) || ts.isIdentifier(expr) || ts.isTemplateExpression(expr)) return expr.getText(expr.getSourceFile());
+  return undefined;
+}
+function placeholders(expr: ts.TemplateExpression): string[] {
+  return expr.templateSpans.map((span) => span.expression.getText(expr.getSourceFile()));
+}
+function isFunctionLikeScope(node: ts.Node): boolean {
+  return ts.isFunctionLike(node) || ts.isSourceFile(node);
+}
+function containingScope(node: ts.Node): ts.Node {
+  let current: ts.Node | undefined = node.parent;
+  while (current && !isFunctionLikeScope(current)) current = current.parent;
+  return current ?? node.getSourceFile();
+}
+function nodeContains(parent: ts.Node, child: ts.Node): boolean {
+  return child.getStart(child.getSourceFile()) >= parent.getStart(parent.getSourceFile()) && child.getEnd() <= parent.getEnd();
+}
+function nestedFunctionContains(scope: ts.Node, candidate: ts.Node, use: ts.Node): boolean {
+  let current = candidate.parent;
+  while (current && current !== scope) {
+    if (isFunctionLikeScope(current) && !nodeContains(current, use)) return true;
+    current = current.parent;
+  }
+  return false;
+}
+function resolveBinding(identifier: ts.Identifier, use: ts.Node): BindingResolution {
+  const scope = containingScope(use);
+  const source = use.getSourceFile();
+  let best: ts.VariableDeclaration | ts.ParameterDeclaration | undefined;
+  const visit = (node: ts.Node): void => {
+    if (node !== scope && isFunctionLikeScope(node)) return;
+    if (node.getStart(source) >= identifier.getStart(source)) return;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && !nestedFunctionContains(scope, node, use)) best = node;
+    if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && !nestedFunctionContains(scope, node, use)) best = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  if (!best) return { immutable: false, evidence: ['binding_not_found'] };
+  const immutable = ts.isVariableDeclaration(best) && (best.parent.flags & ts.NodeFlags.Const) !== 0;
+  return { declaration: best, initializer: ts.isVariableDeclaration(best) ? best.initializer : undefined, immutable, evidence: [immutable ? 'const_binding_before_use' : 'mutable_or_parameter_binding'] };
+}
+function resolveExpression(expr: ts.Expression | undefined, use: ts.Node, policy: 'operation_path' | 'external' | 'literal', depth = 0, seen = new Set<ts.Node>()): ExpressionResolution {
+  if (!expr) return { status: 'unknown', sourceKind: 'dynamic_expression', placeholderKeys: [], evidence: ['expression_missing'] };
+  if (ts.isStringLiteral(expr)) return { status: 'static', sourceKind: 'string_literal', value: expr.text, rawExpression: safeRaw(expr), placeholderKeys: [], evidence: ['string_literal'] };
+  if (ts.isNoSubstitutionTemplateLiteral(expr)) return { status: 'static', sourceKind: 'no_substitution_template', value: expr.text, rawExpression: safeRaw(expr), placeholderKeys: [], evidence: ['no_substitution_template'] };
+  if (ts.isTemplateExpression(expr)) {
+    const keys = placeholders(expr);
+    if (policy === 'operation_path') return { status: 'dynamic', sourceKind: 'template_with_substitutions', value: stripQuotes(expr.getText(expr.getSourceFile())), rawExpression: safeRaw(expr), placeholderKeys: keys, evidence: ['operation_path_template_placeholders_retained'] };
+    return { status: 'dynamic', sourceKind: 'template_with_substitutions', placeholderKeys: keys, evidence: ['template_substitutions_not_static_external_target'] };
+  }
+  if (ts.isIdentifier(expr)) {
+    if (depth >= maxAliasDepth) return { status: 'unknown', sourceKind: 'const_alias', rawExpression: safeRaw(expr), placeholderKeys: [], evidence: ['alias_depth_exceeded'], constName: expr.text };
+    const binding = resolveBinding(expr, use);
+    if (!binding.declaration || !binding.initializer || !binding.immutable) return { status: 'dynamic', sourceKind: 'dynamic_expression', rawExpression: safeRaw(expr), placeholderKeys: [], evidence: binding.evidence, constName: expr.text };
+    if (seen.has(binding.declaration)) return { status: 'unknown', sourceKind: 'const_alias', rawExpression: safeRaw(expr), placeholderKeys: [], evidence: ['alias_cycle_detected'], constName: expr.text };
+    seen.add(binding.declaration);
+    const resolved = resolveExpression(binding.initializer, binding.declaration, policy, depth + 1, seen);
+    return { ...resolved, sourceKind: 'const_alias', rawExpression: safeRaw(expr), constName: expr.text, evidence: [...binding.evidence, ...resolved.evidence] };
+  }
+  return { status: 'dynamic', sourceKind: 'dynamic_expression', rawExpression: safeRaw(expr), placeholderKeys: [], evidence: [`unsupported_${ts.SyntaxKind[expr.kind] ?? 'expression'}`] };
+}
 function staticExpressionText(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): string | undefined {
   if (!expr) return undefined;
   if (isStringLike(expr)) return expr.text;
-  if (ts.isTemplateExpression(expr)) return stripQuotes(expr.getText(expr.getSourceFile()));
   if (ts.isIdentifier(expr) && initializers.has(expr.text)) return staticExpressionText(initializers.get(expr.text), initializers);
   return undefined;
 }
-interface StaticPathResolution { text?: string; sourceKind: 'literal' | 'template' | 'const' | 'dynamic'; rawExpression?: string; constName?: string }
-function staticPathExpression(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): StaticPathResolution {
-  if (!expr) return { sourceKind: 'dynamic' };
-  const rawExpression = expr.getText(expr.getSourceFile());
-  if (isStringLike(expr)) return { text: expr.text, sourceKind: 'literal', rawExpression };
-  if (ts.isTemplateExpression(expr)) return { text: stripQuotes(rawExpression), sourceKind: 'template', rawExpression };
-  if (ts.isIdentifier(expr) && initializers.has(expr.text)) {
-    const resolved = staticPathExpression(initializers.get(expr.text), initializers);
-    return resolved.text ? { ...resolved, sourceKind: 'const', rawExpression, constName: expr.text } : { sourceKind: 'dynamic', rawExpression };
-  }
-  return { sourceKind: 'dynamic', rawExpression };
+interface StaticPathResolution { text?: string; sourceKind: 'literal' | 'template' | 'const' | 'dynamic'; rawExpression?: string; constName?: string; resolution: ExpressionResolution }
+function staticPathExpression(expr: ts.Expression | undefined, use: ts.Node): StaticPathResolution {
+  const resolution = resolveExpression(expr, use, 'operation_path');
+  const sourceKind = resolution.sourceKind === 'const_alias' ? 'const' : resolution.sourceKind === 'template_with_substitutions' || resolution.sourceKind === 'no_substitution_template' ? 'template' : resolution.status === 'static' ? 'literal' : 'dynamic';
+  return { text: resolution.value, sourceKind, rawExpression: resolution.rawExpression, constName: resolution.constName, resolution };
 }
 function operationPathFromStatic(text: string | undefined): string | undefined {
   return text ? `/${stripQuotes(text).replace(/^\//, '')}` : undefined;
 }
-interface PathCandidateEvidence { candidatePaths: string[]; normalizedCandidateOperations: string[]; candidateSourceKind: string; candidateIdentifier: string; hasDynamicAssignments: boolean }
-function staticPathCandidates(source: ts.SourceFile, identifier: string, initializers: Map<string, ts.Expression>): PathCandidateEvidence | undefined {
+interface PathCandidateEvidence { candidatePaths: string[]; normalizedCandidateOperations: string[]; candidateSourceKind: string; candidateIdentifier: string; hasDynamicAssignments: boolean; conservativeReason?: string }
+function staticPathCandidates(identifier: ts.Identifier, call: ts.Node, method: string): PathCandidateEvidence | undefined {
+  const binding = resolveBinding(identifier, call);
+  const declaration = binding.declaration;
+  if (!declaration) return undefined;
+  const scope = containingScope(call);
+  const source = call.getSourceFile();
   const paths: string[] = [];
   let hasDynamicAssignments = false;
+  const addExpr = (expr: ts.Expression | undefined, origin: ts.Node): void => {
+    const resolved = staticPathExpression(expr, origin);
+    if (resolved.text) paths.push(operationPathFromStatic(resolved.text) ?? resolved.text);
+    else hasDynamicAssignments = true;
+  };
+  if (ts.isVariableDeclaration(declaration)) addExpr(declaration.initializer, declaration);
   const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === identifier && node.initializer) {
-      const resolved = staticPathExpression(node.initializer, initializers);
-      if (resolved.text) paths.push(operationPathFromStatic(resolved.text) ?? resolved.text);
-      else hasDynamicAssignments = true;
-    }
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && node.left.text === identifier) {
-      const resolved = staticPathExpression(node.right, initializers);
-      if (resolved.text) paths.push(operationPathFromStatic(resolved.text) ?? resolved.text);
-      else hasDynamicAssignments = true;
-    }
+    if (node !== scope && isFunctionLikeScope(node)) return;
+    if (node.getStart(source) >= call.getStart(source)) return;
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && node.left.text === identifier.text) addExpr(node.right, node);
     ts.forEachChild(node, visit);
   };
-  visit(source);
+  visit(scope);
   const candidatePaths = [...new Set(paths)];
   if (candidatePaths.length === 0) return undefined;
-  const normalizedCandidateOperations = [...new Set(candidatePaths.map((candidate) => classifyODataPathIntent(candidate, 'POST').topLevelOperationName).filter((value): value is string => Boolean(value)))];
-  return { candidatePaths, normalizedCandidateOperations, candidateSourceKind: 'static candidates observed', candidateIdentifier: identifier, hasDynamicAssignments };
+  const normalizedCandidateOperations = [...new Set(candidatePaths.map((candidate) => classifyODataPathIntent(candidate, method).topLevelOperationName).filter((value): value is string => Boolean(value)))];
+  return { candidatePaths, normalizedCandidateOperations, candidateSourceKind: 'static candidates observed before call in lexical scope', candidateIdentifier: identifier.text, hasDynamicAssignments, conservativeReason: hasDynamicAssignments ? 'dynamic_assignment_observed' : normalizedCandidateOperations.length > 1 ? 'candidate_tie' : undefined };
 }
 function destinationExpressionShape(expr: ts.Expression | undefined): string | undefined {
   if (!expr) return undefined;
@@ -159,57 +224,59 @@ function propertyInitializer(object: ts.ObjectLiteralExpression, key: string): t
   }
   return undefined;
 }
-function httpMethodFromObject(object: ts.ObjectLiteralExpression, initializers: Map<string, ts.Expression>): string | undefined {
-  const text = staticExpressionText(propertyInitializer(object, 'method'), initializers);
+function httpMethodFromObject(object: ts.ObjectLiteralExpression, use: ts.Node): string | undefined {
+  const text = resolveExpression(propertyInitializer(object, 'method'), use, 'literal').value;
   return text ? stripQuotes(text).toUpperCase() : undefined;
 }
-function urlTargetFromExpression(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): Record<string, unknown> {
-  const text = staticExpressionText(expr, initializers);
-  if (text) return { kind: 'static_url', expression: text, dynamic: false };
-  if (expr && (ts.isTemplateExpression(expr) || ts.isIdentifier(expr) || ts.isPropertyAccessExpression(expr) || ts.isCallExpression(expr))) return { kind: 'url_expression', expression: expr.getText(expr.getSourceFile()), dynamic: true };
+function hasTemplatePlaceholder(value: string): boolean { return /\$\{|%7B|%7D/i.test(value); }
+function urlTargetFromExpression(expr: ts.Expression | undefined, use: ts.Node): Record<string, unknown> {
+  const resolved = resolveExpression(expr, use, 'external');
+  if (resolved.status === 'static' && resolved.value && !hasTemplatePlaceholder(resolved.value)) return { kind: 'static_url', expression: resolved.value, dynamic: false, sourceKind: resolved.sourceKind };
+  if (expr) return { kind: 'url_expression', dynamic: true, expression: `${resolved.sourceKind}:${resolved.placeholderKeys.join('|')}`, expressionShape: resolved.sourceKind, placeholderKeys: resolved.placeholderKeys };
   return { kind: 'unknown', dynamic: false };
 }
-function destinationTargetFromExpression(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): Record<string, unknown> | undefined {
-  const text = staticExpressionText(expr, initializers);
-  if (text) return { kind: 'destination', expression: text, dynamic: false };
-  const candidates = staticConditionalCandidates(expr, initializers);
+function destinationTargetFromExpression(expr: ts.Expression | undefined, use: ts.Node): Record<string, unknown> | undefined {
+  const resolved = resolveExpression(expr, use, 'external');
+  const text = resolved.value;
+  if (resolved.status === 'static' && text && !hasTemplatePlaceholder(text)) return { kind: 'destination', expression: text, dynamic: false, sourceKind: resolved.sourceKind };
+  const candidates = staticConditionalCandidates(expr, new Map<string, ts.Expression>());
   if (candidates) return { kind: 'destination', dynamic: true, expressionShape: 'conditional', candidateLiterals: candidates };
   const shape = destinationExpressionShape(expr);
   if (shape) return { kind: 'destination', dynamic: true, expressionShape: shape };
   return undefined;
 }
-function externalHttpEvidence(node: ts.CallExpression, source: ts.SourceFile, initializers: Map<string, ts.Expression>): { method?: string; externalTarget: Record<string, unknown>; classifier: string; sourceCallShape: string } | undefined {
+function externalHttpEvidence(node: ts.CallExpression, source: ts.SourceFile): { method?: string; externalTarget: Record<string, unknown>; classifier: string; sourceCallShape: string } | undefined {
   const expr = node.expression;
   const exprText = expr.getText(source);
   if (exprText === 'useOrFetchDestination') {
     const objectArg = node.arguments[0];
     if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
-      const destination = destinationTargetFromExpression(propertyInitializer(objectArg, 'destinationName'), initializers);
+      const destination = destinationTargetFromExpression(propertyInitializer(objectArg, 'destinationName'), node);
       return { externalTarget: destination ?? { kind: 'unknown', dynamic: false }, classifier: 'sap_destination_lookup', sourceCallShape: 'useOrFetchDestination' };
     }
   }
   if (exprText === 'executeHttpRequest') {
-    const destination = destinationTargetFromExpression(node.arguments[0], initializers);
+    const destination = destinationTargetFromExpression(node.arguments[0], node);
     const config = node.arguments[1];
-    const method = config && ts.isObjectLiteralExpression(config) ? httpMethodFromObject(config, initializers) : undefined;
-    const url = config && ts.isObjectLiteralExpression(config) ? urlTargetFromExpression(propertyInitializer(config, 'url'), initializers) : { kind: 'unknown', dynamic: false };
+    const method = config && ts.isObjectLiteralExpression(config) ? httpMethodFromObject(config, node) : undefined;
+    const url = config && ts.isObjectLiteralExpression(config) ? urlTargetFromExpression(propertyInitializer(config, 'url'), node) : { kind: 'unknown', dynamic: false };
     return { method, externalTarget: destination ? { ...url, destination } : url, classifier: 'sap_execute_http_request', sourceCallShape: 'executeHttpRequest' };
   }
   if (exprText === 'axios') {
     const config = node.arguments[0];
     if (config && ts.isObjectLiteralExpression(config)) {
-      const method = httpMethodFromObject(config, initializers);
-      return { method, externalTarget: urlTargetFromExpression(propertyInitializer(config, 'url'), initializers), classifier: 'axios_config_call', sourceCallShape: 'axios(config)' };
+      const method = httpMethodFromObject(config, node);
+      return { method, externalTarget: urlTargetFromExpression(propertyInitializer(config, 'url'), node), classifier: 'axios_config_call', sourceCallShape: 'axios(config)' };
     }
     return { externalTarget: { kind: 'unknown', dynamic: false }, classifier: 'axios_unknown_call', sourceCallShape: 'axios(...)' };
   }
   if (exprText === 'fetch') {
     const init = node.arguments[1];
-    const method = init && ts.isObjectLiteralExpression(init) ? httpMethodFromObject(init, initializers) : undefined;
-    return { method, externalTarget: urlTargetFromExpression(node.arguments[0], initializers), classifier: 'fetch_call', sourceCallShape: 'fetch' };
+    const method = init && ts.isObjectLiteralExpression(init) ? httpMethodFromObject(init, node) : undefined;
+    return { method, externalTarget: urlTargetFromExpression(node.arguments[0], node), classifier: 'fetch_call', sourceCallShape: 'fetch' };
   }
   if (ts.isPropertyAccessExpression(expr) && ['get','post','put','patch','delete','head'].includes(expr.name.text) && expr.expression.getText(source) === 'axios') {
-    return { method: expr.name.text.toUpperCase(), externalTarget: urlTargetFromExpression(node.arguments[0], initializers), classifier: 'axios_member_call', sourceCallShape: `axios.${expr.name.text}` };
+    return { method: expr.name.text.toUpperCase(), externalTarget: urlTargetFromExpression(node.arguments[0], node), classifier: 'axios_member_call', sourceCallShape: `axios.${expr.name.text}` };
   }
   return undefined;
 }
@@ -274,7 +341,7 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
           const methodProp = propertyInitializer(objectArg, 'method');
           const pathName = pathProp && ts.isIdentifier(pathProp) ? pathProp.text : undefined;
           const methodName = methodProp && ts.isIdentifier(methodProp) ? methodProp.text : undefined;
-          const methodLiteral = staticExpressionText(methodProp, variableInitializers(source));
+          const methodLiteral = resolveExpression(methodProp, node, 'literal').value;
           if (pathName) sends.push({ client: node.expression.expression.text, path: pathName, method: methodName, methodLiteral, start: node.getStart(source), end: node.getEnd() });
         }
       }
@@ -324,12 +391,12 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
           const receiver = receiverName(expr.expression);
           const query = objectPropertyText(objectArg, 'query');
-          const method = stripQuotes(objectPropertyText(objectArg, 'method') ?? 'POST');
+          const method = stripQuotes(resolveExpression(propertyInitializer(objectArg, 'method'), node, 'literal').value ?? objectPropertyText(objectArg, 'method') ?? 'POST');
           const pathExpr = propertyInitializer(objectArg, 'path') ?? propertyInitializer(objectArg, 'event');
-          const resolvedPath = staticPathExpression(pathExpr, initializers);
+          const resolvedPath = staticPathExpression(pathExpr, node);
           const op = pathExpr ? resolvedPath.text ?? pathExpr.getText(source) : undefined;
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
-          const candidateEvidence = pathExpr && ts.isIdentifier(pathExpr) && !resolvedPath.text ? staticPathCandidates(source, pathExpr.text, initializers) : undefined;
+          const candidateEvidence = pathExpr && ts.isIdentifier(pathExpr) && !resolvedPath.text ? staticPathCandidates(pathExpr, node, method) : undefined;
           const candidateOperationPath = candidateEvidence && !candidateEvidence.hasDynamicAssignments && candidateEvidence.normalizedCandidateOperations.length === 1 && candidateEvidence.candidatePaths.length > 0 ? candidateEvidence.candidatePaths[0] : undefined;
           const operationPathExpr = operationPathFromStatic(resolvedPath.text) ?? candidateOperationPath;
           const intent = classifyODataPathIntent(operationPathExpr, method);
@@ -346,8 +413,8 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const pathArg = spec ? wrapperArgs[spec.pathIndex] : undefined;
         const methodArg = spec?.methodIndex === undefined ? undefined : wrapperArgs[spec.methodIndex];
         const receiver = clientArg && ts.isIdentifier(clientArg) ? clientArg.text : spec?.clientName;
-        const method = stripQuotes(staticExpressionText(methodArg, initializers) ?? spec?.methodLiteral ?? 'POST');
-        const resolvedPath = staticPathExpression(pathArg, initializers);
+        const method = stripQuotes(resolveExpression(methodArg, node, 'literal').value ?? spec?.methodLiteral ?? 'POST');
+        const resolvedPath = staticPathExpression(pathArg, node);
         const operationPathExpr = operationPathFromStatic(resolvedPath.text);
         const normalizedOperationPath = operationPathExpr ? classifyODataPathIntent(operationPathExpr, method).topLevelOperationName : undefined;
         if (spec && receiver && operationPathExpr) {
@@ -363,7 +430,7 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           if (eventName) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: rootReceiver ?? receiver, eventNameExpr: eventName }, { receiver, rootReceiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit', receiverClassification: 'cap_evidence' });
         }
       } else {
-        const external = externalHttpEvidence(node, source, initializers);
+        const external = externalHttpEvidence(node, source);
         if (external) {
           const evidenceTarget = { ...external.externalTarget, method: external.method, parserClassifier: external.classifier, sourceCallShape: external.sourceCallShape };
           const safeTarget = externalHttpTarget({ method: external.method, evidence_json: JSON.stringify({ externalTarget: evidenceTarget }) });

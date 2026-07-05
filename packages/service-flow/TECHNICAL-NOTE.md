@@ -142,3 +142,7 @@ Outbound call extraction is AST-based and ignores comments, block comments, and 
 ## 0.1.35 OData placeholder semantics
 
 Service-flow now records OData placeholders by semantic layer. Service-routing placeholders belong to service bindings and can make an operation edge dynamic until runtime variables are supplied. Operation invocation argument placeholders, such as action/function call arguments, remain operation evidence but are not service-routing variables. Entity key placeholders belong to entity addressing, so key, navigation, and media/property paths remain terminal remote entity/query edges unless indexed CDS operation evidence provides a credible operation match.
+## 0.1.40 analyzer hardening
+
+Expression resolution is consumer-specific: operation paths may retain template placeholders for OData normalization, while external URL and destination classifiers require literal or no-substitution-template evidence before a static target is persisted. Identifier resolution is bounded to the call-site lexical scope and ignores sibling scopes, later declarations, nested function bodies, and mutable or computed writes unless they are recorded as conservative candidate evidence.
+

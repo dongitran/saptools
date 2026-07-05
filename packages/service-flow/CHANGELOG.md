@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.40
+
+- Hardened operation path expression analysis to respect lexical scope, declaration order, aliases, and bounded branch candidates.
+- Kept external URL and destination templates with substitutions dynamic with sanitized labels.
+- Fixed CDS path annotation parsing for prefix/suffix annotations and supported service extension syntax.
+
 ## 0.1.35
 
 - Hardened OData path precedence so entity key, navigation, and media/property paths with placeholders remain terminal entity evidence instead of dynamic operation candidates.
@@ -261,3 +267,4 @@
 ## 0.1.0
 
 - Initial `@saptools/service-flow` CLI package for indexing and tracing SAP CAP service flows.
+
