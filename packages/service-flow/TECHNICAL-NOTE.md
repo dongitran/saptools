@@ -1,5 +1,11 @@
 # Service Flow Resolution Notes
 
+## 0.1.29 OData entity-query intent notes
+
+- Service-client `GET` paths with OData collection queries, filter/search functions in the query string, entity key predicates, navigation reads, or query-string placeholders are classified conservatively as terminal remote entity/query reads when no strong indexed CDS operation candidate resolves the path. Examples include `/Books?$filter=contains(title,'A')`, `/Books(ID='1000')`, and `/Authors('A1')/books?$select=ID`.
+- Query-string placeholders are recorded as query evidence and do not make the operation target dynamic. Runtime variables in service paths, destinations, aliases, and true operation paths still keep the existing dynamic-edge behavior.
+- OData invocation normalization no longer truncates paths at parentheses that appear inside query strings. Balanced top-level operation imports such as `/calculateScore(input='A')` continue to normalize and resolve against indexed CDS functions/actions when service evidence is strong.
+
 ## 0.1.22 alias, wrapper, contextual trace, and strict doctor notes
 
 - Same-file service-client identity aliases now create their own service binding rows when the right-hand side is a known connected client variable. The parser accepts direct identifier aliases plus typed, `as`, and `satisfies` forms, supports source-order transitive aliases, and records `aliasKind: identity` helper-chain evidence. It still does not infer aliases from property reads, indexed access, function calls, object metadata, or cross-scope guesses.

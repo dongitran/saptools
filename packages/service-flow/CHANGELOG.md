@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.29
+
+- Classify GET OData entity/query paths with query strings, filter functions, key predicates, navigation reads, and query placeholders as terminal remote query/entity edges when no strong indexed CDS operation candidate resolves them.
+- Preserve raw path, entity segment, query-string presence, query placeholders, method, and classifier reason in link evidence without creating dynamic operation edges from query parameters.
+- Keep balanced top-level OData action/function invocation normalization for real operation imports while avoiding truncation at parentheses inside query strings.
+- Document the conservative entity-query versus operation-invocation distinction for neutral CAP service-client calls.
+
 ## 0.1.28
 
 - Propagate contextual service-client bindings through one-level object-parameter destructuring aliases, including renamed and assignment destructuring in neutral CAP helpers.

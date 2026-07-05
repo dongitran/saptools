@@ -12,6 +12,9 @@ describe('normalizeODataOperationInvocationPath', () => {
     ["/Namespace.readConfig(id='123')", '/Namespace.readConfig', true],
     ["/Documents(id='123')/file", "/Documents(id='123')/file", false],
     ["/Orders(id='123')/items", "/Orders(id='123')/items", false],
+    ["/Books?$filter=contains(title,'A')", "/Books?$filter=contains(title,'A')", false],
+    ["/Books?$select=ID&$filter=contains(title,'A')", "/Books?$select=ID&$filter=contains(title,'A')", false],
+    ["/calculateScore(input='A')?$select=value", "/calculateScore(input='A')?$select=value", false],
   ])('normalizes %s', (input, expected, wasInvocation) => {
     expect(normalizeODataOperationInvocationPath(input)).toMatchObject({ normalizedOperationPath: expected, wasInvocation });
   });
