@@ -72,8 +72,19 @@ jobs:
         run: pnpm --filter @saptools/service-flow test:unit
       - name: Run fake-backed e2e tests
         run: pnpm --filter @saptools/service-flow test:e2e:fake
-      - name: Verify publish tarball
-        run: npm pack --dry-run
+      - name: Verify publish tarball includes TypeScript sources
+        run: |
+          pack_json="$(npm pack --dry-run --json)"
+          PACK_JSON="$pack_json" node - <<'NODE'
+          const packEntries = JSON.parse(process.env.PACK_JSON);
+          const files = packEntries.flatMap((entry) => entry.files.map((file) => file.path));
+          const hasTypeScriptSource = files.some((file) => file.startsWith('src/') && file.endsWith('.ts'));
+
+          if (!hasTypeScriptSource) {
+            process.stderr.write('Expected npm package to include TypeScript source files under src/.\n');
+            process.exit(1);
+          }
+          NODE
         working-directory: packages/service-flow
 
   publish:
