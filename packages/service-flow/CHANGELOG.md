@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.28
+
+- Propagate contextual service-client bindings through one-level object-parameter destructuring aliases, including renamed and assignment destructuring in neutral CAP helpers.
+- Prefer caller-site higher-order wrapper remote-action evidence for literal wrapper paths while keeping dynamic wrapper path diagnostics on the caller edge.
+- Refine contextual implementation selection evidence for duplicate helper candidates and report structured duplicate-candidate ties when selection is unsafe.
+- Fix strict doctor contextual opportunity metrics so aggregate totals, capped examples, and actionable severity remain internally consistent.
+
 ## 0.1.27
 
 - Enrich trace-time contextual service-client bindings from package-level CAP `cds.requires` aliases so helper-internal sends resolve through require-derived service paths and destinations.

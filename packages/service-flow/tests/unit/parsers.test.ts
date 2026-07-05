@@ -430,6 +430,30 @@ describe('executable symbol parser trace-quality cases', () => {
     expect(parsed.calls.map((call) => call.calleeExpression)).toEqual(['local.run']);
   });
 
+  it('records one-level object parameter destructuring aliases inside helper bodies', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-parameter-alias-'));
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src', 'entry.ts'), `
+      export async function prepareHistory(input: { processClient: unknown; headers: Record<string, string> }): Promise<void> {
+        const { processClient } = input;
+        const { processClient: client } = input;
+        let assignedClient;
+        ({ processClient: assignedClient } = input);
+        await processClient.send({ method: 'POST', path: '/loadPriorState' });
+        await client.send({ method: 'POST', path: '/loadCurrentState' });
+        await assignedClient.send({ method: 'POST', path: '/loadNextState' });
+      }
+    `);
+    const parsed = await parseExecutableSymbols(root, 'src/entry.ts');
+    expect(parsed.symbols.find((symbol) => symbol.qualifiedName === 'prepareHistory')?.importExportEvidence).toMatchObject({
+      parameterPropertyAliases: [
+        { parameter: 'input', property: 'processClient', local: 'processClient', kind: 'object_parameter_destructure' },
+        { parameter: 'input', property: 'processClient', local: 'client', kind: 'object_parameter_destructure' },
+        { parameter: 'input', property: 'processClient', local: 'assignedClient', kind: 'object_parameter_destructure' },
+      ],
+    });
+  });
+
   it('records destructured object parameter metadata for class methods', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-destructured-'));
     await fs.mkdir(path.join(root, 'src'), { recursive: true });
