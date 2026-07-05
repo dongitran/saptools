@@ -137,3 +137,8 @@ Schema version 6 adds queryable external target metadata columns to `outbound_ca
 ### 0.1.17 parser ownership policy
 
 Outbound call extraction is AST-based and ignores comments, block comments, and string literals. CAP/service `.on(...)` registrations are indexed only when the receiver has CAP/service evidence, and top-level registrations receive `module:<relative-file>#event:<event-name>:<line>` synthetic owners. Generic event emitters such as desktop or window events are ignored by default rather than guessed as CAP async edges. Unsupported source shapes are surfaced through diagnostics and strict doctor ownerless categories instead of guessed graph edges.
+
+
+## 0.1.35 OData placeholder semantics
+
+Service-flow now records OData placeholders by semantic layer. Service-routing placeholders belong to service bindings and can make an operation edge dynamic until runtime variables are supplied. Operation invocation argument placeholders, such as action/function call arguments, remain operation evidence but are not service-routing variables. Entity key placeholders belong to entity addressing, so key, navigation, and media/property paths remain terminal remote entity/query edges unless indexed CDS operation evidence provides a credible operation match.

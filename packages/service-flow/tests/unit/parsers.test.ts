@@ -671,3 +671,29 @@ describe('outbound AST parser hardening', () => {
     expect(symbols.some((symbol) => symbol.kind === 'event_registration' && symbol.qualifiedName.includes('module:src/handler.ts#event:served:'))).toBe(true);
   });
 });
+
+describe('OData send parser evidence', () => {
+  it('persists entity-key placeholders separately from operation invocation arguments', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-documents-parser-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      export async function run(documentService, attachment, file, attachmentID, request, data, content) {
+        await documentService.send({ method: "POST", path: "/DocumentAttachment", data });
+        await documentService.send({ method: "PUT", path: \`/DocumentAttachment(\${attachment.ID})/file\`, data: content });
+        await documentService.send({ method: "PUT", path: \`/DocumentAttachment('\${file.ID}')/content\`, data: content });
+        await documentService.send({ method: "GET", path: \`/DocumentAttachment(\${attachmentID})\` });
+        await documentService.send({ method: "POST", path: "/refreshCache(id=\${request.ID})" });
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/handler.ts');
+    const media = calls.find((call) => call.operationPathExpr?.includes('/file'));
+    expect(media?.callType).toBe('remote_entity_media');
+    expect(media?.evidence).toMatchObject({ odataPathIntent: { kind: 'entity_media', keyPredicatePlaceholderKeys: ['attachment.ID'], mediaOrPropertySuffix: 'file' } });
+    const read = calls.find((call) => call.operationPathExpr?.includes('attachmentID'));
+    expect(read?.callType).toBe('remote_query');
+    expect(read?.evidence).toMatchObject({ odataPathIntent: { kind: 'entity_key_read', keyPredicatePlaceholderKeys: ['attachmentID'] } });
+    const operation = calls.find((call) => call.operationPathExpr?.startsWith('/refreshCache'));
+    expect(operation?.callType).toBe('remote_action');
+    expect(operation?.evidence).toMatchObject({ odataPathIntent: { kind: 'operation_invocation', invocationArgumentPlaceholderKeys: ['request.ID'], keyPredicatePlaceholderKeys: [] } });
+  });
+});

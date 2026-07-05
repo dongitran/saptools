@@ -228,6 +228,13 @@ function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<s
   return { repoId: row.repoId, files: new Set(row.sourceFile ? [row.sourceFile] : []), symbolId: row.symbolId };
 }
 
+
+function traceEdgeType(call: CallRow, row: GraphRow): string {
+  if (row.to_kind === 'operation' && row.edge_type === 'REMOTE_CALL_RESOLVES_TO_OPERATION') return 'remote_action';
+  if (row.to_kind === 'operation' && row.edge_type === 'LOCAL_CALL_RESOLVES_TO_OPERATION') return 'local_service_call';
+  return String(call.call_type);
+}
+
 function includeCall(
   type: string,
   options: {
@@ -575,7 +582,7 @@ export function trace(
         const to = edgeTarget(effectiveRow, evidence);
         edges.push({
           step: current.depth,
-          type: String(call.call_type),
+          type: traceEdgeType(call, effectiveRow),
           from: `${call.repoName}:${call.source_file}:${call.source_line}`,
           to,
           evidence,

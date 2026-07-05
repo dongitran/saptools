@@ -21,7 +21,7 @@ import { parsePackageJson } from './parsers/package-json-parser.js';
 import { classifyRepository } from './discovery/classify-repository.js';
 import { indexWorkspace } from './indexer/workspace-indexer.js';
 import { linkWorkspace } from './linker/cross-repo-linker.js';
-import { normalizeODataOperationInvocationPath } from './linker/odata-path-normalizer.js';
+import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from './linker/odata-path-normalizer.js';
 import { trace } from './trace/trace-engine.js';
 import { parseVars } from './trace/selectors.js';
 import { renderTraceTable } from './output/table-output.js';
@@ -140,6 +140,34 @@ function remoteEntityOperationCollisionQuality(db: ReturnType<typeof openDatabas
   return { severity: examples.length > 0 ? 'warning' : 'info', code: 'strict_remote_entity_operation_collision_quality', message: 'Terminal remote entity edges that look like indexed operation invocations', collisionCount: examples.length, examples: examples.slice(0, 10) };
 }
 
+
+function remoteEntityDynamicOperationFalsePositiveQuality(db: ReturnType<typeof openDatabase>): Record<string, unknown> {
+  const rows = db.prepare(`SELECT c.id callId,c.source_file sourceFile,c.source_line sourceLine,c.method method,c.operation_path_expr rawPath,e.id graphEdgeId,e.status status,e.to_kind targetKind,e.unresolved_reason unresolvedReason,e.evidence_json evidenceJson
+    FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type LIKE 'remote_entity_%' AND e.status IN ('dynamic','unresolved') AND e.to_kind='operation_candidate'
+    ORDER BY c.source_file,c.source_line LIMIT 100`).all() as Array<Record<string, unknown>>;
+  const examples: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const rawPath = String(row.rawPath ?? '');
+    const method = String(row.method ?? 'GET');
+    const intent = classifyODataPathIntent(rawPath, method);
+    const entityIntent = ['entity_key_read', 'entity_navigation_query', 'entity_media'].includes(intent.kind) || (intent.kind === 'entity_mutation' && (intent.hasEntityKeyPredicate || intent.hasNavigationSuffix));
+    if (!entityIntent) continue;
+    let candidateCount: number;
+    try {
+      const evidence = JSON.parse(String(row.evidenceJson ?? '{}')) as { indexedOperationCandidateCount?: unknown; candidateCount?: unknown };
+      candidateCount = Number(evidence.indexedOperationCandidateCount ?? evidence.candidateCount ?? 0);
+    } catch {
+      candidateCount = 0;
+    }
+    const reason = String(row.unresolvedReason ?? '');
+    const keyEvidence = intent.keyPredicatePlaceholderKeys.length > 0 || reason.includes('runtime variable') || reason.includes('placeholder');
+    if (candidateCount > 0 || !keyEvidence) continue;
+    examples.push({ sourceFile: row.sourceFile, sourceLine: row.sourceLine, rawPath, method, pathIntent: intent.kind, keyPlaceholderKeys: intent.keyPredicatePlaceholderKeys, navigationOrMediaSuffix: intent.navigationSuffix ?? intent.mediaOrPropertySuffix, operationCandidateCount: candidateCount, graphEdgeId: row.graphEdgeId, recommendedRemediation: 'Reindex and relink with service-flow 0.1.35 or newer so entity key placeholders remain entity-addressing evidence.' });
+  }
+  return { severity: examples.length > 0 ? 'warning' : 'info', code: 'strict_remote_entity_dynamic_operation_false_positive_quality', message: 'Parser-classified entity paths linked as dynamic operation candidates without indexed operation evidence', falsePositiveCount: examples.length, examples: examples.slice(0, 10) };
+}
+
 function localServiceDiagnostics(db: ReturnType<typeof openDatabase>, strict: boolean): Array<Record<string, unknown>> {
   const rows = db.prepare(`SELECT e.status status,e.unresolved_reason reason,e.evidence_json evidenceJson FROM graph_edges e JOIN outbound_calls c ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER) WHERE c.call_type='local_service_call'`).all() as Array<{ status?: string; reason?: string | null; evidenceJson?: string }>;
   const implementationContext = rows.filter((row) => row.status === 'resolved' && String(row.evidenceJson ?? '').includes('implementation_context_caller_ownership')).length;
@@ -210,6 +238,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
   const invocation = odataInvocationResolutionQuality(db);
   const remoteAction = remoteActionTargetQuality(db);
   const entityOperationCollision = remoteEntityOperationCollisionQuality(db);
+  const entityDynamicFalsePositive = remoteEntityDynamicOperationFalsePositiveQuality(db);
   const externalHttp = externalHttpTargetQuality(db);
   const aliasQuality = identityAliasBindingQuality(db);
   const noBindingQuality = remoteActionNoBindingQuality(db);
@@ -228,6 +257,7 @@ function parserQualityDiagnostics(db: ReturnType<typeof openDatabase>, strict: b
     nestedThisQuality,
     remoteQuery,
     entityOperationCollision,
+    entityDynamicFalsePositive,
     invocation,
     remoteAction,
     externalHttp,
