@@ -674,6 +674,18 @@ export class FlowHandler {
   public async runFlow(id: string): Promise<void> {
     const remoteClient = await cds.connect.to('ConfigRemote', { path: '/ConfigService', destination: 'neutral-destination' });
     await remoteClient.send({ method: 'GET', path: "/readConfig(id='\${encodeURIComponent(id)}',version=0)" });
+    await remoteClient.send({
+      method: 'GET',
+      path: \`/readConfig(id='\${encodeURIComponent(
+        id
+      )}',version=0)\`,
+    });
+    await remoteClient.send({
+      method: 'GET',
+      path: \`/readConfig(id='\${encodeURIComponent(id)}',version=\${
+        id ? 1 : 0
+      })\`,
+    });
     await remoteClient.send({ method: 'GET', path: "/ConfigService.readConfig(id='123')" });
     await remoteClient.send({ method: 'GET', path: "/UserGroups?$select=id,name&$filter=contains(id,'A')" });
     await remoteClient.send({ method: 'GET', path: "/ProjectMappings?$filter=projectId eq '\${id}'&$skiptoken=\${id}" });
@@ -701,6 +713,16 @@ export class FlowHandler {
     const remoteAction = db.prepare("SELECT e.evidence_json evidenceJson,e.status status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.call_type='remote_action' AND c.operation_path_expr LIKE '/readConfig(%'").get() as { evidenceJson: string; status: string };
     expect(remoteAction.status).toBe('resolved');
     expect(JSON.parse(remoteAction.evidenceJson)).toMatchObject({ rawOperationPath: "/readConfig(id='${encodeURIComponent(id)}',version=0)", normalizedOperationPath: '/readConfig' });
+    const multilineActions = db.prepare("SELECT e.evidence_json evidenceJson,e.status status,e.unresolved_reason unresolvedReason FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.call_type='remote_action' AND c.operation_path_expr LIKE '/readConfig(%' AND c.operation_path_expr LIKE '%' || char(10) || '%'").all() as Array<{ evidenceJson: string; status: string; unresolvedReason: string | null }>;
+    expect(multilineActions).toHaveLength(2);
+    for (const action of multilineActions) {
+      expect(action.status).toBe('resolved');
+      expect(action.unresolvedReason).toBeNull();
+      const evidence = JSON.parse(action.evidenceJson) as { normalizedOperationPath?: string; invocationArgumentPlaceholderKeys?: string[]; resolutionReasons?: string[] };
+      expect(evidence.normalizedOperationPath).toBe('/readConfig');
+      expect(evidence.invocationArgumentPlaceholderKeys?.length).toBeGreaterThan(0);
+      expect(evidence.resolutionReasons?.some((reason) => reason.startsWith('missing_variable:'))).not.toBe(true);
+    }
     const namespaceAction = db.prepare("SELECT e.evidence_json evidenceJson,e.status status FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER) WHERE e.from_kind='call' AND c.call_type='remote_action' AND c.operation_path_expr LIKE '/ConfigService.readConfig(%'").get() as { evidenceJson: string; status: string };
     expect(namespaceAction.status).toBe('resolved');
     expect(JSON.parse(namespaceAction.evidenceJson)).toMatchObject({ normalizedOperationPath: '/ConfigService.readConfig', targetOperationPath: '/readConfig' });

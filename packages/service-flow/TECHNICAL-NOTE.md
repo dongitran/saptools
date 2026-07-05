@@ -1,5 +1,12 @@
 # Service Flow Resolution Notes
 
+## 0.1.30 OData invocation argument placeholder notes
+
+- Balanced top-level OData function/action imports such as `/readDetails(ID='${id}',version=0)` now normalize to the operation segment even when placeholder expressions span multiple lines or contain nested JavaScript parentheses.
+- Placeholders inside the invocation argument list are recorded as `invocationArgumentPlaceholderKeys` evidence. They are not route selectors and do not produce `missing_variable:*` operation-target diagnostics after a stable operation segment has been identified.
+- Runtime `--var` substitution still applies to actual route selectors: service path, destination, alias, and dynamic operation path segments. GET entity key reads, navigation reads, and query-string placeholders remain conservative terminal remote query/entity evidence unless strong indexed operation evidence resolves them.
+- Trace-time contextual service-client resolution uses the same shared OData invocation normalizer as persisted linking, keeping helper-propagated calls consistent with full graph linking.
+
 ## 0.1.29 OData entity-query intent notes
 
 - Service-client `GET` paths with OData collection queries, filter/search functions in the query string, entity key predicates, navigation reads, or query-string placeholders are classified conservatively as terminal remote entity/query reads when no strong indexed CDS operation candidate resolves the path. Examples include `/Books?$filter=contains(title,'A')`, `/Books(ID='1000')`, and `/Authors('A1')/books?$select=ID`.

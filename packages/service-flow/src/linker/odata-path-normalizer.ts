@@ -2,6 +2,9 @@ export interface NormalizedODataOperationPath {
   rawOperationPath: string;
   normalizedOperationPath: string;
   wasInvocation: boolean;
+  invocationArgumentPlaceholderKeys: string[];
+  normalizationReason?: string;
+  normalizationRejectedReason?: string;
 }
 
 export type ODataPathIntentKind = 'operation_invocation' | 'entity_query' | 'entity_key_read' | 'entity_navigation_query' | 'unknown';
@@ -22,16 +25,25 @@ export function normalizeODataOperationInvocationPath(path: string | undefined):
   if (path === undefined) return undefined;
   const raw = path.trim();
   if (!raw) return undefined;
+  const rejected = (reason: string): NormalizedODataOperationPath => ({ rawOperationPath: raw, normalizedOperationPath: raw, wasInvocation: false, invocationArgumentPlaceholderKeys: [], normalizationRejectedReason: reason });
   const open = raw.indexOf('(');
-  if (open < 0) return { rawOperationPath: raw, normalizedOperationPath: raw, wasInvocation: false };
-  const query = raw.indexOf('?');
-  if (query >= 0) return { rawOperationPath: raw, normalizedOperationPath: raw, wasInvocation: false };
-  if (!raw.startsWith('/') || raw.slice(1, open).includes('/')) return { rawOperationPath: raw, normalizedOperationPath: raw, wasInvocation: false };
+  if (open < 0) return rejected('no_top_level_parenthesis');
+  const query = topLevelQueryIndex(raw);
+  if (query >= 0) return rejected('query_string_paths_are_not_operation_invocations');
+  if (!raw.startsWith('/')) return rejected('path_is_not_absolute');
+  if (raw.slice(1, open).includes('/')) return rejected('operation_segment_contains_navigation_separator');
   const close = matchingClose(raw, open);
-  if (close === undefined || raw.slice(close + 1).trim().length > 0) return { rawOperationPath: raw, normalizedOperationPath: raw, wasInvocation: false };
+  if (close === undefined) return rejected('top_level_invocation_parenthesis_is_unbalanced');
+  if (raw.slice(close + 1).trim().length > 0) return rejected('top_level_invocation_does_not_cover_remaining_path');
   const operationSegment = raw.slice(0, open).trim();
-  if (operationSegment.length <= 1) return { rawOperationPath: raw, normalizedOperationPath: raw, wasInvocation: false };
-  return { rawOperationPath: raw, normalizedOperationPath: operationSegment, wasInvocation: true };
+  if (operationSegment.length <= 1) return rejected('operation_segment_is_empty');
+  return {
+    rawOperationPath: raw,
+    normalizedOperationPath: operationSegment,
+    wasInvocation: true,
+    invocationArgumentPlaceholderKeys: [...new Set(extractTemplatePlaceholders(raw.slice(open + 1, close)))],
+    normalizationReason: 'balanced_top_level_operation_invocation',
+  };
 }
 
 export function classifyODataPathIntent(path: string | undefined, method: string | undefined): ODataPathIntent {
@@ -78,7 +90,16 @@ function looksLikeLowerCamelInvocation(segment: string): boolean {
 }
 
 function extractTemplatePlaceholders(text: string): string[] {
-  return [...text.matchAll(/\$\{([^}]*)\}/g)].map((match) => (match[1] ?? '').trim()).filter(Boolean);
+  const keys: string[] = [];
+  for (let index = 0; index < text.length - 1; index += 1) {
+    if (text[index] !== '$' || text[index + 1] !== '{') continue;
+    const close = matchingPlaceholderClose(text, index + 1);
+    if (close === undefined) continue;
+    const key = text.slice(index + 2, close).trim();
+    if (key) keys.push(key);
+    index = close;
+  }
+  return keys;
 }
 
 function matchingClose(text: string, openIndex: number): number | undefined {
@@ -89,7 +110,19 @@ function matchingClose(text: string, openIndex: number): number | undefined {
     const prev = text[index - 1];
     if (quote) {
       if (prev === '\\') continue;
+      if (quote === 'template' && char === '$' && text[index + 1] === '{') {
+        const close = matchingPlaceholderClose(text, index + 1);
+        if (close === undefined) return undefined;
+        index = close;
+        continue;
+      }
       if ((quote === 'single' && char === "'") || (quote === 'double' && char === '"') || (quote === 'template' && char === '`')) quote = undefined;
+      continue;
+    }
+    if (char === '$' && text[index + 1] === '{') {
+      const close = matchingPlaceholderClose(text, index + 1);
+      if (close === undefined) return undefined;
+      index = close;
       continue;
     }
     if (char === "'") { quote = 'single'; continue; }
@@ -103,4 +136,63 @@ function matchingClose(text: string, openIndex: number): number | undefined {
     }
   }
   return undefined;
+}
+
+function matchingPlaceholderClose(text: string, openBraceIndex: number): number | undefined {
+  let depth = 0;
+  let quote: 'single' | 'double' | 'template' | undefined;
+  for (let index = openBraceIndex; index < text.length; index += 1) {
+    const char = text[index];
+    const prev = text[index - 1];
+    if (quote) {
+      if (prev === '\\') continue;
+      if (quote === 'template' && char === '$' && text[index + 1] === '{') {
+        depth += 1;
+        index += 1;
+        continue;
+      }
+      if ((quote === 'single' && char === "'") || (quote === 'double' && char === '"') || (quote === 'template' && char === '`')) quote = undefined;
+      continue;
+    }
+    if (char === "'") { quote = 'single'; continue; }
+    if (char === '"') { quote = 'double'; continue; }
+    if (char === '`') { quote = 'template'; continue; }
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+      if (depth < 0) return undefined;
+    }
+  }
+  return undefined;
+}
+
+function topLevelQueryIndex(text: string): number {
+  let quote: 'single' | 'double' | 'template' | undefined;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const prev = text[index - 1];
+    if (quote) {
+      if (prev === '\\') continue;
+      if (quote === 'template' && char === '$' && text[index + 1] === '{') {
+        const close = matchingPlaceholderClose(text, index + 1);
+        if (close === undefined) return -1;
+        index = close;
+        continue;
+      }
+      if ((quote === 'single' && char === "'") || (quote === 'double' && char === '"') || (quote === 'template' && char === '`')) quote = undefined;
+      continue;
+    }
+    if (char === '$' && text[index + 1] === '{') {
+      const close = matchingPlaceholderClose(text, index + 1);
+      if (close === undefined) return -1;
+      index = close;
+      continue;
+    }
+    if (char === "'") { quote = 'single'; continue; }
+    if (char === '"') { quote = 'double'; continue; }
+    if (char === '`') { quote = 'template'; continue; }
+    if (char === '?') return index;
+  }
+  return -1;
 }
