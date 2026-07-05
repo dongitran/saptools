@@ -736,6 +736,36 @@ describe('0.1.42 parser regressions', () => {
     expect(calls.every((call) => call.evidence?.literalPathSource === 'same_scope_const_initializer')).toBe(true);
   });
 
+  it('keeps nested catch and loop block declarations inside their real block scope', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-nested-lexical-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      const route = "/outerAction";
+      export async function run() {
+        const remote = await cds.connect.to("remote_catalog");
+        for (const item of [1]) {
+          {
+            const route = "/innerAction";
+            void route;
+          }
+          await remote.send("POST", route, { item });
+        }
+        try { await work(); } catch (error) {
+          {
+            const route = "/innerAction";
+            void route;
+          }
+          void error;
+          await remote.send("POST", route, {});
+        }
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/handler.ts');
+    const positional = calls.filter((call) => call.evidence?.classifier === 'service_client_send_method_path');
+    expect(positional.map((call) => call.operationPathExpr)).toEqual(['/outerAction', '/outerAction']);
+    expect(positional.every((call) => call.evidence?.literalPathSource === 'same_scope_const_initializer')).toBe(true);
+  });
+
   it('classifies positional remote CAP send only for proven connected clients', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-positional-send-'));
     await fs.mkdir(path.join(root, 'srv'), { recursive: true });
@@ -758,5 +788,26 @@ describe('0.1.42 parser regressions', () => {
       operationPathExpr: '/performWork',
     });
     expect(calls[0]?.evidence).toMatchObject({ classifier: 'service_client_send_method_path' });
+  });
+
+  it('classifies proven CAP send operation overload and immutable aliases without generic send fallback', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-operation-send-'));
+    await fs.mkdir(path.join(root, 'srv'), { recursive: true });
+    await fs.writeFile(path.join(root, 'srv', 'handler.ts'), `
+      export async function run(response, customTransport) {
+        const remote = await cds.connect.to('remote_catalog');
+        const operation = 'performWork';
+        await remote.send(operation, { ok: true });
+        await remote.send('POST', '/performWork', { ok: true });
+        await customTransport.send('performWork', {});
+        response.send('OK');
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'srv/handler.ts');
+    expect(calls).toHaveLength(2);
+    const operation = calls.find((call) => call.evidence?.classifier === 'service_client_send_operation_event');
+    expect(operation).toMatchObject({ callType: 'remote_action', serviceVariableName: 'remote', operationPathExpr: '/performWork', unresolvedReason: undefined });
+    expect(operation?.method).toBeUndefined();
+    expect(operation?.evidence).toMatchObject({ literalOperationSource: 'const_alias' });
   });
 });

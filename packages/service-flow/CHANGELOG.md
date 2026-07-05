@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.43
+
+- Reconciled inherited CDS operation search rows from the exact effective-operation set during extension materialization.
+- Invalidated concrete extension repositories when derived inherited operations or base resolution semantics change, while preserving no-op generations.
+- Tightened lexical binding scope so nested block declarations inside catch and loop bodies do not escape their real blocks.
+- Classified proven CAP `send(operationName, payload)` calls, including immutable aliases, without applying the rule to generic `send()` receivers.
+
 ## 0.1.42
 
 - Continued inherited CDS extension operations into the selected base implementation while retaining concrete routing evidence.
