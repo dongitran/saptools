@@ -105,37 +105,40 @@ function placeholders(expr: ts.TemplateExpression): string[] {
 function isFunctionLikeScope(node: ts.Node): boolean {
   return ts.isFunctionLike(node) || ts.isSourceFile(node);
 }
-function containingScope(node: ts.Node): ts.Node {
-  let current: ts.Node | undefined = node.parent;
-  while (current && !isFunctionLikeScope(current)) current = current.parent;
-  return current ?? node.getSourceFile();
-}
 function nodeContains(parent: ts.Node, child: ts.Node): boolean {
-  return child.getStart(child.getSourceFile()) >= parent.getStart(parent.getSourceFile()) && child.getEnd() <= parent.getEnd();
+  const source = child.getSourceFile();
+  return child.getStart(source) >= parent.getStart(source) && child.getEnd() <= parent.getEnd();
 }
-function nestedFunctionContains(scope: ts.Node, candidate: ts.Node, use: ts.Node): boolean {
-  let current = candidate.parent;
-  while (current && current !== scope) {
-    if (isFunctionLikeScope(current) && !nodeContains(current, use)) return true;
-    current = current.parent;
+function declarationScope(node: ts.VariableDeclaration | ts.ParameterDeclaration): ts.Node {
+  if (ts.isParameter(node)) return node.parent;
+  const list = node.parent;
+  const blockScoped = (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) !== 0;
+  let current: ts.Node = list.parent;
+  if (!blockScoped) {
+    while (current.parent && !isFunctionLikeScope(current)) current = current.parent;
+    return current;
   }
-  return false;
+  while (current.parent && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isModuleBlock(current) && !ts.isCaseBlock(current) && !isFunctionLikeScope(current)) current = current.parent;
+  return current;
+}
+function isAccessibleDeclaration(declaration: ts.VariableDeclaration | ts.ParameterDeclaration, use: ts.Node): boolean {
+  const source = use.getSourceFile();
+  if (declaration.name.getStart(source) >= use.getStart(source)) return false;
+  const scope = declarationScope(declaration);
+  return ts.isSourceFile(scope) || nodeContains(scope, use);
 }
 function resolveBinding(identifier: ts.Identifier, use: ts.Node): BindingResolution {
-  const scope = containingScope(use);
   const source = use.getSourceFile();
   let best: ts.VariableDeclaration | ts.ParameterDeclaration | undefined;
   const visit = (node: ts.Node): void => {
-    if (node !== scope && isFunctionLikeScope(node)) return;
-    if (node.getStart(source) >= identifier.getStart(source)) return;
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && !nestedFunctionContains(scope, node, use)) best = node;
-    if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && !nestedFunctionContains(scope, node, use)) best = node;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && isAccessibleDeclaration(node, use)) best = node;
+    if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && isAccessibleDeclaration(node, use)) best = node;
     ts.forEachChild(node, visit);
   };
-  visit(scope);
+  visit(source);
   if (!best) return { immutable: false, evidence: ['binding_not_found'] };
   const immutable = ts.isVariableDeclaration(best) && (best.parent.flags & ts.NodeFlags.Const) !== 0;
-  return { declaration: best, initializer: ts.isVariableDeclaration(best) ? best.initializer : undefined, immutable, evidence: [immutable ? 'const_binding_before_use' : 'mutable_or_parameter_binding'] };
+  return { declaration: best, initializer: ts.isVariableDeclaration(best) ? best.initializer : undefined, immutable, evidence: [immutable ? 'lexical_const_binding_before_use' : 'lexical_mutable_or_parameter_binding'] };
 }
 function resolveExpression(expr: ts.Expression | undefined, use: ts.Node, policy: 'operation_path' | 'external' | 'literal', depth = 0, seen = new Set<ts.Node>()): ExpressionResolution {
   if (!expr) return { status: 'unknown', sourceKind: 'dynamic_expression', placeholderKeys: [], evidence: ['expression_missing'] };
@@ -177,7 +180,6 @@ function staticPathCandidates(identifier: ts.Identifier, call: ts.Node, method: 
   const binding = resolveBinding(identifier, call);
   const declaration = binding.declaration;
   if (!declaration) return undefined;
-  const scope = containingScope(call);
   const source = call.getSourceFile();
   const paths: string[] = [];
   let hasDynamicAssignments = false;
@@ -188,12 +190,15 @@ function staticPathCandidates(identifier: ts.Identifier, call: ts.Node, method: 
   };
   if (ts.isVariableDeclaration(declaration)) addExpr(declaration.initializer, declaration);
   const visit = (node: ts.Node): void => {
-    if (node !== scope && isFunctionLikeScope(node)) return;
+    if (node !== source && isFunctionLikeScope(node) && !nodeContains(node, call)) return;
     if (node.getStart(source) >= call.getStart(source)) return;
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && node.left.text === identifier.text) addExpr(node.right, node);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+      const target = resolveBinding(node.left, node);
+      if (target.declaration === declaration) addExpr(node.right, node);
+    }
     ts.forEachChild(node, visit);
   };
-  visit(scope);
+  visit(source);
   const candidatePaths = [...new Set(paths)];
   if (candidatePaths.length === 0) return undefined;
   const normalizedCandidateOperations = [...new Set(candidatePaths.map((candidate) => classifyODataPathIntent(candidate, method).topLevelOperationName).filter((value): value is string => Boolean(value)))];
@@ -467,7 +472,7 @@ function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFac
       if (origin) aliases.set(node.name.text, { ...origin, chain: [...origin.chain, node.name.text] });
     }
     if (ts.isCallExpression(node)) {
-      const parsed = serviceOperationCall(node.expression, aliases);
+      const parsed = serviceOperationCall(node, aliases);
       if (parsed && parsed.operation !== 'entities') calls.push({
         callType: 'local_service_call',
         operationPathExpr: `/${parsed.operation}`,
@@ -480,7 +485,8 @@ function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFac
         confidence: 0.9,
         unresolvedReason: ['send', 'emit', 'publish', 'on'].includes(parsed.operation) ? 'transport_client_method' : undefined,
         evidence: parserEvidence(source, node, {
-          classifier: 'local_cap_service_call',
+          classifier: parsed.classifier,
+          parserCallType: parsed.operation === 'send' ? 'transport_client_method' : parsed.classifier,
           localServiceLookup: parsed.lookup,
           localServiceName: parsed.service,
           operation: parsed.operation,
@@ -499,10 +505,17 @@ function serviceLookup(expr: ts.Expression, aliases: Map<string, { service: stri
   if (ts.isElementAccessExpression(expr) && expr.expression.getText() === 'cds.services' && ts.isStringLiteral(expr.argumentExpression)) return { service: expr.argumentExpression.text, lookup: expr.getText(), chain: [expr.getText()] };
   return undefined;
 }
-function serviceOperationCall(expr: ts.Expression, aliases: Map<string, { service: string; lookup: string; chain: string[] }>): { service: string; lookup: string; chain: string[]; operation: string } | undefined {
+function serviceOperationCall(node: ts.CallExpression, aliases: Map<string, { service: string; lookup: string; chain: string[] }>): { service: string; lookup: string; chain: string[]; operation: string; classifier: string } | undefined {
+  const expr = node.expression;
   if (!ts.isPropertyAccessExpression(expr)) return undefined;
-  const operation = expr.name.text;
   const origin = serviceLookup(expr.expression, aliases);
   if (!origin) return undefined;
-  return { ...origin, operation };
+  if (expr.name.text === 'send') {
+    const first = literalText(node.arguments[0]);
+    const second = literalText(node.arguments[1]);
+    const method = first?.toUpperCase();
+    if (method && ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'].includes(method) && second) return { ...origin, operation: second.replace(/^\//, ''), classifier: 'cap_service_send_method_path' };
+    if (first) return { ...origin, operation: first.replace(/^\//, ''), classifier: 'cap_service_send_local_dispatch' };
+  }
+  return { ...origin, operation: expr.name.text, classifier: 'local_cap_service_call' };
 }

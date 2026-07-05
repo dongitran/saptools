@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 9;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   service_bindings: [
     { name: 'helper_chain_json', ddl: 'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT' },
@@ -28,6 +28,19 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'source_file', ddl: 'ALTER TABLE symbols ADD COLUMN source_file TEXT' },
     { name: 'exported_name', ddl: 'ALTER TABLE symbols ADD COLUMN exported_name TEXT' },
     { name: 'evidence_json', ddl: 'ALTER TABLE symbols ADD COLUMN evidence_json TEXT' },
+  ],
+  cds_services: [
+    { name: 'extension_local_ref', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_local_ref TEXT' },
+    { name: 'extension_imported_symbol', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_imported_symbol TEXT' },
+    { name: 'extension_local_alias', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_local_alias TEXT' },
+    { name: 'extension_module_specifier', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_module_specifier TEXT' },
+    { name: 'extension_import_kind', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_import_kind TEXT' },
+    { name: 'extension_base_service_id', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_base_service_id INTEGER' },
+    { name: 'extension_base_status', ddl: 'ALTER TABLE cds_services ADD COLUMN extension_base_status TEXT' },
+  ],
+  cds_operations: [
+    { name: 'provenance', ddl: "ALTER TABLE cds_operations ADD COLUMN provenance TEXT NOT NULL DEFAULT 'direct'" },
+    { name: 'base_operation_id', ddl: 'ALTER TABLE cds_operations ADD COLUMN base_operation_id INTEGER' },
   ],
   outbound_calls: [
     { name: 'local_service_name', ddl: 'ALTER TABLE outbound_calls ADD COLUMN local_service_name TEXT' },

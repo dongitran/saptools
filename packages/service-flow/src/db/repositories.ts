@@ -139,7 +139,7 @@ export function insertService(
   const id = Number(
     db
       .prepare(
-        'INSERT INTO cds_services(repo_id,namespace,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?,?) RETURNING id',
+        'INSERT INTO cds_services(repo_id,namespace,service_name,qualified_name,service_path,is_extend,source_file,source_line,extension_local_ref,extension_imported_symbol,extension_local_alias,extension_module_specifier,extension_import_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
       )
       .get(
         repoId,
@@ -150,10 +150,15 @@ export function insertService(
         s.isExtend ? 1 : 0,
         s.sourceFile,
         s.sourceLine,
+        s.extension?.localReference,
+        s.extension?.importedSymbol,
+        s.extension?.localAlias,
+        s.extension?.moduleSpecifier,
+        s.extension?.importKind,
       )?.id,
   );
   const stmt = db.prepare(
-    'INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)',
+    'INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line,provenance,base_operation_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
   );
   db.prepare(
     'INSERT INTO search_index(kind,name,path,repo) VALUES(?,?,?,?)',
@@ -168,6 +173,8 @@ export function insertService(
       o.returnType,
       o.sourceFile,
       o.sourceLine,
+      o.provenance ?? 'direct',
+      o.baseOperationId ?? null,
     );
   const search = db.prepare(
     'INSERT INTO search_index(kind,name,path,repo) VALUES(?,?,?,?)',

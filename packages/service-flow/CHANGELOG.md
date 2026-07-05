@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.41
+
+- Added imported CDS extension provenance and materialized inherited operations at concrete extension paths without guessing by simple service name.
+- Resolved TypeScript identifier expressions through lexical bindings so module constants work and inaccessible shadowed block values are excluded.
+- Classified positional CAP `Service.send(...)` dispatch only for proven CAP service receivers while leaving generic `send` calls untouched.
+- Bumped the SQLite schema to persist extension/base and operation provenance metadata.
+
 ## 0.1.40
 
 - Hardened operation path expression analysis to respect lexical scope, declaration order, aliases, and bounded branch candidates.

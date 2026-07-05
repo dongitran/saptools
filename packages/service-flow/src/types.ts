@@ -70,6 +70,14 @@ export interface CdsServiceFact {
   sourceFile: string;
   sourceLine: number;
   operations: CdsOperationFact[];
+  extension?: CdsExtensionFact;
+}
+export interface CdsExtensionFact {
+  localReference: string;
+  importedSymbol?: string;
+  localAlias?: string;
+  moduleSpecifier?: string;
+  importKind?: 'relative' | 'package' | 'none';
 }
 export interface CdsOperationFact {
   operationType: 'action' | 'function' | 'event';
@@ -79,6 +87,8 @@ export interface CdsOperationFact {
   returnType?: string;
   sourceFile: string;
   sourceLine: number;
+  provenance?: 'direct' | 'inherited';
+  baseOperationId?: number;
 }
 export interface HandlerClassFact {
   className: string;

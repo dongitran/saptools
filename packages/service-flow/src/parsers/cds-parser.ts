@@ -90,6 +90,23 @@ function annotationRawAt(original: string, masked: string, index: number): { end
   return { end: collected.end, raw: original.slice(index, collected.end) };
 }
 
+
+interface CdsUsing { importedSymbol: string; localAlias: string; moduleSpecifier: string; importKind: 'relative' | 'package' }
+function collectUsings(masked: string): Map<string, CdsUsing> {
+  const imports = new Map<string, CdsUsing>();
+  for (const m of masked.matchAll(/\busing\s*\{([^}]*)\}\s*from\s*(['"])(.*?)\2\s*;/gs)) {
+    const moduleSpecifier = m[3] ?? '';
+    for (const part of (m[1] ?? '').split(',')) {
+      const text = part.trim();
+      if (!text) continue;
+      const alias = /^(\w+)\s+as\s+(\w+)$/.exec(text) ?? /^(\w+)\s*:\s*(\w+)$/.exec(text);
+      const importedSymbol = alias?.[1] ?? text;
+      const localAlias = alias?.[2] ?? importedSymbol;
+      imports.set(localAlias, { importedSymbol, localAlias, moduleSpecifier, importKind: moduleSpecifier.startsWith('.') ? 'relative' : 'package' });
+    }
+  }
+  return imports;
+}
 function operationsFromBody(text: string, maskedBody: string, bodyOffset: number, filePath: string): CdsOperationFact[] {
   return [...maskedBody.matchAll(/\b(action|function|event)\s+(\w+)\s*(?:\(([^)]*)\))?\s*(?:returns\s+([^;{]+))?/g)].map((m) => ({
     operationType: (m[1] as 'action' | 'function' | 'event') ?? 'action',
@@ -109,6 +126,7 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
   const namespace = /namespace\s+([\w.]+)\s*;/.exec(masked)?.[1];
   const services: CdsServiceFact[] = [];
   const pendingAnnotations: Array<{ end: number; raw: string }> = [];
+  const usings = collectUsings(text);
   for (const a of masked.matchAll(/@\s*\(/g)) pendingAnnotations.push(annotationRawAt(text, masked, a.index ?? 0));
   const serviceRegex = /\b(?:(extend)\s+)?(?:(service)\s+)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\b/g;
   let match: RegExpExecArray | null;
@@ -131,6 +149,7 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
     const body = masked.slice(open + 1, end);
     const name = match[3] ?? 'UnknownService';
     const serviceName = name.split('.').pop() ?? name;
+    const imported = isExtend ? usings.get(name) ?? usings.get(serviceName) : undefined;
     const servicePath = ensureLeadingSlash(pathAnnotation(annotations) ?? serviceName);
     services.push({
       namespace,
@@ -140,14 +159,16 @@ export async function parseCdsFile(repoPath: string, filePath: string): Promise<
       isExtend,
       sourceFile: normalizePath(filePath),
       sourceLine: lineOf(text, match.index),
-      operations: operationsFromBody(text, body, open + 1, filePath)
+      operations: operationsFromBody(text, body, open + 1, filePath),
+      extension: isExtend ? { localReference: name, importedSymbol: imported?.importedSymbol, localAlias: imported?.localAlias, moduleSpecifier: imported?.moduleSpecifier, importKind: imported?.importKind ?? 'none' } : undefined
     });
     serviceRegex.lastIndex = end + 1;
   }
   const baseOps = new Map(services.filter((s) => !s.isExtend).map((s) => [s.qualifiedName, s.operations]));
   for (const service of services.filter((s) => s.isExtend && s.operations.length === 0)) {
+    if (service.extension?.moduleSpecifier) continue;
     const inherited = baseOps.get(service.qualifiedName) ?? baseOps.get(service.serviceName);
-    if (inherited) service.operations = inherited.map((op) => ({ ...op, sourceFile: service.sourceFile, sourceLine: service.sourceLine }));
+    if (inherited) service.operations = inherited.map((op) => ({ ...op, provenance: 'inherited' }));
   }
   return services;
 }
