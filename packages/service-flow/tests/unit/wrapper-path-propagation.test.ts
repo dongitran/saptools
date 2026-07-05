@@ -94,4 +94,29 @@ describe('local wrapper path propagation', () => {
     expect(branch?.evidence?.staticPathCandidates).toMatchObject({ candidatePaths: ['/defaultAction', '/alternateAction'], normalizedCandidateOperations: ['defaultAction', 'alternateAction'] });
     expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(2);
   });
+
+  it('resolves nested wrapper literal paths only when the caller path is static', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-nested-wrapper-'));
+    await write(root, `
+      import cds from '@sap/cds';
+      async function sendInner(client: { send(input: unknown): Promise<unknown> }, path: string): Promise<unknown> {
+        return client.send({ method: 'POST', path, data: {} });
+      }
+      async function sendOuter(client: { send(input: unknown): Promise<unknown> }, operationPath: string): Promise<unknown> {
+        return sendInner(client, operationPath);
+      }
+      export async function runFlow(input: { path: string }): Promise<void> {
+        const remoteClient = await cds.connect.to('remote_service');
+        await sendOuter(remoteClient, '/nestedAction');
+        await sendOuter(remoteClient, input.path);
+      }
+    `);
+    const calls = await parseOutboundCalls(root, 'handler.ts');
+    expect(calls.find((call) => call.operationPathExpr === '/nestedAction')?.evidence).toMatchObject({
+      classifier: 'higher_order_wrapper_literal_path',
+      wrapperFunction: 'sendOuter',
+      nestedWrapperFunction: 'sendInner',
+    });
+    expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(1);
+  });
 });

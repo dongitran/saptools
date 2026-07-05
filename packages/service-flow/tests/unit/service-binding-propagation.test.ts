@@ -85,3 +85,15 @@ export async function connectRemote(request?: unknown) {
   expect(handlerRows.find((row) => row.variableName === 'legacyTx')?.alias).toBe('remote_service');
   expect(handlerRows.some((row) => row.variableName === 'unknownTx')).toBe(false);
 });
+
+it('captures local variables assigned from helper-returned service client properties', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-helper-property-binding-'));
+  await write(root, 'helper.ts', "import cds from '@sap/cds';\nexport async function connectRemote(req: unknown) {\n  const workflowClient = await cds.connect.to('workflow_service');\n  const workflowTx = workflowClient.tx(req);\n  return { workflowClient, workflowTx };\n}\n");
+  await write(root, 'handler.ts', "import { connectRemote } from './helper.js';\nasync function run(req: unknown): Promise<void> {\n  const clients = await connectRemote(req);\n  const workflowTx = clients.workflowTx;\n  await workflowTx.send({ method: 'POST', path: '/startWorkflow' });\n}\n");
+  const rows = await parseServiceBindings(root, 'handler.ts');
+  expect(rows.find((row) => row.variableName === 'workflowTx')?.alias).toBe('workflow_service');
+  expect(rows.find((row) => row.variableName === 'workflowTx')?.helperChain).toEqual(expect.arrayContaining([
+    expect.objectContaining({ returnedProperty: 'workflowTx' }),
+    expect.objectContaining({ assignedFromProperty: 'clients.workflowTx' }),
+  ]));
+});

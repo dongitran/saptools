@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.44
+
+- Separated trace-time effective resolution evidence from persisted graph resolution, including runtime substitution details and missing `--var` suggestions.
+- Added duplicate package-name implementation ambiguity evidence plus trace-time implementation repo hints for guided traversal.
+- Aggregated strict doctor implementation candidate noise into actionable categories with capped examples.
+- Tightened contextual binding, nested wrapper, OData invocation, and incremental publication atomicity regression coverage.
+
 ## 0.1.43
 
 - Reconciled inherited CDS operation search rows from the exact effective-operation set during extension materialization.
@@ -288,4 +295,3 @@
 ## 0.1.0
 
 - Initial `@saptools/service-flow` CLI package for indexing and tracing SAP CAP service flows.
-

@@ -162,7 +162,11 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
     const accepted = candidates.filter((candidate) => candidate.accepted);
     const topScore = accepted[0]?.score ?? 0;
     const winners = accepted.filter((candidate) => candidate.score === topScore);
-    const unique = winners.length === 1 ? winners[0] : undefined;
+    const duplicateFamilies = duplicatePackageFamilies(accepted);
+    const duplicatePackageAmbiguous = duplicateFamilies.length > 0 && !accepted.some(hasDirectOwnershipEvidence);
+    const selected = duplicatePackageAmbiguous ? accepted : winners;
+    const unique = !duplicatePackageAmbiguous && winners.length === 1 ? winners[0] : undefined;
+    const ambiguityReasons = duplicatePackageAmbiguous ? ['duplicate_package_name_candidates'] : winners.length > 1 ? ['multiple_equal_score_implementation_candidates'] : [];
     const evidence = {
       servicePath: operation.servicePath,
       operationPath: operation.operationPath,
@@ -171,6 +175,8 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
       implementationSource: implementationContext.operationId === operation.operationId ? 'direct_or_concrete_override' : 'inherited_from_base_operation',
       baseOperationId: operation.baseOperationId,
       implementationOperationId: implementationContext.operationId,
+      ambiguityReasons,
+      candidateFamilies: duplicateFamilies,
       candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
     };
     if (accepted.length === 0) {
@@ -179,7 +185,7 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
       unresolvedCount += 1;
       continue;
     }
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : winners.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidence), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : selected.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidence), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
     edgeCount += 1;
     if (unique) resolvedCount += 1;
     else ambiguousCount += 1;
@@ -231,6 +237,20 @@ function uniqueRegistrations(rows: Array<Record<string, unknown>>): Array<Record
     seen.add(key);
     return true;
   });
+}
+function duplicatePackageFamilies(candidates: ImplementationCandidate[]): Array<Record<string, unknown>> {
+  const byPackage = new Map<string, ImplementationCandidate[]>();
+  for (const candidate of candidates) {
+    const packageName = typeof candidate.handlerPackage === 'string' ? candidate.handlerPackage : undefined;
+    if (!packageName) continue;
+    byPackage.set(packageName, [...(byPackage.get(packageName) ?? []), candidate]);
+  }
+  return [...byPackage.entries()]
+    .filter(([, rows]) => new Set(rows.map((row) => Number(row.handlerRepoId))).size > 1)
+    .map(([packageName, rows]) => ({ reason: 'duplicate_package_name_candidates', packageName, count: rows.length, repositories: rows.map((row) => row.handlerRepo).sort() }));
+}
+function hasDirectOwnershipEvidence(candidate: ImplementationCandidate): boolean {
+  return candidate.acceptedReasons.some((reason) => reason === 'model package equals registration package' || reason === 'model package equals handler package' || reason === 'registration package contains exact local service path');
 }
 function implementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): Array<Record<string, unknown>> {
   const modelRepoGraphId = graphId(operation.modelRepoId);

@@ -1,8 +1,9 @@
 import type { Db } from '../db/connection.js';
-import { extractPlaceholders, substituteVariables, type RuntimeSubstitution } from '../linker/dynamic-edge-resolver.js';
+import { extractPlaceholders } from '../linker/dynamic-edge-resolver.js';
 import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
-import { resolveOperation, type OperationTarget } from '../linker/service-resolver.js';
+import { resolveOperation } from '../linker/service-resolver.js';
 import type { TraceEdge, TraceResult, TraceStart } from '../types.js';
+import { baseTraceEvidence, edgeTarget, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
 
 interface RepoRef {
   id: number;
@@ -59,14 +60,10 @@ interface ContextBinding {
   parameterPropertyAliasLine?: unknown;
   calleeReceiver: string;
 }
-interface Candidate {
-  servicePath?: string;
-  operationPath?: string;
-  repoName?: string;
-  operationName?: string;
-  score?: number;
+interface ImplementationSelection {
+  methodId?: string;
+  evidence: Record<string, unknown>;
 }
-
 function normalizeOperation(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return value.startsWith('/') ? value.slice(1) : value;
@@ -75,7 +72,7 @@ function positiveDepth(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
 }
 
-function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart): { files?: Set<string>; symbols?: Set<number>; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
+function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, implementationRepo?: string): { files?: Set<string>; symbols?: Set<number>; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
   const requested = normalizeOperation(start.operationPath ?? start.operation);
   if (!requested) return undefined;
   const rows = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_path operationPath,s.service_path servicePath,r.id repoId,r.name repoName
@@ -91,7 +88,15 @@ function operationStartScope(db: Db, repoId: number | undefined, start: TraceSta
   const operationId = String(rows[0]?.operationId);
   const impl = implementationScope(db, operationId);
   if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, operationId, diagnostics: [] };
-  if (impl.edge) return { operationId, diagnostics: [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, candidates: parseEvidence(impl.edge.evidence_json).candidates }] };
+  const hinted = implementationMethodIdFromHint(impl.edge, implementationRepo);
+  if (hinted.methodId) {
+    const hintedScope = handlerScope(db, hinted.methodId);
+    if (hintedScope?.files.size) return { files: hintedScope.files, symbols: hintedScope.symbolId ? new Set([hintedScope.symbolId]) : undefined, operationId, diagnostics: [] };
+  }
+  if (impl.edge) {
+    const evidence = parseEvidence(impl.edge.evidence_json);
+    return { operationId, diagnostics: [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, candidates: evidence.candidates }] };
+  }
   return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_implementation_unresolved', message: 'Indexed operation matched but no implementation candidate exists', resolutionStage: 'implementation', resolutionStatus: 'operation_without_implementation' }] };
 }
 
@@ -141,7 +146,7 @@ function sourceFilesForStart(
   }
   return undefined;
 }
-function startScope(db: Db, start: TraceStart): StartScope {
+function startScope(db: Db, start: TraceStart, implementationRepo?: string): StartScope {
   const repo = start.repo
     ? (db
         .prepare(
@@ -150,7 +155,7 @@ function startScope(db: Db, start: TraceStart): StartScope {
         .get(start.repo, start.repo) as RepoRef | undefined)
     : undefined;
   if (start.repo && !repo) return { repo, selectorMatched: false };
-  const operationScope = operationStartScope(db, repo?.id, start);
+  const operationScope = operationStartScope(db, repo?.id, start, implementationRepo);
   const terminalOperationScope = operationScope && !operationScope.files && (operationScope.diagnostics ?? []).some((d) => d.resolutionStage === 'operation' || d.resolutionStage === 'implementation');
   const sourceScope = operationScope?.files || terminalOperationScope ? operationScope : sourceFilesForStart(db, repo?.id, start);
   const sourceFiles = sourceScope?.files;
@@ -206,7 +211,31 @@ function implementationScope(db: Db, operationId: string): { repoId?: number; fi
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
   return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
-function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown> = {}): { methodId?: string; evidence: Record<string, unknown> } {
+function implementationMethodIdFromHint(edge: GraphRow | undefined, implementationRepo: string | undefined): ImplementationSelection {
+  if (!edge || edge.status !== 'ambiguous' || !implementationRepo) return { evidence: { status: 'not_applicable' } };
+  const evidence = parseEvidence(edge.evidence_json) as { ambiguityReasons?: string[]; candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { name?: string; packageName?: string }; sourceFile?: string }> };
+  const matches = (evidence.candidates ?? []).filter((item) => item.accepted && (
+    item.handlerPackage?.name === implementationRepo ||
+    item.handlerPackage?.packageName === implementationRepo ||
+    item.sourceFile?.startsWith(implementationRepo)
+  ));
+  if (matches.length !== 1 || matches[0]?.methodId === undefined) return { evidence: { status: matches.length > 1 ? 'tied' : 'not_matched', strategy: 'implementation_repo_hint', selectedRepo: implementationRepo, candidateCount: matches.length } };
+  return {
+    methodId: String(matches[0].methodId),
+    evidence: {
+      status: 'selected',
+      guided: true,
+      strategy: 'implementation_repo_hint',
+      selectedRepo: implementationRepo,
+      selectedMethodId: matches[0].methodId,
+      ambiguityReason: evidence.ambiguityReasons?.[0],
+    },
+  };
+}
+
+function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown> = {}, implementationRepo?: string): ImplementationSelection {
+  const hinted = implementationMethodIdFromHint(edge, implementationRepo);
+  if (hinted.methodId) return hinted;
   if (!edge || edge.status !== 'ambiguous' || callerRepoId === undefined) return { evidence: { status: 'not_applicable' } };
   const evidence = JSON.parse(String(edge.evidence_json || '{}')) as { candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { id?: number; name?: string }; applicationPackage?: { id?: number; name?: string }; reasons?: string[]; score?: number }> };
   const scores = (evidence.candidates ?? []).filter((item) => item.accepted).map((item) => {
@@ -262,38 +291,6 @@ function graphForCalls(db: Db, callIds: number[]): Map<number, GraphRow[]> {
   }
   return map;
 }
-function hasRuntimeVariable(value: unknown, vars: Record<string, string>): boolean {
-  return typeof value === 'string' && extractPlaceholders(value).some((key) => Object.hasOwn(vars, key));
-}
-
-function isRemoteRuntimeCandidate(row: GraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): boolean {
-  if (!vars || Object.keys(vars).length === 0) return false;
-  if (!['dynamic', 'ambiguous', 'unresolved'].includes(String(row.status ?? ''))) return false;
-  if (!['DYNAMIC_EDGE_CANDIDATE', 'UNRESOLVED_EDGE', 'REMOTE_CALL_RESOLVES_TO_OPERATION'].includes(row.edge_type)) return false;
-  if (row.status === 'resolved') return false;
-  return ['servicePath', 'operationPath', 'serviceAliasExpr', 'serviceAlias', 'destination'].some((key) => hasRuntimeVariable(evidence[key], vars));
-}
-
-function evidenceWithRuntimeVariables(
-  evidence: Record<string, unknown>,
-  vars: Record<string, string> | undefined,
-): Record<string, unknown> {
-  if (!vars || Object.keys(vars).length === 0) return evidence;
-  const substitutions: Record<string, RuntimeSubstitution> = {};
-  for (const key of ['servicePath', 'operationPath', 'serviceAliasExpr', 'serviceAlias', 'destination']) {
-    const substitution = substituteVariables(typeof evidence[key] === 'string' ? String(evidence[key]) : undefined, vars);
-    if (substitution.placeholders.length > 0) substitutions[key] = substitution;
-  }
-  const next: Record<string, unknown> = { ...evidence, runtimeVariablesApplied: true, runtimeSubstitutions: substitutions };
-  for (const [key, value] of Object.entries(substitutions)) {
-    if (value.effective) next[key] = value.effective;
-  }
-  const missing = Object.values(substitutions).flatMap((value) => value.missing);
-  if (missing.length > 0) next.missingRuntimeVariables = [...new Set(missing)];
-  return next;
-}
-
-
 function symbolNode(db: Db, symbolId: number): Record<string, unknown> | undefined {
   const row = db.prepare(`SELECT s.id symbolId,s.name symbolName,s.qualified_name qualifiedName,s.source_file sourceFile,s.start_line startLine,s.end_line endLine,r.name repoName,r.id repoId FROM symbols s JOIN repositories r ON r.id=s.repo_id WHERE s.id=?`).get(symbolId) as Record<string, unknown> | undefined;
   if (!row) return undefined;
@@ -308,24 +305,6 @@ function operationNode(db: Db, operationId: string): Record<string, unknown> | u
 }
 function workspaceIdForCall(db: Db, callId: string): number | undefined {
   return (db.prepare('SELECT r.workspace_id workspaceId FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE c.id=?').get(callId) as { workspaceId?: number } | undefined)?.workspaceId;
-}
-function runtimeResolution(db: Db, row: GraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): { row: GraphRow; evidence: Record<string, unknown>; target?: OperationTarget; unresolvedReason?: string } {
-  if (!isRemoteRuntimeCandidate(row, evidence, vars))
-    return { row, evidence, unresolvedReason: row.unresolved_reason };
-  const nextEvidence = evidenceWithRuntimeVariables(evidence, vars);
-  const servicePath = typeof nextEvidence.servicePath === 'string' ? nextEvidence.servicePath : undefined;
-  const operationPath = typeof nextEvidence.normalizedOperationPath === 'string' ? nextEvidence.normalizedOperationPath : typeof nextEvidence.operationPath === 'string' ? nextEvidence.operationPath : undefined;
-  const alias = typeof nextEvidence.serviceAliasExpr === 'string' ? nextEvidence.serviceAliasExpr : typeof nextEvidence.serviceAlias === 'string' ? nextEvidence.serviceAlias : undefined;
-  const destination = typeof nextEvidence.destination === 'string' ? nextEvidence.destination : undefined;
-  const resolution = resolveOperation(db, { servicePath, operationPath, alias, destination, hasExplicitOverride: true, isDynamic: true }, workspaceIdForCall(db, row.from_id));
-  nextEvidence.runtimeResolutionStatus = resolution.status;
-  nextEvidence.runtimeResolutionReasons = resolution.reasons;
-  if (resolution.target) {
-    nextEvidence.runtimeResolvedCandidate = resolution.target;
-    return { row: { ...row, to_kind: 'operation', to_id: String(resolution.target.operationId), unresolved_reason: undefined, confidence: Math.max(0, Math.min(1, resolution.target.score)) }, evidence: nextEvidence, target: resolution.target };
-  }
-  const unresolvedReason = resolution.status === 'dynamic' ? `Dynamic target is missing runtime variables: ${resolution.reasons.join(', ')}` : resolution.status === 'ambiguous' ? 'Ambiguous runtime operation candidates' : 'No runtime operation candidate matched substituted service and operation path';
-  return { row, evidence: nextEvidence, unresolvedReason };
 }
 function parseEvidence(value: unknown): Record<string, unknown> {
   try {
@@ -429,39 +408,6 @@ function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBind
   if (persistedResolved) return { row: undefined, evidence: { ...resolvedEvidence, contextualPreservedPersistedResolvedEdge: true }, unresolvedReason: undefined };
   return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(resolvedEvidence), status: 'resolved' }, evidence: resolvedEvidence, unresolvedReason: undefined };
 }
-function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
-  const runtimeCandidate = evidence.runtimeResolvedCandidate as
-    | Candidate
-    | undefined;
-  if (runtimeCandidate?.servicePath && runtimeCandidate.operationPath)
-    return `${runtimeCandidate.servicePath}${runtimeCandidate.operationPath}`;
-  const targetServicePath = typeof evidence.targetServicePath === 'string' ? evidence.targetServicePath : undefined;
-  const targetOperationPath = typeof evidence.targetOperationPath === 'string' ? evidence.targetOperationPath : undefined;
-  if (targetServicePath && targetOperationPath) return `${targetServicePath}${targetOperationPath}`;
-  const servicePath =
-    typeof evidence.servicePath === 'string' ? evidence.servicePath : undefined;
-  const operationPath =
-    typeof evidence.operationPath === 'string'
-      ? evidence.operationPath
-      : undefined;
-  const targetOperation =
-    typeof evidence.targetOperation === 'string'
-      ? evidence.targetOperation
-      : undefined;
-  const targetRepo =
-    typeof evidence.targetRepo === 'string' ? evidence.targetRepo : '';
-  if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return `Entity: ${row.to_id || 'unknown'}`;
-  if (row.edge_type === 'HANDLER_RUNS_REMOTE_QUERY') return typeof evidence.remoteQueryTarget === 'string' ? evidence.remoteQueryTarget : `Remote query: ${row.to_id || 'unknown'}`;
-  if (row.edge_type === 'HANDLER_CALLS_EXTERNAL_HTTP') {
-    const target = evidence.externalTarget as Record<string, unknown> | undefined;
-    return typeof target?.label === 'string' ? target.label : `External endpoint: ${row.to_id || 'unknown'}`;
-  }
-  return servicePath && operationPath
-    ? `${servicePath}${operationPath}`
-    : targetOperation
-      ? `${targetRepo}:${targetOperation}`
-      : row.to_id;
-}
 export function trace(
   db: Db,
   start: TraceStart,
@@ -471,9 +417,10 @@ export function trace(
     includeExternal?: boolean;
     includeDb?: boolean;
     includeAsync?: boolean;
+    implementationRepo?: string;
   },
 ): TraceResult {
-  const scope = startScope(db, start);
+  const scope = startScope(db, start, options.implementationRepo);
   const diagnostics = db
     .prepare(
       'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics WHERE (? IS NULL OR repo_id=?)',
@@ -501,12 +448,14 @@ export function trace(
     const op = operationNode(db, scope.startOperationId);
     const impl = implementationScope(db, scope.startOperationId);
     if (op) nodes.set(String(op.id), op);
-    if (impl.edge && impl.edge.status === 'resolved') {
-      const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: impl.edge.status === 'resolved' ? impl.edge.to_id : undefined } };
-      const handlerNode = impl.edge.status === 'resolved' ? handlerMethodNode(db, impl.edge.to_id) : undefined;
+    const startSelection = implementationMethodIdFromHint(impl.edge, options.implementationRepo);
+    if (impl.edge && (impl.edge.status === 'resolved' || startSelection.methodId)) {
+      const selectedMethodId = impl.edge.status === 'resolved' ? impl.edge.to_id : startSelection.methodId;
+      const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: selectedMethodId }, implementationSelection: startSelection.methodId ? startSelection.evidence : undefined };
+      const handlerNode = selectedMethodId ? handlerMethodNode(db, selectedMethodId) : undefined;
       if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
       seenEdges.add(Number(impl.edge.id));
-      edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `operation:${scope.startOperationId}`, to: handlerNode?.label ? String(handlerNode.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: implEvidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: impl.edge.status === 'resolved' ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status) });
+      edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `operation:${scope.startOperationId}`, to: handlerNode?.label ? String(handlerNode.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: implEvidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: impl.edge.status === 'resolved' || startSelection.methodId ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status) });
     }
   }
   const seenScopes = new Set<string>();
@@ -568,8 +517,8 @@ export function trace(
         const persistedEvidence = JSON.parse(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
-        const rawEvidence = { ...persistedEvidence, ...(contextual.evidence ?? {}), graphEdgeId: row.id, persistedGraphEdgeId: row.id > 0 ? row.id : undefined, outboundCallId: call.id, callSite: { sourceFile: call.source_file, sourceLine: call.source_line }, sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, linker: { status: row.status, confidence: row.confidence, reason: row.unresolved_reason, edgeType: row.edge_type }, persistedTarget: { kind: row.to_kind, id: row.to_id }, contextualResolutionParticipated: Boolean(contextual.evidence?.contextualServiceBindingAttempted) };
-        const effective = runtimeResolution(db, row, rawEvidence, options.vars);
+        const rawEvidence = baseTraceEvidence(row as TraceGraphRow, call, persistedEvidence, contextual.evidence);
+        const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, options.vars, workspaceIdForCall(db, String(call.id)));
         const evidence = effective.evidence;
         const effectiveRow = effective.row;
         const targetNode = `${effectiveRow.to_kind}:${effectiveRow.to_id}`;
@@ -591,7 +540,7 @@ export function trace(
         });
         if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
-          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence);
+          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence, options.implementationRepo);
           const contextMethodId = contextSelection.methodId;
           const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
           if (implementation.edge) {
@@ -604,7 +553,7 @@ export function trace(
               type: 'operation_implemented_by_handler',
               from: to,
               to: implTo,
-              evidence: contextMethodId ? { ...implEvidence, contextualImplementationSelected: true, contextualImplementation: contextSelection.evidence } : { ...implEvidence, contextualImplementation: contextSelection.evidence },
+              evidence: contextMethodId ? { ...implEvidence, contextualImplementationSelected: contextSelection.evidence.strategy !== 'implementation_repo_hint', contextualImplementation: contextSelection.evidence, implementationSelection: contextSelection.evidence } : { ...implEvidence, contextualImplementation: contextSelection.evidence },
               confidence: Number(implementation.edge.confidence ?? 0),
               unresolvedReason: implementation.edge.status === 'resolved' || contextMethodId ? undefined : String(implementation.edge.unresolved_reason ?? implementation.edge.status),
             });
@@ -643,5 +592,7 @@ export function trace(
       }
     }
   }
+  const runtimeDiagnostic = runtimeVariableDiagnostic(edges);
+  if (runtimeDiagnostic) diagnostics.unshift(runtimeDiagnostic);
   return { start, nodes: [...nodes.values()], edges, diagnostics };
 }

@@ -338,7 +338,7 @@ function isSupportedEventReceiver(receiver: string | undefined, rootReceiver: st
   if (/^(srv|service|serviceClient|messaging|messageClient|eventClient)$/.test(candidate)) return true;
   return false;
 }
-interface WrapperSpec { clientIndex?: number; clientName?: string; pathIndex: number; methodIndex?: number; methodName?: string; methodLiteral?: string; definitionLine: number; internalStart: number; internalEnd: number }
+interface WrapperSpec { clientIndex?: number; clientName?: string; pathIndex: number; methodIndex?: number; methodName?: string; methodLiteral?: string; nestedWrapperFunction?: string; definitionLine: number; internalStart: number; internalEnd: number }
 function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   const specs = new Map<string, WrapperSpec>();
   const serviceVariables = collectServiceVariables(source);
@@ -354,7 +354,7 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   const scanFunction = (name: string, fn: ts.FunctionLikeDeclaration): void => {
     if (!calledNames.has(name)) return;
     const params = fn.parameters.map((param) => ts.isIdentifier(param.name) ? param.name.text : undefined);
-    const sends: Array<{ client: string; path: string; method?: string; methodLiteral?: string; start: number; end: number }> = [];
+    const sends: Array<{ client: string; path: string; method?: string; methodLiteral?: string; nestedWrapperFunction?: string; start: number; end: number }> = [];
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send' && ts.isIdentifier(node.expression.expression)) {
         const objectArg = node.arguments[0];
@@ -367,6 +367,14 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
           if (pathName) sends.push({ client: node.expression.expression.text, path: pathName, method: methodName, methodLiteral, start: node.getStart(source), end: node.getEnd() });
         }
       }
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && specs.has(node.expression.text)) {
+        const nested = specs.get(node.expression.text);
+        const pathArg = nested ? node.arguments[nested.pathIndex] : undefined;
+        const clientArg = nested?.clientIndex === undefined ? undefined : node.arguments[nested.clientIndex];
+        const pathName = pathArg && ts.isIdentifier(pathArg) ? pathArg.text : undefined;
+        const clientName = clientArg && ts.isIdentifier(clientArg) ? clientArg.text : nested?.clientName;
+        if (nested && pathName && clientName) sends.push({ client: clientName, path: pathName, method: nested.methodName, methodLiteral: nested.methodLiteral, nestedWrapperFunction: node.expression.text, start: node.getStart(source), end: node.getEnd() });
+      }
       ts.forEachChild(node, visit);
     };
     visit(fn);
@@ -376,7 +384,7 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
     const pathIndex = params.indexOf(found.path);
     const methodIndex = found.method ? params.indexOf(found.method) : -1;
     const capturesKnownClient = serviceVariables.has(found.client) || /^(srv|service|serviceClient|client|.*Client)$/.test(found.client);
-    if (pathIndex >= 0 && (clientIndex >= 0 || capturesKnownClient)) specs.set(name, { clientIndex: clientIndex >= 0 ? clientIndex : undefined, clientName: clientIndex >= 0 ? undefined : found.client, pathIndex, methodIndex: methodIndex >= 0 ? methodIndex : undefined, methodName: found.method, methodLiteral: found.methodLiteral, definitionLine: lineOf(source.text, fn.getStart(source)), internalStart: found.start, internalEnd: found.end });
+    if (pathIndex >= 0 && (clientIndex >= 0 || capturesKnownClient)) specs.set(name, { clientIndex: clientIndex >= 0 ? clientIndex : undefined, clientName: clientIndex >= 0 ? undefined : found.client, pathIndex, methodIndex: methodIndex >= 0 ? methodIndex : undefined, methodName: found.method, methodLiteral: found.methodLiteral, nestedWrapperFunction: found.nestedWrapperFunction, definitionLine: lineOf(source.text, fn.getStart(source)), internalStart: found.start, internalEnd: found.end });
   };
   const visitTop = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name) scanFunction(node.name.text, node);
@@ -456,7 +464,7 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const operationPathExpr = operationPathFromStatic(resolvedPath.text);
         const normalizedOperationPath = operationPathExpr ? classifyODataPathIntent(operationPathExpr, method).topLevelOperationName : undefined;
         if (spec && receiver && operationPathExpr) {
-          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver, classifier: resolvedPath.sourceKind === 'literal' ? 'higher_order_wrapper_literal_path' : 'higher_order_wrapper_static_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: resolvedPath.sourceKind, rawPathExpression: resolvedPath.rawExpression, normalizedOperationPath, literalPathSource: resolvedPath.sourceKind === 'const' ? 'same_scope_const_initializer' : `wrapper_call_${resolvedPath.sourceKind}`, literalCallerArgumentDetected: true });
+          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver, classifier: resolvedPath.sourceKind === 'literal' ? 'higher_order_wrapper_literal_path' : 'higher_order_wrapper_static_path', wrapperFunction: wrapperName, nestedWrapperFunction: spec.nestedWrapperFunction, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: resolvedPath.sourceKind, rawPathExpression: resolvedPath.rawExpression, normalizedOperationPath, literalPathSource: resolvedPath.sourceKind === 'const' ? 'same_scope_const_initializer' : `wrapper_call_${resolvedPath.sourceKind}`, literalCallerArgumentDetected: true });
         } else if (spec && receiver) {
           add(node, { callType: 'remote_action', serviceVariableName: receiver, method, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.45, unresolvedReason: 'dynamic_operation_path_identifier' }, { receiver, classifier: 'higher_order_wrapper_dynamic_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: resolvedPath.sourceKind, rawPathExpression: resolvedPath.rawExpression, parserWarning: 'dynamic_operation_path_identifier' });
         }

@@ -42,41 +42,67 @@ interface ParsedFacts {
   symbolCalls: SymbolCallFact[];
   fileRecords: Array<{ relativePath: string; extension: string; sha256: string; sizeBytes: number }>;
 }
+export interface PreparedRepositoryIndex extends IndexRepoResult {
+  repo: RepoRow;
+  packageFacts?: Awaited<ReturnType<typeof parsePackageJson>>;
+  fingerprint?: string;
+  kind?: string;
+  parsed?: ParsedFacts;
+}
 export async function indexRepository(
   db: Db,
   repo: RepoRow,
   force: boolean,
 ): Promise<IndexRepoResult> {
   try {
-    const sourceFiles = await findSourceFiles(repo.absolute_path);
-    const packageFacts = await parsePackageJson(repo.absolute_path);
-    const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, packageFacts);
-    if (!force && repo.fingerprint === fingerprint) return { fileCount: 0, diagnosticCount: 0, skipped: true };
-    const kind = await classifyRepository(repo.absolute_path, packageFacts);
-    const parsed = await parseAllSourceFacts(repo.absolute_path, sourceFiles);
-    db.transaction(() => {
-      db.prepare('UPDATE repositories SET package_name=?, package_version=?, dependencies_json=?, kind=?, index_status=? WHERE id=?').run(packageFacts.packageName, packageFacts.packageVersion, JSON.stringify(packageFacts.dependencies), kind, 'indexing', repo.id);
-      clearRepoFacts(db, repo.id);
-      insertRequires(db, repo.id, packageFacts.cdsRequires);
-      const fileStmt = db.prepare('INSERT INTO files(repo_id,relative_path,extension,sha256,size_bytes,last_indexed_at) VALUES(?,?,?,?,?,?) ON CONFLICT(repo_id,relative_path) DO UPDATE SET sha256=excluded.sha256,size_bytes=excluded.size_bytes,last_indexed_at=excluded.last_indexed_at');
-      for (const file of parsed.fileRecords) fileStmt.run(repo.id, file.relativePath, file.extension, file.sha256, file.sizeBytes, new Date().toISOString());
-      for (const s of parsed.services) insertService(db, repo.id, s);
-      for (const h of parsed.handlers) insertHandler(db, repo.id, h);
-      insertExecutableSymbols(db, repo.id, parsed.symbols);
-      insertSymbolCalls(db, repo.id, parsed.symbolCalls);
-      insertRegistrations(db, repo.id, parsed.registrations);
-      insertBindings(db, repo.id, parsed.bindings);
-      insertCalls(db, repo.id, parsed.calls);
-      db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(new Date().toISOString(), fingerprint, new Date().toISOString(), ANALYZER_VERSION, repo.id);
-    });
-    return { fileCount: sourceFiles.length, diagnosticCount: 0, skipped: false };
+    const prepared = await prepareRepositoryIndex(repo, force);
+    if (!prepared.skipped) db.transaction(() => publishPreparedRepositoryIndex(db, prepared));
+    return { fileCount: prepared.fileCount, diagnosticCount: prepared.diagnosticCount, skipped: prepared.skipped };
   } catch (error) {
-    const message = errorMessage(error);
-    db.prepare("UPDATE repositories SET index_status='failed', error_count=1 WHERE id=?").run(repo.id);
-    db.prepare("DELETE FROM diagnostics WHERE repo_id=? AND code IN ('index_failed_snapshot_preserved','source_read_failed')").run(repo.id);
-    db.prepare('INSERT INTO diagnostics(repo_id,severity,code,message) VALUES(?,?,?,?)').run(repo.id, 'error', 'source_read_failed', `Index failed before publication; previous facts and fingerprint were preserved. ${message}`);
+    recordIndexFailure(db, repo.id, error);
     return { fileCount: 0, diagnosticCount: 1, skipped: false };
   }
+}
+export async function prepareRepositoryIndex(repo: RepoRow, force: boolean): Promise<PreparedRepositoryIndex> {
+  const sourceFiles = await findSourceFiles(repo.absolute_path);
+  const packageFacts = await parsePackageJson(repo.absolute_path);
+  const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, packageFacts);
+  if (!force && repo.fingerprint === fingerprint) return { repo, fileCount: 0, diagnosticCount: 0, skipped: true };
+  return {
+    repo,
+    packageFacts,
+    fingerprint,
+    kind: await classifyRepository(repo.absolute_path, packageFacts),
+    parsed: await parseAllSourceFacts(repo.absolute_path, sourceFiles),
+    fileCount: sourceFiles.length,
+    diagnosticCount: 0,
+    skipped: false,
+  };
+}
+export function publishPreparedRepositoryIndex(db: Db, prepared: PreparedRepositoryIndex): void {
+  if (prepared.skipped) return;
+  if (!prepared.packageFacts || !prepared.parsed || !prepared.fingerprint || !prepared.kind) throw new Error('Prepared repository index is missing publication facts');
+  const now = new Date().toISOString();
+  const repoId = prepared.repo.id;
+  db.prepare('UPDATE repositories SET package_name=?, package_version=?, dependencies_json=?, kind=?, index_status=? WHERE id=?').run(prepared.packageFacts.packageName, prepared.packageFacts.packageVersion, JSON.stringify(prepared.packageFacts.dependencies), prepared.kind, 'indexing', repoId);
+  clearRepoFacts(db, repoId);
+  insertRequires(db, repoId, prepared.packageFacts.cdsRequires);
+  const fileStmt = db.prepare('INSERT INTO files(repo_id,relative_path,extension,sha256,size_bytes,last_indexed_at) VALUES(?,?,?,?,?,?) ON CONFLICT(repo_id,relative_path) DO UPDATE SET sha256=excluded.sha256,size_bytes=excluded.size_bytes,last_indexed_at=excluded.last_indexed_at');
+  for (const file of prepared.parsed.fileRecords) fileStmt.run(repoId, file.relativePath, file.extension, file.sha256, file.sizeBytes, now);
+  for (const service of prepared.parsed.services) insertService(db, repoId, service);
+  for (const handler of prepared.parsed.handlers) insertHandler(db, repoId, handler);
+  insertExecutableSymbols(db, repoId, prepared.parsed.symbols);
+  insertSymbolCalls(db, repoId, prepared.parsed.symbolCalls);
+  insertRegistrations(db, repoId, prepared.parsed.registrations);
+  insertBindings(db, repoId, prepared.parsed.bindings);
+  insertCalls(db, repoId, prepared.parsed.calls);
+  db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(now, prepared.fingerprint, now, ANALYZER_VERSION, repoId);
+}
+export function recordIndexFailure(db: Db, repoId: number, error: unknown): void {
+  const message = errorMessage(error);
+  db.prepare("UPDATE repositories SET index_status='failed', error_count=1 WHERE id=?").run(repoId);
+  db.prepare("DELETE FROM diagnostics WHERE repo_id=? AND code IN ('index_failed_snapshot_preserved','source_read_failed')").run(repoId);
+  db.prepare('INSERT INTO diagnostics(repo_id,severity,code,message) VALUES(?,?,?,?)').run(repoId, 'error', 'source_read_failed', `Index failed before publication; previous facts and fingerprint were preserved. ${message}`);
 }
 async function parseAllSourceFacts(root: string, files: string[]): Promise<ParsedFacts> {
   const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], fileRecords: [] };
