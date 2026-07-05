@@ -87,6 +87,72 @@ function nameOfProperty(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
   return undefined;
 }
+
+function staticExpressionText(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): string | undefined {
+  if (!expr) return undefined;
+  if (isStringLike(expr)) return expr.text;
+  if (ts.isIdentifier(expr) && initializers.has(expr.text)) return staticExpressionText(initializers.get(expr.text), initializers);
+  return undefined;
+}
+function propertyInitializer(object: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined {
+  for (const property of object.properties) {
+    if (ts.isPropertyAssignment(property) && nameOfProperty(property.name) === key) return property.initializer;
+    if (ts.isShorthandPropertyAssignment(property) && property.name.text === key) return property.name;
+  }
+  return undefined;
+}
+function httpMethodFromObject(object: ts.ObjectLiteralExpression, initializers: Map<string, ts.Expression>): string | undefined {
+  const text = staticExpressionText(propertyInitializer(object, 'method'), initializers);
+  return text ? stripQuotes(text).toUpperCase() : undefined;
+}
+function urlTargetFromExpression(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): Record<string, unknown> {
+  const text = staticExpressionText(expr, initializers);
+  if (text) return { kind: 'static_url', expression: text, dynamic: false };
+  if (expr && (ts.isTemplateExpression(expr) || ts.isIdentifier(expr) || ts.isPropertyAccessExpression(expr) || ts.isCallExpression(expr))) return { kind: 'url_expression', expression: expr.getText(expr.getSourceFile()), dynamic: true };
+  return { kind: 'unknown', dynamic: false };
+}
+function destinationTargetFromExpression(expr: ts.Expression | undefined, initializers: Map<string, ts.Expression>): Record<string, unknown> | undefined {
+  const text = staticExpressionText(expr, initializers);
+  if (text) return { kind: 'destination', expression: text, dynamic: false };
+  if (expr && ts.isIdentifier(expr)) return { kind: 'destination', expression: expr.text, dynamic: true };
+  return undefined;
+}
+function externalHttpEvidence(node: ts.CallExpression, source: ts.SourceFile, initializers: Map<string, ts.Expression>): { method?: string; externalTarget: Record<string, unknown>; classifier: string; sourceCallShape: string } | undefined {
+  const expr = node.expression;
+  const exprText = expr.getText(source);
+  if (exprText === 'useOrFetchDestination') {
+    const objectArg = node.arguments[0];
+    if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
+      const destination = destinationTargetFromExpression(propertyInitializer(objectArg, 'destinationName'), initializers);
+      return { externalTarget: destination ?? { kind: 'unknown', dynamic: false }, classifier: 'sap_destination_lookup', sourceCallShape: 'useOrFetchDestination' };
+    }
+  }
+  if (exprText === 'executeHttpRequest') {
+    const destination = destinationTargetFromExpression(node.arguments[0], initializers);
+    const config = node.arguments[1];
+    const method = config && ts.isObjectLiteralExpression(config) ? httpMethodFromObject(config, initializers) : undefined;
+    const url = config && ts.isObjectLiteralExpression(config) ? urlTargetFromExpression(propertyInitializer(config, 'url'), initializers) : { kind: 'unknown', dynamic: false };
+    return { method, externalTarget: destination ? { ...url, destination } : url, classifier: 'sap_execute_http_request', sourceCallShape: 'executeHttpRequest' };
+  }
+  if (exprText === 'axios') {
+    const config = node.arguments[0];
+    if (config && ts.isObjectLiteralExpression(config)) {
+      const method = httpMethodFromObject(config, initializers);
+      return { method, externalTarget: urlTargetFromExpression(propertyInitializer(config, 'url'), initializers), classifier: 'axios_config_call', sourceCallShape: 'axios(config)' };
+    }
+    return { externalTarget: { kind: 'unknown', dynamic: false }, classifier: 'axios_unknown_call', sourceCallShape: 'axios(...)' };
+  }
+  if (exprText === 'fetch') {
+    const init = node.arguments[1];
+    const method = init && ts.isObjectLiteralExpression(init) ? httpMethodFromObject(init, initializers) : undefined;
+    return { method, externalTarget: urlTargetFromExpression(node.arguments[0], initializers), classifier: 'fetch_call', sourceCallShape: 'fetch' };
+  }
+  if (ts.isPropertyAccessExpression(expr) && ['get','post','put','patch','delete','head'].includes(expr.name.text) && expr.expression.getText(source) === 'axios') {
+    return { method: expr.name.text.toUpperCase(), externalTarget: urlTargetFromExpression(node.arguments[0], initializers), classifier: 'axios_member_call', sourceCallShape: `axios.${expr.name.text}` };
+  }
+  return undefined;
+}
+
 function collectServiceVariables(source: ts.SourceFile): Set<string> {
   const vars = new Set<string>(['cds', 'messaging', 'messageClient', 'eventClient']);
   const visit = (node: ts.Node): void => {
@@ -219,8 +285,9 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const eventName = literalText(node.arguments[0]);
           if (eventName) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: rootReceiver ?? receiver, eventNameExpr: eventName }, { receiver, rootReceiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit', receiverClassification: 'cap_evidence' });
         }
-      } else if (exprText === 'axios' || exprText === 'executeHttpRequest' || exprText === 'useOrFetchDestination') {
-        add(node, { callType: 'external_http', payloadSummary: summarizeExpression(node.arguments.map((arg) => arg.getText(source)).join(', ')), confidence: 0.7, unresolvedReason: 'External HTTP destination is outside indexed CAP services' });
+      } else {
+        const external = externalHttpEvidence(node, source, initializers);
+        if (external) add(node, { callType: 'external_http', method: external.method, payloadSummary: summarizeExpression(node.arguments.map((arg) => arg.getText(source)).join(', ')), confidence: 0.7, unresolvedReason: 'External HTTP destination is outside indexed CAP services' }, { classifier: external.classifier, externalTarget: { ...external.externalTarget, method: external.method, parserClassifier: external.classifier, sourceCallShape: external.sourceCallShape }, sourceCallShape: external.sourceCallShape });
       }
     }
     ts.forEachChild(node, visit);

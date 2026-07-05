@@ -1,5 +1,12 @@
 # Service Flow Resolution Notes
 
+
+## 0.1.31 selector and external target notes
+
+Operation trace selectors are resolved from CDS operation facts before handler-source fallback. The start resolver scopes by repository and service path, requires disambiguation when multiple repositories or services match, and only queues traversal from a resolved implementation edge. Generated operation decorator constants are normalized in `operation-decorator-normalizer` so linker, trace fallback, diagnostics, and tests share one conservative implementation.
+
+Schema version 6 adds queryable external target metadata columns to `outbound_calls`. The linker writes semantic `external_destination` or `external_endpoint` graph targets and keeps redacted structured target details in edge evidence. Existing databases migrate forward without dropping facts; relinking rebuilds legacy numeric external HTTP targets.
+
 ## 0.1.30 OData invocation argument placeholder notes
 
 - Balanced top-level OData function/action imports such as `/readDetails(ID='${id}',version=0)` now normalize to the operation segment even when placeholder expressions span multiple lines or contain nested JavaScript parentheses.

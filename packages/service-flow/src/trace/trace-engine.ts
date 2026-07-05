@@ -13,6 +13,8 @@ interface StartScope {
   sourceFiles?: Set<string>;
   symbolIds?: Set<number>;
   selectorMatched: boolean;
+  startOperationId?: string;
+  startDiagnostics?: Array<Record<string, unknown>>;
 }
 interface CallRow extends Record<string, unknown> {
   id: number;
@@ -72,6 +74,27 @@ function normalizeOperation(value: string | undefined): string | undefined {
 function positiveDepth(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
 }
+
+function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart): { files?: Set<string>; symbols?: Set<number>; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
+  const requested = normalizeOperation(start.operationPath ?? start.operation);
+  if (!requested) return undefined;
+  const rows = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_path operationPath,s.service_path servicePath,r.id repoId,r.name repoName
+    FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
+    WHERE (? IS NULL OR r.id=?) AND (? IS NULL OR s.service_path=?) AND (o.operation_name=? OR o.operation_path=? OR o.operation_path=?)
+    ORDER BY r.name,s.service_path,o.operation_name,o.id`).all(repoId, repoId, start.servicePath, start.servicePath, requested, requested, requested.startsWith('/') ? requested : `/${requested}`) as Array<Record<string, unknown>>;
+  if (rows.length === 0) return { diagnostics: [{ severity: 'warning', code: 'trace_start_not_found', message: 'No indexed operation matched the requested trace selector', normalizedSelectorValue: requested }] };
+  const repoCount = new Set(rows.map((row) => String(row.repoName))).size;
+  const serviceCount = new Set(rows.map((row) => `${String(row.repoName)}:${String(row.servicePath)}`)).size;
+  if (!repoId && repoCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple repositories; add --repo to disambiguate', normalizedSelectorValue: requested, candidates: rows }] };
+  if (!start.servicePath && serviceCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple services; add --service to disambiguate', normalizedSelectorValue: requested, candidates: rows }] };
+  if (rows.length !== 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple indexed operations', normalizedSelectorValue: requested, candidates: rows }] };
+  const operationId = String(rows[0]?.operationId);
+  const impl = implementationScope(db, operationId);
+  if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, operationId, diagnostics: [] };
+  if (impl.edge) return { operationId, diagnostics: [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_not_found', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, candidates: parseEvidence(impl.edge.evidence_json).candidates }] };
+  return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_not_found', message: 'Indexed operation matched but no implementation candidate exists' }] };
+}
+
 function sourceFilesForStart(
   db: Db,
   repoId: number | undefined,
@@ -127,7 +150,8 @@ function startScope(db: Db, start: TraceStart): StartScope {
         .get(start.repo, start.repo) as RepoRef | undefined)
     : undefined;
   if (start.repo && !repo) return { repo, selectorMatched: false };
-  const sourceScope = sourceFilesForStart(db, repo?.id, start);
+  const operationScope = operationStartScope(db, repo?.id, start);
+  const sourceScope = operationScope?.files ? operationScope : sourceFilesForStart(db, repo?.id, start);
   const sourceFiles = sourceScope?.files;
   const hasSelector = Boolean(
     start.handler ?? start.operation ?? start.operationPath ?? start.servicePath,
@@ -139,6 +163,8 @@ function startScope(db: Db, start: TraceStart): StartScope {
     sourceFiles,
     symbolIds: sourceScope?.symbols,
     selectorMatched: !hasSelector || sourceFiles !== undefined,
+    startOperationId: operationScope?.operationId,
+    startDiagnostics: operationScope?.diagnostics,
   };
 }
 function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
@@ -416,6 +442,10 @@ function edgeTarget(row: GraphRow, evidence: Record<string, unknown>): string {
     typeof evidence.targetRepo === 'string' ? evidence.targetRepo : '';
   if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return `Entity: ${row.to_id || 'unknown'}`;
   if (row.edge_type === 'HANDLER_RUNS_REMOTE_QUERY') return typeof evidence.remoteQueryTarget === 'string' ? evidence.remoteQueryTarget : `Remote query: ${row.to_id || 'unknown'}`;
+  if (row.edge_type === 'HANDLER_CALLS_EXTERNAL_HTTP') {
+    const target = evidence.externalTarget as Record<string, unknown> | undefined;
+    return typeof target?.label === 'string' ? target.label : `External endpoint: ${row.to_id || 'unknown'}`;
+  }
   return servicePath && operationPath
     ? `${servicePath}${operationPath}`
     : targetOperation
@@ -442,7 +472,8 @@ export function trace(
   const stale = db.prepare('SELECT name,graph_stale_reason reason FROM repositories WHERE graph_stale_reason IS NOT NULL AND (? IS NULL OR id=?)').all(scope.repo?.id, scope.repo?.id) as Array<{ name?: string; reason?: string }>;
   for (const row of stale)
     diagnostics.unshift({ severity: 'warning', code: 'graph_stale', message: `Graph is stale for ${row.name ?? 'repository'}: ${row.reason ?? 'facts_changed'}. Run service-flow link.` });
-  if (!scope.selectorMatched)
+  for (const diagnostic of scope.startDiagnostics ?? []) diagnostics.unshift(diagnostic);
+  if (!scope.selectorMatched && !(scope.startDiagnostics?.length))
     diagnostics.unshift({
       severity: 'warning',
       code: 'trace_start_not_found',
@@ -451,30 +482,24 @@ export function trace(
   const maxDepth = positiveDepth(options.depth);
   const edges: TraceEdge[] = [];
   const nodes = new Map<string, Record<string, unknown>>();
+  const seenEdges = new Set<number>();
   const queue: Array<{ repoId?: number; files?: Set<string>; symbolIds?: Set<number>; depth: number; context?: Map<string, ContextBinding> }> =
     scope.selectorMatched
       ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1, context: new Map() }]
       : [];
-  if (start.servicePath && (start.operation ?? start.operationPath)) {
-    const startOperation = normalizeOperation(start.operation ?? start.operationPath);
-    const startRows = db.prepare(`SELECT o.id operationId,r.name repoName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?) ORDER BY r.name,o.id LIMIT 2`).all(scope.repo?.id, scope.repo?.id, start.servicePath, startOperation, startOperation) as Array<Record<string, unknown>>;
-    if (!scope.repo && startRows.length > 1) diagnostics.unshift({ severity: 'warning', code: 'trace_start_ambiguous', message: 'Service/path trace start matched multiple repositories; add --repo to disambiguate', candidates: startRows });
-    const row = startRows.length === 1 ? startRows[0] : undefined;
-    if (row?.operationId !== undefined) {
-      const opId = String(row.operationId);
-      const op = operationNode(db, opId);
-      const impl = implementationScope(db, opId);
-      if (op) nodes.set(String(op.id), op);
-      if (impl.edge) {
-        const implEvidence = JSON.parse(String(impl.edge.evidence_json || '{}')) as Record<string, unknown>;
-        const handlerNode = impl.edge.status === 'resolved' ? handlerMethodNode(db, impl.edge.to_id) : undefined;
-        if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
-        edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `${start.servicePath}/${startOperation ?? ''}`, to: handlerNode?.label ? String(handlerNode.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: implEvidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: impl.edge.status === 'resolved' ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status) });
-      }
+  if (scope.startOperationId) {
+    const op = operationNode(db, scope.startOperationId);
+    const impl = implementationScope(db, scope.startOperationId);
+    if (op) nodes.set(String(op.id), op);
+    if (impl.edge) {
+      const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: impl.edge.status === 'resolved' ? impl.edge.to_id : undefined } };
+      const handlerNode = impl.edge.status === 'resolved' ? handlerMethodNode(db, impl.edge.to_id) : undefined;
+      if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
+      seenEdges.add(Number(impl.edge.id));
+      edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `operation:${scope.startOperationId}`, to: handlerNode?.label ? String(handlerNode.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: implEvidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: impl.edge.status === 'resolved' ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status) });
     }
   }
   const seenScopes = new Set<string>();
-  const seenEdges = new Set<number>();
   while (queue.length > 0) {
     const current = queue.shift();
     if (!current || current.depth > maxDepth) continue;
