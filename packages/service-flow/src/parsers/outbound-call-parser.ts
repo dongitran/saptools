@@ -121,12 +121,13 @@ function isSupportedEventReceiver(receiver: string | undefined, rootReceiver: st
   if (/^(srv|service|serviceClient|messaging|messageClient|eventClient)$/.test(candidate)) return true;
   return false;
 }
-interface WrapperSpec { clientIndex: number; pathIndex: number; methodIndex?: number; definitionLine: number }
+interface WrapperSpec { clientIndex: number; pathIndex: number; methodIndex?: number; definitionLine: number; internalStart: number; internalEnd: number }
 function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   const specs = new Map<string, WrapperSpec>();
   const scanFunction = (name: string, fn: ts.FunctionLikeDeclaration): void => {
     const params = fn.parameters.map((param) => ts.isIdentifier(param.name) ? param.name.text : undefined);
-    const closure = returnedClosure(fn) ?? fn;
+    const closure = returnedClosure(fn);
+    if (!closure) return;
     const sends: Array<{ client: string; path: string; method?: string }> = [];
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'send' && ts.isIdentifier(node.expression.expression)) {
@@ -144,7 +145,7 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
     const clientIndex = params.indexOf(found.client);
     const pathIndex = params.indexOf(found.path);
     const methodIndex = found.method && params.includes(found.method) ? params.indexOf(found.method) : undefined;
-    if (clientIndex >= 0 && pathIndex >= 0) specs.set(name, { clientIndex, pathIndex, methodIndex, definitionLine: lineOf(source.text, fn.getStart(source)) });
+    if (clientIndex >= 0 && pathIndex >= 0) specs.set(name, { clientIndex, pathIndex, methodIndex, definitionLine: lineOf(source.text, fn.getStart(source)), internalStart: closure.getStart(source), internalEnd: closure.getEnd() });
   };
   for (const stmt of source.statements) {
     if (ts.isFunctionDeclaration(stmt) && stmt.name) scanFunction(stmt.name.text, stmt);
@@ -169,11 +170,15 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
   const initializers = variableInitializers(source);
   const serviceVariables = collectServiceVariables(source);
   const wrapperSpecs = collectWrapperSpecs(source);
+  const wrapperInternalRanges = [...wrapperSpecs.values()].map((spec) => ({ start: spec.internalStart, end: spec.internalEnd }));
   const add = (node: ts.CallExpression, fact: Omit<OutboundCallFact, 'sourceFile' | 'sourceLine' | 'confidence'> & { confidence?: number }, extra?: Record<string, unknown>): void => {
     calls.push({ node, fact: { ...fact, sourceFile, sourceLine: lineOf(source.text, node.getStart(source)), confidence: fact.confidence ?? 0.8, evidence: parserEvidence(source, node, extra) } });
   };
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
+      if (wrapperInternalRanges.some((range) => node.getStart(source) >= range.start && node.getEnd() <= range.end)) {
+        return;
+      }
       const expr = node.expression;
       const exprText = expr.getText(source);
       if (exprText === 'cds.run') {
@@ -199,6 +204,8 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const methodArg = spec?.methodIndex === undefined ? undefined : wrapperArgs[spec.methodIndex];
         if (spec && clientArg && ts.isIdentifier(clientArg) && isStringLike(pathArg)) {
           add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), operationPathExpr: `/${pathArg.text.replace(/^\//, '')}`, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver: clientArg.text, classifier: 'higher_order_wrapper_literal_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, literalCallerArgumentDetected: true });
+        } else if (spec && clientArg && ts.isIdentifier(clientArg)) {
+          add(node, { callType: 'remote_action', serviceVariableName: clientArg.text, method: stripQuotes(methodArg?.getText(source) ?? 'POST'), payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.45, unresolvedReason: 'dynamic_operation_path_identifier' }, { receiver: clientArg.text, classifier: 'higher_order_wrapper_dynamic_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, parserWarning: 'dynamic_operation_path_identifier' });
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);

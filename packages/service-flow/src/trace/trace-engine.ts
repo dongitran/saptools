@@ -50,6 +50,10 @@ interface ContextBinding {
   callerArgument?: string;
   callerProperty?: string;
   calleeParameter?: string;
+  calleeObjectProperty?: string;
+  calleeLocalDestructuredIdentifier?: string;
+  parameterPropertyAliasKind?: unknown;
+  parameterPropertyAliasLine?: unknown;
   calleeReceiver: string;
 }
 interface Candidate {
@@ -174,7 +178,7 @@ function implementationScope(db: Db, operationId: string): { repoId?: number; fi
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
   return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
-function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined): { methodId?: string; evidence: Record<string, unknown> } {
+function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown> = {}): { methodId?: string; evidence: Record<string, unknown> } {
   if (!edge || edge.status !== 'ambiguous' || callerRepoId === undefined) return { evidence: { status: 'not_applicable' } };
   const evidence = JSON.parse(String(edge.evidence_json || '{}')) as { candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { id?: number; name?: string }; applicationPackage?: { id?: number; name?: string }; reasons?: string[]; score?: number }> };
   const scores = (evidence.candidates ?? []).filter((item) => item.accepted).map((item) => {
@@ -182,12 +186,13 @@ function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId:
     let score = Number(item.score ?? 0);
     if (Number(item.handlerPackage?.id) === callerRepoId) { score += 10; reasons.push('handler_package_matches_caller_repository'); }
     if (Number(item.applicationPackage?.id) === callerRepoId) { score += 10; reasons.push('registration_package_matches_caller_repository'); }
+    if (typeof remoteEvidence.effectiveServicePath === 'string' || typeof remoteEvidence.effectiveDestination === 'string' || typeof remoteEvidence.effectiveAlias === 'string') { score += 1; reasons.push('remote_call_context_available'); }
     return { methodId: item.methodId, score, reasons, handlerPackage: item.handlerPackage, applicationPackage: item.applicationPackage };
   }).sort((a, b) => b.score - a.score);
   if (scores.length === 0) return { evidence: { status: 'not_applicable', candidateScores: [] } };
   const [first, second] = scores;
   if (first && first.methodId !== undefined && first.score > 0 && (!second || first.score > second.score)) return { methodId: String(first.methodId), evidence: { status: 'selected', selectedMethodId: first.methodId, candidateScores: scores } };
-  return { evidence: { status: 'tied', tieReason: 'no_unique_materially_stronger_candidate', candidateScores: scores } };
+  return { evidence: { status: 'tied', tieReason: scores.length > 1 ? 'duplicate_helper_implementation_candidates' : 'no_unique_materially_stronger_candidate', candidateScores: scores } };
 }
 function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<string>; symbolId?: number } | undefined {
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(methodId) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
@@ -346,6 +351,7 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
   const calleeEvidence = parseEvidence(callee?.evidenceJson);
   const params = Array.isArray(calleeEvidence.parameters) ? calleeEvidence.parameters.filter((item): item is string => typeof item === 'string') : [];
   const parameterBindings = Array.isArray(calleeEvidence.parameterBindings) ? calleeEvidence.parameterBindings.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
+  const parameterPropertyAliases = Array.isArray(calleeEvidence.parameterPropertyAliases) ? calleeEvidence.parameterPropertyAliases.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
   const args = Array.isArray(callEvidence.callArguments) ? callEvidence.callArguments as Array<Record<string, unknown>> : [];
   args.forEach((arg, index) => {
     const paramBinding = parameterBindings.find((binding) => binding.index === index);
@@ -363,7 +369,12 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
           ? (paramBinding.properties as Array<Record<string, unknown>>).find((item) => item.property === prop.property && typeof item.local === 'string')
           : undefined;
         if (destructured && typeof destructured.local === 'string') next.set(destructured.local, { ...binding, source: 'local_symbol_destructured_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: String(index), calleeReceiver: destructured.local });
-        else if (param) next.set(`${param}.${prop.property}`, { ...binding, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
+        else if (param) {
+          next.set(`${param}.${prop.property}`, { ...binding, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
+          for (const alias of parameterPropertyAliases) {
+            if (alias.parameter === param && alias.property === prop.property && typeof alias.local === 'string') next.set(alias.local, { ...binding, source: 'local_symbol_object_parameter_destructure', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeObjectProperty: `${param}.${prop.property}`, calleeReceiver: alias.local, calleeLocalDestructuredIdentifier: alias.local, parameterPropertyAliasKind: alias.kind, parameterPropertyAliasLine: alias.line });
+          }
+        }
       }
     }
   });
@@ -545,7 +556,7 @@ export function trace(
         });
         if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
-          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId);
+          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence);
           const contextMethodId = contextSelection.methodId;
           const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
           if (implementation.edge) {

@@ -43,6 +43,7 @@ function isObjectFunction(node: ts.Node): boolean {
 type ParameterBinding =
   | { index: number; kind: 'identifier'; name: string }
   | { index: number; kind: 'object_pattern'; properties: Array<{ property: string; local: string }> };
+type ParameterPropertyAlias = { parameter: string; property: string; local: string; kind: 'object_parameter_destructure'; line: number };
 const commonTerminalMembers = new Set(['push', 'includes', 'find', 'findIndex', 'map', 'filter', 'reduce', 'forEach', 'some', 'every', 'toUpperCase', 'toLowerCase', 'trim', 'split', 'join', 'get', 'set', 'has']);
 const loggerMembers = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'log']);
 const globalObjects = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Math', 'Date', 'Promise', 'Reflect']);
@@ -106,6 +107,37 @@ function bindingLocalName(name: ts.BindingName, initializer?: ts.Expression): st
   if (initializer && ts.isIdentifier(initializer)) return initializer.text;
   return undefined;
 }
+
+function objectPatternAliases(pattern: ts.ObjectBindingPattern, parameter: string, source: ts.SourceFile, lineNode: ts.Node): ParameterPropertyAlias[] {
+  return pattern.elements.flatMap((element): ParameterPropertyAlias[] => {
+    if (element.dotDotDotToken || ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) return [];
+    const property = element.propertyName ? nameOf(element.propertyName) : nameOf(element.name);
+    if (!property) return [];
+    const local = bindingLocalName(element.name, element.initializer);
+    return local ? [{ parameter, property, local, kind: 'object_parameter_destructure', line: lineOf(source, lineNode.getStart(source)) }] : [];
+  });
+}
+function parameterPropertyAliases(fn: ts.FunctionLikeDeclaration, source: ts.SourceFile): ParameterPropertyAlias[] {
+  const parameterNames = new Set(fn.parameters.flatMap((param) => ts.isIdentifier(param.name) ? [param.name.text] : []));
+  if (!fn.body || parameterNames.size === 0) return [];
+  const aliases: ParameterPropertyAlias[] = [];
+  const addFromAssignment = (left: ts.Expression, right: ts.Expression, node: ts.Node): void => {
+    if (!ts.isObjectLiteralExpression(left) || !ts.isIdentifier(right) || !parameterNames.has(right.text)) return;
+    for (const prop of left.properties) {
+      if (!ts.isPropertyAssignment(prop)) continue;
+      const property = nameOf(prop.name);
+      if (property && ts.isIdentifier(prop.initializer)) aliases.push({ parameter: right.text, property, local: prop.initializer.text, kind: 'object_parameter_destructure', line: lineOf(source, node.getStart(source)) });
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer && ts.isIdentifier(node.initializer) && parameterNames.has(node.initializer.text)) aliases.push(...objectPatternAliases(node.name, node.initializer.text, source, node));
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) addFromAssignment(ts.isParenthesizedExpression(node.left) ? node.left.expression : node.left, node.right, node);
+    ts.forEachChild(node, visit);
+  };
+  visit(fn.body);
+  const seen = new Set<string>();
+  return aliases.filter((alias) => { const key = `${alias.parameter}.${alias.property}:${alias.local}`; if (seen.has(key)) return false; seen.add(key); return true; });
+}
 function parameterBindings(params: ts.NodeArray<ts.ParameterDeclaration>): ParameterBinding[] {
   return params.flatMap((param, index): ParameterBinding[] => {
     if (ts.isIdentifier(param.name)) return [{ index, kind: 'identifier', name: param.name.text }];
@@ -143,7 +175,8 @@ export async function parseExecutableSymbols(repoPath: string, filePath: string)
     const bindings = isFunctionLike(node) ? parameterBindings(node.parameters) : undefined;
     const params = bindings?.flatMap((binding) => binding.kind === 'identifier' ? [binding.name] : []);
     const sourceEvidence = evidence ?? (classMemberExported ? { source: 'exported_class_member', exportedClass: parentRoot, memberKind: (ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Static) !== 0 ? 'static_method' : 'class_method', parameters: params } : declaredExportName ? { exportedName: declaredExportName, source: 'export_declaration' } : objectExported ? { exportedName: qualifiedName, source: 'exported_object_literal' } : undefined);
-    const parameterEvidence = bindings && bindings.length > 0 ? { parameters: params, parameterBindings: bindings } : {};
+    const aliases = isFunctionLike(node) ? parameterPropertyAliases(node, source) : [];
+    const parameterEvidence = { ...(bindings && bindings.length > 0 ? { parameters: params, parameterBindings: bindings } : {}), ...(aliases.length > 0 ? { parameterPropertyAliases: aliases } : {}) };
     symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: effectiveExportedName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(effectiveExportedName), importExportEvidence: sourceEvidence ? { ...sourceEvidence, ...parameterEvidence } : bindings && bindings.length > 0 ? parameterEvidence : undefined });
   };
   const addAliasSymbol = (objectName: string, propertyName: string, node: ts.Node, targetImportSource?: string): void => {
