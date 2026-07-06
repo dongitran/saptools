@@ -75,7 +75,7 @@ describe('strict doctor implementation aggregation', () => {
     const aggregate = diagnostics.find((item) => item.code === 'strict_implementation_candidate_quality') as {
       severity?: string;
       summary?: Array<{ category: string; count: number; reason: string; candidateFamily: string; suggestedAction: string }>;
-      categories?: Array<{ category: string; count: number; baseOperation?: string; servicePathPattern?: string; reason?: string; candidateFamily?: string; examples?: unknown[]; expandedExamples?: unknown[]; suggestedAction?: string }>;
+      categories?: Array<{ category: string; count: number; baseOperation?: string; servicePathPattern?: string; reason?: string; candidateFamily?: string; examples?: unknown[]; expandedExamples?: unknown[]; suggestedAction?: string; suggestedHints?: string[] }>;
     };
     expect(aggregate?.severity).toBe('warning');
     expect(aggregate.categories).toEqual(expect.arrayContaining([
@@ -104,6 +104,11 @@ describe('strict doctor implementation aggregation', () => {
     const duplicateSummary = aggregate.summary?.find((item) => item.category === 'duplicate_package_name_candidates');
     expect(duplicateSummary).toMatchObject({ candidateFamily: '@neutral/duplicate-helper', count: 1 });
     expect(duplicateSummary?.suggestedAction).toContain('--implementation-hint');
+    const duplicateCategory = aggregate.categories?.find((item) => item.category === 'duplicate_package_name_candidates');
+    expect(duplicateCategory?.suggestedHints).toEqual(expect.arrayContaining([
+      '--implementation-hint service=/DuplicateService,operation=/syncData,family=@neutral/duplicate-helper,repo=helper-a',
+      '--implementation-hint service=/DuplicateService,operation=/syncData,family=@neutral/duplicate-helper,repo=helper-b',
+    ]));
     const wrapperSummary = aggregate.summary?.find((item) => item.category === 'dynamic_wrapper_paths');
     expect(wrapperSummary).toMatchObject({ reason: 'wrapper path cannot be proven statically' });
     expect(wrapperSummary?.suggestedAction).toContain('--var');

@@ -6,6 +6,7 @@ import { resolveOperation } from './service-resolver.js';
 import { linkHelperPackages } from './helper-package-linker.js';
 import { normalizeDecoratorOperationSignal, normalizedOperationName } from './operation-decorator-normalizer.js';
 import { externalHttpTarget } from './external-http-target.js';
+import { implementationHintSuggestions } from '../trace/implementation-hints.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;
@@ -201,13 +202,14 @@ function linkImplementations(db: Db, workspaceId: number, generation: number): {
       candidateFamilies: duplicateFamilies,
       candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
     };
+    const evidenceWithHints = unique ? evidence : { ...evidence, implementationHintSuggestions: implementationHintSuggestions(evidence) };
     if (accepted.length === 0) {
-      db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', 'unresolved', 'operation', graphId(operation.operationId), 'handler_method_candidates', candidates.map((row) => graphId(row.methodId)).join(','), 0, JSON.stringify(evidence), 0, 'No implementation candidate passed policy', generation);
+      db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', 'unresolved', 'operation', graphId(operation.operationId), 'handler_method_candidates', candidates.map((row) => graphId(row.methodId)).join(','), 0, JSON.stringify(evidenceWithHints), 0, 'No implementation candidate passed policy', generation);
       edgeCount += 1;
       unresolvedCount += 1;
       continue;
     }
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : selected.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidence), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : selected.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidenceWithHints), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
     edgeCount += 1;
     if (unique) resolvedCount += 1;
     else ambiguousCount += 1;

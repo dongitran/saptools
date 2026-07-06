@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { linkWorkspace, trace } from '../../src/index.js';
-import { parseImplementationHint } from '../../src/trace/implementation-hints.js';
+import { implementationHintSuggestions, parseImplementationHint } from '../../src/trace/implementation-hints.js';
+import { renderTraceTable } from '../../src/output/table-output.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 
 async function createDuplicatePackageImplementationFixture(root: string): Promise<void> {
@@ -93,6 +94,21 @@ describe('implementation duplicate package disambiguation', () => {
     expect(() => parseImplementationHint('unknown=value,repo=helper')).toThrow('Unknown implementation hint field');
   });
 
+  it('omits hint suggestions when a repository selector would still be ambiguous', () => {
+    const suggestions = implementationHintSuggestions({
+      servicePath: '/SharedService',
+      operationPath: '/syncData',
+      ambiguityReasons: ['multiple_equal_score_implementation_candidates'],
+      candidates: [
+        { accepted: true, handlerPackage: { name: 'helper-alpha', packageName: '@neutral/shared-helper' } },
+        { accepted: true, handlerPackage: { name: 'helper-alpha', packageName: '@neutral/shared-helper' } },
+        { accepted: true, handlerPackage: { name: 'helper-beta', packageName: '@neutral/shared-helper' } },
+      ],
+    });
+    expect(suggestions.map((item) => item.implementationRepo)).toEqual(['helper-beta']);
+    expect(JSON.stringify(suggestions)).not.toContain('repo=helper-alpha');
+  });
+
   it('keeps duplicate package-name implementation candidates ambiguous without a hint', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-duplicate-package-'));
     await createDuplicatePackageImplementationFixture(root);
@@ -106,6 +122,7 @@ describe('implementation duplicate package disambiguation', () => {
     const evidence = JSON.parse(edge.evidenceJson) as {
       ambiguityReasons?: string[];
       candidateFamilies?: Array<{ reason: string; packageName: string; count: number }>;
+      implementationHintSuggestions?: Array<{ servicePath: string; operationPath: string; ambiguityReason: string; candidateFamily: string; selectableImplementationRepositories: string[]; implementationRepo: string; cli: string }>;
       candidates: Array<{ handlerPackage: { name: string; packageName: string }; accepted: boolean }>;
     };
     expect(evidence.ambiguityReasons).toContain('duplicate_package_name_candidates');
@@ -115,6 +132,23 @@ describe('implementation duplicate package disambiguation', () => {
       count: 2,
     }));
     expect(evidence.candidates.map((candidate) => candidate.handlerPackage.name).sort()).toEqual(['helper-alpha', 'helper-beta']);
+    expect(evidence.implementationHintSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        servicePath: '/SharedService',
+        operationPath: '/syncData',
+        ambiguityReason: 'duplicate_package_name_candidates',
+        candidateFamily: '@neutral/shared-helper',
+        selectableImplementationRepositories: ['helper-alpha', 'helper-beta'],
+        implementationRepo: 'helper-alpha',
+        cli: '--implementation-hint service=/SharedService,operation=/syncData,package=@neutral/model-core,repository=model-core,family=@neutral/shared-helper,repo=helper-alpha',
+      }),
+      expect.objectContaining({
+        servicePath: '/SharedService',
+        operationPath: '/syncData',
+        candidateFamily: '@neutral/shared-helper',
+        implementationRepo: 'helper-beta',
+      }),
+    ]));
 
     const result = trace(db, { servicePath: '/SharedService', operation: 'syncData' }, { depth: 5, includeDb: true });
     expect(result.edges).toHaveLength(0);
@@ -122,7 +156,9 @@ describe('implementation duplicate package disambiguation', () => {
       code: 'trace_start_ambiguous',
       resolutionStatus: 'ambiguous_implementation',
       implementationAmbiguityReasons: ['duplicate_package_name_candidates'],
+      implementationHintSuggestions: evidence.implementationHintSuggestions,
     }));
+    expect(renderTraceTable(result)).toContain('try --implementation-hint service=/SharedService,operation=/syncData');
     db.close();
   });
 
@@ -231,11 +267,11 @@ describe('implementation duplicate package disambiguation', () => {
     });
 
     expect(result.edges).toHaveLength(0);
-    expect(result.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'implementation_hint_mismatch',
-      hintStatus: 'not_matched',
-      candidateCount: 0,
-    }));
+    const mismatch = result.diagnostics.find((item) => item.code === 'implementation_hint_mismatch');
+    expect(mismatch).toMatchObject({ hintStatus: 'not_matched', candidateCount: 0 });
+    expect(JSON.stringify(mismatch?.implementationHintSuggestions)).toContain(
+      '--implementation-hint service=/EntryService,operation=/beginFlow,package=@neutral/flow-model,repository=flow-model,family=@neutral/entry-helper,repo=entry-helper-east',
+    );
 
     const tied = trace(db, { servicePath: '/EntryService', operation: 'beginFlow' }, {
       depth: 8,

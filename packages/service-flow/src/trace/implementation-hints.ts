@@ -65,7 +65,10 @@ export function selectImplementation(
   return hint ? selectCandidate(evidence, hint, 'scoped_implementation_hint') : { blocksAutomatic: false, evidence: { status: 'not_matched' } };
 }
 
-export function implementationHintDiagnostic(selection: ImplementationSelection): Record<string, unknown> | undefined {
+export function implementationHintDiagnostic(
+  selection: ImplementationSelection,
+  suggestions?: unknown,
+): Record<string, unknown> | undefined {
   if (!selection.blocksAutomatic || selection.methodId) return undefined;
   return {
     severity: 'warning',
@@ -73,8 +76,39 @@ export function implementationHintDiagnostic(selection: ImplementationSelection)
     message: 'Implementation hint did not select exactly one viable candidate',
     hintStatus: selection.evidence.status,
     candidateCount: selection.evidence.candidateCount,
+    implementationHintSuggestions: Array.isArray(suggestions) && suggestions.length > 0 ? suggestions : undefined,
     implementationSelection: selection.evidence,
   };
+}
+
+export function implementationHintSuggestions(rawEvidence: Record<string, unknown>): Array<Record<string, unknown>> {
+  const evidence = asEvidence(rawEvidence);
+  const accepted = (evidence.candidates ?? []).filter((candidate) => candidate.accepted);
+  if (accepted.length < 2) return [];
+  const repos = selectableRepositories(accepted);
+  return accepted
+    .flatMap((candidate) => {
+      const repo = candidate.handlerPackage?.name;
+      if (!repo || !repos.includes(repo)) return [];
+      const hint = suggestionHint(evidence, candidate, repo);
+      return [{
+        servicePath: hint.servicePath,
+        operationPath: hint.operationPath,
+        ambiguityReason: evidence.ambiguityReasons?.[0],
+        candidateFamily: hint.candidateFamily,
+        selectableImplementationRepositories: repos,
+        implementationRepo: repo,
+        hint,
+        cli: `--implementation-hint ${hintString(hint)}`,
+      }];
+    });
+}
+
+function selectableRepositories(candidates: Candidate[]): string[] {
+  const repos = new Set(candidates.flatMap((candidate) => candidate.handlerPackage?.name ? [candidate.handlerPackage.name] : []));
+  return [...repos]
+    .filter((repo) => candidates.filter((candidate) => candidateMatchesRepo(candidate, repo)).length === 1)
+    .sort();
 }
 
 function assignHintField(hint: Partial<ImplementationHint>, key: string, value: string): void {
@@ -117,6 +151,44 @@ function selectCandidate(evidence: EdgeEvidence, hint: ImplementationHint, strat
       ambiguityReason: evidence.ambiguityReasons?.[0],
     },
   };
+}
+
+function suggestionHint(evidence: EdgeEvidence, candidate: Candidate, repo: string): ImplementationHint {
+  const servicePath = evidence.servicePath ?? candidate.servicePath;
+  const operationPath = evidence.operationPath ?? candidate.operationPath;
+  const family = usefulCandidateFamily(evidence, candidate);
+  return {
+    ...(servicePath ? { servicePath } : {}),
+    ...(operationPath ? { operationPath } : {}),
+    ...(evidence.modelPackage?.packageName ? { packageName: evidence.modelPackage.packageName } : {}),
+    ...(evidence.modelPackage?.name ? { repositoryName: evidence.modelPackage.name } : {}),
+    ...(family ? { candidateFamily: family } : {}),
+    implementationRepo: repo,
+  };
+}
+
+function usefulCandidateFamily(evidence: EdgeEvidence, candidate: Candidate): string | undefined {
+  const family = candidate.handlerPackage?.packageName;
+  if (!family) return undefined;
+  if ((evidence.candidateFamilies ?? []).some((item) => item.packageName === family)) return family;
+  const acceptedFamilies = new Set(
+    (evidence.candidates ?? [])
+      .filter((item) => item.accepted)
+      .flatMap((item) => item.handlerPackage?.packageName ? [item.handlerPackage.packageName] : []),
+  );
+  return acceptedFamilies.size > 1 ? family : undefined;
+}
+
+function hintString(hint: ImplementationHint): string {
+  const fields = [
+    ['service', hint.servicePath],
+    ['operation', hint.operationPath],
+    ['package', hint.packageName],
+    ['repository', hint.repositoryName],
+    ['family', hint.candidateFamily],
+    ['repo', hint.implementationRepo],
+  ];
+  return fields.flatMap(([key, value]) => value ? [`${key}=${value}`] : []).join(',');
 }
 
 function hintMatchesEdge(hint: ImplementationHint, evidence: EdgeEvidence): boolean {

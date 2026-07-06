@@ -1,5 +1,6 @@
 import type { Db } from '../db/connection.js';
 import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
+import { implementationHintSuggestions } from '../trace/implementation-hints.js';
 import { ANALYZER_VERSION } from '../version.js';
 
 type Diagnostic = Record<string, unknown>;
@@ -198,6 +199,7 @@ function implementationEdgeCategories(db: Db, detail: boolean): Array<Diagnostic
     ...item,
     servicePathPattern: pathPattern(servicePaths),
     suggestedAction: categoryAction(String(item.category)),
+    suggestedHints: suggestedHints(item.examples),
     examples: item.examples.slice(0, 3),
     expandedExamples: detail ? item.examples : undefined,
   }));
@@ -211,10 +213,25 @@ function addImplementationCategory(grouped: Map<string, Diagnostic & { count: nu
   const baseOperation = String(row.baseOperation ?? row.operationName ?? evidence.operationName ?? 'unknown');
   const key = [category, baseOperation, reason, family].join('\0');
   const current = grouped.get(key) ?? { category, baseOperation, reason, candidateFamily: family, count: 0, servicePaths: [], examples: [] };
+  const hintSuggestions = implementationSuggestions(evidence);
   current.count += 1;
   current.servicePaths.push(String(row.servicePath ?? evidence.servicePath ?? ''));
-  current.examples.push({ servicePath: row.servicePath, operation: row.operationName, status: row.status, reason: row.unresolvedReason });
+  current.examples.push({ servicePath: row.servicePath, operation: row.operationName, status: row.status, reason: row.unresolvedReason, implementationHintSuggestions: hintSuggestions });
   grouped.set(key, current);
+}
+
+function implementationSuggestions(evidence: Diagnostic): Diagnostic[] | undefined {
+  const persisted = asRecords(evidence.implementationHintSuggestions);
+  const suggestions = persisted.length ? persisted : implementationHintSuggestions(evidence);
+  return suggestions.length ? suggestions : undefined;
+}
+
+function suggestedHints(examples: Diagnostic[]): string[] | undefined {
+  const hints = examples.flatMap((example) =>
+    asRecords(example.implementationHintSuggestions)
+      .flatMap((suggestion) => typeof suggestion.cli === 'string' ? [String(suggestion.cli)] : []));
+  const unique = [...new Set(hints)].slice(0, 3);
+  return unique.length ? unique : undefined;
 }
 
 function missingParameterMetadataCategory(db: Db, detail = false): Diagnostic & { count: number } {

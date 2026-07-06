@@ -98,8 +98,8 @@ function operationStartScope(db: Db, repoId: number | undefined, start: TraceSta
   }
   if (impl.edge) {
     const evidence = parseEvidence(impl.edge.evidence_json);
-    const hintDiagnostic = implementationHintDiagnostic(hinted);
-    const diagnostics = [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, candidates: evidence.candidates }];
+    const hintDiagnostic = implementationHintDiagnostic(hinted, evidence.implementationHintSuggestions);
+    const diagnostics = [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, implementationHintSuggestions: evidence.implementationHintSuggestions, candidates: evidence.candidates }];
     return { operationId, diagnostics: hintDiagnostic ? [hintDiagnostic, ...diagnostics] : diagnostics };
   }
   return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_implementation_unresolved', message: 'Indexed operation matched but no implementation candidate exists', resolutionStage: 'implementation', resolutionStatus: 'operation_without_implementation' }] };
@@ -547,9 +547,9 @@ export function trace(
           const contextMethodId = contextSelection.methodId;
           const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
           if (implementation.edge) {
-            const hintDiagnostic = implementationHintDiagnostic(contextSelection);
-            if (hintDiagnostic) diagnostics.unshift(hintDiagnostic);
             const implEvidence = JSON.parse(String(implementation.edge.evidence_json || '{}')) as Record<string, unknown>;
+            const hintDiagnostic = implementationHintDiagnostic(contextSelection, implEvidence.implementationHintSuggestions);
+            if (hintDiagnostic) diagnostics.unshift(hintDiagnostic);
             const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : contextNode;
             const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
             if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
