@@ -1,6 +1,7 @@
 import type {
   AppSummary,
   AuditEvent,
+  AuditEventScope,
   CfEntityRef,
   FetchAuditEventsInput,
   ProcessInstanceStat,
@@ -53,7 +54,7 @@ function optionalGuid(value: unknown): string | undefined {
   return guid.length > 0 ? guid : undefined;
 }
 
-function mapAuditEvent(value: unknown): AuditEvent {
+export function mapAuditEvent(value: unknown): AuditEvent {
   const record = asRecord(value);
   return {
     guid: asString(record["guid"]),
@@ -86,7 +87,7 @@ function mapProcessStat(value: unknown): ProcessInstanceStat {
 
 export function buildAuditEventsPath(input: FetchAuditEventsInput, perPage: number): string {
   const params = new URLSearchParams();
-  params.set("target_guids", input.appGuid);
+  applyAuditEventScope(params, input.scope);
   params.set("order_by", "-created_at");
   params.set("per_page", perPage.toString());
   if (input.types !== undefined && input.types.length > 0) {
@@ -96,6 +97,43 @@ export function buildAuditEventsPath(input: FetchAuditEventsInput, perPage: numb
     params.set("created_ats[gt]", input.createdAfter);
   }
   return `/v3/audit_events?${params.toString()}`;
+}
+
+function applyAuditEventScope(params: URLSearchParams, scope: AuditEventScope): void {
+  if (scope.kind === "app") {
+    params.set("target_guids", scope.appGuid);
+    return;
+  }
+  params.set("space_guids", scope.spaceGuid);
+}
+
+export async function resolveOrganizationGuid(orgName: string, curl: CurlFn): Promise<string> {
+  const params = new URLSearchParams();
+  params.set("names", orgName);
+  const body = asRecord(parseJson(await curl(`/v3/organizations?${params.toString()}`)));
+  const first = asRecord(asArray(body["resources"])[0]);
+  const guid = asString(first["guid"]);
+  if (guid.length === 0) {
+    throw new Error(`Could not resolve the GUID for organization "${orgName}".`);
+  }
+  return guid;
+}
+
+export async function resolveSpaceGuid(
+  spaceName: string,
+  orgGuid: string,
+  curl: CurlFn,
+): Promise<string> {
+  const params = new URLSearchParams();
+  params.set("names", spaceName);
+  params.set("organization_guids", orgGuid);
+  const body = asRecord(parseJson(await curl(`/v3/spaces?${params.toString()}`)));
+  const first = asRecord(asArray(body["resources"])[0]);
+  const guid = asString(first["guid"]);
+  if (guid.length === 0) {
+    throw new Error(`Could not resolve the GUID for space "${spaceName}".`);
+  }
+  return guid;
 }
 
 function nextPagePath(body: unknown): string | undefined {
@@ -112,7 +150,7 @@ function nextPagePath(body: unknown): string | undefined {
   }
 }
 
-/** Fetches audit events for an app, following pagination up to `input.limit`. */
+/** Fetches audit events for an app or space, following pagination up to `input.limit`. */
 export async function fetchAuditEvents(
   input: FetchAuditEventsInput,
   curl: CurlFn,

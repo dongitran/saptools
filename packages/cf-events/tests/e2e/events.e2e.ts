@@ -5,6 +5,7 @@ import type { Scenario } from "./helpers.js";
 
 const ROOT = "cf-events-e2e-events";
 const APP_GUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+const BILLING_GUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567891";
 
 function makeScenario(events: readonly Record<string, unknown>[]): Scenario {
   return {
@@ -65,4 +66,33 @@ test("events fails clearly when the app is unknown", async () => {
   const result = await runCli(createEnv(paths), ["events", "ghost-app"]);
   expect(result.code).toBe(1);
   expect(result.stderr).toContain("Failed to resolve the GUID for app \"ghost-app\"");
+});
+
+
+test("events prints a space-wide audit-event report", async () => {
+  const scenario = makeScenario(SAMPLE_EVENTS);
+  const paths = await prepareCase(ROOT, "space-text", {
+    ...scenario,
+    apps: {
+      ...scenario.apps,
+      "billing-srv": {
+        guid: BILLING_GUID,
+        app: { guid: BILLING_GUID, name: "billing-srv", state: "STARTED" },
+        events: [fakeAuditEvent({ guid: "billing-start", target: { guid: BILLING_GUID, type: "app", name: "billing-srv" } })],
+      },
+    },
+  });
+  const result = await runCli(createEnv(paths), ["events", "ap10/demo-org/dev", "--since", "3650d", "--limit", "100"]);
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("Audit events for space ap10/demo-org/dev");
+  expect(result.stdout).toContain("orders-srv");
+  expect(result.stdout).toContain("billing-srv");
+});
+
+test("events emits a space-wide JSON array with --json", async () => {
+  const paths = await prepareCase(ROOT, "space-json", makeScenario(SAMPLE_EVENTS));
+  const result = await runCli(createEnv(paths), ["events", "ap10/demo-org/dev", "--json"]);
+  expect(result.code).toBe(0);
+  const parsed = JSON.parse(result.stdout) as unknown[];
+  expect(parsed).toHaveLength(2);
 });

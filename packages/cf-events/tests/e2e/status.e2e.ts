@@ -63,3 +63,10 @@ test("status emits structured JSON with --json", async () => {
   expect(health.requestedState).toBe("STARTED");
   expect(health.instances).toHaveLength(1);
 });
+
+test("status rejects a space selector clearly", async () => {
+  const paths = await prepareCase(ROOT, "space-reject", makeScenario());
+  const result = await runCli(createEnv(paths), ["status", "ap10/demo-org/dev"]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("The status command requires an app selector");
+});
