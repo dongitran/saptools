@@ -45,3 +45,35 @@ test("watch prints new events then exits cleanly on SIGTERM", async () => {
   expect(result.stdout).toContain("SSH session authorized");
   expect(result.stderr).toContain("Watching ap10/demo-org/dev/orders-srv");
 });
+
+test("watch streams space-wide crash events as NDJSON", async () => {
+  const scenario = makeScenario();
+  const paths = await prepareCase(ROOT, "space-json", {
+    ...scenario,
+    apps: {
+      "orders-srv": {
+        guid: APP_GUID,
+        app: { guid: APP_GUID, name: "orders-srv", state: "STARTED" },
+        events: [
+          fakeAuditEvent({
+            guid: "space-crash-1",
+            type: "audit.app.process.crash",
+            created_at: "2026-05-22T11:30:00Z",
+            data: { index: 0, reason: "CRASHED", exit_status: 137 },
+          }),
+        ],
+      },
+    },
+  });
+  const result = await runWatchCli(
+    createEnv(paths),
+    ["watch", "ap10/demo-org/dev", "--interval", "2000", "--lookback", "3650d", "--type", "crash", "--json"],
+    2800,
+  );
+  expect(result.code).toBe(0);
+  const lines = result.stdout.trim().split(/\r?\n/).filter((line) => line.length > 0);
+  expect(lines).toHaveLength(1);
+  const event = JSON.parse(lines[0] ?? "{}") as { type?: string; target?: { name?: string } };
+  expect(event.type).toBe("audit.app.process.crash");
+  expect(event.target?.name).toBe("orders-srv");
+});

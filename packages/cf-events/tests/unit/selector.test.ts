@@ -17,7 +17,7 @@ describe("parseSelector", () => {
   it("parses a full region/org/space/app selector", async () => {
     const { parseSelector } = await import("../../src/selector.js");
     expect(parseSelector("ap10/demo-org/dev/orders-srv")).toEqual({
-      kind: "explicit",
+      kind: "appPath",
       regionKey: "ap10",
       orgName: "demo-org",
       spaceName: "dev",
@@ -30,9 +30,19 @@ describe("parseSelector", () => {
     expect(() => parseSelector("   ")).toThrow(/selector is required/);
   });
 
-  it("rejects a selector with the wrong number of segments", async () => {
+  it("parses a region/org/space selector", async () => {
     const { parseSelector } = await import("../../src/selector.js");
-    expect(() => parseSelector("ap10/demo-org/dev")).toThrow(/Invalid selector/);
+    expect(parseSelector("ap10/demo-org/dev")).toEqual({
+      kind: "spacePath",
+      regionKey: "ap10",
+      orgName: "demo-org",
+      spaceName: "dev",
+    });
+  });
+
+  it("rejects a two-segment selector with usage text", async () => {
+    const { parseSelector } = await import("../../src/selector.js");
+    expect(() => parseSelector("ap10/demo-org")).toThrow(/region\/org\/space/);
   });
 
   it("rejects a selector with an empty segment", async () => {
@@ -45,6 +55,7 @@ describe("resolveSelector", () => {
   it("resolves explicit full path using region api map", async () => {
     const { resolveSelector } = await import("../../src/selector.js");
     await expect(resolveSelector("ap10/demo-org/dev/orders-srv")).resolves.toEqual({
+      kind: "app",
       raw: "ap10/demo-org/dev/orders-srv",
       regionKey: "ap10",
       apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
@@ -87,6 +98,18 @@ describe("resolveSelector", () => {
     });
     const { resolveSelector } = await import("../../src/selector.js");
     await expect(resolveSelector("orders-srv")).rejects.toThrow(/No current CF target found/);
+  });
+
+  it("resolves explicit space path without current target", async () => {
+    const { resolveSelector } = await import("../../src/selector.js");
+    await expect(resolveSelector("ap10/demo-org/dev")).resolves.toEqual({
+      kind: "space",
+      raw: "ap10/demo-org/dev",
+      regionKey: "ap10",
+      apiEndpoint: "https://api.cf.ap10.hana.ondemand.com",
+      orgName: "demo-org",
+      spaceName: "dev",
+    });
   });
 
   it("throws for unknown region in explicit", async () => {

@@ -54,3 +54,23 @@ test("crashes reports cleanly when there are none", async () => {
   const summary = JSON.parse(result.stdout) as { crashCount: number };
   expect(summary.crashCount).toBe(0);
 });
+
+
+test("crashes emits a space-wide JSON summary", async () => {
+  const scenario = makeScenario([
+    fakeAuditEvent({
+      guid: "crash-space-1",
+      type: "audit.app.process.crash",
+      created_at: "2026-05-22T09:00:00Z",
+      target: { guid: APP_GUID, type: "app", name: "orders-srv" },
+      data: { index: 0, reason: "CRASHED", exit_status: 1 },
+    }),
+  ]);
+  const paths = await prepareCase(ROOT, "space-json", scenario);
+  const result = await runCli(createEnv(paths), ["crashes", "ap10/demo-org/dev", "--since", "3650d", "--json"]);
+  expect(result.code).toBe(0);
+  const summary = JSON.parse(result.stdout) as { scope: string; crashCount: number; apps: unknown[] };
+  expect(summary.scope).toBe("space");
+  expect(summary.crashCount).toBe(1);
+  expect(summary.apps).toHaveLength(1);
+});

@@ -35,6 +35,9 @@ function respondAuditEvents(scenario, path) {
   const targetGuids = (params.get("target_guids") ?? "")
     .split(",")
     .filter((value) => value.length > 0);
+  const spaceGuids = (params.get("space_guids") ?? "")
+    .split(",")
+    .filter((value) => value.length > 0);
   const typesParam = params.get("types");
   const types = typesParam
     ? typesParam.split(",").filter((value) => value.length > 0)
@@ -44,7 +47,8 @@ function respondAuditEvents(scenario, path) {
 
   let events = [];
   for (const app of Object.values(scenario.apps ?? {})) {
-    if (targetGuids.length === 0 || targetGuids.includes(app.guid)) {
+    const appSpaceGuid = app.spaceGuid ?? scenario.spaceGuid ?? "space-1";
+    if ((targetGuids.length === 0 || targetGuids.includes(app.guid)) && (spaceGuids.length === 0 || spaceGuids.includes(appSpaceGuid))) {
       events = events.concat(app.events ?? []);
     }
   }
@@ -56,6 +60,24 @@ function respondAuditEvents(scenario, path) {
   }
   events.sort((left, right) => (String(left.created_at) < String(right.created_at) ? 1 : -1));
   return { pagination: { next: null }, resources: events.slice(0, perPage) };
+}
+
+function respondOrganizations(scenario, path) {
+  const queryIndex = path.indexOf("?");
+  const params = new URLSearchParams(queryIndex >= 0 ? path.slice(queryIndex + 1) : "");
+  if (params.get("names") === scenario.org) {
+    return { pagination: { next: null }, resources: [{ guid: scenario.orgGuid ?? "org-1", name: scenario.org }] };
+  }
+  return { pagination: { next: null }, resources: [] };
+}
+
+function respondSpaces(scenario, path) {
+  const queryIndex = path.indexOf("?");
+  const params = new URLSearchParams(queryIndex >= 0 ? path.slice(queryIndex + 1) : "");
+  if (params.get("names") === scenario.space && params.get("organization_guids") === (scenario.orgGuid ?? "org-1")) {
+    return { pagination: { next: null }, resources: [{ guid: scenario.spaceGuid ?? "space-1", name: scenario.space }] };
+  }
+  return { pagination: { next: null }, resources: [] };
 }
 
 function respondCurl(scenario, path) {
@@ -75,6 +97,14 @@ function respondCurl(scenario, path) {
       fail(`Unknown app guid: ${statsMatch[1]}`);
     }
     return app.stats ?? { resources: [] };
+  }
+
+  if (path.startsWith("/v3/organizations")) {
+    return respondOrganizations(scenario, path);
+  }
+
+  if (path.startsWith("/v3/spaces")) {
+    return respondSpaces(scenario, path);
   }
 
   if (path.startsWith("/v3/audit_events")) {
