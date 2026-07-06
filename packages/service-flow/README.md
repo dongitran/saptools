@@ -277,13 +277,17 @@ service-flow inspect operation /doWork --workspace /path/to/workspace
 
 ### 🩺 `service-flow doctor`
 
-Print stored diagnostics. Default output suppresses high-noise entity-only service checks; `--strict` includes them. A clean workspace prints `No diagnostics recorded`.
+Print stored diagnostics. Default output suppresses high-noise entity-only service checks; `--strict` includes them. Without `--format`, doctor keeps the legacy-compatible behavior: JSON when diagnostics exist and `No diagnostics recorded` for a clean workspace. Deterministic JSON mode prints `[]` when clean.
 
 ```bash
 service-flow doctor --workspace /path/to/workspace
 service-flow doctor --workspace /path/to/workspace --strict
 service-flow doctor --workspace /path/to/workspace --strict --detail
+service-flow doctor --workspace /path/to/workspace --strict --format json
+service-flow doctor --workspace /path/to/workspace --strict --format table
 ```
+
+`--format json` always returns a JSON array, including `[]` for clean workspaces. `--format table` prints a concise human-readable table with capped copyable hint lines; use JSON when automation needs every field or every hint alternative. Omit `--format` when relying on the pre-0.1.48 compatible output contract.
 
 Strict output keeps stable category, count, severity, and capped example fields. Use `--detail` to include full `expandedExamples` for implementation candidate, parameter metadata, and dynamic wrapper categories.
 

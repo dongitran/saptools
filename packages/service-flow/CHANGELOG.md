@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.48
+
+- Added deterministic `doctor --format json|table` output while preserving legacy-compatible default doctor output; JSON mode returns `[]` for clean workspaces and table mode renders concise diagnostic rows with capped hint lines.
+- Documented the 0.1.47 audit follow-up evidence fields for service-client ownership chains, normalized OData operation paths, wrapper path candidates, and implementation hint suggestions.
+- Bumped the package patch version for the service-flow audit follow-up release.
+
 ## 0.1.46
 
 - Improved ambiguous implementation diagnostics with ready-to-copy scoped hint suggestions for each blocked helper hop.
