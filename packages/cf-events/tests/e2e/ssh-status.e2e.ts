@@ -66,3 +66,11 @@ test("ssh-status shows the disabled reason as JSON", async () => {
   expect(status.sshEnabled).toBe(false);
   expect(status.sshReason).toBe("Disabled for the space");
 });
+
+test("ssh-status rejects a space selector clearly", async () => {
+  const scenario = makeScenario({ enabled: true, reason: "" }, []);
+  const paths = await prepareCase(ROOT, "space-reject", scenario);
+  const result = await runCli(createEnv(paths), ["ssh-status", "ap10/demo-org/dev"]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("The ssh-status command requires an app selector");
+});

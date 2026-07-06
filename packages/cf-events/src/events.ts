@@ -1,4 +1,4 @@
-import type { AuditEvent, CrashRecord, CrashSummary } from "./types.js";
+import type { AppCrashSummary, AuditEvent, CrashRecord, CrashSummary, SpaceCrashSummary } from "./types.js";
 import { CRASH_EVENT_TYPES, SSH_EVENT_TYPES } from "./types.js";
 
 const DURATION_PATTERN = /^(\d+)\s*(s|m|h|d)$/;
@@ -116,5 +116,49 @@ export function summarizeCrashes(appName: string, events: readonly AuditEvent[])
     lastCrashAt: last?.at,
     lastCrashReason: last?.reason,
     crashes,
+  };
+}
+
+
+function crashAppName(event: AuditEvent): string {
+  if (event.target.name.length > 0) {
+    return event.target.name;
+  }
+  if (event.target.guid.length > 0) {
+    return event.target.guid;
+  }
+  return "(unknown app)";
+}
+
+export function summarizeSpaceCrashes(
+  selector: string,
+  events: readonly AuditEvent[],
+): SpaceCrashSummary {
+  const byApp = new Map<string, AuditEvent[]>();
+  for (const event of events.filter(isCrashEvent)) {
+    const appName = crashAppName(event);
+    byApp.set(appName, [...(byApp.get(appName) ?? []), event]);
+  }
+
+  const apps: AppCrashSummary[] = [...byApp.entries()]
+    .map(([appName, appEvents]) => summarizeCrashes(appName, appEvents))
+    .map(({ appName, crashCount, lastCrashAt, lastCrashReason, crashes }) => ({
+      appName,
+      crashCount,
+      lastCrashAt,
+      lastCrashReason,
+      crashes,
+    }))
+    .sort((left, right) => {
+      const byTime = (right.lastCrashAt ?? "").localeCompare(left.lastCrashAt ?? "");
+      return byTime === 0 ? left.appName.localeCompare(right.appName) : byTime;
+    });
+
+  return {
+    scope: "space",
+    selector,
+    crashCount: apps.reduce((sum, app) => sum + app.crashCount, 0),
+    lastCrashAt: apps[0]?.lastCrashAt,
+    apps,
   };
 }

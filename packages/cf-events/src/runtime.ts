@@ -1,9 +1,16 @@
 import { setTimeout as delayPromise } from "node:timers/promises";
 
-import { fetchApp, fetchAuditEvents, fetchSshEnabled, fetchWebProcessStats } from "./api.js";
+import {
+  fetchApp,
+  fetchAuditEvents,
+  fetchSshEnabled,
+  fetchWebProcessStats,
+  resolveOrganizationGuid,
+  resolveSpaceGuid,
+} from "./api.js";
 import type { CurlFn } from "./api.js";
 import { cfAppGuid, cfCurl, prepareCfCliSession, withCfSession } from "./cf.js";
-import { durationToCreatedAfter, summarizeCrashes } from "./events.js";
+import { durationToCreatedAfter, summarizeCrashes, summarizeSpaceCrashes } from "./events.js";
 import { resolveSelector } from "./selector.js";
 import { buildSshStatus } from "./ssh.js";
 import { CRASH_EVENT_TYPES, SSH_EVENT_TYPES } from "./types.js";
@@ -11,10 +18,12 @@ import type {
   AppHealth,
   AppSummary,
   AuditEvent,
+  AuditEventScope,
   CfCredentials,
-  CrashSummary,
+  CrashReportSummary,
   FetchAuditEventsInput,
   ProcessInstanceStat,
+  ResolvedAppSelector,
   ResolvedSelector,
   SshEnabled,
   SshStatus,
@@ -26,20 +35,23 @@ export interface CfClient {
   readonly fetchApp: (appGuid: string) => Promise<AppSummary>;
   readonly fetchSshEnabled: (appGuid: string) => Promise<SshEnabled>;
   readonly fetchWebProcessStats: (appGuid: string) => Promise<readonly ProcessInstanceStat[]>;
+  readonly resolveOrganizationGuid: (orgName: string) => Promise<string>;
+  readonly resolveSpaceGuid: (spaceName: string, orgGuid: string) => Promise<string>;
 }
 
-export interface CfAppSession {
-  readonly appGuid: string;
+export interface CfTargetSession {
+  readonly selector: ResolvedSelector;
   readonly client: CfClient;
+  readonly resolveAppGuid: (appName: string) => Promise<string>;
 }
 
 /** Injection seam so the orchestration can be unit-tested without a real CF. */
 export interface CfEventsDependencies {
   readonly resolveSelector: (raw: string) => Promise<ResolvedSelector>;
-  readonly withCfApp: <T>(
+  readonly withCfTarget: <T>(
     selector: ResolvedSelector,
     credentials: CfCredentials,
-    work: (session: CfAppSession) => Promise<T>,
+    work: (session: CfTargetSession) => Promise<T>,
   ) => Promise<T>;
   readonly now: () => Date;
 }
@@ -70,13 +82,15 @@ function createCfClient(curl: CurlFn): CfClient {
     fetchApp: (appGuid) => fetchApp(appGuid, curl),
     fetchSshEnabled: (appGuid) => fetchSshEnabled(appGuid, curl),
     fetchWebProcessStats: (appGuid) => fetchWebProcessStats(appGuid, curl),
+    resolveOrganizationGuid: (orgName) => resolveOrganizationGuid(orgName, curl),
+    resolveSpaceGuid: (spaceName, orgGuid) => resolveSpaceGuid(spaceName, orgGuid, curl),
   };
 }
 
-async function defaultWithCfApp<T>(
+async function defaultWithCfTarget<T>(
   selector: ResolvedSelector,
   credentials: CfCredentials,
-  work: (session: CfAppSession) => Promise<T>,
+  work: (session: CfTargetSession) => Promise<T>,
 ): Promise<T> {
   return await withCfSession(async (ctx) => {
     await prepareCfCliSession(
@@ -88,16 +102,15 @@ async function defaultWithCfApp<T>(
       },
       ctx,
     );
-    const appGuid = await cfAppGuid(selector.appName, ctx);
     const client = createCfClient((path) => cfCurl(path, ctx));
-    return await work({ appGuid, client });
+    return await work({ selector, client, resolveAppGuid: (appName) => cfAppGuid(appName, ctx) });
   });
 }
 
 export function createDefaultDependencies(): CfEventsDependencies {
   return {
     resolveSelector,
-    withCfApp: defaultWithCfApp,
+    withCfTarget: defaultWithCfTarget,
     now: () => new Date(),
   };
 }
@@ -108,6 +121,26 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
   } catch {
     // The abort signal fired; resolve quietly so the watch loop can re-check it.
   }
+}
+
+function requireAppSelector(selector: ResolvedSelector, command: string): ResolvedAppSelector {
+  if (selector.kind === "app") {
+    return selector;
+  }
+  throw new Error(
+    `The ${command} command requires an app selector. Use region/org/space/app or a bare app name.`,
+  );
+}
+
+async function resolveAuditScope(session: CfTargetSession): Promise<AuditEventScope> {
+  if (session.selector.kind === "app") {
+    return { kind: "app", appGuid: await session.resolveAppGuid(session.selector.appName) };
+  }
+  const orgGuid = await session.client.resolveOrganizationGuid(session.selector.orgName);
+  return {
+    kind: "space",
+    spaceGuid: await session.client.resolveSpaceGuid(session.selector.spaceName, orgGuid),
+  };
 }
 
 /** Orchestrates the cf-events commands on top of an injectable dependency set. */
@@ -124,9 +157,9 @@ export class CfEventsRuntime {
     options: EventQueryOptions,
   ): Promise<readonly AuditEvent[]> {
     const selector = await this.deps.resolveSelector(raw);
-    return await this.deps.withCfApp(selector, credentials, async ({ appGuid, client }) => {
-      return await client.fetchAuditEvents({
-        appGuid,
+    return await this.deps.withCfTarget(selector, credentials, async (session) => {
+      return await session.client.fetchAuditEvents({
+        scope: await resolveAuditScope(session),
         types: options.types.length > 0 ? options.types : undefined,
         createdAfter: this.resolveCreatedAfter(options.since),
         limit: options.limit,
@@ -135,12 +168,13 @@ export class CfEventsRuntime {
   }
 
   async getSshStatus(raw: string, credentials: CfCredentials, since: string): Promise<SshStatus> {
-    const selector = await this.deps.resolveSelector(raw);
-    return await this.deps.withCfApp(selector, credentials, async ({ appGuid, client }) => {
+    const selector = requireAppSelector(await this.deps.resolveSelector(raw), "ssh-status");
+    return await this.deps.withCfTarget(selector, credentials, async ({ client, resolveAppGuid }) => {
+      const appGuid = await resolveAppGuid(selector.appName);
       const [sshEnabled, events] = await Promise.all([
         client.fetchSshEnabled(appGuid),
         client.fetchAuditEvents({
-          appGuid,
+          scope: { kind: "app", appGuid },
           types: [...SSH_EVENT_TYPES],
           createdAfter: durationToCreatedAfter(since, this.deps.now()),
           limit: SSH_STATUS_EVENT_LIMIT,
@@ -160,27 +194,31 @@ export class CfEventsRuntime {
     raw: string,
     credentials: CfCredentials,
     options: CrashQueryOptions,
-  ): Promise<CrashSummary> {
+  ): Promise<CrashReportSummary> {
     const selector = await this.deps.resolveSelector(raw);
-    return await this.deps.withCfApp(selector, credentials, async ({ appGuid, client }) => {
-      const events = await client.fetchAuditEvents({
-        appGuid,
+    return await this.deps.withCfTarget(selector, credentials, async (session) => {
+      const events = await session.client.fetchAuditEvents({
+        scope: await resolveAuditScope(session),
         types: [...CRASH_EVENT_TYPES],
         createdAfter: this.resolveCreatedAfter(options.since),
         limit: options.limit,
       });
-      return summarizeCrashes(selector.appName, events);
+      if (selector.kind === "app") {
+        return summarizeCrashes(selector.appName, events);
+      }
+      return summarizeSpaceCrashes(`${selector.regionKey}/${selector.orgName}/${selector.spaceName}`, events);
     });
   }
 
   async getStatus(raw: string, credentials: CfCredentials): Promise<AppHealth> {
-    const selector = await this.deps.resolveSelector(raw);
-    return await this.deps.withCfApp(selector, credentials, async ({ appGuid, client }) => {
+    const selector = requireAppSelector(await this.deps.resolveSelector(raw), "status");
+    return await this.deps.withCfTarget(selector, credentials, async ({ client, resolveAppGuid }) => {
+      const appGuid = await resolveAppGuid(selector.appName);
       const [app, instances, sshEnabled, recent] = await Promise.all([
         client.fetchApp(appGuid),
         client.fetchWebProcessStats(appGuid),
         client.fetchSshEnabled(appGuid),
-        client.fetchAuditEvents({ appGuid, types: undefined, createdAfter: undefined, limit: 1 }),
+        client.fetchAuditEvents({ scope: { kind: "app", appGuid }, types: undefined, createdAfter: undefined, limit: 1 }),
       ]);
       return {
         appName: selector.appName,
@@ -201,13 +239,14 @@ export class CfEventsRuntime {
     signal: AbortSignal,
   ): Promise<void> {
     const selector = await this.deps.resolveSelector(raw);
-    await this.deps.withCfApp(selector, credentials, async ({ appGuid, client }) => {
+    await this.deps.withCfTarget(selector, credentials, async (session) => {
+      const scope = await resolveAuditScope(session);
       const seen = new Set<string>();
       let cursor = durationToCreatedAfter(options.lookback, this.deps.now());
 
       while (!signal.aborted) {
-        const events = await client.fetchAuditEvents({
-          appGuid,
+        const events = await session.client.fetchAuditEvents({
+          scope,
           types: options.types.length > 0 ? options.types : undefined,
           createdAfter: cursor,
           limit: WATCH_FETCH_LIMIT,

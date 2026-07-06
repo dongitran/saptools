@@ -10,10 +10,13 @@ import {
   formatCrashReport,
   formatEventLine,
   formatEventsReport,
+  formatSpaceEventLine,
+  formatSpaceEventsReport,
   formatSshStatusReport,
   formatStatusReport,
 } from "./format.js";
 import { CfEventsRuntime } from "./runtime.js";
+import { parseSelector } from "./selector.js";
 import type { AuditEvent, CfCredentials } from "./types.js";
 
 const DEFAULT_EVENT_LIMIT = 50;
@@ -81,6 +84,15 @@ function appLabel(selector: string): string {
   return (selector.split("/").at(-1) ?? selector).trim();
 }
 
+function isSpaceSelector(selector: string): boolean {
+  return parseSelector(selector).kind === "spacePath";
+}
+
+function spaceLabel(selector: string): string {
+  const parsed = parseSelector(selector);
+  return parsed.kind === "spacePath" ? `${parsed.regionKey}/${parsed.orgName}/${parsed.spaceName}` : selector;
+}
+
 function resolveSelectorArgument(selector: string): string {
   // Bare app name or full path is passed as-is.
   // Bare names are resolved inside resolveSelector using the current CF target (no global snapshot search).
@@ -111,7 +123,9 @@ async function runEvents(selector: string, flags: EventsFlags): Promise<void> {
     writeJson(events);
     return;
   }
-  writeOut(formatEventsReport(appLabel(resolvedSelector), events, new Date()));
+  writeOut(isSpaceSelector(resolvedSelector)
+    ? formatSpaceEventsReport(spaceLabel(resolvedSelector), events, new Date())
+    : formatEventsReport(appLabel(resolvedSelector), events, new Date()));
 }
 
 async function runSshStatus(selector: string, flags: SshStatusFlags): Promise<void> {
@@ -154,12 +168,12 @@ async function runStatus(selector: string, flags: CommonFlags): Promise<void> {
   writeOut(formatStatusReport(health, new Date()));
 }
 
-function emitWatchEvent(event: AuditEvent, asJson: boolean): void {
+function emitWatchEvent(event: AuditEvent, asJson: boolean, spaceScope: boolean): void {
   if (asJson) {
     writeJsonLine(event);
     return;
   }
-  writeOut(formatEventLine(event, new Date()));
+  writeOut(spaceScope ? formatSpaceEventLine(event, new Date()) : formatEventLine(event, new Date()));
 }
 
 async function runWatch(selector: string, flags: WatchFlags): Promise<void> {
@@ -175,6 +189,7 @@ async function runWatch(selector: string, flags: WatchFlags): Promise<void> {
     controller.abort();
   });
   const asJson = flags.json === true;
+  const spaceScope = isSpaceSelector(resolvedSelector);
 
   try {
     process.stderr.write(`Watching ${resolvedSelector} for new audit events. Press Ctrl+C to stop.\n`);
@@ -187,7 +202,7 @@ async function runWatch(selector: string, flags: WatchFlags): Promise<void> {
         types: parseTypeFilter(flags.type),
       },
       (event) => {
-        emitWatchEvent(event, asJson);
+        emitWatchEvent(event, asJson, spaceScope);
       },
       controller.signal,
     );
@@ -247,8 +262,8 @@ function buildProgram(): Command {
   addCommonOptions(
     program
       .command("events")
-      .description("List recent audit events for an app")
-      .argument("<selector>", "region/org/space/app or a bare app name"),
+      .description("List recent audit events for an app or all apps in a space")
+      .argument("<selector>", "region/org/space, region/org/space/app, or a bare app name"),
   )
     .option(
       "--limit <count>",
@@ -275,8 +290,8 @@ function buildProgram(): Command {
   addCommonOptions(
     program
       .command("crashes")
-      .description("Summarize recent crash events for an app")
-      .argument("<selector>", "region/org/space/app or a bare app name"),
+      .description("Summarize recent crash events for an app or all apps in a space")
+      .argument("<selector>", "region/org/space, region/org/space/app, or a bare app name"),
   )
     .option(
       "--limit <count>",
@@ -300,8 +315,8 @@ function buildProgram(): Command {
   addCommonOptions(
     program
       .command("watch")
-      .description("Poll for new audit events and print them as they appear")
-      .argument("<selector>", "region/org/space/app or a bare app name"),
+      .description("Poll for new audit events for an app or all apps in a space")
+      .argument("<selector>", "region/org/space, region/org/space/app, or a bare app name"),
   )
     .option(
       "--interval <ms>",

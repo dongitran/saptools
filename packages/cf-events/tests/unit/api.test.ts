@@ -11,7 +11,7 @@ import {
 describe("buildAuditEventsPath", () => {
   it("includes target_guids, ordering, and per_page", () => {
     const path = buildAuditEventsPath(
-      { appGuid: "app-1", types: undefined, createdAfter: undefined, limit: 50 },
+      { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: undefined, limit: 50 },
       25,
     );
     expect(path.startsWith("/v3/audit_events?")).toBe(true);
@@ -20,16 +20,17 @@ describe("buildAuditEventsPath", () => {
     expect(path).toContain("per_page=25");
   });
 
-  it("includes the type filter and created_ats lower bound when provided", () => {
+  it("includes the space filter, type filter, and created_ats lower bound when provided", () => {
     const path = buildAuditEventsPath(
       {
-        appGuid: "app-1",
+        scope: { kind: "space", spaceGuid: "space-1" },
         types: ["audit.app.crash"],
         createdAfter: "2026-05-22T00:00:00.000Z",
         limit: 50,
       },
       100,
     );
+    expect(path).toContain("space_guids=space-1");
     expect(path).toContain("types=audit.app.crash");
     expect(decodeURIComponent(path)).toContain("created_ats[gt]=2026-05-22T00:00:00.000Z");
   });
@@ -56,7 +57,7 @@ describe("fetchAuditEvents", () => {
       }),
     );
     const events = await fetchAuditEvents(
-      { appGuid: "app-1", types: undefined, createdAfter: undefined, limit: 50 },
+      { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: undefined, limit: 50 },
       curl,
     );
     expect(events).toHaveLength(1);
@@ -81,7 +82,7 @@ describe("fetchAuditEvents", () => {
     });
     const curl = vi.fn().mockResolvedValueOnce(page1).mockResolvedValueOnce(page2);
     const events = await fetchAuditEvents(
-      { appGuid: "app-1", types: undefined, createdAfter: undefined, limit: 50 },
+      { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: undefined, limit: 50 },
       curl,
     );
     expect(events.map((event) => event.guid)).toEqual(["e1", "e2"]);
@@ -99,7 +100,7 @@ describe("fetchAuditEvents", () => {
       }),
     );
     const events = await fetchAuditEvents(
-      { appGuid: "app-1", types: undefined, createdAfter: undefined, limit: 1 },
+      { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: undefined, limit: 1 },
       curl,
     );
     expect(events.map((event) => event.guid)).toEqual(["e1"]);
@@ -110,7 +111,7 @@ describe("fetchAuditEvents", () => {
     const curl = vi.fn().mockResolvedValue("not json");
     await expect(
       fetchAuditEvents(
-        { appGuid: "app-1", types: undefined, createdAfter: undefined, limit: 5 },
+        { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: undefined, limit: 5 },
         curl,
       ),
     ).rejects.toThrow(/not valid JSON/);
