@@ -1,0 +1,7 @@
+{
+  "name": "@neutral/process-helper",
+  "version": "1.0.0",
+  "dependencies": {
+    "@neutral/process-service": "1.0.0"
+  }
+}

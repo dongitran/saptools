@@ -1,0 +1,22 @@
+{
+  "name": "@neutral/gateway-app",
+  "version": "1.0.0",
+  "cds": {
+    "requires": {
+      "user-api": {
+        "kind": "odata-v4",
+        "credentials": {
+          "destination": "user-destination",
+          "path": "/UserProfileService"
+        }
+      },
+      "settings-api": {
+        "kind": "odata-v4",
+        "credentials": {
+          "destination": "settings-destination",
+          "path": "/SettingsService"
+        }
+      }
+    }
+  }
+}

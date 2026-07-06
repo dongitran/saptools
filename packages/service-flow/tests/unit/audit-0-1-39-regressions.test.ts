@@ -56,7 +56,7 @@ describe('0.1.39 audit regressions', () => {
     const branch = calls.find((call) => call.evidence?.rawPathExpression === 'branch');
     expect(branch?.operationPathExpr).toBeUndefined();
     expect(branch?.evidence?.staticPathCandidates).toMatchObject({ candidatePaths: ['/firstAction', '/secondAction'], normalizedCandidateOperations: ['firstAction', 'secondAction'] });
-    expect(calls.find((call) => call.evidence?.rawPathExpression === 'later')?.operationPathExpr).toBeUndefined();
+    expect(calls.find((call) => call.evidence?.rawPathExpression === 'later')?.operationPathExpr).toBe('${input.path}');
   });
 
   it('keeps external URL and destination templates with substitutions dynamic', async () => {

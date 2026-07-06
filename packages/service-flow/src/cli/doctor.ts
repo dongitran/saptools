@@ -149,6 +149,7 @@ function parserQualityDiagnostics(db: Db, strict: boolean, options: DoctorOption
     implementationCandidateQuality(db, Boolean(options.detail)),
     classInstanceNoiseQuality(db),
     contextualBindingPropagationQuality(db),
+    serviceBindingQuality(db, Boolean(options.detail)),
     nestedThisReceiverQuality(db),
     wrapperPathPropagationQuality(db),
     remoteQueryTargetQuality(db),
@@ -369,6 +370,88 @@ function contextualBindingPropagationQuality(db: Db): Diagnostic {
   return { severity: missing.count + opportunities.length > 0 ? 'warning' : 'info', code: 'strict_contextual_binding_propagation_quality', message: 'Contextual service-client propagation opportunities for trace-time helper resolution', calleeSymbolsMissingParameterMetadata: missing.count, traceTimeContextualOpportunities: opportunities.length, examples: opportunities };
 }
 
+function serviceBindingQuality(db: Db, detail: boolean): Diagnostic {
+  const rows = db.prepare(`
+    SELECT c.source_file sourceFile,c.source_line sourceLine,
+      c.unresolved_reason unresolvedReason,c.evidence_json evidenceJson,
+      s.evidence_json symbolEvidenceJson
+    FROM outbound_calls c
+    LEFT JOIN symbols s ON s.id=c.source_symbol_id
+    WHERE c.call_type='remote_action'
+      AND c.operation_path_expr IS NOT NULL
+      AND c.service_binding_id IS NULL
+    ORDER BY c.source_file,c.source_line
+  `).all() as Diagnostic[];
+  const groups = new Map<string, Diagnostic[]>();
+  for (const row of rows) {
+    const category = bindingCategory(row);
+    groups.set(category, [...(groups.get(category) ?? []), bindingExample(row)]);
+  }
+  const categories = [...groups.entries()].map(([category, examples]) => ({
+    category,
+    count: examples.length,
+    severity: 'warning',
+    suggestedAction: bindingCategoryAction(category),
+    examples: examples.slice(0, 3),
+    expandedExamples: detail ? examples : undefined,
+  }));
+  return {
+    severity: rows.length > 0 ? 'warning' : 'info',
+    code: 'strict_service_binding_quality',
+    message: 'Remote service-client binding quality aggregate',
+    total: rows.length,
+    categories,
+  };
+}
+
+function bindingCategory(row: Diagnostic): string {
+  const evidence = parseObject(row.evidenceJson);
+  const resolution = parseObject(evidence.serviceBindingResolution);
+  if (resolution.status === 'rejected_future_binding') return 'direct_binding_missing';
+  if (resolution.status === 'ambiguous') return 'ambiguous_binding_candidates';
+  const receiver = evidence.receiver;
+  const symbolEvidence = parseObject(row.symbolEvidenceJson);
+  if (symbolHasReceiverParameter(symbolEvidence, receiver))
+    return 'contextual_binding_recoverable';
+  if (!Array.isArray(symbolEvidence.parameterBindings))
+    return 'missing_symbol_parameter_metadata';
+  return 'unrecoverable_binding';
+}
+
+function symbolHasReceiverParameter(evidence: Diagnostic, receiver: unknown): boolean {
+  if (typeof receiver !== 'string' || !Array.isArray(evidence.parameterBindings))
+    return false;
+  return asRecords(evidence.parameterBindings).some((binding) => {
+    if (binding.kind === 'identifier') return binding.name === receiver;
+    if (binding.kind === 'object_pattern')
+      return asRecords(binding.properties).some((property) => property.local === receiver);
+    return asRecords(binding.elements).some((element) => element.local === receiver);
+  });
+}
+
+function bindingExample(row: Diagnostic): Diagnostic {
+  const evidence = parseObject(row.evidenceJson);
+  return {
+    sourceFile: row.sourceFile,
+    sourceLine: row.sourceLine,
+    receiver: evidence.receiver,
+    unresolvedReason: row.unresolvedReason,
+    bindingResolution: evidence.serviceBindingResolution,
+  };
+}
+
+function bindingCategoryAction(category: string): string {
+  if (category === 'direct_binding_missing')
+    return 'Move the binding before the call or bind the call to an earlier immutable client.';
+  if (category === 'contextual_binding_recoverable')
+    return 'Trace from the caller so parameter binding evidence can be applied.';
+  if (category === 'ambiguous_binding_candidates')
+    return 'Split mutable client alternatives or add a statically unique client assignment.';
+  if (category === 'missing_symbol_parameter_metadata')
+    return 'Use named or destructured parameters on an indexed helper symbol.';
+  return 'Add a direct CAP client binding or statically provable helper-return binding.';
+}
+
 function wrapperPathPropagationQuality(db: Db): Diagnostic {
   const examples = db.prepare("SELECT source_file sourceFile,source_line sourceLine,json_extract(evidence_json,'$.receiver') receiverName,json_extract(evidence_json,'$.operationPathExpression') pathIdentifier FROM outbound_calls WHERE call_type='remote_action' AND unresolved_reason='dynamic_operation_path_identifier' ORDER BY source_file,source_line LIMIT 5").all() as Diagnostic[];
   return { severity: examples.length > 0 ? 'warning' : 'info', code: 'strict_wrapper_path_propagation_quality', message: 'Dynamic path sends where send({ path }) used a path identifier', dynamicPathIdentifierCalls: examples.length, examples };
@@ -450,10 +533,53 @@ function externalHttpTargetQuality(db: Db): Diagnostic {
 }
 
 function odataInvocationResolutionQuality(db: Db): Diagnostic {
-  const rows = db.prepare("SELECT c.operation_path_expr operationPathExpr,e.status status FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) WHERE c.call_type='remote_action' AND c.operation_path_expr LIKE '%(%'").all() as Array<{ operationPathExpr?: string; status?: string }>;
+  const rows = db.prepare(`SELECT c.operation_path_expr operationPathExpr,
+    c.source_file sourceFile,c.source_line sourceLine,e.id graphEdgeId,
+    e.status status,e.evidence_json evidenceJson
+    FROM outbound_calls c JOIN graph_edges e
+      ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT)
+    WHERE c.call_type='remote_action' AND c.operation_path_expr LIKE '%(%'
+    ORDER BY c.source_file,c.source_line`).all() as Array<{
+      operationPathExpr?: string;
+      sourceFile?: string;
+      sourceLine?: number;
+      graphEdgeId?: number;
+      status?: string;
+      evidenceJson?: string;
+    }>;
   const unresolved = rows.filter((row) => row.status === 'unresolved' && normalizeODataOperationInvocationPath(row.operationPathExpr)?.wasInvocation).length;
   const ambiguous = rows.filter((row) => row.status === 'ambiguous' && normalizeODataOperationInvocationPath(row.operationPathExpr)?.wasInvocation).length;
-  return { severity: unresolved + ambiguous > 0 ? 'warning' : 'info', code: 'strict_odata_invocation_resolution_quality', message: 'OData invocation-path resolution quality aggregate', totalInvocationRemoteActions: rows.length, resolvedInvocationCalls: rows.filter((row) => row.status === 'resolved').length, dynamicInvocationCalls: rows.filter((row) => row.status === 'dynamic').length, ambiguousInvocationCalls: rows.filter((row) => row.status === 'ambiguous').length, unresolvedInvocationCalls: rows.filter((row) => row.status === 'unresolved').length, ambiguousNormalizedCalls: ambiguous, unresolvedNormalizedCallsWithIndexedCandidates: unresolved };
+  const examples = rows
+    .filter((row) => row.status === 'ambiguous' || row.status === 'unresolved')
+    .map(odataInvocationExample)
+    .slice(0, 5);
+  return { severity: unresolved + ambiguous > 0 ? 'warning' : 'info', code: 'strict_odata_invocation_resolution_quality', message: 'OData invocation-path resolution quality aggregate', totalInvocationRemoteActions: rows.length, resolvedInvocationCalls: rows.filter((row) => row.status === 'resolved').length, dynamicInvocationCalls: rows.filter((row) => row.status === 'dynamic').length, ambiguousInvocationCalls: rows.filter((row) => row.status === 'ambiguous').length, unresolvedInvocationCalls: rows.filter((row) => row.status === 'unresolved').length, ambiguousNormalizedCalls: ambiguous, unresolvedNormalizedCallsWithIndexedCandidates: unresolved, examples };
+}
+
+function odataInvocationExample(row: {
+  operationPathExpr?: string;
+  sourceFile?: string;
+  sourceLine?: number;
+  graphEdgeId?: number;
+  status?: string;
+  evidenceJson?: string;
+}): Diagnostic {
+  const evidence = parseObject(row.evidenceJson);
+  const normalized = normalizeODataOperationInvocationPath(row.operationPathExpr);
+  return {
+    sourceFile: row.sourceFile,
+    sourceLine: row.sourceLine,
+    graphEdgeId: row.graphEdgeId,
+    status: row.status,
+    rawPath: row.operationPathExpr,
+    normalizedOperationPath: normalized?.wasInvocation
+      ? normalized.normalizedOperationPath
+      : undefined,
+    indexedOperationCandidateCount: evidence.indexedOperationCandidateCount,
+    candidateScores: evidence.candidateScores,
+    entityOperationPrecedence: evidence.entityOperationPrecedence,
+    resolutionReasons: evidence.resolutionReasons,
+  };
 }
 
 function identityAliasBindingQuality(db: Db): Diagnostic {

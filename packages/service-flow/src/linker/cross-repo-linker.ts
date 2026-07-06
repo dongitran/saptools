@@ -78,7 +78,38 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const operationLikeRemoteEntity = isRemoteEntityCall && Boolean(op) && credibleOperationSignal && (!strongEntitySignal || indexedOperationCandidateCount > 0);
   const isOperationCall = operationLikeRemoteEntity || ((callType === 'remote_action' || callType === 'local_service_call') || (callType === 'remote_query' && Boolean(op)));
   const resolution = isOperationCall ? resolveOperation(db, { servicePath, operationPath: op, serviceName: call.local_service_name as string | undefined, repoId: callType === 'local_service_call' ? Number(call.repo_id) : undefined, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 || callType === 'local_service_call' }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
-  const evidence: Record<string, unknown> = { ...callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent), indexedOperationCandidateCount, parserCallType: callType };
+  const evidence: Record<string, unknown> = {
+    ...callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent),
+    indexedOperationCandidateCount,
+    parserCallType: callType,
+    entityOperationPrecedence: operationPrecedence(
+      callType,
+      intent,
+      indexedOperationCandidateCount,
+      Boolean(resolution.target),
+    ),
+  };
+  const pathAnalysis = objectValue(objectJson(call.evidence_json)?.pathAnalysis);
+  if (callType === 'remote_action' && pathAnalysis?.status === 'ambiguous') {
+    const candidatePaths = Array.isArray(pathAnalysis.candidateRawPaths)
+      ? pathAnalysis.candidateRawPaths
+      : [];
+    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
+      workspaceId,
+      'UNRESOLVED_EDGE',
+      'ambiguous',
+      'call',
+      String(call.id),
+      'operation_candidates',
+      candidatePaths.join(','),
+      Number(call.confidence ?? 0.5),
+      JSON.stringify(evidence),
+      0,
+      'Ambiguous operation path candidates require explicit disambiguation',
+      generation,
+    );
+    return { status: 'ambiguous', callType };
+  }
   if (isRemoteEntityCall && (resolution.target || resolution.candidates.length > 0 || resolution.status === 'dynamic')) {
     if (resolution.target) {
       db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(call.id), 'operation', String(resolution.target.operationId), resolution.target.score, JSON.stringify({ ...evidence, operationEntityPrecedence: 'indexed_operation_over_parser_entity' }), 0, generation);
@@ -123,6 +154,44 @@ function operationCandidateCount(db: Db, workspaceId: number, operationPath: str
   const normalizedName = operationName ?? operationPath?.replace(/^\//, '').split('.').at(-1);
   const row = db.prepare(`SELECT COUNT(*) count FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_path=? OR o.operation_path=? OR o.operation_name=?)`).get(workspaceId, operationPath, normalizedName ? `/${normalizedName}` : operationPath, normalizedName) as { count?: number } | undefined;
   return Number(row?.count ?? 0);
+}
+
+function operationPrecedence(
+  callType: string,
+  intent: ReturnType<typeof classifyODataPathIntent>,
+  indexedOperationCandidateCount: number,
+  resolvedOperation: boolean,
+): Record<string, unknown> {
+  if (resolvedOperation) {
+    return {
+      decision: 'operation',
+      reason: 'indexed_operation_with_strong_service_context',
+      indexedOperationCandidateCount,
+    };
+  }
+  if (callType === 'remote_action' && intent.kind === 'operation_invocation') {
+    return {
+      decision: 'operation_candidate',
+      rejectionReason: indexedOperationCandidateCount > 0
+        ? 'indexed_candidates_lack_unique_strong_service_context'
+        : 'no_indexed_operation_candidate',
+      indexedOperationCandidateCount,
+    };
+  }
+  if (intent.kind.startsWith('entity_')) {
+    return {
+      decision: 'entity',
+      rejectionReason: indexedOperationCandidateCount > 0
+        ? 'entity_shape_has_precedence_without_resolved_operation_context'
+        : 'entity_shape_has_no_indexed_operation_evidence',
+      indexedOperationCandidateCount,
+    };
+  }
+  return {
+    decision: 'unresolved',
+    rejectionReason: 'path_has_no_safe_entity_or_operation_precedence',
+    indexedOperationCandidateCount,
+  };
 }
 
 function unresolvedOperationReason(resolution: { candidates: unknown[]; status: string; reasons: string[] }): string {

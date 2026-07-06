@@ -8,6 +8,12 @@ import { summarizeExpression } from '../utils/redaction.js';
 import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
 import { parseServiceBindings } from './service-binding-parser.js';
 import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
+import {
+  analyzeOperationPath,
+  operationPathExpression,
+  pathUnresolvedReason,
+  type OperationPathAnalysis,
+} from './operation-path-analysis.js';
 function lineOf(text: string, idx: number): number {
   return text.slice(0, idx).split('\n').length;
 }
@@ -180,43 +186,8 @@ function staticExpressionText(expr: ts.Expression | undefined, initializers: Map
   if (ts.isIdentifier(expr) && initializers.has(expr.text)) return staticExpressionText(initializers.get(expr.text), initializers);
   return undefined;
 }
-interface StaticPathResolution { text?: string; sourceKind: 'literal' | 'template' | 'const' | 'dynamic'; rawExpression?: string; constName?: string; resolution: ExpressionResolution }
-function staticPathExpression(expr: ts.Expression | undefined, use: ts.Node): StaticPathResolution {
-  const resolution = resolveExpression(expr, use, 'operation_path');
-  const sourceKind = resolution.sourceKind === 'const_alias' ? 'const' : resolution.sourceKind === 'template_with_substitutions' || resolution.sourceKind === 'no_substitution_template' ? 'template' : resolution.status === 'static' ? 'literal' : 'dynamic';
-  return { text: resolution.value, sourceKind, rawExpression: resolution.rawExpression, constName: resolution.constName, resolution };
-}
 function operationPathFromStatic(text: string | undefined): string | undefined {
   return text ? `/${stripQuotes(text).replace(/^\//, '')}` : undefined;
-}
-interface PathCandidateEvidence { candidatePaths: string[]; normalizedCandidateOperations: string[]; candidateSourceKind: string; candidateIdentifier: string; hasDynamicAssignments: boolean; conservativeReason?: string }
-function staticPathCandidates(identifier: ts.Identifier, call: ts.Node, method: string): PathCandidateEvidence | undefined {
-  const binding = resolveBinding(identifier, call);
-  const declaration = binding.declaration;
-  if (!declaration) return undefined;
-  const source = call.getSourceFile();
-  const paths: string[] = [];
-  let hasDynamicAssignments = false;
-  const addExpr = (expr: ts.Expression | undefined, origin: ts.Node): void => {
-    const resolved = staticPathExpression(expr, origin);
-    if (resolved.text) paths.push(operationPathFromStatic(resolved.text) ?? resolved.text);
-    else hasDynamicAssignments = true;
-  };
-  if (ts.isVariableDeclaration(declaration)) addExpr(declaration.initializer, declaration);
-  const visit = (node: ts.Node): void => {
-    if (node !== source && isFunctionLikeScope(node) && !nodeContains(node, call)) return;
-    if (node.getStart(source) >= call.getStart(source)) return;
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
-      const target = resolveBinding(node.left, node);
-      if (target.declaration === declaration) addExpr(node.right, node);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  const candidatePaths = [...new Set(paths)];
-  if (candidatePaths.length === 0) return undefined;
-  const normalizedCandidateOperations = [...new Set(candidatePaths.map((candidate) => classifyODataPathIntent(candidate, method).topLevelOperationName).filter((value): value is string => Boolean(value)))];
-  return { candidatePaths, normalizedCandidateOperations, candidateSourceKind: 'static candidates observed before call in lexical scope', candidateIdentifier: identifier.text, hasDynamicAssignments, conservativeReason: hasDynamicAssignments ? 'dynamic_assignment_observed' : normalizedCandidateOperations.length > 1 ? 'candidate_tie' : undefined };
 }
 function destinationExpressionShape(expr: ts.Expression | undefined): string | undefined {
   if (!expr) return undefined;
@@ -251,6 +222,33 @@ const supportedHttpMethods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', '
 function safeOperationName(value: string | undefined): string | undefined {
   if (!value || !/^[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$]*)*$/.test(value)) return undefined;
   return operationPathFromStatic(value);
+}
+function wrapperSourceKind(sourceKind: string): string {
+  if (sourceKind.includes('const_alias')) return 'const';
+  if (sourceKind.includes('template')) return 'template';
+  if (sourceKind.includes('string_literal')) return 'literal';
+  return sourceKind.includes('conditional') ? 'ambiguous' : 'dynamic';
+}
+function literalPathSource(analysis: OperationPathAnalysis): string | undefined {
+  if (analysis.status !== 'static') return undefined;
+  if (analysis.sourceKind.includes('const_alias')) return 'same_scope_const_initializer';
+  if (analysis.sourceKind.includes('no_substitution_template')) return 'template';
+  return analysis.sourceKind.includes('string_literal') ? 'literal' : analysis.sourceKind;
+}
+function legacyPathCandidates(analysis: OperationPathAnalysis): Record<string, unknown> | undefined {
+  if (analysis.candidateRawPaths.length < 2 && analysis.dynamicReassignments.length === 0)
+    return undefined;
+  return {
+    candidatePaths: analysis.candidateRawPaths,
+    normalizedCandidateOperations: analysis.candidateNormalizedOperationPaths
+      .map((value) => value.replace(/^\//, '')),
+    candidateSourceKind: analysis.sourceKind,
+    candidateIdentifier: analysis.candidateIdentifier,
+    hasDynamicAssignments: analysis.dynamicReassignments.length > 0,
+    conservativeReason: analysis.dynamicReassignments.length > 0
+      ? 'dynamic_assignment_observed'
+      : 'candidate_tie',
+  };
 }
 function hasTemplatePlaceholder(value: string): boolean { return /\$\{|%7B|%7D/i.test(value); }
 function urlTargetFromExpression(expr: ts.Expression | undefined, use: ts.Node): Record<string, unknown> {
@@ -346,15 +344,16 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   const serviceVariables = collectServiceVariables(source);
   const calledNames = new Set<string>();
   const collectCalls = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      if (ts.isIdentifier(node.expression)) calledNames.add(node.expression.text);
-      if (ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression)) calledNames.add(node.expression.expression.text);
-    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression))
+      calledNames.add(node.expression.text);
+    if (ts.isCallExpression(node) && ts.isCallExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression))
+      calledNames.add(node.expression.expression.text);
     ts.forEachChild(node, collectCalls);
   };
   collectCalls(source);
   const scanFunction = (name: string, fn: ts.FunctionLikeDeclaration): void => {
-    if (!calledNames.has(name)) return;
+    if (!calledNames.has(name) && !isExportedWrapper(fn)) return;
     const params = fn.parameters.map((param) => ts.isIdentifier(param.name) ? param.name.text : undefined);
     const sends: Array<{ client: string; path: string; method?: string; methodLiteral?: string; nestedWrapperFunction?: string; start: number; end: number }> = [];
     const visit = (node: ts.Node): void => {
@@ -396,6 +395,16 @@ function collectWrapperSpecs(source: ts.SourceFile): Map<string, WrapperSpec> {
   visitTop(source);
   return specs;
 }
+function isExportedWrapper(fn: ts.FunctionLikeDeclaration): boolean {
+  const declaration = ts.isFunctionDeclaration(fn)
+    ? fn
+    : ts.isVariableDeclaration(fn.parent)
+      ? fn.parent.parent.parent
+      : undefined;
+  if (!declaration || !ts.canHaveModifiers(declaration)) return false;
+  return ts.getModifiers(declaration)?.some((modifier) =>
+    modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+}
 export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: string): ClassifiedOutboundCall[] {
   const calls: ClassifiedOutboundCall[] = [];
   const sourceFile = normalizePath(filePath);
@@ -425,17 +434,16 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const query = objectPropertyText(objectArg, 'query');
           const method = stripQuotes(resolveExpression(propertyInitializer(objectArg, 'method'), node, 'literal').value ?? objectPropertyText(objectArg, 'method') ?? 'POST');
           const pathExpr = propertyInitializer(objectArg, 'path') ?? propertyInitializer(objectArg, 'event');
-          const resolvedPath = staticPathExpression(pathExpr, node);
-          const op = pathExpr ? resolvedPath.text ?? pathExpr.getText(source) : undefined;
+          const pathAnalysis = analyzeOperationPath(pathExpr, node, method);
+          const op = pathExpr ? operationPathExpression(pathAnalysis) ?? pathExpr.getText(source) : undefined;
           const shorthandPath = objectPropertyIsShorthand(objectArg, 'path');
-          const candidateEvidence = pathExpr && ts.isIdentifier(pathExpr) && !resolvedPath.text ? staticPathCandidates(pathExpr, node, method) : undefined;
-          const candidateOperationPath = candidateEvidence && !candidateEvidence.hasDynamicAssignments && candidateEvidence.normalizedCandidateOperations.length === 1 && candidateEvidence.candidatePaths.length > 0 ? candidateEvidence.candidatePaths[0] : undefined;
-          const operationPathExpr = operationPathFromStatic(resolvedPath.text) ?? candidateOperationPath;
+          const operationPathExpr = operationPathExpression(pathAnalysis);
           const intent = classifyODataPathIntent(operationPathExpr, method);
           const entityCallTypes: Record<string, OutboundCallFact['callType']> = { entity_mutation: 'remote_entity_mutation', entity_delete: 'remote_entity_delete', entity_media: 'remote_entity_media', entity_candidate: 'remote_entity_candidate' };
           const entityCallType = entityCallTypes[intent.kind];
           const isODataQueryRead = method.toUpperCase() === 'GET' && ['entity_query', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
-          add(node, { callType: query ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason: !query && pathExpr && !operationPathExpr ? 'dynamic_operation_path_identifier' : undefined }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, rawPathExpression: resolvedPath.rawExpression, literalPathSource: resolvedPath.text ? (resolvedPath.sourceKind === 'const' ? 'same_scope_const_initializer' : resolvedPath.sourceKind) : undefined, odataPathIntent: operationPathExpr ? intent : undefined, staticPathCandidates: candidateEvidence, parserWarning: !query && pathExpr && !operationPathExpr ? 'dynamic_operation_path_identifier' : undefined });
+          const unresolvedReason = !query && pathExpr ? pathUnresolvedReason(pathAnalysis) : undefined;
+          add(node, { callType: query ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, rawPathExpression: pathAnalysis.rawExpression, literalPathSource: literalPathSource(pathAnalysis), odataPathIntent: operationPathExpr ? intent : undefined, pathAnalysis, staticPathCandidates: legacyPathCandidates(pathAnalysis), parserWarning: unresolvedReason });
         } else {
           const receiver = receiverName(expr.expression);
           const rootReceiver = rootReceiverName(expr.expression);
@@ -444,10 +452,11 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const pathArg = node.arguments[1];
           const supported = method && supportedHttpMethods.has(method);
           if (receiver && supported && serviceVariables.has(rootReceiver ?? receiver)) {
-            const resolvedPath = staticPathExpression(pathArg, node);
-            const operationPathExpr = operationPathFromStatic(resolvedPath.text);
+            const pathAnalysis = analyzeOperationPath(pathArg, node, method);
+            const operationPathExpr = operationPathExpression(pathAnalysis);
             const intent = classifyODataPathIntent(operationPathExpr, method);
-            add(node, { callType: 'remote_action', serviceVariableName: rootReceiver ?? receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: operationPathExpr ? 0.8 : 0.45, unresolvedReason: operationPathExpr ? undefined : 'dynamic_operation_path_identifier' }, { receiver, rootReceiver, classifier: 'service_client_send_method_path', rawPathExpression: resolvedPath.rawExpression, literalPathSource: resolvedPath.text ? (resolvedPath.sourceKind === 'const' ? 'same_scope_const_initializer' : resolvedPath.sourceKind) : undefined, odataPathIntent: operationPathExpr ? intent : undefined, parserWarning: operationPathExpr ? undefined : 'dynamic_operation_path_identifier' });
+            const unresolvedReason = pathUnresolvedReason(pathAnalysis);
+            add(node, { callType: 'remote_action', serviceVariableName: rootReceiver ?? receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: operationPathExpr ? 0.8 : 0.45, unresolvedReason }, { receiver, rootReceiver, classifier: 'service_client_send_method_path', rawPathExpression: pathAnalysis.rawExpression, literalPathSource: literalPathSource(pathAnalysis), odataPathIntent: operationPathExpr ? intent : undefined, pathAnalysis, staticPathCandidates: legacyPathCandidates(pathAnalysis), parserWarning: unresolvedReason });
           } else if (receiver && serviceVariables.has(rootReceiver ?? receiver)) {
             const operationPathExpr = safeOperationName(firstArg.value);
             add(node, { callType: 'remote_action', serviceVariableName: rootReceiver ?? receiver, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: operationPathExpr ? 0.75 : 0.35, unresolvedReason: operationPathExpr ? undefined : 'unsupported_cap_send_signature' }, { receiver, rootReceiver, classifier: operationPathExpr ? 'service_client_send_operation_event' : 'service_client_send_unsupported_signature', rawOperationExpression: firstArg.rawExpression, literalOperationSource: firstArg.value ? firstArg.sourceKind : undefined, parserWarning: operationPathExpr ? undefined : 'unsupported_cap_send_signature' });
@@ -462,13 +471,14 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const methodArg = spec?.methodIndex === undefined ? undefined : wrapperArgs[spec.methodIndex];
         const receiver = clientArg && ts.isIdentifier(clientArg) ? clientArg.text : spec?.clientName;
         const method = stripQuotes(resolveExpression(methodArg, node, 'literal').value ?? spec?.methodLiteral ?? 'POST');
-        const resolvedPath = staticPathExpression(pathArg, node);
-        const operationPathExpr = operationPathFromStatic(resolvedPath.text);
+        const pathAnalysis = analyzeOperationPath(pathArg, node, method);
+        const operationPathExpr = operationPathExpression(pathAnalysis);
         const normalizedOperationPath = operationPathExpr ? classifyODataPathIntent(operationPathExpr, method).topLevelOperationName : undefined;
+        const unresolvedReason = pathUnresolvedReason(pathAnalysis);
         if (spec && receiver && operationPathExpr) {
-          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75 }, { receiver, classifier: resolvedPath.sourceKind === 'literal' ? 'higher_order_wrapper_literal_path' : 'higher_order_wrapper_static_path', wrapperFunction: wrapperName, nestedWrapperFunction: spec.nestedWrapperFunction, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: resolvedPath.sourceKind, rawPathExpression: resolvedPath.rawExpression, normalizedOperationPath, literalPathSource: resolvedPath.sourceKind === 'const' ? 'same_scope_const_initializer' : `wrapper_call_${resolvedPath.sourceKind}`, literalCallerArgumentDetected: true });
+          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, operationPathExpr, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.75, unresolvedReason }, { receiver, classifier: pathAnalysis.sourceKind.includes('string_literal') ? 'higher_order_wrapper_literal_path' : 'higher_order_wrapper_static_path', wrapperFunction: wrapperName, nestedWrapperFunction: spec.nestedWrapperFunction, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: wrapperSourceKind(pathAnalysis.sourceKind), rawPathExpression: pathAnalysis.rawExpression, normalizedOperationPath, literalPathSource: pathAnalysis.sourceKind.includes('const_alias') ? 'same_scope_const_initializer' : `wrapper_call_${wrapperSourceKind(pathAnalysis.sourceKind)}`, literalCallerArgumentDetected: true, pathAnalysis });
         } else if (spec && receiver) {
-          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.45, unresolvedReason: 'dynamic_operation_path_identifier' }, { receiver, classifier: 'higher_order_wrapper_dynamic_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: resolvedPath.sourceKind, rawPathExpression: resolvedPath.rawExpression, parserWarning: 'dynamic_operation_path_identifier' });
+          add(node, { callType: 'remote_action', serviceVariableName: receiver, method, payloadSummary: summarizeExpression(node.getText(source)), confidence: 0.45, unresolvedReason }, { receiver, classifier: pathAnalysis.status === 'ambiguous' ? 'higher_order_wrapper_ambiguous_path' : 'higher_order_wrapper_dynamic_path', wrapperFunction: wrapperName, wrapperDefinitionLine: spec.definitionLine, callerLine: lineOf(source.text, node.getStart(source)), wrapperPathSourceKind: wrapperSourceKind(pathAnalysis.sourceKind), rawPathExpression: pathAnalysis.rawExpression, pathAnalysis, parserWarning: unresolvedReason });
         }
       } else if (ts.isPropertyAccessExpression(expr) && ['emit', 'publish', 'on'].includes(expr.name.text)) {
         const receiver = receiverName(expr.expression);

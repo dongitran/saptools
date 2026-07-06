@@ -15,8 +15,8 @@ export function renderTraceTable(result: TraceResult): string {
   const lines = ['Step  Type                 From                                To                                  Evidence'];
   for (const e of result.edges) {
     lines.push(`${String(e.step).padEnd(5)} ${e.type.padEnd(20)} ${e.from.slice(0, 34).padEnd(35)} ${e.to.slice(0, 35).padEnd(36)} ${location(e.evidence)}`);
-    const hint = firstHint(e.evidence);
-    if (e.unresolvedReason && hint) lines.push(`      try ${hint}`);
+    if (e.unresolvedReason)
+      lines.push(...hintLines(e.evidence).map((hint) => `      ${hint}`));
   }
   if (result.diagnostics.length > 0) lines.push('', 'Diagnostics:', ...result.diagnostics.flatMap(diagnosticLines));
   return `${lines.join('\n')}\n`;
@@ -24,13 +24,23 @@ export function renderTraceTable(result: TraceResult): string {
 
 function diagnosticLines(diagnostic: Record<string, unknown>): string[] {
   const first = `${String(diagnostic.severity ?? 'info')} ${String(diagnostic.code ?? 'diagnostic')} ${String(diagnostic.message ?? '')}`;
-  const hint = firstHint(diagnostic);
-  return hint ? [first, `  try ${hint}`] : [first];
+  return [first, ...hintLines(diagnostic).map((hint) => `  ${hint}`)];
 }
 
-function firstHint(evidence: Record<string, unknown>): string | undefined {
+function hintLines(evidence: Record<string, unknown>): string[] {
   const suggestions = evidence.implementationHintSuggestions;
-  if (!Array.isArray(suggestions)) return undefined;
-  const first = suggestions.find((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object');
-  return typeof first?.cli === 'string' ? first.cli : undefined;
+  if (!Array.isArray(suggestions)) return [];
+  const hints = suggestions.flatMap((item) =>
+    isRecord(item) && typeof item.cli === 'string'
+      ? [item.cli]
+      : []);
+  const unique = [...new Set(hints)];
+  const shown = unique.slice(0, 3).map((hint) => `try ${hint}`);
+  if (unique.length > shown.length)
+    shown.push(`... ${unique.length - shown.length} more hint(s) available in JSON`);
+  return shown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

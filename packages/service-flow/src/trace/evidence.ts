@@ -52,11 +52,13 @@ export function runtimeResolution(
   evidence: Record<string, unknown>,
   vars: Record<string, string> | undefined,
   workspaceId: number | undefined,
+  contextualUnresolvedReason?: string,
 ): { row: TraceGraphRow; evidence: Record<string, unknown>; target?: OperationTarget; unresolvedReason?: string } {
   const substituted = evidenceWithRuntimeVariables(evidence, vars);
   if (!isRemoteRuntimeCandidate(row, evidence, vars)) {
-    const withSections = withEffectiveResolution(substituted, row, row.unresolved_reason);
-    return { row, evidence: withSections, unresolvedReason: row.unresolved_reason };
+    const unresolvedReason = contextualUnresolvedReason ?? row.unresolved_reason;
+    const withSections = withEffectiveResolution(substituted, row, unresolvedReason);
+    return { row, evidence: withSections, unresolvedReason };
   }
   const resolution = resolveRuntimeOperation(db, substituted, workspaceId);
   if (resolution.target) {
@@ -70,6 +72,9 @@ export function runtimeResolution(
 export function runtimeVariableDiagnostic(edges: Array<{ evidence: Record<string, unknown> }>): Record<string, unknown> | undefined {
   const missing = new Set<string>();
   for (const edge of edges) {
+    const effective = parseObject(edge.evidence.effectiveResolution);
+    if (!['dynamic', 'unresolved', 'ambiguous'].includes(String(effective.status ?? '')))
+      continue;
     const substitutions = edge.evidence.runtimeSubstitutions;
     if (!substitutions || typeof substitutions !== 'object' || Array.isArray(substitutions)) continue;
     for (const value of Object.values(substitutions as Record<string, RuntimeSubstitution>))
@@ -178,10 +183,20 @@ function evidenceWithRuntimeVariables(evidence: Record<string, unknown>, vars: R
 function runtimeSubstitutions(evidence: Record<string, unknown>, vars: Record<string, string>): Record<string, RuntimeSubstitution> {
   const substitutions: Record<string, RuntimeSubstitution> = {};
   for (const key of ['servicePath', 'operationPath', 'serviceAliasExpr', 'serviceAlias', 'destination']) {
-    const substitution = substituteVariables(stringValue(evidence[key]), vars);
+    const substitution = substituteVariables(substitutionValue(evidence, key), vars);
     if (substitution.placeholders.length > 0) substitutions[key] = substitution;
   }
   return substitutions;
+}
+
+function substitutionValue(
+  evidence: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = stringValue(evidence[key]);
+  if (key !== 'operationPath') return value;
+  const normalized = normalizeODataOperationInvocationPath(value);
+  return normalized?.wasInvocation ? normalized.normalizedOperationPath : value;
 }
 
 function isRemoteRuntimeCandidate(row: TraceGraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): boolean {

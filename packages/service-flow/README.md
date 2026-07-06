@@ -233,6 +233,8 @@ service-flow list calls --workspace /path/to/workspace --repo facade-service --o
 
 Operation-based trace starts first resolve indexed CDS operations, then follow the persisted `OPERATION_IMPLEMENTED_BY_HANDLER` graph edge to the exact handler method symbol. Generated decorator constants such as `ActionPublishRecord.name` and `FuncLookupRecord.name` are normalized through the same shared helper used by linking and diagnostics, so public operations like `/publishRecord` can trace into methods such as `executePublish`. If the same operation name exists in multiple services or repositories, `service-flow` returns `trace_start_ambiguous`; add `--service /CatalogService` or `--repo catalog-api` to disambiguate. Unique operation selectors emit the initial operation node and implementation hop exactly once before traversing handler-owned calls.
 
+Ambiguous operation starts include repository, service path, operation path, source file, and source line candidates. When service paths are unique, JSON diagnostics also include copyable `--service <path>` suggestions. A scoped implementation hint changes only the matching implementation hop; guided traversal uses the selected handler repository even when the operation model belongs to another repository.
+
 ### External HTTP targets
 
 External HTTP facts use semantic terminal nodes instead of outbound-call row ids. Literal destinations render as `External destination: ANALYTICS_API`; static absolute or relative URLs render as redacted `External endpoint` labels; dynamic URL expressions render as `External endpoint: dynamic URL`; unavailable target evidence renders as `External endpoint: unknown`. URL user information, query-string values, credentials, tokens, cookies, headers, and payload bodies are not stored in labels. Run `service-flow link` after schema migration so legacy numeric targets are rebuilt from the current parser evidence. `service-flow doctor --strict` reports `strict_external_http_target_quality` with semantic, dynamic, unknown, numeric, and malformed-evidence counts.
@@ -291,6 +293,8 @@ service-flow doctor --workspace /path/to/workspace --strict --format table
 
 Strict output keeps stable category, count, severity, and capped example fields. Use `--detail` to include full `expandedExamples` for implementation candidate, parameter metadata, and dynamic wrapper categories.
 
+Strict binding diagnostics group remote sends into `direct_binding_missing`, `contextual_binding_recoverable`, `ambiguous_binding_candidates`, `unrecoverable_binding`, and `missing_symbol_parameter_metadata`. Candidate chains remain in JSON evidence, while table output stays capped and copyable.
+
 ### 🧹 `service-flow clean`
 
 Remove generated service-flow state.
@@ -342,6 +346,12 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 ```
 
 When a concrete target exists after variable substitution, the trace shows both the parameterized evidence and the resolved match. When it does not, `service-flow` keeps the edge as a dynamic candidate or unresolved edge so the missing link remains visible.
+
+Direct sends and same-file or imported wrappers share one path-candidate analysis. Literals and immutable aliases resolve; conditional or branch-assigned static alternatives remain ambiguous with all raw and normalized candidates; dynamic reassignments remain dynamic with the exact runtime identifier. Wrapper definition sends are treated as templates when a concrete caller-site edge can be indexed.
+
+Service binding evidence distinguishes a directly persisted binding from caller-to-callee contextual recovery. Persisted binding selection never uses a declaration after the call and does not choose among different mutable client assignments. Contextual trace evidence carries caller and callee sites, argument/property and parameter/local names, original binding location, routing expressions, candidate ties, and selection status.
+
+OData evidence preserves the raw path, query-free path, normalized invocation path, invocation arguments, placeholder keys, classifier reason, indexed operation candidate count, and entity-versus-operation precedence decision. Entity keys, navigation paths, media/property paths, and query reads remain entity access unless indexed operation evidence and strong service context prove an operation.
 
 Service-binding evidence keeps these fields distinct: service alias, alias expression, destination expression, service-path expression, operation-path expression, and runtime placeholders. Helpers that return concrete connected clients inside object properties are followed through destructuring, simple identity aliases, transitive same-file aliases, and transaction aliases while preserving helper-chain evidence. This is important for common CAP helpers such as `cds.connect.to(`remote_${code}`, { credentials: { destination: `remote_${code}`, path: `/${entityType}ProcessService` } })`, where the alias is not the service path.
 

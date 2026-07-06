@@ -5,13 +5,13 @@ import { resolveOperation } from '../linker/service-resolver.js';
 import type { ImplementationHint, TraceEdge, TraceResult, TraceStart } from '../types.js';
 import { baseTraceEvidence, edgeTarget, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
 import { implementationHintDiagnostic, selectImplementation, type ImplementationSelection } from './implementation-hints.js';
-
 interface RepoRef {
   id: number;
   name: string;
 }
 interface StartScope {
   repo?: RepoRef;
+  executionRepoId?: number;
   sourceFiles?: Set<string>;
   symbolIds?: Set<number>;
   selectorMatched: boolean;
@@ -40,7 +40,7 @@ interface GraphRow extends Record<string, unknown> {
   status?: string;
 }
 interface ContextBinding {
-  bindingId: number;
+  bindingId?: number;
   alias?: string;
   aliasExpr?: string;
   destinationExpr?: string;
@@ -62,6 +62,8 @@ interface ContextBinding {
   calleeReceiver: string;
   callerSite?: { sourceFile?: string; sourceLine?: number };
   calleeSite?: { sourceFile?: string; sourceLine?: number };
+  resolutionStatus?: 'selected' | 'ambiguous';
+  bindingCandidates?: Array<Record<string, unknown>>;
 }
 interface ImplementationHintOptions {
   implementationRepo?: string;
@@ -74,42 +76,75 @@ function normalizeOperation(value: string | undefined): string | undefined {
 function positiveDepth(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
 }
-
-function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, hintOptions: ImplementationHintOptions): { files?: Set<string>; symbols?: Set<number>; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
+function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, hintOptions: ImplementationHintOptions): { files?: Set<string>; symbols?: Set<number>; repoId?: number; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
   const requested = normalizeOperation(start.operationPath ?? start.operation);
   if (!requested) return undefined;
-  const rows = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_path operationPath,s.service_path servicePath,r.id repoId,r.name repoName
+  const rows = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_path operationPath,o.source_file sourceFile,o.source_line sourceLine,s.service_path servicePath,r.id repoId,r.name repoName
     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
     WHERE (? IS NULL OR r.id=?) AND (? IS NULL OR s.service_path=?) AND (o.operation_name=? OR o.operation_path=? OR o.operation_path=?)
     ORDER BY r.name,s.service_path,o.operation_name,o.id`).all(repoId, repoId, start.servicePath, start.servicePath, requested, requested, requested.startsWith('/') ? requested : `/${requested}`) as Array<Record<string, unknown>>;
   if (rows.length === 0) return undefined;
   const repoCount = new Set(rows.map((row) => String(row.repoName))).size;
   const serviceCount = new Set(rows.map((row) => `${String(row.repoName)}:${String(row.servicePath)}`)).size;
-  if (!repoId && repoCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple repositories; add --repo to disambiguate', normalizedSelectorValue: requested, resolutionStage: 'operation', resolutionStatus: 'ambiguous_operation', candidates: rows }] };
-  if (!start.servicePath && serviceCount > 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple services; add --service to disambiguate', normalizedSelectorValue: requested, resolutionStage: 'operation', resolutionStatus: 'ambiguous_operation', candidates: rows }] };
-  if (rows.length !== 1) return { diagnostics: [{ severity: 'warning', code: 'trace_start_ambiguous', message: 'Operation trace start matched multiple indexed operations', normalizedSelectorValue: requested, resolutionStage: 'operation', resolutionStatus: 'ambiguous_operation', candidates: rows }] };
+  if (!repoId && repoCount > 1)
+    return { diagnostics: [ambiguousStartDiagnostic(requested, rows, 'Operation trace start matched multiple repositories; add --repo to disambiguate')] };
+  if (!start.servicePath && serviceCount > 1)
+    return { diagnostics: [ambiguousStartDiagnostic(requested, rows, 'Operation trace start matched multiple services; add --service to disambiguate')] };
+  if (rows.length !== 1)
+    return { diagnostics: [ambiguousStartDiagnostic(requested, rows, 'Operation trace start matched multiple indexed operations')] };
   const operationId = String(rows[0]?.operationId);
   const impl = implementationScope(db, operationId);
-  if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, operationId, diagnostics: [] };
+  if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, repoId: impl.repoId, operationId, diagnostics: [] };
   const hinted = implementationMethodIdFromHint(impl.edge, hintOptions);
   if (hinted.methodId) {
     const hintedScope = handlerScope(db, hinted.methodId);
-    if (hintedScope?.files.size) return { files: hintedScope.files, symbols: hintedScope.symbolId ? new Set([hintedScope.symbolId]) : undefined, operationId, diagnostics: [] };
+    if (hintedScope?.files.size) return { files: hintedScope.files, symbols: hintedScope.symbolId ? new Set([hintedScope.symbolId]) : undefined, repoId: hintedScope.repoId, operationId, diagnostics: [] };
   }
   if (impl.edge) {
     const evidence = parseEvidence(impl.edge.evidence_json);
     const hintDiagnostic = implementationHintDiagnostic(hinted, evidence.implementationHintSuggestions);
-    const diagnostics = [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, implementationHintSuggestions: evidence.implementationHintSuggestions, candidates: evidence.candidates }];
+    const diagnostics = [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, implementationRejectionReasons: implementationRejectionReasons(evidence), implementationHintSuggestions: evidence.implementationHintSuggestions, candidates: evidence.candidates }];
     return { operationId, diagnostics: hintDiagnostic ? [hintDiagnostic, ...diagnostics] : diagnostics };
   }
   return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_implementation_unresolved', message: 'Indexed operation matched but no implementation candidate exists', resolutionStage: 'implementation', resolutionStatus: 'operation_without_implementation' }] };
 }
-
+function implementationRejectionReasons(evidence: Record<string, unknown>): string[] {
+  const candidates = Array.isArray(evidence.candidates)
+    ? evidence.candidates.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && !Array.isArray(item)))
+    : [];
+  const reasons = candidates.flatMap((candidate) =>
+    Array.isArray(candidate.rejectedReasons)
+      ? candidate.rejectedReasons.filter((reason): reason is string =>
+          typeof reason === 'string')
+      : []);
+  return [...new Set(reasons)].sort();
+}
+function ambiguousStartDiagnostic(
+  requested: string,
+  candidates: Array<Record<string, unknown>>,
+  message: string,
+): Record<string, unknown> {
+  const serviceSuggestions = [...new Set(candidates
+    .flatMap((row) => typeof row.servicePath === 'string'
+      ? [`--service ${row.servicePath}`]
+      : []))].sort();
+  return {
+    severity: 'warning',
+    code: 'trace_start_ambiguous',
+    message,
+    normalizedSelectorValue: requested,
+    resolutionStage: 'operation',
+    resolutionStatus: 'ambiguous_operation',
+    candidates,
+    serviceSuggestions,
+  };
+}
 function sourceFilesForStart(
   db: Db,
   repoId: number | undefined,
   start: TraceStart,
-): { files?: Set<string>; symbols?: Set<number> } | undefined {
+): { files?: Set<string>; symbols?: Set<number>; repoId?: number } | undefined {
   const handler = start.handler;
   const operation = normalizeOperation(start.operation ?? start.operationPath);
   if (!handler && !operation) return undefined;
@@ -138,7 +173,7 @@ function sourceFilesForStart(
       operation,
       operation,
     ) as Array<{ sourceFile?: string; symbolId?: number }>;
-  if (rows.length > 0) return { files: new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(rows.map((row) => Number(row.symbolId)).filter(Boolean)) };
+  if (rows.length > 0) return { files: new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(rows.map((row) => Number(row.symbolId)).filter(Boolean)), repoId };
   if (start.servicePath && operation) {
     const implRows = db.prepare(`SELECT DISTINCT hc.source_file sourceFile,sym.id symbolId
       FROM cds_services s JOIN cds_operations o ON o.service_id=s.id
@@ -147,7 +182,7 @@ function sourceFilesForStart(
       JOIN handler_classes hc ON hc.id=hm.handler_class_id
       LEFT JOIN symbols sym ON sym.repo_id=hc.repo_id AND sym.source_file=hc.source_file AND sym.name=hm.method_name
       WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?)`).all(repoId, repoId, start.servicePath, operation, operation) as Array<{ sourceFile?: string; symbolId?: number }>;
-    if (implRows.length > 0) return { files: new Set(implRows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(implRows.map((row) => Number(row.symbolId)).filter(Boolean)) };
+    if (implRows.length > 0) return { files: new Set(implRows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(implRows.map((row) => Number(row.symbolId)).filter(Boolean)), repoId };
   }
   return undefined;
 }
@@ -171,6 +206,7 @@ function startScope(db: Db, start: TraceStart, hintOptions: ImplementationHintOp
     return { repo, selectorMatched: false };
   return {
     repo,
+    executionRepoId: sourceScope?.repoId ?? repo?.id,
     sourceFiles,
     symbolIds: sourceScope?.symbols,
     selectorMatched: !terminalOperationScope && (!hasSelector || sourceFiles !== undefined),
@@ -201,7 +237,6 @@ function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
   }>;
   return new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]);
 }
-
 function implementationEdge(db: Db, operationId: string): GraphRow | undefined {
   return db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND from_kind='operation' AND from_id=? ORDER BY CASE status WHEN 'resolved' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,id LIMIT 1").get(operationId) as GraphRow | undefined;
 }
@@ -220,7 +255,6 @@ function implementationMethodIdFromHint(edge: GraphRow | undefined, options: Imp
   if (!edge || edge.status !== 'ambiguous') return { blocksAutomatic: false, evidence: { status: 'not_applicable' } };
   return selectImplementation(parseEvidence(edge.evidence_json), options.implementationHints, options.implementationRepo);
 }
-
 function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown>, hintOptions: ImplementationHintOptions): ImplementationSelection {
   const hinted = implementationMethodIdFromHint(edge, hintOptions);
   if (hinted.methodId) return hinted;
@@ -331,20 +365,64 @@ function knownBindingsForCalls(db: Db, calls: CallRow[]): Map<string, ContextBin
 function knownBindingsForScope(db: Db, repoId: number | undefined, symbolIds: Set<number> | undefined, files: Set<string> | undefined): Map<string, ContextBinding> {
   const map = new Map<string, ContextBinding>();
   if (repoId === undefined) return map;
-  type BindingRow = Omit<ContextBinding, 'bindingId' | 'source' | 'calleeReceiver'> & { id?: number; variableName?: string };
-  const rows = db.prepare(`SELECT b.id,b.variable_name variableName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.source_file sourceFile,b.source_line sourceLine,req.service_path requireServicePath,req.destination requireDestination
+  type BindingRow = Omit<ContextBinding, 'bindingId' | 'source' | 'calleeReceiver'> & { id?: number; symbolId?: number | null; variableName?: string };
+  const rows = db.prepare(`SELECT b.id,b.symbol_id symbolId,b.variable_name variableName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.source_file sourceFile,b.source_line sourceLine,req.service_path requireServicePath,req.destination requireDestination
     FROM service_bindings b LEFT JOIN cds_requires req ON req.repo_id=b.repo_id AND req.alias=b.alias
     WHERE b.repo_id=?`).all(repoId) as BindingRow[];
   for (const row of rows) {
     if (!row.variableName) continue;
     if (files && !files.has(String(row.sourceFile))) continue;
-    if (symbolIds && symbolIds.size > 0) {
-      const owner = db.prepare('SELECT id FROM symbols WHERE id IN (' + [...symbolIds].map(() => '?').join(',') + ') AND source_file=? AND start_line<=? AND end_line>=? LIMIT 1').get(...symbolIds, row.sourceFile, row.sourceLine, row.sourceLine) as { id?: number } | undefined;
-      if (!owner) continue;
+    if (symbolIds && symbolIds.size > 0 && row.symbolId != null
+      && !symbolIds.has(Number(row.symbolId))) continue;
+    const candidate = enrichBinding({
+      ...row,
+      bindingId: Number(row.id),
+      source: 'local_service_binding',
+      calleeReceiver: row.variableName,
+      resolutionStatus: 'selected',
+    });
+    const existing = map.get(row.variableName);
+    if (!existing) {
+      map.set(row.variableName, candidate);
+      continue;
     }
-    map.set(row.variableName, enrichBinding({ ...row, bindingId: Number(row.id), source: 'local_service_binding', calleeReceiver: row.variableName }));
+    const candidates = uniqueBindingCandidates([
+      ...(existing.bindingCandidates ?? [bindingCandidateEvidence(existing)]),
+      bindingCandidateEvidence(candidate),
+    ]);
+    map.set(row.variableName, {
+      ...candidate,
+      bindingId: undefined,
+      source: 'ambiguous_local_service_bindings',
+      resolutionStatus: 'ambiguous',
+      bindingCandidates: candidates,
+    });
   }
   return map;
+}
+
+function bindingCandidateEvidence(binding: ContextBinding): Record<string, unknown> {
+  return {
+    bindingId: binding.bindingId,
+    sourceFile: binding.sourceFile,
+    sourceLine: binding.sourceLine,
+    alias: binding.alias,
+    aliasExpr: binding.aliasExpr,
+    destinationExpr: binding.destinationExpr,
+    servicePathExpr: binding.servicePathExpr,
+  };
+}
+
+function uniqueBindingCandidates(
+  candidates: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = JSON.stringify(candidate);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, callerBindings: Map<string, ContextBinding>): Map<string, ContextBinding> {
   const next = new Map<string, ContextBinding>();
@@ -397,6 +475,21 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
 }
 function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined, persistedRows: GraphRow[] = []): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
   if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
+  if (binding.resolutionStatus === 'ambiguous') {
+    return {
+      evidence: {
+        contextualServiceBindingAttempted: true,
+        contextualBinding: {
+          source: binding.source,
+          status: 'tied',
+          candidates: binding.bindingCandidates,
+        },
+        contextualResolutionStatus: 'ambiguous',
+        contextualCandidateCount: binding.bindingCandidates?.length ?? 0,
+      },
+      unresolvedReason: 'Ambiguous contextual service binding candidates',
+    };
+  }
   const normalized = normalizeODataOperationInvocationPath(String(call.operation_path_expr));
   const op = normalized?.normalizedOperationPath ?? (String(call.operation_path_expr).startsWith('/') ? String(call.operation_path_expr) : `/${String(call.operation_path_expr)}`);
   const servicePath = binding.effectiveServicePath ?? binding.servicePathExpr ?? binding.requireServicePath;
@@ -445,7 +538,7 @@ export function trace(
   const seenEdges = new Set<number>();
   const queue: Array<{ repoId?: number; files?: Set<string>; symbolIds?: Set<number>; depth: number; context?: Map<string, ContextBinding> }> =
     scope.selectorMatched
-      ? [{ repoId: scope.repo?.id, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1, context: new Map() }]
+      ? [{ repoId: scope.executionRepoId, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1, context: new Map() }]
       : [];
   if (scope.startOperationId && scope.selectorMatched) {
     const op = operationNode(db, scope.startOperationId);
@@ -521,7 +614,7 @@ export function trace(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
         const rawEvidence = baseTraceEvidence(row as TraceGraphRow, call, persistedEvidence, contextual.evidence);
-        const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, options.vars, workspaceIdForCall(db, String(call.id)));
+        const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, options.vars, workspaceIdForCall(db, String(call.id)), contextual.unresolvedReason);
         const evidence = effective.evidence;
         const effectiveRow = effective.row;
         const targetNode = `${effectiveRow.to_kind}:${effectiveRow.to_id}`;

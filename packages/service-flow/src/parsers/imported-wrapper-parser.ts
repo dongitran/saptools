@@ -4,6 +4,11 @@ import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
 import type { OutboundCallFact } from '../types.js';
 import { normalizePath } from '../utils/path-utils.js';
 import { importsFor, lineOf, readSource, type ImportBinding } from './service-binding-parser-helpers.js';
+import {
+  analyzeOperationPath,
+  operationPathExpression,
+  pathUnresolvedReason,
+} from './operation-path-analysis.js';
 
 interface WrapperSpec {
   clientIndex: number;
@@ -13,12 +18,6 @@ interface WrapperSpec {
   sourceFile: string;
   sourceLine: number;
   chain: string[];
-}
-
-interface PathValue {
-  value?: string;
-  sourceKind: string;
-  rawExpression: string;
 }
 
 export async function parseImportedWrapperCalls(
@@ -143,11 +142,11 @@ function wrapperCallFact(
 ): OutboundCallFact | undefined {
   const client = call.arguments[spec.clientIndex];
   if (!client || !ts.isIdentifier(client) || !serviceBindings.has(client.text)) return undefined;
-  const pathValue = resolveCallerPath(call.arguments[spec.pathIndex], call);
   const methodValue = spec.methodIndex === undefined ? spec.methodLiteral : literal(call.arguments[spec.methodIndex]);
   const method = (methodValue ?? 'POST').toUpperCase();
-  const rawPath = pathValue.rawExpression;
-  const operationPathExpr = pathValue.value ? normalizeOperationPath(pathValue.value) : runtimePathExpression(rawPath);
+  const pathAnalysis = analyzeOperationPath(call.arguments[spec.pathIndex], call, method);
+  const operationPathExpr = operationPathExpression(pathAnalysis);
+  const unresolvedReason = pathUnresolvedReason(pathAnalysis);
   return {
     callType: 'remote_action',
     serviceVariableName: client.text,
@@ -157,46 +156,29 @@ function wrapperCallFact(
     sourceFile: normalizePath(filePath),
     sourceLine: lineOf(source, call),
     confidence: operationPathExpr ? 0.85 : 0.5,
-    unresolvedReason: pathValue.value ? undefined : 'dynamic_operation_path_identifier',
+    unresolvedReason,
     evidence: {
       parser: 'typescript_ast',
-      classifier: pathValue.value ? 'imported_wrapper_literal_path' : 'imported_wrapper_dynamic_path',
+      classifier: importedWrapperClassifier(pathAnalysis.status),
       receiver: client.text,
       wrapperFunction: spec.chain[0],
       wrapperChain: spec.chain,
       callerSite: { sourceFile: normalizePath(filePath), sourceLine: lineOf(source, call) },
       calleeSite: { sourceFile: spec.sourceFile, sourceLine: spec.sourceLine },
-      rawPathExpression: rawPath,
-      missingPathIdentifier: pathValue.value ? undefined : rawPath,
-      odataPathIntent: pathValue.value ? classifyODataPathIntent(operationPathExpr, method) : undefined,
+      rawPathExpression: pathAnalysis.rawExpression,
+      missingPathIdentifier: pathAnalysis.runtimeIdentifier,
+      pathAnalysis,
+      odataPathIntent: operationPathExpr
+        ? classifyODataPathIntent(operationPathExpr, method)
+        : undefined,
     },
   };
 }
 
-function resolveCallerPath(expr: ts.Expression | undefined, use: ts.Node): PathValue {
-  if (!expr) return { sourceKind: 'missing', rawExpression: '' };
-  if (ts.isStringLiteralLike(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return { value: expr.text, sourceKind: 'literal', rawExpression: expr.getText() };
-  if (ts.isTemplateExpression(expr)) return { value: expr.getText().slice(1, -1), sourceKind: 'template', rawExpression: expr.getText() };
-  if (ts.isIdentifier(expr)) {
-    const initializer = constInitializer(expr.text, use);
-    if (initializer) {
-      const resolved = resolveCallerPath(initializer, initializer);
-      return { ...resolved, sourceKind: 'const', rawExpression: expr.text };
-    }
-  }
-  return { sourceKind: 'dynamic', rawExpression: expr.getText() };
-}
-
-function constInitializer(name: string, use: ts.Node): ts.Expression | undefined {
-  let found: ts.Expression | undefined;
-  const source = use.getSourceFile();
-  const visit = (node: ts.Node): void => {
-    if (node.getStart(source) >= use.getStart(source)) return;
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name && node.initializer && (node.parent.flags & ts.NodeFlags.Const) !== 0) found = node.initializer;
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return found;
+function importedWrapperClassifier(status: string): string {
+  if (status === 'static') return 'imported_wrapper_literal_path';
+  if (status === 'ambiguous') return 'imported_wrapper_ambiguous_path';
+  return 'imported_wrapper_dynamic_path';
 }
 
 function findFunction(source: ts.SourceFile, exportedName: string): { name: string; fn: ts.FunctionLikeDeclaration } | undefined {
@@ -251,12 +233,4 @@ function propertyName(name: ts.PropertyName): string | undefined {
 
 function literal(expr: ts.Expression | undefined): string | undefined {
   return expr && (ts.isStringLiteralLike(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) ? expr.text : undefined;
-}
-
-function normalizeOperationPath(value: string): string {
-  return value.startsWith('/') ? value : `/${value}`;
-}
-
-function runtimePathExpression(value: string): string | undefined {
-  return value ? `\${${value}}` : undefined;
 }

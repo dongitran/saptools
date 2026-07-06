@@ -79,6 +79,7 @@ describe('local wrapper path propagation', () => {
     const calls = await parseOutboundCalls(root, 'handler.ts');
     expect(calls.find((call) => call.operationPathExpr === '/someAction')?.evidence?.literalPathSource).toBe('same_scope_const_initializer');
     expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(2);
+    expect(calls.some((call) => call.operationPathExpr === '${request.path}')).toBe(true);
   });
 
   it('records branch candidate evidence without guessing across incompatible paths', async () => {
@@ -96,9 +97,9 @@ describe('local wrapper path propagation', () => {
     const calls = await parseOutboundCalls(root, 'handler.ts');
     const branch = calls.find((call) => call.evidence?.staticPathCandidates);
     expect(branch?.operationPathExpr).toBeUndefined();
-    expect(branch?.unresolvedReason).toBe('dynamic_operation_path_identifier');
-    expect(branch?.evidence?.staticPathCandidates).toMatchObject({ candidatePaths: ['/defaultAction', '/alternateAction'], normalizedCandidateOperations: ['defaultAction', 'alternateAction'] });
-    expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(2);
+    expect(branch?.unresolvedReason).toBe('ambiguous_operation_path_candidates');
+    expect(branch?.evidence?.staticPathCandidates).toMatchObject({ candidatePaths: ['/alternateAction', '/defaultAction'], normalizedCandidateOperations: ['alternateAction', 'defaultAction'] });
+    expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(1);
   });
 
   it('resolves nested wrapper literal paths only when the caller path is static', async () => {

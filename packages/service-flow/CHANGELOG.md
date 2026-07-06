@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.49
+
+- Unified direct and wrapper operation-path analysis with deterministic static, ambiguous, and dynamic candidate evidence while preserving lexical scope and source order.
+- Prevented future or mutable service-client assignments from becoming persisted bindings; trace and strict doctor now distinguish direct, contextual, ambiguous, unrecoverable, and missing-parameter-metadata cases.
+- Added explicit OData entity-versus-operation precedence evidence, richer trace-start remediation, capped implementation hint alternatives, and repository-correct guided traversal.
+- Added a neutral seven-package CAP workspace covering runtime substitutions, contextual clients, imported wrappers, OData/entity paths, duplicate helper implementations, SQLite evidence, and CLI quality gates.
+
 ## 0.1.48
 
 - Added deterministic `doctor --format json|table` output while preserving legacy-compatible default doctor output; JSON mode returns `[]` for clean workspaces and table mode renders concise diagnostic rows with capped hint lines.

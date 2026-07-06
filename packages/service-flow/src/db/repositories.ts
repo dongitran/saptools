@@ -259,11 +259,15 @@ export function insertBindings(
   rows: ServiceBindingFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO service_bindings(repo_id,variable_name,alias,alias_expr,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,helper_chain_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO service_bindings(repo_id,symbol_id,variable_name,alias,alias_expr,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,helper_chain_json) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1),?,?,?,?,?,?,?,?,?,?)',
   );
   for (const r of rows)
     stmt.run(
       repoId,
+      repoId,
+      r.sourceFile,
+      r.sourceLine,
+      r.sourceLine,
       r.variableName,
       r.alias,
       r.aliasExpr,
@@ -321,9 +325,14 @@ export function insertCalls(
   rows: OutboundCallFact[],
 ): void {
   const stmt = db.prepare(
-    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,evidence_json,external_target_kind,external_target_id,external_target_label,external_target_dynamic,service_binding_id) VALUES(?,COALESCE((SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1)),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT id FROM service_bindings WHERE repo_id=? AND variable_name=? AND source_file=? ORDER BY CASE WHEN source_line<=? THEN 0 ELSE 1 END, ABS(source_line-?) ASC, id DESC LIMIT 1))',
+    'INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,event_name_expr,payload_summary,source_file,source_line,confidence,unresolved_reason,local_service_name,local_service_lookup,alias_chain_json,evidence_json,external_target_kind,external_target_id,external_target_label,external_target_dynamic,service_binding_id) VALUES(?,COALESCE((SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1)),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
   );
-  for (const r of rows)
+  for (const r of rows) {
+    const binding = resolvePersistedBinding(db, repoId, r);
+    const evidence = {
+      ...(r.evidence ?? {}),
+      serviceBindingResolution: binding.evidence,
+    };
     stmt.run(
       repoId,
       repoId,
@@ -342,19 +351,186 @@ export function insertCalls(
       r.sourceFile,
       r.sourceLine,
       r.confidence,
-      r.unresolvedReason,
+      r.unresolvedReason ?? binding.unresolvedReason,
       r.localServiceName,
       r.localServiceLookup,
       r.aliasChain ? JSON.stringify(r.aliasChain) : null,
-      r.evidence ? JSON.stringify(r.evidence) : null,
+      JSON.stringify(evidence),
       r.externalTarget?.kind ?? null,
       r.externalTarget?.stableId ?? null,
       r.externalTarget?.label ?? null,
       r.externalTarget?.dynamic ? 1 : 0,
-      repoId,
-      r.serviceVariableName,
-      r.sourceFile,
-      r.sourceLine,
-      r.sourceLine,
+      binding.bindingId,
     );
+  }
+}
+
+interface BindingCandidate {
+  id: number;
+  symbolId?: number | null;
+  variableName: string;
+  alias?: string | null;
+  aliasExpr?: string | null;
+  destinationExpr?: string | null;
+  servicePathExpr?: string | null;
+  sourceFile: string;
+  sourceLine: number;
+  helperChainJson?: string | null;
+}
+
+function resolvePersistedBinding(
+  db: Db,
+  repoId: number,
+  call: OutboundCallFact,
+): {
+  bindingId: number | null;
+  unresolvedReason?: string;
+  evidence: Record<string, unknown>;
+} {
+  if (!call.serviceVariableName)
+    return { bindingId: null, evidence: { status: 'not_applicable', candidateCount: 0 } };
+  const candidates = bindingCandidates(db, repoId, call);
+  const prior = candidates.filter((candidate) => candidate.sourceLine <= call.sourceLine);
+  const families = new Set(prior.map(bindingSignature));
+  if (prior.length > 0 && families.size === 1) {
+    const selected = prior.at(-1);
+    return {
+      bindingId: selected?.id ?? null,
+      evidence: bindingEvidence('selected', prior, selected),
+    };
+  }
+  if (prior.length > 1) {
+    return {
+      bindingId: null,
+      unresolvedReason: 'ambiguous_service_binding_candidates',
+      evidence: bindingEvidence('ambiguous', prior),
+    };
+  }
+  if (candidates.length > 0) {
+    return {
+      bindingId: null,
+      unresolvedReason: 'service_binding_declared_after_call',
+      evidence: bindingEvidence('rejected_future_binding', candidates),
+    };
+  }
+  return {
+    bindingId: null,
+    evidence: bindingEvidence('unrecoverable', []),
+  };
+}
+
+function bindingCandidates(
+  db: Db,
+  repoId: number,
+  call: OutboundCallFact,
+): BindingCandidate[] {
+  const ownerId = callSymbolId(db, repoId, call);
+  const rows = db.prepare(`
+    SELECT id,symbol_id symbolId,variable_name variableName,alias,alias_expr aliasExpr,
+      destination_expr destinationExpr,service_path_expr servicePathExpr,
+      source_file sourceFile,source_line sourceLine,helper_chain_json helperChainJson
+    FROM service_bindings
+    WHERE repo_id=? AND variable_name=? AND source_file=?
+      AND (? IS NULL OR symbol_id IS NULL OR symbol_id=?)
+    ORDER BY source_line,id
+  `).all(
+    repoId,
+    call.serviceVariableName,
+    call.sourceFile,
+    ownerId,
+    ownerId,
+  ) as Array<Record<string, unknown>>;
+  return rows.flatMap((row) => {
+    if (typeof row.id !== 'number' || typeof row.variableName !== 'string'
+      || typeof row.sourceFile !== 'string' || typeof row.sourceLine !== 'number')
+      return [];
+    return [{
+      id: row.id,
+      symbolId: nullableNumber(row.symbolId),
+      variableName: row.variableName,
+      alias: nullableString(row.alias),
+      aliasExpr: nullableString(row.aliasExpr),
+      destinationExpr: nullableString(row.destinationExpr),
+      servicePathExpr: nullableString(row.servicePathExpr),
+      sourceFile: row.sourceFile,
+      sourceLine: row.sourceLine,
+      helperChainJson: nullableString(row.helperChainJson),
+    }];
+  });
+}
+
+function nullableString(value: unknown): string | null | undefined {
+  return value === null || typeof value === 'string' ? value : undefined;
+}
+
+function nullableNumber(value: unknown): number | null | undefined {
+  return value === null || typeof value === 'number' ? value : undefined;
+}
+
+function callSymbolId(
+  db: Db,
+  repoId: number,
+  call: OutboundCallFact,
+): number | undefined {
+  const row = db.prepare(`
+    SELECT id FROM symbols
+    WHERE repo_id=? AND source_file=?
+      AND ((? IS NOT NULL AND qualified_name=?)
+        OR (start_line<=? AND end_line>=?))
+    ORDER BY CASE WHEN qualified_name=? THEN 0 ELSE 1 END,
+      (end_line-start_line),id
+    LIMIT 1
+  `).get(
+    repoId,
+    call.sourceFile,
+    call.sourceSymbolQualifiedName,
+    call.sourceSymbolQualifiedName,
+    call.sourceLine,
+    call.sourceLine,
+    call.sourceSymbolQualifiedName,
+  );
+  return typeof row?.id === 'number' ? row.id : undefined;
+}
+
+function bindingEvidence(
+  status: string,
+  candidates: BindingCandidate[],
+  selected?: BindingCandidate,
+): Record<string, unknown> {
+  return {
+    status,
+    candidateCount: candidates.length,
+    selectedBindingId: selected?.id,
+    sourceOrderRule: 'binding_source_line_must_not_follow_call',
+    candidates: candidates.map((candidate) => ({
+      bindingId: candidate.id,
+      symbolId: candidate.symbolId,
+      variableName: candidate.variableName,
+      alias: candidate.alias,
+      aliasExpr: candidate.aliasExpr,
+      destinationExpr: candidate.destinationExpr,
+      servicePathExpr: candidate.servicePathExpr,
+      sourceFile: candidate.sourceFile,
+      sourceLine: candidate.sourceLine,
+      helperChain: parseBindingChain(candidate.helperChainJson),
+    })),
+  };
+}
+
+function bindingSignature(candidate: BindingCandidate): string {
+  return JSON.stringify([
+    candidate.alias,
+    candidate.aliasExpr,
+    candidate.destinationExpr,
+    candidate.servicePathExpr,
+  ]);
+}
+
+function parseBindingChain(value: string | null | undefined): unknown {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
 }

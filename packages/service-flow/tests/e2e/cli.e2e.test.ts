@@ -4,9 +4,11 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
+import { openDatabase } from '../../src/db/connection.js';
 const execFileAsync = promisify(execFile);
 const cli = path.resolve('dist/cli.js');
 const fixture = path.resolve('tests/fixtures/cap-workspace');
+const traceFixture = path.resolve('tests/fixtures/trace-correctness-workspace');
 async function runResult(
   args: string[],
   cwd = path.resolve('.'),
@@ -121,5 +123,83 @@ describe('service-flow CLI link wording', () => {
     expect(linkResult.stdout).toContain('remote operation calls resolved');
     expect(linkResult.stdout).toContain('local operation calls resolved');
     expect(linkResult.stdout).not.toContain('remote resolved');
+  });
+});
+
+describe('service-flow guided trace CLI', () => {
+  it('runs runtime substitution, ambiguity, hints, doctor, and SQLite checks', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'service-flow-guided-e2e-'));
+    const dbPath = path.join(dir, 'service-flow.db');
+    await run(['init', traceFixture, '--db', dbPath]);
+    await run(['index', '--workspace', traceFixture, '--force']);
+    await run(['link', '--workspace', traceFixture, '--force']);
+
+    const runtime = JSON.parse(await run([
+      'trace', '--workspace', traceFixture,
+      '--repo', 'gateway-app',
+      '--operation', 'runCompositeCheck',
+      '--format', 'json',
+      '--include-db', '--include-external', '--include-async',
+      '--var', 'domain=Product',
+      '--var', 'shortName=prod',
+    ])) as { edges: Array<{ unresolvedReason?: string; to?: string }> };
+    expect(runtime.edges.some((edge) =>
+      edge.to === '/ProductProcessService/runDeepCheck')).toBe(true);
+    expect(runtime.edges.filter((edge) => edge.unresolvedReason)).toEqual([]);
+
+    const missing = JSON.parse(await run([
+      'trace', '--workspace', traceFixture,
+      '--repo', 'gateway-app',
+      '--operation', 'runCompositeCheck',
+      '--format', 'json',
+      '--include-db', '--include-external', '--include-async',
+    ])) as { diagnostics: Array<{ code?: string; missingVariables?: string[] }> };
+    expect(missing.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'trace_runtime_variables_missing',
+      missingVariables: ['domain', 'shortName'],
+    }));
+
+    const ambiguous = JSON.parse(await run([
+      'trace', '--workspace', traceFixture,
+      '--repo', 'process-service',
+      '--service', '/ProductProcessService',
+      '--operation', 'activate',
+      '--format', 'json',
+      '--include-db', '--include-external', '--include-async',
+    ])) as { diagnostics: Array<{ resolutionStatus?: string }> };
+    expect(ambiguous.diagnostics).toContainEqual(expect.objectContaining({
+      resolutionStatus: 'ambiguous_implementation',
+    }));
+
+    const guided = JSON.parse(await run([
+      'trace', '--workspace', traceFixture,
+      '--repo', 'process-service',
+      '--service', '/ProductProcessService',
+      '--operation', 'activate',
+      '--format', 'json',
+      '--include-db', '--include-external', '--include-async',
+      '--implementation-hint',
+      'service=/ProductProcessService,operation=/activate,repo=process-helper-a',
+    ])) as { edges: Array<{ type?: string; to?: string }> };
+    const guidedImplementation = guided.edges.find((edge) =>
+      edge.type === 'operation_implemented_by_handler');
+    expect(guidedImplementation?.to).toContain('ActivateHandlerA.activate');
+
+    const doctorJson = JSON.parse(await run([
+      'doctor', '--workspace', traceFixture, '--strict', '--format', 'json',
+    ])) as Array<{ code?: string }>;
+    expect(doctorJson).toContainEqual(expect.objectContaining({
+      code: 'strict_service_binding_quality',
+    }));
+    const doctorTable = await run([
+      'doctor', '--workspace', traceFixture, '--strict', '--format', 'table',
+    ]);
+    expect(doctorTable).toContain('Severity');
+    expect(doctorTable).toContain('strict_service_binding_quality');
+
+    const db = openDatabase(dbPath, { readonly: true });
+    expect(db.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
   });
 });
