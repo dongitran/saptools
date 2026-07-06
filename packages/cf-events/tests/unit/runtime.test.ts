@@ -66,7 +66,7 @@ describe("CfEventsRuntime.fetchEvents", () => {
     expect(fetchAuditEvents).toHaveBeenCalledWith({
       scope: { kind: "app", appGuid: "app-1" },
       types: ["audit.app.start"],
-      createdAfter: "2026-05-22T11:00:00.000Z",
+      createdAfter: "2026-05-22T11:00:00Z",
       limit: 20,
     });
   });
@@ -100,6 +100,12 @@ describe("CfEventsRuntime.getSshStatus", () => {
     expect(status.sshEnabled).toBe(true);
     expect(status.sessions).toHaveLength(1);
     expect(status.activeSessionCount).toBe(1);
+    expect(client.fetchAuditEvents).toHaveBeenCalledWith({
+      scope: { kind: "app", appGuid: "app-1" },
+      types: ["audit.app.ssh-authorized", "audit.app.ssh-unauthorized"],
+      createdAfter: "2026-05-21T12:00:00Z",
+      limit: 200,
+    });
   });
 
   it("rejects a space selector", async () => {
@@ -123,6 +129,12 @@ describe("CfEventsRuntime.getCrashes", () => {
     if (!("scope" in summary)) {
       expect(summary.appName).toBe("orders-srv");
     }
+    expect(client.fetchAuditEvents).toHaveBeenCalledWith({
+      scope: { kind: "app", appGuid: "app-1" },
+      types: ["audit.app.crash", "audit.app.process.crash"],
+      createdAfter: "2026-05-15T12:00:00Z",
+      limit: 50,
+    });
   });
 
   it("groups space crashes by target app", async () => {
@@ -139,6 +151,12 @@ describe("CfEventsRuntime.getCrashes", () => {
       expect(summary.crashCount).toBe(2);
       expect(summary.apps.map((app) => app.appName).sort()).toEqual(["billing-srv", "orders-srv"]);
     }
+    expect(client.fetchAuditEvents).toHaveBeenCalledWith({
+      scope: { kind: "space", spaceGuid: "space-1" },
+      types: ["audit.app.crash", "audit.app.process.crash"],
+      createdAfter: "2026-05-15T12:00:00Z",
+      limit: 50,
+    });
   });
 });
 
@@ -171,42 +189,45 @@ describe("CfEventsRuntime.watchEvents", () => {
   it("emits new space events oldest-first and stops when aborted", async () => {
     const controller = new AbortController();
     let calls = 0;
-    const client = makeClient({
-      fetchAuditEvents: vi.fn().mockImplementation(() => {
-        calls += 1;
-        if (calls === 1) {
-          return Promise.resolve([
-            makeEvent({ guid: "e2", createdAt: "2026-05-22T10:02:00.000Z" }),
-            makeEvent({ guid: "e1", createdAt: "2026-05-22T10:01:00.000Z" }),
-          ]);
-        }
-        controller.abort();
-        return Promise.resolve([]);
-      }),
+    const fetchAuditEvents = vi.fn().mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve([
+          makeEvent({ guid: "e2", createdAt: "2026-05-22T10:02:00.000Z" }),
+          makeEvent({ guid: "e1", createdAt: "2026-05-22T10:01:00.000Z" }),
+        ]);
+      }
+      controller.abort();
+      return Promise.resolve([]);
     });
+    const client = makeClient({ fetchAuditEvents });
     const runtime = new CfEventsRuntime(makeDeps(client, SPACE_SELECTOR));
     const emitted: string[] = [];
     await runtime.watchEvents("ap10/demo-org/dev", CREDENTIALS, { intervalMs: 5, lookback: "5m", types: [] }, (event) => emitted.push(event.guid), controller.signal);
     expect(emitted).toEqual(["e1", "e2"]);
+    expect(fetchAuditEvents).toHaveBeenNthCalledWith(1, {
+      scope: { kind: "space", spaceGuid: "space-1" },
+      types: undefined,
+      createdAfter: "2026-05-22T11:55:00Z",
+      limit: 100,
+    });
   });
 
   it("de-duplicates events seen across polling ticks", async () => {
     const controller = new AbortController();
     let calls = 0;
-    const client = makeClient({
-      fetchAuditEvents: vi.fn().mockImplementation(() => {
-        calls += 1;
-        if (calls === 1) {
-          return Promise.resolve([makeEvent({ guid: "e1", createdAt: "2026-05-22T10:01:00.000Z" })]);
-        }
-        if (calls === 2) {
-          return Promise.resolve([makeEvent({ guid: "e2", createdAt: "2026-05-22T10:02:00.000Z" }), makeEvent({ guid: "e1", createdAt: "2026-05-22T10:01:00.000Z" })]);
-        }
-        controller.abort();
-        return Promise.resolve([]);
-      }),
+    const fetchAuditEvents = vi.fn().mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve([makeEvent({ guid: "e1", createdAt: "2026-05-22T10:01:00.000Z" })]);
+      }
+      if (calls === 2) {
+        return Promise.resolve([makeEvent({ guid: "e2", createdAt: "2026-05-22T10:02:00.000Z" }), makeEvent({ guid: "e1", createdAt: "2026-05-22T10:01:00.000Z" })]);
+      }
+      controller.abort();
+      return Promise.resolve([]);
     });
-    const runtime = new CfEventsRuntime(makeDeps(client));
+    const runtime = new CfEventsRuntime(makeDeps(makeClient({ fetchAuditEvents })));
     const emitted: string[] = [];
     await runtime.watchEvents("orders-srv", CREDENTIALS, { intervalMs: 5, lookback: "5m", types: ["audit.app.start"] }, (event) => emitted.push(event.guid), controller.signal);
     expect(emitted).toEqual(["e1", "e2"]);

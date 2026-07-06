@@ -73,9 +73,14 @@ describe("parseDuration", () => {
 });
 
 describe("durationToCreatedAfter", () => {
-  it("subtracts the duration from the supplied clock", () => {
-    const now = new Date("2026-05-22T12:00:00.000Z");
-    expect(durationToCreatedAfter("1h", now)).toBe("2026-05-22T11:00:00.000Z");
+  it("subtracts the duration and formats without fractional seconds", () => {
+    const now = new Date("2026-07-06T00:00:00.000Z");
+    expect(durationToCreatedAfter("24h", now)).toBe("2026-07-05T00:00:00Z");
+  });
+
+  it("drops non-zero milliseconds for CF audit-event filters", () => {
+    const now = new Date("2026-07-06T08:19:03.456Z");
+    expect(durationToCreatedAfter("30m", now)).toBe("2026-07-06T07:49:03Z");
   });
 });
 

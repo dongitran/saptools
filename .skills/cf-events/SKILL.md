@@ -57,6 +57,9 @@ cf-events watch ap10/example-org/dev --lookback 2m --interval 15000 --type crash
 
 ## Filters And Windows
 
+- `events`, `crashes`, and `watch` support app and space selectors; `ssh-status` and `status` remain app-only.
+- `--since` and `--lookback` are safe for recent audit-event filters; the CLI sends CF-compatible audit timestamps without fractional seconds.
+- CF API `errors` responses are surfaced as command errors instead of being reported as empty audit-event results.
 - Durations accept positive `s`, `m`, `h`, or `d` values such as `30m`, `6h`, or `7d`.
 - `--type ssh` expands to SSH authorized and denied events.
 - `--type crash` expands to app and process crash events.
@@ -83,8 +86,8 @@ Treat `ssh-status` as audit evidence, not a live session API. Cloud Foundry does
 
 ## Data Handling
 
-Audit events can expose user identities, app names, org/space names, route metadata, crash details, and operational timing. Do not print credentials. Do not dump raw sensitive event payloads into final answers unless the user explicitly asks; summarize and cite relevant timestamps, event types, actors, and selectors.
+Audit events can expose user identities, app names, org/space names, route metadata, crash details, and operational timing. Do not print credentials, tokens, authorization headers, or raw sensitive event payloads. Do not dump raw sensitive event payloads into final answers unless the user explicitly asks; summarize and cite relevant timestamps, event types, actors, and selectors.
 
 ## Troubleshooting
 
-If credentials are missing, use `SAP_EMAIL` and `SAP_PASSWORD` or ask for secure explicit input. If CF access fails, verify the region, org, space, app, and current CF permissions. If `watch` appears quiet, increase `--lookback`, lower the type filter, or first run `events --since <duration> --json` to confirm recent audit events exist.
+If credentials are missing, use `SAP_EMAIL` and `SAP_PASSWORD` or ask for secure explicit input. If CF access fails, verify the region, org, space, app, and current CF permissions. If `watch` appears quiet, first check for surfaced CF API errors, then increase `--lookback`, lower the type filter, or run `events --since <duration> --json` to confirm recent audit events exist.

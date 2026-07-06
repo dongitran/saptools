@@ -25,14 +25,15 @@ describe("buildAuditEventsPath", () => {
       {
         scope: { kind: "space", spaceGuid: "space-1" },
         types: ["audit.app.crash"],
-        createdAfter: "2026-05-22T00:00:00.000Z",
+        createdAfter: "2026-05-22T00:00:00Z",
         limit: 50,
       },
       100,
     );
     expect(path).toContain("space_guids=space-1");
     expect(path).toContain("types=audit.app.crash");
-    expect(decodeURIComponent(path)).toContain("created_ats[gt]=2026-05-22T00:00:00.000Z");
+    expect(path).toContain("created_ats%5Bgt%5D=2026-05-22T00%3A00%3A00Z");
+    expect(path).not.toContain(".000Z");
   });
 });
 
@@ -105,6 +106,36 @@ describe("fetchAuditEvents", () => {
     );
     expect(events.map((event) => event.guid)).toEqual(["e1"]);
     expect(curl).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws a clear error when CF returns an errors array", async () => {
+    const curl = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        errors: [
+          {
+            code: 10005,
+            title: "CF-BadQueryParameter",
+            detail: "The query parameter is invalid: Created ats has an invalid timestamp format. Timestamps should be formatted as 'YYYY-MM-DDThh:mm:ssZ'",
+          },
+        ],
+      }),
+    );
+    await expect(
+      fetchAuditEvents(
+        { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: "2026-07-05T00:00:00Z", limit: 5 },
+        curl,
+      ),
+    ).rejects.toThrow(/CF-BadQueryParameter.*YYYY-MM-DDThh:mm:ssZ/);
+  });
+
+  it("throws when an audit-event list response has no resources array", async () => {
+    const curl = vi.fn().mockResolvedValue(JSON.stringify({ pagination: { next: null } }));
+    await expect(
+      fetchAuditEvents(
+        { scope: { kind: "app", appGuid: "app-1" }, types: undefined, createdAfter: undefined, limit: 5 },
+        curl,
+      ),
+    ).rejects.toThrow(/missing resources array/);
   });
 
   it("throws when the API returns a non-JSON body", async () => {

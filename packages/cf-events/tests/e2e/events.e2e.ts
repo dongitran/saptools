@@ -68,7 +68,6 @@ test("events fails clearly when the app is unknown", async () => {
   expect(result.stderr).toContain("Failed to resolve the GUID for app \"ghost-app\"");
 });
 
-
 test("events prints a space-wide audit-event report", async () => {
   const scenario = makeScenario(SAMPLE_EVENTS);
   const paths = await prepareCase(ROOT, "space-text", {
@@ -95,4 +94,43 @@ test("events emits a space-wide JSON array with --json", async () => {
   expect(result.code).toBe(0);
   const parsed = JSON.parse(result.stdout) as unknown[];
   expect(parsed).toHaveLength(2);
+});
+
+test("events --since uses a CF-compatible timestamp and returns recent app events", async () => {
+  const paths = await prepareCase(ROOT, "since-no-millis", makeScenario([
+    fakeAuditEvent({ guid: "recent", type: "audit.app.start", created_at: "2026-07-06T08:19:03Z" }),
+  ]));
+  const result = await runCli(createEnv(paths), [
+    "events",
+    "ap10/demo-org/dev/orders-srv",
+    "--since",
+    "24h",
+    "--limit",
+    "20",
+    "--json",
+  ]);
+  expect(result.code).toBe(0);
+  const parsed = JSON.parse(result.stdout) as { guid?: string }[];
+  expect(parsed.map((event) => event.guid)).toEqual(["recent"]);
+});
+
+test("events surfaces CF API errors instead of returning an empty array", async () => {
+  const paths = await prepareCase(ROOT, "api-error", {
+    ...makeScenario(SAMPLE_EVENTS),
+    auditEventsError: {
+      code: 10005,
+      title: "CF-BadQueryParameter",
+      detail: "The query parameter is invalid: Created ats has an invalid timestamp format. Timestamps should be formatted as 'YYYY-MM-DDThh:mm:ssZ'",
+    },
+  });
+  const result = await runCli(createEnv(paths), [
+    "events",
+    "ap10/demo-org/dev/orders-srv",
+    "--since",
+    "24h",
+    "--json",
+  ]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("CF-BadQueryParameter");
+  expect(result.stderr).toContain("YYYY-MM-DDThh:mm:ssZ");
 });
