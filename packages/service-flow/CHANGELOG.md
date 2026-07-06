@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.50
+
+- Resolved local string, enum-member, and const-object decorator arguments with persisted evidence while keeping unsupported expressions conservative.
+- Prevented handler registrations with exact class ids from producing cross-repository class-name candidates; genuine duplicate implementations remain ambiguous with scoped hints.
+- Added copyable service-and-path trace-start selectors and strict doctor aggregates for decorator resolution and registration pairing.
+- Added a neutral implementation-resolution workspace with SQLite, trace, hint, and runtime-variable regression coverage.
+
 ## 0.1.49
 
 - Unified direct and wrapper operation-path analysis with deterministic static, ambiguous, and dynamic candidate evidence while preserving lexical scope and source order.

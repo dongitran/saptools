@@ -1,0 +1,3 @@
+service GatewayService {
+  action runGatewayCheck();
+}

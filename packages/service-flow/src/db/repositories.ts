@@ -211,7 +211,7 @@ export function insertHandler(
       .get(repoId, sid, h.className, h.sourceFile, h.sourceLine)?.id,
   );
   const stmt = db.prepare(
-    'INSERT INTO handler_methods(handler_class_id,method_name,decorator_kind,decorator_value,decorator_raw_expression,source_file,source_line) VALUES(?,?,?,?,?,?,?)',
+    'INSERT INTO handler_methods(handler_class_id,method_name,decorator_kind,decorator_value,decorator_raw_expression,decorator_resolution_json,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)',
   );
   for (const m of h.methods)
     stmt.run(
@@ -220,6 +220,7 @@ export function insertHandler(
       m.decoratorKind,
       m.decoratorValue,
       m.decoratorRawExpression,
+      JSON.stringify(m.decoratorResolution),
       m.sourceFile,
       m.sourceLine,
     );

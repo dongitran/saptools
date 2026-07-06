@@ -301,14 +301,64 @@ function implementationContextForOperation(db: Db, operation: Record<string, unk
 }
 function rankedImplementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): ImplementationCandidate[] {
   const rows = implementationCandidates(db, workspaceId, operation);
-  return deduplicateCandidates(rows.map((row) => scoreImplementationCandidate(row, operation))).sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)) || a.methodId - b.methodId);
+  const invalid = rows.filter((row) => !validRegistrationPair(row));
+  recordRegistrationInvariantDiagnostics(db, invalid);
+  return deduplicateCandidates(
+    rows.filter(validRegistrationPair)
+      .map((row) => scoreImplementationCandidate(row, operation)),
+  ).sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)) || a.methodId - b.methodId);
+}
+function validRegistrationPair(row: Record<string, unknown>): boolean {
+  if (row.registrationHandlerClassId === null
+    || row.registrationHandlerClassId === undefined)
+    return registrationPairingStrategy(row) !== 'unproven';
+  return Number(row.registrationHandlerClassId) === Number(row.classId);
+}
+function registrationPairingStrategy(row: Record<string, unknown>): string {
+  if (row.registrationHandlerClassId !== null
+    && row.registrationHandlerClassId !== undefined)
+    return 'exact_handler_class_id';
+  if (Number(row.applicationRepoId) === Number(row.handlerRepoId))
+    return 'same_repository_class_name_fallback';
+  const source = stringValue(row.importSource);
+  const separator = source?.lastIndexOf('#') ?? -1;
+  if (!source || separator <= 0) return 'unproven';
+  const moduleName = source.slice(0, separator);
+  const importedName = source.slice(separator + 1);
+  const matchesClass = importedName === row.className
+    || (importedName === 'default' && row.registrationClassName === row.className);
+  return moduleName === row.handlerPackage && matchesClass
+    ? 'explicit_package_import'
+    : 'unproven';
+}
+function recordRegistrationInvariantDiagnostics(
+  db: Db,
+  rows: Array<Record<string, unknown>>,
+): void {
+  const insert = db.prepare(`INSERT INTO diagnostics(repo_id,severity,code,message,source_file,source_line)
+    SELECT ?,'error','handler_registration_class_mismatch',
+      'Implementation candidate registration did not match its persisted handler class id',?,?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM diagnostics
+      WHERE repo_id=? AND code='handler_registration_class_mismatch'
+        AND source_file=? AND source_line=?
+    )`);
+  for (const row of rows)
+    insert.run(
+      row.applicationRepoId,
+      row.registrationFile,
+      row.registrationLine,
+      row.applicationRepoId,
+      row.registrationFile,
+      row.registrationLine,
+    );
 }
 
 function deduplicateCandidates(rows: ImplementationCandidate[]): ImplementationCandidate[] {
   const merged = new Map<string, ImplementationCandidate>();
   for (const row of rows) {
     const key = [row.methodId, row.classId, row.handlerRepoId].join(':');
-    const registration = { file: row.registrationFile, line: row.registrationLine, kind: row.registrationKind, importSource: row.importSource };
+    const registration = registrationEvidence(row);
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, { ...row, registrations: [registration] });
@@ -321,6 +371,19 @@ function deduplicateCandidates(rows: ImplementationCandidate[]): ImplementationC
     existing.rejectedReasons = [...new Set([...existing.rejectedReasons, ...row.rejectedReasons])];
   }
   return [...merged.values()];
+}
+function registrationEvidence(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    id: row.registrationId,
+    handlerClassId: row.registrationHandlerClassId,
+    file: row.registrationFile,
+    line: row.registrationLine,
+    kind: row.registrationKind,
+    importSource: row.importSource,
+    pairingStrategy: registrationPairingStrategy(row),
+  };
 }
 function uniqueRegistrations(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const seen = new Set<string>();
@@ -352,10 +415,14 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       hm.method_name methodName,
       hm.decorator_value decoratorValue,
       hm.decorator_raw_expression decoratorRawExpression,
+      hm.decorator_resolution_json decoratorResolutionJson,
       hc.id classId,
       hc.class_name className,
       hc.source_file sourceFile,
       hc.source_line sourceLine,
+      hr.id registrationId,
+      hr.handler_class_id registrationHandlerClassId,
+      hr.class_name registrationClassName,
       hr.repo_id applicationRepoId,
       hr.registration_file registrationFile,
       hr.registration_line registrationLine,
@@ -378,14 +445,36 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id AND localService.service_path=?) THEN 1 ELSE 0 END localServicePathMatch,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id) THEN 1 ELSE 0 END applicationHasLocalServices,
-      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON (localClass.id=localReg.handler_class_id OR localClass.class_name=localReg.class_name) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=? OR localMethod.decorator_raw_expression LIKE ?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
+      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON ((localReg.handler_class_id IS NOT NULL AND localClass.id=localReg.handler_class_id) OR (localReg.handler_class_id IS NULL AND localClass.class_name=localReg.class_name AND localClass.repo_id=localReg.repo_id)) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=? OR localMethod.decorator_raw_expression LIKE ?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END appDependsOnModel,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(handlerRepo.id AS TEXT)) THEN 1 ELSE 0 END appDependsOnHandler,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END handlerDependsOnModel
     FROM handler_methods hm
     JOIN handler_classes hc ON hc.id=hm.handler_class_id
     JOIN repositories handlerRepo ON handlerRepo.id=hc.repo_id
-    JOIN handler_registrations hr ON (hr.handler_class_id=hc.id OR (hr.class_name=hc.class_name AND (hr.repo_id=hc.repo_id OR hr.import_source IS NOT NULL)))
+    JOIN handler_registrations hr ON (
+      (hr.handler_class_id IS NOT NULL AND hr.handler_class_id=hc.id)
+      OR (
+        hr.handler_class_id IS NULL
+        AND (
+          (hr.class_name=hc.class_name AND hr.repo_id=hc.repo_id)
+          OR (
+            instr(hr.import_source,'#')>1
+            AND substr(hr.import_source,1,instr(hr.import_source,'#')-1)
+              =handlerRepo.package_name
+            AND (
+              substr(hr.import_source,instr(hr.import_source,'#')+1)
+                =hc.class_name
+              OR (
+                substr(hr.import_source,instr(hr.import_source,'#')+1)
+                  ='default'
+                AND hr.class_name=hc.class_name
+              )
+            )
+          )
+        )
+      )
+    )
     JOIN repositories appRepo ON appRepo.id=hr.repo_id
     WHERE appRepo.workspace_id=?
       AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=? OR hm.decorator_raw_expression LIKE ?)`).all(
@@ -487,8 +576,16 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
     className: candidate.className,
     sourceFile: candidate.sourceFile,
     sourceLine: candidate.sourceLine,
-    registration: { file: candidate.registrationFile, line: candidate.registrationLine, kind: candidate.registrationKind, importSource: candidate.importSource },
+    decoratorResolution: objectJson(candidate.decoratorResolutionJson),
+    registration: registrationEvidence(candidate),
     registrations: candidate.registrations ?? [],
+    registrationPairing: {
+      strategy: registrationPairingStrategy(candidate),
+      registrationId: candidate.registrationId,
+      registrationHandlerClassId: candidate.registrationHandlerClassId,
+      candidateHandlerClassId: candidate.classId,
+      invariantStatus: validRegistrationPair(candidate) ? 'valid' : 'invalid',
+    },
     applicationPackage: { id: candidate.applicationRepoId, name: candidate.applicationRepo, packageName: candidate.applicationPackage },
     handlerPackage: { id: candidate.handlerRepoId, name: candidate.handlerRepo, packageName: candidate.handlerPackage },
     modelPackage: { id: candidate.modelRepoId, name: candidate.modelRepo, packageName: candidate.modelPackage },

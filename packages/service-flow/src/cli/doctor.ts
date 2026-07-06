@@ -150,6 +150,8 @@ function parserQualityDiagnostics(db: Db, strict: boolean, options: DoctorOption
     classInstanceNoiseQuality(db),
     contextualBindingPropagationQuality(db),
     serviceBindingQuality(db, Boolean(options.detail)),
+    decoratorResolutionQuality(db),
+    handlerRegistrationPairingQuality(db),
     nestedThisReceiverQuality(db),
     wrapperPathPropagationQuality(db),
     remoteQueryTargetQuality(db),
@@ -249,9 +251,18 @@ function addImplementationCategory(grouped: Map<string, Diagnostic & { count: nu
   const key = [category, baseOperation, reason, family].join('\0');
   const current = grouped.get(key) ?? { category, baseOperation, reason, candidateFamily: family, count: 0, servicePaths: [], examples: [] };
   const hintSuggestions = implementationSuggestions(evidence);
+  const candidates = asRecords(evidence.candidates);
   current.count += 1;
   current.servicePaths.push(String(row.servicePath ?? evidence.servicePath ?? ''));
-  current.examples.push({ servicePath: row.servicePath, operation: row.operationName, status: row.status, reason: row.unresolvedReason, implementationHintSuggestions: hintSuggestions });
+  current.examples.push({
+    servicePath: row.servicePath,
+    operation: row.operationName,
+    status: row.status,
+    reason: row.unresolvedReason,
+    candidateCount: candidates.length,
+    candidateEvidence: candidates.slice(0, 3),
+    implementationHintSuggestions: hintSuggestions,
+  });
   grouped.set(key, current);
 }
 
@@ -450,6 +461,53 @@ function bindingCategoryAction(category: string): string {
   if (category === 'missing_symbol_parameter_metadata')
     return 'Use named or destructured parameters on an indexed helper symbol.';
   return 'Add a direct CAP client binding or statically provable helper-return binding.';
+}
+
+function decoratorResolutionQuality(db: Db): Diagnostic {
+  const aggregate = db.prepare(`SELECT
+      SUM(CASE WHEN json_extract(decorator_resolution_json,'$.resolutionKind')
+        IN ('const_identifier','enum_member','const_object_property','generated_constant_name') THEN 1 ELSE 0 END) resolvedFromConstants,
+      SUM(CASE WHEN json_extract(decorator_resolution_json,'$.resolutionKind')
+        ='unresolved' THEN 1 ELSE 0 END) unresolvedExpressions
+    FROM handler_methods`).get() as Diagnostic;
+  const unresolved = Number(aggregate.unresolvedExpressions ?? 0);
+  const examples = db.prepare(`SELECT hm.method_name methodName,
+      hm.decorator_raw_expression rawExpression,
+      json_extract(hm.decorator_resolution_json,'$.unresolvedReason') unresolvedReason,
+      hm.source_file sourceFile,hm.source_line sourceLine
+    FROM handler_methods hm
+    WHERE json_extract(hm.decorator_resolution_json,'$.resolutionKind')='unresolved'
+    ORDER BY hm.source_file,hm.source_line LIMIT 5`).all() as Diagnostic[];
+  return {
+    severity: unresolved > 0 ? 'warning' : 'info',
+    code: 'strict_decorator_resolution_quality',
+    message: 'Handler decorator string-resolution aggregate',
+    resolvedFromConstants: Number(aggregate.resolvedFromConstants ?? 0),
+    unresolvedExpressions: unresolved,
+    unresolvedExamples: examples,
+  };
+}
+
+function handlerRegistrationPairingQuality(db: Db): Diagnostic {
+  const mismatch = db.prepare(`SELECT COUNT(*) count
+    FROM handler_registrations hr
+    JOIN handler_classes hc ON hc.id=hr.handler_class_id
+    WHERE hr.handler_class_id IS NOT NULL
+      AND (hc.repo_id<>hr.repo_id OR hc.class_name<>hr.class_name)`).get() as Diagnostic;
+  const prevented = db.prepare(`SELECT COUNT(*) count
+    FROM handler_registrations hr
+    JOIN handler_classes exactClass ON exactClass.id=hr.handler_class_id
+    JOIN handler_classes otherClass ON otherClass.class_name=hr.class_name
+      AND otherClass.repo_id<>hr.repo_id
+    WHERE hr.handler_class_id IS NOT NULL AND hr.import_source IS NOT NULL`).get() as Diagnostic;
+  const mismatched = Number(mismatch.count ?? 0);
+  return {
+    severity: mismatched > 0 ? 'error' : 'info',
+    code: 'strict_handler_registration_pairing_quality',
+    message: 'Handler registration and class ownership aggregate',
+    mismatchedExactRegistrations: mismatched,
+    preventedSyntheticCrossRepositoryPairs: Number(prevented.count ?? 0),
+  };
 }
 
 function wrapperPathPropagationQuality(db: Db): Diagnostic {

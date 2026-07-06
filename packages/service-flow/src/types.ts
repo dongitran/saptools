@@ -101,6 +101,18 @@ export interface HandlerMethodFact {
   decoratorKind: string;
   decoratorValue?: string;
   decoratorRawExpression: string;
+  decoratorResolution: {
+    rawExpression: string;
+    resolvedValue?: string;
+    resolutionKind:
+      | 'literal'
+      | 'const_identifier'
+      | 'enum_member'
+      | 'const_object_property'
+      | 'generated_constant_name'
+      | 'unresolved';
+    unresolvedReason?: string;
+  };
   sourceFile: string;
   sourceLine: number;
 }

@@ -1,0 +1,7 @@
+{
+  "name": "@neutral/quality-service",
+  "version": "1.0.0",
+  "dependencies": {
+    "@neutral/process-model": "1.0.0"
+  }
+}

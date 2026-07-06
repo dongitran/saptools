@@ -1,7 +1,10 @@
 import type { Db } from './connection.js';
 import { schemaSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 9;
+const CURRENT_SCHEMA_VERSION = 10;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
+  handler_methods: [
+    { name: 'decorator_resolution_json', ddl: "ALTER TABLE handler_methods ADD COLUMN decorator_resolution_json TEXT NOT NULL DEFAULT '{}'" },
+  ],
   service_bindings: [
     { name: 'helper_chain_json', ddl: 'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT' },
     { name: 'alias_expr', ddl: 'ALTER TABLE service_bindings ADD COLUMN alias_expr TEXT' },

@@ -5,6 +5,7 @@ import { resolveOperation } from '../linker/service-resolver.js';
 import type { ImplementationHint, TraceEdge, TraceResult, TraceStart } from '../types.js';
 import { baseTraceEvidence, edgeTarget, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
 import { implementationHintDiagnostic, selectImplementation, type ImplementationSelection } from './implementation-hints.js';
+import { ambiguousStartDiagnostic } from './selectors.js';
 interface RepoRef {
   id: number;
   name: string;
@@ -119,26 +120,6 @@ function implementationRejectionReasons(evidence: Record<string, unknown>): stri
           typeof reason === 'string')
       : []);
   return [...new Set(reasons)].sort();
-}
-function ambiguousStartDiagnostic(
-  requested: string,
-  candidates: Array<Record<string, unknown>>,
-  message: string,
-): Record<string, unknown> {
-  const serviceSuggestions = [...new Set(candidates
-    .flatMap((row) => typeof row.servicePath === 'string'
-      ? [`--service ${row.servicePath}`]
-      : []))].sort();
-  return {
-    severity: 'warning',
-    code: 'trace_start_ambiguous',
-    message,
-    normalizedSelectorValue: requested,
-    resolutionStage: 'operation',
-    resolutionStatus: 'ambiguous_operation',
-    candidates,
-    serviceSuggestions,
-  };
 }
 function sourceFilesForStart(
   db: Db,
