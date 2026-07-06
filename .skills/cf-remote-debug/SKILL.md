@@ -1,13 +1,13 @@
 ---
 name: cf-remote-debug
-description: Guide on how to remotely debug SAP BTP Cloud Foundry Node.js applications by combining deployed compiled JS discovery, live HTTP request/response traces, runtime inspector snapshots, and read-only HANA evidence when debugging errors or exploring runtime behavior.
+description: Guide on how to remotely debug SAP BTP Cloud Foundry Node.js applications by combining deployed compiled JS discovery, Cloud Foundry log evidence, live HTTP request/response traces, runtime inspector snapshots, and read-only HANA evidence when debugging errors or exploring runtime behavior.
 ---
 
 # CF Remote Debugging Workflow
 
 This skill defines the correct workflow for debugging a Node.js application on SAP Cloud Foundry.
 
-**Important**: Do not guess command syntax. You MUST read the base skill files for both `cf-explorer` and `cf-inspector` to fully understand all available commands and flags. Also read `cf-live-trace` when HTTP request/response evidence is relevant, and read `cf-hana` when the investigation needs database schema or row evidence. This guide focuses strictly on tool selection, integration workflow, and avoiding common pitfalls.
+**Important**: Do not guess command syntax. You MUST read the base skill files for both `cf-explorer` and `cf-inspector` to fully understand all available commands and flags. Also read `cf-logs` when Cloud Foundry application log evidence is relevant, `cf-live-trace` when HTTP request/response evidence is relevant, and `cf-hana` when the investigation needs database schema or row evidence. This guide focuses strictly on tool selection, integration workflow, and avoiding common pitfalls.
 
 ## The Debugging Workflow
 
@@ -20,7 +20,10 @@ TypeScript compilation alters line numbers, and source maps on CF are often misa
 
 ## Evidence Loop
 
-After the deployed code target is understood, choose the next evidence source based on the current hypothesis. These tools are not strict sequential steps; move between HTTP traces, runtime captures, and database checks as each result narrows the problem.
+After the deployed code target is understood, choose the next evidence source based on the current hypothesis. These tools are not strict sequential steps; move between logs, HTTP traces, runtime captures, and database checks as each result narrows the problem.
+
+### Inspect Application Logs For Error Context (`cf-logs`)
+Use `cf-logs` when the investigation needs recent errors, crash context, request IDs, logger names, timestamps, severity, tenant/client hints, or a bounded live stream before choosing a trace or breakpoint. Prefer compact saved output for snapshots and streams so terminal output stays small while full rows remain available through refs. Use `cf-logs show <ref>` only when the compact row is not enough.
 
 ### Capture HTTP Evidence When The Trigger Is Unclear (`cf-live-trace`)
 Use `cf-live-trace` before, after, or alongside inspector breakpoints when the failing path depends on an incoming request, response, status code, payload shape, correlation ID, or timing. Use trace evidence to choose the next breakpoint, request reproduction, or HANA lookup.
@@ -34,8 +37,9 @@ Use `cf-hana` when trace or runtime evidence points to bound HANA data, missing 
 ## Tool Choice
 
 - Use `cf-explorer` to find the deployed compiled code and exact runtime line numbers.
+- Use `cf-logs` to find recent or live application log evidence, request IDs, logger context, severity, and saved refs for full-row drill-down.
 - Use `cf-live-trace` to see which HTTP request actually fails or which payload/status/correlation ID matters.
 - Use `cf-inspector` to pause or observe the Node.js process at the exact deployed line.
 - Use `cf-hana` to confirm database facts after the failing entity, tenant, or key is known.
 - Do not force all tools into every investigation. Pick the smallest evidence source that can confirm or reject the current hypothesis.
-- Treat inspector captures, trace bodies, headers, HANA rows, and saved refs as sensitive; summarize findings instead of pasting raw values unless the user explicitly asks.
+- Treat log rows, inspector captures, trace bodies, headers, HANA rows, and saved refs as sensitive; summarize findings instead of pasting raw values unless the user explicitly asks.
