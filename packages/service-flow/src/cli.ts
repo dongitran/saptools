@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import pc from 'picocolors';
 import { DEFAULT_IGNORES } from './config/defaults.js';
 import {
   createWorkspaceConfig,
@@ -27,6 +26,7 @@ import { parseVars } from './trace/selectors.js';
 import { parseImplementationHint } from './trace/implementation-hints.js';
 import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
+import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
 import { VERSION } from './version.js';
 async function init(
@@ -370,15 +370,12 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .option('--strict')
     .option('--detail')
+    .option('--format <format>', 'json|table')
     .action(
-      (opts: { workspace?: string; strict?: boolean; detail?: boolean }) =>
+      (opts: { workspace?: string; strict?: boolean; detail?: boolean; format?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), { detail: Boolean(opts.detail) });
-          process.stdout.write(
-            allDiagnostics.length
-              ? renderJson(allDiagnostics)
-              : `${pc.green('No diagnostics recorded')}\n`,
-          );
+          process.stdout.write(renderDoctorDiagnostics(allDiagnostics, opts.format));
         }).catch(fail),
     );
   program

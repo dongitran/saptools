@@ -124,4 +124,42 @@ describe('strict doctor implementation aggregation', () => {
     expect(ownershipDetail?.expandedExamples).toHaveLength(5);
     db.close();
   });
+
+  it('aggregates repeated remote targets without implementation by service and operation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-doctor-missing-impl-'));
+    const db = openDatabase(path.join(root, 'graph.db'));
+    const workspaceId = upsertWorkspace(db, root, path.join(root, 'graph.db'));
+    const repoId = upsertRepository(db, workspaceId, {
+      name: 'facade-service',
+      absolutePath: path.join(root, 'facade-service'),
+      relativePath: 'facade-service',
+      isGitRepo: false,
+      packageName: '@neutral/facade-service',
+      kind: 'cap-service',
+    });
+    const serviceId = insertService(db, repoId, '/ProductService', 1);
+    const operationId = insertOperation(db, serviceId, 'activate', 2);
+    const insertCall = db.prepare('INSERT INTO outbound_calls(repo_id,call_type,operation_path_expr,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?) RETURNING id');
+    const insertEdge = db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
+    for (const line of [10, 20, 30, 40]) {
+      const callId = Number(insertCall.get(repoId, 'remote_action', '/activate', 'srv/facade.ts', line, 0.8, JSON.stringify({ parser: 'neutral_fixture' }))?.id);
+      insertEdge.run(workspaceId, 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(callId), 'operation', String(operationId), 0.9, '{}', 0, 1);
+    }
+
+    const compact = doctorDiagnostics(db, true).find((item) => item.code === 'remote_target_without_implementation') as {
+      callSiteCount?: number;
+      examples?: unknown[];
+      expandedExamples?: unknown[];
+      servicePath?: string;
+      operationPath?: string;
+    };
+    expect(compact).toMatchObject({ servicePath: '/ProductService', operationPath: '/activate', callSiteCount: 4 });
+    expect(compact.examples).toHaveLength(3);
+    expect(compact.expandedExamples).toBeUndefined();
+
+    const detailed = doctorDiagnostics(db, true, { detail: true }).find((item) => item.code === 'remote_target_without_implementation') as typeof compact;
+    expect(detailed.expandedExamples).toHaveLength(4);
+    db.close();
+  });
+
 });

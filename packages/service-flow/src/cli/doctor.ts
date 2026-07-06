@@ -18,6 +18,7 @@ export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOption
   return [
     ...diagnostics,
     ...healthDiagnostics(db, strict),
+    ...remoteTargetWithoutImplementationDiagnostics(db, strict, Boolean(options.detail)),
     ...localServiceDiagnostics(db, strict),
     ...schemaDriftDiagnostics(db, strict),
     ...analyzerVersionDiagnostics(db, strict),
@@ -46,10 +47,6 @@ function healthDiagnostics(db: Db, strict: boolean): Diagnostic[] {
      SELECT 'warning','legacy_schema_weaker_foreign_keys','Legacy table lacks fresh-schema foreign-key metadata; rebuild the database or re-run init/index in a new database',NULL,NULL
      WHERE (SELECT COUNT(*) FROM pragma_foreign_key_list('graph_edges'))=0 OR (SELECT COUNT(*) FROM pragma_foreign_key_list('index_runs'))=0 OR (SELECT COUNT(*) FROM pragma_foreign_key_list('diagnostics'))=0
      UNION ALL
-     SELECT 'warning','remote_target_without_implementation','Remote target operation has no implementation edge: ' || s.service_path || o.operation_path,o.source_file,o.source_line
-     FROM graph_edges remote JOIN cds_operations o ON o.id=CAST(remote.to_id AS INTEGER) JOIN cds_services s ON s.id=o.service_id
-     WHERE remote.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' AND remote.to_kind='operation' AND NOT EXISTS (SELECT 1 FROM graph_edges impl WHERE impl.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND impl.from_kind='operation' AND impl.from_id=remote.to_id) AND ?
-     UNION ALL
      SELECT CASE WHEN ? THEN 'warning' ELSE 'error' END,'local_service_calls_all_unresolved','All local service calls are unresolved; verify local service alias parsing and linking',NULL,NULL
      WHERE EXISTS (SELECT 1 FROM outbound_calls WHERE call_type='local_service_call') AND NOT EXISTS (SELECT 1 FROM graph_edges e JOIN outbound_calls c ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER) WHERE c.call_type='local_service_call' AND e.status='resolved')
      UNION ALL
@@ -67,7 +64,44 @@ function healthDiagnostics(db: Db, strict: boolean): Diagnostic[] {
      UNION ALL
      SELECT 'warning','index_run_abandoned','Index run ' || id || ' started at ' || started_at || ' is still running after the 60 minute abandonment threshold',NULL,NULL
      FROM index_runs WHERE status='running' AND datetime(started_at) < datetime('now','-60 minutes')`,
-  ).all(strict, strict, strict, strict, strict, strict, strict) as Diagnostic[];
+  ).all(strict, strict, strict, strict, strict, strict) as Diagnostic[];
+}
+
+
+function remoteTargetWithoutImplementationDiagnostics(db: Db, strict: boolean, detail: boolean): Diagnostic[] {
+  if (!strict) return [];
+  const groups = db.prepare(`SELECT s.service_path servicePath,o.operation_path operationPath,o.source_file sourceFile,o.source_line sourceLine,COUNT(*) callSiteCount
+    FROM graph_edges remote JOIN cds_operations o ON o.id=CAST(remote.to_id AS INTEGER) JOIN cds_services s ON s.id=o.service_id
+    WHERE remote.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' AND remote.to_kind='operation'
+      AND NOT EXISTS (SELECT 1 FROM graph_edges impl WHERE impl.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND impl.from_kind='operation' AND impl.from_id=remote.to_id)
+    GROUP BY s.service_path,o.operation_path,o.source_file,o.source_line
+    ORDER BY s.service_path,o.operation_path`).all() as Array<{ servicePath?: string; operationPath?: string; sourceFile?: string | null; sourceLine?: number | null; callSiteCount?: number }>;
+  return groups.map((group) => {
+    const examples = remoteTargetWithoutImplementationExamples(db, String(group.servicePath ?? ''), String(group.operationPath ?? ''));
+    return {
+      severity: 'warning',
+      code: 'remote_target_without_implementation',
+      message: `Remote target operation has no implementation edge: ${String(group.servicePath ?? '')}${String(group.operationPath ?? '')}`,
+      sourceFile: group.sourceFile,
+      sourceLine: group.sourceLine,
+      servicePath: group.servicePath,
+      operationPath: group.operationPath,
+      callSiteCount: Number(group.callSiteCount ?? 0),
+      examples: examples.slice(0, 3),
+      expandedExamples: detail ? examples : undefined,
+    };
+  });
+}
+
+function remoteTargetWithoutImplementationExamples(db: Db, servicePath: string, operationPath: string): Diagnostic[] {
+  return db.prepare(`SELECT r.name repo,c.source_file sourceFile,c.source_line sourceLine,c.operation_path_expr operationPathExpr
+    FROM graph_edges remote JOIN cds_operations o ON o.id=CAST(remote.to_id AS INTEGER) JOIN cds_services s ON s.id=o.service_id
+    LEFT JOIN outbound_calls c ON remote.from_kind='call' AND c.id=CAST(remote.from_id AS INTEGER)
+    LEFT JOIN repositories r ON r.id=c.repo_id
+    WHERE remote.edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' AND remote.to_kind='operation'
+      AND s.service_path=? AND o.operation_path=?
+      AND NOT EXISTS (SELECT 1 FROM graph_edges impl WHERE impl.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND impl.from_kind='operation' AND impl.from_id=remote.to_id)
+    ORDER BY r.name,c.source_file,c.source_line`).all(servicePath, operationPath) as Diagnostic[];
 }
 
 function schemaDriftDiagnostics(db: Db, strict: boolean): Diagnostic[] {
