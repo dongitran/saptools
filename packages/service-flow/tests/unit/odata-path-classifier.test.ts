@@ -51,4 +51,13 @@ describe('entity-key placeholders versus operation arguments', () => {
       mediaOrPropertySuffix: suffix,
     });
   });
+
+  it('preserves invocation argument text separately from normalized operation paths', () => {
+    expect(classifyODataPathIntent("/refreshCache(scope='${scope}',force=true)", 'POST')).toMatchObject({
+      kind: 'operation_invocation',
+      invocationArguments: "scope='${scope}',force=true",
+      invocationArgumentPlaceholderKeys: ['scope'],
+      topLevelOperationName: 'refreshCache',
+    });
+  });
 });

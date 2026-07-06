@@ -6,6 +6,10 @@ import { openDatabase } from '../../src/db/connection.js';
 import { upsertRepository, upsertWorkspace } from '../../src/db/repositories.js';
 import { linkWorkspace } from '../../src/index.js';
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
 function addRepo(db: ReturnType<typeof openDatabase>, workspaceId: number, root: string, name: string): number {
   return upsertRepository(db, workspaceId, {
     name,
@@ -49,26 +53,39 @@ describe('OData operation invocation resolution', () => {
     addCall(db, callerRepoId, addBinding(db, callerRepoId, 'dynamicClient', '/${tenant}Service'), 'remote_action', 'POST', '/refreshCache()');
     addCall(db, callerRepoId, null, 'remote_action', 'POST', '/sharedAction()');
     addCall(db, callerRepoId, addBinding(db, callerRepoId, 'entityClient', '/AdminService'), 'remote_query', 'GET', '/BusinessPartners(123)', 'BusinessPartners');
+    addCall(db, callerRepoId, addBinding(db, callerRepoId, 'navigationClient', '/AdminService'), 'remote_query', 'GET', "/BusinessPartners('1')/addresses", 'BusinessPartners');
+    addCall(db, callerRepoId, addBinding(db, callerRepoId, 'mediaClient', '/AdminService'), 'remote_entity_media', 'GET', "/Documents('1')/$value", 'Documents');
+    addCall(db, callerRepoId, addBinding(db, callerRepoId, 'mutationClient', '/AdminService'), 'remote_entity_mutation', 'PATCH', "/BusinessPartners('1')", 'BusinessPartners');
 
     const linked = linkWorkspace(db, workspaceId);
     expect(linked.remoteResolvedCount).toBe(1);
     expect(linked.dynamicCount).toBe(1);
     expect(linked.ambiguousCount).toBe(1);
-    expect(linked.terminalCount).toBe(1);
+    expect(linked.terminalCount).toBe(4);
 
     const rows = db.prepare("SELECT c.operation_path_expr path,c.call_type callType,e.edge_type edgeType,e.status status,e.unresolved_reason unresolvedReason,e.evidence_json evidenceJson FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) ORDER BY c.id").all() as Array<{ path: string; callType: string; edgeType: string; status: string; unresolvedReason: string | null; evidenceJson: string }>;
     const staticInvocation = rows.find((row) => row.path === '/refreshCache()' && row.status === 'resolved');
-    expect(JSON.parse(staticInvocation?.evidenceJson ?? '{}')).toMatchObject({
+    const staticEvidence = JSON.parse(staticInvocation?.evidenceJson ?? '{}') as unknown;
+    expect(staticEvidence).toMatchObject({
       rawOperationPath: '/refreshCache()',
       normalizedOperationPath: '/refreshCache',
+      invocationArguments: '',
       targetServicePath: '/AdminService',
     });
+    const candidateScores = recordValue(staticEvidence)?.candidateScores;
+    expect(Array.isArray(candidateScores)).toBe(true);
+    const adminScore = Array.isArray(candidateScores)
+      ? candidateScores.map(recordValue).find((candidate) => candidate?.servicePath === '/AdminService')
+      : undefined;
+    expect(adminScore).toMatchObject({ operationPath: '/refreshCache' });
+    expect(adminScore?.reasons).toEqual(expect.arrayContaining(['operation_path_match', 'exact_service_path']));
     const dynamicInvocation = rows.find((row) => row.path === '/refreshCache()' && row.status === 'dynamic');
     expect(dynamicInvocation?.unresolvedReason).toContain('missing_variable:tenant');
     expect(JSON.parse(dynamicInvocation?.evidenceJson ?? '{}')).toMatchObject({
       rawOperationPath: '/refreshCache()',
       normalizedOperationPath: '/refreshCache',
       servicePath: '/${tenant}Service',
+      routingPlaceholderKeys: ['tenant'],
     });
     expect(rows.find((row) => row.path === '/sharedAction()')).toMatchObject({
       status: 'ambiguous',
@@ -80,6 +97,14 @@ describe('OData operation invocation resolution', () => {
       status: 'terminal',
       unresolvedReason: null,
     });
+    for (const entityPath of ["/BusinessPartners('1')/addresses", "/Documents('1')/$value", "/BusinessPartners('1')"]) {
+      const entityRow = rows.find((row) => row.path === entityPath);
+      expect(entityRow).toMatchObject({
+        status: 'terminal',
+        unresolvedReason: null,
+      });
+      expect(entityRow?.edgeType).not.toContain('OPERATION');
+    }
     db.close();
   });
 });

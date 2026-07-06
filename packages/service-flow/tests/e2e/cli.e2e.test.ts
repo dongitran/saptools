@@ -26,7 +26,7 @@ async function run(
   return stdout;
 }
 describe('service-flow CLI', () => {
-  it('runs init index link trace graph doctor', async () => {
+  it('runs init index link trace graph list and doctor', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'service-flow-e2e-'));
     const db = path.join(dir, 'service-flow.db');
     await expect(runResult(['init', fixture, '--db', db])).resolves.toMatchObject({ stderr: '' });
@@ -89,6 +89,11 @@ describe('service-flow CLI', () => {
     ]);
     expect(graphResult.stderr).toBe('');
     expect(graphResult.stdout).toContain('flowchart TD');
+    const listResult = await runResult(['list', 'operations', '--workspace', fixture, '--repo', 'facade-service']);
+    expect(listResult.stderr).toBe('');
+    expect(JSON.parse(listResult.stdout)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repo: 'facade-service' }),
+    ]));
     const doctorResult = await runResult(['doctor', '--workspace', fixture]);
     expect(doctorResult.stderr).toBe('');
     expect(doctorResult.stdout).toMatch(/No diagnostics|\[/);
@@ -101,6 +106,11 @@ describe('service-flow CLI', () => {
     expect(strictDiagnostics.some((item) => item.code === 'strict_graph_evidence_quality')).toBe(true);
     expect(strictDiagnostics.some((item) => item.code === 'strict_event_receiver_classification_quality')).toBe(true);
     expect(strictDiagnostics.some((item) => item.code === 'strict_graph_dynamic_flag_consistency')).toBe(true);
+    const detailDoctorResult = await runResult(['doctor', '--workspace', fixture, '--strict', '--detail']);
+    expect(detailDoctorResult.stderr).toBe('');
+    expect(JSON.parse(detailDoctorResult.stdout)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'strict_implementation_candidate_quality' }),
+    ]));
   });
 });
 

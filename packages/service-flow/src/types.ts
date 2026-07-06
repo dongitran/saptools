@@ -179,6 +179,14 @@ export interface TraceStart {
   operationPath?: string;
   handler?: string;
 }
+export interface ImplementationHint {
+  servicePath?: string;
+  operationPath?: string;
+  packageName?: string;
+  repositoryName?: string;
+  candidateFamily?: string;
+  implementationRepo: string;
+}
 export interface TraceEdge {
   step: number;
   type: string;

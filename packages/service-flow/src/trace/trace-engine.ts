@@ -2,8 +2,9 @@ import type { Db } from '../db/connection.js';
 import { extractPlaceholders } from '../linker/dynamic-edge-resolver.js';
 import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { resolveOperation } from '../linker/service-resolver.js';
-import type { TraceEdge, TraceResult, TraceStart } from '../types.js';
+import type { ImplementationHint, TraceEdge, TraceResult, TraceStart } from '../types.js';
 import { baseTraceEvidence, edgeTarget, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
+import { implementationHintDiagnostic, selectImplementation, type ImplementationSelection } from './implementation-hints.js';
 
 interface RepoRef {
   id: number;
@@ -59,10 +60,12 @@ interface ContextBinding {
   parameterPropertyAliasKind?: unknown;
   parameterPropertyAliasLine?: unknown;
   calleeReceiver: string;
+  callerSite?: { sourceFile?: string; sourceLine?: number };
+  calleeSite?: { sourceFile?: string; sourceLine?: number };
 }
-interface ImplementationSelection {
-  methodId?: string;
-  evidence: Record<string, unknown>;
+interface ImplementationHintOptions {
+  implementationRepo?: string;
+  implementationHints?: ImplementationHint[];
 }
 function normalizeOperation(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -72,7 +75,7 @@ function positiveDepth(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
 }
 
-function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, implementationRepo?: string): { files?: Set<string>; symbols?: Set<number>; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
+function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, hintOptions: ImplementationHintOptions): { files?: Set<string>; symbols?: Set<number>; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
   const requested = normalizeOperation(start.operationPath ?? start.operation);
   if (!requested) return undefined;
   const rows = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_path operationPath,s.service_path servicePath,r.id repoId,r.name repoName
@@ -88,14 +91,16 @@ function operationStartScope(db: Db, repoId: number | undefined, start: TraceSta
   const operationId = String(rows[0]?.operationId);
   const impl = implementationScope(db, operationId);
   if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, operationId, diagnostics: [] };
-  const hinted = implementationMethodIdFromHint(impl.edge, implementationRepo);
+  const hinted = implementationMethodIdFromHint(impl.edge, hintOptions);
   if (hinted.methodId) {
     const hintedScope = handlerScope(db, hinted.methodId);
     if (hintedScope?.files.size) return { files: hintedScope.files, symbols: hintedScope.symbolId ? new Set([hintedScope.symbolId]) : undefined, operationId, diagnostics: [] };
   }
   if (impl.edge) {
     const evidence = parseEvidence(impl.edge.evidence_json);
-    return { operationId, diagnostics: [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, candidates: evidence.candidates }] };
+    const hintDiagnostic = implementationHintDiagnostic(hinted);
+    const diagnostics = [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, candidates: evidence.candidates }];
+    return { operationId, diagnostics: hintDiagnostic ? [hintDiagnostic, ...diagnostics] : diagnostics };
   }
   return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_implementation_unresolved', message: 'Indexed operation matched but no implementation candidate exists', resolutionStage: 'implementation', resolutionStatus: 'operation_without_implementation' }] };
 }
@@ -146,7 +151,7 @@ function sourceFilesForStart(
   }
   return undefined;
 }
-function startScope(db: Db, start: TraceStart, implementationRepo?: string): StartScope {
+function startScope(db: Db, start: TraceStart, hintOptions: ImplementationHintOptions): StartScope {
   const repo = start.repo
     ? (db
         .prepare(
@@ -155,7 +160,7 @@ function startScope(db: Db, start: TraceStart, implementationRepo?: string): Sta
         .get(start.repo, start.repo) as RepoRef | undefined)
     : undefined;
   if (start.repo && !repo) return { repo, selectorMatched: false };
-  const operationScope = operationStartScope(db, repo?.id, start, implementationRepo);
+  const operationScope = operationStartScope(db, repo?.id, start, hintOptions);
   const terminalOperationScope = operationScope && !operationScope.files && (operationScope.diagnostics ?? []).some((d) => d.resolutionStage === 'operation' || d.resolutionStage === 'implementation');
   const sourceScope = operationScope?.files || terminalOperationScope ? operationScope : sourceFilesForStart(db, repo?.id, start);
   const sourceFiles = sourceScope?.files;
@@ -211,32 +216,16 @@ function implementationScope(db: Db, operationId: string): { repoId?: number; fi
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
   return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
-function implementationMethodIdFromHint(edge: GraphRow | undefined, implementationRepo: string | undefined): ImplementationSelection {
-  if (!edge || edge.status !== 'ambiguous' || !implementationRepo) return { evidence: { status: 'not_applicable' } };
-  const evidence = parseEvidence(edge.evidence_json) as { ambiguityReasons?: string[]; candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { name?: string; packageName?: string }; sourceFile?: string }> };
-  const matches = (evidence.candidates ?? []).filter((item) => item.accepted && (
-    item.handlerPackage?.name === implementationRepo ||
-    item.handlerPackage?.packageName === implementationRepo ||
-    item.sourceFile?.startsWith(implementationRepo)
-  ));
-  if (matches.length !== 1 || matches[0]?.methodId === undefined) return { evidence: { status: matches.length > 1 ? 'tied' : 'not_matched', strategy: 'implementation_repo_hint', selectedRepo: implementationRepo, candidateCount: matches.length } };
-  return {
-    methodId: String(matches[0].methodId),
-    evidence: {
-      status: 'selected',
-      guided: true,
-      strategy: 'implementation_repo_hint',
-      selectedRepo: implementationRepo,
-      selectedMethodId: matches[0].methodId,
-      ambiguityReason: evidence.ambiguityReasons?.[0],
-    },
-  };
+function implementationMethodIdFromHint(edge: GraphRow | undefined, options: ImplementationHintOptions): ImplementationSelection {
+  if (!edge || edge.status !== 'ambiguous') return { blocksAutomatic: false, evidence: { status: 'not_applicable' } };
+  return selectImplementation(parseEvidence(edge.evidence_json), options.implementationHints, options.implementationRepo);
 }
 
-function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown> = {}, implementationRepo?: string): ImplementationSelection {
-  const hinted = implementationMethodIdFromHint(edge, implementationRepo);
+function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown>, hintOptions: ImplementationHintOptions): ImplementationSelection {
+  const hinted = implementationMethodIdFromHint(edge, hintOptions);
   if (hinted.methodId) return hinted;
-  if (!edge || edge.status !== 'ambiguous' || callerRepoId === undefined) return { evidence: { status: 'not_applicable' } };
+  if (hinted.blocksAutomatic) return hinted;
+  if (!edge || edge.status !== 'ambiguous' || callerRepoId === undefined) return hinted;
   const evidence = JSON.parse(String(edge.evidence_json || '{}')) as { candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { id?: number; name?: string }; applicationPackage?: { id?: number; name?: string }; reasons?: string[]; score?: number }> };
   const scores = (evidence.candidates ?? []).filter((item) => item.accepted).map((item) => {
     const reasons: string[] = [];
@@ -246,10 +235,10 @@ function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId:
     if (typeof remoteEvidence.effectiveServicePath === 'string' || typeof remoteEvidence.effectiveDestination === 'string' || typeof remoteEvidence.effectiveAlias === 'string') { score += 1; reasons.push('remote_call_context_available'); }
     return { methodId: item.methodId, score, reasons, handlerPackage: item.handlerPackage, applicationPackage: item.applicationPackage };
   }).sort((a, b) => b.score - a.score);
-  if (scores.length === 0) return { evidence: { status: 'not_applicable', candidateScores: [] } };
+  if (scores.length === 0) return { blocksAutomatic: false, evidence: { status: 'not_applicable', candidateScores: [] } };
   const [first, second] = scores;
-  if (first && first.methodId !== undefined && first.score > 0 && (!second || first.score > second.score)) return { methodId: String(first.methodId), evidence: { status: 'selected', selectedMethodId: first.methodId, candidateScores: scores } };
-  return { evidence: { status: 'tied', tieReason: scores.length > 1 ? 'duplicate_helper_implementation_candidates' : 'no_unique_materially_stronger_candidate', candidateScores: scores } };
+  if (first && first.methodId !== undefined && first.score > 0 && (!second || first.score > second.score)) return { methodId: String(first.methodId), blocksAutomatic: false, evidence: { status: 'selected', selectedMethodId: first.methodId, candidateScores: scores } };
+  return { blocksAutomatic: false, evidence: hinted.evidence.reason === 'no_scoped_hint_matched_edge' ? hinted.evidence : { status: 'tied', tieReason: scores.length > 1 ? 'duplicate_helper_implementation_candidates' : 'no_unique_materially_stronger_candidate', candidateScores: scores } };
 }
 function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<string>; symbolId?: number } | undefined {
   const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(methodId) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
@@ -361,18 +350,22 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
   const next = new Map<string, ContextBinding>();
   if (callerBindings.size === 0) return next;
   const callEvidence = parseEvidence(symbolCall.evidence_json);
-  const callee = db.prepare('SELECT evidence_json evidenceJson FROM symbols WHERE id=?').get(symbolCall.callee_symbol_id) as { evidenceJson?: string } | undefined;
+  const callee = db.prepare('SELECT evidence_json evidenceJson,source_file sourceFile,start_line startLine FROM symbols WHERE id=?').get(symbolCall.callee_symbol_id) as { evidenceJson?: string; sourceFile?: string; startLine?: number } | undefined;
   const calleeEvidence = parseEvidence(callee?.evidenceJson);
   const params = Array.isArray(calleeEvidence.parameters) ? calleeEvidence.parameters.filter((item): item is string => typeof item === 'string') : [];
   const parameterBindings = Array.isArray(calleeEvidence.parameterBindings) ? calleeEvidence.parameterBindings.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
   const parameterPropertyAliases = Array.isArray(calleeEvidence.parameterPropertyAliases) ? calleeEvidence.parameterPropertyAliases.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : [];
   const args = Array.isArray(callEvidence.callArguments) ? callEvidence.callArguments as Array<Record<string, unknown>> : [];
+  const provenance = {
+    callerSite: { sourceFile: String(symbolCall.source_file ?? ''), sourceLine: Number(symbolCall.source_line ?? 0) },
+    calleeSite: { sourceFile: callee?.sourceFile, sourceLine: callee?.startLine },
+  };
   args.forEach((arg, index) => {
     const paramBinding = parameterBindings.find((binding) => binding.index === index);
     const param = paramBinding?.kind === 'identifier' && typeof paramBinding.name === 'string' ? paramBinding.name : params[index];
     if (arg.kind === 'identifier' && typeof arg.name === 'string') {
       const binding = callerBindings.get(arg.name);
-      if (binding && param) next.set(param, { ...binding, source: 'local_symbol_argument', callerArgument: arg.name, calleeParameter: param, calleeReceiver: param });
+      if (binding && param) next.set(param, { ...binding, ...provenance, source: 'local_symbol_argument', callerArgument: arg.name, calleeParameter: param, calleeReceiver: param });
     }
     if (arg.kind === 'object_literal' && Array.isArray(arg.properties)) {
       for (const prop of arg.properties as Array<Record<string, unknown>>) {
@@ -382,13 +375,21 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
         const destructured = paramBinding?.kind === 'object_pattern' && Array.isArray(paramBinding.properties)
           ? (paramBinding.properties as Array<Record<string, unknown>>).find((item) => item.property === prop.property && typeof item.local === 'string')
           : undefined;
-        if (destructured && typeof destructured.local === 'string') next.set(destructured.local, { ...binding, source: 'local_symbol_destructured_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: String(index), calleeReceiver: destructured.local });
+        if (destructured && typeof destructured.local === 'string') next.set(destructured.local, { ...binding, ...provenance, source: 'local_symbol_destructured_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: String(index), calleeReceiver: destructured.local });
         else if (param) {
-          next.set(`${param}.${prop.property}`, { ...binding, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
+          next.set(`${param}.${prop.property}`, { ...binding, ...provenance, source: 'local_symbol_object_argument', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeReceiver: `${param}.${prop.property}` });
           for (const alias of parameterPropertyAliases) {
-            if (alias.parameter === param && alias.property === prop.property && typeof alias.local === 'string') next.set(alias.local, { ...binding, source: 'local_symbol_object_parameter_destructure', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeObjectProperty: `${param}.${prop.property}`, calleeReceiver: alias.local, calleeLocalDestructuredIdentifier: alias.local, parameterPropertyAliasKind: alias.kind, parameterPropertyAliasLine: alias.line });
+            if (alias.parameter === param && alias.property === prop.property && typeof alias.local === 'string') next.set(alias.local, { ...binding, ...provenance, source: 'local_symbol_object_parameter_destructure', callerProperty: prop.property, callerArgument: prop.argument, calleeParameter: param, calleeObjectProperty: `${param}.${prop.property}`, calleeReceiver: alias.local, calleeLocalDestructuredIdentifier: alias.local, parameterPropertyAliasKind: alias.kind, parameterPropertyAliasLine: alias.line });
           }
         }
+      }
+    }
+    if (arg.kind === 'array_literal' && Array.isArray(arg.elements) && paramBinding?.kind === 'array_pattern' && Array.isArray(paramBinding.elements)) {
+      for (const element of arg.elements as Array<Record<string, unknown>>) {
+        const target = (paramBinding.elements as Array<Record<string, unknown>>).find((item) => item.index === element.index);
+        if (element.kind !== 'identifier' || typeof element.name !== 'string' || typeof target?.local !== 'string') continue;
+        const binding = callerBindings.get(element.name);
+        if (binding) next.set(target.local, { ...binding, ...provenance, source: 'local_symbol_destructured_array_argument', callerArgument: element.name, calleeParameter: String(index), calleeReceiver: target.local });
       }
     }
   });
@@ -401,7 +402,7 @@ function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBind
   const servicePath = binding.effectiveServicePath ?? binding.servicePathExpr ?? binding.requireServicePath;
   const destination = binding.effectiveDestination ?? binding.destinationExpr ?? binding.requireDestination;
   const resolution = resolveOperation(db, { servicePath, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination, hasExplicitOverride: true, isDynamic: false }, workspaceId);
-  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
+  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, callerSite: binding.callerSite, calleeSite: binding.calleeSite, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
   if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : resolution.status === 'dynamic' ? `Dynamic contextual target is missing runtime variables: ${resolution.reasons.join(', ')}` : 'No contextual operation candidate matched' };
   const resolvedEvidence = { ...evidence, contextualServiceBindingSelected: true, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName };
   const persistedResolved = persistedRows.find((item) => item.status === 'resolved');
@@ -418,9 +419,11 @@ export function trace(
     includeDb?: boolean;
     includeAsync?: boolean;
     implementationRepo?: string;
+    implementationHints?: ImplementationHint[];
   },
 ): TraceResult {
-  const scope = startScope(db, start, options.implementationRepo);
+  const hintOptions = { implementationRepo: options.implementationRepo, implementationHints: options.implementationHints };
+  const scope = startScope(db, start, hintOptions);
   const diagnostics = db
     .prepare(
       'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics WHERE (? IS NULL OR repo_id=?)',
@@ -448,7 +451,7 @@ export function trace(
     const op = operationNode(db, scope.startOperationId);
     const impl = implementationScope(db, scope.startOperationId);
     if (op) nodes.set(String(op.id), op);
-    const startSelection = implementationMethodIdFromHint(impl.edge, options.implementationRepo);
+    const startSelection = implementationMethodIdFromHint(impl.edge, hintOptions);
     if (impl.edge && (impl.edge.status === 'resolved' || startSelection.methodId)) {
       const selectedMethodId = impl.edge.status === 'resolved' ? impl.edge.to_id : startSelection.methodId;
       const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: selectedMethodId }, implementationSelection: startSelection.methodId ? startSelection.evidence : undefined };
@@ -540,10 +543,12 @@ export function trace(
         });
         if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
-          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence, options.implementationRepo);
+          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence, hintOptions);
           const contextMethodId = contextSelection.methodId;
           const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
           if (implementation.edge) {
+            const hintDiagnostic = implementationHintDiagnostic(contextSelection);
+            if (hintDiagnostic) diagnostics.unshift(hintDiagnostic);
             const implEvidence = JSON.parse(String(implementation.edge.evidence_json || '{}')) as Record<string, unknown>;
             const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : contextNode;
             const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
@@ -553,7 +558,9 @@ export function trace(
               type: 'operation_implemented_by_handler',
               from: to,
               to: implTo,
-              evidence: contextMethodId ? { ...implEvidence, contextualImplementationSelected: contextSelection.evidence.strategy !== 'implementation_repo_hint', contextualImplementation: contextSelection.evidence, implementationSelection: contextSelection.evidence } : { ...implEvidence, contextualImplementation: contextSelection.evidence },
+              evidence: contextMethodId
+                ? { ...implEvidence, contextualImplementationSelected: contextSelection.evidence.strategy !== 'implementation_repo_hint', contextualImplementation: contextSelection.evidence, implementationSelection: contextSelection.evidence }
+                : { ...implEvidence, contextualImplementation: contextSelection.evidence, implementationSelection: contextSelection.evidence },
               confidence: Number(implementation.edge.confidence ?? 0),
               unresolvedReason: implementation.edge.status === 'resolved' || contextMethodId ? undefined : String(implementation.edge.unresolved_reason ?? implementation.edge.status),
             });

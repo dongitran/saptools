@@ -1,5 +1,6 @@
 import type { Db } from '../db/connection.js';
 import { extractPlaceholders, substituteVariables, type RuntimeSubstitution } from '../linker/dynamic-edge-resolver.js';
+import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { resolveOperation, type OperationTarget } from '../linker/service-resolver.js';
 
 export interface TraceGraphRow extends Record<string, unknown> {
@@ -154,7 +155,11 @@ function withEffectiveResolution(
 
 function resolveRuntimeOperation(db: Db, evidence: Record<string, unknown>, workspaceId: number | undefined): ReturnType<typeof resolveOperation> {
   const servicePath = stringValue(evidence.servicePath);
-  const operationPath = stringValue(evidence.normalizedOperationPath ?? evidence.operationPath);
+  const rawOperationPath = stringValue(evidence.operationPath);
+  const normalized = normalizeODataOperationInvocationPath(rawOperationPath);
+  const operationPath = normalized?.wasInvocation
+    ? normalized.normalizedOperationPath
+    : stringValue(evidence.normalizedOperationPath) ?? rawOperationPath;
   const alias = stringValue(evidence.serviceAliasExpr ?? evidence.serviceAlias);
   const destination = stringValue(evidence.destination);
   return resolveOperation(db, { servicePath, operationPath, alias, destination, hasExplicitOverride: true, isDynamic: true }, workspaceId);

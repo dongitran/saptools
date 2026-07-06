@@ -24,6 +24,7 @@ import { linkWorkspace } from './linker/cross-repo-linker.js';
 import { doctorDiagnostics, linkUpgradeWarnings } from './cli/doctor.js';
 import { trace } from './trace/trace-engine.js';
 import { parseVars } from './trace/selectors.js';
+import { parseImplementationHint } from './trace/implementation-hints.js';
 import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
@@ -152,6 +153,7 @@ export function createProgram(): Command {
     .option('--include-db')
     .option('--include-async')
     .option('--implementation-repo <name>')
+    .option('--implementation-hint <scope>', 'scoped implementation hint', collect, [])
     .option('--var <key=value>', 'dynamic variable', collect, [])
     .action(
       (opts: {
@@ -167,6 +169,7 @@ export function createProgram(): Command {
         includeDb?: boolean;
         includeAsync?: boolean;
         implementationRepo?: string;
+        implementationHint: string[];
         var: string[];
       }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
@@ -186,6 +189,7 @@ export function createProgram(): Command {
               includeDb: Boolean(opts.includeDb),
               includeAsync: Boolean(opts.includeAsync),
               implementationRepo: opts.implementationRepo,
+              implementationHints: opts.implementationHint.map(parseImplementationHint),
             },
           );
           process.stdout.write(
@@ -293,6 +297,7 @@ export function createProgram(): Command {
     .option('--path <operationPath>')
     .option('--format <format>', 'mermaid|json', 'mermaid')
     .option('--implementation-repo <name>')
+    .option('--implementation-hint <scope>', 'scoped implementation hint', collect, [])
     .option('--var <key=value>', 'dynamic variable', collect, [])
     .action(
       (opts: {
@@ -303,6 +308,7 @@ export function createProgram(): Command {
         path?: string;
         format: string;
         implementationRepo?: string;
+        implementationHint: string[];
         var: string[];
       }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
@@ -321,6 +327,7 @@ export function createProgram(): Command {
               includeExternal: true,
               vars: parseVars(opts.var),
               implementationRepo: opts.implementationRepo,
+              implementationHints: opts.implementationHint.map(parseImplementationHint),
             },
           );
           process.stdout.write(
@@ -362,10 +369,11 @@ export function createProgram(): Command {
     .command('doctor')
     .option('--workspace <path>')
     .option('--strict')
+    .option('--detail')
     .action(
-      (opts: { workspace?: string; strict?: boolean }) =>
+      (opts: { workspace?: string; strict?: boolean; detail?: boolean }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
-          const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict));
+          const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), { detail: Boolean(opts.detail) });
           process.stdout.write(
             allDiagnostics.length
               ? renderJson(allDiagnostics)

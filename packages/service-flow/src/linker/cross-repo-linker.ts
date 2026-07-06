@@ -146,7 +146,29 @@ function objectJson(value: unknown): Record<string, unknown> | undefined {
 }
 function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; servicePath?: string; operationPath?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined, normalized?: NormalizedODataOperationPath, odataPathIntent?: ReturnType<typeof classifyODataPathIntent>): Record<string, unknown> {
   const bindingHasDynamicExpression = Boolean(Number(call.isDynamic ?? 0));
-  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, rawOperationPath: normalized?.wasInvocation ? normalized.rawOperationPath : odataPathIntent?.rawPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, odataOperationNormalizationReason: normalized?.normalizationReason, odataOperationNormalizationRejectedReason: normalized?.normalizationRejectedReason, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: parseJson(call.alias_chain_json), transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetServicePath: resolution.target?.servicePath, targetOperationPath: resolution.target?.operationPath, targetOperation: resolution.target?.operationName, helperChain: parseJson(call.helperChainJson), candidates: resolution.candidates, candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, odataPathIntent, queryStringPresent: odataPathIntent?.hasQueryString || undefined, queryPlaceholderKeys: odataPathIntent?.placeholderKeys.length ? odataPathIntent.placeholderKeys : undefined, bindingHasDynamicExpression: bindingHasDynamicExpression || undefined, outboundEvidence: objectJson(call.evidence_json), analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
+  const routingPlaceholderKeys = placeholderKeys([servicePath, destination, stringValue(call.aliasExpr), stringValue(call.alias)]);
+  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, rawOperationPath: normalized?.wasInvocation ? normalized.rawOperationPath : odataPathIntent?.rawPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArguments: normalized?.wasInvocation ? normalized.invocationArguments : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, routingPlaceholderKeys: routingPlaceholderKeys.length ? routingPlaceholderKeys : undefined, odataOperationNormalizationReason: normalized?.normalizationReason, odataOperationNormalizationRejectedReason: normalized?.normalizationRejectedReason, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: parseJson(call.alias_chain_json), transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetServicePath: resolution.target?.servicePath, targetOperationPath: resolution.target?.operationPath, targetOperation: resolution.target?.operationName, helperChain: parseJson(call.helperChainJson), candidates: resolution.candidates, candidateScores: compactCandidateScores(resolution.candidates), candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, odataPathIntent, queryStringPresent: odataPathIntent?.hasQueryString || undefined, queryPlaceholderKeys: odataPathIntent?.placeholderKeys.length ? odataPathIntent.placeholderKeys : undefined, bindingHasDynamicExpression: bindingHasDynamicExpression || undefined, outboundEvidence: objectJson(call.evidence_json), analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
+}
+
+function compactCandidateScores(candidates: unknown[]): Array<Record<string, unknown>> {
+  return candidates.flatMap((candidate): Array<Record<string, unknown>> => {
+    const row = objectValue(candidate);
+    if (!row) return [];
+    return [{ repo: row.repoName, servicePath: row.servicePath, operationPath: row.operationPath, score: row.score, reasons: row.reasons }];
+  });
+}
+
+function placeholderKeys(values: Array<string | undefined>): string[] {
+  const keys = values.flatMap((value) => [...(value ?? '').matchAll(/\$\{([^}]*)\}/g)].map((match) => (match[1] ?? '').trim()).filter(Boolean));
+  return [...new Set(keys)].sort();
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }
 
 function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {

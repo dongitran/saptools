@@ -3,13 +3,16 @@ import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from '
 import { ANALYZER_VERSION } from '../version.js';
 
 type Diagnostic = Record<string, unknown>;
+interface DoctorOptions {
+  detail?: boolean;
+}
 
 export function linkUpgradeWarnings(db: Db): Diagnostic[] {
   return [...schemaDriftDiagnostics(db, true), ...analyzerVersionDiagnostics(db, true)]
     .filter((item) => ['schema_legacy_columns_present', 'external_target_columns_missing_data', 'reindex_required_after_upgrade', 'reindex_required_after_analyzer_upgrade'].includes(String(item.code)));
 }
 
-export function doctorDiagnostics(db: Db, strict: boolean): Diagnostic[] {
+export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOptions = {}): Diagnostic[] {
   const diagnostics = db.prepare('SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id').all() as Diagnostic[];
   return [
     ...diagnostics,
@@ -17,7 +20,7 @@ export function doctorDiagnostics(db: Db, strict: boolean): Diagnostic[] {
     ...localServiceDiagnostics(db, strict),
     ...schemaDriftDiagnostics(db, strict),
     ...analyzerVersionDiagnostics(db, strict),
-    ...parserQualityDiagnostics(db, strict),
+    ...parserQualityDiagnostics(db, strict, options),
   ];
 }
 
@@ -99,7 +102,7 @@ function localServiceDiagnostics(db: Db, strict: boolean): Diagnostic[] {
   return out;
 }
 
-function parserQualityDiagnostics(db: Db, strict: boolean): Diagnostic[] {
+function parserQualityDiagnostics(db: Db, strict: boolean, options: DoctorOptions): Diagnostic[] {
   if (!strict) return [];
   const symbol = symbolCallQuality(db);
   const dbq = dbQueryQuality(db);
@@ -108,7 +111,7 @@ function parserQualityDiagnostics(db: Db, strict: boolean): Diagnostic[] {
     identityAliasBindingQuality(db),
     remoteActionNoBindingQuality(db),
     contextualImplementationQuality(db),
-    implementationCandidateQuality(db),
+    implementationCandidateQuality(db, Boolean(options.detail)),
     classInstanceNoiseQuality(db),
     contextualBindingPropagationQuality(db),
     nestedThisReceiverQuality(db),
@@ -178,20 +181,26 @@ function graphDynamicFlagQuality(db: Db): Diagnostic {
   return { severity: Number(row.count ?? 0) > 0 ? 'warning' : 'info', code: 'strict_graph_dynamic_flag_consistency', message: 'Graph dynamic flag consistency aggregate', dynamicTerminalEdges: Number(row.count ?? 0) };
 }
 
-function implementationCandidateQuality(db: Db): Diagnostic {
-  const categories = [...implementationEdgeCategories(db), missingParameterMetadataCategory(db)].filter((item) => item.count > 0);
+function implementationCandidateQuality(db: Db, detail: boolean): Diagnostic {
+  const categories = [...implementationEdgeCategories(db, detail), missingParameterMetadataCategory(db, detail), dynamicWrapperCategory(db, detail)].filter((item) => item.count > 0);
   const total = categories.reduce((sum, item) => sum + item.count, 0);
-  return { severity: total > 0 ? 'warning' : 'info', code: 'strict_implementation_candidate_quality', message: 'Implementation candidate ambiguity and rejection aggregate', total, categories };
+  return { severity: total > 0 ? 'warning' : 'info', code: 'strict_implementation_candidate_quality', message: 'Implementation candidate ambiguity and rejection aggregate', total, summary: implementationSummary(categories), categories };
 }
 
-function implementationEdgeCategories(db: Db): Array<Diagnostic & { count: number }> {
+function implementationEdgeCategories(db: Db, detail: boolean): Array<Diagnostic & { count: number }> {
   const rows = db.prepare(`SELECT e.status,e.unresolved_reason unresolvedReason,e.evidence_json evidenceJson,o.operation_name operationName,base.operation_name baseOperation,s.service_path servicePath
     FROM graph_edges e JOIN cds_operations o ON o.id=CAST(e.from_id AS INTEGER)
     JOIN cds_services s ON s.id=o.service_id LEFT JOIN cds_operations base ON base.id=o.base_operation_id
     WHERE e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND e.status IN ('ambiguous','unresolved') ORDER BY s.service_path,o.operation_name,e.id`).all() as Diagnostic[];
   const grouped = new Map<string, Diagnostic & { count: number; servicePaths: string[]; examples: Diagnostic[] }>();
   for (const row of rows) addImplementationCategory(grouped, row);
-  return [...grouped.values()].map(({ servicePaths, ...item }) => ({ ...item, servicePathPattern: pathPattern(servicePaths), examples: item.examples.slice(0, 3) }));
+  return [...grouped.values()].map(({ servicePaths, ...item }) => ({
+    ...item,
+    servicePathPattern: pathPattern(servicePaths),
+    suggestedAction: categoryAction(String(item.category)),
+    examples: item.examples.slice(0, 3),
+    expandedExamples: detail ? item.examples : undefined,
+  }));
 }
 
 function addImplementationCategory(grouped: Map<string, Diagnostic & { count: number; servicePaths: string[]; examples: Diagnostic[] }>, row: Diagnostic): void {
@@ -208,16 +217,44 @@ function addImplementationCategory(grouped: Map<string, Diagnostic & { count: nu
   grouped.set(key, current);
 }
 
-function missingParameterMetadataCategory(db: Db): Diagnostic & { count: number } {
+function missingParameterMetadataCategory(db: Db, detail = false): Diagnostic & { count: number } {
   const examples = db.prepare(`SELECT sc.source_file sourceFile,sc.source_line sourceLine,sc.callee_expression calleeExpression
     FROM symbol_calls sc JOIN symbols s ON s.id=sc.callee_symbol_id
     WHERE sc.status='resolved' AND json_extract(sc.evidence_json,'$.callArguments[0].kind') IN ('identifier','object_literal')
       AND (s.evidence_json IS NULL OR json_extract(s.evidence_json,'$.parameterBindings') IS NULL)
-    ORDER BY sc.source_file,sc.source_line LIMIT 3`).all() as Diagnostic[];
+    ORDER BY sc.source_file,sc.source_line`).all() as Diagnostic[];
   const row = db.prepare(`SELECT COUNT(*) count FROM symbol_calls sc JOIN symbols s ON s.id=sc.callee_symbol_id
     WHERE sc.status='resolved' AND json_extract(sc.evidence_json,'$.callArguments[0].kind') IN ('identifier','object_literal')
       AND (s.evidence_json IS NULL OR json_extract(s.evidence_json,'$.parameterBindings') IS NULL)`).get() as { count?: number };
-  return { category: 'missing_parameter_metadata', reason: 'callee symbol is missing parameter binding metadata', candidateFamily: 'symbol_parameter_metadata', count: Number(row.count ?? 0), examples };
+  return { category: 'missing_parameter_metadata', reason: 'callee symbol is missing parameter binding metadata', candidateFamily: 'symbol_parameter_metadata', count: Number(row.count ?? 0), suggestedAction: categoryAction('missing_parameter_metadata'), examples: examples.slice(0, 3), expandedExamples: detail ? examples : undefined };
+}
+
+function dynamicWrapperCategory(db: Db, detail: boolean): Diagnostic & { count: number } {
+  const rows = db.prepare(`SELECT source_file sourceFile,source_line sourceLine,
+      json_extract(evidence_json,'$.receiver') receiverName,
+      COALESCE(json_extract(evidence_json,'$.missingPathIdentifier'),json_extract(evidence_json,'$.operationPathExpression')) pathIdentifier
+    FROM outbound_calls WHERE call_type='remote_action' AND unresolved_reason='dynamic_operation_path_identifier'
+    ORDER BY source_file,source_line`).all() as Diagnostic[];
+  return { category: 'dynamic_wrapper_paths', reason: 'wrapper path cannot be proven statically', candidateFamily: 'wrapper_path', count: rows.length, suggestedAction: categoryAction('dynamic_wrapper_paths'), examples: rows.slice(0, 3), expandedExamples: detail ? rows : undefined };
+}
+
+function implementationSummary(categories: Array<Diagnostic & { count: number }>): Diagnostic[] {
+  const grouped = new Map<string, Diagnostic & { count: number }>();
+  for (const category of categories) {
+    const key = [category.category, category.candidateFamily, category.reason].join('\0');
+    const current = grouped.get(key) ?? { category: category.category, candidateFamily: category.candidateFamily, reason: category.reason, severity: 'warning', suggestedAction: category.suggestedAction, count: 0 };
+    current.count += category.count;
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].sort((left, right) => String(left.category).localeCompare(String(right.category)) || String(left.candidateFamily).localeCompare(String(right.candidateFamily)));
+}
+
+function categoryAction(category: string): string {
+  if (category === 'duplicate_package_name_candidates') return 'Use scoped --implementation-hint fields to select one repository for each ambiguous hop.';
+  if (category === 'missing_strong_ownership_evidence') return 'Add an explicit package dependency, local service-path ownership, or registration ownership evidence.';
+  if (category === 'missing_parameter_metadata') return 'Export a statically analyzable helper with named or destructured parameters.';
+  if (category === 'dynamic_wrapper_paths') return 'Pass a literal path or provide the reported runtime identifier with --var key=value.';
+  return 'Inspect the capped examples and add stronger implementation ownership evidence.';
 }
 
 function implementationCategory(row: Diagnostic, evidence: Diagnostic): string {

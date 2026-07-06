@@ -10,4 +10,6 @@ export { linkWorkspace } from './linker/cross-repo-linker.js';
 export { applyVariables, extractPlaceholders, substituteVariables } from './linker/dynamic-edge-resolver.js';
 export type { RuntimeSubstitution } from './linker/dynamic-edge-resolver.js';
 export { trace } from './trace/trace-engine.js';
+export { parseImplementationHint } from './trace/implementation-hints.js';
+export type { ImplementationHint } from './types.js';
 export { redactValue, redactText } from './utils/redaction.js';

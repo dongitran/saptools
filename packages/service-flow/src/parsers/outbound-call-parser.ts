@@ -6,6 +6,8 @@ import type { OutboundCallFact } from '../types.js';
 import { normalizePath, stripQuotes } from '../utils/path-utils.js';
 import { summarizeExpression } from '../utils/redaction.js';
 import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
+import { parseServiceBindings } from './service-binding-parser.js';
+import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
 function lineOf(text: string, idx: number): number {
   return text.slice(0, idx).split('\n').length;
 }
@@ -501,7 +503,9 @@ export async function parseOutboundCalls(
 ): Promise<OutboundCallFact[]> {
   const text = await fs.readFile(path.join(repoPath, filePath), 'utf8');
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
-  return [...classifyOutboundCallsInSource(source, filePath).map((call) => call.fact), ...parseLocalServiceCalls(text, filePath)];
+  const bindingNames = new Set((await parseServiceBindings(repoPath, filePath)).map((binding) => binding.variableName));
+  const importedWrappers = await parseImportedWrapperCalls(repoPath, filePath, source, bindingNames);
+  return [...classifyOutboundCallsInSource(source, filePath).map((call) => call.fact), ...importedWrappers, ...parseLocalServiceCalls(text, filePath)];
 }
 function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFact[] {
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);

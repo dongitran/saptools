@@ -169,6 +169,7 @@ service-flow trace --workspace /path/to/workspace --service /FacadeService --pat
 service-flow trace --workspace /path/to/workspace --handler EntryHandler --depth 1 --format json
 service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --depth 2
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
+service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --implementation-hint service=/TargetService,operation=/runTask,repo=target-helper
 ```
 
 | Flag | Description |
@@ -184,6 +185,8 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 | `--include-external` | Include external HTTP/destination edges in traversal output |
 | `--include-db` | Include local DB query edges in traversal output |
 | `--include-async` | Include async publish/subscribe edges in traversal output |
+| `--implementation-repo <name>` | Select one implementation repository for every ambiguous hop; retained for backward compatibility |
+| `--implementation-hint <scope>` | Select one implementation for a matching hop; repeatable fields are `service`, `operation`, `package`, `repository`, `family`, and required `repo` |
 | `--var <key=value>` | Apply runtime values to dynamic destinations/service paths; repeatable |
 
 ### 🗺️ `service-flow graph`
@@ -203,6 +206,9 @@ service-flow graph --workspace /path/to/workspace --repo facade-service --operat
 | `--service <path>` | Filter/start by service path |
 | `--path <operationPath>` | Filter/start by operation path |
 | `--format <format>` | `mermaid` or `json`; defaults to `mermaid` |
+| `--implementation-repo <name>` | Select one implementation repository for every ambiguous hop |
+| `--implementation-hint <scope>` | Apply a repeatable scoped implementation selection |
+| `--var <key=value>` | Apply repeatable runtime substitutions |
 
 ### 📚 `service-flow list ...`
 
@@ -276,7 +282,10 @@ Print stored diagnostics. Default output suppresses high-noise entity-only servi
 ```bash
 service-flow doctor --workspace /path/to/workspace
 service-flow doctor --workspace /path/to/workspace --strict
+service-flow doctor --workspace /path/to/workspace --strict --detail
 ```
+
+Strict output keeps stable category, count, severity, and capped example fields. Use `--detail` to include full `expandedExamples` for implementation candidate, parameter metadata, and dynamic wrapper categories.
 
 ### 🧹 `service-flow clean`
 
@@ -508,4 +517,3 @@ Graph taxonomy now keeps CAP operation candidates separate from external HTTP ta
 ### Runtime and parser hardening
 
 `service-flow` treats URL and destination templates with substitutions as dynamic external targets, preserves operation-path template evidence without promoting unrelated variables, and parses CDS `@(path: ...)` annotations from original source text. Service extension declarations using both `extend Name` and `extend service Name` are recognized for routing provenance.
-

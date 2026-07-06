@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.45
+
+- Added repeatable scoped implementation hints with explicit selection and mismatch evidence while preserving conservative automatic and legacy repository selection.
+- Propagated proven CAP clients and literal or runtime wrapper paths across relative imports, including object, array, returned-client, and transaction contexts.
+- Kept OData invocation arguments, routing placeholders, and compact candidate scores distinct while preserving terminal entity paths.
+- Added compact strict-doctor summaries with actionable detail mode and expanded publication atomicity recovery coverage.
+
 ## 0.1.44
 
 - Separated trace-time effective resolution evidence from persisted graph resolution, including runtime substitution details and missing `--var` suggestions.

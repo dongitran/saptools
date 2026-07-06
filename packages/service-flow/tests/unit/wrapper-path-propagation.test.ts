@@ -8,6 +8,12 @@ async function write(root: string, text: string): Promise<void> {
   await fs.writeFile(path.join(root, 'handler.ts'), text);
 }
 
+async function writeFile(root: string, relativePath: string, text: string): Promise<void> {
+  const target = path.join(root, relativePath);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, text);
+}
+
 describe('local wrapper path propagation', () => {
   it('resolves same-file higher-order literal path wrapper calls while preserving dynamic wrapper sends', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-wrapper-'));
@@ -118,5 +124,63 @@ describe('local wrapper path propagation', () => {
       nestedWrapperFunction: 'sendInner',
     });
     expect(calls.filter((call) => call.unresolvedReason === 'dynamic_operation_path_identifier')).toHaveLength(1);
+  });
+
+  it('resolves imported and nested imported wrappers at the caller site only for proven service clients', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-imported-wrapper-'));
+    await writeFile(root, 'inner.ts', `
+      export async function sendInner(client: { send(input: unknown): Promise<unknown> }, path: string): Promise<unknown> {
+        return client.send({ method: 'POST', path, data: {} });
+      }
+    `);
+    await writeFile(root, 'outer.ts', `
+      import { sendInner } from './inner.js';
+      export async function sendOuter(client: { send(input: unknown): Promise<unknown> }, operationPath: string): Promise<unknown> {
+        return sendInner(client, operationPath);
+      }
+    `);
+    await writeFile(root, 'transport.ts', `
+      export function sendTransport(client: { send(input: unknown): unknown }, path: string): unknown {
+        return client.send({ method: 'POST', path });
+      }
+    `);
+    await writeFile(root, 'handler.ts', `
+      import cds from '@sap/cds';
+      import { sendOuter } from './outer.js';
+      import { sendTransport } from './transport.js';
+      export async function runFlow(input: { path: string }): Promise<void> {
+        const remoteClient = await cds.connect.to('remote_service', { credentials: { path: '/RemoteService' } });
+        const transport = createTransport();
+        await sendOuter(remoteClient, '/executeTask()');
+        await sendOuter(remoteClient, input.path);
+        sendTransport(transport, '/mustNotBecomeCapOperation');
+      }
+    `);
+
+    const calls = await parseOutboundCalls(root, 'handler.ts');
+    const literal = calls.find((call) => call.operationPathExpr === '/executeTask()');
+    expect(literal).toMatchObject({
+      sourceFile: 'handler.ts',
+      callType: 'remote_action',
+      serviceVariableName: 'remoteClient',
+    });
+    expect(literal?.evidence).toMatchObject({
+      classifier: 'imported_wrapper_literal_path',
+      callerSite: { sourceFile: 'handler.ts' },
+      calleeSite: { sourceFile: 'outer.ts' },
+      wrapperChain: ['sendOuter', 'sendInner'],
+    });
+    const dynamic = calls.find((call) => call.evidence?.classifier === 'imported_wrapper_dynamic_path');
+    expect(dynamic).toMatchObject({
+      sourceFile: 'handler.ts',
+      operationPathExpr: '${input.path}',
+      unresolvedReason: 'dynamic_operation_path_identifier',
+    });
+    expect(dynamic?.evidence).toMatchObject({
+      missingPathIdentifier: 'input.path',
+      calleeSite: { sourceFile: 'outer.ts' },
+    });
+    expect(calls.some((call) => call.operationPathExpr === '/mustNotBecomeCapOperation')).toBe(false);
+    expect(calls.every((call) => call.sourceFile === 'handler.ts')).toBe(true);
   });
 });

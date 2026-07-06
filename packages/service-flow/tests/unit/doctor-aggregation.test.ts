@@ -34,7 +34,7 @@ describe('strict doctor implementation aggregation', () => {
     });
     const baseServiceId = insertService(db, repoId, '/BaseService', 1);
     const baseOperationId = insertOperation(db, baseServiceId, 'performWork', 2);
-    for (const suffix of ['A', 'B', 'C']) {
+    for (const suffix of ['A', 'B', 'C', 'D', 'E']) {
       const serviceId = insertService(db, repoId, `/Tenant${suffix}Service`, 10);
       const operationId = insertOperation(db, serviceId, 'performWork', 11, 'inherited', baseOperationId);
       insertImplementationEdge(db, workspaceId, operationId, 'unresolved', {
@@ -67,12 +67,15 @@ describe('strict doctor implementation aggregation', () => {
     const calleeId = Number(db.prepare("INSERT INTO symbols(repo_id,kind,name,qualified_name,exported,start_line,end_line,source_file,evidence_json) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").get(repoId, 'function', 'callee', 'callee', 1, 5, 7, 'srv/helper.ts', '{}')?.id);
     db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,source_file,source_line,status,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)')
       .run(repoId, callerId, calleeId, 'callee', 'srv/helper.ts', 2, 'resolved', 0.8, JSON.stringify({ callArguments: [{ kind: 'identifier', name: 'serviceClient' }] }));
+    db.prepare('INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,operation_path_expr,source_file,source_line,confidence,unresolved_reason,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(repoId, callerId, 'remote_action', null, 'srv/helper.ts', 3, 0.4, 'dynamic_operation_path_identifier', JSON.stringify({ receiver: 'serviceClient', operationPathExpression: 'request.path' }));
 
     const diagnostics = doctorDiagnostics(db, true);
     expect(diagnostics.some((item) => item.code === 'implementation_candidates_rejected')).toBe(false);
     const aggregate = diagnostics.find((item) => item.code === 'strict_implementation_candidate_quality') as {
       severity?: string;
-      categories?: Array<{ category: string; count: number; baseOperation?: string; servicePathPattern?: string; reason?: string; candidateFamily?: string; examples?: unknown[] }>;
+      summary?: Array<{ category: string; count: number; reason: string; candidateFamily: string; suggestedAction: string }>;
+      categories?: Array<{ category: string; count: number; baseOperation?: string; servicePathPattern?: string; reason?: string; candidateFamily?: string; examples?: unknown[]; expandedExamples?: unknown[]; suggestedAction?: string }>;
     };
     expect(aggregate?.severity).toBe('warning');
     expect(aggregate.categories).toEqual(expect.arrayContaining([
@@ -81,7 +84,7 @@ describe('strict doctor implementation aggregation', () => {
         baseOperation: 'performWork',
         servicePathPattern: '/Tenant*Service',
         candidateFamily: '@neutral/shared-helper',
-        count: 3,
+        count: 5,
       }),
       expect.objectContaining({
         category: 'duplicate_package_name_candidates',
@@ -92,8 +95,28 @@ describe('strict doctor implementation aggregation', () => {
         category: 'missing_parameter_metadata',
         count: 1,
       }),
+      expect.objectContaining({
+        category: 'dynamic_wrapper_paths',
+        candidateFamily: 'wrapper_path',
+        count: 1,
+      }),
     ]));
-    for (const category of aggregate.categories ?? []) expect((category.examples ?? []).length).toBeLessThanOrEqual(3);
+    const duplicateSummary = aggregate.summary?.find((item) => item.category === 'duplicate_package_name_candidates');
+    expect(duplicateSummary).toMatchObject({ candidateFamily: '@neutral/duplicate-helper', count: 1 });
+    expect(duplicateSummary?.suggestedAction).toContain('--implementation-hint');
+    const wrapperSummary = aggregate.summary?.find((item) => item.category === 'dynamic_wrapper_paths');
+    expect(wrapperSummary).toMatchObject({ reason: 'wrapper path cannot be proven statically' });
+    expect(wrapperSummary?.suggestedAction).toContain('--var');
+    for (const category of aggregate.categories ?? []) {
+      expect((category.examples ?? []).length).toBeLessThanOrEqual(3);
+      expect(category.expandedExamples).toBeUndefined();
+      expect(typeof category.suggestedAction).toBe('string');
+    }
+
+    const detailed = doctorDiagnostics(db, true, { detail: true }).find((item) => item.code === 'strict_implementation_candidate_quality') as typeof aggregate;
+    const ownershipDetail = detailed.categories?.find((item) => item.category === 'missing_strong_ownership_evidence');
+    expect(ownershipDetail?.examples).toHaveLength(3);
+    expect(ownershipDetail?.expandedExamples).toHaveLength(5);
     db.close();
   });
 });

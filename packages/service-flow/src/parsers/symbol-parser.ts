@@ -42,7 +42,8 @@ function isObjectFunction(node: ts.Node): boolean {
 }
 type ParameterBinding =
   | { index: number; kind: 'identifier'; name: string }
-  | { index: number; kind: 'object_pattern'; properties: Array<{ property: string; local: string }> };
+  | { index: number; kind: 'object_pattern'; properties: Array<{ property: string; local: string }> }
+  | { index: number; kind: 'array_pattern'; elements: Array<{ index: number; local: string }> };
 type ParameterPropertyAlias = { parameter: string; property: string; local: string; kind: 'object_parameter_destructure'; line: number };
 const commonTerminalMembers = new Set(['push', 'includes', 'find', 'findIndex', 'map', 'filter', 'reduce', 'forEach', 'some', 'every', 'toUpperCase', 'toLowerCase', 'trim', 'split', 'join', 'get', 'set', 'has']);
 const loggerMembers = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'log']);
@@ -99,6 +100,11 @@ function argumentEvidence(args: ts.NodeArray<ts.Expression>, source: ts.SourceFi
       }
       return { kind: 'object_literal', properties };
     }
+    if (ts.isArrayLiteralExpression(arg)) {
+      const elements = arg.elements.flatMap((element, index): Array<Record<string, unknown>> =>
+        ts.isIdentifier(element) ? [{ index, kind: 'identifier', name: element.text }] : []);
+      return { kind: 'array_literal', elements };
+    }
     return { kind: 'unsupported', expression: arg.getText(source) };
   });
 }
@@ -141,15 +147,24 @@ function parameterPropertyAliases(fn: ts.FunctionLikeDeclaration, source: ts.Sou
 function parameterBindings(params: ts.NodeArray<ts.ParameterDeclaration>): ParameterBinding[] {
   return params.flatMap((param, index): ParameterBinding[] => {
     if (ts.isIdentifier(param.name)) return [{ index, kind: 'identifier', name: param.name.text }];
-    if (!ts.isObjectBindingPattern(param.name)) return [];
-    const properties = param.name.elements.flatMap((element): Array<{ property: string; local: string }> => {
-      if (element.dotDotDotToken || ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) return [];
-      const property = element.propertyName ? nameOf(element.propertyName) : nameOf(element.name);
-      if (!property) return [];
-      const local = bindingLocalName(element.name, element.initializer);
-      return local ? [{ property, local }] : [];
-    });
-    return properties.length > 0 ? [{ index, kind: 'object_pattern', properties }] : [];
+    if (ts.isObjectBindingPattern(param.name)) {
+      const properties = param.name.elements.flatMap((element): Array<{ property: string; local: string }> => {
+        if (element.dotDotDotToken || ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) return [];
+        const property = element.propertyName ? nameOf(element.propertyName) : nameOf(element.name);
+        if (!property) return [];
+        const local = bindingLocalName(element.name, element.initializer);
+        return local ? [{ property, local }] : [];
+      });
+      return properties.length > 0 ? [{ index, kind: 'object_pattern', properties }] : [];
+    }
+    if (ts.isArrayBindingPattern(param.name)) {
+      const elements = param.name.elements.flatMap((element, elementIndex): Array<{ index: number; local: string }> =>
+        ts.isBindingElement(element) && !element.dotDotDotToken && ts.isIdentifier(element.name)
+          ? [{ index: elementIndex, local: element.name.text }]
+          : []);
+      return elements.length > 0 ? [{ index, kind: 'array_pattern', elements }] : [];
+    }
+    return [];
   });
 }
 export async function parseExecutableSymbols(repoPath: string, filePath: string): Promise<{ symbols: ExecutableSymbolFact[]; calls: SymbolCallFact[] }> {

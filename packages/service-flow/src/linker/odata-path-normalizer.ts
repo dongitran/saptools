@@ -2,6 +2,7 @@ export interface NormalizedODataOperationPath {
   rawOperationPath: string;
   normalizedOperationPath: string;
   wasInvocation: boolean;
+  invocationArguments?: string;
   invocationArgumentPlaceholderKeys: string[];
   normalizationReason?: string;
   normalizationRejectedReason?: string;
@@ -20,6 +21,7 @@ export interface ODataPathIntent {
   placeholderKeys: string[];
   keyPredicatePlaceholderKeys: string[];
   invocationArgumentPlaceholderKeys: string[];
+  invocationArguments?: string;
   navigationSuffix?: string;
   mediaOrPropertySuffix?: string;
   hasEntityKeyPredicate: boolean;
@@ -51,6 +53,7 @@ export function normalizeODataOperationInvocationPath(path: string | undefined):
     rawOperationPath: raw,
     normalizedOperationPath: operationSegment,
     wasInvocation: true,
+    invocationArguments: raw.slice(open + 1, close),
     invocationArgumentPlaceholderKeys: [...new Set(extractTemplatePlaceholders(raw.slice(open + 1, close)))],
     normalizationReason: 'balanced_top_level_operation_invocation',
   };
@@ -81,7 +84,7 @@ export function classifyODataPathIntent(path: string | undefined, method: string
   const topLevelOperationInvocation = Boolean(invocation?.wasInvocation && looksLikeLowerCamelInvocation(firstSegment));
   const keyPredicatePlaceholderKeys = topLevelOperationInvocation ? [] : rawKeyPredicatePlaceholderKeys;
   const topLevelOperationNameCandidate = Boolean(topLevelOperationName && !hasNavigationSegments && !firstSegment.includes('('));
-  const base = { rawPath, method: normalizedMethod, pathWithoutQuery, queryString, hasQueryString: queryIndex >= 0, entitySegment, placeholderKeys, keyPredicatePlaceholderKeys, invocationArgumentPlaceholderKeys: invocation?.invocationArgumentPlaceholderKeys ?? [], navigationSuffix, mediaOrPropertySuffix, hasEntityKeyPredicate: firstOpen >= 0 && firstClose !== undefined, hasNavigationSuffix: hasNavigationSegments, hasMediaOrPropertySuffix: Boolean(mediaOrPropertySuffix && isMediaOrPropertySuffix(mediaOrPropertySuffix)), topLevelOperationName, topLevelOperationNameCandidate, topLevelOperationInvocation };
+  const base = { rawPath, method: normalizedMethod, pathWithoutQuery, queryString, hasQueryString: queryIndex >= 0, entitySegment, placeholderKeys, keyPredicatePlaceholderKeys, invocationArguments: invocation?.invocationArguments, invocationArgumentPlaceholderKeys: invocation?.invocationArgumentPlaceholderKeys ?? [], navigationSuffix, mediaOrPropertySuffix, hasEntityKeyPredicate: firstOpen >= 0 && firstClose !== undefined, hasNavigationSuffix: hasNavigationSegments, hasMediaOrPropertySuffix: Boolean(mediaOrPropertySuffix && isMediaOrPropertySuffix(mediaOrPropertySuffix)), topLevelOperationName, topLevelOperationNameCandidate, topLevelOperationInvocation };
   if (!rawPath || !rawPath.startsWith('/')) return { ...base, kind: 'unknown', reason: 'path_missing_or_not_absolute' };
   const upperEntityLike = /^[A-Z][A-Za-z0-9_]*$/.test(entitySegment ?? firstSegment);
   const mediaLike = isMediaOrPropertySuffix(segments.at(-1) ?? '');
