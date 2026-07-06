@@ -1,4 +1,4 @@
-import type { AppHealth, AuditEvent, CrashSummary, ProcessInstanceStat, SshStatus } from "./types.js";
+import type { AppHealth, AuditEvent, CrashReportSummary, CrashSummary, ProcessInstanceStat, SpaceCrashSummary, SshStatus } from "./types.js";
 
 const EVENT_LABELS: Readonly<Record<string, string>> = {
   "audit.app.create": "App created",
@@ -110,6 +110,42 @@ export function formatEventsReport(
   ].join("\n");
 }
 
+
+function eventTargetLabel(event: AuditEvent): string {
+  if (event.target.name.length > 0) {
+    return event.target.name;
+  }
+  if (event.target.type.length > 0) {
+    return event.target.type;
+  }
+  return event.target.guid.length > 0 ? event.target.guid : "(unknown target)";
+}
+
+export function formatSpaceEventLine(event: AuditEvent, now: Date): string {
+  const actor = event.actor.name.length > 0 ? event.actor.name : event.actor.type;
+  return [
+    `  ${event.createdAt.padEnd(26)}`,
+    formatRelativeTime(event.createdAt, now).padEnd(11),
+    describeEventType(event.type).padEnd(24),
+    eventTargetLabel(event).padEnd(18),
+    actor.length > 0 ? actor : "(unknown actor)",
+  ].join("  ");
+}
+
+export function formatSpaceEventsReport(
+  selector: string,
+  events: readonly AuditEvent[],
+  now: Date,
+): string {
+  if (events.length === 0) {
+    return `No audit events found for space ${selector}.`;
+  }
+  return [
+    `Audit events for space ${selector} (${events.length.toString()}):`,
+    ...events.map((event) => formatSpaceEventLine(event, now)),
+  ].join("\n");
+}
+
 export function formatSshStatusReport(status: SshStatus, now: Date): string {
   const sessionLines = status.sessions.map((session) => {
     const tag = session.likelyActive ? "[active]" : "[past]  ";
@@ -140,7 +176,7 @@ export function formatSshStatusReport(status: SshStatus, now: Date): string {
   ].join("\n");
 }
 
-export function formatCrashReport(summary: CrashSummary, now: Date): string {
+function formatAppCrashReport(summary: CrashSummary, now: Date): string {
   if (summary.crashCount === 0) {
     return `No crashes found for ${summary.appName}.`;
   }
@@ -163,6 +199,39 @@ export function formatCrashReport(summary: CrashSummary, now: Date): string {
     "  Recent crashes:",
     ...crashLines,
   ].join("\n");
+}
+
+function formatSpaceCrashReport(summary: SpaceCrashSummary, now: Date): string {
+  if (summary.crashCount === 0) {
+    return `No crashes found for space ${summary.selector}.`;
+  }
+  const appLines = summary.apps.flatMap((app) => [
+    `  ${app.appName} (${app.crashCount.toString()})`,
+    ...app.crashes.map((crash) => {
+      const index = crash.index === undefined ? "-" : `#${crash.index.toString()}`;
+      const reason = crash.reason ?? "unknown";
+      const exit = crash.exitStatus === undefined ? "" : `  exit ${crash.exitStatus.toString()}`;
+      return `    ${crash.at}  instance ${index}  ${reason}${exit}`;
+    }),
+  ]);
+  return [
+    `Crash report for space ${summary.selector}`,
+    "",
+    `  Crashes: ${summary.crashCount.toString()}`,
+    `  Apps affected: ${summary.apps.length.toString()}`,
+    ...(summary.lastCrashAt === undefined
+      ? []
+      : [`  Last crash: ${summary.lastCrashAt} (${formatRelativeTime(summary.lastCrashAt, now)})`]),
+    "",
+    ...appLines,
+  ].join("\n");
+}
+
+export function formatCrashReport(summary: CrashReportSummary, now: Date): string {
+  if ("scope" in summary) {
+    return formatSpaceCrashReport(summary, now);
+  }
+  return formatAppCrashReport(summary, now);
 }
 
 function formatInstanceLine(instance: ProcessInstanceStat): string {

@@ -7,15 +7,15 @@ description: Use when inspecting SAP BTP CF app audit events, SSH/debug activity
 
 ## Purpose
 
-Use `cf-events` to inspect Cloud Foundry app audit events, SSH/debug activity, crash history, app health, and event polling for SAP BTP Cloud Foundry apps. Prefer it when the task needs "what happened to this app", "who recently opened SSH/debug", "why did it crash", or "what is the current app health".
+Use `cf-events` to inspect Cloud Foundry app or space audit events, SSH/debug activity, crash history, app health, and event polling for SAP BTP Cloud Foundry apps. Prefer it when the task needs "what happened to this app", "who recently opened SSH/debug", "why did it crash", or "what is the current app health".
 
 If `cf-events` is missing, install it from `@saptools/cf-events`: `npm install -g @saptools/cf-events`.
 
 ## First Steps
 
 1. Identify whether the user needs audit history, SSH/debug activity, crash summary, app health, or live event watch.
-2. App name (as selector) is always required. Full `region/org/space/app` is optional. If the user only mentions the app name, try short form first. It will use the current CF target if set. Only ask the user for the full selector when no target is configured or the app is ambiguous.
-3. The selector resolution uses the current CF target for bare app names. A CF login/target must be active for bare names.
+2. Choose selector scope: use `region/org/space/app` or a bare app name for app-specific commands; use `region/org/space` for space-wide `events`, `watch`, and `crashes`.
+3. Bare app names use the current CF target. A CF login/target must be active for bare names. Do not treat a bare single segment as a space.
 4. Use live CF access only when current evidence is needed and credentials are available through `SAP_EMAIL` and `SAP_PASSWORD` or secure explicit input.
 5. Prefer `--json` for structured parsing; use text output when a human-facing summary is more useful.
 
@@ -26,6 +26,7 @@ Use `events` for recent audit history. Narrow noisy output with `--since`, `--li
 ```bash
 cf-events events ap10/example-org/dev/app-demo --since 6h --limit 100 --json
 cf-events events app-demo --type ssh --json
+cf-events events ap10/example-org/dev --type ssh --json
 ```
 
 Use `ssh-status` to check SSH enablement and recent SSH/debug activity:
@@ -38,6 +39,7 @@ Use `crashes` for crash counts, latest crash time, reason, instance index, and e
 
 ```bash
 cf-events crashes app-demo --since 24h --json
+cf-events crashes ap10/example-org/dev --since 24h --json
 ```
 
 Use `status` for requested state, web instance stats, SSH flag, and latest audit event:
@@ -50,6 +52,7 @@ Use `watch` only when the task needs live audit-event polling. Bound it operatio
 
 ```bash
 cf-events watch app-demo --lookback 2m --interval 15000 --type crash --json
+cf-events watch ap10/example-org/dev --lookback 2m --interval 15000 --type crash --json
 ```
 
 ## Filters And Windows
@@ -64,16 +67,15 @@ cf-events watch app-demo --lookback 2m --interval 15000 --type crash --json
 
 ## Selectors And Setup
 
-The selector can be a full `region/org/space/app` or just the bare app name:
+The selector can be an app selector (`region/org/space/app` or bare app name) or a space selector (`region/org/space`) for `events`, `watch`, and `crashes`:
 
 ```bash
 cf-events status ap10/example-org/dev/app-demo --json
 cf-events status app-demo --json
+cf-events events ap10/example-org/dev --json
 ```
 
-Bare app names will automatically use the current CF target if one is active. If the name is ambiguous or no target is set, provide the full path instead.
-
-Bare names require an active `cf target` (and credentials for live CF calls).
+Bare app names automatically use the current CF target if one is active. If no target is set, provide the full app path instead. `status` and `ssh-status` remain app-specific and should reject `region/org/space` selectors unless a future implementation explicitly adds aggregate variants.
 
 ## SSH And Debug Interpretation
 
@@ -81,7 +83,7 @@ Treat `ssh-status` as audit evidence, not a live session API. Cloud Foundry does
 
 ## Data Handling
 
-Audit events can expose user identities, app names, org/space names, route metadata, crash details, and operational timing. Do not print credentials. Do not paste sensitive event payloads into final answers unless the user explicitly asks; summarize and cite relevant timestamps, event types, actors, and selectors.
+Audit events can expose user identities, app names, org/space names, route metadata, crash details, and operational timing. Do not print credentials. Do not dump raw sensitive event payloads into final answers unless the user explicitly asks; summarize and cite relevant timestamps, event types, actors, and selectors.
 
 ## Troubleshooting
 

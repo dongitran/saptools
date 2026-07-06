@@ -34,8 +34,9 @@ export interface CfCredentials {
   readonly password: string;
 }
 
-/** A fully resolved `region/org/space/app` target. */
-export interface ResolvedSelector {
+/** A fully resolved application target. */
+export interface ResolvedAppSelector {
+  readonly kind: "app";
   readonly raw: string;
   readonly regionKey: RegionKey;
   readonly apiEndpoint: string;
@@ -43,6 +44,18 @@ export interface ResolvedSelector {
   readonly spaceName: string;
   readonly appName: string;
 }
+
+/** A fully resolved space target for space-wide audit-event queries. */
+export interface ResolvedSpaceSelector {
+  readonly kind: "space";
+  readonly raw: string;
+  readonly regionKey: RegionKey;
+  readonly apiEndpoint: string;
+  readonly orgName: string;
+  readonly spaceName: string;
+}
+
+export type ResolvedSelector = ResolvedAppSelector | ResolvedSpaceSelector;
 
 export interface CfSessionInput {
   readonly apiEndpoint: string;
@@ -141,8 +154,30 @@ export interface AppHealth {
   readonly lastEvent: AuditEvent | undefined;
 }
 
+export interface AppCrashSummary {
+  readonly appName: string;
+  readonly crashCount: number;
+  readonly lastCrashAt: string | undefined;
+  readonly lastCrashReason: string | undefined;
+  readonly crashes: readonly CrashRecord[];
+}
+
+export interface SpaceCrashSummary {
+  readonly scope: "space";
+  readonly selector: string;
+  readonly crashCount: number;
+  readonly lastCrashAt: string | undefined;
+  readonly apps: readonly AppCrashSummary[];
+}
+
+export type CrashReportSummary = CrashSummary | SpaceCrashSummary;
+
+export type AuditEventScope =
+  | { readonly kind: "app"; readonly appGuid: string }
+  | { readonly kind: "space"; readonly spaceGuid: string };
+
 export interface FetchAuditEventsInput {
-  readonly appGuid: string;
+  readonly scope: AuditEventScope;
   readonly types: readonly string[] | undefined;
   readonly createdAfter: string | undefined;
   readonly limit: number;

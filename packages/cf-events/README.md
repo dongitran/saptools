@@ -2,9 +2,9 @@
 
 # ☁️ `@saptools/cf-events`
 
-**Inspect SAP BTP Cloud Foundry application audit events and detect active SSH/debug sessions from the command line.**
+**Inspect SAP BTP Cloud Foundry application and space audit events and detect active SSH/debug sessions from the command line.**
 
-Point it at a `region/org/space/app` (or a bare app name) and instantly answer: "what just happened?", "is anyone SSH'd in right now?", or "why did it crash?".
+Point it at a `region/org/space/app`, `region/org/space`, or a bare app name and instantly answer: "what just happened?", "is anyone SSH'd in right now?", or "why did it crash?".
 
 [![npm version](https://img.shields.io/npm/v/@saptools/cf-events.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/cf-events)
 [![license](https://img.shields.io/npm/l/@saptools/cf-events.svg?style=flat&color=blue)](./LICENSE)
@@ -20,16 +20,15 @@ Point it at a `region/org/space/app` (or a bare app name) and instantly answer: 
 
 ## ✨ Features
 
-- 📜 **Audit event inspection** — list recent `audit.app.*` events (start/stop, scale, restarts, restage, route changes, env views, crashes, SSH authz)
+- 📜 **Audit event inspection** — list recent `audit.app.*` events for one app or all apps in a space
 - 🔐 **SSH & debug session detection** — surface authorized sessions + denied attempts; infer "likely active" ones from recent `ssh-authorized` events (CF has no live session or close events)
-- 💥 **Crash summaries** — count, last crash time/reason/exit code, and per-instance detail
+- 💥 **Crash summaries** — count, last crash time/reason/exit code, and per-instance detail for an app or grouped by app across a space
 - ❤️ **One-glance status** — requested state, per-instance CPU/mem/uptime, SSH flag, and the most recent audit event
 - 👀 **Live watch** — poll `/v3/audit_events` on an interval and stream new events (Ctrl+C to stop)
-- 🧭 **Smart selectors** — full `region/org/space/app` or bare app name (resolved via the `cf-sync` snapshot; falls back to current `cf target` for bare names)
-- 🔄 **Reuses cf-sync** — topology snapshot + current-target helpers from [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync)
+- 🧭 **Smart selectors** — full app selectors (`region/org/space/app`), space selectors (`region/org/space`), or bare app names resolved from the current `cf target`
 - 🧪 **Isolated sessions** — every invocation uses a fresh ephemeral `CF_HOME`; never touches your interactive login
 - 🧩 **CLI + typed library** — full TypeScript exports for `CfEventsRuntime`, parsers, formatters, and types
-- 🪶 **Zero daemon, tiny deps** — commander + cf-sync only
+- 🪶 **Zero daemon, tiny deps** — commander only
 
 ---
 
@@ -59,12 +58,10 @@ npm install @saptools/cf-events
 export SAP_EMAIL="you@company.com"
 export SAP_PASSWORD="your-sap-password"
 
-# 2. Make sure you have a topology snapshot (or be logged into a CF target)
-cf-sync sync --only ap10   # or cf-sync space ap10 my-org dev
-
-# 3. Inspect events
+# 2. Inspect events
 cf-events events orders-srv
 cf-events events ap10/my-org/dev/orders-srv --limit 100 --since 6h
+cf-events events ap10/my-org/dev --limit 200 --since 6h
 
 # 4. Check for active SSH/debug sessions
 cf-events ssh-status orders-srv --since 7d
@@ -79,16 +76,17 @@ cf-events status orders-srv
 cf-events watch orders-srv --type crash
 ```
 
-After a `cf-sync` snapshot exists, bare app names are resolved automatically (with current `cf target` expansion when no `/` present).
+Bare app names use the current `cf target` for org/space/API context. Explicit app and space selectors do not require a topology snapshot.
 
 ---
 
 ## 🧰 CLI
 
-All commands accept a single positional **selector**:
+All commands accept a single positional **selector**. `events`, `watch`, and `crashes` accept app or space selectors; `status` and `ssh-status` require an app selector.
 
-- Full path: `ap10/my-org/dev/orders-srv`
-- Bare app name: `orders-srv` — resolved against the cf-sync snapshot (and current `cf target` when the name is unique within the target scope). Ambiguous names list the candidates and fail.
+- App path: `ap10/my-org/dev/orders-srv`
+- Space path: `ap10/my-org/dev`
+- Bare app name: `orders-srv` — resolved against the current `cf target`. Bare single-segment selectors are always app names, never spaces.
 
 Common credential flags (all commands):
 
@@ -100,13 +98,14 @@ Common credential flags (all commands):
 
 ### `events <selector>`
 
-List recent audit events for the app (deployments, restarts, scaling, crashes, SSH, routes, ...).
+List recent audit events for the app or all apps in a space (deployments, restarts, scaling, crashes, SSH, routes, ...).
 
 ```bash
 cf-events events ap10/my-org/dev/orders-srv
 cf-events events orders-srv --limit 100 --since 6h
 cf-events events orders-srv --type ssh --json
 cf-events events orders-srv --type audit.app.start,audit.app.stop
+cf-events events ap10/my-org/dev --type ssh --json
 ```
 
 | Flag     | Description                                      |
@@ -133,11 +132,12 @@ cf-events ssh-status orders-srv --since 7d --json
 
 ### `crashes <selector>`
 
-Count and detail recent crash events (both `audit.app.crash` and `audit.app.process.crash`).
+Count and detail recent crash events for an app or grouped by target app across a space (both `audit.app.crash` and `audit.app.process.crash`).
 
 ```bash
 cf-events crashes orders-srv
 cf-events crashes orders-srv --since 24h --json
+cf-events crashes ap10/my-org/dev --since 24h --json
 ```
 
 | Flag          | Description                              |
@@ -156,11 +156,12 @@ cf-events status orders-srv --json
 
 ### `watch <selector>`
 
-Poll `/v3/audit_events` repeatedly and print (or emit NDJSON) fresh events as they arrive. Press Ctrl+C to stop.
+Poll `/v3/audit_events` repeatedly for an app or space and print (or emit NDJSON) fresh events as they arrive. Press Ctrl+C to stop.
 
 ```bash
 cf-events watch orders-srv
 cf-events watch orders-srv --interval 30000 --type crash --lookback 5m
+cf-events watch ap10/my-org/dev --lookback 5m --type crash --json
 ```
 
 | Flag             | Description                                      |
@@ -172,24 +173,22 @@ cf-events watch orders-srv --interval 30000 --type crash --lookback 5m
 
 ---
 
-## 📁 Prerequisites & Snapshots
+## 📁 Prerequisites & Selector Resolution
 
-`cf-events` relies on a `cf-sync` snapshot at `~/.saptools/cf-structure.json` for bare-app-name resolution and validation of explicit paths.
+`cf-events` uses direct CF CLI/API calls and an isolated throw-away `CF_HOME`; it does not read or validate a `cf-sync` snapshot.
 
-- Run `cf-sync sync`, `cf-sync space ...`, or `cf-sync org ...` at least once.
-- When you pass a bare app name, `cf-events` will also consult your current `cf target` (via `cf target` output) to build a full selector before validating against the snapshot.
-- Pure `--json` + explicit full selectors still require the snapshot for safety.
+- Explicit app selectors (`region/org/space/app`) and space selectors (`region/org/space`) use the built-in SAP BTP region-to-API map, then authenticate and target that org/space.
+- Bare app names use your current interactive `cf target` only to discover API endpoint, org, and space, then resolve the app GUID inside the isolated session.
+- Space-wide audit event queries use the Cloud Foundry v3 `space_guids` audit-event filter after resolving org and space GUIDs with `/v3/organizations?names=...` and `/v3/spaces?names=...&organization_guids=...`.
 
-All CF operations run inside a throw-away `CF_HOME`. Your interactive `cf` login is never affected.
-
----
+For JSON output, `events --json` returns the same raw audit-event array shape for app and space selectors. Space events include target, space, and organization references from the CF response. `watch --json` emits newline-delimited JSON events.
 
 ## ❓ FAQ
 
 <details>
 <summary><b>Do I need to run cf target first?</b></summary>
 
-Not required. Pass a full selector or make sure a cf-sync snapshot exists. Bare names will try to use your current `cf target` output to expand into `region/org/space/app`.
+Not required for explicit selectors. Bare app names require a current `cf target` so `cf-events` can discover the API endpoint, org, and space.
 
 </details>
 
@@ -217,7 +216,7 @@ Yes: `--type crash` or `--type ssh`. You can also pass comma-separated full type
 <details>
 <summary><b>Is the snapshot required even for JSON output?</b></summary>
 
-Yes for safety and consistent resolution. The snapshot is the single source of truth for which apps exist in which spaces.
+No. `cf-events` does not read a snapshot. Explicit selectors are resolved with the region map and live CF API/CLI calls; bare app names use the current `cf target`.
 
 </details>
 
@@ -243,7 +242,6 @@ E2E tests are fully fake-backed (no real CF or credentials needed).
 
 ## 🌐 Related
 
-- 🗺️ [`@saptools/cf-sync`](https://www.npmjs.com/package/@saptools/cf-sync) — the topology snapshot and current-target helpers that power selector resolution
 - 🔐 [`@saptools/cf-xsuaa`](https://www.npmjs.com/package/@saptools/cf-xsuaa)
 - 🐛 [`@saptools/cf-debugger`](https://www.npmjs.com/package/@saptools/cf-debugger)
 - Full toolbox: [saptools monorepo](https://github.com/dongitran/saptools)
