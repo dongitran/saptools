@@ -32,6 +32,13 @@ function asArray(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? (value as readonly unknown[]) : [];
 }
 
+function requireArray(value: unknown, message: string): readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(message);
+  }
+  return value as readonly unknown[];
+}
+
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -136,6 +143,34 @@ export async function resolveSpaceGuid(
   return guid;
 }
 
+function formatCfApiError(error: unknown): string {
+  const record = asRecord(error);
+  const title = asString(record["title"]);
+  const detail = asString(record["detail"]);
+  if (title.length > 0 && detail.length > 0) {
+    return `${title}: ${detail}`;
+  }
+  if (title.length > 0) {
+    return title;
+  }
+  if (detail.length > 0) {
+    return detail;
+  }
+  const code = asNumber(record["code"]);
+  return code === undefined ? "unknown CF API error" : `code ${code.toString()}`;
+}
+
+function throwIfCfApiErrors(body: unknown): void {
+  const errors = asRecord(body)["errors"];
+  if (errors === undefined) {
+    return;
+  }
+  const details = requireArray(errors, "The CF API returned an invalid errors response.")
+    .map(formatCfApiError)
+    .filter((detail) => detail.length > 0);
+  throw new Error(`CF API error ${details.length > 0 ? details.join("; ") : "unknown CF API error"}`);
+}
+
 function nextPagePath(body: unknown): string | undefined {
   const next = asRecord(asRecord(asRecord(body)["pagination"])["next"]);
   const href = next["href"];
@@ -162,7 +197,11 @@ export async function fetchAuditEvents(
 
   while (path !== undefined && events.length < limit) {
     const body = parseJson(await curl(path));
-    for (const resource of asArray(asRecord(body)["resources"])) {
+    throwIfCfApiErrors(body);
+    for (const resource of requireArray(
+      asRecord(body)["resources"],
+      "The CF API returned an invalid audit events response: missing resources array.",
+    )) {
       events.push(mapAuditEvent(resource));
       if (events.length >= limit) {
         break;

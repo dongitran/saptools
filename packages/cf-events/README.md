@@ -238,6 +238,10 @@ pnpm --filter @saptools/cf-events check   # cspell + lint + type + unit + e2e
 
 E2E tests are fully fake-backed (no real CF or credentials needed).
 
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md).
+
 ---
 
 ## 🌐 Related

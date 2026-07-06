@@ -50,9 +50,14 @@ export function parseDuration(raw: string): number {
   return amount * unitMs;
 }
 
-/** Converts a duration into an ISO timestamp suitable for `created_ats[gt]`. */
+/** Formats a timestamp for Cloud Foundry audit-event `created_ats` filters. */
+function toCfAuditTimestamp(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/** Converts a duration into a CF audit timestamp suitable for `created_ats[gt]`. */
 export function durationToCreatedAfter(raw: string, now: Date): string {
-  return new Date(now.getTime() - parseDuration(raw)).toISOString();
+  return toCfAuditTimestamp(new Date(now.getTime() - parseDuration(raw)));
 }
 
 /**

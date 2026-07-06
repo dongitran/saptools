@@ -25,6 +25,7 @@ export interface Scenario {
   readonly org: string;
   readonly space: string;
   readonly apps: Readonly<Record<string, ScenarioApp>>;
+  readonly auditEventsError?: Record<string, unknown>;
 }
 
 export interface CasePaths {

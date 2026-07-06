@@ -45,6 +45,21 @@ function respondAuditEvents(scenario, path) {
   const createdAfter = params.get("created_ats[gt]");
   const perPage = Number.parseInt(params.get("per_page") ?? "100", 10);
 
+  if (scenario.auditEventsError) {
+    return { errors: [scenario.auditEventsError] };
+  }
+  if (createdAfter && /\.\d{3}Z$/.test(createdAfter)) {
+    return {
+      errors: [
+        {
+          code: 10005,
+          title: "CF-BadQueryParameter",
+          detail: "The query parameter is invalid: Created ats has an invalid timestamp format. Timestamps should be formatted as 'YYYY-MM-DDThh:mm:ssZ'",
+        },
+      ],
+    };
+  }
+
   let events = [];
   for (const app of Object.values(scenario.apps ?? {})) {
     const appSpaceGuid = app.spaceGuid ?? scenario.spaceGuid ?? "space-1";
