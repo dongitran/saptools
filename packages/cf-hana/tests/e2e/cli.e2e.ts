@@ -93,7 +93,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.3.4");
+  expect(result.stdout).toContain("0.3.5");
 });
 
 test("User can inspect resolved connection metadata", async () => {

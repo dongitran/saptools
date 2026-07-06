@@ -29,6 +29,28 @@ describe("Connection", () => {
     expect(result.rowCount).toBe(1);
   });
 
+  it("normalizes HANA BOOLEAN cells to JavaScript booleans", async () => {
+    const { connection } = await openConn(() => ({
+      rows: [{ ID: 1, ACTIVE: 1, DELETED: 0, PUBLISHED: "1", ARCHIVED: "0", COUNT: 0 }],
+      columns: [
+        { name: "ID", typeName: "INTEGER" },
+        { name: "ACTIVE", typeName: "BOOLEAN" },
+        { name: "DELETED", typeName: "BOOLEAN" },
+        { name: "PUBLISHED", typeName: "BOOLEAN" },
+        { name: "ARCHIVED", typeName: "BOOLEAN" },
+        { name: "COUNT", typeName: "INTEGER" },
+      ],
+    }));
+
+    const result = await connection.query(
+      "SELECT ID, ACTIVE, DELETED, PUBLISHED, ARCHIVED, COUNT FROM ORDERS",
+    );
+
+    expect(result.rows).toEqual([
+      { ID: 1, ACTIVE: true, DELETED: false, PUBLISHED: true, ARCHIVED: false, COUNT: 0 },
+    ]);
+  });
+
   it("runs a DML statement and reports affected rows", async () => {
     const { connection } = await openConn(() => ({ affectedRows: 4 }));
     const result = await connection.execute("UPDATE ORDERS SET S = ? WHERE ID = ?", ["X", 1]);

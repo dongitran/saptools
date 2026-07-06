@@ -2,6 +2,11 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.3.5 - 2026-07-06
+
+- Normalize HANA `BOOLEAN` result columns that arrive from the driver as `1`/`0`
+  into JavaScript `true`/`false` values before CLI/API formatting and saved refs.
+
 ## 0.3.4 - 2026-07-02
 
 - Keep explicit selector region lookup map-backed so unknown technical keys fail before isolated authentication unless they are added to the maintained SAP CF region catalog.

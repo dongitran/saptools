@@ -2,7 +2,13 @@ import type { DriverConnection, HanaDriver } from "./driver/types.js";
 import { CfHanaError, DestructiveStatementError, ReadOnlyViolationError } from "./errors.js";
 import { applyAutoLimit, evaluateGuard } from "./safety.js";
 import { assertParamArity, classifyStatement } from "./statements.js";
-import type { QueryOptions, QueryResult, QueryRow, SqlParam } from "./types.js";
+import type {
+  QueryOptions,
+  QueryResult,
+  QueryResultColumn,
+  QueryRow,
+  SqlParam,
+} from "./types.js";
 
 export interface ConnectionConfig {
   readonly host: string;
@@ -45,6 +51,68 @@ function boundedRows(
     rows: rows.slice(0, requestedLimit),
     truncated: rows.length > requestedLimit,
   };
+}
+
+function isBooleanColumn(column: QueryResultColumn): boolean {
+  return column.typeName.trim().toUpperCase() === "BOOLEAN";
+}
+
+function normalizeBooleanCell(value: SqlParam): SqlParam {
+  if (value === 0) {
+    return false;
+  }
+  if (value === 1) {
+    return true;
+  }
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "0") {
+    return false;
+  }
+  if (normalized === "1") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  if (normalized === "true") {
+    return true;
+  }
+  return value;
+}
+
+function normalizeBooleanRow(
+  row: Record<string, SqlParam>,
+  columns: readonly QueryResultColumn[],
+): Record<string, SqlParam> {
+  let normalizedRow: Record<string, SqlParam> | undefined;
+  for (const column of columns) {
+    const value = row[column.name];
+    if (value === undefined) {
+      continue;
+    }
+    const normalizedValue = normalizeBooleanCell(value);
+    if (normalizedValue === value) {
+      continue;
+    }
+    normalizedRow ??= { ...row };
+    normalizedRow[column.name] = normalizedValue;
+  }
+  return normalizedRow ?? row;
+}
+
+function normalizeBooleanRows(
+  rows: readonly Record<string, SqlParam>[],
+  columns: readonly QueryResultColumn[],
+): readonly Record<string, SqlParam>[] {
+  const booleanColumns = columns.filter(isBooleanColumn);
+  if (booleanColumns.length === 0 || rows.length === 0) {
+    return rows;
+  }
+  return rows.map((row) => normalizeBooleanRow(row, booleanColumns));
 }
 
 async function withTimeout<T>(
@@ -169,7 +237,8 @@ export class Connection {
       },
     );
     const elapsedMs = Date.now() - started;
-    const selected = boundedRows(execResult.rows, limited.requestedLimit);
+    const normalizedRows = normalizeBooleanRows(execResult.rows, execResult.columns);
+    const selected = boundedRows(normalizedRows, limited.requestedLimit);
 
     return {
       rows: selected.rows,
