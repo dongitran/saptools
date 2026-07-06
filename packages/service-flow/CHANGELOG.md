@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.46
+
+- Improved ambiguous implementation diagnostics with ready-to-copy scoped hint suggestions for each blocked helper hop.
+- Persisted deterministic service-client ownership across helper boundaries, object and tuple destructuring, returned clients, and transaction aliases while preserving dynamic evidence for ambiguous flows.
+- Tightened OData operation-invocation normalization and dynamic wrapper-path evidence without promoting entity addressing paths to operation calls.
+- Kept strict doctor output concise by default with actionable categories and detail-mode evidence expansion.
+
 ## 0.1.45
 
 - Added repeatable scoped implementation hints with explicit selection and mismatch evidence while preserving conservative automatic and legacy repository selection.
