@@ -11,5 +11,5 @@ export { applyVariables, extractPlaceholders, substituteVariables } from './link
 export type { RuntimeSubstitution } from './linker/dynamic-edge-resolver.js';
 export { trace } from './trace/trace-engine.js';
 export { parseImplementationHint } from './trace/implementation-hints.js';
-export type { ImplementationHint } from './types.js';
+export type { DynamicMode, ImplementationHint, TraceOptions } from './types.js';
 export { redactValue, redactText } from './utils/redaction.js';

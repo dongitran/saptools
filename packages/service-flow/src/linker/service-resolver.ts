@@ -26,9 +26,9 @@ function rows(
   workspaceId?: number,
 ): OperationTarget[] {
   const names = operationLookupNames(operationPath);
-  return db
+  const result = db
     .prepare(
-      `SELECT o.id operationId,r.id repoId,r.name repoName,r.package_name packageName,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score,'' reasons
+      `SELECT o.id operationId,r.id repoId,r.name repoName,r.package_name packageName,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,o.source_line sourceLine,0 score
        FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
        WHERE (? IS NULL OR r.workspace_id=?) AND (o.operation_path IN (?,?) OR o.operation_name IN (?,?)) ORDER BY r.name,s.service_path,o.operation_name`,
     )
@@ -39,7 +39,12 @@ function rows(
       names.simplePath,
       names.name,
       names.simpleName,
-    ) as unknown as OperationTarget[];
+    ) as Array<Omit<OperationTarget, 'reasons'>>;
+  return result.map((row) => ({
+    ...row,
+    score: Number(row.score ?? 0),
+    reasons: [],
+  }));
 }
 function operationLookupNames(operationPath: string): { path: string; simplePath: string; name: string; simpleName: string } {
   const name = operationPath.replace(/^\//, '');
@@ -70,7 +75,13 @@ export function resolveOperation(
   if (missing.length > 0)
     return {
       status: 'dynamic',
-      candidates: signals.operationPath ? rows(db, signals.operationPath, workspaceId) : [],
+      candidates: signals.operationPath
+        ? rows(db, signals.operationPath, workspaceId).map((candidate) => ({
+            ...candidate,
+            score: 0.2,
+            reasons: ['operation_path_match'],
+          }))
+        : [],
       reasons: [...new Set(missing)].map((name) => `missing_variable:${name}`),
     };
   if (!signals.operationPath)

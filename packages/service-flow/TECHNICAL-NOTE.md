@@ -1,5 +1,11 @@
 # Service Flow Resolution Notes
 
+## 0.1.51 dynamic target exploration notes
+
+- Persisted graph storage remains conservative. Runtime-dependent remote targets still link as dynamic or unresolved graph edges unless static evidence is strong enough.
+- Trace and graph now accept `--dynamic-mode strict|candidates|infer`. Strict is the default and does not traverse missing-runtime-variable candidates. Candidates mode renders capped exploratory candidate branches that are explicitly unselected. Infer mode resolves only when all required placeholders are derived from deterministic indexed evidence and the selected candidate is unique above threshold.
+- Dynamic candidate evidence is derived from indexed operation paths, service-path templates, alias/destination templates, `cds.requires`, service-binding facts, and implementation-edge availability. Candidate `reasons` are arrays, and rejected candidates explain mismatches, missing runtime variables, or tied scores.
+- Missing-variable diagnostics retain the copyable `--var key=<value>` placeholders and add bounded candidate suggestions, suggested var sets, candidate counts, and omitted counts for human and CI consumers.
 
 ## 0.1.33 trace, entity, destination, and upgrade notes
 
@@ -145,4 +151,3 @@ Service-flow now records OData placeholders by semantic layer. Service-routing p
 ## 0.1.40 analyzer hardening
 
 Expression resolution is consumer-specific: operation paths may retain template placeholders for OData normalization, while external URL and destination classifiers require literal or no-substitution-template evidence before a static target is persisted. Identifier resolution is bounded to the call-site lexical scope and ignores sibling scopes, later declarations, nested function bodies, and mutable or computed writes unless they are recorded as conservative candidate evidence.
-

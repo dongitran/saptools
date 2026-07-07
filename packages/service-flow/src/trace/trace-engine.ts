@@ -2,8 +2,9 @@ import type { Db } from '../db/connection.js';
 import { extractPlaceholders } from '../linker/dynamic-edge-resolver.js';
 import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { resolveOperation } from '../linker/service-resolver.js';
-import type { ImplementationHint, TraceEdge, TraceResult, TraceStart } from '../types.js';
+import type { ImplementationHint, TraceEdge, TraceOptions, TraceResult, TraceStart } from '../types.js';
 import { baseTraceEvidence, edgeTarget, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
+import { dynamicCandidateBranches } from './dynamic-branches.js';
 import { implementationHintDiagnostic, selectImplementation, type ImplementationSelection } from './implementation-hints.js';
 import { ambiguousStartDiagnostic } from './selectors.js';
 interface RepoRef {
@@ -307,6 +308,7 @@ function operationNode(db: Db, operationId: string): Record<string, unknown> | u
   if (!row) return undefined;
   return { id: `operation:${operationId}`, kind: 'operation', label: `${String(row.repoName)}:${String(row.servicePath)}${String(row.operationPath)}`, ...row };
 }
+
 function workspaceIdForCall(db: Db, callId: string): number | undefined {
   return (db.prepare('SELECT r.workspace_id workspaceId FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE c.id=?').get(callId) as { workspaceId?: number } | undefined)?.workspaceId;
 }
@@ -486,15 +488,7 @@ function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBind
 export function trace(
   db: Db,
   start: TraceStart,
-  options: {
-    depth: number;
-    vars?: Record<string, string>;
-    includeExternal?: boolean;
-    includeDb?: boolean;
-    includeAsync?: boolean;
-    implementationRepo?: string;
-    implementationHints?: ImplementationHint[];
-  },
+  options: TraceOptions,
 ): TraceResult {
   const hintOptions = { implementationRepo: options.implementationRepo, implementationHints: options.implementationHints };
   const scope = startScope(db, start, hintOptions);
@@ -595,7 +589,11 @@ export function trace(
           String(row.evidence_json || '{}'),
         ) as Record<string, unknown>;
         const rawEvidence = baseTraceEvidence(row as TraceGraphRow, call, persistedEvidence, contextual.evidence);
-        const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, options.vars, workspaceIdForCall(db, String(call.id)), contextual.unresolvedReason);
+        const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, {
+          vars: options.vars,
+          dynamicMode: options.dynamicMode ?? 'strict',
+          maxDynamicCandidates: options.maxDynamicCandidates,
+        }, workspaceIdForCall(db, String(call.id)), contextual.unresolvedReason);
         const evidence = effective.evidence;
         const effectiveRow = effective.row;
         const targetNode = `${effectiveRow.to_kind}:${effectiveRow.to_id}`;
@@ -615,6 +613,8 @@ export function trace(
           confidence: Number(effectiveRow.confidence ?? call.confidence),
           unresolvedReason: effective.unresolvedReason,
         });
+        if ((options.dynamicMode ?? 'strict') === 'candidates')
+          edges.push(...dynamicCandidateBranches(current.depth, call, evidence));
         if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
           const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence, hintOptions);

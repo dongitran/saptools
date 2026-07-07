@@ -28,8 +28,9 @@ function diagnosticLines(diagnostic: Record<string, unknown>): string[] {
 }
 
 function hintLines(evidence: Record<string, unknown>): string[] {
+  const dynamicLines = dynamicHintLines(evidence);
   const suggestions = evidence.implementationHintSuggestions;
-  if (!Array.isArray(suggestions)) return [];
+  if (!Array.isArray(suggestions)) return dynamicLines;
   const hints = suggestions.flatMap((item) =>
     isRecord(item) && typeof item.cli === 'string'
       ? [item.cli]
@@ -38,9 +39,35 @@ function hintLines(evidence: Record<string, unknown>): string[] {
   const shown = unique.slice(0, 3).map((hint) => `try ${hint}`);
   if (unique.length > shown.length)
     shown.push(`... ${unique.length - shown.length} more hint(s) available in JSON`);
-  return shown;
+  return [...dynamicLines, ...shown];
+}
+
+function dynamicHintLines(evidence: Record<string, unknown>): string[] {
+  const exploration = isRecord(evidence.dynamicTargetExploration)
+    ? evidence.dynamicTargetExploration
+    : evidence;
+  const count = numberValue(exploration.candidateCount);
+  if (count === 0) return [];
+  const shown = numberValue(exploration.shownCandidateCount);
+  const omitted = numberValue(exploration.omittedCandidateCount);
+  const lines = [`candidates: ${shown} shown, ${omitted} omitted`];
+  lines.push(...varSetHints(exploration.suggestedVarSets));
+  if (omitted > 0 || shown < count)
+    lines.push('use --dynamic-mode candidates --max-dynamic-candidates 20 to explore candidate branches');
+  return lines;
+}
+
+function varSetHints(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const hints = value.flatMap((item) =>
+    isRecord(item) && typeof item.cli === 'string' ? [`try ${item.cli}`] : []);
+  return [...new Set(hints)].slice(0, 3);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }

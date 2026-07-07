@@ -158,6 +158,28 @@ describe('service-flow guided trace CLI', () => {
       code: 'trace_runtime_variables_missing',
       missingVariables: ['domain', 'shortName'],
     }));
+    const candidateMode = JSON.parse(await run([
+      'trace', '--workspace', traceFixture,
+      '--repo', 'gateway-app',
+      '--operation', 'runCompositeCheck',
+      '--format', 'json',
+      '--include-db', '--include-external', '--include-async',
+      '--dynamic-mode', 'candidates',
+      '--max-dynamic-candidates', '2',
+    ])) as { diagnostics: Array<{ code?: string }>; edges: unknown[] };
+    expect(candidateMode.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'trace_runtime_variables_missing',
+    }));
+    expect(candidateMode.edges.length).toBeGreaterThan(0);
+    const graphCandidateMode = JSON.parse(await run([
+      'graph', '--workspace', traceFixture,
+      '--repo', 'gateway-app',
+      '--operation', 'runCompositeCheck',
+      '--format', 'json',
+      '--dynamic-mode', 'candidates',
+      '--max-dynamic-candidates', '2',
+    ])) as { edges: unknown[] };
+    expect(graphCandidateMode.edges.length).toBeGreaterThan(0);
 
     const ambiguous = JSON.parse(await run([
       'trace', '--workspace', traceFixture,

@@ -199,6 +199,18 @@ export interface ImplementationHint {
   candidateFamily?: string;
   implementationRepo: string;
 }
+export type DynamicMode = 'strict' | 'candidates' | 'infer';
+export interface TraceOptions {
+  depth: number;
+  vars?: Record<string, string>;
+  includeExternal?: boolean;
+  includeDb?: boolean;
+  includeAsync?: boolean;
+  implementationRepo?: string;
+  implementationHints?: ImplementationHint[];
+  dynamicMode?: DynamicMode;
+  maxDynamicCandidates?: number;
+}
 export interface TraceEdge {
   step: number;
   type: string;

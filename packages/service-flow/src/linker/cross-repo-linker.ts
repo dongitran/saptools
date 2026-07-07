@@ -224,7 +224,15 @@ function compactCandidateScores(candidates: unknown[]): Array<Record<string, unk
   return candidates.flatMap((candidate): Array<Record<string, unknown>> => {
     const row = objectValue(candidate);
     if (!row) return [];
-    return [{ repo: row.repoName, servicePath: row.servicePath, operationPath: row.operationPath, score: row.score, reasons: row.reasons }];
+    return [{
+      repo: row.repoName,
+      servicePath: row.servicePath,
+      operationPath: row.operationPath,
+      score: row.score,
+      reasons: Array.isArray(row.reasons)
+        ? row.reasons.filter((reason): reason is string => typeof reason === 'string')
+        : ['operation_path_match'],
+    }];
   });
 }
 

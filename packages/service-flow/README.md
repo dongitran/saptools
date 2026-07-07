@@ -24,7 +24,7 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 - 🧩 **Static CAP/CDS indexing** — extracts services, actions, functions, events, handler classes, decorator metadata, handler registrations, executable symbols, local helper calls, and package-level `cds.requires`
 - 🔗 **Service-to-service linking** — resolves `cds.connect.to(...)`, `remote.send(...)`, `cds.services.*` style calls, helper package imports, dynamic candidates, and unresolved evidence into graph edges
 - 🗄️ **SQLite-backed workspace cache** — stores deterministic facts under `.service-flow/service-flow.db` so large workspaces can be queried repeatedly without reparsing everything
-- 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets trace and graph commands apply runtime `--var key=value` values that can turn dynamic candidates into effective traversable operation edges
+- 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets trace and graph commands apply runtime `--var key=value` values or explicitly explore/infer bounded dynamic target candidates
 - 📊 **Multiple output modes** — renders human-readable tables, JSON for automation, and Mermaid diagrams for architecture docs
 - 🩺 **Diagnostics-first workflow** — records parse/index issues and exposes them through `service-flow doctor` instead of hiding partial analysis
 - 🧩 **CAP helper-aware binding evidence** — follows imported helpers exported directly or through named export lists and separates alias, destination, and service-path expressions for dynamic `cds.connect.to(alias, options)` calls
@@ -56,6 +56,7 @@ npm install @saptools/service-flow
 
 - Runtime `--var` values are considered only for dynamic, ambiguous, or unresolved **remote** graph edges whose alias, destination, service path, or operation path expressions contain supplied placeholders. Placeholder keys are the full trimmed expression inside `${...}`, so keys such as `domainInfo.serviceName`, `domainInfo.shortName?.toLowerCase()`, and `items[0].service` can be supplied literally without JavaScript evaluation. Local database, external HTTP, event, and already resolved static edges keep their persisted status, target, reason, and confidence. Partial substitutions remain dynamic and report the missing placeholder names.
 - `trace` and `graph` both accept repeatable `--var key=value` options. Effective substitutions are rendered in trace evidence without mutating the persisted graph. Confidence values are bounded to `[0, 1]`.
+- Dynamic target exploration is explicit. Default `--dynamic-mode strict` keeps missing-runtime-variable edges unresolved, but diagnostics summarize ranked candidates and copyable `--var` sets when indexed evidence can derive likely values. `--dynamic-mode candidates` renders capped exploratory candidate branches without selecting or traversing them. `--dynamic-mode infer` traverses only when all missing placeholders are derived from deterministic indexed evidence and one candidate is uniquely strongest.
 - Repository selectors on list, trace, graph, and inspect commands narrow scope. Unknown selectors return empty machine-readable diagnostics instead of falling back to the whole workspace.
 - Helper-package dependency edges prefer exact indexed package names. Duplicate package-name candidates are persisted as ambiguous evidence rather than silently selecting one repository.
 - Handler registration parsing is AST-based for common `createCombinedHandler({ handler: ... })` forms: direct arrays, arrays assembled with spreads, non-`handlers` array names, aliased class imports, default-imported arrays, named exported arrays, and safe relative re-exports. Class-level rows keep registration file/line and import evidence.
@@ -169,6 +170,7 @@ service-flow trace --workspace /path/to/workspace --service /FacadeService --pat
 service-flow trace --workspace /path/to/workspace --handler EntryHandler --depth 1 --format json
 service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --depth 2
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
+service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --dynamic-mode candidates --max-dynamic-candidates 20
 service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --implementation-hint service=/TargetService,operation=/runTask,repo=target-helper
 ```
 
@@ -188,6 +190,8 @@ service-flow trace --workspace /path/to/workspace --service /FacadeService --pat
 | `--implementation-repo <name>` | Select one implementation repository for every ambiguous hop; retained for backward compatibility |
 | `--implementation-hint <scope>` | Select one implementation for a matching hop; repeatable fields are `service`, `operation`, `package`, `repository`, `family`, and required `repo` |
 | `--var <key=value>` | Apply runtime values to dynamic destinations/service paths; repeatable |
+| `--dynamic-mode <mode>` | `strict`, `candidates`, or `infer`; defaults to `strict` |
+| `--max-dynamic-candidates <n>` | Cap dynamic candidate suggestions and exploratory branches; defaults to `5` |
 
 ### 🗺️ `service-flow graph`
 
@@ -209,6 +213,8 @@ service-flow graph --workspace /path/to/workspace --repo facade-service --operat
 | `--implementation-repo <name>` | Select one implementation repository for every ambiguous hop |
 | `--implementation-hint <scope>` | Apply a repeatable scoped implementation selection |
 | `--var <key=value>` | Apply repeatable runtime substitutions |
+| `--dynamic-mode <mode>` | `strict`, `candidates`, or `infer`; defaults to `strict` |
+| `--max-dynamic-candidates <n>` | Cap dynamic candidate suggestions and exploratory branches; defaults to `5` |
 
 ### 📚 `service-flow list ...`
 
@@ -346,6 +352,8 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 ```
 
 When a concrete target exists after variable substitution, the trace shows both the parameterized evidence and the resolved match. When it does not, `service-flow` keeps the edge as a dynamic candidate or unresolved edge so the missing link remains visible.
+
+When runtime values are missing, strict trace output includes the missing variable names plus bounded candidate guidance when indexed operations and routing metadata can derive values. JSON includes `dynamicTargetExploration`, `dynamicTargetCandidates`, `dynamicTargetCandidateSuggestions`, `suggestedVarSets`, and `dynamicTargetInference`; table output shows compact candidate counts and copyable `--var` examples. Use `--dynamic-mode candidates` to render capped exploratory branches, or `--dynamic-mode infer` to continue only through a unique fully-derived candidate.
 
 Direct sends and same-file or imported wrappers share one path-candidate analysis. Literals and immutable aliases resolve; conditional or branch-assigned static alternatives remain ambiguous with all raw and normalized candidates; dynamic reassignments remain dynamic with the exact runtime identifier. Wrapper definition sends are treated as templates when a concrete caller-site edge can be indexed.
 

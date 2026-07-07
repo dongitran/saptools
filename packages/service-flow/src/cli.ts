@@ -29,6 +29,7 @@ import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
 import { VERSION } from './version.js';
+import type { DynamicMode } from './types.js';
 async function init(
   workspace: string,
   options: { db?: string; ignore?: string[] },
@@ -155,6 +156,8 @@ export function createProgram(): Command {
     .option('--implementation-repo <name>')
     .option('--implementation-hint <scope>', 'scoped implementation hint', collect, [])
     .option('--var <key=value>', 'dynamic variable', collect, [])
+    .option('--dynamic-mode <mode>', 'strict|candidates|infer', 'strict')
+    .option('--max-dynamic-candidates <n>', 'maximum dynamic candidates to show', '5')
     .action(
       (opts: {
         workspace?: string;
@@ -171,6 +174,8 @@ export function createProgram(): Command {
         implementationRepo?: string;
         implementationHint: string[];
         var: string[];
+        dynamicMode: string;
+        maxDynamicCandidates: string;
       }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const result = trace(
@@ -190,6 +195,8 @@ export function createProgram(): Command {
               includeAsync: Boolean(opts.includeAsync),
               implementationRepo: opts.implementationRepo,
               implementationHints: opts.implementationHint.map(parseImplementationHint),
+              dynamicMode: parseDynamicMode(opts.dynamicMode),
+              maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
             },
           );
           process.stdout.write(
@@ -299,6 +306,8 @@ export function createProgram(): Command {
     .option('--implementation-repo <name>')
     .option('--implementation-hint <scope>', 'scoped implementation hint', collect, [])
     .option('--var <key=value>', 'dynamic variable', collect, [])
+    .option('--dynamic-mode <mode>', 'strict|candidates|infer', 'strict')
+    .option('--max-dynamic-candidates <n>', 'maximum dynamic candidates to show', '5')
     .action(
       (opts: {
         workspace?: string;
@@ -310,6 +319,8 @@ export function createProgram(): Command {
         implementationRepo?: string;
         implementationHint: string[];
         var: string[];
+        dynamicMode: string;
+        maxDynamicCandidates: string;
       }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const result = trace(
@@ -328,6 +339,8 @@ export function createProgram(): Command {
               vars: parseVars(opts.var),
               implementationRepo: opts.implementationRepo,
               implementationHints: opts.implementationHint.map(parseImplementationHint),
+              dynamicMode: parseDynamicMode(opts.dynamicMode),
+              maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
             },
           );
           process.stdout.write(
@@ -417,6 +430,15 @@ export function createProgram(): Command {
 function collect(value: string, previous: string[]): string[] {
   previous.push(value);
   return previous;
+}
+function parseDynamicMode(value: string | undefined): DynamicMode {
+  if (value === undefined || value === 'strict') return 'strict';
+  if (value === 'candidates' || value === 'infer') return value;
+  throw new Error(`Invalid --dynamic-mode ${value}; expected strict, candidates, or infer`);
+}
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 function fail(error: unknown): void {
   process.stderr.write(

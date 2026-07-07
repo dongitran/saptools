@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.51
+
+- Added trace and graph `--dynamic-mode strict|candidates|infer` with capped `--max-dynamic-candidates` exploration for runtime-dependent remote targets.
+- Ranked dynamic operation candidates with derived `--var` suggestions from service-path, alias, destination, package require, and implementation evidence while keeping strict mode fail-closed.
+- Added infer-mode traversal only when all required placeholders are uniquely derived above threshold; tied candidates remain unresolved with explicit evidence.
+- Normalized dynamic candidate score reasons to arrays and added neutral regression coverage for explicit vars, strict suggestions, candidate branches, and infer ties.
+
 ## 0.1.50
 
 - Resolved local string, enum-member, and const-object decorator arguments with persisted evidence while keeping unsupported expressions conservative.
