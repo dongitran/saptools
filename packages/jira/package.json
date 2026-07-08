@@ -1,6 +1,6 @@
 {
   "name": "@saptools/jira",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Jira Cloud CLI and typed API that reuses the JiraOps OAuth token store",
   "type": "module",
   "publishConfig": {

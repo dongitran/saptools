@@ -72,11 +72,35 @@ Read one issue:
 jira issue OPS-123 --json
 ```
 
-- `--json`: return summary, status, priority, assignee, description text, paginated comments, attachments, clone links, and saved image metadata.
+- `--json`: return summary, status, priority, assignee, flattened description text, raw `descriptionAdf`, paginated comments, attachments, clone links, and saved image metadata.
 - `--no-images`: skip downloading inline Jira images.
 - `--image-dir <path>`: save inline images in a specific folder instead of the OS temp directory.
 - `--max-images <number>`: cap the number of inline images saved.
 - `--max-image-bytes <number>`: cap each saved image body size.
+
+Print the current raw description ADF when the user needs to inspect or safely edit a complex description:
+
+```bash
+jira describe OPS-123 --print > description.adf.json
+jira describe OPS-123 --print --json
+```
+
+- `--print` is a read mode and does not update Jira.
+- Default `--print` emits raw pretty-printed ADF JSON, not human text, so redirected output can be reused with `--adf-file`.
+- `--print --json` returns `{ "issueKey": "OPS-123", "description": <ADF|null> }`.
+- If default `--print` reports that the issue has no description ADF, use `--print --json` to handle `null` explicitly.
+
+Round-trip a description with images by editing the printed ADF and pushing the whole document back:
+
+```bash
+jira describe OPS-123 --print > description.adf.json
+# Edit only the relevant {"type":"text","text":"..."} node.
+jira describe OPS-123 --adf-file ./description.adf.json
+```
+
+- Leave `media` and `mediaSingle` nodes unchanged. Their `media.attrs.id` values point to existing Jira media, so the image is preserved without re-upload.
+- `--text` and `--text-file` cannot preserve media because flattened text has no media nodes.
+- The read-edit-write flow is last-write-wins; if Jira changes between `--print` and `--adf-file`, the later update overwrites the server description.
 
 Update a description only when the user explicitly asks for a write:
 
@@ -88,10 +112,10 @@ jira describe OPS-123 --text "Additional notes" --append
 jira describe OPS-123 --adf-file ./description.adf.json --json
 ```
 
-- Exactly one body source is required: `--text`, `--text-file`, or `--adf-file`.
+- Exactly one body source is required for write mode: `--text`, `--text-file`, or `--adf-file`.
 - Plain text becomes ADF paragraphs; blank lines split paragraphs and single newlines become hard breaks.
 - `jira describe` checks Jira edit metadata before writing.
-- If the current description contains media, plain-text replacement is refused unless `--force` is passed. Prefer `--append` or raw ADF that preserves the media nodes.
+- If the current description contains media, plain-text replacement is refused unless `--force` is passed. Prefer `--append` or a `--print` to `--adf-file` round-trip that preserves the media nodes.
 - Native local-image inline embedding is unsupported because Jira attachments do not reliably expose the Media Services ID needed for ADF `media` file nodes.
 - Use `--no-notify-users` only when the user explicitly wants to suppress Jira notifications.
 

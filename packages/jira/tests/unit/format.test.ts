@@ -68,6 +68,7 @@ describe("CLI text formatters", () => {
       assigneeDisplayName: null,
       attachments: [],
       comments: [],
+      descriptionAdf: null,
       descriptionText: "Deploy safely",
       images: [],
       issueType: "Task",
@@ -99,6 +100,7 @@ describe("CLI text formatters", () => {
       assigneeDisplayName: null,
       attachments: [],
       comments: [],
+      descriptionAdf: null,
       descriptionText: "See attached screenshot.",
       images: [
         {

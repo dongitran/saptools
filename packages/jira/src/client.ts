@@ -560,6 +560,7 @@ function mapIssueDetail(
     ...mapIssueSummary(issue),
     attachments: mapAttachments(issue.fields.attachment ?? []),
     comments: mappedComments.comments,
+    descriptionAdf: parseOptionalDescriptionAdf(issue.fields.description),
     descriptionText: extractTextFromAdf(issue.fields.description),
     images: [],
     linkedCloneIssues: mapCloneIssueLinks(issue.fields.issuelinks ?? []),
@@ -569,6 +570,11 @@ function mapIssueDetail(
     commentImageReferences: mappedComments.imageReferences,
     descriptionImageReferences,
   };
+}
+
+function parseOptionalDescriptionAdf(value: unknown): JiraAdfDocument | null {
+  const parsed = JiraAdfDocumentSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 async function fetchPaginatedIssueComments(

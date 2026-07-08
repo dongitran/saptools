@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  assertNoJiraAdfBodySource,
   parseJiraAdfDocument,
   readJiraAdfBodyInput,
   selectJiraAdfBodySource,
@@ -86,6 +87,24 @@ describe("ADF helpers", () => {
     expect(() => selectJiraAdfBodySource({ text: "x", adfFile: "body.json" })).toThrow(
       "Exactly one body source",
     );
+  });
+
+  it("allows read mode without a body source and rejects mixed read/write flags", () => {
+    expect(() => {
+      assertNoJiraAdfBodySource({});
+    }).not.toThrow();
+    for (const flags of [
+      { text: "hello" },
+      { textFile: "body.txt" },
+      { adfFile: "body.json" },
+    ]) {
+      expect(() => {
+        assertNoJiraAdfBodySource(flags);
+      }).toThrow(
+        "--print cannot be combined with --text, --text-file, or --adf-file.",
+      );
+    }
+    expect(() => selectJiraAdfBodySource({})).toThrow("Exactly one body source");
   });
 
   it("reads text and raw ADF body files", async () => {

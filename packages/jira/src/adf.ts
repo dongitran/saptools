@@ -50,11 +50,7 @@ export function parseJiraAdfDocument(value: unknown, label: string): JiraAdfDocu
 }
 
 export function selectJiraAdfBodySource(flags: JiraAdfBodySourceFlags): JiraAdfBodySource {
-  const sources = [
-    ...(flags.text === undefined ? [] : [{ kind: "text" as const, value: flags.text }]),
-    ...(flags.textFile === undefined ? [] : [{ kind: "text-file" as const, value: flags.textFile }]),
-    ...(flags.adfFile === undefined ? [] : [{ kind: "adf-file" as const, value: flags.adfFile }]),
-  ];
+  const sources = collectJiraAdfBodySources(flags);
   if (sources.length !== 1) {
     throw new Error("Exactly one body source is required: --text, --text-file, or --adf-file.");
   }
@@ -63,6 +59,14 @@ export function selectJiraAdfBodySource(flags: JiraAdfBodySourceFlags): JiraAdfB
     throw new Error("Exactly one body source is required: --text, --text-file, or --adf-file.");
   }
   return source;
+}
+
+export function assertNoJiraAdfBodySource(flags: JiraAdfBodySourceFlags): void {
+  if (collectJiraAdfBodySources(flags).length === 0) {
+    return;
+  }
+
+  throw new Error("--print cannot be combined with --text, --text-file, or --adf-file.");
 }
 
 export async function readJiraAdfBodyInput(flags: JiraAdfBodySourceFlags): Promise<JiraAdfBodyInput> {
@@ -81,6 +85,14 @@ export async function readJiraAdfBodyInput(flags: JiraAdfBodySourceFlags): Promi
       "--adf-file",
     ),
   };
+}
+
+function collectJiraAdfBodySources(flags: JiraAdfBodySourceFlags): readonly JiraAdfBodySource[] {
+  return [
+    ...(flags.text === undefined ? [] : [{ kind: "text" as const, value: flags.text }]),
+    ...(flags.textFile === undefined ? [] : [{ kind: "text-file" as const, value: flags.textFile }]),
+    ...(flags.adfFile === undefined ? [] : [{ kind: "adf-file" as const, value: flags.adfFile }]),
+  ];
 }
 
 function paragraphToAdfNode(paragraph: string): Record<string, unknown> {
