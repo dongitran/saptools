@@ -22,6 +22,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 - 🔁 **Shared JiraOps token** — reads and refreshes `~/.jira-oauth/tokens.json`, the default `jira-oauth-client` store used by JiraOps.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
 - 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text, paginated comments, attachments, and clone-linked issues.
+- 📝 **Issue content writes** — updates summaries, media-safe descriptions, and ADF comments.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
 - 👤 **Safe assignment** — assigns one issue only after resolving exactly one active issue-assignable Jira account.
@@ -159,6 +160,77 @@ jira issue OPS-123 --no-images
 ```
 
 Inline Jira images in the description or comments are saved to the OS temp directory by default. Downloaded local image metadata is returned only in the top-level `images[]` array as `fileUrl`/`filePath` entries plus attachment metadata; join images to `attachments[]` with `image.attachmentId === attachment.id`. Use `--image-dir <path>`, `--max-image-bytes <number>`, or `--max-images <number>` to control local image capture.
+
+### `jira describe <key>`
+
+Update one issue's description. Exactly one body source is required:
+
+```bash
+jira describe OPS-123 --text "Plain text description"
+jira describe OPS-123 --text-file ./description.txt
+jira describe OPS-123 --adf-file ./description.adf.json
+jira describe OPS-123 --text "Follow-up notes" --append
+jira describe OPS-123 --text "Replace anyway" --force
+jira describe OPS-123 --adf-file ./description.adf.json --json
+```
+
+Plain text is converted to ADF paragraphs. Blank lines create separate paragraphs; single newlines inside a paragraph become ADF `hardBreak` nodes. `--adf-file` reads a complete raw ADF JSON document and sends it after validation.
+
+Description replacement is safe by default. If the current description contains ADF media nodes, plain-text replacement is refused unless `--force` is passed. Use `--append` to preserve the current ADF content and append new paragraphs. Use `--adf-file` when a caller needs to provide a full document that already includes media nodes.
+
+Native local-image inline embedding is not implemented. Jira's attachment upload API returns attachment metadata, but native ADF `media` file nodes require a Media Services ID that the public attachment endpoint does not return reliably. Use raw ADF input for image-preserving or image-bearing descriptions.
+
+Use `--no-notify-users` to send `notifyUsers=false` on the Jira update. By default, the CLI leaves Jira's notification behavior unchanged.
+
+JSON output:
+
+```json
+{
+  "issueKey": "OPS-123",
+  "updated": ["description"]
+}
+```
+
+### `jira summary <key> <summary>`
+
+Update one issue's summary after verifying the field is editable on that issue.
+
+```bash
+jira summary OPS-123 "New issue title"
+jira summary OPS-123 "New issue title" --json
+jira summary OPS-123 "New issue title" --no-notify-users
+```
+
+JSON output:
+
+```json
+{
+  "issueKey": "OPS-123",
+  "updated": ["summary"]
+}
+```
+
+### `jira comment <key>`
+
+Add a comment to an issue. Exactly one body source is required:
+
+```bash
+jira comment OPS-123 --text "Reviewed the rollout logs."
+jira comment OPS-123 --text-file ./comment.txt
+jira comment OPS-123 --adf-file ./comment.adf.json
+jira comment OPS-123 --text "Reviewed the rollout logs." --json
+```
+
+Plain text is converted to ADF the same way as descriptions. `--adf-file` is available for callers that need to supply a complete rich ADF comment body.
+
+JSON output:
+
+```json
+{
+  "issueKey": "OPS-123",
+  "commentId": "40001"
+}
+```
 
 ### `jira links <key>`
 

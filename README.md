@@ -184,6 +184,7 @@ Turns the JiraOps OAuth session into a scriptable Jira Cloud CLI and TypeScript 
 
 - 🔁 shared `~/.jira-oauth/tokens.json` token store with JiraOps and `jira-oauth-client`
 - 🎫 assigned issue reads, issue details, remote links, transitions, and worklogs
+- 📝 issue description, summary, and comment writes with ADF body support
 - 🧪 fake-backed E2E tests that avoid real Atlassian network calls
 
 Docs → [`packages/jira/README.md`](./packages/jira/README.md)

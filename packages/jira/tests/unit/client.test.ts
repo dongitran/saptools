@@ -4,19 +4,24 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { textToAdfDocument } from "../../src/adf.js";
 import {
+  addJiraIssueComment,
   addJiraIssueWorklog,
   assignJiraIssue,
   fetchAssignedJiraIssues,
   fetchJiraCurrentUser,
   fetchJiraCustomFields,
+  fetchJiraIssueDescriptionAdf,
   fetchJiraIssueEditMetadata,
   fetchJiraIssueDetail,
   fetchJiraIssueRemoteLinks,
   fetchJiraIssueTransitions,
   searchJiraAssignableUsers,
   transitionJiraIssue,
+  updateJiraIssueDescription,
   updateJiraIssueFields,
+  updateJiraIssueSummary,
 } from "../../src/client.js";
 import { buildAssignedIssuesSearchBody } from "../../src/urls.js";
 
@@ -151,7 +156,7 @@ describe("Jira REST client", () => {
 
   it("fetches paginated issue comments and downloads inline comment images", async () => {
     const imageOutputDir = await createTempDir();
-    const fetchMock = vi.fn(async (input: FetchInput) => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
       const url = requestUrl(input);
       if (url.includes("/rest/api/3/issue/OPS-124?")) {
         return await Promise.resolve(
@@ -248,7 +253,7 @@ describe("Jira REST client", () => {
 
   it("downloads inline description images to local temp files when requested", async () => {
     const imageOutputDir = await createTempDir();
-    const fetchMock = vi.fn(async (input: FetchInput) => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
       const url = requestUrl(input);
       if (url.includes("/rest/api/3/issue/OPS-125?")) {
         return await Promise.resolve(
@@ -335,7 +340,7 @@ describe("Jira REST client", () => {
 
   it("follows signed media redirects without forwarding Authorization headers", async () => {
     const imageOutputDir = await createTempDir();
-    const fetchMock = vi.fn(async (input: FetchInput) => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
       const url = requestUrl(input);
       if (url.includes("/rest/api/3/issue/OPS-126?")) {
         return await Promise.resolve(
@@ -417,7 +422,7 @@ describe("Jira REST client", () => {
 
   it("skips inline image downloads when the image body exceeds the byte limit", async () => {
     const imageOutputDir = await createTempDir();
-    const fetchMock = vi.fn(async (input: FetchInput) => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
       const url = requestUrl(input);
       if (url.includes("/rest/api/3/issue/OPS-127?")) {
         return await Promise.resolve(
@@ -656,7 +661,7 @@ describe("Jira REST client", () => {
 
 
   it("fetches paginated custom fields and issue edit metadata", async () => {
-    const fetchMock = vi.fn(async (input: FetchInput) => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
       const url = requestUrl(input);
       if (url.includes("startAt=0")) {
         return await Promise.resolve(jsonResponse({ startAt: 0, maxResults: 1, total: 2, values: [{ id: "customfield_10101", name: "Custom text A", schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } }] }));
@@ -692,6 +697,221 @@ describe("Jira REST client", () => {
         method: "PUT",
       }),
     );
+  });
+
+  it("fetches the current description ADF for media-safety checks", async () => {
+    const description = mediaDocument("diagram.png", "media-platform-id");
+    const fetchMock = vi.fn(async () => await Promise.resolve(jsonResponse({
+      fields: { description },
+    })));
+
+    await expect(fetchJiraIssueDescriptionAdf({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-123",
+    })).resolves.toEqual(description);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/issue/OPS-123?fields=description",
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer secret-access-token",
+        },
+      },
+    );
+  });
+
+  it("adds issue comments with validated ADF bodies", async () => {
+    const body = textToAdfDocument("First line\nSecond line");
+    const fetchMock = vi.fn(async () => await Promise.resolve(jsonResponse({ id: 10101, body }, 201)));
+
+    await expect(addJiraIssueComment({
+      accessToken: "secret-access-token",
+      apiRoot,
+      body,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-123",
+    })).resolves.toEqual({ id: "10101" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/issue/OPS-123/comment",
+      {
+        body: JSON.stringify({ body }),
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer secret-access-token",
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      },
+    );
+  });
+
+  it("updates summaries only after editability checks", async () => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/editmeta")) {
+        return await Promise.resolve(jsonResponse(systemEditMetadata()));
+      }
+      return await Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    await expect(updateJiraIssueSummary({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-123",
+      notifyUsers: false,
+      summary: "New title",
+    })).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/issue/OPS-123?notifyUsers=false",
+      expect.objectContaining({
+        body: JSON.stringify({ fields: { summary: "New title" } }),
+        method: "PUT",
+      }),
+    );
+
+    const lockedFetch = vi.fn(async () => await Promise.resolve(jsonResponse({ fields: {} })));
+    await expect(updateJiraIssueSummary({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: lockedFetch,
+      issueKey: "OPS-123",
+      summary: "New title",
+    })).rejects.toThrow('Jira field "summary" is not editable on OPS-123');
+    expect(lockedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses plain-text description replacement when the current description contains media", async () => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/editmeta")) {
+        return await Promise.resolve(jsonResponse(systemEditMetadata()));
+      }
+      if (url.endsWith("?fields=description")) {
+        return await Promise.resolve(jsonResponse({
+          fields: { description: mediaDocument("diagram.png", "media-platform-id") },
+        }));
+      }
+      return await Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    await expect(updateJiraIssueDescription({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      description: textToAdfDocument("Replacement"),
+      fetchImpl: fetchMock,
+      inputKind: "plain-text",
+      issueKey: "OPS-123",
+    })).rejects.toThrow("contains media");
+    await expect(updateJiraIssueDescription({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      description: textToAdfDocument("Replacement"),
+      fetchImpl: fetchMock,
+      inputKind: "plain-text",
+      issueKey: "OPS-123",
+    })).rejects.not.toThrow(/secret-access-token/u);
+    expect(fetchMock.mock.calls.some((call) => requestUrl(call[0]).includes("notifyUsers"))).toBe(false);
+    expect(fetchMock.mock.calls.some((call) => call[1]?.method === "PUT")).toBe(false);
+  });
+
+  it("allows forced plain-text description replacement", async () => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/editmeta")) {
+        return await Promise.resolve(jsonResponse(systemEditMetadata()));
+      }
+      if (url.endsWith("?fields=description")) {
+        return await Promise.resolve(jsonResponse({
+          fields: { description: mediaDocument("diagram.png", "media-platform-id") },
+        }));
+      }
+      return await Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    const replacement = textToAdfDocument("Replacement");
+    await expect(updateJiraIssueDescription({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      description: replacement,
+      fetchImpl: fetchMock,
+      force: true,
+      inputKind: "plain-text",
+      issueKey: "OPS-123",
+    })).resolves.toBeUndefined();
+    const put = fetchMock.mock.calls.find((call) => call[1]?.method === "PUT");
+    expect(put?.[1]?.body).toBe(JSON.stringify({ fields: { description: replacement } }));
+  });
+
+  it("appends description ADF without dropping existing media content", async () => {
+    const currentDescription = mediaDocument("diagram.png", "media-platform-id");
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/editmeta")) {
+        return await Promise.resolve(jsonResponse(systemEditMetadata()));
+      }
+      if (url.endsWith("?fields=description")) {
+        return await Promise.resolve(jsonResponse({ fields: { description: currentDescription } }));
+      }
+      return await Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    await expect(updateJiraIssueDescription({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      description: textToAdfDocument("Appendix"),
+      fetchImpl: fetchMock,
+      inputKind: "plain-text",
+      issueKey: "OPS-123",
+      mode: "append",
+    })).resolves.toBeUndefined();
+
+    const put = fetchMock.mock.calls.find((call) => call[1]?.method === "PUT");
+    const rawBody = put?.[1]?.body;
+    expect(typeof rawBody).toBe("string");
+    const body = JSON.parse(typeof rawBody === "string" ? rawBody : "{}") as {
+      readonly fields: { readonly description: { readonly content: readonly unknown[] } };
+    };
+    expect(body.fields.description.content).toHaveLength(2);
+    expect(JSON.stringify(body.fields.description)).toContain("media-platform-id");
+    expect(JSON.stringify(body.fields.description)).toContain("Appendix");
+  });
+
+  it("treats raw ADF description replacement as an explicit full document", async () => {
+    const rawDescription = {
+      type: "doc" as const,
+      version: 1,
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Raw replacement" }] }],
+    };
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/editmeta")) {
+        return await Promise.resolve(jsonResponse(systemEditMetadata()));
+      }
+      return await Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    await expect(updateJiraIssueDescription({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      description: rawDescription,
+      fetchImpl: fetchMock,
+      inputKind: "adf",
+      issueKey: "OPS-123",
+    })).resolves.toBeUndefined();
+    const put = fetchMock.mock.calls.find((call) => call[1]?.method === "PUT");
+    expect(put?.[1]?.body).toBe(JSON.stringify({ fields: { description: rawDescription } }));
   });
 
   it("throws neutral validation errors for malformed Jira responses", async () => {
@@ -789,10 +1009,10 @@ describe("Jira REST client", () => {
   });
 });
 
-function jsonResponse(value: unknown): Response {
+function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     headers: { "content-type": "application/json" },
-    status: 200,
+    status,
   });
 }
 
@@ -812,6 +1032,23 @@ function mediaDocument(filename: string, mediaId: string): unknown {
     ],
     type: "doc",
     version: 1,
+  };
+}
+
+function systemEditMetadata(): unknown {
+  return {
+    fields: {
+      description: {
+        name: "Description",
+        required: false,
+        schema: { type: "string" },
+      },
+      summary: {
+        name: "Summary",
+        required: true,
+        schema: { type: "string" },
+      },
+    },
   };
 }
 

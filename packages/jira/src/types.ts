@@ -1,3 +1,5 @@
+import type { JiraAdfDocument, JiraAdfInputKind } from "./adf.js";
+
 export interface JiraTokens {
   readonly accessToken: string;
   readonly refreshToken: string;
@@ -100,6 +102,30 @@ export interface AddJiraIssueWorklogOptions extends JiraIssueKeyRequestOptions {
   readonly started?: string;
 }
 
+export type JiraIssueDescriptionInputKind = JiraAdfInputKind;
+export type JiraIssueDescriptionUpdateMode = "append" | "replace";
+
+export interface UpdateJiraIssueDescriptionOptions extends JiraIssueKeyRequestOptions {
+  readonly description: JiraAdfDocument;
+  readonly force?: boolean;
+  readonly inputKind: JiraIssueDescriptionInputKind;
+  readonly mode?: JiraIssueDescriptionUpdateMode;
+  readonly notifyUsers?: boolean;
+}
+
+export interface UpdateJiraIssueSummaryOptions extends JiraIssueKeyRequestOptions {
+  readonly notifyUsers?: boolean;
+  readonly summary: string;
+}
+
+export interface AddJiraIssueCommentOptions extends JiraIssueKeyRequestOptions {
+  readonly body: JiraAdfDocument;
+}
+
+export interface JiraIssueCommentResult {
+  readonly id: string;
+}
+
 export interface AssignedIssuesSearchBody {
   readonly fields: readonly string[];
   readonly jql: string;
@@ -177,4 +203,5 @@ export interface FetchJiraCustomFieldsOptions extends JiraRequestOptions {
 
 export interface UpdateJiraIssueFieldsOptions extends JiraIssueKeyRequestOptions {
   readonly fields: Record<string, unknown>;
+  readonly notifyUsers?: boolean;
 }

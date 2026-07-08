@@ -73,6 +73,37 @@ export function buildJiraIssueCommentsUrl(
   return url.toString();
 }
 
+export function buildJiraIssueCommentCreateUrl(
+  cloudId: string,
+  issueKey: string,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/comment`;
+}
+
+export function buildJiraIssueDescriptionUrl(
+  cloudId: string,
+  issueKey: string,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  const url = new URL(buildJiraIssueUrl(cloudId, issueKey, apiRoot));
+  url.searchParams.set("fields", "description");
+  return url.toString();
+}
+
+export function buildJiraIssueUpdateUrl(
+  cloudId: string,
+  issueKey: string,
+  options: { readonly notifyUsers?: boolean },
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  const url = new URL(buildJiraIssueUrl(cloudId, issueKey, apiRoot));
+  if (options.notifyUsers !== undefined) {
+    url.searchParams.set("notifyUsers", String(options.notifyUsers));
+  }
+  return url.toString();
+}
+
 export function buildJiraIssueTransitionsUrl(
   cloudId: string,
   issueKey: string,

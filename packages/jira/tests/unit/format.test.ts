@@ -6,6 +6,9 @@ import {
   formatIssueLinks,
   formatIssueTransitions,
   formatIssues,
+  formatJiraIssueCommentAdded,
+  formatJiraIssueDescriptionUpdated,
+  formatJiraIssueSummaryUpdated,
   formatCustomFieldRows,
   formatCustomFieldDiscovery,
   formatPinnedCustomFields,
@@ -121,6 +124,12 @@ describe("CLI text formatters", () => {
     expect(formatIssueDetail(detail)).toContain(
       "Images:\nscreenshot.png: file:///tmp/saptools-jira/OPS-123/screenshot.png",
     );
+  });
+
+  it("formats issue content write confirmations", () => {
+    expect(formatJiraIssueDescriptionUpdated("OPS-123")).toBe("Description updated on OPS-123.");
+    expect(formatJiraIssueSummaryUpdated("OPS-123")).toBe("Summary updated on OPS-123.");
+    expect(formatJiraIssueCommentAdded("OPS-123")).toBe("Comment added to OPS-123.");
   });
 });
 
