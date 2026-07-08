@@ -1,15 +1,18 @@
 import { z } from "zod";
 
+import { JiraAdfDocumentSchema, textToAdfDocument, type JiraAdfDocument } from "./adf.js";
 import { parseJiraAssignableUsers, parseJiraCurrentUser } from "./assignment.js";
 import { JiraCustomFieldSearchPageSchema, JiraIssueEditMetadataSchema, normalizeCustomField, normalizeFieldSchema } from "./custom-fields.js";
 import type { JiraCustomFieldSearchPage, JiraIssueEditableField, NormalizedCustomField } from "./custom-fields.js";
 import {
   collectAdfMediaReferences,
   collectDescriptionImageReferences,
+  hasAdfMedia,
   hydrateIssueImages,
   type JiraIssueImageReference,
 } from "./issue-images.js";
 import type {
+  AddJiraIssueCommentOptions,
   AddJiraIssueWorklogOptions,
   AssignJiraIssueOptions,
   FetchAssignedJiraIssuesOptions,
@@ -18,6 +21,7 @@ import type {
   JiraAssignableUser,
   JiraIssueAttachment,
   JiraIssueComment,
+  JiraIssueCommentResult,
   JiraIssueDetail,
   JiraIssueKeyRequestOptions,
   JiraIssueRemoteLink,
@@ -26,7 +30,9 @@ import type {
   JiraRequestOptions,
   SearchJiraAssignableUsersOptions,
   TransitionJiraIssueOptions,
+  UpdateJiraIssueDescriptionOptions,
   UpdateJiraIssueFieldsOptions,
+  UpdateJiraIssueSummaryOptions,
 } from "./types.js";
 import {
   buildAssignedIssuesSearchBody,
@@ -35,11 +41,13 @@ import {
   buildJiraCurrentUserUrl,
   buildJiraFieldSearchUrl,
   buildJiraIssueAssigneeUrl,
+  buildJiraIssueCommentCreateUrl,
   buildJiraIssueCommentsUrl,
+  buildJiraIssueDescriptionUrl,
   buildJiraIssueDetailUrl,
   buildJiraIssueEditMetaUrl,
   buildJiraIssueRemoteLinksUrl,
-  buildJiraIssueUrl,
+  buildJiraIssueUpdateUrl,
   buildJiraIssueTransitionsUrl,
   buildJiraIssueWorklogUrl,
 } from "./urls.js";
@@ -112,6 +120,10 @@ const JiraCommentsResponseSchema = z.object({
   total: z.number().int().nonnegative().optional(),
 });
 
+const JiraCommentCreateResponseSchema = z.object({
+  id: z.union([z.string(), z.number()]),
+}).loose();
+
 const AttachmentSchema = z.object({
   id: z.union([z.string(), z.number()]),
   filename: nonEmptyStringSchema,
@@ -148,6 +160,12 @@ const JiraIssueDetailResponseSchema = z.object({
     comment: z.union([z.array(CommentSchema), z.object({ comments: z.array(CommentSchema) })]).optional(),
     description: z.unknown().optional().nullable(),
     issuelinks: z.array(IssueLinkSchema).optional(),
+  }),
+});
+
+const JiraIssueDescriptionResponseSchema = z.object({
+  fields: z.object({
+    description: JiraAdfDocumentSchema.nullable().optional(),
   }),
 });
 
@@ -198,12 +216,133 @@ export async function fetchJiraIssueEditMetadata(
 
 export async function updateJiraIssueFields(options: UpdateJiraIssueFieldsOptions): Promise<void> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(buildJiraIssueUrl(options.cloudId, options.issueKey, options.apiRoot), {
-    body: JSON.stringify({ fields: options.fields }),
-    headers: jsonJiraHeaders(options.accessToken),
-    method: "PUT",
-  });
+  const response = await fetchImpl(
+    buildJiraIssueUpdateUrl(
+      options.cloudId,
+      options.issueKey,
+      updateUrlOptions(options),
+      options.apiRoot,
+    ),
+    {
+      body: JSON.stringify({ fields: options.fields }),
+      headers: jsonJiraHeaders(options.accessToken),
+      method: "PUT",
+    },
+  );
   assertOk(response, "Jira issue fields could not be updated.");
+}
+
+export async function fetchJiraIssueDescriptionAdf(
+  options: JiraIssueKeyRequestOptions,
+): Promise<JiraAdfDocument | null> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    buildJiraIssueDescriptionUrl(options.cloudId, options.issueKey, options.apiRoot),
+    { headers: readJiraHeaders(options.accessToken) },
+  );
+  assertOk(response, "Jira issue description could not be loaded.");
+  const parsed = JiraIssueDescriptionResponseSchema.safeParse(await response.json());
+  if (parsed.success) {
+    return parsed.data.fields.description ?? null;
+  }
+  throw new Error("Jira issue description response was not valid.");
+}
+
+export async function updateJiraIssueDescription(
+  options: UpdateJiraIssueDescriptionOptions,
+): Promise<void> {
+  const editableFields = await fetchJiraIssueEditMetadata(options);
+  requireEditableIssueField(editableFields, "description", options.issueKey);
+  const currentDescription = shouldFetchCurrentDescription(options)
+    ? await fetchJiraIssueDescriptionAdf(options)
+    : null;
+  const description = resolveDescriptionUpdateDocument(options, currentDescription);
+  await updateJiraIssueFields({
+    ...options,
+    fields: { description },
+  });
+}
+
+export async function updateJiraIssueSummary(
+  options: UpdateJiraIssueSummaryOptions,
+): Promise<void> {
+  const summary = options.summary.trim();
+  if (summary.length === 0) {
+    throw new Error("Jira issue summary must not be empty.");
+  }
+  const editableFields = await fetchJiraIssueEditMetadata(options);
+  requireEditableIssueField(editableFields, "summary", options.issueKey);
+  await updateJiraIssueFields({
+    ...options,
+    fields: { summary },
+  });
+}
+
+export async function addJiraIssueComment(
+  options: AddJiraIssueCommentOptions,
+): Promise<JiraIssueCommentResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(
+    buildJiraIssueCommentCreateUrl(options.cloudId, options.issueKey, options.apiRoot),
+    {
+      body: JSON.stringify({ body: options.body }),
+      headers: jsonJiraHeaders(options.accessToken),
+      method: "POST",
+    },
+  );
+  assertOk(response, "Jira issue comment could not be added.");
+  const parsed = JiraCommentCreateResponseSchema.safeParse(await response.json());
+  if (parsed.success) {
+    return { id: String(parsed.data.id) };
+  }
+  throw new Error("Jira issue comment response was not valid.");
+}
+
+function updateUrlOptions(
+  options: UpdateJiraIssueFieldsOptions,
+): { readonly notifyUsers?: boolean } {
+  return options.notifyUsers === undefined ? {} : { notifyUsers: options.notifyUsers };
+}
+
+function requireEditableIssueField(
+  editableFields: ReadonlyMap<string, JiraIssueEditableField>,
+  fieldId: "description" | "summary",
+  issueKey: string,
+): void {
+  if (editableFields.has(fieldId)) {
+    return;
+  }
+  throw new Error(`Jira field "${fieldId}" is not editable on ${issueKey}. Check the issue screen, field configuration, issue type, project, and workflow status.`);
+}
+
+function resolveDescriptionUpdateDocument(
+  options: UpdateJiraIssueDescriptionOptions,
+  currentDescription: JiraAdfDocument | null,
+): JiraAdfDocument {
+  if ((options.mode ?? "replace") === "append") {
+    return appendAdfDocument(currentDescription, options.description);
+  }
+  if (options.inputKind === "plain-text" && options.force !== true && hasAdfMedia(currentDescription)) {
+    throw new Error(`Current description on ${options.issueKey} contains media. Use --append to preserve it or --force to replace it.`);
+  }
+  return options.description;
+}
+
+function shouldFetchCurrentDescription(options: UpdateJiraIssueDescriptionOptions): boolean {
+  return (options.mode ?? "replace") === "append" || options.inputKind === "plain-text";
+}
+
+function appendAdfDocument(
+  currentDescription: JiraAdfDocument | null,
+  addition: JiraAdfDocument,
+): JiraAdfDocument {
+  if (currentDescription === null) {
+    return addition;
+  }
+  return {
+    ...currentDescription,
+    content: [...currentDescription.content, ...addition.content],
+  };
 }
 
 export async function fetchJiraCurrentUser(options: JiraRequestOptions): Promise<JiraAssignableUser> {
@@ -657,12 +796,4 @@ function buildWorklogRequestBody(
         started: options.started ?? formatJiraDate(new Date()),
         timeSpentSeconds: options.minutes * 60,
       };
-}
-
-function textToAdfDocument(text: string): Record<string, unknown> {
-  return {
-    content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
-    type: "doc",
-    version: 1,
-  };
 }

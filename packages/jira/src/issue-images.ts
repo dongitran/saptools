@@ -102,6 +102,10 @@ export function collectAdfMediaReferences(
     : current;
 }
 
+export function hasAdfMedia(value: unknown): boolean {
+  return collectAdfMediaReferences(value, "description").length > 0;
+}
+
 function selectIssueImageTasks(
   detail: JiraIssueDetail,
   references: readonly JiraIssueImageReference[],

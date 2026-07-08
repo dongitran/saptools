@@ -64,6 +64,18 @@ export function formatIssueTransitions(
     : "No Jira transitions found.";
 }
 
+export function formatJiraIssueDescriptionUpdated(issueKey: string): string {
+  return `Description updated on ${issueKey}.`;
+}
+
+export function formatJiraIssueSummaryUpdated(issueKey: string): string {
+  return `Summary updated on ${issueKey}.`;
+}
+
+export function formatJiraIssueCommentAdded(issueKey: string): string {
+  return `Comment added to ${issueKey}.`;
+}
+
 function formatIssueSummaryLine(issue: JiraIssueSummary): string {
   const priority = issue.priority ?? "No priority";
   return `${issue.key}\t[${issue.status}]\t${priority}\t${issue.summary}`;

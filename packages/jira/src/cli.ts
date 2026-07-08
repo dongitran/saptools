@@ -3,6 +3,7 @@ import process from "node:process";
 
 import { Command } from "commander";
 
+import { readJiraAdfBodyInput } from "./adf.js";
 import {
   JiraAssigneeAmbiguityError,
   resolveAssignableUserByAccountId,
@@ -15,6 +16,7 @@ import {
   requireStoredOrRefreshJiraTokens,
 } from "./auth.js";
 import {
+  addJiraIssueComment,
   addJiraIssueWorklog,
   assignJiraIssue,
   fetchAssignedJiraIssues,
@@ -26,7 +28,9 @@ import {
   fetchJiraIssueTransitions,
   searchJiraAssignableUsers,
   transitionJiraIssue,
+  updateJiraIssueDescription,
   updateJiraIssueFields,
+  updateJiraIssueSummary,
 } from "./client.js";
 import {
   readCustomFieldSnapshot,
@@ -42,6 +46,9 @@ import {
   formatIssueDetail,
   formatIssueLinks,
   formatIssueTransitions,
+  formatJiraIssueCommentAdded,
+  formatJiraIssueDescriptionUpdated,
+  formatJiraIssueSummaryUpdated,
   formatCustomFieldDiscovery,
   formatCustomFieldRows,
   formatIssues,
@@ -108,6 +115,25 @@ interface AssignFlags extends JsonFlags {
   readonly to?: string;
 }
 
+interface DescribeFlags extends JsonFlags {
+  readonly adfFile?: string;
+  readonly append?: boolean;
+  readonly force?: boolean;
+  readonly notifyUsers?: boolean;
+  readonly text?: string;
+  readonly textFile?: string;
+}
+
+interface SummaryFlags extends JsonFlags {
+  readonly notifyUsers?: boolean;
+}
+
+interface CommentFlags extends JsonFlags {
+  readonly adfFile?: string;
+  readonly text?: string;
+  readonly textFile?: string;
+}
+
 interface WorklogFlags {
   readonly comment?: string;
   readonly minutes?: string;
@@ -148,6 +174,9 @@ export async function main(argv: readonly string[]): Promise<void> {
   addTransitionsCommand(program);
   addTransitionCommand(program);
   addAssignCommand(program);
+  addDescribeCommand(program);
+  addSummaryCommand(program);
+  addCommentCommand(program);
   addWorklogCommand(program);
   addWorklogsCommand(program);
   addFieldsCommand(program);
@@ -422,6 +451,90 @@ function formatAssigneeAmbiguity(error: JiraAssigneeAmbiguityError): string {
     ...error.candidates.map((candidate) => `${candidate.displayName}\t${candidate.accountId}`),
     `Retry with: jira assign ${error.issueKey} --account-id <account-id>`,
   ].join("\n");
+}
+
+function addDescribeCommand(program: Command): void {
+  program
+    .command("describe")
+    .description("Update one Jira issue description from plain text or raw ADF")
+    .argument("<key>", "Jira issue key")
+    .option("--text <text>", "Plain text description body")
+    .option("--text-file <path>", "Read a plain text description body from a file")
+    .option("--adf-file <path>", "Read a raw ADF JSON description body from a file")
+    .option("--append", "Append to the current description instead of replacing it", false)
+    .option("--force", "Allow plain text replacement of a media-bearing description", false)
+    .option("--no-notify-users", "Suppress Jira user notifications for the update")
+    .option("--json", "Print JSON output", false)
+    .action(async (issueKey: string, flags: DescribeFlags): Promise<void> => {
+      const requestOptions = await toIssueRequestOptions(program, issueKey);
+      const bodyInput = await readJiraAdfBodyInput(flags);
+      await updateJiraIssueDescription({
+        ...requestOptions,
+        ...notifyUsersOption(flags),
+        description: bodyInput.document,
+        force: flags.force === true,
+        inputKind: bodyInput.inputKind,
+        mode: flags.append === true ? "append" : "replace",
+      });
+      const result = { issueKey, updated: ["description"] };
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? result : formatJiraIssueDescriptionUpdated(issueKey),
+        flags.json === true,
+      );
+    });
+}
+
+function addSummaryCommand(program: Command): void {
+  program
+    .command("summary")
+    .description("Update one Jira issue summary")
+    .argument("<key>", "Jira issue key")
+    .argument("<summary>", "New Jira issue summary")
+    .option("--no-notify-users", "Suppress Jira user notifications for the update")
+    .option("--json", "Print JSON output", false)
+    .action(async (issueKey: string, summary: string, flags: SummaryFlags): Promise<void> => {
+      const requestOptions = await toIssueRequestOptions(program, issueKey);
+      await updateJiraIssueSummary({
+        ...requestOptions,
+        ...notifyUsersOption(flags),
+        summary: requireText(summary, "<summary>"),
+      });
+      const result = { issueKey, updated: ["summary"] };
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? result : formatJiraIssueSummaryUpdated(issueKey),
+        flags.json === true,
+      );
+    });
+}
+
+function addCommentCommand(program: Command): void {
+  program
+    .command("comment")
+    .description("Add a Jira issue comment from plain text or raw ADF")
+    .argument("<key>", "Jira issue key")
+    .option("--text <text>", "Plain text comment body")
+    .option("--text-file <path>", "Read a plain text comment body from a file")
+    .option("--adf-file <path>", "Read a raw ADF JSON comment body from a file")
+    .option("--json", "Print JSON output", false)
+    .action(async (issueKey: string, flags: CommentFlags): Promise<void> => {
+      const requestOptions = await toIssueRequestOptions(program, issueKey);
+      const bodyInput = await readJiraAdfBodyInput(flags);
+      const comment = await addJiraIssueComment({
+        ...requestOptions,
+        body: bodyInput.document,
+      });
+      const result = { issueKey, commentId: comment.id };
+      await writeOutputWithOptionalHint(
+        program,
+        requestOptions.cloudId,
+        flags.json === true ? result : formatJiraIssueCommentAdded(issueKey),
+        flags.json === true,
+      );
+    });
 }
 
 function addWorklogCommand(program: Command): void {
@@ -723,6 +836,10 @@ function parseWorklogsGroupBy(raw: string | undefined): "day" | "issue" {
     return "day";
   }
   throw new Error("--group-by <day|issue> must be day or issue");
+}
+
+function notifyUsersOption(flags: { readonly notifyUsers?: boolean }): { readonly notifyUsers?: boolean } {
+  return flags.notifyUsers === false ? { notifyUsers: false } : {};
 }
 
 function formatWorklogSummary(summary: WorklogSummary): string {

@@ -9,8 +9,11 @@ import {
   buildJiraAttachmentThumbnailUrl,
   buildJiraCurrentUserUrl,
   buildJiraIssueAssigneeUrl,
+  buildJiraIssueCommentCreateUrl,
   buildJiraIssueCommentsUrl,
+  buildJiraIssueDescriptionUrl,
   buildJiraIssueDetailUrl,
+  buildJiraIssueUpdateUrl,
   buildJiraIssueRemoteLinksUrl,
   buildJiraIssueTransitionsUrl,
   buildJiraIssueWorklogUrl,
@@ -30,6 +33,15 @@ describe("Jira URL builders", () => {
     );
     expect(buildJiraIssueCommentsUrl("cloud 1", "OPS/123", 100, 50)).toBe(
       "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123/comment?startAt=100&maxResults=50",
+    );
+    expect(buildJiraIssueCommentCreateUrl("cloud 1", "OPS/123")).toBe(
+      "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123/comment",
+    );
+    expect(buildJiraIssueDescriptionUrl("cloud 1", "OPS/123")).toBe(
+      "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123?fields=description",
+    );
+    expect(buildJiraIssueUpdateUrl("cloud 1", "OPS/123", { notifyUsers: false })).toBe(
+      "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123?notifyUsers=false",
     );
     expect(buildJiraAttachmentContentUrl("cloud 1", "100/01")).toBe(
       "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/attachment/content/100%2F01",
@@ -53,6 +65,9 @@ describe("Jira URL builders", () => {
     );
     expect(buildJiraIssueWorklogUrl("cloud-1", "OPS-123", apiRoot)).toBe(
       "http://127.0.0.1:30129/ex/jira/cloud-1/rest/api/3/issue/OPS-123/worklog",
+    );
+    expect(buildJiraIssueUpdateUrl("cloud-1", "OPS-123", {}, apiRoot)).toBe(
+      "http://127.0.0.1:30129/ex/jira/cloud-1/rest/api/3/issue/OPS-123",
     );
   });
 

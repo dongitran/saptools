@@ -169,6 +169,8 @@ async function handleFakeJiraRequest(
 
   if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/editmeta") {
     writeJson(response, { fields: {
+      description: { name: "Description", required: false, schema: { type: "string" } },
+      summary: { name: "Summary", required: true, schema: { type: "string" } },
       customfield_10101: { name: "Custom text A", required: false, schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } },
       customfield_10102: { name: "Custom text B", required: false, schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textfield", customId: 10102 } },
     } });
@@ -215,6 +217,7 @@ async function handleFakeJiraRequest(
         updated: "2026-05-01T08:20:00.000+0000",
         description: {
           type: "doc",
+          version: 1,
           content: [
             { type: "paragraph", content: [{ type: "text", text: "Deploy safely" }] },
             {
@@ -279,6 +282,18 @@ async function handleFakeJiraRequest(
 
   if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/worklog") {
     writeJson(response, { id: "30001" }, 201);
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/comment") {
+    writeJson(response, {
+      id: "40001",
+      body: {
+        type: "doc",
+        version: 1,
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Created comment" }] }],
+      },
+    }, 201);
     return;
   }
 
@@ -529,6 +544,140 @@ test.describe("Jira CLI", () => {
       expect(JSON.parse(issueSummary.stdout)).toMatchObject({ minutes: 30 });
       const humanSummary = await ctx.run(["worklogs", "--month", "202605", "--group-by", "issue"]);
       expect(humanSummary.stdout).toContain("OPS-123\t30 minutes\t0.50 hours");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can update descriptions without silently dropping existing media", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const forced = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--text",
+        "Forced replacement",
+        "--force",
+      ]);
+      expect(forced.stdout).toContain("Description updated on OPS-123.");
+      const forcedPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.body.includes("Forced replacement");
+      });
+      expect(JSON.parse(forcedPut?.body ?? "{}")).toEqual({
+        fields: {
+          description: {
+            type: "doc",
+            version: 1,
+            content: [{ type: "paragraph", content: [{ type: "text", text: "Forced replacement" }] }],
+          },
+        },
+      });
+
+      const adfPath = join(ctx.home, "description.adf.json");
+      const rawAdf = {
+        type: "doc",
+        version: 1,
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Raw ADF description" }] },
+          {
+            type: "mediaSingle",
+            content: [{ type: "media", attrs: { id: "media-platform-id", type: "file" } }],
+          },
+        ],
+      };
+      await writeFile(adfPath, JSON.stringify(rawAdf), "utf8");
+      const raw = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--adf-file",
+        adfPath,
+        "--json",
+      ]);
+      expect(JSON.parse(raw.stdout)).toEqual({ issueKey: "OPS-123", updated: ["description"] });
+      const rawPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.body.includes("Raw ADF description");
+      });
+      expect(JSON.parse(rawPut?.body ?? "{}")).toEqual({ fields: { description: rawAdf } });
+
+      const requestCountBeforeRefusal = ctx.fakeJira.requests().length;
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--text",
+        "Unsafe replacement",
+      ])).rejects.toMatchObject({ stderr: expect.stringContaining("contains media") });
+      const refusalRequests = ctx.fakeJira.requests().slice(requestCountBeforeRefusal);
+      expect(refusalRequests.some((entry) => entry.method === "PUT")).toBe(false);
+
+      const appended = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--text",
+        "Appended note",
+        "--append",
+        "--json",
+      ]);
+      expect(JSON.parse(appended.stdout)).toEqual({ issueKey: "OPS-123", updated: ["description"] });
+      const appendPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.body.includes("Appended note");
+      });
+      const appendBody = JSON.parse(appendPut?.body ?? "{}") as {
+        readonly fields: { readonly description: { readonly content: readonly unknown[] } };
+      };
+      expect(appendBody.fields.description.content).toHaveLength(3);
+      expect(JSON.stringify(appendBody.fields.description)).toContain("media-platform-id");
+      expect(JSON.stringify(appendBody.fields.description)).toContain("Appended note");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can update summaries and add comments", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const summary = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "summary",
+        "OPS-123",
+        "Updated title",
+        "--json",
+      ]);
+      expect(JSON.parse(summary.stdout)).toEqual({ issueKey: "OPS-123", updated: ["summary"] });
+      const summaryPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.body.includes("Updated title");
+      });
+      expect(JSON.parse(summaryPut?.body ?? "{}")).toEqual({
+        fields: { summary: "Updated title" },
+      });
+
+      const comment = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "comment",
+        "OPS-123",
+        "--text",
+        "Review note",
+      ]);
+      expect(comment.stdout).toContain("Comment added to OPS-123.");
+      const commentPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url.endsWith("/issue/OPS-123/comment");
+      });
+      expect(JSON.parse(commentPost?.body ?? "{}")).toEqual({
+        body: {
+          type: "doc",
+          version: 1,
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Review note" }] }],
+        },
+      });
     } finally {
       await ctx.cleanup();
     }

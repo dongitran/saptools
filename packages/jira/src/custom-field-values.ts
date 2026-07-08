@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 
+import { textToAdfDocument } from "./adf.js";
 import type { JiraIssueEditableField, PinnedCustomField } from "./custom-fields.js";
 import { customFieldTypeSuffix, resolveFieldByDisplayName } from "./custom-fields.js";
+
+export { textToAdfDocument } from "./adf.js";
 
 export interface FieldValueInput {
   readonly fieldName: string;
@@ -103,14 +106,6 @@ export function convertFieldValue(value: string, pinned: PinnedCustomField, edit
     return value.split(",").map((part) => convertOptionValue(part.trim(), pinned, editable.allowedValues));
   }
   throw new Error(`Field "${pinned.name}" uses unsupported Jira custom field type ${schema.type}/${suffix || "unknown"}.`);
-}
-
-export function textToAdfDocument(text: string): Record<string, unknown> {
-  return {
-    type: "doc",
-    version: 1,
-    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
-  };
 }
 
 function convertOptionValue(value: string, pinned: PinnedCustomField, allowedValues: readonly unknown[]): Record<string, string> {
