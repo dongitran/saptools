@@ -3,7 +3,7 @@ import process from "node:process";
 
 import { Command } from "commander";
 
-import { readJiraAdfBodyInput } from "./adf.js";
+import { assertNoJiraAdfBodySource, readJiraAdfBodyInput } from "./adf.js";
 import {
   JiraAssigneeAmbiguityError,
   resolveAssignableUserByAccountId,
@@ -22,6 +22,7 @@ import {
   fetchAssignedJiraIssues,
   fetchJiraCurrentUser,
   fetchJiraCustomFields,
+  fetchJiraIssueDescriptionAdf,
   fetchJiraIssueDetail,
   fetchJiraIssueEditMetadata,
   fetchJiraIssueRemoteLinks,
@@ -120,6 +121,7 @@ interface DescribeFlags extends JsonFlags {
   readonly append?: boolean;
   readonly force?: boolean;
   readonly notifyUsers?: boolean;
+  readonly print?: boolean;
   readonly text?: string;
   readonly textFile?: string;
 }
@@ -456,17 +458,25 @@ function formatAssigneeAmbiguity(error: JiraAssigneeAmbiguityError): string {
 function addDescribeCommand(program: Command): void {
   program
     .command("describe")
-    .description("Update one Jira issue description from plain text or raw ADF")
+    .description("Print or update one Jira issue description as raw ADF")
     .argument("<key>", "Jira issue key")
     .option("--text <text>", "Plain text description body")
     .option("--text-file <path>", "Read a plain text description body from a file")
     .option("--adf-file <path>", "Read a raw ADF JSON description body from a file")
+    .option("--print", "Print the current raw description ADF JSON without updating the issue", false)
     .option("--append", "Append to the current description instead of replacing it", false)
     .option("--force", "Allow plain text replacement of a media-bearing description", false)
     .option("--no-notify-users", "Suppress Jira user notifications for the update")
     .option("--json", "Print JSON output", false)
     .action(async (issueKey: string, flags: DescribeFlags): Promise<void> => {
       const requestOptions = await toIssueRequestOptions(program, issueKey);
+      if (flags.print === true) {
+        assertNoJiraAdfBodySource(flags);
+        const description = await fetchJiraIssueDescriptionAdf(requestOptions);
+        writeOutput(formatDescriptionPrintOutput(issueKey, description, flags.json === true));
+        return;
+      }
+
       const bodyInput = await readJiraAdfBodyInput(flags);
       await updateJiraIssueDescription({
         ...requestOptions,
@@ -484,6 +494,20 @@ function addDescribeCommand(program: Command): void {
         flags.json === true,
       );
     });
+}
+
+function formatDescriptionPrintOutput(
+  issueKey: string,
+  description: unknown,
+  isJson: boolean,
+): unknown {
+  if (isJson) {
+    return { issueKey, description };
+  }
+  if (description !== null) {
+    return description;
+  }
+  throw new Error(`Jira issue ${issueKey} has no description ADF to print. Use --json to receive a null description.`);
 }
 
 function addSummaryCommand(program: Command): void {

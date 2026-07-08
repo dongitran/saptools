@@ -179,6 +179,7 @@ export interface JiraLinkedCloneIssue {
 export interface JiraIssueDetail extends JiraIssueSummary {
   readonly attachments: readonly JiraIssueAttachment[];
   readonly comments: readonly JiraIssueComment[];
+  readonly descriptionAdf: JiraAdfDocument | null;
   readonly descriptionText: string;
   readonly images: readonly JiraIssueImageFile[];
   readonly linkedCloneIssues: readonly JiraLinkedCloneIssue[];

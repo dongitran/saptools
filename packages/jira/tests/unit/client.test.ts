@@ -96,6 +96,11 @@ describe("Jira REST client", () => {
   });
 
   it("fetches issue detail and extracts readable ADF text", async () => {
+    const descriptionAdf = {
+      type: "doc",
+      version: 1,
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Deploy safely" }] }],
+    };
     const fetchMock = vi.fn(async () => {
       return await Promise.resolve(
         jsonResponse({
@@ -107,10 +112,7 @@ describe("Jira REST client", () => {
             assignee: null,
             issuetype: { name: "Task" },
             updated: "2026-05-01T08:20:00.000+0000",
-            description: {
-              type: "doc",
-              content: [{ type: "paragraph", content: [{ type: "text", text: "Deploy safely" }] }],
-            },
+            description: descriptionAdf,
             comment: {
               comments: [
                 {
@@ -147,10 +149,77 @@ describe("Jira REST client", () => {
     ).resolves.toMatchObject({
       attachments: [{ filename: "diagram.png", id: "20001", mimeType: "image/png", size: 42 }],
       comments: [{ authorDisplayName: "Reviewer", bodyText: "Looks good" }],
+      descriptionAdf,
       descriptionText: "Deploy safely",
       linkedCloneIssues: [{ key: "OPS-456", relationship: "clones", status: "Done" }],
       key: "OPS-123",
       priority: null,
+    });
+  });
+
+  it("keeps issue detail robust when raw description ADF is missing or invalid", async () => {
+    const fetchMock = vi.fn(async (input: FetchInput, _init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url.includes("/comment?")) {
+        return await Promise.resolve(jsonResponse({ comments: [], maxResults: 100, startAt: 0, total: 0 }));
+      }
+      if (url.includes("/OPS-129?")) {
+        return await Promise.resolve(
+          jsonResponse({
+          key: "OPS-129",
+          fields: {
+            summary: "Invalid description shape",
+            status: { name: "In Progress", statusCategory: { name: "In Progress" } },
+            priority: null,
+            assignee: null,
+            issuetype: { name: "Task" },
+            updated: "2026-05-01T08:20:00.000+0000",
+            description: { type: "doc", version: 1, content: "not-array", text: "Readable fallback" },
+            comment: { comments: [] },
+            attachment: [],
+            issuelinks: [],
+          },
+        }),
+        );
+      }
+      return await Promise.resolve(
+        jsonResponse({
+          key: "OPS-130",
+          fields: {
+            summary: "No description",
+            status: { name: "Open", statusCategory: { name: "To Do" } },
+            priority: null,
+            assignee: null,
+            issuetype: { name: "Task" },
+            updated: "2026-05-01T08:20:00.000+0000",
+            description: null,
+            comment: { comments: [] },
+            attachment: [],
+            issuelinks: [],
+          },
+        }),
+      );
+    });
+
+    await expect(fetchJiraIssueDetail({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-129",
+    })).resolves.toMatchObject({
+      descriptionAdf: null,
+      descriptionText: "Readable fallback",
+    });
+    await expect(fetchJiraIssueDetail({
+      accessToken: "secret-access-token",
+      apiRoot,
+      cloudId: "cloud-1",
+      fetchImpl: fetchMock,
+      issueKey: "OPS-130",
+    })).resolves.toMatchObject({
+      descriptionAdf: null,
+      descriptionText: "",
     });
   });
 

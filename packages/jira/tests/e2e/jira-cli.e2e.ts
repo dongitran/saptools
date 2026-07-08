@@ -239,6 +239,11 @@ async function handleFakeJiraRequest(
     return;
   }
 
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/OPS-EMPTY?")) {
+    writeJson(response, { fields: { description: null } });
+    return;
+  }
+
   if (
     method === "GET" &&
     url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/comment?startAt=0&maxResults=100"
@@ -383,6 +388,35 @@ function normalizeOutput(output: string | Uint8Array): string {
   return typeof output === "string" ? output : Buffer.from(output).toString("utf8");
 }
 
+function hasMediaId(value: unknown, mediaId: string): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const attrs = value["attrs"];
+  if (isRecord(attrs) && attrs["id"] === mediaId) {
+    return true;
+  }
+
+  const content = value["content"];
+  return Array.isArray(content) && content.some((child) => hasMediaId(child, mediaId));
+}
+
+function findTopLevelNodeWithMedia(
+  document: { readonly content?: readonly unknown[] },
+  mediaId: string,
+): unknown {
+  const node = document.content?.find((candidate) => hasMediaId(candidate, mediaId));
+  if (node === undefined) {
+    throw new Error(`Expected printed ADF to include media node ${mediaId}`);
+  }
+  return node;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 test.describe("Jira CLI", () => {
   test("User can inspect the installed CLI version", async () => {
     const { stdout } = await execFileAsync("node", [CLI_PATH, "--version"], {
@@ -440,10 +474,12 @@ test.describe("Jira CLI", () => {
       const parsedDetail = JSON.parse(detail.stdout) as {
         readonly attachments: readonly Record<string, unknown>[];
         readonly comments: readonly Record<string, unknown>[];
+        readonly descriptionAdf: unknown;
         readonly descriptionText: string;
         readonly images: readonly { readonly filePath: string; readonly fileUrl: string }[];
       };
       expect(parsedDetail).toMatchObject({ descriptionText: "Deploy safely" });
+      expect(hasMediaId(parsedDetail.descriptionAdf, "media-platform-id")).toBe(true);
       expect(parsedDetail.attachments[0]).toEqual({
         filename: "deployment.png",
         id: "20001",
@@ -460,6 +496,101 @@ test.describe("Jira CLI", () => {
       );
       expect(JSON.parse(links.stdout)).toEqual([expect.objectContaining({ title: "Docs" })]);
       expect(JSON.parse(transitions.stdout)).toEqual([expect.objectContaining({ id: "31" })]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can print current description ADF and round-trip an edited document with media intact", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const printed = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--print",
+      ]);
+      const printedAdf = JSON.parse(printed.stdout) as {
+        readonly content?: readonly unknown[];
+        readonly type?: unknown;
+        readonly version?: unknown;
+      };
+      expect(printedAdf).toMatchObject({ type: "doc", version: 1 });
+      expect(hasMediaId(printedAdf, "media-platform-id")).toBe(true);
+
+      const envelope = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--print",
+        "--json",
+      ]);
+      const parsedEnvelope = JSON.parse(envelope.stdout) as {
+        readonly description: unknown;
+        readonly issueKey: string;
+      };
+      expect(parsedEnvelope.issueKey).toBe("OPS-123");
+      expect(hasMediaId(parsedEnvelope.description, "media-platform-id")).toBe(true);
+
+      const mediaNode = findTopLevelNodeWithMedia(printedAdf, "media-platform-id");
+      const editedAdf = {
+        type: "doc",
+        version: 1,
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Deploy safely after review" }] },
+          mediaNode,
+        ],
+      };
+      const adfPath = join(ctx.home, "round-trip-description.json");
+      await writeFile(adfPath, JSON.stringify(editedAdf), "utf8");
+
+      const updated = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-123",
+        "--adf-file",
+        adfPath,
+        "--json",
+      ]);
+      expect(JSON.parse(updated.stdout)).toEqual({ issueKey: "OPS-123", updated: ["description"] });
+      const roundTripPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.body.includes("Deploy safely after review");
+      });
+      const putBody = JSON.parse(roundTripPut?.body ?? "{}") as {
+        readonly fields?: { readonly description?: unknown };
+      };
+      expect(putBody.fields?.description).toEqual(editedAdf);
+      expect(hasMediaId(putBody.fields?.description, "media-platform-id")).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User gets explicit null-description behavior when printing current ADF", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const envelope = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-EMPTY",
+        "--print",
+        "--json",
+      ]);
+      expect(JSON.parse(envelope.stdout)).toEqual({ issueKey: "OPS-EMPTY", description: null });
+
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "describe",
+        "OPS-EMPTY",
+        "--print",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("has no description ADF to print"),
+      });
     } finally {
       await ctx.cleanup();
     }

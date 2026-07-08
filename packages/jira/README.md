@@ -21,7 +21,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 
 - 🔁 **Shared JiraOps token** — reads and refreshes `~/.jira-oauth/tokens.json`, the default `jira-oauth-client` store used by JiraOps.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
-- 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text, paginated comments, attachments, and clone-linked issues.
+- 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text and raw ADF, paginated comments, attachments, and clone-linked issues.
 - 📝 **Issue content writes** — updates summaries, media-safe descriptions, and ADF comments.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
@@ -161,9 +161,22 @@ jira issue OPS-123 --no-images
 
 Inline Jira images in the description or comments are saved to the OS temp directory by default. Downloaded local image metadata is returned only in the top-level `images[]` array as `fileUrl`/`filePath` entries plus attachment metadata; join images to `attachments[]` with `image.attachmentId === attachment.id`. Use `--image-dir <path>`, `--max-image-bytes <number>`, or `--max-images <number>` to control local image capture.
 
+JSON issue details include both `descriptionText` and `descriptionAdf`. `descriptionText` is a flattened convenience string. `descriptionAdf` is the raw ADF document when Jira returns a valid document, or `null` when the issue has no valid description ADF.
+
 ### `jira describe <key>`
 
-Update one issue's description. Exactly one body source is required:
+Print or update one issue's description as raw ADF.
+
+Read the current raw ADF without updating Jira:
+
+```bash
+jira describe OPS-123 --print > description.adf.json
+jira describe OPS-123 --print --json
+```
+
+Default `--print` output is deliberately raw pretty-printed ADF JSON even without `--json`, so shell redirection creates a valid `--adf-file` artifact. `--json` wraps the document as `{ "issueKey": "OPS-123", "description": <ADF|null> }`. If the issue has no description, default `--print` exits non-zero instead of writing an invalid empty file; use `--json` when callers need to handle `null`.
+
+Update mode still requires exactly one body source:
 
 ```bash
 jira describe OPS-123 --text "Plain text description"
@@ -177,6 +190,18 @@ jira describe OPS-123 --adf-file ./description.adf.json --json
 Plain text is converted to ADF paragraphs. Blank lines create separate paragraphs; single newlines inside a paragraph become ADF `hardBreak` nodes. `--adf-file` reads a complete raw ADF JSON document and sends it after validation.
 
 Description replacement is safe by default. If the current description contains ADF media nodes, plain-text replacement is refused unless `--force` is passed. Use `--append` to preserve the current ADF content and append new paragraphs. Use `--adf-file` when a caller needs to provide a full document that already includes media nodes.
+
+To edit a complex description with images, fetch the current ADF, change only the relevant text node, and push the complete document back:
+
+```bash
+jira describe OPS-123 --print > description.adf.json
+# Edit one {"type":"text","text":"..."} node and leave media/mediaSingle nodes untouched.
+jira describe OPS-123 --adf-file description.adf.json
+```
+
+This preserves embedded images because existing `media.attrs.id` values are carried through unchanged; no media upload or regeneration is needed. Text-only flows (`--text` and `--text-file`) cannot preserve media because flattened text does not contain the media nodes.
+
+The read-edit-write flow is not transactional. If the description changes in Jira between `--print` and `--adf-file`, the later write overwrites the current server description.
 
 Native local-image inline embedding is not implemented. Jira's attachment upload API returns attachment metadata, but native ADF `media` file nodes require a Media Services ID that the public attachment endpoint does not return reliably. Use raw ADF input for image-preserving or image-bearing descriptions.
 
