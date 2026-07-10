@@ -3,6 +3,7 @@ import { lstat, mkdtemp, mkdir, readFile, readlink, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 
+import { readCache } from "../../src/cache.js";
 import { CACHE_FILE_NAME, PACKAGE_ANNOTATION } from "../../src/types.js";
 import type { HanaLensCsn } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
@@ -68,6 +69,28 @@ describe("hana-lens CLI e2e", () => {
       const salesToMaster = path.join(root, "packages", "sales", "node_modules", "@demo", "master");
       expect((await lstat(salesToMaster)).isSymbolicLink()).toBe(true);
       expect(await readlink(salesToMaster)).toBe(path.join(root, "packages", "master"));
+    });
+  }, 30_000);
+
+  it("build-cache recovers a duplicate package name and compiles both packages", async () => {
+    await withTempWorkspace(async (root) => {
+      const invoice = path.join(root, "packages", "demo_billing_invoice");
+      const ledger = path.join(root, "packages", "demo_billing_ledger");
+      await writeCapPackage(invoice, "@demo/billing_invoice", "namespace demo.invoice; entity Invoice { key ID: Integer; }");
+      await writeCapPackage(ledger, "@demo/billing_invoice", "namespace demo.ledger; entity Ledger { key ID: Integer; }");
+
+      const build = runCli(["build-cache", "--dir", root, "--prefix", "@demo/"], root);
+
+      expect(build.status).toBe(0);
+      expect(build.stdout).toContain("packages=2");
+      expect(build.stderr).toContain("@demo/billing_invoice");
+      expect(build.stderr).toContain(invoice);
+      expect(build.stderr).toContain(ledger);
+      expect(build.stderr).toContain("@demo/billing_ledger");
+
+      const parsed = await readCache(root);
+      expect(parsed.definitions["demo.invoice.Invoice"]?.[PACKAGE_ANNOTATION]).toBe("@demo/billing_invoice");
+      expect(parsed.definitions["demo.ledger.Ledger"]?.[PACKAGE_ANNOTATION]).toBe("@demo/billing_ledger");
     });
   }, 30_000);
 

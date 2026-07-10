@@ -90,6 +90,7 @@ What it does:
 
 - ignores `node_modules`, `.git`, `dist`, and `gen`
 - stops recursion once it finds a matching package root
+- resolves duplicate package names by folder match, then uses folder-derived fallbacks and excludes only fallbacks that still collide
 - creates virtual sibling links under each package's `node_modules/<scope>`
 - removes broken symlinks before relinking
 - spawns one worker process per package before calling `@sap/cds.compile(['*'])`
