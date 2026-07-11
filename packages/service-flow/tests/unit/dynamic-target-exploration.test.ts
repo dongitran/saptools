@@ -21,6 +21,36 @@ function rows(value: unknown): Row[] {
     : [];
 }
 
+const boundedDynamicArrayKeys = new Set([
+  'candidates',
+  'candidateScores',
+  'dynamicTargetCandidates',
+  'dynamicTargetCandidateSuggestions',
+  'candidateSuggestions',
+  'suggestedVarSets',
+  'rejectedCandidates',
+  'rejectedCandidateSuggestions',
+  'copyableExamples',
+]);
+
+function boundedDynamicArrays(
+  value: unknown,
+  pathPrefix = '$',
+): Array<{ path: string; length: number }> {
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      boundedDynamicArrays(item, `${pathPrefix}[${index}]`));
+  }
+  const object = record(value);
+  return Object.entries(object).flatMap(([key, item]) => {
+    const itemPath = `${pathPrefix}.${key}`;
+    const current = Array.isArray(item) && boundedDynamicArrayKeys.has(key)
+      ? [{ path: itemPath, length: item.length }]
+      : [];
+    return [...current, ...boundedDynamicArrays(item, itemPath)];
+  });
+}
+
 async function createDynamicTargetFixture(
   root: string,
   includeBetaRequire: boolean,
@@ -102,9 +132,82 @@ async function prepareDynamicTargetWorkspace(
   return prepareWorkspace(root);
 }
 
+async function createIdentityDynamicTargetFixture(root: string): Promise<void> {
+  await writeFixtureFile(root, 'gateway-app/.git-fixture');
+  await writeFixtureFile(root, 'gateway-app/package.json', JSON.stringify({
+    name: '@neutral/gateway-app',
+    version: '1.0.0',
+  }));
+  await writeFixtureFile(root, 'gateway-app/srv/gateway.cds', 'service GatewayService { action runIdentityFlow(); }');
+  await writeIdentityGatewayHandler(root, 'worker_${entityCode}_process');
+  await writeFixtureFile(root, 'gateway-app/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { GatewayHandler } from './GatewayHandler.js';\ncreateCombinedHandler({ handler: [GatewayHandler] });\n");
+  await createProcessService(
+    root,
+    'worker-or-process',
+    '@neutral/worker_or_process',
+    'OrderProcessService',
+    'OrderHandler',
+  );
+  await createProcessService(
+    root,
+    'worker-in-process',
+    '@neutral/worker_in_process',
+    'InvoiceProcessService',
+    'InvoiceHandler',
+  );
+}
+
+async function writeIdentityGatewayHandler(
+  root: string,
+  routeTemplate: string,
+): Promise<void> {
+  const routeExpression = `\`${routeTemplate}\``;
+  await writeFixtureFile(root, 'gateway-app/srv/GatewayHandler.ts', `import cds from '@sap/cds';
+import { Action, Handler } from 'cds-routing-handlers';
+@Handler()
+export class GatewayHandler {
+  @Action('runIdentityFlow')
+  async runIdentityFlow(entityName: string, entityCode: string): Promise<void> {
+    const client = await cds.connect.to(${routeExpression}, {
+      credentials: {
+        destination: ${routeExpression},
+        path: \`/\${entityName}ProcessService\`,
+      },
+    });
+    await client.send({ method: 'POST', path: '/collectPaths', data: {} });
+  }
+}
+`);
+}
+
+async function prepareIdentityDynamicTargetWorkspace(): ReturnType<typeof prepareWorkspace> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-dynamic-identity-'));
+  await createIdentityDynamicTargetFixture(root);
+  return prepareWorkspace(root);
+}
+
+async function prepareIdentityVariantWorkspace(
+  mutate: (root: string) => Promise<void>,
+): ReturnType<typeof prepareWorkspace> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-dynamic-variant-'));
+  await createIdentityDynamicTargetFixture(root);
+  await mutate(root);
+  return prepareWorkspace(root);
+}
+
 function missingRuntimeDiagnostic(result: ReturnType<typeof trace>): Row {
   return record(result.diagnostics.find((item) =>
     item.code === 'trace_runtime_variables_missing'));
+}
+
+function diagnosticByCode(result: ReturnType<typeof trace>, code: string): Row {
+  return record(result.diagnostics.find((item) => item.code === code));
+}
+
+function dynamicEvidence(result: ReturnType<typeof trace>): Row {
+  const edge = result.edges.find((item) =>
+    Object.keys(record(record(item.evidence).dynamicTargetExploration)).length > 0);
+  return record(edge?.evidence);
 }
 
 describe('dynamic runtime target exploration', () => {
@@ -248,12 +351,328 @@ describe('dynamic runtime target exploration', () => {
     });
     const candidates = rows(record(dynamicEdge?.evidence).dynamicTargetCandidates);
     expect(candidates.some((candidate) =>
-      Array.isArray(candidate.rejectedReasons)
-      && candidate.rejectedReasons.includes('candidate_tied_with_equal_score'))).toBe(true);
+      Array.isArray(candidate.inferenceBlockReasons)
+      && candidate.inferenceBlockReasons.includes('candidate_tied_with_equal_score'))).toBe(true);
     expect(JSON.stringify(dynamicEdge?.evidence)).toContain('candidate_tied_with_equal_score');
     expect(result.edges.some((edge) =>
       edge.type === 'remote_action'
       && edge.to === '/AlphaProcessService/collectPaths')).toBe(false);
+    db.close();
+  });
+
+  it('narrows partial substitutions before counting candidates', async () => {
+    const { db, workspaceId } = await prepareIdentityDynamicTargetWorkspace();
+    linkWorkspace(db, workspaceId);
+    const strict = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      maxDynamicCandidates: 5,
+    });
+    const strictDiagnostic = missingRuntimeDiagnostic(strict);
+    expect(strictDiagnostic).toMatchObject({
+      candidateCount: 2,
+      viableCandidateCount: 1,
+      rejectedCandidateCount: 1,
+      shownCandidateCount: 1,
+      omittedCandidateCount: 0,
+    });
+    expect(rows(strictDiagnostic.candidateSuggestions)).toEqual([
+      expect.objectContaining({
+        servicePath: '/OrderProcessService',
+        operationPath: '/collectPaths',
+      }),
+    ]);
+    expect(rows(strictDiagnostic.suggestedVarSets)).toContainEqual(
+      expect.objectContaining({
+        variables: { entityName: 'Order', entityCode: 'or' },
+        cli: '--var entityName=Order --var entityCode=or',
+      }),
+    );
+    expect(strict.edges.some((edge) =>
+      edge.type === 'operation_implemented_by_handler'
+      && String(edge.to).includes('OrderHandler.collectPaths'))).toBe(false);
+    db.close();
+  });
+
+  it('branches only to candidates viable after partial substitution', async () => {
+    const { db, workspaceId } = await prepareIdentityDynamicTargetWorkspace();
+    linkWorkspace(db, workspaceId);
+    const candidates = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      dynamicMode: 'candidates',
+      maxDynamicCandidates: 5,
+    });
+    const branches = candidates.edges.filter((edge) =>
+      edge.type === 'dynamic_candidate_branch');
+    expect(branches).toHaveLength(1);
+    expect(branches[0]).toMatchObject({
+      to: '/OrderProcessService/collectPaths',
+      evidence: {
+        viable: true,
+        rejected: false,
+        exploratory: true,
+        selected: false,
+      },
+    });
+    expect(branches.some((edge) =>
+      String(edge.to).includes('/InvoiceProcessService'))).toBe(false);
+    db.close();
+  });
+
+  it('infers an identity-only variable with exact generic provenance', async () => {
+    const { db, workspaceId } = await prepareIdentityDynamicTargetWorkspace();
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      dynamicMode: 'infer',
+      maxDynamicCandidates: 5,
+    });
+    const edge = result.edges.find((item) =>
+      item.type === 'remote_action'
+      && item.to === '/OrderProcessService/collectPaths');
+    expect(edge?.unresolvedReason).toBeUndefined();
+    expect(edge?.evidence).toMatchObject({
+      dynamicTargetInference: {
+        status: 'resolved',
+      },
+    });
+    expect(record(record(edge?.evidence).dynamicTargetInference).inferredVariables)
+      .toMatchObject({ entityCode: 'or' });
+    const selected = rows(record(edge?.evidence).dynamicTargetCandidates)
+      .find((candidate) => candidate.selected === true);
+    expect(selected).toMatchObject({
+      repoName: 'worker-or-process',
+      packageName: '@neutral/worker_or_process',
+      servicePath: '/OrderProcessService',
+      viable: true,
+      rejected: false,
+      selected: true,
+      derivedVariables: { entityCode: 'or' },
+    });
+    const provenance = record(record(selected?.derivedVariableSources).entityCode);
+    expect(String(provenance.sourceKind)).toMatch(/identity/);
+    expect([
+      '@neutral/worker_or_process',
+      'worker-or-process',
+    ]).toContain(provenance.matchedName);
+    expect(provenance.normalizedForm ?? provenance.normalizedName).toBe('worker_or_process');
+    expect(String(provenance.rule ?? provenance.normalizationRule)).toMatch(/exact.*identity|identity.*exact/);
+    expect(result.edges.some((item) =>
+      item.type === 'operation_implemented_by_handler'
+      && String(item.to).includes('OrderHandler.collectPaths'))).toBe(true);
+    db.close();
+  });
+
+  it('reports a no-match diagnostic for a conflicting explicit identity value', async () => {
+    const { db, workspaceId } = await prepareIdentityDynamicTargetWorkspace();
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order', entityCode: 'wrong' },
+      dynamicMode: 'infer',
+      maxDynamicCandidates: 2,
+    });
+    const diagnostic = diagnosticByCode(
+      result,
+      'no_candidate_after_runtime_substitution',
+    );
+    expect(diagnostic).toMatchObject({
+      code: 'no_candidate_after_runtime_substitution',
+      suppliedVariables: { entityName: 'Order', entityCode: 'wrong' },
+      candidateCount: 2,
+      viableCandidateCount: 0,
+      rejectedCandidateCount: 2,
+    });
+    const substituted = JSON.stringify(diagnostic.substitutedSignals);
+    expect(substituted).toContain('/OrderProcessService');
+    expect(substituted).toContain('worker_wrong_process');
+    expect(result.edges.some((edge) =>
+      edge.type === 'remote_action'
+      && edge.to === '/OrderProcessService/collectPaths'
+      && !edge.unresolvedReason)).toBe(false);
+    expect(result.edges.some((edge) =>
+      edge.type === 'operation_implemented_by_handler'
+      && String(edge.to).includes('OrderHandler.collectPaths'))).toBe(false);
+    db.close();
+  });
+
+  it('bounds every dynamic candidate array in trace JSON', async () => {
+    const { db, workspaceId } = await prepareIdentityDynamicTargetWorkspace();
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      dynamicMode: 'candidates',
+      maxDynamicCandidates: 1,
+    });
+    const diagnostic = missingRuntimeDiagnostic(result);
+    const machineOutput = JSON.parse(JSON.stringify({
+      evidence: dynamicEvidence(result),
+      diagnostic,
+    })) as unknown;
+    const exposedArrays = boundedDynamicArrays(machineOutput);
+    expect(exposedArrays.some((item) =>
+      item.path.endsWith('.candidateScores'))).toBe(true);
+    expect(exposedArrays.filter((item) => item.length > 1)).toEqual([]);
+    expect(exposedArrays.some((item) =>
+      item.path.endsWith('.rejectedCandidates'))).toBe(true);
+    expect(diagnostic).toMatchObject({
+      candidateCount: 2,
+      viableCandidateCount: 1,
+      rejectedCandidateCount: 1,
+      shownCandidateCount: 1,
+      omittedCandidateCount: 0,
+    });
+    expect(result.edges.filter((edge) =>
+      edge.type === 'dynamic_candidate_branch')).toHaveLength(1);
+    db.close();
+  });
+
+  it('refuses inference when exact require and identity derivations conflict', async () => {
+    const { db, workspaceId } = await prepareIdentityVariantWorkspace(async (root) => {
+      await writeFixtureFile(root, 'gateway-app/package.json', JSON.stringify({
+        name: '@neutral/gateway-app',
+        version: '1.0.0',
+        cds: { requires: {
+          worker_alt_process: {
+            kind: 'odata',
+            credentials: {
+              destination: 'worker_alt_process',
+              path: '/OrderProcessService',
+            },
+          },
+        } },
+      }));
+    });
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      dynamicMode: 'infer',
+    });
+    const evidence = dynamicEvidence(result);
+    const rejected = rows(record(evidence.dynamicTargetExploration).rejectedCandidates);
+    const candidate = rejected.find((item) => item.repoName === 'worker-or-process');
+    const conflict = rows(candidate?.conflicts)[0];
+    expect(conflict).toMatchObject({
+      key: 'entityCode',
+      values: ['alt', 'or'],
+      reason: 'conflicting_strong_derivations',
+    });
+    expect(conflict?.sources).toEqual(expect.arrayContaining([
+      'cds_require.alias',
+      'package_identity',
+    ]));
+    expect(record(evidence.dynamicTargetInference).status).not.toBe('resolved');
+    expect(result.edges.some((edge) =>
+      edge.type === 'operation_implemented_by_handler'
+      && String(edge.to).includes('OrderHandler.collectPaths'))).toBe(false);
+    db.close();
+  });
+
+  it('refuses identity fallback when package identities are duplicated', async () => {
+    const { db, workspaceId } = await prepareIdentityVariantWorkspace(async (root) => {
+      await writeFixtureFile(root, 'worker-in-process/package.json', JSON.stringify({
+        name: '@neutral/worker_or_process',
+        version: '1.0.0',
+      }));
+    });
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      dynamicMode: 'infer',
+    });
+    const evidence = dynamicEvidence(result);
+    const candidate = rows(evidence.dynamicTargetCandidates)
+      .find((item) => item.repoName === 'worker-or-process');
+    expect(candidate).toMatchObject({
+      missingVariables: ['entityCode'],
+      completeVariables: { entityName: 'Order' },
+      derivedVariables: {},
+      selected: false,
+    });
+    expect(record(candidate?.derivedVariableSources)).not.toHaveProperty('entityCode');
+    expect(record(evidence.dynamicTargetInference)).toMatchObject({
+      status: 'unresolved',
+      reason: 'missing_required_runtime_variable',
+    });
+    db.close();
+  });
+
+  it('keeps a bare identity template unresolved without literal boundaries', async () => {
+    const { db, workspaceId } = await prepareIdentityVariantWorkspace(async (root) => {
+      await writeIdentityGatewayHandler(root, '${entityCode}');
+    });
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runIdentityFlow' }, {
+      depth: 6,
+      vars: { entityName: 'Order' },
+      dynamicMode: 'infer',
+    });
+    const evidence = dynamicEvidence(result);
+    const candidate = rows(evidence.dynamicTargetCandidates)
+      .find((item) => item.repoName === 'worker-or-process');
+    expect(candidate).toMatchObject({
+      missingVariables: ['entityCode'],
+      selected: false,
+    });
+    expect(record(candidate?.derivedVariableSources)).not.toHaveProperty('entityCode');
+    expect(record(evidence.dynamicTargetInference).status).not.toBe('resolved');
+    db.close();
+  });
+
+  it('resolves both entry selectors in memory without mutating the dynamic row', async () => {
+    const { db, workspaceId } = await prepareIdentityDynamicTargetWorkspace();
+    linkWorkspace(db, workspaceId);
+    const snapshot = (): Row => record(db.prepare(`
+      SELECT id,edge_type edgeType,status,to_kind targetKind,to_id targetId,
+        unresolved_reason unresolvedReason,evidence_json evidenceJson
+      FROM graph_edges WHERE edge_type='DYNAMIC_EDGE_CANDIDATE'
+      ORDER BY id LIMIT 1
+    `).get());
+    const before = snapshot();
+    expect(before).toMatchObject({
+      edgeType: 'DYNAMIC_EDGE_CANDIDATE',
+      status: 'dynamic',
+      targetKind: 'operation_candidate',
+    });
+    const options = {
+      depth: 6,
+      vars: { entityName: 'Order', entityCode: 'or' },
+    };
+    const byOperation = trace(
+      db,
+      { repo: 'gateway-app', operation: 'runIdentityFlow' },
+      options,
+    );
+    expect(snapshot()).toEqual(before);
+    const byPath = trace(db, {
+      repo: 'gateway-app',
+      servicePath: '/GatewayService',
+      operationPath: '/runIdentityFlow',
+    }, options);
+    expect(snapshot()).toEqual(before);
+    const downstreamHandler = (result: ReturnType<typeof trace>): string | undefined =>
+      result.edges.find((edge) =>
+        edge.type === 'operation_implemented_by_handler'
+        && String(edge.to).includes('OrderHandler.collectPaths'))?.to;
+    expect(downstreamHandler(byOperation)).toBe('worker-or-process:OrderHandler.collectPaths');
+    expect(downstreamHandler(byPath)).toBe(downstreamHandler(byOperation));
+    for (const result of [byOperation, byPath]) {
+      const edge = result.edges.find((item) =>
+        item.type === 'remote_action'
+        && item.to === '/OrderProcessService/collectPaths');
+      expect(edge?.evidence).toMatchObject({
+        persistedResolution: {
+          status: 'dynamic',
+          edgeType: 'DYNAMIC_EDGE_CANDIDATE',
+        },
+        effectiveResolution: { status: 'resolved' },
+      });
+    }
     db.close();
   });
 });

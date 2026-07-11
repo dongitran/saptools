@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.52
+
+- Narrowed dynamic targets before ranking, scoped strong evidence by exact repository IDs, required workspace-wide identity uniqueness, refused conflicting/incomplete/margin-bound inference, shell-quoted suggestions, and bounded all candidate projections.
+- Indexed supported zero-argument CAP lifecycle decorators with runtime import provenance, kept lifecycle/event methods out of operation implementation matching, and added fail-closed repository, operation, handler, and no-executable-method diagnostics.
+- Coordinated index and clean writers with recoverable owner metadata and actionable lock failures while preserving atomic last-good publication, including backward-safe index creation during migration.
+- Reused immutable package/source text and TypeScript AST snapshots during sequential preparation, and added deterministic table/JSON, workspace-scope, integrity, concurrency, migration, and parse-failure coverage.
+
 ## 0.1.51
 
 - Added trace and graph `--dynamic-mode strict|candidates|infer` with capped `--max-dynamic-candidates` exploration for runtime-dependent remote targets.

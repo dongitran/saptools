@@ -1,17 +1,16 @@
 import { Command } from 'commander';
-import path from 'node:path';
-import fs from 'node:fs/promises';
 import { DEFAULT_IGNORES } from './config/defaults.js';
 import {
   createWorkspaceConfig,
   loadWorkspaceConfig,
   saveWorkspaceConfig,
 } from './config/workspace-config.js';
-import { openDatabase, openReadOnlyDatabase } from './db/connection.js';
+import { openDatabase, openReadOnlyDatabase, type Db } from './db/connection.js';
 import {
   getWorkspace,
   listRepositories,
-  repoByName,
+  reposByName,
+  type RepoRow,
   upsertRepository,
   upsertWorkspace,
 } from './db/repositories.js';
@@ -22,7 +21,10 @@ import { indexWorkspace } from './indexer/workspace-indexer.js';
 import { linkWorkspace } from './linker/cross-repo-linker.js';
 import { doctorDiagnostics, linkUpgradeWarnings } from './cli/doctor.js';
 import { trace } from './trace/trace-engine.js';
-import { parseVars } from './trace/selectors.js';
+import {
+  parseVars,
+  selectorRepoAmbiguousDiagnostic,
+} from './trace/selectors.js';
 import { parseImplementationHint } from './trace/implementation-hints.js';
 import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
@@ -30,6 +32,7 @@ import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
 import { VERSION } from './version.js';
 import type { DynamicMode } from './types.js';
+import { cleanWorkspaceState } from './cli/000-clean.js';
 async function init(
   workspace: string,
   options: { db?: string; ignore?: string[] },
@@ -91,6 +94,30 @@ async function withReadOnlyWorkspace<T>(
   } finally {
     db.close();
   }
+}
+function selectRepository(db: Db, selector: string, workspaceId?: number): {
+  repo?: RepoRow;
+  diagnostic?: Record<string, unknown>;
+} {
+  const candidates = reposByName(db, selector, workspaceId);
+  if (candidates.length === 1) return { repo: candidates[0] };
+  if (candidates.length === 0) return {
+    diagnostic: {
+      severity: 'warning',
+      code: 'selector_repo_not_found',
+      message: `Repository selector not found: ${selector}`,
+    },
+  };
+  return {
+    diagnostic: selectorRepoAmbiguousDiagnostic(
+      selector,
+      candidates.map((repo) => ({
+        id: repo.id,
+        name: repo.name,
+        packageName: repo.package_name ?? undefined,
+      })),
+    ),
+  };
 }
 export function createProgram(): Command {
   const program = new Command();
@@ -177,7 +204,7 @@ export function createProgram(): Command {
         dynamicMode: string;
         maxDynamicCandidates: string;
       }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
           const result = trace(
             db,
             {
@@ -189,6 +216,7 @@ export function createProgram(): Command {
             },
             {
               depth: Number(opts.depth),
+              workspaceId,
               vars: parseVars(opts.var),
               includeExternal: Boolean(opts.includeExternal),
               includeDb: Boolean(opts.includeDb),
@@ -214,10 +242,10 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (opts: { workspace?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) =>
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) =>
           process.stdout.write(
             renderJson(
-              listRepositories(db).map((r) => ({
+              listRepositories(db, workspaceId).map((r) => ({
                 name: r.name,
                 kind: r.kind,
                 packageName: r.package_name,
@@ -232,17 +260,20 @@ export function createProgram(): Command {
     .option('--repo <name>')
     .action(
       (opts: { workspace?: string; repo?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
-          const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
-          if (opts.repo && !repo) {
-            process.stdout.write(renderJson([{ severity: 'warning', code: 'selector_repo_not_found', message: `Repository selector not found: ${opts.repo}` }]));
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+          const selection = opts.repo
+            ? selectRepository(db, opts.repo, workspaceId)
+            : {};
+          if (selection.diagnostic) {
+            process.stdout.write(renderJson([selection.diagnostic]));
             return;
           }
+          const repo = selection.repo;
           const rows = db
             .prepare(
-              'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
+              'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
             )
-            .all(repo?.id, repo?.id);
+            .all(workspaceId, repo?.id, repo?.id);
           process.stdout.write(renderJson(rows));
         }).catch(fail),
     );
@@ -253,17 +284,20 @@ export function createProgram(): Command {
     .option('--service <path>')
     .action(
       (opts: { workspace?: string; repo?: string; service?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
-          const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
-          if (opts.repo && !repo) {
-            process.stdout.write(renderJson([{ severity: 'warning', code: 'selector_repo_not_found', message: `Repository selector not found: ${opts.repo}` }]));
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+          const selection = opts.repo
+            ? selectRepository(db, opts.repo, workspaceId)
+            : {};
+          if (selection.diagnostic) {
+            process.stdout.write(renderJson([selection.diagnostic]));
             return;
           }
+          const repo = selection.repo;
           const rows = db
             .prepare(
-              'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
+              'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
             )
-            .all(repo?.id, repo?.id, opts.service, opts.service);
+            .all(workspaceId, repo?.id, repo?.id, opts.service, opts.service);
           process.stdout.write(renderJson(rows));
         }).catch(fail),
     );
@@ -274,17 +308,21 @@ export function createProgram(): Command {
     .option('--operation <name>')
     .action(
       (opts: { workspace?: string; repo?: string; operation?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
-          const repo = opts.repo ? repoByName(db, opts.repo) : undefined;
-          if (opts.repo && !repo) {
-            process.stdout.write(renderJson([{ severity: 'warning', code: 'selector_repo_not_found', message: `Repository selector not found: ${opts.repo}` }]));
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+          const selection = opts.repo
+            ? selectRepository(db, opts.repo, workspaceId)
+            : {};
+          if (selection.diagnostic) {
+            process.stdout.write(renderJson([selection.diagnostic]));
             return;
           }
+          const repo = selection.repo;
           const rows = db
             .prepare(
-              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)',
+              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE r.workspace_id=? AND (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)',
             )
             .all(
+              workspaceId,
               repo?.id,
               repo?.id,
               opts.operation,
@@ -322,7 +360,7 @@ export function createProgram(): Command {
         dynamicMode: string;
         maxDynamicCandidates: string;
       }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
           const result = trace(
             db,
             {
@@ -333,6 +371,7 @@ export function createProgram(): Command {
             },
             {
               depth: 100,
+              workspaceId,
               includeAsync: true,
               includeDb: true,
               includeExternal: true,
@@ -357,11 +396,12 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (name: string, opts: { workspace?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) =>
-          process.stdout.write(
-            renderJson(repoByName(db, name) ?? { error: 'repo not found' }),
-          ),
-        ).catch(fail),
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+          const selection = selectRepository(db, name, workspaceId);
+          process.stdout.write(renderJson(
+            selection.repo ?? selection.diagnostic ?? { error: 'repo not found' },
+          ));
+        }).catch(fail),
     );
   inspect
     .command('operation')
@@ -369,12 +409,12 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (selector: string, opts: { workspace?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
           const rows = db
             .prepare(
-              'SELECT * FROM cds_operations WHERE operation_name=? OR operation_path=?',
+              'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
             )
-            .all(selector, selector);
+            .all(workspaceId, selector, selector);
           process.stdout.write(renderJson(rows));
         }).catch(fail),
     );
@@ -399,29 +439,7 @@ export function createProgram(): Command {
       (opts: { workspace?: string; dbOnly?: boolean }) =>
         void (async () => {
           const config = await loadWorkspaceConfig(opts.workspace);
-          const dbDir = path.resolve(path.dirname(config.dbPath));
-          const workspaceRoot = path.resolve(config.rootPath);
-          await fs.rm(config.dbPath, { force: true });
-          if (!opts.dbOnly) {
-            const marker = path.join(dbDir, '.service-flow-state');
-            const dangerous = new Set([
-              path.parse(dbDir).root,
-              '/tmp',
-              process.env.HOME ? path.resolve(process.env.HOME) : '',
-              workspaceRoot,
-            ]);
-            let ownsState: boolean;
-            try {
-              ownsState = (await fs.stat(marker)).isFile();
-            } catch {
-              ownsState = false;
-            }
-            if (!ownsState || dangerous.has(dbDir))
-              throw new Error(
-                `Refusing to recursively delete unowned or dangerous state directory: ${dbDir}. Use --db-only to remove only the database file.`,
-              );
-            await fs.rm(dbDir, { recursive: true, force: true });
-          }
+          await cleanWorkspaceState(config, Boolean(opts.dbOnly));
           process.stdout.write('Cleaned service-flow state\n');
         })().catch(fail),
     );

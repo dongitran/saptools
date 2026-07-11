@@ -95,14 +95,34 @@ export interface HandlerClassFact {
   sourceFile: string;
   sourceLine: number;
   methods: HandlerMethodFact[];
+  hasHandlerDecorator?: boolean;
+  classDecoratorNames?: string[];
+  observedDecoratorNames?: string[];
+  unsupportedDecoratorNames?: string[];
 }
+export type HandlerMethodKind =
+  | 'operation'
+  | 'entity_lifecycle'
+  | 'event'
+  | 'unsupported_lifecycle'
+  | 'unsupported_decorator';
+export type HandlerLifecyclePhase = 'on' | 'before' | 'after';
+export type HandlerLifecycleEvent = 'CREATE' | 'READ' | 'UPDATE' | 'DELETE';
 export interface HandlerMethodFact {
   methodName: string;
   decoratorKind: string;
   decoratorValue?: string;
   decoratorRawExpression: string;
+  handlerKind?: HandlerMethodKind;
+  executable?: boolean;
+  lifecyclePhase?: HandlerLifecyclePhase;
+  lifecycleEvent?: HandlerLifecycleEvent;
   decoratorResolution: {
     rawExpression: string;
+    decoratorExpression?: string;
+    argumentExpression?: string;
+    resolvedDecoratorKind?: string;
+    decoratorImportSource?: string;
     resolvedValue?: string;
     resolutionKind:
       | 'literal'
@@ -110,8 +130,13 @@ export interface HandlerMethodFact {
       | 'enum_member'
       | 'const_object_property'
       | 'generated_constant_name'
+      | 'lifecycle_implicit'
       | 'unresolved';
     unresolvedReason?: string;
+    handlerKind?: HandlerMethodKind;
+    executable?: boolean;
+    lifecyclePhase?: HandlerLifecyclePhase;
+    lifecycleEvent?: HandlerLifecycleEvent;
   };
   sourceFile: string;
   sourceLine: number;
@@ -202,6 +227,7 @@ export interface ImplementationHint {
 export type DynamicMode = 'strict' | 'candidates' | 'infer';
 export interface TraceOptions {
   depth: number;
+  workspaceId?: number;
   vars?: Record<string, string>;
   includeExternal?: boolean;
   includeDb?: boolean;

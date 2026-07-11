@@ -7,6 +7,7 @@ import {
   insertCalls,
   insertExecutableSymbols,
   insertHandler,
+  handlerMethodIsExecutable,
   insertRegistrations,
   insertSymbolCalls,
   insertRequires,
@@ -19,14 +20,20 @@ import { parseDecorators } from '../parsers/decorator-parser.js';
 import { parseHandlerRegistrations } from '../parsers/handler-registration-parser.js';
 import { parseOutboundCalls } from '../parsers/outbound-call-parser.js';
 import { parseExecutableSymbols } from '../parsers/symbol-parser.js';
-import { parsePackageJson } from '../parsers/package-json-parser.js';
+import {
+  loadPackageJsonSnapshot,
+} from '../parsers/package-json-parser.js';
 import { parseServiceBindings } from '../parsers/service-binding-parser.js';
-import { sha256File } from '../utils/hashing.js';
 import { normalizePath } from '../utils/path-utils.js';
 import { errorMessage } from '../utils/diagnostics.js';
 import { sha256Text } from '../utils/hashing.js';
 import { ANALYZER_VERSION } from '../version.js';
-import type { CdsServiceFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, ServiceBindingFact, ExecutableSymbolFact, SymbolCallFact } from '../types.js';
+import {
+  loadRepositorySourceContext,
+  type RepositorySourceContext,
+  type SourceContextInstrumentation,
+} from '../parsers/ts-project.js';
+import type { CdsServiceFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, PackageFacts, ServiceBindingFact, ExecutableSymbolFact, SymbolCallFact } from '../types.js';
 export interface IndexRepoResult {
   fileCount: number;
   diagnosticCount: number;
@@ -44,7 +51,7 @@ interface ParsedFacts {
 }
 export interface PreparedRepositoryIndex extends IndexRepoResult {
   repo: RepoRow;
-  packageFacts?: Awaited<ReturnType<typeof parsePackageJson>>;
+  packageFacts?: PackageFacts;
   fingerprint?: string;
   kind?: string;
   parsed?: ParsedFacts;
@@ -53,9 +60,10 @@ export async function indexRepository(
   db: Db,
   repo: RepoRow,
   force: boolean,
+  instrumentation?: SourceContextInstrumentation,
 ): Promise<IndexRepoResult> {
   try {
-    const prepared = await prepareRepositoryIndex(repo, force);
+    const prepared = await prepareRepositoryIndex(repo, force, instrumentation);
     if (!prepared.skipped) db.transaction(() => publishPreparedRepositoryIndex(db, prepared));
     return { fileCount: prepared.fileCount, diagnosticCount: prepared.diagnosticCount, skipped: prepared.skipped };
   } catch (error) {
@@ -63,19 +71,36 @@ export async function indexRepository(
     return { fileCount: 0, diagnosticCount: 1, skipped: false };
   }
 }
-export async function prepareRepositoryIndex(repo: RepoRow, force: boolean): Promise<PreparedRepositoryIndex> {
+export async function prepareRepositoryIndex(
+  repo: RepoRow,
+  force: boolean,
+  instrumentation?: SourceContextInstrumentation,
+): Promise<PreparedRepositoryIndex> {
   const sourceFiles = await findSourceFiles(repo.absolute_path);
-  const packageFacts = await parsePackageJson(repo.absolute_path);
-  const fingerprint = await repositoryFingerprint(repo.absolute_path, sourceFiles, packageFacts);
+  const packageSnapshot = await loadPackageJsonSnapshot(repo.absolute_path, {
+    strict: true,
+    allowMissing: repo.package_name === null,
+  });
+  const packageFacts = packageSnapshot.facts;
+  const sources = await loadRepositorySourceContext(
+    repo.absolute_path, sourceFiles, instrumentation,
+  );
+  const fingerprint = repositoryFingerprint(
+    sources, packageFacts, packageSnapshot.rawText,
+  );
   if (!force && repo.fingerprint === fingerprint) return { repo, fileCount: 0, diagnosticCount: 0, skipped: true };
+  const parsed = await parseAllSourceFacts(repo.absolute_path, sources);
   return {
     repo,
     packageFacts,
     fingerprint,
     kind: await classifyRepository(repo.absolute_path, packageFacts),
-    parsed: await parseAllSourceFacts(repo.absolute_path, sourceFiles),
+    parsed,
     fileCount: sourceFiles.length,
-    diagnosticCount: 0,
+    diagnosticCount: parsed.handlers.filter((handler) =>
+      handler.hasHandlerDecorator
+      && (handler.methods.length === 0
+        || handler.methods.some((method) => !handlerMethodIsExecutable(method)))).length,
     skipped: false,
   };
 }
@@ -104,21 +129,23 @@ export function recordIndexFailure(db: Db, repoId: number, error: unknown): void
   db.prepare("DELETE FROM diagnostics WHERE repo_id=? AND code IN ('index_failed_snapshot_preserved','source_read_failed')").run(repoId);
   db.prepare('INSERT INTO diagnostics(repo_id,severity,code,message) VALUES(?,?,?,?)').run(repoId, 'error', 'source_read_failed', `Index failed before publication; previous facts and fingerprint were preserved. ${message}`);
 }
-async function parseAllSourceFacts(root: string, files: string[]): Promise<ParsedFacts> {
+async function parseAllSourceFacts(
+  root: string,
+  sources: RepositorySourceContext,
+): Promise<ParsedFacts> {
   const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], fileRecords: [] };
-  for (const file of files) {
-    const abs = path.join(root, file);
-    const stat = await fs.stat(abs);
-    facts.fileRecords.push({ relativePath: normalizePath(file), extension: path.extname(file), sha256: await sha256File(abs), sizeBytes: stat.size });
-    if (file.endsWith('.cds')) facts.services.push(...(await parseCdsFile(root, file)));
+  for (const snapshot of sources.entries()) {
+    const file = snapshot.filePath;
+    facts.fileRecords.push({ relativePath: normalizePath(file), extension: path.extname(file), sha256: sha256Text(snapshot.text), sizeBytes: snapshot.sizeBytes });
+    if (file.endsWith('.cds')) facts.services.push(...(await parseCdsFile(root, file, sources)));
     if (/\.[jt]s$/.test(file)) {
-      facts.handlers.push(...(await parseDecorators(root, file)));
-      facts.registrations.push(...(await parseHandlerRegistrations(root, file)));
-      facts.bindings.push(...(await parseServiceBindings(root, file)));
-      const symbolFacts = await parseExecutableSymbols(root, file);
+      facts.handlers.push(...(await parseDecorators(root, file, sources)));
+      facts.registrations.push(...(await parseHandlerRegistrations(root, file, sources)));
+      facts.bindings.push(...(await parseServiceBindings(root, file, sources)));
+      const symbolFacts = await parseExecutableSymbols(root, file, sources);
       facts.symbols.push(...symbolFacts.symbols);
       facts.symbolCalls.push(...symbolFacts.calls);
-      facts.calls.push(...(await parseOutboundCalls(root, file)));
+      facts.calls.push(...(await parseOutboundCalls(root, file, sources)));
     }
   }
   return facts;
@@ -126,7 +153,7 @@ async function parseAllSourceFacts(root: string, files: string[]): Promise<Parse
 async function findSourceFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string, prefix = ''): Promise<void> {
-    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const e of entries) {
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) {
@@ -142,8 +169,11 @@ function isDefaultTestFile(relativeFile: string): boolean {
   if (parts.some((part) => ['test', 'tests', '__tests__'].includes(part))) return true;
   return /\.(test|spec)\.[jt]s$/.test(parts.at(-1) ?? '');
 }
-async function repositoryFingerprint(root: string, files: string[], facts: Awaited<ReturnType<typeof parsePackageJson>>): Promise<string> {
-  const packageJson = await fs.readFile(path.join(root, 'package.json'), 'utf8').catch(() => '');
+function repositoryFingerprint(
+  sources: RepositorySourceContext,
+  facts: PackageFacts,
+  packageJsonText: string,
+): string {
   const normalizedFacts = {
     analyzerVersion: ANALYZER_VERSION,
     packageName: facts.packageName,
@@ -152,12 +182,10 @@ async function repositoryFingerprint(root: string, files: string[], facts: Await
     cdsRequires: [...facts.cdsRequires].sort((a, b) => a.alias.localeCompare(b.alias)),
     scripts: Object.fromEntries(Object.entries(facts.scripts).sort()),
     includeTests: false,
-    packageJsonHash: sha256Text(packageJson),
+    packageJsonHash: sha256Text(packageJsonText),
   };
   const entries: string[] = [`facts:${JSON.stringify(normalizedFacts)}`];
-  for (const file of files) {
-    const content = await fs.readFile(path.join(root, file), 'utf8');
-    entries.push(`${file}:${sha256Text(content)}`);
-  }
+  for (const snapshot of sources.entries())
+    entries.push(`${snapshot.filePath}:${sha256Text(snapshot.text)}`);
   return sha256Text(entries.join('\n'));
 }

@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
-import { schemaSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 10;
+import { schemaIndexesSql, schemaTablesSql } from './schema.js';
+const CURRENT_SCHEMA_VERSION = 11;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   handler_methods: [
     { name: 'decorator_resolution_json', ddl: "ALTER TABLE handler_methods ADD COLUMN decorator_resolution_json TEXT NOT NULL DEFAULT '{}'" },
@@ -57,6 +57,7 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   ],
   index_runs: [
     { name: 'error_message', ddl: 'ALTER TABLE index_runs ADD COLUMN error_message TEXT' },
+    { name: 'owner_pid', ddl: 'ALTER TABLE index_runs ADD COLUMN owner_pid INTEGER' },
   ],
 };
 function hasColumn(db: Db, table: string, column: string): boolean {
@@ -81,8 +82,9 @@ export function migrate(db: Db): void {
   db.transaction(() => {
     const version = userVersion(db);
     if (version > CURRENT_SCHEMA_VERSION) throw new Error(`Unsupported future service-flow schema version ${version}`);
-    db.exec(schemaSql);
+    db.exec(schemaTablesSql);
     addMissingColumns(db);
+    db.exec(schemaIndexesSql);
     normalizeLegacyStatus(db);
     const violations = db.pragma('foreign_key_check');
     if (violations.length > 0) throw new Error('SQLite foreign_key_check failed during migration');

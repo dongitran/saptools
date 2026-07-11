@@ -3,6 +3,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import type { ExecutableSymbolFact, SymbolCallFact } from '../types.js';
 import { containsSupportedOutboundCall } from './outbound-call-parser.js';
+import type { RepositorySourceContext } from './ts-project.js';
 import { normalizePath } from '../utils/path-utils.js';
 
 function lineOf(source: ts.SourceFile, pos: number): number {
@@ -167,9 +168,18 @@ function parameterBindings(params: ts.NodeArray<ts.ParameterDeclaration>): Param
     return [];
   });
 }
-export async function parseExecutableSymbols(repoPath: string, filePath: string): Promise<{ symbols: ExecutableSymbolFact[]; calls: SymbolCallFact[] }> {
-  const text = await fs.readFile(path.join(repoPath, filePath), 'utf8');
-  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+export async function parseExecutableSymbols(
+  repoPath: string,
+  filePath: string,
+  context?: RepositorySourceContext,
+): Promise<{ symbols: ExecutableSymbolFact[]; calls: SymbolCallFact[] }> {
+  const snapshot = context?.get(filePath);
+  const text = snapshot?.text
+    ?? await fs.readFile(path.join(repoPath, filePath), 'utf8');
+  const source = snapshot?.sourceFile() ?? ts.createSourceFile(
+    filePath, text, ts.ScriptTarget.Latest, true,
+    filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
+  );
   const sourceFile = normalizePath(filePath);
   const symbols: ExecutableSymbolFact[] = [];
   const calls: SymbolCallFact[] = [];

@@ -1,11 +1,15 @@
 # Service Flow Resolution Notes
 
-## 0.1.51 dynamic target exploration notes
+## 0.1.52 dynamic target, lifecycle, and indexing notes
 
 - Persisted graph storage remains conservative. Runtime-dependent remote targets still link as dynamic or unresolved graph edges unless static evidence is strong enough.
-- Trace and graph now accept `--dynamic-mode strict|candidates|infer`. Strict is the default and does not traverse missing-runtime-variable candidates. Candidates mode renders capped exploratory candidate branches that are explicitly unselected. Infer mode resolves only when all required placeholders are derived from deterministic indexed evidence and the selected candidate is unique above threshold.
-- Dynamic candidate evidence is derived from indexed operation paths, service-path templates, alias/destination templates, `cds.requires`, service-binding facts, and implementation-edge availability. Candidate `reasons` are arrays, and rejected candidates explain mismatches, missing runtime variables, or tied scores.
-- Missing-variable diagnostics retain the copyable `--var key=<value>` placeholders and add bounded candidate suggestions, suggested var sets, candidate counts, and omitted counts for human and CI consumers.
+- Trace and graph accept `--dynamic-mode strict|candidates|infer`. Strict is the default and never traverses a target that still needs runtime values. Candidates mode emits only viable, explicitly unselected exploratory branches. Infer mode resolves only when the top viable candidate has every required value, scores at least `0.85`, exceeds the runner-up by more than `0.05`, and has no conflicting strong derivation.
+- Explicit variables are substituted first and remain authoritative. Concrete service, operation, alias, or destination contradictions reject a candidate before viable counts or branch creation. A conflicting derived value is retained as conflict evidence and cannot replace the explicit value.
+- Identity normalization removes an npm scope, splits camel case, lowercases, folds separator runs to `_`, and trims edge separators. Fallback then requires an exact whole-name template match with literal text on both sides of one placeholder, one exact implementation owner, and workspace-wide unique repository/package identity and derived value. Provenance records the matched source name, normalized form, and rule; substring, duplicate-name, discovery-order, and same-operation-name guesses remain ineligible.
+- `--max-dynamic-candidates` bounds viable and rejected candidates, branches, suggestions, variable sets, nested provenance/conflict lists, and duplicate persisted candidate projections. `omittedCandidateCount` is always relative to viable candidates; rejected shown/omitted counts are separate.
+- Supported zero-argument `OnCreate/Read/Update/Delete`, `Before*`, and `After*` method decorators require runtime imports and retain their original expression, canonical import evidence, lifecycle phase/event, and source location. Type-only imports, nonzero arguments, unsupported shapes, and body-less methods stay non-executable. Lifecycle and event rows are not CDS operation implementations without real operation facts; supported methods in a mixed class remain traceable with structured warnings.
+- Schema version 11 adds nullable index-writer owner metadata. A short `BEGIN IMMEDIATE` claim serializes writers for one database, dead owners are recoverable, active owners fail with `index_writer_active`, and read-only commands remain available outside the short claim/publication transactions.
+- Repository preparation stays sequential. Each discovered source and package metadata file is read once into a repository-scoped immutable snapshot; TypeScript parsers share one lazy AST per file. Publication remains one atomic transaction, and discovery/read/parse failures retain the last-good facts and fingerprint.
 
 ## 0.1.33 trace, entity, destination, and upgrade notes
 

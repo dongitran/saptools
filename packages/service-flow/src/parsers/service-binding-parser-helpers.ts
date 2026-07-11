@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
 import { normalizePath } from '../utils/path-utils.js';
+import type { RepositorySourceContext } from './ts-project.js';
 
 export interface HelperBinding {
   exportedName: string;
@@ -123,7 +124,13 @@ export function findConnectInExpression(expr: ts.Expression): Omit<HelperBinding
   return found;
 }
 
-export async function readSource(abs: string): Promise<ts.SourceFile | undefined> {
+export async function readSource(
+  abs: string,
+  context?: RepositorySourceContext,
+  filePath?: string,
+): Promise<ts.SourceFile | undefined> {
+  const snapshot = filePath ? context?.get(filePath) : undefined;
+  if (snapshot) return snapshot.sourceFile();
   try {
     const text = await fs.readFile(abs, 'utf8');
     return ts.createSourceFile(abs, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);

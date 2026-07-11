@@ -3,6 +3,12 @@ import { substituteVariables } from '../../src/linker/dynamic-edge-resolver.js';
 import { resolveOperation } from '../../src/linker/service-resolver.js';
 import { openDatabase } from '../../src/db/connection.js';
 import { schemaSql } from '../../src/db/schema.js';
+import {
+  runtimeNoCandidateDiagnostics,
+  runtimeVariableDiagnostic,
+  runtimeResolution,
+  type TraceGraphRow,
+} from '../../src/trace/evidence.js';
 
 describe('runtime substitution and resolution correctness', () => {
   it('keeps partial substitutions dynamic with missing placeholder names', () => {
@@ -28,6 +34,126 @@ describe('runtime substitution and resolution correctness', () => {
       isDynamic: true,
     }, 1);
     expect(resolution.target?.score).toBe(1);
+    db.close();
+  });
+
+  it('never reclassifies terminal or already resolved edges during inference', () => {
+    const db = openDatabase(':memory:');
+    const candidate = {
+      operationId: 91,
+      repoName: 'worker-service',
+      packageName: '@neutral/worker-service',
+      serviceName: 'OrderService',
+      qualifiedName: 'OrderService',
+      servicePath: '/OrderService',
+      operationPath: '/run',
+      operationName: 'run',
+      sourceFile: 'srv/order.cds',
+      sourceLine: 2,
+      score: 0.2,
+      reasons: ['operation_path_match'],
+    };
+    const cases = [
+      ['HANDLER_RUNS_DB_QUERY', 'terminal', 'db_entity', 'Orders', 'local_db_query'],
+      ['HANDLER_RUNS_REMOTE_QUERY', 'terminal', 'remote_entity', 'Orders', 'remote_query'],
+      ['HANDLER_CALLS_EXTERNAL_HTTP', 'terminal', 'external_endpoint', 'endpoint:orders', 'external_http'],
+      ['HANDLER_EMITS_EVENT', 'terminal', 'event', 'OrdersChanged', 'async_emit'],
+      ['REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'operation', '55', 'remote_action'],
+    ] as const;
+    for (const [edgeType, status, targetKind, targetId, callType] of cases) {
+      const row: TraceGraphRow = {
+        id: 10,
+        edge_type: edgeType,
+        from_id: '7',
+        to_kind: targetKind,
+        to_id: targetId,
+        confidence: 0.8,
+        evidence_json: '{}',
+        status,
+      };
+      const resolved = runtimeResolution(db, row, {
+        callType,
+        servicePath: '/${entityName}Service',
+        operationPath: '/run',
+        candidates: [candidate, candidate, candidate],
+        candidateScores: [candidate, candidate, candidate],
+      }, { dynamicMode: 'infer', maxDynamicCandidates: 1 }, 1);
+      expect(resolved.row).toMatchObject({
+        edge_type: edgeType,
+        status,
+        to_kind: targetKind,
+        to_id: targetId,
+      });
+      expect(resolved.target).toBeUndefined();
+      expect(resolved.evidence).not.toHaveProperty('dynamicTargetInference');
+      expect(resolved.evidence.candidates).toEqual([candidate]);
+      expect(resolved.evidence.candidateScores).toEqual([candidate]);
+      expect(resolved.evidence).toMatchObject({
+        persistedCandidateCount: 3,
+        persistedCandidateOmittedCount: 2,
+      });
+    }
+    db.close();
+  });
+
+  it('reports aggregate shown and omitted counts from the globally bounded list', () => {
+    const edge = (suffix: string): { evidence: Record<string, unknown> } => ({
+      evidence: {
+        effectiveResolution: { status: 'dynamic' },
+        runtimeSubstitutions: {
+          servicePath: { missing: ['entityName'] },
+        },
+        dynamicTargetCandidateSuggestions: [
+          { repoName: `worker-${suffix}`, servicePath: `/${suffix}Service` },
+        ],
+        dynamicTargetExploration: {
+          maxCandidates: 1,
+          candidateCount: 2,
+          viableCandidateCount: 2,
+          rejectedCandidateCount: 0,
+          shownCandidateCount: 1,
+          omittedCandidateCount: 1,
+          suggestedVarSets: [],
+          rejectedCandidates: [],
+        },
+      },
+    });
+    const diagnostic = runtimeVariableDiagnostic([edge('alpha'), edge('beta')]);
+    expect(diagnostic).toMatchObject({
+      candidateCount: 4,
+      viableCandidateCount: 4,
+      shownCandidateCount: 1,
+      omittedCandidateCount: 3,
+    });
+    expect(diagnostic?.candidateSuggestions).toHaveLength(1);
+  });
+
+  it('does not report a no-match when no supplied variable applies to the edge', () => {
+    const db = openDatabase(':memory:');
+    db.exec(schemaSql);
+    const row: TraceGraphRow = {
+      id: 10,
+      edge_type: 'DYNAMIC_EDGE_CANDIDATE',
+      from_id: '7',
+      to_kind: 'operation_candidate',
+      to_id: '',
+      confidence: 0.4,
+      evidence_json: '{}',
+      status: 'dynamic',
+      unresolved_reason: 'Runtime target requires entityName',
+    };
+    const result = runtimeResolution(db, row, {
+      callType: 'remote_action',
+      repo: 'gateway',
+      repoId: 1,
+      servicePath: '/${entityName}Service',
+      operationPath: '/collect',
+      candidates: [],
+    }, { vars: { unrelated: 'value' } }, 1);
+
+    expect(result.unresolvedReason).toBe('Runtime target requires entityName');
+    expect(runtimeNoCandidateDiagnostics([{ evidence: result.evidence }]))
+      .toEqual([]);
     db.close();
   });
 });

@@ -1,6 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { CdsRequire, PackageFacts } from '../types.js';
+interface ParsePackageJsonOptions {
+  strict?: boolean;
+  allowMissing?: boolean;
+}
+export interface PackageJsonSnapshot {
+  facts: PackageFacts;
+  rawText: string;
+}
+function emptyPackageFacts(): PackageFacts {
+  return { dependencies: {}, cdsRequires: [], scripts: {} };
+}
 function recordOfString(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object') return {};
   return Object.fromEntries(
@@ -41,23 +52,37 @@ function readRequires(cds: unknown): CdsRequire[] {
   });
 }
 export async function parsePackageJson(
-  repoPath: string
+  repoPath: string,
+  options: ParsePackageJsonOptions = {},
 ): Promise<PackageFacts> {
+  return (await loadPackageJsonSnapshot(repoPath, options)).facts;
+}
+export async function loadPackageJsonSnapshot(
+  repoPath: string,
+  options: ParsePackageJsonOptions = {},
+): Promise<PackageJsonSnapshot> {
   try {
     const raw = await fs.readFile(path.join(repoPath, 'package.json'), 'utf8');
     const json = JSON.parse(raw) as Record<string, unknown>;
     return {
-      packageName: typeof json.name === 'string' ? json.name : undefined,
-      packageVersion:
-        typeof json.version === 'string' ? json.version : undefined,
-      dependencies: {
-        ...recordOfString(json.dependencies),
-        ...recordOfString(json.devDependencies)
+      rawText: raw,
+      facts: {
+        packageName: typeof json.name === 'string' ? json.name : undefined,
+        packageVersion:
+          typeof json.version === 'string' ? json.version : undefined,
+        dependencies: {
+          ...recordOfString(json.dependencies),
+          ...recordOfString(json.devDependencies),
+        },
+        cdsRequires: readRequires(json.cds),
+        scripts: recordOfString(json.scripts),
       },
-      cdsRequires: readRequires(json.cds),
-      scripts: recordOfString(json.scripts)
     };
-  } catch {
-    return { dependencies: {}, cdsRequires: [], scripts: {} };
+  } catch (error) {
+    const missing = typeof error === 'object' && error !== null
+      && 'code' in error && error.code === 'ENOENT';
+    if (!options.strict || (options.allowMissing && missing))
+      return { facts: emptyPackageFacts(), rawText: '' };
+    throw error;
   }
 }

@@ -74,6 +74,159 @@ describe('service-flow parsers', () => {
     expect(regs.length).toBeGreaterThan(0);
   });
 
+  it('indexes supported zero-argument lifecycle decorators as executable methods', async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-lifecycle-decorators-'),
+    );
+    await fs.writeFile(path.join(root, 'handler.ts'), `
+      import {
+        AfterDelete,
+        BeforeCreate,
+        Handler,
+        OnUpdate,
+      } from 'cds-routing-handlers';
+      @Handler()
+      export class RecordLifecycleHandler {
+        @OnUpdate() async updateRecord(): Promise<void> {}
+        @BeforeCreate() async prepareRecord(): Promise<void> {}
+        @AfterDelete() async clearRecord(): Promise<void> {}
+      }
+    `);
+
+    const handlers = await parseDecorators(root, 'handler.ts');
+    expect(handlers).toHaveLength(1);
+    expect(handlers[0]?.methods).toHaveLength(3);
+    expect(handlers[0]?.methods[0]).toMatchObject({
+      methodName: 'updateRecord',
+      decoratorKind: 'OnUpdate',
+      decoratorRawExpression: 'OnUpdate()',
+      handlerKind: 'entity_lifecycle',
+      executable: true,
+      decoratorResolution: {
+        rawExpression: 'OnUpdate()',
+        resolutionKind: 'lifecycle_implicit',
+      },
+    });
+    expect(handlers[0]?.methods[1]).toMatchObject({
+      methodName: 'prepareRecord',
+      decoratorKind: 'BeforeCreate',
+      decoratorRawExpression: 'BeforeCreate()',
+      handlerKind: 'entity_lifecycle',
+      executable: true,
+      decoratorResolution: {
+        rawExpression: 'BeforeCreate()',
+        resolutionKind: 'lifecycle_implicit',
+      },
+    });
+    expect(handlers[0]?.methods[2]).toMatchObject({
+      methodName: 'clearRecord',
+      decoratorKind: 'AfterDelete',
+      decoratorRawExpression: 'AfterDelete()',
+      handlerKind: 'entity_lifecycle',
+      executable: true,
+      decoratorResolution: {
+        rawExpression: 'AfterDelete()',
+        resolutionKind: 'lifecycle_implicit',
+      },
+    });
+  });
+
+  it('does not treat a lifecycle-like decorator outside a handler class as CAP routing', async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-non-cap-lifecycle-'),
+    );
+    await fs.writeFile(path.join(root, 'model.ts'), `
+      import { OnUpdate } from 'unrelated-decorators';
+      export class RecordModel {
+        @OnUpdate() updateRecord(): void {}
+      }
+    `);
+
+    expect(await parseDecorators(root, 'model.ts')).toEqual([]);
+  });
+
+  it('keeps unrelated Handler and lifecycle decorators non-executable', async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-unrelated-handler-'),
+    );
+    await fs.writeFile(path.join(root, 'model.ts'), `
+      import { Handler, OnUpdate } from 'unrelated-decorators';
+      @Handler()
+      export class RecordModel {
+        @OnUpdate() updateRecord(): void {}
+      }
+    `);
+
+    const handler = (await parseDecorators(root, 'model.ts'))[0];
+    expect(handler?.methods[0]).toMatchObject({
+      decoratorKind: 'OnUpdate',
+      handlerKind: 'unsupported_lifecycle',
+      executable: false,
+      decoratorResolution: {
+        unresolvedReason: 'lifecycle_decorator_import_not_supported',
+      },
+    });
+  });
+
+  it('resolves aliased and namespace CAP lifecycle decorator imports', async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-lifecycle-imports-'),
+    );
+    await fs.writeFile(path.join(root, 'handler.ts'), `
+      import { Handler as CapHandler, OnUpdate as WhenUpdated } from 'cds-routing-handlers';
+      import * as routing from 'cds-routing-handlers';
+      @CapHandler()
+      export class AliasedHandler {
+        @WhenUpdated() updateRecord(): void {}
+      }
+      @routing.Handler()
+      export class NamespaceHandler {
+        @routing.BeforeCreate() createRecord(): void {}
+      }
+    `);
+
+    const handlers = await parseDecorators(root, 'handler.ts');
+    expect(handlers[0]?.methods[0]).toMatchObject({
+      decoratorKind: 'WhenUpdated',
+      handlerKind: 'entity_lifecycle',
+      lifecycleEvent: 'UPDATE',
+      decoratorResolution: {
+        resolvedDecoratorKind: 'OnUpdate',
+        decoratorImportSource: 'cds-routing-handlers',
+      },
+    });
+    expect(handlers[1]?.methods[0]).toMatchObject({
+      decoratorKind: 'routing.BeforeCreate',
+      lifecyclePhase: 'before',
+      decoratorResolution: { resolvedDecoratorKind: 'BeforeCreate' },
+    });
+  });
+
+  it('keeps declaration-only handlers non-executable and normalizes literal method names', async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-handler-method-shapes-'),
+    );
+    await fs.writeFile(path.join(root, 'handler.ts'), `
+      import { Action, Handler } from 'cds-routing-handlers';
+      @Handler()
+      export abstract class ShapeHandler {
+        @Action('declared') abstract declared(): void;
+        @Action('literal') 'literal'(): void {}
+      }
+    `);
+
+    const methods = (await parseDecorators(root, 'handler.ts'))[0]?.methods;
+    expect(methods?.[0]).toMatchObject({
+      methodName: 'declared',
+      executable: false,
+      decoratorResolution: { unresolvedReason: 'handler_method_body_missing' },
+    });
+    expect(methods?.[1]).toMatchObject({
+      methodName: 'literal',
+      executable: true,
+    });
+  });
+
   it('parses AST handler registration arrays, spreads, imports, defaults, aliases, and re-exports', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-reg-'));
     await fs.mkdir(path.join(root, 'srv'), { recursive: true });

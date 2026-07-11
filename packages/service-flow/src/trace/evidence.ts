@@ -24,6 +24,16 @@ interface Candidate {
   operationName?: string;
   score?: number;
 }
+interface RuntimeDiagnosticTotals {
+  missing: Set<string>;
+  candidateCount: number;
+  viableCandidateCount: number;
+  rejectedCandidateCount: number;
+  maxCandidates: number;
+  candidateSuggestions: Record<string, unknown>[];
+  rejectedCandidates: Record<string, unknown>[];
+  suggestedVarSets: Record<string, unknown>[];
+}
 
 export function baseTraceEvidence(
   row: TraceGraphRow,
@@ -38,6 +48,8 @@ export function baseTraceEvidence(
     persistedGraphEdgeId: row.id > 0 ? row.id : undefined,
     outboundCallId: call.id,
     callSite: { sourceFile: call.source_file, sourceLine: call.source_line },
+    callType: call.call_type,
+    repoId: call.repo_id,
     sourceFile: call.source_file,
     sourceLine: call.source_line,
     file: call.source_file,
@@ -56,44 +68,137 @@ export function runtimeResolution(
   workspaceId: number | undefined,
   contextualUnresolvedReason?: string,
 ): { row: TraceGraphRow; evidence: Record<string, unknown>; target?: OperationTarget; unresolvedReason?: string } {
-  const substituted = evidenceWithRuntimeVariables(evidence, options.vars);
   const dynamicMode = options.dynamicMode ?? 'strict';
+  const candidateCap = positiveCandidateCap(options.maxDynamicCandidates);
+  if (!isDynamicRemoteOperationEdge(row, evidence))
+    return unchangedRuntimeResolution(
+      row,
+      boundDynamicEvidence(evidence, candidateCap),
+      contextualUnresolvedReason,
+    );
+  const substituted = evidenceWithRuntimeVariables(evidence, options.vars);
   const analysis = analyzeDynamicTargetCandidates(
-    db,
-    substituted,
-    workspaceId,
-    dynamicMode,
-    positiveCandidateCap(options.maxDynamicCandidates),
+    db, substituted, workspaceId, dynamicMode, candidateCap,
   );
-  const enriched = analysis ? evidenceWithDynamicAnalysis(substituted, analysis) : substituted;
+  const enriched = boundDynamicEvidence(
+    analysis ? evidenceWithDynamicAnalysis(substituted, analysis) : substituted,
+    candidateCap,
+  );
+  if (analysis && analysis.candidateCount > 0
+    && analysis.viableCandidateCount === 0
+    && Object.keys(analysis.appliedSuppliedVariables).length > 0)
+    return noCandidateRuntimeResolution(row, enriched);
   if (dynamicMode === 'infer') {
     const inferred = inferredTarget(analysis);
-    if (inferred) {
-      const resolvedRow = { ...row, status: 'resolved', to_kind: 'operation', to_id: String(inferred.operationId), unresolved_reason: undefined, confidence: inferred.score };
-      const resolution = { status: 'resolved' as const, target: inferred, candidates: [], reasons: inferred.reasons };
-      return { row: resolvedRow, evidence: withEffectiveResolution(enriched, resolvedRow, undefined, resolution), target: inferred };
-    }
+    if (inferred)
+      return resolvedRuntimeResolution(row, enriched, inferred, inferred.reasons);
   }
-  if (!isRemoteRuntimeCandidate(row, evidence, options.vars)) {
+  if (!hasApplicableRuntimeVariables(evidence, options.vars)) {
     const unresolvedReason = contextualUnresolvedReason ?? row.unresolved_reason;
     const withSections = withEffectiveResolution(enriched, row, unresolvedReason);
     return { row, evidence: withSections, unresolvedReason };
   }
   const resolution = resolveRuntimeOperation(db, enriched, workspaceId);
-  if (resolution.target) {
-    const resolvedRow = { ...row, status: 'resolved', to_kind: 'operation', to_id: String(resolution.target.operationId), unresolved_reason: undefined, confidence: Math.max(0, Math.min(1, resolution.target.score)) };
-    return { row: resolvedRow, evidence: withEffectiveResolution(enriched, resolvedRow, undefined, resolution), target: resolution.target };
-  }
+  if (resolution.target)
+    return resolvedRuntimeResolution(
+      row, enriched, resolution.target, resolution.reasons,
+    );
+  if (analysis && analysis.viableCandidateCount === 0
+    && Object.keys(analysis.appliedSuppliedVariables).length > 0)
+    return noCandidateRuntimeResolution(row, enriched);
   const unresolvedReason = runtimeUnresolvedReason(resolution);
   return { row, evidence: withEffectiveResolution(enriched, row, unresolvedReason, resolution), unresolvedReason };
 }
 
+function unchangedRuntimeResolution(
+  row: TraceGraphRow,
+  evidence: Record<string, unknown>,
+  contextualUnresolvedReason: string | undefined,
+): ReturnType<typeof runtimeResolution> {
+  const unresolvedReason = contextualUnresolvedReason ?? row.unresolved_reason;
+  return {
+    row,
+    evidence: withEffectiveResolution(evidence, row, unresolvedReason),
+    unresolvedReason,
+  };
+}
+
+function noCandidateRuntimeResolution(
+  row: TraceGraphRow,
+  evidence: Record<string, unknown>,
+): ReturnType<typeof runtimeResolution> {
+  const unresolvedReason = 'No candidate remained after runtime substitution';
+  return {
+    row,
+    evidence: withEffectiveResolution(evidence, row, unresolvedReason),
+    unresolvedReason,
+  };
+}
+
+function resolvedRuntimeResolution(
+  row: TraceGraphRow,
+  evidence: Record<string, unknown>,
+  target: OperationTarget,
+  reasons: string[],
+): ReturnType<typeof runtimeResolution> {
+  const resolvedRow = {
+    ...row,
+    status: 'resolved',
+    to_kind: 'operation',
+    to_id: String(target.operationId),
+    unresolved_reason: undefined,
+    confidence: Math.max(0, Math.min(1, target.score)),
+  };
+  const resolution = {
+    status: 'resolved' as const,
+    target,
+    candidates: [],
+    reasons,
+  };
+  return {
+    row: resolvedRow,
+    evidence: withEffectiveResolution(evidence, resolvedRow, undefined, resolution),
+    target,
+  };
+}
+
 export function runtimeVariableDiagnostic(edges: Array<{ evidence: Record<string, unknown> }>): Record<string, unknown> | undefined {
+  const totals = runtimeDiagnosticTotals(edges);
+  const missingVariables = [...totals.missing].sort();
+  if (missingVariables.length === 0) return undefined;
+  const shownSuggestions = totals.candidateSuggestions.slice(0, totals.maxCandidates);
+  const shownRejected = totals.rejectedCandidates.slice(0, totals.maxCandidates);
+  const shownCandidateCount = shownSuggestions.length;
+  return {
+    severity: 'warning',
+    code: 'trace_runtime_variables_missing',
+    message: `Runtime variables are required to resolve dynamic trace targets: ${missingVariables.join(', ')}`,
+    missingVariables,
+    suggestions: missingVariables.map((key) => `--var ${key}=<value>`),
+    candidateCount: totals.candidateCount,
+    viableCandidateCount: totals.viableCandidateCount,
+    rejectedCandidateCount: totals.rejectedCandidateCount,
+    shownCandidateCount,
+    omittedCandidateCount: Math.max(0, totals.viableCandidateCount - shownCandidateCount),
+    maxDynamicCandidates: totals.maxCandidates,
+    shownRejectedCandidateCount: shownRejected.length,
+    omittedRejectedCandidateCount: Math.max(0, totals.rejectedCandidateCount - shownRejected.length),
+    candidateSuggestions: shownSuggestions,
+    rejectedCandidates: shownRejected,
+    suggestedVarSets: uniqueCliRows(totals.suggestedVarSets).slice(0, totals.maxCandidates),
+    copyableExamples: copyableExamples(totals.suggestedVarSets, totals.candidateCount, totals.maxCandidates),
+  };
+}
+
+function runtimeDiagnosticTotals(
+  edges: Array<{ evidence: Record<string, unknown> }>): RuntimeDiagnosticTotals {
   const missing = new Set<string>();
   let candidateCount = 0;
-  let shownCandidateCount = 0;
-  let omittedCandidateCount = 0;
+  let viableCandidateCount = 0;
+  let rejectedCandidateCount = 0;
+  let maxCandidates = 5;
   const candidateSuggestions: Record<string, unknown>[] = [];
+  const rejectedCandidates: Record<string, unknown>[] = [];
   const suggestedVarSets: Record<string, unknown>[] = [];
   for (const edge of edges) {
     const effective = parseObject(edge.evidence.effectiveResolution);
@@ -104,31 +209,77 @@ export function runtimeVariableDiagnostic(edges: Array<{ evidence: Record<string
     for (const value of Object.values(substitutions as Record<string, RuntimeSubstitution>))
       for (const key of value.missing ?? []) missing.add(key);
     const exploration = parseObject(edge.evidence.dynamicTargetExploration);
+    maxCandidates = positiveCandidateCap(numeric(exploration.maxCandidates) || maxCandidates);
     candidateCount += numeric(exploration.candidateCount);
-    shownCandidateCount += numeric(exploration.shownCandidateCount);
-    omittedCandidateCount += numeric(exploration.omittedCandidateCount);
-    candidateSuggestions.push(...recordArray(edge.evidence.dynamicTargetCandidateSuggestions));
-    suggestedVarSets.push(...recordArray(exploration.suggestedVarSets));
+    viableCandidateCount += numeric(exploration.viableCandidateCount);
+    rejectedCandidateCount += numeric(exploration.rejectedCandidateCount);
+    appendBounded(
+      candidateSuggestions,
+      recordArray(edge.evidence.dynamicTargetCandidateSuggestions),
+      maxCandidates,
+    );
+    appendBounded(
+      rejectedCandidates,
+      recordArray(exploration.rejectedCandidates),
+      maxCandidates,
+    );
+    appendBounded(
+      suggestedVarSets,
+      recordArray(exploration.suggestedVarSets),
+      maxCandidates,
+    );
   }
-  const missingVariables = [...missing].sort();
-  if (missingVariables.length === 0) return undefined;
   return {
-    severity: 'warning',
-    code: 'trace_runtime_variables_missing',
-    message: `Runtime variables are required to resolve dynamic trace targets: ${missingVariables.join(', ')}`,
-    missingVariables,
-    suggestions: missingVariables.map((key) => `--var ${key}=<value>`),
+    missing,
     candidateCount,
-    shownCandidateCount,
-    omittedCandidateCount,
-    candidateSuggestions: candidateSuggestions.slice(0, 5),
-    suggestedVarSets: uniqueCliRows(suggestedVarSets).slice(0, 5),
-    copyableExamples: [
-      ...uniqueCliRows(suggestedVarSets).slice(0, 3).flatMap((row) =>
-        typeof row.cli === 'string' ? [row.cli] : []),
-      ...(candidateCount > 0 ? ['--dynamic-mode candidates --max-dynamic-candidates 20'] : []),
-    ],
+    viableCandidateCount,
+    rejectedCandidateCount,
+    maxCandidates,
+    candidateSuggestions,
+    rejectedCandidates,
+    suggestedVarSets,
   };
+}
+
+export function runtimeNoCandidateDiagnostics(
+  edges: Array<{ evidence: Record<string, unknown> }>,
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return edges.flatMap((edge) => {
+    const exploration = parseObject(edge.evidence.dynamicTargetExploration);
+    const suppliedVariables = parseObject(exploration.suppliedVariables);
+    const appliedSuppliedVariables = parseObject(
+      exploration.appliedSuppliedVariables,
+    );
+    if (numeric(exploration.viableCandidateCount) !== 0
+      || Object.keys(appliedSuppliedVariables).length === 0) return [];
+    const callSite = parseObject(edge.evidence.callSite);
+    const key = JSON.stringify([callSite, suppliedVariables]);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    const maxCandidates = positiveCandidateCap(numeric(exploration.maxCandidates));
+    return [{
+      severity: 'warning',
+      code: 'no_candidate_after_runtime_substitution',
+      message: 'No dynamic target candidate remained after applying runtime variables',
+      suppliedVariables,
+      appliedSuppliedVariables,
+      substitutedSignals: parseObject(exploration.substitutedSignals),
+      candidateCount: numeric(exploration.candidateCount),
+      viableCandidateCount: 0,
+      rejectedCandidateCount: numeric(exploration.rejectedCandidateCount),
+      shownCandidateCount: numeric(exploration.shownCandidateCount),
+      omittedCandidateCount: numeric(exploration.omittedCandidateCount),
+      shownRejectedCandidateCount: numeric(
+        exploration.shownRejectedCandidateCount,
+      ),
+      omittedRejectedCandidateCount: numeric(
+        exploration.omittedRejectedCandidateCount,
+      ),
+      rejectedCandidates: recordArray(exploration.rejectedCandidates).slice(0, maxCandidates),
+      callSite,
+    }];
+  });
 }
 
 export function edgeTarget(row: TraceGraphRow, evidence: Record<string, unknown>): string {
@@ -212,11 +363,18 @@ function resolveRuntimeOperation(db: Db, evidence: Record<string, unknown>, work
 
 function evidenceWithRuntimeVariables(evidence: Record<string, unknown>, vars: Record<string, string> | undefined): Record<string, unknown> {
   const substitutions = runtimeSubstitutions(evidence, vars ?? {});
-  const next: Record<string, unknown> = { ...evidence, runtimeSubstitutions: substitutions };
+  const suppliedRuntimeVariables = Object.fromEntries(
+    Object.entries(vars ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const next: Record<string, unknown> = {
+    ...evidence,
+    runtimeSubstitutions: substitutions,
+    suppliedRuntimeVariables,
+  };
   for (const [key, value] of Object.entries(substitutions)) if (value.effective) next[key] = value.effective;
   const missing = Object.values(substitutions).flatMap((value) => value.missing);
   if (missing.length > 0) next.missingRuntimeVariables = [...new Set(missing)].sort();
-  if (Object.keys(vars ?? {}).length > 0) next.runtimeVariablesApplied = true;
+  if (Object.keys(suppliedRuntimeVariables).length > 0) next.runtimeVariablesApplied = true;
   return next;
 }
 
@@ -224,20 +382,91 @@ function evidenceWithDynamicAnalysis(
   evidence: Record<string, unknown>,
   analysis: DynamicTargetAnalysis,
 ): Record<string, unknown> {
+  const persistedCandidates = recordArray(evidence.candidates);
+  const persistedScores = recordArray(evidence.candidateScores);
   return {
     ...evidence,
+    candidates: persistedCandidates.slice(0, analysis.maxCandidates),
+    candidateScores: persistedScores.slice(0, analysis.maxCandidates),
+    persistedCandidateCount: persistedCandidates.length,
+    persistedCandidateOmittedCount: Math.max(
+      0,
+      persistedCandidates.length - analysis.maxCandidates,
+    ),
     dynamicTargetExploration: {
       mode: analysis.mode,
+      maxCandidates: analysis.maxCandidates,
       missingVariables: analysis.missingVariables,
+      requiredVariables: analysis.requiredVariables,
+      suppliedVariables: analysis.suppliedVariables,
+      appliedSuppliedVariables: analysis.appliedSuppliedVariables,
+      substitutedSignals: analysis.substitutedSignals,
       candidateCount: analysis.candidateCount,
+      viableCandidateCount: analysis.viableCandidateCount,
+      rejectedCandidateCount: analysis.rejectedCandidateCount,
       shownCandidateCount: analysis.shownCandidateCount,
       omittedCandidateCount: analysis.omittedCandidateCount,
+      shownRejectedCandidateCount: analysis.shownRejectedCandidateCount,
+      omittedRejectedCandidateCount: analysis.omittedRejectedCandidateCount,
+      rejectedCandidates: analysis.rejectedCandidates,
       suggestedVarSets: analysis.suggestedVarSets,
     },
     dynamicTargetCandidates: analysis.candidates,
     dynamicTargetCandidateSuggestions: analysis.shownCandidates,
+    rejectedCandidates: analysis.rejectedCandidates,
     dynamicTargetInference: analysis.inference,
   };
+}
+
+const boundedDynamicListKeys = new Set([
+  'candidates',
+  'candidateScores',
+  'dynamicTargetCandidates',
+  'dynamicTargetCandidateSuggestions',
+  'candidateSuggestions',
+  'suggestedVarSets',
+  'rejectedCandidates',
+  'rejectedCandidateSuggestions',
+  'copyableExamples',
+  'conflicts',
+]);
+
+function boundDynamicEvidence(
+  evidence: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown> {
+  const candidateCount = numeric(evidence.persistedCandidateCount)
+    || (Array.isArray(evidence.candidates) ? evidence.candidates.length : 0);
+  const projected = boundDynamicValue(evidence, limit);
+  const next = parseObject(projected);
+  if (candidateCount === 0) return next;
+  return {
+    ...next,
+    persistedCandidateCount: candidateCount,
+    persistedCandidateOmittedCount: Math.max(0, candidateCount - limit),
+  };
+}
+
+function boundDynamicValue(
+  value: unknown,
+  limit: number,
+  key?: string,
+  parentKey?: string,
+): unknown {
+  if (Array.isArray(value)) {
+    const bounded = Boolean(key && (boundedDynamicListKeys.has(key)
+      || parentKey === 'derivationProvenance'
+      || parentKey === 'conflicts' && key === 'sources'));
+    const input = bounded ? value.slice(0, limit) : value;
+    const projected = input.map((item) =>
+      boundDynamicValue(item, limit, undefined, key ?? parentKey));
+    return projected;
+  }
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [
+    childKey,
+    boundDynamicValue(child, limit, childKey, key ?? parentKey),
+  ]));
 }
 
 function runtimeSubstitutions(evidence: Record<string, unknown>, vars: Record<string, string>): Record<string, RuntimeSubstitution> {
@@ -259,10 +488,21 @@ function substitutionValue(
   return normalized?.wasInvocation ? normalized.normalizedOperationPath : value;
 }
 
-function isRemoteRuntimeCandidate(row: TraceGraphRow, evidence: Record<string, unknown>, vars: Record<string, string> | undefined): boolean {
-  if (!vars || Object.keys(vars).length === 0) return false;
+function isDynamicRemoteOperationEdge(
+  row: TraceGraphRow,
+  evidence: Record<string, unknown>,
+): boolean {
+  if (evidence.callType !== 'remote_action') return false;
   if (!['dynamic', 'ambiguous', 'unresolved'].includes(String(row.status ?? ''))) return false;
-  if (!['DYNAMIC_EDGE_CANDIDATE', 'UNRESOLVED_EDGE', 'REMOTE_CALL_RESOLVES_TO_OPERATION'].includes(row.edge_type)) return false;
+  return ['DYNAMIC_EDGE_CANDIDATE', 'UNRESOLVED_EDGE', 'REMOTE_CALL_RESOLVES_TO_OPERATION']
+    .includes(row.edge_type);
+}
+
+function hasApplicableRuntimeVariables(
+  evidence: Record<string, unknown>,
+  vars: Record<string, string> | undefined,
+): boolean {
+  if (!vars || Object.keys(vars).length === 0) return false;
   return ['servicePath', 'operationPath', 'serviceAliasExpr', 'serviceAlias', 'destination'].some((key) => hasRuntimeVariable(evidence[key], vars));
 }
 
@@ -283,11 +523,12 @@ function targetFromCandidate(candidate: DynamicTargetCandidate): OperationTarget
     servicePath: candidate.servicePath,
     operationPath: candidate.operationPath,
     operationName: candidate.operationName,
+    repoId: candidate.repoId,
     packageName: candidate.packageName,
     score: candidate.score,
     reasons: candidate.reasons,
-    sourceFile: '',
-    sourceLine: 0,
+    sourceFile: candidate.sourceFile,
+    sourceLine: candidate.sourceLine,
   };
 }
 
@@ -320,6 +561,11 @@ function recordArray(value: unknown): Record<string, unknown>[] {
     : [];
 }
 
+function appendBounded<T>(target: T[], values: T[], limit: number): void {
+  const remaining = Math.max(0, limit - target.length);
+  if (remaining > 0) target.push(...values.slice(0, remaining));
+}
+
 function uniqueCliRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   const seen = new Set<string>();
   return rows.filter((row) => {
@@ -328,6 +574,19 @@ function uniqueCliRows(rows: Record<string, unknown>[]): Record<string, unknown>
     seen.add(cli);
     return true;
   });
+}
+
+function copyableExamples(
+  suggestedVarSets: Record<string, unknown>[],
+  candidateCount: number,
+  limit: number,
+): string[] {
+  const variableExamples = uniqueCliRows(suggestedVarSets).flatMap((row) =>
+    typeof row.cli === 'string' ? [row.cli] : []);
+  const exploration = candidateCount > 0
+    ? ['--dynamic-mode candidates --max-dynamic-candidates 20']
+    : [];
+  return [...variableExamples, ...exploration].slice(0, limit);
 }
 
 function positiveCandidateCap(value: number | undefined): number {

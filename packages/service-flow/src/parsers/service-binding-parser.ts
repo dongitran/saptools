@@ -15,6 +15,7 @@ import {
   type HelperBinding,
   type ImportBinding,
 } from './service-binding-parser-helpers.js';
+import type { RepositorySourceContext } from './ts-project.js';
 
 function collectLocalBindingFacts(
   fn: ts.FunctionLikeDeclaration,
@@ -125,8 +126,9 @@ function exportedLocalNames(sf: ts.SourceFile): Map<string, string> {
 async function helperBindings(
   repoPath: string,
   filePath: string,
+  context?: RepositorySourceContext,
 ): Promise<HelperBinding[]> {
-  const sf = await readSource(path.join(repoPath, filePath));
+  const sf = await readSource(path.join(repoPath, filePath), context, filePath);
   if (!sf) return [];
   const sourceFileAst = sf;
   const out: HelperBinding[] = [];
@@ -195,8 +197,9 @@ async function helperBindings(
 export async function parseServiceBindings(
   repoPath: string,
   filePath: string,
+  context?: RepositorySourceContext,
 ): Promise<ServiceBindingFact[]> {
-  const sf = await readSource(path.join(repoPath, filePath));
+  const sf = await readSource(path.join(repoPath, filePath), context, filePath);
   if (!sf) return [];
   const sourceFileAst = sf;
   const out: ServiceBindingFact[] = [];
@@ -237,7 +240,7 @@ export async function parseServiceBindings(
     if (!helperCache.has(imp.sourceFile))
       helperCache.set(
         imp.sourceFile,
-        await helperBindings(repoPath, imp.sourceFile),
+        await helperBindings(repoPath, imp.sourceFile, context),
       );
     return (helperCache.get(imp.sourceFile) ?? [])
       .filter((h) => h.exportedName === imp.exportedName)

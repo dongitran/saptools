@@ -1,4 +1,4 @@
-export const schemaSql = `
+export const schemaTablesSql = `
 CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY, root_path TEXT UNIQUE NOT NULL, db_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS repositories (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, name TEXT NOT NULL, absolute_path TEXT NOT NULL, relative_path TEXT NOT NULL, package_name TEXT, package_version TEXT, dependencies_json TEXT DEFAULT '{}', kind TEXT NOT NULL, is_git_repo INTEGER NOT NULL, last_indexed_at TEXT, index_status TEXT DEFAULT 'pending', error_count INTEGER DEFAULT 0, fingerprint TEXT, fact_generation INTEGER NOT NULL DEFAULT 0, graph_generation INTEGER NOT NULL DEFAULT 0, graph_stale_reason TEXT, graph_stale_at TEXT, fact_analyzer_version TEXT, UNIQUE(workspace_id, absolute_path), FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, relative_path TEXT NOT NULL, extension TEXT NOT NULL, sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL, last_indexed_at TEXT NOT NULL, UNIQUE(repo_id, relative_path), FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE);
@@ -13,8 +13,11 @@ CREATE TABLE IF NOT EXISTS service_bindings (id INTEGER PRIMARY KEY, repo_id INT
 CREATE TABLE IF NOT EXISTS outbound_calls (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, source_symbol_id INTEGER, call_type TEXT NOT NULL, service_binding_id INTEGER, method TEXT, operation_path_expr TEXT, query_entity TEXT, event_name_expr TEXT, payload_summary TEXT, source_file TEXT NOT NULL, source_line INTEGER NOT NULL, confidence REAL NOT NULL, unresolved_reason TEXT, local_service_name TEXT, local_service_lookup TEXT, alias_chain_json TEXT, evidence_json TEXT, external_target_kind TEXT, external_target_id TEXT, external_target_label TEXT, external_target_dynamic INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE, FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL, FOREIGN KEY(service_binding_id) REFERENCES service_bindings(id) ON DELETE SET NULL);
 CREATE TABLE IF NOT EXISTS symbol_calls (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, caller_symbol_id INTEGER NOT NULL, callee_symbol_id INTEGER, callee_expression TEXT NOT NULL, import_source TEXT, source_file TEXT NOT NULL, source_line INTEGER NOT NULL, status TEXT NOT NULL, confidence REAL NOT NULL, evidence_json TEXT NOT NULL, unresolved_reason TEXT, FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE, FOREIGN KEY(caller_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE, FOREIGN KEY(callee_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL);
 CREATE TABLE IF NOT EXISTS graph_edges (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, edge_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unresolved', from_kind TEXT NOT NULL, from_id TEXT NOT NULL, to_kind TEXT NOT NULL, to_id TEXT NOT NULL, confidence REAL NOT NULL, evidence_json TEXT NOT NULL, is_dynamic INTEGER NOT NULL, unresolved_reason TEXT, generation INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS index_runs (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, repo_count INTEGER NOT NULL, file_count INTEGER NOT NULL, diagnostic_count INTEGER NOT NULL, error_message TEXT, FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS index_runs (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL, repo_count INTEGER NOT NULL, file_count INTEGER NOT NULL, diagnostic_count INTEGER NOT NULL, error_message TEXT, owner_pid INTEGER, FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS diagnostics (id INTEGER PRIMARY KEY, repo_id INTEGER, file_id INTEGER, severity TEXT NOT NULL, code TEXT NOT NULL, message TEXT NOT NULL, source_file TEXT, source_line INTEGER, FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE, FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE SET NULL);
+`;
+
+export const schemaIndexesSql = `
 CREATE INDEX IF NOT EXISTS idx_repo_name ON repositories(name);
 CREATE INDEX IF NOT EXISTS idx_service_path ON cds_services(service_path);
 CREATE INDEX IF NOT EXISTS idx_extension_import ON cds_services(extension_module_specifier, extension_imported_symbol, is_extend);
@@ -24,3 +27,5 @@ CREATE INDEX IF NOT EXISTS idx_calls_repo ON outbound_calls(repo_id, call_type);
 CREATE INDEX IF NOT EXISTS idx_symbol_calls_caller ON symbol_calls(repo_id, caller_symbol_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(kind, name, path, repo);
 `;
+
+export const schemaSql = `${schemaTablesSql}\n${schemaIndexesSql}`;

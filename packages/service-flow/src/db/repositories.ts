@@ -3,6 +3,7 @@ import type {
   CdsRequire,
   CdsServiceFact,
   HandlerClassFact,
+  HandlerMethodFact,
   HandlerRegistrationFact,
   OutboundCallFact,
   ServiceBindingFact,
@@ -85,15 +86,29 @@ export function upsertRepository(
       .get(workspaceId, r.absolutePath)?.id,
   );
 }
-export function listRepositories(db: Db): RepoRow[] {
+export function listRepositories(db: Db, workspaceId?: number): RepoRow[] {
   return db
-    .prepare('SELECT * FROM repositories ORDER BY name')
-    .all() as unknown as RepoRow[];
+    .prepare('SELECT * FROM repositories WHERE (? IS NULL OR workspace_id=?) ORDER BY name,absolute_path,id')
+    .all(workspaceId, workspaceId) as unknown as RepoRow[];
 }
-export function repoByName(db: Db, name: string): RepoRow | undefined {
+export function repoByName(
+  db: Db,
+  name: string,
+  workspaceId?: number,
+): RepoRow | undefined {
+  const matches = reposByName(db, name, workspaceId);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+export function reposByName(
+  db: Db,
+  name: string,
+  workspaceId?: number,
+): RepoRow[] {
   return db
-    .prepare('SELECT * FROM repositories WHERE name=? OR package_name=?')
-    .get(name, name) as RepoRow | undefined;
+    .prepare(`SELECT * FROM repositories
+      WHERE (? IS NULL OR workspace_id=?) AND (name=? OR package_name=?)
+      ORDER BY name,absolute_path,id`)
+    .all(workspaceId, workspaceId, name, name) as unknown as RepoRow[];
 }
 export function clearRepoFacts(db: Db, repoId: number): void {
   for (const t of [
@@ -188,21 +203,7 @@ export function insertHandler(
   repoId: number,
   h: HandlerClassFact,
 ): number {
-  const sid = Number(
-    db
-      .prepare(
-        'INSERT INTO symbols(repo_id,kind,name,qualified_name,exported,start_line,end_line) VALUES(?,?,?,?,?,?,?) RETURNING id',
-      )
-      .get(
-        repoId,
-        'class',
-        h.className,
-        h.className,
-        1,
-        h.sourceLine,
-        h.sourceLine,
-      )?.id,
-  );
+  const sid = insertHandlerClassSymbol(db, repoId, h);
   const hid = Number(
     db
       .prepare(
@@ -220,11 +221,108 @@ export function insertHandler(
       m.decoratorKind,
       m.decoratorValue,
       m.decoratorRawExpression,
-      JSON.stringify(m.decoratorResolution),
+      JSON.stringify(canonicalHandlerMethodResolution(m)),
       m.sourceFile,
       m.sourceLine,
     );
+  insertHandlerIndexDiagnostic(db, repoId, h);
   return hid;
+}
+function insertHandlerClassSymbol(
+  db: Db,
+  repoId: number,
+  h: HandlerClassFact,
+): number {
+  const classEvidence = {
+    hasHandlerDecorator: h.hasHandlerDecorator ?? false,
+    classDecoratorNames: h.classDecoratorNames ?? [],
+    observedDecoratorNames: h.observedDecoratorNames ?? [],
+    unsupportedDecoratorNames: h.unsupportedDecoratorNames ?? [],
+    unsupportedMethods: h.methods
+      .filter((method) => !handlerMethodIsExecutable(method))
+      .map((method) => ({
+        methodName: method.methodName,
+        decoratorKind: method.decoratorKind,
+        sourceFile: method.sourceFile,
+        sourceLine: method.sourceLine,
+        reason: method.decoratorResolution.unresolvedReason,
+      })),
+  };
+  return Number(
+    db
+      .prepare(
+        'INSERT INTO symbols(repo_id,kind,name,qualified_name,exported,start_line,end_line,source_file,evidence_json) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id',
+      )
+      .get(
+        repoId,
+        'class',
+        h.className,
+        h.className,
+        1,
+        h.sourceLine,
+        h.sourceLine,
+        h.sourceFile,
+        JSON.stringify(classEvidence),
+      )?.id,
+  );
+}
+function insertHandlerIndexDiagnostic(
+  db: Db,
+  repoId: number,
+  h: HandlerClassFact,
+): void {
+  if (!h.hasHandlerDecorator) return;
+  const hasExecutable = h.methods.some(handlerMethodIsExecutable);
+  const unsupported = h.methods.filter((method) =>
+    !handlerMethodIsExecutable(method));
+  if (hasExecutable && unsupported.length === 0) return;
+  const code = hasExecutable
+    ? 'handler_decorators_not_indexed'
+    : 'handler_methods_not_indexed';
+  const names = unsupported.map((method) => method.decoratorKind).sort();
+  const detail = names.length > 0
+    ? ` Unsupported decorators: ${[...new Set(names)].join(', ')}.`
+    : '';
+  db.prepare(
+    'INSERT INTO diagnostics(repo_id,severity,code,message,source_file,source_line) VALUES(?,?,?,?,?,?)',
+  ).run(
+    repoId,
+    'warning',
+    code,
+    hasExecutable
+      ? `Handler class ${h.className} contains methods that were not indexed.${detail}`
+      : `Handler class ${h.className} has no indexed executable methods; use a supported CAP handler decorator and re-index.${detail}`,
+    h.sourceFile,
+    h.sourceLine,
+  );
+}
+export function canonicalHandlerMethodResolution(
+  method: HandlerMethodFact,
+): HandlerMethodFact['decoratorResolution'] {
+  const handlerKind = method.handlerKind
+    ?? method.decoratorResolution.handlerKind
+    ?? legacyHandlerKind(method.decoratorKind);
+  const executable = method.executable
+    ?? method.decoratorResolution.executable
+    ?? (handlerKind === 'operation' || handlerKind === 'event'
+      || handlerKind === 'entity_lifecycle');
+  return {
+    ...method.decoratorResolution,
+    handlerKind,
+    executable,
+    lifecyclePhase: method.lifecyclePhase
+      ?? method.decoratorResolution.lifecyclePhase,
+    lifecycleEvent: method.lifecycleEvent
+      ?? method.decoratorResolution.lifecycleEvent,
+  };
+}
+export function handlerMethodIsExecutable(method: HandlerMethodFact): boolean {
+  return canonicalHandlerMethodResolution(method).executable === true;
+}
+function legacyHandlerKind(kind: string): HandlerMethodFact['handlerKind'] {
+  if (kind === 'Event') return 'event';
+  if (['Action', 'Func', 'On'].includes(kind)) return 'operation';
+  return 'unsupported_decorator';
 }
 export function insertRegistrations(
   db: Db,

@@ -101,8 +101,8 @@ export function openDatabase(dbPath: string, options: OpenDatabaseOptions = {}):
     },
     transaction<T>(fn: () => T): T {
       if (inTransaction) return fn();
-      inTransaction = true;
       native.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
       try {
         const result = fn();
         native.exec('COMMIT');

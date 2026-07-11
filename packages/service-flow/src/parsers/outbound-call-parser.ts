@@ -8,6 +8,7 @@ import { summarizeExpression } from '../utils/redaction.js';
 import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
 import { parseServiceBindings } from './service-binding-parser.js';
 import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
+import type { RepositorySourceContext } from './ts-project.js';
 import {
   analyzeOperationPath,
   operationPathExpression,
@@ -510,15 +511,31 @@ export function containsSupportedOutboundCall(node: ts.Node): boolean {
 export async function parseOutboundCalls(
   repoPath: string,
   filePath: string,
+  context?: RepositorySourceContext,
 ): Promise<OutboundCallFact[]> {
-  const text = await fs.readFile(path.join(repoPath, filePath), 'utf8');
-  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
-  const bindingNames = new Set((await parseServiceBindings(repoPath, filePath)).map((binding) => binding.variableName));
-  const importedWrappers = await parseImportedWrapperCalls(repoPath, filePath, source, bindingNames);
-  return [...classifyOutboundCallsInSource(source, filePath).map((call) => call.fact), ...importedWrappers, ...parseLocalServiceCalls(text, filePath)];
+  const snapshot = context?.get(filePath);
+  const text = snapshot?.text
+    ?? await fs.readFile(path.join(repoPath, filePath), 'utf8');
+  const source = snapshot?.sourceFile() ?? ts.createSourceFile(
+    filePath, text, ts.ScriptTarget.Latest, true,
+    filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
+  );
+  const bindingNames = new Set((await parseServiceBindings(
+    repoPath, filePath, context,
+  )).map((binding) => binding.variableName));
+  const importedWrappers = await parseImportedWrapperCalls(
+    repoPath, filePath, source, bindingNames, context,
+  );
+  return [...classifyOutboundCallsInSource(source, filePath).map((call) => call.fact), ...importedWrappers, ...parseLocalServiceCalls(text, filePath, source)];
 }
-function parseLocalServiceCalls(text: string, filePath: string): OutboundCallFact[] {
-  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+function parseLocalServiceCalls(
+  text: string,
+  filePath: string,
+  source = ts.createSourceFile(
+    filePath, text, ts.ScriptTarget.Latest, true,
+    filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
+  ),
+): OutboundCallFact[] {
   const aliases = new Map<string, { service: string; lookup: string; chain: string[] }>();
   const calls: OutboundCallFact[] = [];
   const visit = (node: ts.Node): void => {

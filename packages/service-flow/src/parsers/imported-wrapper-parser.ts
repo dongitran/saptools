@@ -4,6 +4,7 @@ import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
 import type { OutboundCallFact } from '../types.js';
 import { normalizePath } from '../utils/path-utils.js';
 import { importsFor, lineOf, readSource, type ImportBinding } from './service-binding-parser-helpers.js';
+import type { RepositorySourceContext } from './ts-project.js';
 import {
   analyzeOperationPath,
   operationPathExpression,
@@ -25,6 +26,7 @@ export async function parseImportedWrapperCalls(
   filePath: string,
   source: ts.SourceFile,
   serviceBindings: Set<string>,
+  context?: RepositorySourceContext,
 ): Promise<OutboundCallFact[]> {
   const imports = await importsFor(repoPath, filePath, source);
   const importedByLocal = new Map(imports.filter((item) => item.sourceFile).map((item) => [item.localName, item]));
@@ -35,7 +37,7 @@ export async function parseImportedWrapperCalls(
     if (!ts.isIdentifier(call.expression)) continue;
     const imported = importedByLocal.get(call.expression.text);
     if (!imported?.sourceFile) continue;
-    const spec = await loadWrapperSpec(repoPath, imported, cache, 0);
+    const spec = await loadWrapperSpec(repoPath, imported, cache, 0, context);
     const fact = spec ? wrapperCallFact(source, filePath, call, spec, serviceBindings) : undefined;
     if (fact) out.push(fact);
   }
@@ -57,12 +59,15 @@ async function loadWrapperSpec(
   imported: ImportBinding,
   cache: Map<string, Promise<WrapperSpec | undefined>>,
   depth: number,
+  context?: RepositorySourceContext,
 ): Promise<WrapperSpec | undefined> {
   if (!imported.sourceFile || depth > 5) return undefined;
   const key = `${imported.sourceFile}#${imported.exportedName}`;
   const existing = cache.get(key);
   if (existing) return existing;
-  const pending = inspectWrapper(repoPath, imported.sourceFile, imported.exportedName, cache, depth);
+  const pending = inspectWrapper(
+    repoPath, imported.sourceFile, imported.exportedName, cache, depth, context,
+  );
   cache.set(key, pending);
   return pending;
 }
@@ -73,14 +78,19 @@ async function inspectWrapper(
   exportedName: string,
   cache: Map<string, Promise<WrapperSpec | undefined>>,
   depth: number,
+  context?: RepositorySourceContext,
 ): Promise<WrapperSpec | undefined> {
-  const source = await readSource(path.join(repoPath, sourceFile));
+  const source = await readSource(
+    path.join(repoPath, sourceFile), context, sourceFile,
+  );
   if (!source) return undefined;
   const named = findFunction(source, exportedName);
   if (!named) return undefined;
   const direct = directSendSpec(source, sourceFile, named.name, named.fn);
   if (direct) return direct;
-  return nestedSendSpec(repoPath, sourceFile, source, named.name, named.fn, cache, depth);
+  return nestedSendSpec(
+    repoPath, sourceFile, source, named.name, named.fn, cache, depth, context,
+  );
 }
 
 function directSendSpec(source: ts.SourceFile, sourceFile: string, name: string, fn: ts.FunctionLikeDeclaration): WrapperSpec | undefined {
@@ -113,6 +123,7 @@ async function nestedSendSpec(
   fn: ts.FunctionLikeDeclaration,
   cache: Map<string, Promise<WrapperSpec | undefined>>,
   depth: number,
+  context?: RepositorySourceContext,
 ): Promise<WrapperSpec | undefined> {
   const imports = await importsFor(repoPath, sourceFile, source);
   const byLocal = new Map(imports.filter((item) => item.sourceFile).map((item) => [item.localName, item]));
@@ -123,7 +134,9 @@ async function nestedSendSpec(
   if (calls.length !== 1) return undefined;
   const call = calls[0];
   const imported = call && ts.isIdentifier(call.expression) ? byLocal.get(call.expression.text) : undefined;
-  const nested = imported ? await loadWrapperSpec(repoPath, imported, cache, depth + 1) : undefined;
+  const nested = imported
+    ? await loadWrapperSpec(repoPath, imported, cache, depth + 1, context)
+    : undefined;
   if (!call || !nested) return undefined;
   const params = parameterNames(fn);
   const clientIndex = mappedParameterIndex(call.arguments[nested.clientIndex], params);

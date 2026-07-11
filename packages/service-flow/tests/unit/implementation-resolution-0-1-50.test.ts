@@ -4,7 +4,9 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { doctorDiagnostics } from '../../src/cli/doctor.js';
 import { schemaVersion } from '../../src/db/migrations.js';
+import { insertHandler, repoByName } from '../../src/db/repositories.js';
 import { linkWorkspace, parseDecorators, trace } from '../../src/index.js';
+import { renderTraceTable } from '../../src/output/table-output.js';
 import type { HandlerMethodFact } from '../../src/types.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 
@@ -34,6 +36,73 @@ async function prepareFixtureWorkspace(): ReturnType<typeof prepareWorkspace> {
   const workspace = path.join(tempRoot, 'workspace');
   await cp(fixture, workspace, { recursive: true });
   return prepareWorkspace(workspace);
+}
+
+async function writeLifecycleRepository(
+  root: string,
+  repo: string,
+  packageName: string,
+): Promise<void> {
+  await writeFixtureFile(root, `${repo}/.git-fixture`);
+  await writeFixtureFile(root, `${repo}/package.json`, JSON.stringify({
+    name: packageName,
+    version: '1.0.0',
+  }));
+  await writeFixtureFile(root, `${repo}/srv/lifecycle.cds`, [
+    'service LifecycleService {',
+    '  entity ChangeRecords { key ID: UUID; };',
+    '  action updateEntry();',
+    '}',
+  ].join('\n'));
+  await writeFixtureFile(root, `${repo}/srv/EntryLifecycleHandler.ts`, [
+    "import cds from '@sap/cds';",
+    "import { Action, Handler, OnUpdate } from 'cds-routing-handlers';",
+    '@Handler()',
+    'export class EntryLifecycleHandler {',
+    '  @OnUpdate()',
+    '  async updateEntry(): Promise<void> {',
+    '    await cds.run(SELECT.from(ChangeRecords));',
+    "    await fetch('https://example.invalid/lifecycle');",
+    '  }',
+    "  @Action('updateEntry')",
+    '  async executeUpdateEntry(): Promise<void> {}',
+    '  @AfterArchive()',
+    '  async archiveEntry(): Promise<void> {}',
+    "  async helperAudit(): Promise<void> { await fetch('https://example.invalid/helper'); }",
+    '}',
+  ].join('\n'));
+  await writeFixtureFile(root, `${repo}/srv/UnsupportedLifecycleHandler.ts`, [
+    "import { Handler } from 'cds-routing-handlers';",
+    '@Handler()',
+    'export class UnsupportedLifecycleHandler {',
+    '  @CustomRoute()',
+    '  async handleCustomRoute(): Promise<void> {}',
+    '}',
+  ].join('\n'));
+  await writeFixtureFile(root, `${repo}/srv/server.ts`, [
+    "import { createCombinedHandler } from 'cds-routing-handlers';",
+    "import { EntryLifecycleHandler } from './EntryLifecycleHandler.js';",
+    "import { UnsupportedLifecycleHandler } from './UnsupportedLifecycleHandler.js';",
+    'createCombinedHandler({',
+    '  handler: [EntryLifecycleHandler, UnsupportedLifecycleHandler],',
+    '});',
+  ].join('\n'));
+}
+
+async function prepareLifecycleWorkspace(
+  duplicateHandler = false,
+): ReturnType<typeof prepareWorkspace> {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), 'service-flow-lifecycle-workspace-'),
+  );
+  await writeLifecycleRepository(
+    root, 'lifecycle-service', '@neutral/lifecycle-service',
+  );
+  if (duplicateHandler)
+    await writeLifecycleRepository(
+      root, 'second-lifecycle-service', '@neutral/second-lifecycle-service',
+    );
+  return prepareWorkspace(root);
 }
 
 async function parseDecoratorMethods(): Promise<Map<string, HandlerMethodFact>> {
@@ -103,6 +172,9 @@ describe('decorator local operation resolution', () => {
       decoratorValue: 'renamedEnumCheck',
       decoratorRawExpression: 'OperationName.name',
       decoratorResolution: {
+        rawExpression: 'OperationName.name',
+        decoratorExpression: 'Func(OperationName.name)',
+        argumentExpression: 'OperationName.name',
         resolutionKind: 'enum_member',
         resolvedValue: 'renamedEnumCheck',
       },
@@ -152,7 +224,7 @@ describe('enum decorator implementation linking', () => {
   it('persists enum decorator values and links their implementation', async () => {
     const { db, workspaceId } = await prepareFixtureWorkspace();
     linkWorkspace(db, workspaceId);
-    expect(schemaVersion(db)).toBe(10);
+    expect(schemaVersion(db)).toBe(11);
     const decorator = db.prepare(`
       SELECT hm.decorator_value decoratorValue,
         hm.decorator_raw_expression decoratorRawExpression,
@@ -302,6 +374,287 @@ describe('handler trace behavior', () => {
     expect(handlerTrace.edges.some((edge) =>
       edge.type === 'local_db_query'
       && edge.to === 'Entity: QualityRecords')).toBe(true);
+    db.close();
+  });
+});
+
+describe('lifecycle handler indexing and trace behavior', () => {
+  it('canonicalizes top-level programmatic handler classification before persistence', async () => {
+    const { db } = await prepareLifecycleWorkspace();
+    const repo = repoByName(db, 'lifecycle-service');
+    expect(repo).toBeDefined();
+    if (!repo) throw new Error('Expected lifecycle-service repository');
+    const method: HandlerMethodFact = {
+      methodName: 'programmaticUpdate',
+      decoratorKind: 'OnUpdate',
+      decoratorRawExpression: 'OnUpdate()',
+      handlerKind: 'entity_lifecycle',
+      executable: false,
+      decoratorResolution: {
+        rawExpression: 'OnUpdate()',
+        resolutionKind: 'lifecycle_implicit',
+      },
+      sourceFile: 'srv/ProgrammaticHandler.ts',
+      sourceLine: 3,
+    };
+    insertHandler(db, repo.id, {
+      className: 'ProgrammaticHandler',
+      sourceFile: 'srv/ProgrammaticHandler.ts',
+      sourceLine: 2,
+      hasHandlerDecorator: true,
+      methods: [method],
+    });
+    const row = db.prepare(`SELECT hm.decorator_resolution_json resolution
+      FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id
+      WHERE hc.class_name='ProgrammaticHandler'`).get() as { resolution?: string };
+    expect(JSON.parse(row.resolution ?? '{}')).toMatchObject({
+      handlerKind: 'entity_lifecycle',
+      executable: false,
+    });
+    db.close();
+  });
+
+  it('traces lifecycle-owned database and external calls with source locations', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    linkWorkspace(db, workspaceId);
+
+    const ownedCalls = db.prepare(`
+      SELECT c.call_type callType,c.source_line sourceLine,
+        s.qualified_name qualifiedName
+      FROM outbound_calls c
+      LEFT JOIN symbols s ON s.id=c.source_symbol_id
+      WHERE c.source_file='srv/EntryLifecycleHandler.ts'
+      ORDER BY c.source_line
+    `).all() as Array<{
+      callType?: string;
+      sourceLine?: number;
+      qualifiedName?: string;
+    }>;
+    expect(ownedCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        callType: 'local_db_query',
+        sourceLine: 7,
+        qualifiedName: 'EntryLifecycleHandler.updateEntry',
+      }),
+      expect.objectContaining({
+        callType: 'external_http',
+        sourceLine: 8,
+        qualifiedName: 'EntryLifecycleHandler.updateEntry',
+      }),
+    ]));
+
+    const result = trace(db, {
+      repo: 'lifecycle-service',
+      handler: 'EntryLifecycleHandler',
+    }, { depth: 5, includeDb: true, includeExternal: true });
+    const databaseEdge = result.edges.find((edge) =>
+      edge.type === 'local_db_query');
+    expect(databaseEdge).toMatchObject({
+      type: 'local_db_query',
+      evidence: {
+        sourceFile: 'srv/EntryLifecycleHandler.ts',
+        sourceLine: 7,
+      },
+    });
+    const externalEdge = result.edges.find((edge) =>
+      edge.type === 'external_http');
+    expect(externalEdge).toMatchObject({
+      type: 'external_http',
+      evidence: {
+        sourceFile: 'srv/EntryLifecycleHandler.ts',
+        sourceLine: 8,
+      },
+    });
+    db.close();
+  });
+
+  it('does not map a lifecycle method-name collision as an operation implementation', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    linkWorkspace(db, workspaceId);
+
+    const implementation = db.prepare(`
+      SELECT hm.method_name methodName,hm.decorator_kind decoratorKind
+      FROM graph_edges e
+      JOIN cds_operations o ON o.id=CAST(e.from_id AS INTEGER)
+      JOIN handler_methods hm ON hm.id=CAST(e.to_id AS INTEGER)
+      WHERE e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'
+        AND e.status='resolved' AND o.operation_name='updateEntry'
+    `).get() as { methodName?: string; decoratorKind?: string } | undefined;
+    expect(implementation).toEqual({
+      methodName: 'executeUpdateEntry',
+      decoratorKind: 'Action',
+    });
+
+    const lifecycleMethod = db.prepare(`
+      SELECT hm.id FROM handler_methods hm
+      WHERE hm.method_name='updateEntry' AND hm.decorator_kind='OnUpdate'
+    `).get() as { id?: number } | undefined;
+    expect(lifecycleMethod?.id).toEqual(expect.any(Number));
+    expect(db.prepare(`
+      SELECT COUNT(*) count FROM graph_edges
+      WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'
+        AND to_kind='handler_method' AND to_id=?
+    `).get(lifecycleMethod?.id)?.count).toBe(0);
+    db.close();
+  });
+
+  it('does not map a legacy Event row with empty evidence as an operation implementation', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    const handlerClass = db.prepare(`SELECT id FROM handler_classes
+      WHERE class_name='EntryLifecycleHandler'`).get() as { id?: number };
+    const legacy = db.prepare(`INSERT INTO handler_methods(
+      handler_class_id,method_name,decorator_kind,decorator_value,
+      decorator_raw_expression,decorator_resolution_json,source_file,source_line
+    ) VALUES(?, 'updateEntry','Event','updateEntry','updateEntry','{}',
+      'srv/EntryLifecycleHandler.ts',15) RETURNING id`).get(
+      handlerClass.id,
+    ) as { id?: number };
+    linkWorkspace(db, workspaceId);
+
+    expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
+      WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND to_id=?`).get(
+      String(legacy.id),
+    )?.count).toBe(0);
+    db.close();
+  });
+
+  it('traces supported methods while diagnosing an unsupported lifecycle method', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, {
+      repo: 'lifecycle-service',
+      handler: 'EntryLifecycleHandler',
+    }, { depth: 5, includeDb: true, includeExternal: true });
+
+    expect(result.edges.some((edge) => edge.type === 'local_db_query')).toBe(true);
+    expect(result.edges.some((edge) => edge.type === 'external_http'
+      && edge.evidence.sourceLine === 14)).toBe(true);
+    const diagnostic = result.diagnostics.find((item) =>
+      item.code === 'handler_decorators_not_indexed');
+    expect(diagnostic).toMatchObject({
+      className: 'EntryLifecycleHandler',
+      sourceFile: 'srv/EntryLifecycleHandler.ts',
+      unsupportedDecoratorNames: ['AfterArchive'],
+    });
+    expect(arrayValue(diagnostic?.unsupportedMethods)[0]).toMatchObject({
+      methodName: 'archiveEntry',
+      decoratorKind: 'AfterArchive',
+      sourceLine: 12,
+    });
+    const table = renderTraceTable(result);
+    expect(table).toContain('srv/EntryLifecycleHandler.ts:3');
+    expect(table).toContain('AfterArchive');
+    expect(table).toContain('supported CAP handler decorator');
+    db.close();
+  });
+
+  it('diagnoses a known handler whose executable methods were not indexed', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    linkWorkspace(db, workspaceId);
+
+    const result = trace(db, {
+      repo: 'lifecycle-service',
+      handler: 'UnsupportedLifecycleHandler',
+    }, { depth: 5 });
+    expect(result.nodes).toEqual([]);
+    expect(result.edges).toEqual([]);
+    const diagnostic = result.diagnostics.find((item) =>
+      item.code === 'handler_methods_not_indexed');
+    expect(result.diagnostics.filter((item) =>
+      item.code === 'handler_methods_not_indexed')).toHaveLength(1);
+    expect(diagnostic).toMatchObject({
+      code: 'handler_methods_not_indexed',
+      className: 'UnsupportedLifecycleHandler',
+      sourceFile: 'srv/UnsupportedLifecycleHandler.ts',
+      sourceLine: 2,
+      observedDecoratorNames: ['CustomRoute'],
+    });
+    expect(diagnostic?.remediation).toEqual(expect.stringContaining('supported'));
+    db.close();
+  });
+});
+
+describe('trace selector diagnostics', () => {
+  it('does not select the first repository when a package selector is ambiguous', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace(true);
+    db.prepare(`UPDATE repositories SET package_name='@neutral/shared-lifecycle'
+      WHERE name IN ('lifecycle-service','second-lifecycle-service')`).run();
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, {
+      repo: '@neutral/shared-lifecycle',
+      handler: 'EntryLifecycleHandler',
+    }, { depth: 5, includeDb: true });
+
+    expect(result.nodes).toEqual([]);
+    expect(result.edges).toEqual([]);
+    const diagnostic = result.diagnostics.find((item) =>
+      item.code === 'selector_repo_ambiguous');
+    expect(diagnostic).toMatchObject({
+      requestedRepository: '@neutral/shared-lifecycle',
+    });
+    expect(arrayValue(diagnostic?.candidates)).toHaveLength(2);
+    expect(diagnostic?.selectorSuggestions).toEqual([
+      '--repo lifecycle-service',
+      '--repo second-lifecycle-service',
+    ]);
+    db.close();
+  });
+
+  it('reports a handler selector that matches multiple repositories as ambiguous', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace(true);
+    linkWorkspace(db, workspaceId);
+
+    const result = trace(db, {
+      handler: 'EntryLifecycleHandler',
+    }, { depth: 5, includeDb: true });
+    expect(result.nodes).toEqual([]);
+    expect(result.edges).toEqual([]);
+    const diagnostic = result.diagnostics.find((item) =>
+      item.code === 'trace_start_ambiguous');
+    expect(diagnostic).toMatchObject({
+      code: 'trace_start_ambiguous',
+      selectorKind: 'handler',
+      requestedHandler: 'EntryLifecycleHandler',
+    });
+    expect(arrayValue(diagnostic?.candidates)).toHaveLength(2);
+    expect(diagnostic?.selectorSuggestions).toEqual([
+      '--repo lifecycle-service --handler EntryLifecycleHandler',
+      '--repo second-lifecycle-service --handler EntryLifecycleHandler',
+    ]);
+    db.close();
+  });
+
+  it('reports an unknown repository explicitly', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    linkWorkspace(db, workspaceId);
+
+    const unknownRepo = trace(db, {
+      repo: 'missing-repository',
+      handler: 'MissingHandler',
+    }, { depth: 5 });
+    expect(unknownRepo.nodes).toEqual([]);
+    expect(unknownRepo.edges).toEqual([]);
+    expect(unknownRepo.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'selector_repo_not_found',
+    }));
+    expect(unknownRepo.diagnostics).toHaveLength(1);
+    db.close();
+  });
+
+  it('retains a handler-specific not-found diagnostic', async () => {
+    const { db, workspaceId } = await prepareLifecycleWorkspace();
+    linkWorkspace(db, workspaceId);
+
+    const unknownHandler = trace(db, {
+      repo: 'lifecycle-service',
+      handler: 'MissingHandler',
+    }, { depth: 5 });
+    expect(unknownHandler.nodes).toEqual([]);
+    expect(unknownHandler.edges).toEqual([]);
+    expect(unknownHandler.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'trace_start_not_found',
+      selectorKind: 'handler',
+    }));
     db.close();
   });
 });

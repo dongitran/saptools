@@ -24,7 +24,30 @@ export function renderTraceTable(result: TraceResult): string {
 
 function diagnosticLines(diagnostic: Record<string, unknown>): string[] {
   const first = `${String(diagnostic.severity ?? 'info')} ${String(diagnostic.code ?? 'diagnostic')} ${String(diagnostic.message ?? '')}`;
-  return [first, ...hintLines(diagnostic).map((hint) => `  ${hint}`)];
+  const details = diagnosticDetailLines(diagnostic);
+  return [first, ...[...details, ...hintLines(diagnostic)]
+    .map((hint) => `  ${hint}`)];
+}
+
+function diagnosticDetailLines(diagnostic: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  if (diagnostic.sourceFile || diagnostic.sourceLine)
+    lines.push(`at ${String(diagnostic.sourceFile ?? '')}:${String(diagnostic.sourceLine ?? '')}`);
+  const unsupported = stringList(diagnostic.unsupportedDecoratorNames);
+  const observed = stringList(diagnostic.observedDecoratorNames);
+  if (unsupported.length > 0)
+    lines.push(`unsupported decorators: ${unsupported.join(', ')}`);
+  else if (observed.length > 0)
+    lines.push(`observed decorators: ${observed.join(', ')}`);
+  if (typeof diagnostic.remediation === 'string')
+    lines.push(`hint: ${diagnostic.remediation}`);
+  return lines;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }
 
 function hintLines(evidence: Record<string, unknown>): string[] {
@@ -50,9 +73,12 @@ function dynamicHintLines(evidence: Record<string, unknown>): string[] {
   if (count === 0) return [];
   const shown = numberValue(exploration.shownCandidateCount);
   const omitted = numberValue(exploration.omittedCandidateCount);
-  const lines = [`candidates: ${shown} shown, ${omitted} omitted`];
+  const rejected = numberValue(exploration.rejectedCandidateCount);
+  const lines = [
+    `viable candidates: ${shown} shown, ${omitted} omitted; rejected: ${rejected}`,
+  ];
   lines.push(...varSetHints(exploration.suggestedVarSets));
-  if (omitted > 0 || shown < count)
+  if (omitted > 0 || rejected > 0 || shown < count)
     lines.push('use --dynamic-mode candidates --max-dynamic-candidates 20 to explore candidate branches');
   return lines;
 }

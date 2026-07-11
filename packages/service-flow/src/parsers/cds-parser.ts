@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { CdsOperationFact, CdsServiceFact } from '../types.js';
 import { ensureLeadingSlash, normalizePath } from '../utils/path-utils.js';
+import type { RepositorySourceContext } from './ts-project.js';
 
 function lineOf(text: string, index: number): number {
   return text.slice(0, index).split('\n').length;
@@ -136,9 +137,14 @@ function operationsFromBody(text: string, maskedBody: string, bodyOffset: number
   }));
 }
 
-export async function parseCdsFile(repoPath: string, filePath: string): Promise<CdsServiceFact[]> {
+export async function parseCdsFile(
+  repoPath: string,
+  filePath: string,
+  context?: RepositorySourceContext,
+): Promise<CdsServiceFact[]> {
   const absolute = path.join(repoPath, filePath);
-  const text = await fs.readFile(absolute, 'utf8');
+  const text = context?.get(filePath)?.text
+    ?? await fs.readFile(absolute, 'utf8');
   const masked = maskCommentsAndStrings(text);
   const namespace = /namespace\s+([\w.]+)\s*;/.exec(masked)?.[1];
   const services: CdsServiceFact[] = [];

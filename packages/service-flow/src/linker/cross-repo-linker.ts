@@ -453,7 +453,7 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
       CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id AND localService.service_path=?) THEN 1 ELSE 0 END localServicePathMatch,
       CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id) THEN 1 ELSE 0 END applicationHasLocalServices,
-      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON ((localReg.handler_class_id IS NOT NULL AND localClass.id=localReg.handler_class_id) OR (localReg.handler_class_id IS NULL AND localClass.class_name=localReg.class_name AND localClass.repo_id=localReg.repo_id)) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=? OR localMethod.decorator_raw_expression LIKE ?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
+      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON ((localReg.handler_class_id IS NOT NULL AND localClass.id=localReg.handler_class_id) OR (localReg.handler_class_id IS NULL AND localClass.class_name=localReg.class_name AND localClass.repo_id=localReg.repo_id)) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND COALESCE(json_extract(localMethod.decorator_resolution_json,'$.handlerKind'),CASE WHEN localMethod.decorator_kind='Event' THEN 'event' WHEN localMethod.decorator_kind IN ('Action','Func','On') THEN 'operation' ELSE 'unsupported' END)='operation' AND COALESCE(json_extract(localMethod.decorator_resolution_json,'$.executable'),CASE WHEN localMethod.decorator_kind IN ('Action','Func','On') THEN 1 ELSE 0 END)=1 AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=? OR localMethod.decorator_raw_expression LIKE ?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END appDependsOnModel,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(handlerRepo.id AS TEXT)) THEN 1 ELSE 0 END appDependsOnHandler,
       CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END handlerDependsOnModel
@@ -485,6 +485,13 @@ function implementationCandidates(db: Db, workspaceId: number, operation: Record
     )
     JOIN repositories appRepo ON appRepo.id=hr.repo_id
     WHERE appRepo.workspace_id=?
+      AND COALESCE(json_extract(hm.decorator_resolution_json,'$.handlerKind'),
+        CASE WHEN hm.decorator_kind='Event' THEN 'event'
+          WHEN hm.decorator_kind IN ('Action','Func','On') THEN 'operation'
+          ELSE 'unsupported' END)='operation'
+      AND COALESCE(json_extract(hm.decorator_resolution_json,'$.executable'),
+        CASE WHEN hm.decorator_kind IN ('Action','Func','On')
+          THEN 1 ELSE 0 END)=1
       AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=? OR hm.decorator_raw_expression LIKE ?)`).all(
         operation.modelRepoId,
         operation.modelRepo,
@@ -613,6 +620,11 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
   };
 }
 function implementationMethodSignal(row: Record<string, unknown>, operation: Record<string, unknown>): { matches: boolean; contradicted: boolean; acceptedReasons: string[]; rejectedReasons: string[] } {
+  const resolution = objectJson(row.decoratorResolutionJson) ?? {};
+  if (resolution.handlerKind && resolution.handlerKind !== 'operation')
+    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['non_operation_handler_kind'] };
+  if (resolution.executable === false)
+    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['handler_method_not_executable'] };
   const op = normalizedOperationName(String(operation.operationPath ?? operation.operationName ?? ''));
   const decorator = normalizeDecoratorOperationSignal(typeof row.decoratorValue === 'string' ? row.decoratorValue : undefined, typeof row.decoratorRawExpression === 'string' ? row.decoratorRawExpression : undefined, op);
   if (decorator.status === 'resolved' && decorator.operationName === op) return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };

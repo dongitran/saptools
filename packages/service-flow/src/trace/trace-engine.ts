@@ -1,15 +1,27 @@
 import type { Db } from '../db/connection.js';
+import { reposByName } from '../db/repositories.js';
 import { extractPlaceholders } from '../linker/dynamic-edge-resolver.js';
 import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { resolveOperation } from '../linker/service-resolver.js';
 import type { ImplementationHint, TraceEdge, TraceOptions, TraceResult, TraceStart } from '../types.js';
-import { baseTraceEvidence, edgeTarget, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
+import { baseTraceEvidence, edgeTarget, runtimeNoCandidateDiagnostics, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
 import { dynamicCandidateBranches } from './dynamic-branches.js';
+import {
+  loadTraceDiagnostics,
+  prependTraceDiagnostic,
+} from './002-trace-diagnostics.js';
 import { implementationHintDiagnostic, selectImplementation, type ImplementationSelection } from './implementation-hints.js';
-import { ambiguousStartDiagnostic } from './selectors.js';
+import {
+  ambiguousStartDiagnostic,
+  selectorNotFoundDiagnostic,
+  selectorRepoAmbiguousDiagnostic,
+  selectorRepoNotFoundDiagnostic,
+  sourceScopeForSelector,
+} from './selectors.js';
 interface RepoRef {
   id: number;
   name: string;
+  packageName?: string;
 }
 interface StartScope {
   repo?: RepoRef;
@@ -78,13 +90,14 @@ function normalizeOperation(value: string | undefined): string | undefined {
 function positiveDepth(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
 }
-function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, hintOptions: ImplementationHintOptions): { files?: Set<string>; symbols?: Set<number>; repoId?: number; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
+function operationStartScope(db: Db, repoId: number | undefined, start: TraceStart, hintOptions: ImplementationHintOptions, workspaceId?: number): { files?: Set<string>; symbols?: Set<number>; repoId?: number; operationId?: string; diagnostics?: Array<Record<string, unknown>> } | undefined {
   const requested = normalizeOperation(start.operationPath ?? start.operation);
   if (!requested) return undefined;
   const rows = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_path operationPath,o.source_file sourceFile,o.source_line sourceLine,s.service_path servicePath,r.id repoId,r.name repoName
     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
-    WHERE (? IS NULL OR r.id=?) AND (? IS NULL OR s.service_path=?) AND (o.operation_name=? OR o.operation_path=? OR o.operation_path=?)
-    ORDER BY r.name,s.service_path,o.operation_name,o.id`).all(repoId, repoId, start.servicePath, start.servicePath, requested, requested, requested.startsWith('/') ? requested : `/${requested}`) as Array<Record<string, unknown>>;
+    WHERE (? IS NULL OR r.workspace_id=?) AND (? IS NULL OR r.id=?)
+      AND (? IS NULL OR s.service_path=?) AND (o.operation_name=? OR o.operation_path=? OR o.operation_path=?)
+    ORDER BY r.name,s.service_path,o.operation_name,o.id`).all(workspaceId, workspaceId, repoId, repoId, start.servicePath, start.servicePath, requested, requested, requested.startsWith('/') ? requested : `/${requested}`) as Array<Record<string, unknown>>;
   if (rows.length === 0) return undefined;
   const repoCount = new Set(rows.map((row) => String(row.repoName))).size;
   const serviceCount = new Set(rows.map((row) => `${String(row.repoName)}:${String(row.servicePath)}`)).size;
@@ -126,60 +139,33 @@ function sourceFilesForStart(
   db: Db,
   repoId: number | undefined,
   start: TraceStart,
-): { files?: Set<string>; symbols?: Set<number>; repoId?: number } | undefined {
-  const handler = start.handler;
-  const operation = normalizeOperation(start.operation ?? start.operationPath);
-  if (!handler && !operation) return undefined;
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT hc.source_file sourceFile,s.id symbolId
-       FROM handler_classes hc LEFT JOIN handler_methods hm ON hm.handler_class_id=hc.id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name
-       WHERE (? IS NULL OR hc.repo_id=?) AND (? IS NULL OR hc.class_name=? OR hm.method_name=?)
-         AND (? IS NULL OR hm.decorator_value=? OR hm.method_name=?)
-         AND (? IS NULL OR EXISTS (SELECT 1 FROM cds_services s JOIN cds_operations o ON o.service_id=s.id WHERE s.repo_id=hc.repo_id AND s.service_path=? AND (? IS NULL OR o.operation_path=? OR o.operation_name=? OR hm.decorator_value=? OR hm.method_name=?)))`,
-    )
-    .all(
-      repoId,
-      repoId,
-      handler,
-      handler,
-      handler,
-      operation,
-      operation,
-      operation,
-      start.servicePath,
-      start.servicePath,
-      operation,
-      operation,
-      operation,
-      operation,
-      operation,
-    ) as Array<{ sourceFile?: string; symbolId?: number }>;
-  if (rows.length > 0) return { files: new Set(rows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(rows.map((row) => Number(row.symbolId)).filter(Boolean)), repoId };
-  if (start.servicePath && operation) {
-    const implRows = db.prepare(`SELECT DISTINCT hc.source_file sourceFile,sym.id symbolId
-      FROM cds_services s JOIN cds_operations o ON o.service_id=s.id
-      JOIN graph_edges e ON e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND e.status='resolved' AND e.from_kind='operation' AND e.from_id=CAST(o.id AS TEXT)
-      JOIN handler_methods hm ON hm.id=CAST(e.to_id AS INTEGER)
-      JOIN handler_classes hc ON hc.id=hm.handler_class_id
-      LEFT JOIN symbols sym ON sym.repo_id=hc.repo_id AND sym.source_file=hc.source_file AND sym.name=hm.method_name
-      WHERE (? IS NULL OR s.repo_id=?) AND s.service_path=? AND (o.operation_path=? OR o.operation_name=?)`).all(repoId, repoId, start.servicePath, operation, operation) as Array<{ sourceFile?: string; symbolId?: number }>;
-    if (implRows.length > 0) return { files: new Set(implRows.map((row) => row.sourceFile).filter(Boolean) as string[]), symbols: new Set(implRows.map((row) => Number(row.symbolId)).filter(Boolean)), repoId };
-  }
-  return undefined;
+  workspaceId: number | undefined,
+): ReturnType<typeof sourceScopeForSelector> {
+  return sourceScopeForSelector(db, repoId, start, workspaceId);
 }
-function startScope(db: Db, start: TraceStart, hintOptions: ImplementationHintOptions): StartScope {
-  const repo = start.repo
-    ? (db
-        .prepare(
-          'SELECT id,name FROM repositories WHERE name=? OR package_name=?',
-        )
-        .get(start.repo, start.repo) as RepoRef | undefined)
-    : undefined;
-  if (start.repo && !repo) return { repo, selectorMatched: false };
-  const operationScope = operationStartScope(db, repo?.id, start, hintOptions);
+function startScope(db: Db, start: TraceStart, hintOptions: ImplementationHintOptions, workspaceId?: number): StartScope {
+  const repos: RepoRef[] = start.repo
+    ? reposByName(db, start.repo, workspaceId).map((row) => ({
+        id: row.id,
+        name: row.name,
+        packageName: row.package_name ?? undefined,
+      }))
+    : [];
+  if (start.repo && repos.length === 0) return {
+    selectorMatched: false,
+    startDiagnostics: [selectorRepoNotFoundDiagnostic(start.repo)],
+  };
+  if (start.repo && repos.length > 1) return {
+    selectorMatched: false,
+    startDiagnostics: [selectorRepoAmbiguousDiagnostic(start.repo, repos)],
+  };
+  const repo = repos[0];
+  const operationScope = operationStartScope(
+    db, repo?.id, start, hintOptions, workspaceId,
+  );
   const terminalOperationScope = operationScope && !operationScope.files && (operationScope.diagnostics ?? []).some((d) => d.resolutionStage === 'operation' || d.resolutionStage === 'implementation');
-  const sourceScope = operationScope?.files || terminalOperationScope ? operationScope : sourceFilesForStart(db, repo?.id, start);
+  const sourceScope = operationScope?.files || terminalOperationScope ? operationScope : sourceFilesForStart(db, repo?.id, start, workspaceId);
+  const terminalSelectorScope = Boolean(sourceScope?.diagnostics?.length && !sourceScope.files);
   const sourceFiles = sourceScope?.files;
   const hasSelector = Boolean(
     start.handler ?? start.operation ?? start.operationPath ?? start.servicePath,
@@ -191,9 +177,12 @@ function startScope(db: Db, start: TraceStart, hintOptions: ImplementationHintOp
     executionRepoId: sourceScope?.repoId ?? repo?.id,
     sourceFiles,
     symbolIds: sourceScope?.symbols,
-    selectorMatched: !terminalOperationScope && (!hasSelector || sourceFiles !== undefined),
+    selectorMatched: !terminalOperationScope && !terminalSelectorScope
+      && (!hasSelector || sourceFiles !== undefined),
     startOperationId: operationScope?.operationId,
-    startDiagnostics: operationScope?.diagnostics,
+    startDiagnostics: operationScope?.diagnostics?.length
+      ? operationScope.diagnostics
+      : sourceScope?.diagnostics,
   };
 }
 function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
@@ -211,8 +200,19 @@ function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
     .prepare(
       `SELECT DISTINCT hc.source_file sourceFile,sym.id symbolId FROM handler_classes hc
     JOIN handler_methods hm ON hm.handler_class_id=hc.id
-    LEFT JOIN symbols sym ON sym.repo_id=hc.repo_id AND sym.source_file=hc.source_file AND sym.name=hm.method_name
-    WHERE hc.repo_id=? AND (hm.decorator_value=? OR hm.method_name=? OR hm.decorator_value=?)`,
+    LEFT JOIN symbols sym ON sym.repo_id=hc.repo_id
+      AND sym.source_file=hc.source_file
+      AND sym.qualified_name=hc.class_name || '.' || hm.method_name
+      AND sym.start_line=hm.source_line
+    WHERE hc.repo_id=?
+      AND COALESCE(json_extract(hm.decorator_resolution_json,'$.handlerKind'),
+        CASE WHEN hm.decorator_kind='Event' THEN 'event'
+          WHEN hm.decorator_kind IN ('Action','Func','On') THEN 'operation'
+          ELSE 'unsupported' END)='operation'
+      AND COALESCE(json_extract(hm.decorator_resolution_json,'$.executable'),
+        CASE WHEN hm.decorator_kind IN ('Action','Func','On')
+          THEN 1 ELSE 0 END)=1
+      AND (hm.decorator_value=? OR hm.method_name=? OR hm.decorator_value=?)`,
     )
     .all(op.repoId, operation, operation, op.operationName) as Array<{
     sourceFile?: string;
@@ -230,7 +230,9 @@ function handlerMethodNode(db: Db, methodId: string): Record<string, unknown> | 
 function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string>; symbolId?: number; edge?: GraphRow } {
   const edge = implementationEdge(db, operationId);
   if (!edge || edge.status !== 'resolved') return { files: new Set(), edge };
-  const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
+  const row = db.prepare("SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.qualified_name=hc.class_name || '.' || hm.method_name AND s.start_line=hm.source_line WHERE hm.id=?").get(edge.to_id) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
+  if (!row || typeof row.symbolId !== 'number')
+    return { repoId: row?.repoId, files: new Set(), edge };
   return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
 function implementationMethodIdFromHint(edge: GraphRow | undefined, options: ImplementationHintOptions): ImplementationSelection {
@@ -257,8 +259,8 @@ function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId:
   return { blocksAutomatic: false, evidence: hinted.evidence.reason === 'no_scoped_hint_matched_edge' ? hinted.evidence : { status: 'tied', tieReason: scores.length > 1 ? 'duplicate_helper_implementation_candidates' : 'no_unique_materially_stronger_candidate', candidateScores: scores } };
 }
 function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<string>; symbolId?: number } | undefined {
-  const row = db.prepare('SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.name=hm.method_name WHERE hm.id=?').get(methodId) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
-  if (!row) return undefined;
+  const row = db.prepare("SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.qualified_name=hc.class_name || '.' || hm.method_name AND s.start_line=hm.source_line WHERE hm.id=?").get(methodId) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
+  if (!row || typeof row.symbolId !== 'number') return undefined;
   return { repoId: row.repoId, files: new Set(row.sourceFile ? [row.sourceFile] : []), symbolId: row.symbolId };
 }
 
@@ -491,22 +493,25 @@ export function trace(
   options: TraceOptions,
 ): TraceResult {
   const hintOptions = { implementationRepo: options.implementationRepo, implementationHints: options.implementationHints };
-  const scope = startScope(db, start, hintOptions);
-  const diagnostics = db
-    .prepare(
-      'SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics WHERE (? IS NULL OR repo_id=?)',
-    )
-    .all(scope.repo?.id, scope.repo?.id) as Array<Record<string, unknown>>;
-  const stale = db.prepare('SELECT name,graph_stale_reason reason FROM repositories WHERE graph_stale_reason IS NOT NULL AND (? IS NULL OR id=?)').all(scope.repo?.id, scope.repo?.id) as Array<{ name?: string; reason?: string }>;
+  const scope = startScope(db, start, hintOptions, options.workspaceId);
+  const hasSelector = Boolean(start.repo || start.handler || start.operation
+    || start.operationPath || start.servicePath);
+  const diagnosticRepoId = scope.executionRepoId ?? scope.repo?.id;
+  const diagnostics = loadTraceDiagnostics(
+    db,
+    diagnosticRepoId,
+    !hasSelector,
+    options.workspaceId,
+  );
+  const stale = diagnosticRepoId !== undefined || !hasSelector
+    ? db.prepare('SELECT name,graph_stale_reason reason FROM repositories WHERE graph_stale_reason IS NOT NULL AND (? IS NULL OR id=?) AND (? IS NULL OR workspace_id=?) ORDER BY name,id').all(diagnosticRepoId, diagnosticRepoId, options.workspaceId, options.workspaceId) as Array<{ name?: string; reason?: string }>
+    : [];
   for (const row of stale)
-    diagnostics.unshift({ severity: 'warning', code: 'graph_stale', message: `Graph is stale for ${row.name ?? 'repository'}: ${row.reason ?? 'facts_changed'}. Run service-flow link.` });
-  for (const diagnostic of scope.startDiagnostics ?? []) diagnostics.unshift(diagnostic);
+    prependTraceDiagnostic(diagnostics, { severity: 'warning', code: 'graph_stale', message: `Graph is stale for ${row.name ?? 'repository'}: ${row.reason ?? 'facts_changed'}. Run service-flow link.` });
+  for (const diagnostic of scope.startDiagnostics ?? [])
+    prependTraceDiagnostic(diagnostics, diagnostic);
   if (!scope.selectorMatched && !(scope.startDiagnostics?.length))
-    diagnostics.unshift({
-      severity: 'warning',
-      code: 'trace_start_not_found',
-      message: start.servicePath && !start.operation && !start.operationPath && !start.handler ? 'Service-only trace requires --operation or --path and will not broaden to the whole workspace' : 'No handler source matched the requested trace start selector',
-    });
+    prependTraceDiagnostic(diagnostics, selectorNotFoundDiagnostic(start));
   const maxDepth = positiveDepth(options.depth);
   const edges: TraceEdge[] = [];
   const nodes = new Map<string, Record<string, unknown>>();
@@ -539,9 +544,9 @@ export function trace(
     seenScopes.add(key);
     const calls = db
       .prepare(
-        `SELECT c.*,r.name repoName FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) ORDER BY c.source_file,c.source_line`,
+        `SELECT c.*,r.name repoName FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR r.workspace_id=?) ORDER BY c.source_file,c.source_line`,
       )
-      .all(current.repoId, current.repoId) as CallRow[];
+      .all(current.repoId, current.repoId, options.workspaceId, options.workspaceId) as CallRow[];
     const filtered = calls.filter(
       (c) =>
         (!current.symbolIds || current.symbolIds.has(Number(c.source_symbol_id))) && (!current.files || current.files.has(String(c.source_file))) &&
@@ -623,7 +628,7 @@ export function trace(
           if (implementation.edge) {
             const implEvidence = JSON.parse(String(implementation.edge.evidence_json || '{}')) as Record<string, unknown>;
             const hintDiagnostic = implementationHintDiagnostic(contextSelection, implEvidence.implementationHintSuggestions);
-            if (hintDiagnostic) diagnostics.unshift(hintDiagnostic);
+            if (hintDiagnostic) prependTraceDiagnostic(diagnostics, hintDiagnostic);
             const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : contextNode;
             const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
             if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
@@ -674,6 +679,8 @@ export function trace(
     }
   }
   const runtimeDiagnostic = runtimeVariableDiagnostic(edges);
-  if (runtimeDiagnostic) diagnostics.unshift(runtimeDiagnostic);
+  if (runtimeDiagnostic) prependTraceDiagnostic(diagnostics, runtimeDiagnostic);
+  for (const diagnostic of runtimeNoCandidateDiagnostics(edges))
+    prependTraceDiagnostic(diagnostics, diagnostic);
   return { start, nodes: [...nodes.values()], edges, diagnostics };
 }

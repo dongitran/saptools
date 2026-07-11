@@ -4,6 +4,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import type { HandlerRegistrationFact } from '../types.js';
 import { normalizePath } from '../utils/path-utils.js';
+import type { RepositorySourceContext } from './ts-project.js';
 
 interface ImportEvidence { importedName: string; source: string }
 interface ClassEvidence { className: string; importSource?: string }
@@ -26,16 +27,26 @@ function importSourceFor(identifier: string, imports: Map<string, ImportEvidence
   return evidence ? `${evidence.source}#${evidence.importedName}` : undefined;
 }
 
-export async function parseHandlerRegistrations(repoPath: string, filePath: string): Promise<HandlerRegistrationFact[]> {
+export async function parseHandlerRegistrations(
+  repoPath: string,
+  filePath: string,
+  context?: RepositorySourceContext,
+): Promise<HandlerRegistrationFact[]> {
   const absolutePath = path.join(repoPath, filePath);
-  const text = await fs.readFile(absolutePath, 'utf8');
-  const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const snapshot = context?.get(filePath);
+  const text = snapshot?.text ?? await fs.readFile(absolutePath, 'utf8');
+  const sourceFile = snapshot?.sourceFile() ?? ts.createSourceFile(
+    filePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+  );
   const imports = collectImports(sourceFile);
-  const localArrays = collectLocalArrays(sourceFile, imports, new Map(), repoPath, filePath);
+  const localArrays = collectLocalArrays(
+    sourceFile, imports, new Map(), repoPath, filePath, context,
+  );
   const out: HandlerRegistrationFact[] = [];
-
   function emitFromExpression(expression: ts.Expression, call: ts.CallExpression): void {
-    const classes = resolveArrayExpression(expression, localArrays, imports, repoPath, filePath, new Set());
+    const classes = resolveArrayExpression(
+      expression, localArrays, imports, repoPath, filePath, new Set(), context,
+    );
     for (const cls of classes) {
       out.push({
         className: cls.className,
@@ -55,7 +66,6 @@ export async function parseHandlerRegistrations(repoPath: string, filePath: stri
       });
     }
   }
-
   function visit(node: ts.Node): void {
     if (ts.isCallExpression(node) && isRegistrationCall(node)) {
       const handlerExpr = handlerExpression(node, sourceFile);
@@ -98,45 +108,47 @@ function collectImports(sourceFile: ts.SourceFile): Map<string, ImportEvidence> 
   }
   return imports;
 }
-function collectLocalArrays(sourceFile: ts.SourceFile, imports: Map<string, ImportEvidence>, seed: Map<string, ClassEvidence[]>, repoPath = '', fromFile = ''): Map<string, ClassEvidence[]> {
+function collectLocalArrays(sourceFile: ts.SourceFile, imports: Map<string, ImportEvidence>, seed: Map<string, ClassEvidence[]>, repoPath = '', fromFile = '', context?: RepositorySourceContext): Map<string, ClassEvidence[]> {
   const arrays = new Map(seed);
   for (const statement of sourceFile.statements) {
     if (ts.isVariableStatement(statement)) {
       for (const decl of statement.declarationList.declarations) {
         if (ts.isIdentifier(decl.name) && decl.initializer && ts.isArrayLiteralExpression(decl.initializer)) {
-          arrays.set(decl.name.text, resolveArrayLiteral(decl.initializer, arrays, imports, repoPath, fromFile, new Set()));
+          arrays.set(decl.name.text, resolveArrayLiteral(
+            decl.initializer, arrays, imports, repoPath, fromFile, new Set(), context,
+          ));
         }
       }
     }
   }
   return arrays;
 }
-function resolveArrayExpression(expr: ts.Expression, arrays: Map<string, ClassEvidence[]>, imports: Map<string, ImportEvidence>, repoPath: string, fromFile: string, seen: Set<string>): ClassEvidence[] {
-  if (ts.isArrayLiteralExpression(expr)) return resolveArrayLiteral(expr, arrays, imports, repoPath, fromFile, seen);
+function resolveArrayExpression(expr: ts.Expression, arrays: Map<string, ClassEvidence[]>, imports: Map<string, ImportEvidence>, repoPath: string, fromFile: string, seen: Set<string>, context?: RepositorySourceContext): ClassEvidence[] {
+  if (ts.isArrayLiteralExpression(expr)) return resolveArrayLiteral(expr, arrays, imports, repoPath, fromFile, seen, context);
   if (ts.isIdentifier(expr)) {
     const local = arrays.get(expr.text);
     if (local) return local;
     const evidence = imports.get(expr.text);
-    if (evidence && isRelative(evidence.source)) return resolveImportedArray(repoPath, fromFile, evidence, seen);
+    if (evidence && isRelative(evidence.source)) return resolveImportedArray(repoPath, fromFile, evidence, seen, context);
     if (evidence) return [{ className: evidence.importedName === 'default' ? expr.text : evidence.importedName, importSource: `${evidence.source}#${evidence.importedName}` }];
   }
   return [];
 }
-function resolveArrayLiteral(array: ts.ArrayLiteralExpression, arrays: Map<string, ClassEvidence[]>, imports: Map<string, ImportEvidence>, repoPath: string, fromFile: string, seen: Set<string>): ClassEvidence[] {
+function resolveArrayLiteral(array: ts.ArrayLiteralExpression, arrays: Map<string, ClassEvidence[]>, imports: Map<string, ImportEvidence>, repoPath: string, fromFile: string, seen: Set<string>, context?: RepositorySourceContext): ClassEvidence[] {
   const out: ClassEvidence[] = [];
   for (const element of array.elements) {
-    if (ts.isSpreadElement(element)) out.push(...resolveArrayExpression(element.expression, arrays, imports, repoPath, fromFile, seen));
+    if (ts.isSpreadElement(element)) out.push(...resolveArrayExpression(element.expression, arrays, imports, repoPath, fromFile, seen, context));
     else if (ts.isIdentifier(element)) out.push({ className: element.text, importSource: importSourceFor(element.text, imports) });
   }
   return out;
 }
-function resolveImportedArray(repoPath: string, fromFile: string, evidence: ImportEvidence, seen: Set<string>): ClassEvidence[] {
+function resolveImportedArray(repoPath: string, fromFile: string, evidence: ImportEvidence, seen: Set<string>, context?: RepositorySourceContext): ClassEvidence[] {
   const moduleFile = resolveRelativeModule(repoPath, fromFile, evidence.source);
   if (!moduleFile) return [];
   const key = `${moduleFile}:${evidence.importedName}`;
   if (seen.has(key) || seen.size > MAX_EXPORT_DEPTH) return [];
   seen.add(key);
-  const exports = readExports(repoPath, moduleFile, seen);
+  const exports = readExports(repoPath, moduleFile, seen, context);
   if (evidence.importedName === 'default') return exports.defaultArray ?? [];
   return exports.arrays.get(evidence.importedName) ?? exports.arrays.get(exports.aliases.get(evidence.importedName) ?? evidence.importedName) ?? [];
 }
@@ -150,13 +162,16 @@ function resolveRelativeModule(repoPath: string, fromFile: string, specifier: st
   }
   return undefined;
 }
-function readExports(repoPath: string, filePath: string, seen: Set<string>): FileExports {
+function readExports(repoPath: string, filePath: string, seen: Set<string>, context?: RepositorySourceContext): FileExports {
   const absolute = path.join(repoPath, filePath);
   let text: string;
-  try { text = fsSync.readFileSync(absolute, 'utf8'); } catch { return { arrays: new Map(), aliases: new Map() }; }
-  const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const snapshot = context?.get(filePath);
+  try { text = snapshot?.text ?? fsSync.readFileSync(absolute, 'utf8'); } catch { return { arrays: new Map(), aliases: new Map() }; }
+  const sourceFile = snapshot?.sourceFile() ?? ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const imports = collectImports(sourceFile);
-  const arrays = collectLocalArrays(sourceFile, imports, new Map(), repoPath, filePath);
+  const arrays = collectLocalArrays(
+    sourceFile, imports, new Map(), repoPath, filePath, context,
+  );
   const aliases = new Map<string, string>();
   let defaultArray: ClassEvidence[] | undefined;
   for (const statement of sourceFile.statements) {
@@ -167,7 +182,9 @@ function readExports(repoPath: string, filePath: string, seen: Set<string>): Fil
         const local = element.propertyName?.text ?? element.name.text;
         aliases.set(element.name.text, local);
         if (module && isRelative(module)) {
-          const imported = resolveImportedArray(repoPath, filePath, { source: module, importedName: local }, seen);
+          const imported = resolveImportedArray(
+            repoPath, filePath, { source: module, importedName: local }, seen, context,
+          );
           if (imported.length > 0) arrays.set(element.name.text, imported);
         }
       }
