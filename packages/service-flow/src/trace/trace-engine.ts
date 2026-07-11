@@ -10,7 +10,14 @@ import {
   loadTraceDiagnostics,
   prependTraceDiagnostic,
 } from './002-trace-diagnostics.js';
-import { implementationHintDiagnostic, selectImplementation, type ImplementationSelection } from './implementation-hints.js';
+import { implementationHintDiagnostic } from './implementation-hints.js';
+import {
+  contextualImplementationSelection,
+  hintedImplementationSelection,
+} from './005-implementation-selection.js';
+import { boundedContextCandidates } from './006-contextual-projection.js';
+import { implementationStartDiagnostic } from './007-implementation-start-diagnostic.js';
+import { boundCandidateLikeEvidence } from '../utils/000-bounded-projection.js';
 import {
   ambiguousStartDiagnostic,
   selectorNotFoundDiagnostic,
@@ -110,30 +117,20 @@ function operationStartScope(db: Db, repoId: number | undefined, start: TraceSta
   const operationId = String(rows[0]?.operationId);
   const impl = implementationScope(db, operationId);
   if (impl.edge?.status === 'resolved' && impl.files.size > 0) return { files: impl.files, symbols: impl.symbolId ? new Set([impl.symbolId]) : undefined, repoId: impl.repoId, operationId, diagnostics: [] };
-  const hinted = implementationMethodIdFromHint(impl.edge, hintOptions);
+  const hinted = hintedImplementationSelection(
+    db, impl.edge, operationId, hintOptions,
+  );
   if (hinted.methodId) {
     const hintedScope = handlerScope(db, hinted.methodId);
     if (hintedScope?.files.size) return { files: hintedScope.files, symbols: hintedScope.symbolId ? new Set([hintedScope.symbolId]) : undefined, repoId: hintedScope.repoId, operationId, diagnostics: [] };
   }
   if (impl.edge) {
     const evidence = parseEvidence(impl.edge.evidence_json);
-    const hintDiagnostic = implementationHintDiagnostic(hinted, evidence.implementationHintSuggestions);
-    const diagnostics = [{ severity: 'warning', code: impl.edge.status === 'ambiguous' ? 'trace_start_ambiguous' : 'trace_start_implementation_unresolved', message: `Indexed operation matched but implementation edge is ${String(impl.edge.status ?? 'unresolved')}`, resolutionStage: 'implementation', resolutionStatus: impl.edge.status === 'ambiguous' ? 'ambiguous_implementation' : 'rejected_implementation', implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, implementationAmbiguityReasons: evidence.ambiguityReasons, implementationRejectionReasons: implementationRejectionReasons(evidence), implementationHintSuggestions: evidence.implementationHintSuggestions, candidates: evidence.candidates }];
+    const hintDiagnostic = implementationHintDiagnostic(hinted, evidence);
+    const diagnostics = [implementationStartDiagnostic(impl.edge, evidence)];
     return { operationId, diagnostics: hintDiagnostic ? [hintDiagnostic, ...diagnostics] : diagnostics };
   }
   return { operationId, diagnostics: [{ severity: 'warning', code: 'trace_start_implementation_unresolved', message: 'Indexed operation matched but no implementation candidate exists', resolutionStage: 'implementation', resolutionStatus: 'operation_without_implementation' }] };
-}
-function implementationRejectionReasons(evidence: Record<string, unknown>): string[] {
-  const candidates = Array.isArray(evidence.candidates)
-    ? evidence.candidates.filter((item): item is Record<string, unknown> =>
-        Boolean(item && typeof item === 'object' && !Array.isArray(item)))
-    : [];
-  const reasons = candidates.flatMap((candidate) =>
-    Array.isArray(candidate.rejectedReasons)
-      ? candidate.rejectedReasons.filter((reason): reason is string =>
-          typeof reason === 'string')
-      : []);
-  return [...new Set(reasons)].sort();
 }
 function sourceFilesForStart(
   db: Db,
@@ -235,29 +232,6 @@ function implementationScope(db: Db, operationId: string): { repoId?: number; fi
     return { repoId: row?.repoId, files: new Set(), edge };
   return { repoId: row?.repoId, files: new Set(row?.sourceFile ? [row.sourceFile] : []), symbolId: row?.symbolId, edge };
 }
-function implementationMethodIdFromHint(edge: GraphRow | undefined, options: ImplementationHintOptions): ImplementationSelection {
-  if (!edge || edge.status !== 'ambiguous') return { blocksAutomatic: false, evidence: { status: 'not_applicable' } };
-  return selectImplementation(parseEvidence(edge.evidence_json), options.implementationHints, options.implementationRepo);
-}
-function contextImplementationMethodId(edge: GraphRow | undefined, callerRepoId: number | undefined, remoteEvidence: Record<string, unknown>, hintOptions: ImplementationHintOptions): ImplementationSelection {
-  const hinted = implementationMethodIdFromHint(edge, hintOptions);
-  if (hinted.methodId) return hinted;
-  if (hinted.blocksAutomatic) return hinted;
-  if (!edge || edge.status !== 'ambiguous' || callerRepoId === undefined) return hinted;
-  const evidence = JSON.parse(String(edge.evidence_json || '{}')) as { candidates?: Array<{ accepted?: boolean; methodId?: number; handlerPackage?: { id?: number; name?: string }; applicationPackage?: { id?: number; name?: string }; reasons?: string[]; score?: number }> };
-  const scores = (evidence.candidates ?? []).filter((item) => item.accepted).map((item) => {
-    const reasons: string[] = [];
-    let score = Number(item.score ?? 0);
-    if (Number(item.handlerPackage?.id) === callerRepoId) { score += 10; reasons.push('handler_package_matches_caller_repository'); }
-    if (Number(item.applicationPackage?.id) === callerRepoId) { score += 10; reasons.push('registration_package_matches_caller_repository'); }
-    if (typeof remoteEvidence.effectiveServicePath === 'string' || typeof remoteEvidence.effectiveDestination === 'string' || typeof remoteEvidence.effectiveAlias === 'string') { score += 1; reasons.push('remote_call_context_available'); }
-    return { methodId: item.methodId, score, reasons, handlerPackage: item.handlerPackage, applicationPackage: item.applicationPackage };
-  }).sort((a, b) => b.score - a.score);
-  if (scores.length === 0) return { blocksAutomatic: false, evidence: { status: 'not_applicable', candidateScores: [] } };
-  const [first, second] = scores;
-  if (first && first.methodId !== undefined && first.score > 0 && (!second || first.score > second.score)) return { methodId: String(first.methodId), blocksAutomatic: false, evidence: { status: 'selected', selectedMethodId: first.methodId, candidateScores: scores } };
-  return { blocksAutomatic: false, evidence: hinted.evidence.reason === 'no_scoped_hint_matched_edge' ? hinted.evidence : { status: 'tied', tieReason: scores.length > 1 ? 'duplicate_helper_implementation_candidates' : 'no_unique_materially_stronger_candidate', candidateScores: scores } };
-}
 function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<string>; symbolId?: number } | undefined {
   const row = db.prepare("SELECT hc.repo_id repoId,hc.source_file sourceFile,s.id symbolId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id LEFT JOIN symbols s ON s.repo_id=hc.repo_id AND s.source_file=hc.source_file AND s.qualified_name=hc.class_name || '.' || hm.method_name AND s.start_line=hm.source_line WHERE hm.id=?").get(methodId) as { repoId?: number; sourceFile?: string; symbolId?: number } | undefined;
   if (!row || typeof row.symbolId !== 'number') return undefined;
@@ -317,10 +291,14 @@ function workspaceIdForCall(db: Db, callId: string): number | undefined {
 function parseEvidence(value: unknown): Record<string, unknown> {
   try {
     const parsed = JSON.parse(String(value || '{}')) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    return isEvidenceRecord(parsed) ? boundCandidateLikeEvidence(parsed) : {};
   } catch {
     return {};
   }
+}
+
+function isEvidenceRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 function receiverFromEvidence(value: unknown): string | undefined {
   const evidence = parseEvidence(value);
@@ -461,16 +439,20 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
 function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined, persistedRows: GraphRow[] = []): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
   if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
   if (binding.resolutionStatus === 'ambiguous') {
+    const candidates = boundedContextCandidates(binding.bindingCandidates ?? []);
     return {
       evidence: {
         contextualServiceBindingAttempted: true,
         contextualBinding: {
           source: binding.source,
           status: 'tied',
-          candidates: binding.bindingCandidates,
+          candidates: candidates.candidates,
+          candidateCount: candidates.candidateCount,
+          shownCandidateCount: candidates.shownCandidateCount,
+          omittedCandidateCount: candidates.omittedCandidateCount,
         },
         contextualResolutionStatus: 'ambiguous',
-        contextualCandidateCount: binding.bindingCandidates?.length ?? 0,
+        contextualCandidateCount: candidates.candidateCount,
       },
       unresolvedReason: 'Ambiguous contextual service binding candidates',
     };
@@ -480,7 +462,8 @@ function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBind
   const servicePath = binding.effectiveServicePath ?? binding.servicePathExpr ?? binding.requireServicePath;
   const destination = binding.effectiveDestination ?? binding.destinationExpr ?? binding.requireDestination;
   const resolution = resolveOperation(db, { servicePath, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination, hasExplicitOverride: true, isDynamic: false }, workspaceId);
-  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, callerSite: binding.callerSite, calleeSite: binding.calleeSite, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: resolution.candidates.length, candidates: resolution.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
+  const candidates = boundedContextCandidates(resolution.candidates);
+  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, callerSite: binding.callerSite, calleeSite: binding.calleeSite, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: candidates.candidateCount, shownContextualCandidateCount: candidates.shownCandidateCount, omittedContextualCandidateCount: candidates.omittedCandidateCount, candidates: candidates.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
   if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : resolution.status === 'dynamic' ? `Dynamic contextual target is missing runtime variables: ${resolution.reasons.join(', ')}` : 'No contextual operation candidate matched' };
   const resolvedEvidence = { ...evidence, contextualServiceBindingSelected: true, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName };
   const persistedResolved = persistedRows.find((item) => item.status === 'resolved');
@@ -524,7 +507,9 @@ export function trace(
     const op = operationNode(db, scope.startOperationId);
     const impl = implementationScope(db, scope.startOperationId);
     if (op) nodes.set(String(op.id), op);
-    const startSelection = implementationMethodIdFromHint(impl.edge, hintOptions);
+    const startSelection = hintedImplementationSelection(
+      db, impl.edge, scope.startOperationId, hintOptions,
+    );
     if (impl.edge && (impl.edge.status === 'resolved' || startSelection.methodId)) {
       const selectedMethodId = impl.edge.status === 'resolved' ? impl.edge.to_id : startSelection.methodId;
       const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: selectedMethodId }, implementationSelection: startSelection.methodId ? startSelection.evidence : undefined };
@@ -564,7 +549,7 @@ export function trace(
         const nextKey = `${nextRepoId}:${[...nextSymbols].join(',')}:${[...nextFiles].join(',')}`;
         const calleeNode = symbolNode(db, Number(symbolCall.callee_symbol_id));
         if (calleeNode) nodes.set(String(calleeNode.id), calleeNode);
-        const evidence = { ...(JSON.parse(String(symbolCall.evidence_json || '{}')) as Record<string, unknown>), sourceFile: symbolCall.source_file, sourceLine: symbolCall.source_line, calleeSymbolId: symbolCall.callee_symbol_id, calleeSymbolName: calleeNode?.symbolName, calleeSymbolFile: calleeNode?.sourceFile, resolutionStatus: symbolCall.status };
+        const evidence = { ...parseEvidence(symbolCall.evidence_json), sourceFile: symbolCall.source_file, sourceLine: symbolCall.source_line, calleeSymbolId: symbolCall.callee_symbol_id, calleeSymbolName: calleeNode?.symbolName, calleeSymbolFile: calleeNode?.sourceFile, resolutionStatus: symbolCall.status };
         edges.push({ step: current.depth, type: 'local_symbol_call', from: String(symbolCall.callee_expression), to: calleeNode?.label ? String(calleeNode.label) : `symbol:${String(symbolCall.callee_symbol_id)}`, evidence, confidence: Number(symbolCall.confidence ?? 0.8), unresolvedReason: String(symbolCall.status) === 'resolved' ? undefined : symbolCall.unresolved_reason ? String(symbolCall.unresolved_reason) : undefined });
         if (seenScopes.has(nextKey)) edges.push({ step: current.depth, type: 'cycle', from: String(symbolCall.callee_expression), to: nextKey, evidence: { cycle: true, symbolCallId: symbolCall.id }, confidence: 1, unresolvedReason: 'Cycle detected; downstream symbol already visited' });
         else queue.push({ repoId: nextRepoId, files: nextFiles, symbolIds: nextSymbols, depth: current.depth + 1, context: contextForSymbolCall(db, symbolCall, callerBindings) });
@@ -590,9 +575,7 @@ export function trace(
       for (const row of graphRows) {
         if (seenEdges.has(Number(row.id))) continue;
         seenEdges.add(Number(row.id));
-        const persistedEvidence = JSON.parse(
-          String(row.evidence_json || '{}'),
-        ) as Record<string, unknown>;
+        const persistedEvidence = parseEvidence(row.evidence_json);
         const rawEvidence = baseTraceEvidence(row as TraceGraphRow, call, persistedEvidence, contextual.evidence);
         const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, {
           vars: options.vars,
@@ -618,16 +601,20 @@ export function trace(
           confidence: Number(effectiveRow.confidence ?? call.confidence),
           unresolvedReason: effective.unresolvedReason,
         });
-        if ((options.dynamicMode ?? 'strict') === 'candidates')
+        if ((options.dynamicMode ?? 'strict') === 'candidates'
+          && effectiveRow.status !== 'resolved')
           edges.push(...dynamicCandidateBranches(current.depth, call, evidence));
         if (effectiveRow.to_kind === 'operation') {
           const implementation = implementationScope(db, effectiveRow.to_id);
-          const contextSelection = contextImplementationMethodId(implementation.edge, current.repoId, evidence, hintOptions);
+          const contextSelection = contextualImplementationSelection(
+            db, implementation.edge, effectiveRow.to_id, current.repoId, evidence,
+            hintOptions,
+          );
           const contextMethodId = contextSelection.methodId;
           const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
           if (implementation.edge) {
-            const implEvidence = JSON.parse(String(implementation.edge.evidence_json || '{}')) as Record<string, unknown>;
-            const hintDiagnostic = implementationHintDiagnostic(contextSelection, implEvidence.implementationHintSuggestions);
+            const implEvidence = parseEvidence(implementation.edge.evidence_json);
+            const hintDiagnostic = implementationHintDiagnostic(contextSelection, implEvidence);
             if (hintDiagnostic) prependTraceDiagnostic(diagnostics, hintDiagnostic);
             const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : contextNode;
             const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;

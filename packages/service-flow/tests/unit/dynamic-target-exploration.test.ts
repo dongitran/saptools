@@ -301,6 +301,24 @@ describe('dynamic runtime target exploration', () => {
     db.close();
   });
 
+  it('does not add exploratory branches after complete explicit routing resolves', async () => {
+    const { db, workspaceId } = await prepareDynamicTargetWorkspace(true);
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, { repo: 'gateway-app', operation: 'runDynamicFlow' }, {
+      depth: 6,
+      workspaceId,
+      dynamicMode: 'candidates',
+      vars: { domainName: 'Beta', domainCode: 'beta' },
+    });
+    expect(result.edges.some((edge) =>
+      edge.type === 'remote_action'
+      && edge.to === '/BetaProcessService/collectPaths'
+      && !edge.unresolvedReason)).toBe(true);
+    expect(result.edges.filter((edge) =>
+      edge.type === 'dynamic_candidate_branch')).toEqual([]);
+    db.close();
+  });
+
   it('infers and traverses a unique fully-derived dynamic candidate', async () => {
     const { db, workspaceId } = await prepareDynamicTargetWorkspace(false);
     linkWorkspace(db, workspaceId);
@@ -562,7 +580,7 @@ describe('dynamic runtime target exploration', () => {
       reason: 'conflicting_strong_derivations',
     });
     expect(conflict?.sources).toEqual(expect.arrayContaining([
-      'cds_require.alias',
+      'selected_binding_require.alias',
       'package_identity',
     ]));
     expect(record(evidence.dynamicTargetInference).status).not.toBe('resolved');

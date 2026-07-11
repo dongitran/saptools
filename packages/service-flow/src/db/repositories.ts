@@ -1,4 +1,5 @@
 import type { Db } from './connection.js';
+import { projectBounded } from '../utils/000-bounded-projection.js';
 import type {
   CdsRequire,
   CdsServiceFact,
@@ -596,12 +597,19 @@ function bindingEvidence(
   candidates: BindingCandidate[],
   selected?: BindingCandidate,
 ): Record<string, unknown> {
+  const projection = projectBounded(candidates, (left, right) =>
+    Number(right.id === selected?.id) - Number(left.id === selected?.id)
+    || left.sourceFile.localeCompare(right.sourceFile)
+    || left.sourceLine - right.sourceLine
+    || left.id - right.id);
   return {
     status,
-    candidateCount: candidates.length,
+    candidateCount: projection.totalCount,
+    shownCandidateCount: projection.shownCount,
+    omittedCandidateCount: projection.omittedCount,
     selectedBindingId: selected?.id,
     sourceOrderRule: 'binding_source_line_must_not_follow_call',
-    candidates: candidates.map((candidate) => ({
+    candidates: projection.items.map((candidate) => ({
       bindingId: candidate.id,
       symbolId: candidate.symbolId,
       variableName: candidate.variableName,

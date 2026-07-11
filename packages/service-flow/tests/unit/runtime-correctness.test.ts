@@ -156,6 +156,39 @@ describe('runtime substitution and resolution correctness', () => {
       .toEqual([]);
     db.close();
   });
+
+  it('reports a no-match when an applicable runtime value leaves no canonical target', () => {
+    const db = openDatabase(':memory:');
+    db.exec(schemaSql);
+    const row: TraceGraphRow = {
+      id: 11,
+      edge_type: 'DYNAMIC_EDGE_CANDIDATE',
+      from_id: '8',
+      to_kind: 'operation_candidate',
+      to_id: '',
+      confidence: 0.4,
+      evidence_json: '{}',
+      status: 'dynamic',
+      unresolved_reason: 'Runtime target requires entityName',
+    };
+    const result = runtimeResolution(db, row, {
+      callType: 'remote_action',
+      repo: 'gateway',
+      repoId: 1,
+      servicePath: '/${entityName}Service',
+      operationPath: '/collect',
+      candidates: [],
+    }, { vars: { entityName: 'Unknown' } }, 1);
+
+    expect(result.unresolvedReason).toBe('No candidate remained after runtime substitution');
+    expect(runtimeNoCandidateDiagnostics([{ evidence: result.evidence }]))
+      .toEqual([expect.objectContaining({
+        code: 'no_candidate_after_runtime_substitution',
+        candidateCount: 0,
+        viableCandidateCount: 0,
+      })]);
+    db.close();
+  });
 });
 
 import ts from 'typescript';

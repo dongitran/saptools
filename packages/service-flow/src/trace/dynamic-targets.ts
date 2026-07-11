@@ -1,12 +1,20 @@
 import type { Db } from '../db/connection.js';
-import { extractPlaceholders } from '../linker/dynamic-edge-resolver.js';
+import {
+  applyVariables,
+  extractPlaceholders,
+  matchRuntimeTemplate,
+} from '../linker/dynamic-edge-resolver.js';
+import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import type { OperationTarget } from '../linker/service-resolver.js';
 import type { DynamicMode } from '../types.js';
+import { dynamicCandidateTargets } from './004-dynamic-candidate-sources.js';
+import { projectBounded } from '../utils/000-bounded-projection.js';
 import { uniqueIdentityDerivations } from './001-dynamic-identity.js';
 import {
   dynamicReferenceProvenance,
-  dynamicReferenceRows,
+  dynamicRoutingContext,
   type DynamicReferenceRow,
+  type DynamicRoutingContext,
 } from './003-dynamic-references.js';
 import type {
   DynamicTargetAnalysis,
@@ -14,15 +22,12 @@ import type {
   DynamicTemplates,
   DynamicVariableProvenance,
 } from './000-dynamic-target-types.js';
-
 export type {
   DynamicTargetAnalysis,
   DynamicTargetCandidate,
 } from './000-dynamic-target-types.js';
-
 type Templates = DynamicTemplates;
 type VariableProvenance = DynamicVariableProvenance;
-
 interface AnalysisInputs {
   original: Templates;
   effective: Templates;
@@ -32,6 +37,7 @@ interface AnalysisInputs {
   order: string[];
   callerRepo?: string;
   callerRepoId?: number;
+  routing: DynamicRoutingContext;
 }
 
 export function analyzeDynamicTargetCandidates(
@@ -41,13 +47,17 @@ export function analyzeDynamicTargetCandidates(
   mode: DynamicMode,
   maxCandidates: number,
 ): DynamicTargetAnalysis | undefined {
-  const inputs = analysisInputs(evidence);
+  const inputs = analysisInputs(db, evidence, workspaceId);
   if (inputs.required.length === 0) return undefined;
-  const targets = candidateTargets(db, evidence, workspaceId);
-  const references = dynamicReferenceRows(
-    db, workspaceId, inputs.callerRepoId, inputs.callerRepo,
+  const targets = dynamicCandidateTargets(
+    db,
+    inputs.effective.operationPath,
+    inputs.original.operationPath,
+    evidence.candidates,
+    workspaceId,
+    inputs.routing.outboundCallId !== undefined,
   );
-  const candidates = buildCandidates(db, targets, references, inputs);
+  const candidates = buildCandidates(db, targets, inputs.routing.references, inputs);
   applyUniqueIdentityEvidence(db, candidates, inputs);
   finalizeCandidates(candidates, inputs.order);
   const ranked = stableRank(candidates);
@@ -59,6 +69,7 @@ export function analyzeDynamicTargetCandidates(
     .map((candidate) => boundedCandidate(candidate, maxCandidates));
   const shownRejected = rejected.slice(0, maxCandidates)
     .map((candidate) => boundedCandidate(candidate, maxCandidates));
+  const suggestionProjection = suggestedVarSets(viable, inputs.order, maxCandidates);
   return {
     mode,
     maxCandidates,
@@ -77,17 +88,26 @@ export function analyzeDynamicTargetCandidates(
     candidates: shown,
     shownCandidates: shown,
     rejectedCandidates: shownRejected,
-    suggestedVarSets: suggestedVarSets(viable, inputs.order, maxCandidates),
+    suggestedVarSets: suggestionProjection.items,
+    suggestedVarSetCount: suggestionProjection.totalCount,
+    shownSuggestedVarSetCount: suggestionProjection.shownCount,
+    omittedSuggestedVarSetCount: suggestionProjection.omittedCount,
     inference,
+    routingContext: routingEvidence(inputs.routing),
   };
 }
 
-function analysisInputs(evidence: Record<string, unknown>): AnalysisInputs {
-  const original = templatesFromEvidence(evidence, 'original');
-  const effective = templatesFromEvidence(evidence, 'effective');
+function analysisInputs(
+  db: Db,
+  evidence: Record<string, unknown>,
+  workspaceId: number | undefined,
+): AnalysisInputs {
+  const routing = dynamicRoutingContext(db, workspaceId, evidence);
+  const supplied = stringRecord(evidence.suppliedRuntimeVariables);
+  const original = templatesFromEvidence(evidence, routing);
+  const effective = effectiveTemplates(original, supplied);
   const requiredSources = placeholderSources(original);
   const required = Object.keys(requiredSources);
-  const supplied = stringRecord(evidence.suppliedRuntimeVariables);
   return {
     original,
     effective,
@@ -95,92 +115,10 @@ function analysisInputs(evidence: Record<string, unknown>): AnalysisInputs {
     requiredSources,
     supplied,
     order: variableOrder(original, required),
-    callerRepo: stringValue(evidence.repo),
-    callerRepoId: numberValue(evidence.repoId),
+    callerRepo: routing.callerRepo ?? stringValue(evidence.repo),
+    callerRepoId: routing.callerRepoId ?? numberValue(evidence.repoId),
+    routing,
   };
-}
-
-function candidateTargets(
-  db: Db,
-  evidence: Record<string, unknown>,
-  workspaceId: number | undefined,
-): OperationTarget[] {
-  const embedded = rowsFromEvidence(evidence.candidates);
-  if (embedded.length > 0) return embedded;
-  const operationPath = effectiveSignal(evidence, 'operationPath');
-  if (!operationPath || extractPlaceholders(operationPath).length > 0) return [];
-  return queryOperationTargets(db, operationPath, workspaceId);
-}
-
-function rowsFromEvidence(value: unknown): OperationTarget[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item): OperationTarget[] => {
-    const row = record(item);
-    const operationId = numberValue(row.operationId);
-    const repoName = stringValue(row.repoName);
-    const servicePath = stringValue(row.servicePath);
-    const operationPath = stringValue(row.operationPath);
-    const operationName = stringValue(row.operationName) ?? operationPath?.replace(/^\//, '');
-    if (operationId === undefined || !repoName || !servicePath || !operationPath || !operationName) return [];
-    return [{
-      operationId,
-      repoId: numberValue(row.repoId),
-      repoName,
-      packageName: stringValue(row.packageName),
-      serviceName: stringValue(row.serviceName) ?? '',
-      qualifiedName: stringValue(row.qualifiedName) ?? '',
-      servicePath,
-      operationPath,
-      operationName,
-      sourceFile: stringValue(row.sourceFile) ?? '',
-      sourceLine: numberValue(row.sourceLine) ?? 0,
-      score: numberValue(row.score) ?? 0,
-      reasons: stringArray(row.reasons),
-    }];
-  });
-}
-
-function queryOperationTargets(
-  db: Db,
-  operationPath: string,
-  workspaceId: number | undefined,
-): OperationTarget[] {
-  const simple = operationPath.replace(/^\//, '').split('.').at(-1) ?? operationPath;
-  const rows = db.prepare(
-    `SELECT o.id operationId,r.id repoId,r.name repoName,r.package_name packageName,
-      s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,
-      o.operation_path operationPath,o.operation_name operationName,o.source_file sourceFile,
-      o.source_line sourceLine FROM cds_operations o
-     JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id
-     WHERE (? IS NULL OR r.workspace_id=?)
-       AND (o.operation_path IN (?,?) OR o.operation_name=?)
-     ORDER BY r.name,s.service_path,o.operation_name,o.id`,
-  ).all(workspaceId, workspaceId, operationPath, `/${simple}`, simple);
-  return rows.flatMap(operationTargetFromRow);
-}
-
-function operationTargetFromRow(row: Record<string, unknown>): OperationTarget[] {
-  const operationId = numberValue(row.operationId);
-  const repoName = stringValue(row.repoName);
-  const servicePath = stringValue(row.servicePath);
-  const operationPath = stringValue(row.operationPath);
-  const operationName = stringValue(row.operationName);
-  if (operationId === undefined || !repoName || !servicePath || !operationPath || !operationName) return [];
-  return [{
-    operationId,
-    repoId: numberValue(row.repoId),
-    repoName,
-    packageName: stringValue(row.packageName),
-    serviceName: stringValue(row.serviceName) ?? '',
-    qualifiedName: stringValue(row.qualifiedName) ?? '',
-    servicePath,
-    operationPath,
-    operationName,
-    sourceFile: stringValue(row.sourceFile) ?? '',
-    sourceLine: numberValue(row.sourceLine) ?? 0,
-    score: 0.2,
-    reasons: ['operation_path_match'],
-  }];
 }
 
 function buildCandidates(
@@ -194,12 +132,46 @@ function buildCandidates(
     applyDirectSignal(state, inputs, 'operationPath', target.operationPath, 0.25);
     applyDirectSignal(state, inputs, 'servicePath', target.servicePath, 0.35);
     const matchingReferences = references.filter((reference) =>
-      reference.servicePath === target.servicePath);
-    applyReferenceSignal(state, inputs, matchingReferences, 'alias');
-    applyReferenceSignal(state, inputs, matchingReferences, 'destination');
+      referenceMatchesCandidate(reference, target.servicePath)
+      && referenceMatchesSelectedAlias(reference, inputs.routing.selectedBinding));
+    const referencesForSignals = fallbackReferencesForCandidate(
+      state, matchingReferences, inputs.routing.fallbackUsed,
+    );
+    applyReferenceSignal(state, inputs, referencesForSignals, 'alias');
+    applyReferenceSignal(state, inputs, referencesForSignals, 'destination');
     if (hasResolvedImplementation(db, target.operationId))
       addScore(state, 0.1, 'implementation_edge_resolved');
     return state;
+  });
+}
+
+function fallbackReferencesForCandidate(
+  state: DynamicTargetCandidate,
+  references: DynamicReferenceRow[],
+  fallbackUsed: boolean,
+): DynamicReferenceRow[] {
+  if (!fallbackUsed) return references;
+  const unique = uniqueFallbackReferences(references);
+  if (unique.length <= 1) return unique;
+  addReason(state, 'fallback_reference_ambiguous');
+  addInferenceBlock(state, 'fallback_reference_ambiguous');
+  return [];
+}
+
+function uniqueFallbackReferences(
+  references: DynamicReferenceRow[],
+): DynamicReferenceRow[] {
+  const seen = new Set<string>();
+  return references.filter((reference) => {
+    const signature = [
+      reference.sourceKind,
+      reference.alias,
+      reference.destination,
+      reference.servicePath,
+    ].join('\0');
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
   });
 }
 
@@ -251,7 +223,7 @@ function applyDirectSignal(
 ): void {
   const effective = inputs.effective[kind];
   const original = inputs.original[kind];
-  if (effective && !matchTemplate(effective, concrete)) {
+  if (effective && !matchRuntimeTemplate(effective, concrete)) {
     reject(state, `${signalCode(kind)}_contradicts_runtime_substitution`);
     return;
   }
@@ -259,13 +231,23 @@ function applyDirectSignal(
   const suppliedKeys = extractPlaceholders(original)
     .filter((key) => inputs.supplied[key] !== undefined);
   state.explicitSignalStrength += suppliedKeys.length;
-  const matched = matchTemplate(original, concrete) ?? {};
+  const matched = matchRuntimeTemplate(original, concrete) ?? {};
+  const fromSelectedBinding = kind === 'servicePath'
+    && inputs.routing.selectedBinding !== undefined;
   for (const [key, value] of Object.entries(matched)) {
     addDerivation(state, key, value, {
-      sourceKind: `${signalCode(kind)}_template`,
+      sourceKind: fromSelectedBinding
+        ? `selected_binding.${signalCode(kind)}_template`
+        : `${signalCode(kind)}_template`,
       value,
-      rule: 'exact_template_match',
+      rule: fromSelectedBinding
+        ? 'exact_selected_binding_template_match'
+        : 'exact_template_match',
       template: original,
+      sourceRepo: fromSelectedBinding ? inputs.routing.selectedBinding?.repoName : undefined,
+      sourceFile: fromSelectedBinding ? inputs.routing.selectedBinding?.sourceFile : undefined,
+      sourceLine: fromSelectedBinding ? inputs.routing.selectedBinding?.sourceLine : undefined,
+      selection: fromSelectedBinding ? 'selected_binding' : 'call_evidence',
     });
   }
   addScore(state, score, `${signalCode(kind)}_template_match`);
@@ -290,7 +272,7 @@ function applyReferenceSignal(
   }
   let matchedSignal = false;
   for (const { reference, concrete } of values) {
-    const matched = matchTemplate(original, concrete);
+    const matched = matchRuntimeTemplate(original, concrete);
     if (!matched) continue;
     matchedSignal = true;
     for (const [key, value] of Object.entries(matched)) {
@@ -406,6 +388,8 @@ function inferenceDecision(candidates: DynamicTargetCandidate[]): Record<string,
   const second = viable[1];
   if (!first || first.missingVariables.length > 0)
     return { status: 'unresolved', reason: 'missing_required_runtime_variable' };
+  if (first.inferenceBlockReasons.length > 0)
+    return { status: 'unresolved', reason: first.inferenceBlockReasons[0] };
   if (first.score < 0.85)
     return { status: 'unresolved', reason: 'candidate_score_below_inference_threshold' };
   const scoreGap = second
@@ -432,16 +416,61 @@ function boundedCandidate(
   candidate: DynamicTargetCandidate,
   limit: number,
 ): DynamicTargetCandidate {
-  const derivationProvenance = Object.fromEntries(
+  const provenanceProjections = Object.fromEntries(
     Object.entries(candidate.derivationProvenance)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, rows]) => [key, rows.slice(0, limit)]),
+      .map(([key, rows]) => [key, projectBounded(rows, compareProvenance, limit)]),
   );
-  const conflicts = candidate.conflicts.slice(0, limit).map((conflict) => ({
+  const derivationProvenance = Object.fromEntries(Object.entries(provenanceProjections)
+    .map(([key, projection]) => [key, projection.items]));
+  const derivationProvenanceCounts = Object.fromEntries(Object.entries(provenanceProjections)
+    .map(([key, projection]) => [key, {
+      provenanceCount: projection.totalCount,
+      shownProvenanceCount: projection.shownCount,
+      omittedProvenanceCount: projection.omittedCount,
+    }]));
+  const conflicts = projectBounded(candidate.conflicts, compareConflict, limit);
+  return {
+    ...candidate,
+    derivationProvenance,
+    derivationProvenanceCounts,
+    conflicts: conflicts.items.map(boundedConflict),
+    conflictCount: conflicts.totalCount,
+    shownConflictCount: conflicts.shownCount,
+    omittedConflictCount: conflicts.omittedCount,
+  };
+}
+
+function compareProvenance(
+  left: DynamicVariableProvenance,
+  right: DynamicVariableProvenance,
+): number {
+  return left.sourceKind.localeCompare(right.sourceKind)
+    || String(left.matchedName ?? '').localeCompare(String(right.matchedName ?? ''))
+    || left.value.localeCompare(right.value);
+}
+
+function compareConflict(
+  left: DynamicTargetCandidate['conflicts'][number],
+  right: DynamicTargetCandidate['conflicts'][number],
+): number {
+  return left.key.localeCompare(right.key)
+    || left.reason.localeCompare(right.reason)
+    || left.values.join('\0').localeCompare(right.values.join('\0'));
+}
+
+function boundedConflict(
+  conflict: DynamicTargetCandidate['conflicts'][number],
+): DynamicTargetCandidate['conflicts'][number] & Record<string, unknown> {
+  const sources = projectBounded(conflict.sources, (left, right) =>
+    left.localeCompare(right));
+  return {
     ...conflict,
-    sources: conflict.sources.slice(0, limit),
-  }));
-  return { ...candidate, derivationProvenance, conflicts };
+    sources: sources.items,
+    sourceCount: sources.totalCount,
+    shownSourceCount: sources.shownCount,
+    omittedSourceCount: sources.omittedCount,
+  };
 }
 
 function applyModeState(
@@ -462,7 +491,7 @@ function suggestedVarSets(
   candidates: DynamicTargetCandidate[],
   order: string[],
   limit: number,
-): Array<{ variables: Record<string, string>; cli: string }> {
+): ReturnType<typeof projectBounded<{ variables: Record<string, string>; cli: string }>> {
   const seen = new Set<string>();
   const rows: Array<{ variables: Record<string, string>; cli: string }> = [];
   for (const candidate of candidates) {
@@ -470,9 +499,8 @@ function suggestedVarSets(
     if (seen.has(candidate.cli)) continue;
     seen.add(candidate.cli);
     rows.push({ variables: orderedVariables(candidate.completeVariables, order), cli: candidate.cli });
-    if (rows.length >= limit) break;
   }
-  return rows;
+  return projectBounded(rows, (left, right) => left.cli.localeCompare(right.cli), limit);
 }
 
 function hasResolvedImplementation(db: Db, operationId: number): boolean {
@@ -480,17 +508,30 @@ function hasResolvedImplementation(db: Db, operationId: number): boolean {
     "SELECT 1 FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND status='resolved' AND from_kind='operation' AND from_id=? LIMIT 1",
   ).get(String(operationId)));
 }
-
 function templatesFromEvidence(
   evidence: Record<string, unknown>,
-  phase: 'original' | 'effective',
+  routing: DynamicRoutingContext,
 ): Templates {
+  const selected = routing.selectedBinding;
   return {
-    servicePath: substitutionSignal(evidence, 'servicePath', phase),
-    operationPath: substitutionSignal(evidence, 'operationPath', phase),
-    alias: substitutionSignal(evidence,
-      evidence.serviceAliasExpr !== undefined ? 'serviceAliasExpr' : 'serviceAlias', phase),
-    destination: substitutionSignal(evidence, 'destination', phase),
+    servicePath: selected?.servicePath ?? substitutionSignal(evidence, 'servicePath', 'original'),
+    operationPath: substitutionSignal(evidence, 'operationPath', 'original'),
+    alias: selected?.aliasExpr ?? selected?.alias ?? substitutionSignal(evidence,
+      evidence.serviceAliasExpr !== undefined ? 'serviceAliasExpr' : 'serviceAlias', 'original'),
+    destination: selected?.destination ?? substitutionSignal(evidence, 'destination', 'original'),
+  };
+}
+function effectiveTemplates(
+  templates: Templates,
+  supplied: Record<string, string>,
+): Templates {
+  const operationPath = applyVariables(templates.operationPath, supplied);
+  return {
+    servicePath: applyVariables(templates.servicePath, supplied),
+    operationPath: normalizeODataOperationInvocationPath(operationPath)?.normalizedOperationPath
+      ?? operationPath,
+    alias: applyVariables(templates.alias, supplied),
+    destination: applyVariables(templates.destination, supplied),
   };
 }
 
@@ -501,10 +542,6 @@ function substitutionSignal(
 ): string | undefined {
   const substitution = record(record(evidence.runtimeSubstitutions)[key]);
   return stringValue(substitution[phase]) ?? stringValue(evidence[key]);
-}
-
-function effectiveSignal(evidence: Record<string, unknown>, key: string): string | undefined {
-  return substitutionSignal(evidence, key, 'effective');
 }
 
 function placeholderSources(templates: Templates): Record<string, string[]> {
@@ -528,35 +565,20 @@ function variableOrder(templates: Templates, required: string[]): string[] {
   return [...new Set([...ordered, ...required])];
 }
 
-function matchTemplate(
-  template: string | undefined,
-  concrete: string | undefined,
-): Record<string, string> | undefined {
-  if (!template || !concrete) return undefined;
-  const keys = extractPlaceholders(template);
-  if (keys.length === 0) return template === concrete ? {} : undefined;
-  const match = new RegExp(`^${templateToPattern(template)}$`).exec(concrete);
-  if (!match) return undefined;
-  const values: Record<string, string> = {};
-  for (let index = 0; index < keys.length; index += 1) {
-    const key = keys[index];
-    const value = match[index + 1];
-    if (!key || value === undefined) return undefined;
-    if (values[key] !== undefined && values[key] !== value) return undefined;
-    values[key] = value;
-  }
-  return values;
+function referenceMatchesCandidate(
+  reference: DynamicReferenceRow,
+  servicePath: string,
+): boolean {
+  return matchRuntimeTemplate(reference.servicePath, servicePath) !== undefined;
 }
 
-function templateToPattern(template: string): string {
-  let pattern = '';
-  let lastIndex = 0;
-  for (const match of template.matchAll(/\$\{([^}]*)\}/g)) {
-    pattern += escapeRegex(template.slice(lastIndex, match.index));
-    pattern += '([^/]+?)';
-    lastIndex = (match.index ?? 0) + match[0].length;
-  }
-  return `${pattern}${escapeRegex(template.slice(lastIndex))}`;
+function referenceMatchesSelectedAlias(
+  reference: DynamicReferenceRow,
+  selected: DynamicRoutingContext['selectedBinding'],
+): boolean {
+  if (reference.selection !== 'selected_binding_require') return true;
+  const template = selected?.aliasExpr ?? selected?.alias;
+  return matchRuntimeTemplate(template, reference.alias) !== undefined;
 }
 
 function cliFor(variables: Record<string, string>, order: string[]): string {
@@ -608,6 +630,34 @@ function requiredSuppliedVariables(inputs: AnalysisInputs): Record<string, strin
     inputs.supplied[key] === undefined ? [] : [[key, inputs.supplied[key]]]));
 }
 
+function routingEvidence(routing: DynamicRoutingContext): Record<string, unknown> {
+  const binding = routing.selectedBinding;
+  return {
+    outboundCallId: routing.outboundCallId,
+    callerRepoId: routing.callerRepoId,
+    callerRepo: routing.callerRepo,
+    selectedBindingId: routing.selectedBindingId,
+    bindingResolutionStatus: routing.bindingResolutionStatus,
+    selectedBinding: binding ? {
+      bindingId: binding.bindingId,
+      alias: binding.alias,
+      aliasExpr: binding.aliasExpr,
+      destination: binding.destination,
+      destinationExpr: binding.destination,
+      servicePath: binding.servicePath,
+      servicePathExpr: binding.servicePath,
+      sourceFile: binding.sourceFile,
+      sourceLine: binding.sourceLine,
+      helperChain: binding.helperChain,
+    } : undefined,
+    bindingAlternativeCount: routing.bindingAlternativeCount,
+    shownBindingAlternativeCount: routing.shownBindingAlternativeCount,
+    omittedBindingAlternativeCount: routing.omittedBindingAlternativeCount,
+    bindingAlternatives: routing.bindingAlternatives,
+    fallbackUsed: routing.fallbackUsed,
+  };
+}
+
 function signalCode(kind: 'servicePath' | 'operationPath'): string {
   return kind === 'servicePath' ? 'service_path' : 'operation_path';
 }
@@ -647,8 +697,4 @@ function nonEmptyStrings(value: unknown, fallback: string[]): string[] {
 function isConcrete(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
     && extractPlaceholders(value).length === 0;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

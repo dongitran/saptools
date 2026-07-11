@@ -5,8 +5,12 @@ import type {
   DynamicVariableProvenance,
 } from './000-dynamic-target-types.js';
 
-interface ImplementationOwner {
-  repoId?: number;
+interface RouteImplementationEvidence {
+  routeRepoId?: number;
+  handlerRepo?: string;
+  operationProvenance?: string;
+  baseOperationId?: number;
+  edgeStatus?: string;
 }
 
 interface IdentityProposal {
@@ -44,11 +48,13 @@ export function uniqueIdentityDerivations(
 ): IdentityDerivation[] {
   const identities = workspaceIdentities(db, candidates);
   const proposals = candidates.flatMap((candidate) => {
-    const owner = implementationOwner(db, candidate.candidateOperationId);
+    const implementation = routeImplementationEvidence(
+      db, candidate.candidateOperationId,
+    );
     const identity = identities.find((item) => item.repoId === candidate.repoId);
-    return ownerAgrees(candidate, owner) && identity
-      ? identityProposals(candidate, identity, templates)
-      : [];
+    if (!identity || !implementation || !routeOwnerAgrees(candidate, implementation))
+      return [];
+    return identityProposals(candidate, identity, templates, implementation);
   });
   const matches = workspaceIdentityMatches(identities, templates);
   const competing = competingIdentityKeys(matches);
@@ -68,6 +74,7 @@ function identityProposals(
   candidate: DynamicTargetCandidate,
   identity: RepositoryIdentity,
   templates: DynamicTemplates,
+  implementation: RouteImplementationEvidence,
 ): IdentityProposal[] {
   const routeTemplates = [templates.alias, templates.destination]
     .filter((value): value is string => Boolean(value));
@@ -81,7 +88,7 @@ function identityProposals(
     identities.flatMap((identity) =>
       proposalForIdentity(
         candidate, template, identity.name, identity.sourceKind,
-        identity.npmPackage,
+        identity.npmPackage, implementation,
       )));
   return deduplicateProposals(proposals);
 }
@@ -92,6 +99,7 @@ function proposalForIdentity(
   identity: string,
   sourceKind: string,
   npmPackage: boolean,
+  implementation: RouteImplementationEvidence,
 ): IdentityProposal[] {
   const match = matchIdentityTemplate(template, identity, npmPackage);
   if (!match) return [];
@@ -108,6 +116,12 @@ function proposalForIdentity(
       matchedName: identity,
       normalizedForm: match.normalizedIdentity,
       sourceRepo: candidate.repoName,
+      routeOwner: candidate.repoName,
+      candidateOperationId: candidate.candidateOperationId,
+      effectiveBaseOperationId: implementation.baseOperationId,
+      candidateOperationProvenance: implementation.operationProvenance,
+      implementationEdgeStatus: implementation.edgeStatus,
+      implementationHandlerRepo: implementation.handlerRepo,
     },
   }];
 }
@@ -229,30 +243,44 @@ function deduplicateProposals(rows: IdentityProposal[]): IdentityProposal[] {
   });
 }
 
-function ownerAgrees(
+function routeOwnerAgrees(
   candidate: DynamicTargetCandidate,
-  owner: ImplementationOwner | undefined,
+  implementation: RouteImplementationEvidence | undefined,
 ): boolean {
   return candidate.repoId !== undefined
-    && owner?.repoId !== undefined
-    && owner.repoId === candidate.repoId;
+    && implementation?.routeRepoId === candidate.repoId
+    && implementation.edgeStatus === 'resolved'
+    && candidate.viable
+    && candidate.reasons.includes('service_path_template_match');
 }
 
-function implementationOwner(db: Db, operationId: number): ImplementationOwner | undefined {
+function routeImplementationEvidence(
+  db: Db,
+  operationId: number,
+): RouteImplementationEvidence | undefined {
   const rows = db.prepare(
-    `SELECT r.id repoId
-     FROM graph_edges e JOIN handler_methods hm ON hm.id=CAST(e.to_id AS INTEGER)
+    `SELECT s.repo_id routeRepoId,o.provenance operationProvenance,
+      o.base_operation_id baseOperationId,e.status edgeStatus,
+      r.name handlerRepo
+     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id
+     JOIN graph_edges e ON e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'
+       AND e.from_kind='operation' AND e.from_id=CAST(o.id AS TEXT)
+     JOIN handler_methods hm ON hm.id=CAST(e.to_id AS INTEGER)
      JOIN handler_classes hc ON hc.id=hm.handler_class_id
      JOIN repositories r ON r.id=hc.repo_id
      WHERE e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND e.status='resolved'
-       AND e.from_kind='operation' AND e.from_id=?
-     ORDER BY r.id,hm.id,e.id`,
+       AND o.id=?
+     ORDER BY e.id,hm.id`,
   ).all(String(operationId));
   if (rows.length !== 1) return undefined;
   const row = rows[0];
   if (!row) return undefined;
   return {
-    repoId: numberValue(row.repoId),
+    routeRepoId: numberValue(row.routeRepoId),
+    handlerRepo: stringValue(row.handlerRepo),
+    operationProvenance: stringValue(row.operationProvenance),
+    baseOperationId: numberValue(row.baseOperationId),
+    edgeStatus: stringValue(row.edgeStatus),
   };
 }
 

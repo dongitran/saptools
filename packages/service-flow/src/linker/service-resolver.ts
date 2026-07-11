@@ -1,4 +1,5 @@
 import type { Db } from '../db/connection.js';
+import { canonicalImplementationEvidence } from './000-implementation-candidates.js';
 export interface OperationTarget {
   operationId: number;
   repoName: string;
@@ -209,13 +210,55 @@ function ownershipReason(db: Db, candidate: OperationTarget, callerRepoId: numbe
     if (row?.repoId === callerRepoId) return { candidate, reason: 'resolved_implementation_handler_repo_matches_caller' };
   }
   if (edge?.evidence_json) {
-    const evidence = JSON.parse(edge.evidence_json) as { candidates?: Array<{ accepted?: boolean; handlerPackage?: { id?: number }; applicationPackage?: { id?: number } }> };
-    const hit = evidence.candidates?.find((item) => item.accepted && (Number(item.handlerPackage?.id) === callerRepoId || Number(item.applicationPackage?.id) === callerRepoId));
+    const stored = parsedRecord(edge.evidence_json);
+    const evidence = canonicalImplementationEvidence(db, candidate.operationId) ?? stored;
+    const hit = implementationEvidenceCandidates(evidence).find((item) =>
+      item.accepted && (item.handlerRepoId === callerRepoId
+        || item.applicationRepoId === callerRepoId));
     if (hit) return { candidate, reason: edge.status === 'ambiguous' ? 'ambiguous_implementation_candidate_repo_matches_caller' : 'registration_package_matches_caller' };
   }
   const dep = db.prepare("SELECT 1 FROM graph_edges WHERE edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND status='resolved' AND from_kind='repo' AND from_id=? AND to_id=?").get(String(callerRepoId), String(candidate.repoId));
   if (dep) return { candidate, reason: 'caller_depends_on_model_package' };
   return undefined;
+}
+
+function implementationEvidenceCandidates(
+  evidence: Record<string, unknown>,
+): Array<{ accepted: boolean; handlerRepoId?: number; applicationRepoId?: number }> {
+  const candidates = evidence.candidates;
+  if (!Array.isArray(candidates)) return [];
+  return candidates.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const row = candidate;
+    const handler = recordValue(row.handlerPackage);
+    const application = recordValue(row.applicationPackage);
+    return [{
+      accepted: row.accepted === true,
+      handlerRepoId: numberValue(handler.id),
+      applicationRepoId: numberValue(application.id),
+    }];
+  });
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function parsedRecord(value: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return recordValue(parsed);
+  } catch {
+    return {};
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function matchesLocalRepo(db: Db, operationId: number, repoId: number | undefined): boolean {

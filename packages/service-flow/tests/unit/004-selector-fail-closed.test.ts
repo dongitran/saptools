@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { linkWorkspace } from '../../src/linker/cross-repo-linker.js';
 import { trace } from '../../src/trace/trace-engine.js';
+import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/000-bounded-projection.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 
 async function writeRepository(
@@ -119,6 +120,51 @@ describe('trace selector fail-closed behavior', () => {
     expect(candidates).toHaveLength(2);
     expect(candidates.map((candidate) => candidate.sourceLine))
       .toEqual([5, 5]);
+    db.close();
+  });
+
+  it('bounds selector ambiguity candidates and suggestions deterministically', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-selector-cap-'));
+    const repositories = [
+      'alpha-service',
+      'beta-service',
+      'gamma-service',
+      'delta-service',
+      'epsilon-service',
+      'zeta-service',
+    ];
+    for (const repo of repositories) {
+      await writeRepository(root, repo, `
+        import { Action, Handler } from 'cds-routing-handlers';
+        @Handler()
+        export class SharedHandler {
+          @Action('sharedAction')
+          async sharedAction(): Promise<void> {}
+        }
+      `);
+    }
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const result = trace(db, { handler: 'sharedAction' }, {
+      depth: 4,
+      workspaceId,
+    });
+    const diagnostic = result.diagnostics.find((item) =>
+      item.code === 'trace_start_ambiguous');
+    const candidates = recordArray(diagnostic?.candidates);
+    const suggestions = Array.isArray(diagnostic?.selectorSuggestions)
+      ? diagnostic.selectorSuggestions
+      : [];
+    expect(candidates).toHaveLength(DEFAULT_EVIDENCE_CANDIDATE_LIMIT);
+    expect(suggestions).toHaveLength(DEFAULT_EVIDENCE_CANDIDATE_LIMIT);
+    expect(diagnostic).toMatchObject({
+      candidateCount: repositories.length,
+      shownCandidateCount: DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+      omittedCandidateCount: repositories.length - DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+      selectorSuggestionCount: repositories.length,
+      shownSelectorSuggestionCount: DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+      omittedSelectorSuggestionCount:
+        repositories.length - DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+    });
     db.close();
   });
 });

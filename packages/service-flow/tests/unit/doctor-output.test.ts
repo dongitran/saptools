@@ -37,7 +37,9 @@ describe('doctor output rendering', () => {
     expect(output).toContain('strict_implementation_candidate_quality');
     expect(output).toContain('total=4');
     expect(output).toContain('try --implementation-hint service=/ProductService,operation=/activate,repo=helper-a');
-    expect(output).toContain('... 1 more hint(s) available in --format json');
+    expect(output).toContain(
+      '... 1 additional hint(s) omitted; use a scoped --implementation-hint',
+    );
   });
 
   it('rejects unsupported doctor formats', () => {

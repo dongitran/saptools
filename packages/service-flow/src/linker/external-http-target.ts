@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+import { projectBounded } from '../utils/000-bounded-projection.js';
 
 export type ExternalTargetKind = 'destination' | 'static_url' | 'url_expression' | 'unknown';
-export interface ExternalHttpTarget { kind: ExternalTargetKind; toKind: 'external_destination' | 'external_endpoint'; toId: string; label: string; method?: string; dynamic: boolean; expression?: string; }
+export interface ExternalHttpTarget { kind: ExternalTargetKind; toKind: 'external_destination' | 'external_endpoint'; toId: string; label: string; method?: string; dynamic: boolean; expression?: string; candidateLiteralCount?: number; shownCandidateLiteralCount?: number; omittedCandidateLiteralCount?: number; }
 const sensitiveKeys = new Set(['token','access_token','id_token','api_key','apikey','key','password','passwd','pwd','secret','client_secret','authorization','cookie','signature']);
 function hash(value: string): string { return createHash('sha256').update(value).digest('hex').slice(0, 12); }
 function methodPrefix(method: unknown): string { return typeof method === 'string' && method.length > 0 ? `${method.toUpperCase()} ` : ''; }
@@ -24,8 +25,22 @@ export function externalHttpTarget(call: Record<string, unknown>): ExternalHttpT
   const expression = typeof target.expression === 'string' ? target.expression : undefined;
   if (kind === 'destination' && target.dynamic === true) {
     const shape = typeof target.expressionShape === 'string' ? target.expressionShape : 'expression';
-    const candidates = Array.isArray(target.candidateLiterals) ? target.candidateLiterals.filter((item): item is string => typeof item === 'string') : [];
-    return { kind, toKind: 'external_destination', toId: `destination:dynamic:${hash(`${shape}:${candidates.join('|')}`)}`, label: 'External destination: dynamic destination', method, dynamic: true, expression: candidates.length ? `candidates:${candidates.join('|')}` : `shape:${shape}` };
+    const candidates = staticDestinationCandidates(target.candidateLiterals);
+    const projection = projectBounded(candidates, (left, right) => left.localeCompare(right));
+    return {
+      kind,
+      toKind: 'external_destination',
+      toId: `destination:dynamic:${hash(`${shape}:${candidates.join('|')}`)}`,
+      label: 'External destination: dynamic destination',
+      method,
+      dynamic: true,
+      expression: projection.items.length
+        ? `candidates:${projection.items.join('|')}`
+        : `shape:${shape}`,
+      candidateLiteralCount: projection.totalCount,
+      shownCandidateLiteralCount: projection.shownCount,
+      omittedCandidateLiteralCount: projection.omittedCount,
+    };
   }
   if (kind === 'destination' && expression) return { kind, toKind: 'external_destination', toId: `destination:${expression}`, label: `External destination: ${expression}`, method, dynamic: false, expression };
   if (kind === 'static_url' && expression) {
@@ -34,5 +49,11 @@ export function externalHttpTarget(call: Record<string, unknown>): ExternalHttpT
   }
   if (kind === 'url_expression' && expression) return { kind, toKind: 'external_endpoint', toId: `dynamic:${hash(expression)}`, label: `External endpoint: ${methodPrefix(method)}dynamic URL`, method, dynamic: true, expression: `expr:${hash(expression)}` };
   return { kind: 'unknown', toKind: 'external_endpoint', toId: 'unknown', label: 'External endpoint: unknown', method, dynamic: false };
+}
+function staticDestinationCandidates(value: unknown): string[] {
+  const candidates = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  return [...new Set(candidates)].sort();
 }
 function safeParse(value: string): Record<string, unknown> { try { const parsed = JSON.parse(value) as unknown; return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; } catch { return {}; } }

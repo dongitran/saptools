@@ -1,6 +1,7 @@
 import type { Db } from '../db/connection.js';
 import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { implementationHintSuggestions } from '../trace/implementation-hints.js';
+import { boundDoctorDiagnostics } from './001-doctor-projection.js';
 import { ANALYZER_VERSION } from '../version.js';
 
 type Diagnostic = Record<string, unknown>;
@@ -15,7 +16,7 @@ export function linkUpgradeWarnings(db: Db): Diagnostic[] {
 
 export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOptions = {}): Diagnostic[] {
   const diagnostics = db.prepare('SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id').all() as Diagnostic[];
-  return [
+  return boundDoctorDiagnostics([
     ...diagnostics,
     ...healthDiagnostics(db, strict),
     ...remoteTargetWithoutImplementationDiagnostics(db, strict, Boolean(options.detail)),
@@ -23,7 +24,7 @@ export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOption
     ...schemaDriftDiagnostics(db, strict),
     ...analyzerVersionDiagnostics(db, strict),
     ...parserQualityDiagnostics(db, strict, options),
-  ];
+  ]);
 }
 
 function healthDiagnostics(db: Db, strict: boolean): Diagnostic[] {
@@ -252,6 +253,10 @@ function addImplementationCategory(grouped: Map<string, Diagnostic & { count: nu
   const current = grouped.get(key) ?? { category, baseOperation, reason, candidateFamily: family, count: 0, servicePaths: [], examples: [] };
   const hintSuggestions = implementationSuggestions(evidence);
   const candidates = asRecords(evidence.candidates);
+  const candidateCount = Math.max(
+    numericValue(evidence.candidateCount),
+    candidates.length,
+  );
   current.count += 1;
   current.servicePaths.push(String(row.servicePath ?? evidence.servicePath ?? ''));
   current.examples.push({
@@ -259,7 +264,15 @@ function addImplementationCategory(grouped: Map<string, Diagnostic & { count: nu
     operation: row.operationName,
     status: row.status,
     reason: row.unresolvedReason,
-    candidateCount: candidates.length,
+    candidateCount,
+    shownCandidateCount: Math.min(
+      candidateCount,
+      numericValue(evidence.shownCandidateCount) || candidates.length,
+    ),
+    omittedCandidateCount: Math.max(
+      0,
+      candidateCount - (numericValue(evidence.shownCandidateCount) || candidates.length),
+    ),
     candidateEvidence: candidates.slice(0, 3),
     implementationHintSuggestions: hintSuggestions,
   });
@@ -653,6 +666,10 @@ function remoteActionNoBindingQuality(db: Db): Diagnostic {
 
 function candidateCount(value: unknown): number {
   return Number(parseObject(value).candidateCount ?? 0);
+}
+
+function numericValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function parseObject(value: unknown): Diagnostic {

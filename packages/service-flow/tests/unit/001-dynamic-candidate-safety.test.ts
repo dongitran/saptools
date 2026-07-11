@@ -287,6 +287,30 @@ describe('dynamic candidate safety invariants', () => {
     db.close();
   });
 
+  it('does not blend multiple fallback bindings into one routing derivation', () => {
+    const db = dynamicDb();
+    addBinding(db, 'worker_or_service', '/OrderService', 1);
+    addBinding(db, 'worker_wrong_service', '/OrderService', 2);
+
+    const analysis = analyzeDynamicTargetCandidates(db, evidence([
+      candidate(10, 'worker-order', '/OrderService', 0.2),
+    ]), 1, 'infer', 5);
+    const shown = analysis?.shownCandidates[0];
+
+    expect(shown).toMatchObject({
+      derivedVariables: { entityName: 'Order' },
+      missingVariables: ['entityCode'],
+    });
+    expect(shown?.derivedVariableSources).not.toHaveProperty('entityCode');
+    expect(shown?.reasons).toContain('fallback_reference_ambiguous');
+    expect(shown?.inferenceBlockReasons).toContain('fallback_reference_ambiguous');
+    expect(analysis?.inference).toMatchObject({
+      status: 'unresolved',
+      reason: 'missing_required_runtime_variable',
+    });
+    db.close();
+  });
+
   it('distinguishes exact ties from candidates within the inference margin', () => {
     const db = dynamicDb();
     const input = {

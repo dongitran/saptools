@@ -22,6 +22,26 @@ export function extractPlaceholders(template: string | undefined): string[] {
     .filter(Boolean);
 }
 
+export function matchRuntimeTemplate(
+  template: string | undefined,
+  concrete: string | undefined,
+): Record<string, string> | undefined {
+  if (!template || !concrete) return undefined;
+  const keys = extractPlaceholders(template);
+  if (keys.length === 0) return template === concrete ? {} : undefined;
+  const match = new RegExp(`^${runtimeTemplatePattern(template)}$`).exec(concrete);
+  if (!match) return undefined;
+  const values: Record<string, string> = {};
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    const value = match[index + 1];
+    if (!key || value === undefined) return undefined;
+    if (values[key] !== undefined && values[key] !== value) return undefined;
+    values[key] = value;
+  }
+  return values;
+}
+
 export function substituteVariables(
   template: string | undefined,
   vars: Record<string, string>,
@@ -42,4 +62,19 @@ export function substituteVariables(
     supplied,
     changed: effective !== template,
   };
+}
+
+function runtimeTemplatePattern(template: string): string {
+  let pattern = '';
+  let lastIndex = 0;
+  for (const match of template.matchAll(PLACEHOLDER)) {
+    pattern += escapeRegex(template.slice(lastIndex, match.index));
+    pattern += '([^/]+?)';
+    lastIndex = (match.index ?? 0) + match[0].length;
+  }
+  return `${pattern}${escapeRegex(template.slice(lastIndex))}`;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -47,8 +47,16 @@ export interface DynamicTargetCandidate {
   derivedVariables: Record<string, string>;
   derivedVariableSources: Record<string, DynamicVariableProvenance>;
   derivationProvenance: Record<string, DynamicVariableProvenance[]>;
+  derivationProvenanceCounts?: Record<string, {
+    provenanceCount: number;
+    shownProvenanceCount: number;
+    omittedProvenanceCount: number;
+  }>;
   missingVariables: string[];
   conflicts: DynamicVariableConflict[];
+  conflictCount?: number;
+  shownConflictCount?: number;
+  omittedConflictCount?: number;
   score: number;
   explicitSignalStrength: number;
   reasons: string[];
@@ -80,5 +88,9 @@ export interface DynamicTargetAnalysis {
   shownCandidates: DynamicTargetCandidate[];
   rejectedCandidates: DynamicTargetCandidate[];
   suggestedVarSets: Array<{ variables: Record<string, string>; cli: string }>;
+  suggestedVarSetCount: number;
+  shownSuggestedVarSetCount: number;
+  omittedSuggestedVarSetCount: number;
   inference: Record<string, unknown>;
+  routingContext?: Record<string, unknown>;
 }

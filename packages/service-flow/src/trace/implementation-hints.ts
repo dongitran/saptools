@@ -1,4 +1,5 @@
 import type { ImplementationHint } from '../types.js';
+import { projectBounded } from '../utils/000-bounded-projection.js';
 
 interface Candidate {
   accepted?: boolean;
@@ -25,6 +26,13 @@ export interface ImplementationSelection {
   evidence: Record<string, unknown>;
 }
 
+export interface ImplementationHintSuggestionProjection {
+  suggestions: Array<Record<string, unknown>>;
+  suggestionCount: number;
+  shownSuggestionCount: number;
+  omittedSuggestionCount: number;
+}
+
 export function parseImplementationHint(value: string): ImplementationHint {
   const hint: Partial<ImplementationHint> = {};
   for (const part of value.split(',')) {
@@ -40,8 +48,9 @@ export function selectImplementation(
   rawEvidence: Record<string, unknown>,
   hints: ImplementationHint[] | undefined,
   legacyRepo: string | undefined,
+  canonicalEvidence?: Record<string, unknown>,
 ): ImplementationSelection {
-  const evidence = asEvidence(rawEvidence);
+  const evidence = asEvidence(canonicalEvidence ?? rawEvidence);
   const scoped = hints ?? [];
   const matchingHints = scoped.filter((hint) => hintMatchesEdge(hint, evidence));
   if (matchingHints.length === 0) {
@@ -50,14 +59,18 @@ export function selectImplementation(
     return { blocksAutomatic: false, evidence: { status: 'not_matched', reason, strategy: 'scoped_implementation_hint' } };
   }
   if (matchingHints.length > 1) {
+    const projection = projectBounded(matchingHints, compareHints);
     return {
       blocksAutomatic: true,
       evidence: {
         status: 'tied',
         reason: 'multiple_scoped_hints_matched_edge',
         strategy: 'scoped_implementation_hint',
-        matchedHints: matchingHints,
+        matchedHints: projection.items,
         candidateCount: matchingHints.length,
+        matchedHintCount: projection.totalCount,
+        shownMatchedHintCount: projection.shownCount,
+        omittedMatchedHintCount: projection.omittedCount,
       },
     };
   }
@@ -67,26 +80,48 @@ export function selectImplementation(
 
 export function implementationHintDiagnostic(
   selection: ImplementationSelection,
-  suggestions?: unknown,
+  suggestionEvidence?: unknown,
 ): Record<string, unknown> | undefined {
   if (!selection.blocksAutomatic || selection.methodId) return undefined;
+  const suggestions = projectedSuggestions(suggestionEvidence);
   return {
     severity: 'warning',
     code: 'implementation_hint_mismatch',
     message: 'Implementation hint did not select exactly one viable candidate',
     hintStatus: selection.evidence.status,
     candidateCount: selection.evidence.candidateCount,
-    implementationHintSuggestions: Array.isArray(suggestions) && suggestions.length > 0 ? suggestions : undefined,
+    implementationHintSuggestions: suggestions.suggestions.length > 0
+      ? suggestions.suggestions
+      : undefined,
+    implementationHintSuggestionCount: suggestions.suggestionCount,
+    shownImplementationHintSuggestionCount: suggestions.shownSuggestionCount,
+    omittedImplementationHintSuggestionCount: suggestions.omittedSuggestionCount,
     implementationSelection: selection.evidence,
   };
 }
 
 export function implementationHintSuggestions(rawEvidence: Record<string, unknown>): Array<Record<string, unknown>> {
+  return implementationHintSuggestionProjection(rawEvidence).suggestions;
+}
+
+export function implementationHintSuggestionProjection(
+  rawEvidence: Record<string, unknown>,
+): ImplementationHintSuggestionProjection {
   const evidence = asEvidence(rawEvidence);
   const accepted = (evidence.candidates ?? []).filter((candidate) => candidate.accepted);
-  if (accepted.length < 2) return [];
+  if (accepted.length < 2) {
+    return {
+      suggestions: [],
+      suggestionCount: 0,
+      shownSuggestionCount: 0,
+      omittedSuggestionCount: 0,
+    };
+  }
   const repos = selectableRepositories(accepted);
-  return accepted
+  const repositoryProjection = projectBounded(
+    repos, (left, right) => left.localeCompare(right),
+  );
+  const suggestions = accepted
     .flatMap((candidate) => {
       const repo = candidate.handlerPackage?.name;
       if (!repo || !repos.includes(repo)) return [];
@@ -96,12 +131,71 @@ export function implementationHintSuggestions(rawEvidence: Record<string, unknow
         operationPath: hint.operationPath,
         ambiguityReason: evidence.ambiguityReasons?.[0],
         candidateFamily: hint.candidateFamily,
-        selectableImplementationRepositories: repos,
+        selectableImplementationRepositories: repositoryProjection.items,
+        selectableImplementationRepositoryCount: repositoryProjection.totalCount,
+        shownSelectableImplementationRepositoryCount:
+          repositoryProjection.shownCount,
+        omittedSelectableImplementationRepositoryCount:
+          repositoryProjection.omittedCount,
         implementationRepo: repo,
         hint,
         cli: `--implementation-hint ${hintString(hint)}`,
       }];
     });
+  const projection = projectBounded(suggestions, compareSuggestion);
+  return {
+    suggestions: projection.items,
+    suggestionCount: projection.totalCount,
+    shownSuggestionCount: projection.shownCount,
+    omittedSuggestionCount: projection.omittedCount,
+  };
+}
+
+function projectedSuggestions(value: unknown): ImplementationHintSuggestionProjection {
+  const evidence = objectRecord(value);
+  const values = Array.isArray(value)
+    ? recordSuggestions(value)
+    : recordSuggestions(evidence.implementationHintSuggestions);
+  const projection = projectBounded(values, compareSuggestion);
+  const total = Math.max(
+    numericValue(evidence.implementationHintSuggestionCount),
+    projection.totalCount,
+  );
+  return {
+    suggestions: projection.items,
+    suggestionCount: total,
+    shownSuggestionCount: projection.shownCount,
+    omittedSuggestionCount: Math.max(0, total - projection.shownCount),
+  };
+}
+
+function compareHints(left: ImplementationHint, right: ImplementationHint): number {
+  return hintString(left).localeCompare(hintString(right));
+}
+
+function compareSuggestion(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): number {
+  return String(left.cli ?? '').localeCompare(String(right.cli ?? ''))
+    || String(left.implementationRepo ?? '').localeCompare(
+      String(right.implementationRepo ?? ''),
+    );
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function recordSuggestions(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && !Array.isArray(item)))
+    : [];
+}
+
+function numericValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function selectableRepositories(candidates: Candidate[]): string[] {
@@ -219,5 +313,51 @@ function legacyHint(implementationRepo: string): ImplementationHint {
 }
 
 function asEvidence(value: Record<string, unknown>): EdgeEvidence {
-  return value as EdgeEvidence;
+  return {
+    servicePath: stringValue(value.servicePath),
+    operationPath: stringValue(value.operationPath),
+    ambiguityReasons: stringArray(value.ambiguityReasons),
+    candidateFamilies: candidateFamilies(value.candidateFamilies),
+    candidates: candidates(value.candidates),
+    modelPackage: packageValue(value.modelPackage),
+  };
+}
+
+function candidates(value: unknown): Candidate[] {
+  return recordSuggestions(value).map((candidate) => ({
+    accepted: candidate.accepted === true,
+    methodId: numericValue(candidate.methodId) || undefined,
+    sourceFile: stringValue(candidate.sourceFile),
+    handlerPackage: packageValue(candidate.handlerPackage),
+    modelPackage: packageValue(candidate.modelPackage),
+    servicePath: stringValue(candidate.servicePath),
+    operationPath: stringValue(candidate.operationPath),
+  }));
+}
+
+function candidateFamilies(value: unknown): Array<{ packageName?: string }> {
+  return recordSuggestions(value).map((family) => ({
+    packageName: stringValue(family.packageName),
+  }));
+}
+
+function packageValue(value: unknown): { name?: string; packageName?: string } | undefined {
+  const candidate = objectRecord(value);
+  const name = stringValue(candidate.name);
+  const packageName = stringValue(candidate.packageName);
+  return name || packageName ? { name, packageName } : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

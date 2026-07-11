@@ -60,8 +60,10 @@ function hintLines(evidence: Record<string, unknown>): string[] {
       : []);
   const unique = [...new Set(hints)];
   const shown = unique.slice(0, 3).map((hint) => `try ${hint}`);
-  if (unique.length > shown.length)
-    shown.push(`... ${unique.length - shown.length} more hint(s) available in JSON`);
+  const omitted = numberValue(evidence.omittedImplementationHintSuggestionCount);
+  const remaining = Math.max(0, unique.length - shown.length) + omitted;
+  if (remaining > 0)
+    shown.push(`... ${remaining} additional hint(s) omitted; use a scoped --implementation-hint`);
   return [...dynamicLines, ...shown];
 }
 

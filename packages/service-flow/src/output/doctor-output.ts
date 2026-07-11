@@ -56,8 +56,11 @@ function compactMessage(diagnostic: Diagnostic): string {
 
 function suggestedHintLines(diagnostic: Diagnostic): string[] {
   const direct = cliHints(diagnostic.suggestedHints);
-  if (direct.length > 0) return cappedHints(direct);
-  return cappedHints(cliHintsFromSuggestions(diagnostic.implementationHintSuggestions));
+  const omitted = numericValue(diagnostic.omittedImplementationHintSuggestionCount);
+  if (direct.length > 0) return cappedHints(direct, omitted);
+  return cappedHints(
+    cliHintsFromSuggestions(diagnostic.implementationHintSuggestions), omitted,
+  );
 }
 
 function cliHints(value: unknown): string[] {
@@ -76,11 +79,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function cappedHints(hints: string[]): string[] {
+function cappedHints(hints: string[], omitted: number): string[] {
   const unique = [...new Set(hints)];
   const shown = unique.slice(0, 3);
-  if (unique.length > shown.length) shown.push(`... ${unique.length - shown.length} more hint(s) available in --format json`);
+  const remaining = Math.max(0, unique.length - shown.length) + omitted;
+  if (remaining > 0)
+    shown.push(`... ${remaining} additional hint(s) omitted; use a scoped --implementation-hint`);
   return shown;
+}
+
+function numericValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function cleanDoctorMessage(): string {

@@ -1,5 +1,9 @@
 import type { Db } from '../db/connection.js';
 import type { TraceStart } from '../types.js';
+import {
+  projectBounded,
+  type BoundedProjection,
+} from '../utils/000-bounded-projection.js';
 
 export interface SelectorSourceScope {
   files?: Set<string>;
@@ -65,14 +69,27 @@ export function selectorRepoAmbiguousDiagnostic(
       return [`--repo ${candidate.packageName}`];
     return [];
   });
+  const candidateProjection = projectBounded(candidates, (left, right) =>
+    left.name.localeCompare(right.name)
+    || String(left.packageName ?? '').localeCompare(String(right.packageName ?? ''))
+    || left.id - right.id);
+  const suggestionProjection = projectBounded(
+    [...new Set(suggestions)], (left, right) => left.localeCompare(right),
+  );
   return {
     severity: 'warning',
     code: 'selector_repo_ambiguous',
     message: `Repository selector matched multiple indexed repositories: ${requested}`,
     selectorKind: 'repo',
     requestedRepository: requested,
-    candidates,
-    selectorSuggestions: [...new Set(suggestions)].sort(),
+    candidates: candidateProjection.items,
+    candidateCount: candidateProjection.totalCount,
+    shownCandidateCount: candidateProjection.shownCount,
+    omittedCandidateCount: candidateProjection.omittedCount,
+    selectorSuggestions: suggestionProjection.items,
+    selectorSuggestionCount: suggestionProjection.totalCount,
+    shownSelectorSuggestionCount: suggestionProjection.shownCount,
+    omittedSelectorSuggestionCount: suggestionProjection.omittedCount,
     remediation: suggestions.length > 0
       ? 'Use one of the unique --repo selectors shown.'
       : 'Repository names and package names must be unique before this selector can be traced safely.',
@@ -250,6 +267,8 @@ function operationHandlerScope(
       ? [`--repo ${candidate.repoName} --handler ${candidate.className}`]
       : [];
   });
+  const projection = boundedSelectorCandidates(candidates);
+  const suggestionProjection = boundedSelectorSuggestions(suggestions);
   return { diagnostics: [{
     severity: 'warning',
     code: 'trace_start_ambiguous',
@@ -258,8 +277,14 @@ function operationHandlerScope(
     normalizedSelectorValue: requested,
     resolutionStage: 'handler',
     resolutionStatus: 'ambiguous_handler_operation',
-    candidates,
-    selectorSuggestions: [...new Set(suggestions)].sort(),
+    candidates: projection.items,
+    candidateCount: projection.totalCount,
+    shownCandidateCount: projection.shownCount,
+    omittedCandidateCount: projection.omittedCount,
+    selectorSuggestions: suggestionProjection.items,
+    selectorSuggestionCount: suggestionProjection.totalCount,
+    shownSelectorSuggestionCount: suggestionProjection.shownCount,
+    omittedSelectorSuggestionCount: suggestionProjection.omittedCount,
     remediation: 'Select one handler class explicitly; no operation was chosen automatically.',
   }] };
 }
@@ -358,6 +383,8 @@ function handlerSelectorAmbiguity(
       return [`${repoName ? `--repo ${repoName} ` : ''}--handler ${candidate.className}`];
     return [];
   });
+  const projection = boundedSelectorCandidates(candidates);
+  const suggestionProjection = boundedSelectorSuggestions(suggestions);
   return {
     severity: 'warning',
     code: 'trace_start_ambiguous',
@@ -366,8 +393,14 @@ function handlerSelectorAmbiguity(
     requestedHandler: requested,
     resolutionStage: 'handler',
     resolutionStatus: 'ambiguous_handler',
-    candidates,
-    selectorSuggestions: [...new Set(suggestions)].sort(),
+    candidates: projection.items,
+    candidateCount: projection.totalCount,
+    shownCandidateCount: projection.shownCount,
+    omittedCandidateCount: projection.omittedCount,
+    selectorSuggestions: suggestionProjection.items,
+    selectorSuggestionCount: suggestionProjection.totalCount,
+    shownSelectorSuggestionCount: suggestionProjection.shownCount,
+    omittedSelectorSuggestionCount: suggestionProjection.omittedCount,
     remediation: suggestions.length > 0
       ? 'Use one of the scoped handler selectors shown.'
       : 'No current CLI selector uniquely identifies these duplicate handler classes.',
@@ -510,6 +543,9 @@ export function ambiguousStartDiagnostic(
     .flatMap((row) => typeof row.servicePath === 'string'
       ? [`--service ${row.servicePath}`]
       : []))].sort();
+  const projection = boundedSelectorCandidates(candidates);
+  const serviceProjection = boundedSelectorSuggestions(serviceSuggestions);
+  const selectorProjection = boundedSelectorSuggestions(fullSelectorSuggestions(candidates));
   return {
     severity: 'warning',
     code: 'trace_start_ambiguous',
@@ -517,10 +553,39 @@ export function ambiguousStartDiagnostic(
     normalizedSelectorValue: requested,
     resolutionStage: 'operation',
     resolutionStatus: 'ambiguous_operation',
-    candidates,
-    serviceSuggestions,
-    selectorSuggestions: fullSelectorSuggestions(candidates),
+    candidates: projection.items,
+    candidateCount: projection.totalCount,
+    shownCandidateCount: projection.shownCount,
+    omittedCandidateCount: projection.omittedCount,
+    serviceSuggestions: serviceProjection.items,
+    serviceSuggestionCount: serviceProjection.totalCount,
+    shownServiceSuggestionCount: serviceProjection.shownCount,
+    omittedServiceSuggestionCount: serviceProjection.omittedCount,
+    selectorSuggestions: selectorProjection.items,
+    selectorSuggestionCount: selectorProjection.totalCount,
+    shownSelectorSuggestionCount: selectorProjection.shownCount,
+    omittedSelectorSuggestionCount: selectorProjection.omittedCount,
   };
+}
+
+function boundedSelectorCandidates(
+  candidates: Array<Record<string, unknown>>,
+): BoundedProjection<Record<string, unknown>> {
+  return projectBounded(candidates, (left, right) =>
+    String(left.repoName ?? '').localeCompare(String(right.repoName ?? ''))
+    || String(left.servicePath ?? '').localeCompare(String(right.servicePath ?? ''))
+    || String(left.className ?? '').localeCompare(String(right.className ?? ''))
+    || String(left.sourceFile ?? '').localeCompare(String(right.sourceFile ?? ''))
+    || Number(left.sourceLine ?? 0) - Number(right.sourceLine ?? 0)
+    || Number(left.handlerClassId ?? left.operationId ?? 0)
+      - Number(right.handlerClassId ?? right.operationId ?? 0));
+}
+
+function boundedSelectorSuggestions(
+  suggestions: string[],
+): BoundedProjection<string> {
+  return projectBounded([...new Set(suggestions)], (left, right) =>
+    left.localeCompare(right));
 }
 function fullSelectorSuggestions(
   candidates: Array<Record<string, unknown>>,

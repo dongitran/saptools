@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.53
+
+- Validated dynamic routes from the outbound call's selected service binding, including helper-return provenance, exact template matches, and explicit alias/destination conflicts that now fail closed with structured no-match evidence.
+- Kept deterministic identity inference attached to the concrete service route owner while allowing a separately validated helper implementation for inherited operations.
+- Bounded persisted call, implementation, parser-alternative, trace, selector, and strict-doctor candidate projections with stable count and omission metadata while retaining canonical SQLite facts for decisions and scoped hints.
+
 ## 0.1.52
 
 - Narrowed dynamic targets before ranking, scoped strong evidence by exact repository IDs, required workspace-wide identity uniqueness, refused conflicting/incomplete/margin-bound inference, shell-quoted suggestions, and bounded all candidate projections.

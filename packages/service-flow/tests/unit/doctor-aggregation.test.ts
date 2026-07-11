@@ -5,6 +5,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { openDatabase } from '../../src/db/connection.js';
 import { upsertRepository, upsertWorkspace } from '../../src/db/repositories.js';
 import { doctorDiagnostics } from '../../src/cli/doctor.js';
+import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/000-bounded-projection.js';
 
 function insertService(db: ReturnType<typeof openDatabase>, repoId: number, servicePath: string, sourceLine: number): number {
   return Number(db.prepare("INSERT INTO cds_services(repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?) RETURNING id").get(repoId, servicePath.replace(/^\//, ''), servicePath.replace(/^\//, ''), servicePath, 0, 'srv/service.cds', sourceLine)?.id);
@@ -34,7 +35,8 @@ describe('strict doctor implementation aggregation', () => {
     });
     const baseServiceId = insertService(db, repoId, '/BaseService', 1);
     const baseOperationId = insertOperation(db, baseServiceId, 'performWork', 2);
-    for (const suffix of ['A', 'B', 'C', 'D', 'E']) {
+    const variants = ['A', 'B', 'C', 'D', 'E', 'F'];
+    for (const suffix of variants) {
       const serviceId = insertService(db, repoId, `/Tenant${suffix}Service`, 10);
       const operationId = insertOperation(db, serviceId, 'performWork', 11, 'inherited', baseOperationId);
       insertImplementationEdge(db, workspaceId, operationId, 'unresolved', {
@@ -84,7 +86,7 @@ describe('strict doctor implementation aggregation', () => {
         baseOperation: 'performWork',
         servicePathPattern: '/Tenant*Service',
         candidateFamily: '@neutral/shared-helper',
-        count: 5,
+        count: variants.length,
       }),
       expect.objectContaining({
         category: 'duplicate_package_name_candidates',
@@ -121,7 +123,18 @@ describe('strict doctor implementation aggregation', () => {
     const detailed = doctorDiagnostics(db, true, { detail: true }).find((item) => item.code === 'strict_implementation_candidate_quality') as typeof aggregate;
     const ownershipDetail = detailed.categories?.find((item) => item.category === 'missing_strong_ownership_evidence');
     expect(ownershipDetail?.examples).toHaveLength(3);
-    expect(ownershipDetail?.expandedExamples).toHaveLength(5);
+    expect(ownershipDetail).toMatchObject({
+      exampleCount: variants.length,
+      shownExampleCount: 3,
+      omittedExampleCount: variants.length - 3,
+      expandedExampleCount: variants.length,
+      shownExpandedExampleCount: DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+      omittedExpandedExampleCount:
+        variants.length - DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+    });
+    expect(ownershipDetail?.expandedExamples).toHaveLength(
+      DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+    );
     db.close();
   });
 
@@ -141,7 +154,8 @@ describe('strict doctor implementation aggregation', () => {
     const operationId = insertOperation(db, serviceId, 'activate', 2);
     const insertCall = db.prepare('INSERT INTO outbound_calls(repo_id,call_type,operation_path_expr,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?) RETURNING id');
     const insertEdge = db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
-    for (const line of [10, 20, 30, 40]) {
+    const lines = [10, 20, 30, 40, 50, 60];
+    for (const line of lines) {
       const callId = Number(insertCall.get(repoId, 'remote_action', '/activate', 'srv/facade.ts', line, 0.8, JSON.stringify({ parser: 'neutral_fixture' }))?.id);
       insertEdge.run(workspaceId, 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(callId), 'operation', String(operationId), 0.9, '{}', 0, 1);
     }
@@ -153,12 +167,20 @@ describe('strict doctor implementation aggregation', () => {
       servicePath?: string;
       operationPath?: string;
     };
-    expect(compact).toMatchObject({ servicePath: '/ProductService', operationPath: '/activate', callSiteCount: 4 });
+    expect(compact).toMatchObject({ servicePath: '/ProductService', operationPath: '/activate', callSiteCount: lines.length });
     expect(compact.examples).toHaveLength(3);
     expect(compact.expandedExamples).toBeUndefined();
 
     const detailed = doctorDiagnostics(db, true, { detail: true }).find((item) => item.code === 'remote_target_without_implementation') as typeof compact;
-    expect(detailed.expandedExamples).toHaveLength(4);
+    expect(detailed).toMatchObject({
+      expandedExampleCount: lines.length,
+      shownExpandedExampleCount: DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+      omittedExpandedExampleCount:
+        lines.length - DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+    });
+    expect(detailed.expandedExamples).toHaveLength(
+      DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+    );
     db.close();
   });
 

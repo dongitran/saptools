@@ -1,4 +1,5 @@
 import type { Db } from '../db/connection.js';
+import { projectBounded } from '../utils/000-bounded-projection.js';
 
 interface RepoDependencyRow {
   id: number;
@@ -34,6 +35,10 @@ export function linkHelperPackages(db: Db, workspaceId: number, generation: numb
       if (result.candidates.length === 0) continue;
       const status = result.candidates.length === 1 ? 'resolved' : 'ambiguous';
       const helper = status === 'resolved' ? result.candidates[0] : undefined;
+      const projection = projectBounded(result.candidates, (left, right) =>
+        left.name.localeCompare(right.name)
+        || String(left.package_name ?? '').localeCompare(String(right.package_name ?? ''))
+        || left.id - right.id);
       db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
         workspaceId,
         'REPO_IMPORTS_HELPER_PACKAGE',
@@ -41,9 +46,20 @@ export function linkHelperPackages(db: Db, workspaceId: number, generation: numb
         'repo',
         String(repo.id),
         helper ? 'repo' : 'repo_candidates',
-        helper ? String(helper.id) : result.candidates.map((candidate) => candidate.id).join(','),
+        helper ? String(helper.id) : projection.items.map((candidate) => candidate.id).join(','),
         helper ? 1 : 0.5,
-        JSON.stringify({ dependency: dep, candidates: result.candidates.map((candidate) => ({ id: candidate.id, name: candidate.name, packageName: candidate.package_name })), match: result.strategy }),
+        JSON.stringify({
+          dependency: dep,
+          candidates: projection.items.map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            packageName: candidate.package_name,
+          })),
+          candidateCount: projection.totalCount,
+          shownCandidateCount: projection.shownCount,
+          omittedCandidateCount: projection.omittedCount,
+          match: result.strategy,
+        }),
         0,
         helper ? null : 'Ambiguous dependency package candidates',
         generation,

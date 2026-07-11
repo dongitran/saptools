@@ -1,12 +1,17 @@
 import type { Db } from '../db/connection.js';
 import { applyVariables } from './dynamic-edge-resolver.js';
-import { classifyODataPathIntent, normalizeODataOperationInvocationPath, type NormalizedODataOperationPath } from './odata-path-normalizer.js';
+import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from './odata-path-normalizer.js';
 import { buildRemoteQueryTarget } from './remote-query-target.js';
 import { resolveOperation } from './service-resolver.js';
 import { linkHelperPackages } from './helper-package-linker.js';
-import { normalizeDecoratorOperationSignal, normalizedOperationName } from './operation-decorator-normalizer.js';
 import { externalHttpTarget } from './external-http-target.js';
-import { implementationHintSuggestions } from '../trace/implementation-hints.js';
+import { linkImplementations as linkCanonicalImplementations } from './000-implementation-candidates.js';
+import {
+  ambiguousPathCandidates,
+  linkedCallEvidence,
+  objectJson,
+  objectValue,
+} from './002-call-evidence.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;
@@ -27,7 +32,7 @@ export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, 
     const generation = nextGraphGeneration(db, workspaceId);
     db.prepare('DELETE FROM graph_edges WHERE workspace_id=?').run(workspaceId);
     const deps = linkHelperPackages(db, workspaceId, generation);
-    const impl = linkImplementations(db, workspaceId, generation);
+    const impl = linkCanonicalImplementations(db, workspaceId, generation);
     const callSummary = linkCalls(db, workspaceId, vars, generation);
     db.prepare("UPDATE repositories SET graph_generation=?, graph_stale_reason=NULL, graph_stale_at=NULL WHERE workspace_id=?").run(generation, workspaceId);
     return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount, implementationUnresolvedCount: impl.unresolvedCount };
@@ -46,7 +51,7 @@ function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, ge
   let ambiguousCount = 0;
   let dynamicCount = 0;
   let terminalCount = 0;
-  const calls = db.prepare(`SELECT c.*,r.name repoName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,b.helper_chain_json helperChainJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
+  const calls = db.prepare(`SELECT c.*,r.name repoName,b.id selectedBindingId,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.is_dynamic isDynamic,b.placeholders_json placeholdersJson,b.source_file bindingSourceFile,b.source_line bindingSourceLine,b.helper_chain_json helperChainJson,req.service_path requireServicePath,req.destination requireDestination FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id LEFT JOIN service_bindings b ON b.id=c.service_binding_id LEFT JOIN cds_requires req ON req.repo_id=c.repo_id AND req.alias=b.alias WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
   for (const call of calls) {
     const result = insertCallEdge(db, workspaceId, call, vars, generation);
     edgeCount += 1;
@@ -79,7 +84,15 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   const isOperationCall = operationLikeRemoteEntity || ((callType === 'remote_action' || callType === 'local_service_call') || (callType === 'remote_query' && Boolean(op)));
   const resolution = isOperationCall ? resolveOperation(db, { servicePath, operationPath: op, serviceName: call.local_service_name as string | undefined, repoId: callType === 'local_service_call' ? Number(call.repo_id) : undefined, alias: applyVariables((call.aliasExpr as string | undefined) ?? (call.alias as string | undefined), vars), destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, hasExplicitOverride: Object.keys(vars).length > 0 || callType === 'local_service_call' }, workspaceId) : { status: 'unresolved' as const, candidates: [], reasons: [] };
   const evidence: Record<string, unknown> = {
-    ...callEvidence(call, resolution, servicePath, op, destination ? applyVariables(destination, vars) : undefined, normalized, intent),
+    ...linkedCallEvidence(
+      call,
+      resolution,
+      servicePath,
+      op,
+      destination ? applyVariables(destination, vars) : undefined,
+      normalized,
+      intent,
+    ),
     indexedOperationCandidateCount,
     parserCallType: callType,
     entityOperationPrecedence: operationPrecedence(
@@ -91,9 +104,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   };
   const pathAnalysis = objectValue(objectJson(call.evidence_json)?.pathAnalysis);
   if (callType === 'remote_action' && pathAnalysis?.status === 'ambiguous') {
-    const candidatePaths = Array.isArray(pathAnalysis.candidateRawPaths)
-      ? pathAnalysis.candidateRawPaths
-      : [];
+    const candidatePaths = ambiguousPathCandidates(pathAnalysis);
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
       workspaceId,
       'UNRESOLVED_EDGE',
@@ -101,9 +112,14 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
       'call',
       String(call.id),
       'operation_candidates',
-      candidatePaths.join(','),
+      candidatePaths.items.join(','),
       Number(call.confidence ?? 0.5),
-      JSON.stringify(evidence),
+      JSON.stringify({
+        ...evidence,
+        ambiguousOperationPathCandidateCount: candidatePaths.totalCount,
+        shownAmbiguousOperationPathCandidateCount: candidatePaths.shownCount,
+        omittedAmbiguousOperationPathCandidateCount: candidatePaths.omittedCount,
+      }),
       0,
       'Ambiguous operation path candidates require explicit disambiguation',
       generation,
@@ -201,446 +217,4 @@ function unresolvedOperationReason(resolution: { candidates: unknown[]; status: 
   if (resolution.reasons.includes('candidate_score_below_resolution_threshold')) return 'Operation candidates found but resolution score is below threshold';
   if (resolution.status === 'ambiguous') return 'Ambiguous operation candidates require a strong service signal';
   return 'Operation candidates found but resolution could not select a target';
-}
-function parseJson(value: unknown): unknown {
-  if (!value) return undefined;
-  try {
-    return JSON.parse(String(value)) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-function objectJson(value: unknown): Record<string, unknown> | undefined {
-  const parsed = parseJson(value);
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
-}
-function callEvidence(call: Record<string, unknown>, resolution: { target?: { repoName?: string; servicePath?: string; operationPath?: string; operationName?: string }; candidates: unknown[]; status: string; reasons: string[] }, servicePath: string | undefined, op: string | undefined, destination: string | undefined, normalized?: NormalizedODataOperationPath, odataPathIntent?: ReturnType<typeof classifyODataPathIntent>): Record<string, unknown> {
-  const bindingHasDynamicExpression = Boolean(Number(call.isDynamic ?? 0));
-  const routingPlaceholderKeys = placeholderKeys([servicePath, destination, stringValue(call.aliasExpr), stringValue(call.alias)]);
-  return { sourceFile: call.source_file, sourceLine: call.source_line, file: call.source_file, line: call.source_line, callId: call.id, repo: call.repoName, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination, servicePath, operationPath: op, rawOperationPath: normalized?.wasInvocation ? normalized.rawOperationPath : odataPathIntent?.rawPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArguments: normalized?.wasInvocation ? normalized.invocationArguments : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, routingPlaceholderKeys: routingPlaceholderKeys.length ? routingPlaceholderKeys : undefined, odataOperationNormalizationReason: normalized?.normalizationReason, odataOperationNormalizationRejectedReason: normalized?.normalizationRejectedReason, localServiceName: call.local_service_name, localServiceLookup: call.local_service_lookup, aliasChain: parseJson(call.alias_chain_json), transport: call.call_type === 'local_service_call' ? 'local' : undefined, targetRepo: resolution.target?.repoName, targetServicePath: resolution.target?.servicePath, targetOperationPath: resolution.target?.operationPath, targetOperation: resolution.target?.operationName, helperChain: parseJson(call.helperChainJson), candidates: resolution.candidates, candidateScores: compactCandidateScores(resolution.candidates), candidateCount: resolution.candidates.length, resolutionStatus: resolution.status, resolutionReasons: resolution.reasons, odataPathIntent, queryStringPresent: odataPathIntent?.hasQueryString || undefined, queryPlaceholderKeys: odataPathIntent?.placeholderKeys.length ? odataPathIntent.placeholderKeys : undefined, bindingHasDynamicExpression: bindingHasDynamicExpression || undefined, outboundEvidence: objectJson(call.evidence_json), analysisCompleteness: call.unresolved_reason ? 'partial' : 'complete', parserWarning: call.unresolved_reason ? { code: 'parser_warning', message: call.unresolved_reason } : undefined };
-}
-
-function compactCandidateScores(candidates: unknown[]): Array<Record<string, unknown>> {
-  return candidates.flatMap((candidate): Array<Record<string, unknown>> => {
-    const row = objectValue(candidate);
-    if (!row) return [];
-    return [{
-      repo: row.repoName,
-      servicePath: row.servicePath,
-      operationPath: row.operationPath,
-      score: row.score,
-      reasons: Array.isArray(row.reasons)
-        ? row.reasons.filter((reason): reason is string => typeof reason === 'string')
-        : ['operation_path_match'],
-    }];
-  });
-}
-
-function placeholderKeys(values: Array<string | undefined>): string[] {
-  const keys = values.flatMap((value) => [...(value ?? '').matchAll(/\$\{([^}]*)\}/g)].map((match) => (match[1] ?? '').trim()).filter(Boolean));
-  return [...new Set(keys)].sort();
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
-}
-
-function linkImplementations(db: Db, workspaceId: number, generation: number): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {
-  const operations = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage,r.kind modelKind FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId) as Array<Record<string, unknown>>;
-  let edgeCount = 0;
-  let resolvedCount = 0;
-  let ambiguousCount = 0;
-  let unresolvedCount = 0;
-  for (const operation of operations) {
-    const implementationContext = implementationContextForOperation(db, operation);
-    const candidates = rankedImplementationCandidates(db, workspaceId, implementationContext);
-    if (candidates.length === 0) continue;
-    const accepted = candidates.filter((candidate) => candidate.accepted);
-    const topScore = accepted[0]?.score ?? 0;
-    const winners = accepted.filter((candidate) => candidate.score === topScore);
-    const duplicateFamilies = duplicatePackageFamilies(accepted);
-    const duplicatePackageAmbiguous = duplicateFamilies.length > 0 && !accepted.some(hasDirectOwnershipEvidence);
-    const selected = duplicatePackageAmbiguous ? accepted : winners;
-    const unique = !duplicatePackageAmbiguous && winners.length === 1 ? winners[0] : undefined;
-    const ambiguityReasons = duplicatePackageAmbiguous ? ['duplicate_package_name_candidates'] : winners.length > 1 ? ['multiple_equal_score_implementation_candidates'] : [];
-    const evidence = {
-      servicePath: operation.servicePath,
-      operationPath: operation.operationPath,
-      operationName: operation.operationName,
-      modelPackage: { id: operation.modelRepoId, name: operation.modelRepo, packageName: operation.modelPackage },
-      implementationSource: implementationContext.operationId === operation.operationId ? 'direct_or_concrete_override' : 'inherited_from_base_operation',
-      baseOperationId: operation.baseOperationId,
-      implementationOperationId: implementationContext.operationId,
-      ambiguityReasons,
-      candidateFamilies: duplicateFamilies,
-      candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
-    };
-    const evidenceWithHints = unique ? evidence : { ...evidence, implementationHintSuggestions: implementationHintSuggestions(evidence) };
-    if (accepted.length === 0) {
-      db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', 'unresolved', 'operation', graphId(operation.operationId), 'handler_method_candidates', candidates.map((row) => graphId(row.methodId)).join(','), 0, JSON.stringify(evidenceWithHints), 0, 'No implementation candidate passed policy', generation);
-      edgeCount += 1;
-      unresolvedCount += 1;
-      continue;
-    }
-    db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', unique ? 'resolved' : 'ambiguous', 'operation', graphId(operation.operationId), unique ? 'handler_method' : 'handler_method_candidates', unique ? graphId(unique.methodId) : selected.map((row) => graphId(row.methodId)).join(','), unique ? 0.95 : 0.5, JSON.stringify(evidenceWithHints), 0, unique ? null : 'Ambiguous registered handler implementation candidates', generation);
-    edgeCount += 1;
-    if (unique) resolvedCount += 1;
-    else ambiguousCount += 1;
-  }
-  return { edgeCount, resolvedCount, ambiguousCount, unresolvedCount };
-}
-interface ImplementationCandidate extends Record<string, unknown> {
-  methodId: number;
-  registrations?: Array<Record<string, unknown>>;
-  score: number;
-  accepted: boolean;
-  acceptedReasons: string[];
-  rejectedReasons: string[];
-}
-function implementationContextForOperation(db: Db, operation: Record<string, unknown>): Record<string, unknown> {
-  if (operation.provenance !== 'inherited' || !operation.baseOperationId) return operation;
-  const base = db.prepare(`SELECT o.id operationId,o.operation_path operationPath,o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,r.package_name modelPackage,r.kind modelKind FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operation.baseOperationId) as Record<string, unknown> | undefined;
-  if (!base) return operation;
-  return { ...base, effectiveOperationId: operation.operationId, effectiveServicePath: operation.servicePath, effectiveOperationPath: operation.operationPath };
-}
-function rankedImplementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): ImplementationCandidate[] {
-  const rows = implementationCandidates(db, workspaceId, operation);
-  const invalid = rows.filter((row) => !validRegistrationPair(row));
-  recordRegistrationInvariantDiagnostics(db, invalid);
-  return deduplicateCandidates(
-    rows.filter(validRegistrationPair)
-      .map((row) => scoreImplementationCandidate(row, operation)),
-  ).sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)) || a.methodId - b.methodId);
-}
-function validRegistrationPair(row: Record<string, unknown>): boolean {
-  if (row.registrationHandlerClassId === null
-    || row.registrationHandlerClassId === undefined)
-    return registrationPairingStrategy(row) !== 'unproven';
-  return Number(row.registrationHandlerClassId) === Number(row.classId);
-}
-function registrationPairingStrategy(row: Record<string, unknown>): string {
-  if (row.registrationHandlerClassId !== null
-    && row.registrationHandlerClassId !== undefined)
-    return 'exact_handler_class_id';
-  if (Number(row.applicationRepoId) === Number(row.handlerRepoId))
-    return 'same_repository_class_name_fallback';
-  const source = stringValue(row.importSource);
-  const separator = source?.lastIndexOf('#') ?? -1;
-  if (!source || separator <= 0) return 'unproven';
-  const moduleName = source.slice(0, separator);
-  const importedName = source.slice(separator + 1);
-  const matchesClass = importedName === row.className
-    || (importedName === 'default' && row.registrationClassName === row.className);
-  return moduleName === row.handlerPackage && matchesClass
-    ? 'explicit_package_import'
-    : 'unproven';
-}
-function recordRegistrationInvariantDiagnostics(
-  db: Db,
-  rows: Array<Record<string, unknown>>,
-): void {
-  const insert = db.prepare(`INSERT INTO diagnostics(repo_id,severity,code,message,source_file,source_line)
-    SELECT ?,'error','handler_registration_class_mismatch',
-      'Implementation candidate registration did not match its persisted handler class id',?,?
-    WHERE NOT EXISTS (
-      SELECT 1 FROM diagnostics
-      WHERE repo_id=? AND code='handler_registration_class_mismatch'
-        AND source_file=? AND source_line=?
-    )`);
-  for (const row of rows)
-    insert.run(
-      row.applicationRepoId,
-      row.registrationFile,
-      row.registrationLine,
-      row.applicationRepoId,
-      row.registrationFile,
-      row.registrationLine,
-    );
-}
-
-function deduplicateCandidates(rows: ImplementationCandidate[]): ImplementationCandidate[] {
-  const merged = new Map<string, ImplementationCandidate>();
-  for (const row of rows) {
-    const key = [row.methodId, row.classId, row.handlerRepoId].join(':');
-    const registration = registrationEvidence(row);
-    const existing = merged.get(key);
-    if (!existing) {
-      merged.set(key, { ...row, registrations: [registration] });
-      continue;
-    }
-    existing.registrations = uniqueRegistrations([...(existing.registrations ?? []), registration]);
-    existing.score = Math.max(existing.score, row.score);
-    existing.accepted = existing.accepted || row.accepted;
-    existing.acceptedReasons = [...new Set([...existing.acceptedReasons, ...row.acceptedReasons])];
-    existing.rejectedReasons = [...new Set([...existing.rejectedReasons, ...row.rejectedReasons])];
-  }
-  return [...merged.values()];
-}
-function registrationEvidence(
-  row: Record<string, unknown>,
-): Record<string, unknown> {
-  return {
-    id: row.registrationId,
-    handlerClassId: row.registrationHandlerClassId,
-    file: row.registrationFile,
-    line: row.registrationLine,
-    kind: row.registrationKind,
-    importSource: row.importSource,
-    pairingStrategy: registrationPairingStrategy(row),
-  };
-}
-function uniqueRegistrations(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    const key = JSON.stringify(row);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-function duplicatePackageFamilies(candidates: ImplementationCandidate[]): Array<Record<string, unknown>> {
-  const byPackage = new Map<string, ImplementationCandidate[]>();
-  for (const candidate of candidates) {
-    const packageName = typeof candidate.handlerPackage === 'string' ? candidate.handlerPackage : undefined;
-    if (!packageName) continue;
-    byPackage.set(packageName, [...(byPackage.get(packageName) ?? []), candidate]);
-  }
-  return [...byPackage.entries()]
-    .filter(([, rows]) => new Set(rows.map((row) => Number(row.handlerRepoId))).size > 1)
-    .map(([packageName, rows]) => ({ reason: 'duplicate_package_name_candidates', packageName, count: rows.length, repositories: rows.map((row) => row.handlerRepo).sort() }));
-}
-function hasDirectOwnershipEvidence(candidate: ImplementationCandidate): boolean {
-  return candidate.acceptedReasons.some((reason) => reason === 'model package equals registration package' || reason === 'model package equals handler package' || reason === 'registration package contains exact local service path');
-}
-function implementationCandidates(db: Db, workspaceId: number, operation: Record<string, unknown>): Array<Record<string, unknown>> {
-  const modelRepoGraphId = graphId(operation.modelRepoId);
-  return db.prepare(`SELECT DISTINCT
-      hm.id methodId,
-      hm.method_name methodName,
-      hm.decorator_value decoratorValue,
-      hm.decorator_raw_expression decoratorRawExpression,
-      hm.decorator_resolution_json decoratorResolutionJson,
-      hc.id classId,
-      hc.class_name className,
-      hc.source_file sourceFile,
-      hc.source_line sourceLine,
-      hr.id registrationId,
-      hr.handler_class_id registrationHandlerClassId,
-      hr.class_name registrationClassName,
-      hr.repo_id applicationRepoId,
-      hr.registration_file registrationFile,
-      hr.registration_line registrationLine,
-      hr.registration_kind registrationKind,
-      hr.import_source importSource,
-      handlerRepo.id handlerRepoId,
-      handlerRepo.name handlerRepo,
-      handlerRepo.package_name handlerPackage,
-      appRepo.name applicationRepo,
-      appRepo.package_name applicationPackage,
-      ? modelRepoId,
-      ? modelRepo,
-      ? modelPackage,
-      ? modelKind,
-      ? servicePath,
-      ? operationPath,
-      ? operationName,
-      CASE WHEN appRepo.id=? THEN 1 ELSE 0 END modelIsApplicationRepo,
-      CASE WHEN handlerRepo.id=? THEN 1 ELSE 0 END modelIsHandlerRepo,
-      CASE WHEN appRepo.id=handlerRepo.id THEN 1 ELSE 0 END sameRepoRegistration,
-      CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id AND localService.service_path=?) THEN 1 ELSE 0 END localServicePathMatch,
-      CASE WHEN EXISTS (SELECT 1 FROM cds_services localService WHERE localService.repo_id=appRepo.id) THEN 1 ELSE 0 END applicationHasLocalServices,
-      CASE WHEN EXISTS (SELECT 1 FROM handler_registrations localReg JOIN handler_classes localClass ON ((localReg.handler_class_id IS NOT NULL AND localClass.id=localReg.handler_class_id) OR (localReg.handler_class_id IS NULL AND localClass.class_name=localReg.class_name AND localClass.repo_id=localReg.repo_id)) JOIN handler_methods localMethod ON localMethod.handler_class_id=localClass.id WHERE localReg.repo_id=appRepo.id AND COALESCE(json_extract(localMethod.decorator_resolution_json,'$.handlerKind'),CASE WHEN localMethod.decorator_kind='Event' THEN 'event' WHEN localMethod.decorator_kind IN ('Action','Func','On') THEN 'operation' ELSE 'unsupported' END)='operation' AND COALESCE(json_extract(localMethod.decorator_resolution_json,'$.executable'),CASE WHEN localMethod.decorator_kind IN ('Action','Func','On') THEN 1 ELSE 0 END)=1 AND (localMethod.decorator_value=? OR localMethod.decorator_value=? OR localMethod.method_name=? OR localMethod.decorator_raw_expression LIKE ?)) THEN 1 ELSE 0 END applicationHasLocalRegistrationForOperation,
-      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END appDependsOnModel,
-      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(appRepo.id AS TEXT) AND dep.to_id=CAST(handlerRepo.id AS TEXT)) THEN 1 ELSE 0 END appDependsOnHandler,
-      CASE WHEN EXISTS (SELECT 1 FROM graph_edges dep WHERE dep.edge_type='REPO_IMPORTS_HELPER_PACKAGE' AND dep.status='resolved' AND dep.from_kind='repo' AND dep.from_id=CAST(handlerRepo.id AS TEXT) AND dep.to_id=?) THEN 1 ELSE 0 END handlerDependsOnModel
-    FROM handler_methods hm
-    JOIN handler_classes hc ON hc.id=hm.handler_class_id
-    JOIN repositories handlerRepo ON handlerRepo.id=hc.repo_id
-    JOIN handler_registrations hr ON (
-      (hr.handler_class_id IS NOT NULL AND hr.handler_class_id=hc.id)
-      OR (
-        hr.handler_class_id IS NULL
-        AND (
-          (hr.class_name=hc.class_name AND hr.repo_id=hc.repo_id)
-          OR (
-            instr(hr.import_source,'#')>1
-            AND substr(hr.import_source,1,instr(hr.import_source,'#')-1)
-              =handlerRepo.package_name
-            AND (
-              substr(hr.import_source,instr(hr.import_source,'#')+1)
-                =hc.class_name
-              OR (
-                substr(hr.import_source,instr(hr.import_source,'#')+1)
-                  ='default'
-                AND hr.class_name=hc.class_name
-              )
-            )
-          )
-        )
-      )
-    )
-    JOIN repositories appRepo ON appRepo.id=hr.repo_id
-    WHERE appRepo.workspace_id=?
-      AND COALESCE(json_extract(hm.decorator_resolution_json,'$.handlerKind'),
-        CASE WHEN hm.decorator_kind='Event' THEN 'event'
-          WHEN hm.decorator_kind IN ('Action','Func','On') THEN 'operation'
-          ELSE 'unsupported' END)='operation'
-      AND COALESCE(json_extract(hm.decorator_resolution_json,'$.executable'),
-        CASE WHEN hm.decorator_kind IN ('Action','Func','On')
-          THEN 1 ELSE 0 END)=1
-      AND (hm.decorator_value=? OR hm.decorator_value=? OR hm.method_name=? OR hm.decorator_raw_expression LIKE ?)`).all(
-        operation.modelRepoId,
-        operation.modelRepo,
-        operation.modelPackage,
-        operation.modelKind,
-        operation.servicePath,
-        operation.operationPath,
-        operation.operationName,
-        operation.modelRepoId,
-        operation.modelRepoId,
-        operation.servicePath,
-        normalizedOperation(String(operation.operationPath ?? '')),
-        operation.operationName,
-        operation.operationName,
-        `%${upperFirst(normalizedOperation(String(operation.operationPath ?? operation.operationName ?? '')))}%`,
-        modelRepoGraphId,
-        modelRepoGraphId,
-        workspaceId,
-        normalizedOperation(String(operation.operationPath ?? '')),
-        operation.operationName,
-        operation.operationName,
-        `%${upperFirst(normalizedOperation(String(operation.operationPath ?? operation.operationName ?? '')))}%`,
-      ) as Array<Record<string, unknown>>;
-}
-function scoreImplementationCandidate(row: Record<string, unknown>, operation: Record<string, unknown>): ImplementationCandidate {
-  const acceptedReasons: string[] = [];
-  const rejectedReasons: string[] = [];
-  let score = 0;
-  const modelIsApplicationRepo = flag(row.modelIsApplicationRepo);
-  const modelIsHandlerRepo = flag(row.modelIsHandlerRepo);
-  const localServicePathMatch = flag(row.localServicePathMatch);
-  const applicationHasLocalServices = flag(row.applicationHasLocalServices);
-  const appDependsOnModel = flag(row.appDependsOnModel);
-  const applicationHasLocalRegistrationForOperation = flag(row.applicationHasLocalRegistrationForOperation);
-  const appDependsOnHandler = flag(row.appDependsOnHandler);
-  const handlerDependsOnModel = flag(row.handlerDependsOnModel);
-  const importSource = typeof row.importSource === 'string' && row.importSource.length > 0;
-  const sameRepoRegistration = flag(row.sameRepoRegistration);
-  const modelOriented = row.modelKind === 'cap-db-model' || !applicationHasLocalRegistrationForOperation;
-  const methodSignal = implementationMethodSignal(row, operation);
-  const methodMatches = methodSignal.matches;
-  acceptedReasons.push(...methodSignal.acceptedReasons);
-  rejectedReasons.push(...methodSignal.rejectedReasons);
-  const registeredAndLinked = sameRepoRegistration && importSource;
-  const helperOwned = modelOriented && methodMatches && registeredAndLinked && sameRepoRegistration && !applicationHasLocalServices && !modelIsApplicationRepo && !modelIsHandlerRepo && !localServicePathMatch && !appDependsOnModel && !appDependsOnHandler && !handlerDependsOnModel;
-  if (modelIsApplicationRepo) {
-    score += 100;
-    acceptedReasons.push('model package equals registration package');
-  }
-  if (modelIsHandlerRepo) {
-    score += 100;
-    acceptedReasons.push('model package equals handler package');
-  }
-  if (localServicePathMatch) {
-    score += 80;
-    acceptedReasons.push('registration package contains exact local service path');
-  } else if (applicationHasLocalServices && !appDependsOnModel && !modelIsApplicationRepo) {
-    rejectedReasons.push(`registration package has local services but none match ${String(operation.servicePath ?? '')}`);
-  }
-  if (appDependsOnModel) {
-    score += 70;
-    acceptedReasons.push('registration package depends on model package');
-  }
-  if (appDependsOnHandler) {
-    score += 30;
-    acceptedReasons.push('registration package depends on handler package');
-  }
-  if (handlerDependsOnModel) {
-    score += 20;
-    acceptedReasons.push('handler package depends on model package');
-  }
-  if (helperOwned) {
-    score += 60;
-    acceptedReasons.push('unique registered helper implementation for model-only operation');
-  }
-  if (importSource) {
-    score += 10;
-    acceptedReasons.push('registration imports handler class');
-  }
-  const hasOwnership = modelIsApplicationRepo || modelIsHandlerRepo;
-  const hasCrossPackage = appDependsOnModel && (modelIsHandlerRepo || appDependsOnHandler || !importSource);
-  const contradicted = applicationHasLocalServices && !localServicePathMatch && !appDependsOnModel && !hasOwnership;
-  if (!hasOwnership && !localServicePathMatch && !hasCrossPackage && !helperOwned) rejectedReasons.push('missing direct ownership, exact local service path, or validated cross-package dependency evidence');
-  const accepted = methodMatches && !methodSignal.contradicted && !contradicted && (hasOwnership || localServicePathMatch || hasCrossPackage || handlerDependsOnModel || helperOwned);
-  if (!accepted && rejectedReasons.length === 0) rejectedReasons.push('candidate did not meet implementation ownership policy');
-  return { ...row, methodId: Number(row.methodId), score, accepted, acceptedReasons, rejectedReasons };
-}
-function candidateEvidence(candidate: ImplementationCandidate, rank: number): Record<string, unknown> {
-  return {
-    rank,
-    score: candidate.score,
-    accepted: candidate.accepted,
-    acceptedReasons: candidate.acceptedReasons,
-    rejectedReasons: candidate.rejectedReasons,
-    methodId: candidate.methodId,
-    classId: candidate.classId,
-    className: candidate.className,
-    sourceFile: candidate.sourceFile,
-    sourceLine: candidate.sourceLine,
-    decoratorResolution: objectJson(candidate.decoratorResolutionJson),
-    registration: registrationEvidence(candidate),
-    registrations: candidate.registrations ?? [],
-    registrationPairing: {
-      strategy: registrationPairingStrategy(candidate),
-      registrationId: candidate.registrationId,
-      registrationHandlerClassId: candidate.registrationHandlerClassId,
-      candidateHandlerClassId: candidate.classId,
-      invariantStatus: validRegistrationPair(candidate) ? 'valid' : 'invalid',
-    },
-    applicationPackage: { id: candidate.applicationRepoId, name: candidate.applicationRepo, packageName: candidate.applicationPackage },
-    handlerPackage: { id: candidate.handlerRepoId, name: candidate.handlerRepo, packageName: candidate.handlerPackage },
-    modelPackage: { id: candidate.modelRepoId, name: candidate.modelRepo, packageName: candidate.modelPackage },
-    servicePath: candidate.servicePath,
-    operationPath: candidate.operationPath,
-    operationName: candidate.operationName,
-    signals: {
-      directOwnership: { modelIsApplicationRepo: flag(candidate.modelIsApplicationRepo), modelIsHandlerRepo: flag(candidate.modelIsHandlerRepo) },
-      localServicePathMatch: flag(candidate.localServicePathMatch),
-      applicationHasLocalServices: flag(candidate.applicationHasLocalServices),
-      applicationHasLocalRegistrationForOperation: flag(candidate.applicationHasLocalRegistrationForOperation),
-      appDependsOnModel: flag(candidate.appDependsOnModel),
-      appDependsOnHandler: flag(candidate.appDependsOnHandler),
-      handlerDependsOnModel: flag(candidate.handlerDependsOnModel),
-      sameRepoRegistration: flag(candidate.sameRepoRegistration),
-    },
-  };
-}
-function implementationMethodSignal(row: Record<string, unknown>, operation: Record<string, unknown>): { matches: boolean; contradicted: boolean; acceptedReasons: string[]; rejectedReasons: string[] } {
-  const resolution = objectJson(row.decoratorResolutionJson) ?? {};
-  if (resolution.handlerKind && resolution.handlerKind !== 'operation')
-    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['non_operation_handler_kind'] };
-  if (resolution.executable === false)
-    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['handler_method_not_executable'] };
-  const op = normalizedOperationName(String(operation.operationPath ?? operation.operationName ?? ''));
-  const decorator = normalizeDecoratorOperationSignal(typeof row.decoratorValue === 'string' ? row.decoratorValue : undefined, typeof row.decoratorRawExpression === 'string' ? row.decoratorRawExpression : undefined, op);
-  if (decorator.status === 'resolved' && decorator.operationName === op) return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };
-  if (decorator.status === 'resolved' && decorator.operationName !== op) return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['method_name_matches_but_decorator_targets_different_operation'] };
-  if (String(row.methodName ?? '') === op) return { matches: true, contradicted: false, acceptedReasons: ['method name fallback matched operation'], rejectedReasons: [] };
-  return { matches: false, contradicted: false, acceptedReasons: [], rejectedReasons: ['method name does not match operation'] };
-}
-function upperFirst(value: string): string {
-  return value ? `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}` : value;
-}
-function flag(value: unknown): boolean {
-  return Boolean(Number(value ?? 0));
-}
-function graphId(value: unknown): string {
-  return String(value);
-}
-function normalizedOperation(value: string): string {
-  return value.startsWith('/') ? value.slice(1) : value;
 }

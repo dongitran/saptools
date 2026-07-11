@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { externalHttpTarget } from '../../src/linker/external-http-target.js';
+import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/000-bounded-projection.js';
 
 describe('external HTTP target normalization', () => {
   it('builds stable semantic labels without numeric call ids or secrets', () => {
@@ -32,4 +33,25 @@ it('exposes only safe conditional destination candidates', () => {
   const target = externalHttpTarget({ evidence_json: JSON.stringify({ externalTarget: { kind: 'destination', dynamic: true, expressionShape: 'conditional', candidateLiterals: ['EXTERNAL_PRIMARY', 'EXTERNAL_SECONDARY'] } }) });
   expect(target.dynamic).toBe(true);
   expect(target.expression).toBe('candidates:EXTERNAL_PRIMARY|EXTERNAL_SECONDARY');
+});
+
+it('caps dynamic destination candidate text without changing its stable target id', () => {
+  const candidates = ['ALPHA', 'BETA', 'GAMMA', 'DELTA', 'EPSILON', 'ZETA'];
+  const target = externalHttpTarget({ evidence_json: JSON.stringify({
+    externalTarget: {
+      kind: 'destination',
+      dynamic: true,
+      expressionShape: 'conditional',
+      candidateLiterals: candidates,
+    },
+  }) });
+  expect(target.expression?.split(':')[1]?.split('|')).toHaveLength(
+    DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+  );
+  expect(target).toMatchObject({
+    candidateLiteralCount: candidates.length,
+    shownCandidateLiteralCount: DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+    omittedCandidateLiteralCount: 1,
+  });
+  expect(target.toId).toMatch(/^destination:dynamic:/);
 });
