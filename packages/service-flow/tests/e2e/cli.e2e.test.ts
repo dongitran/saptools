@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
 import { openDatabase } from '../../src/db/connection.js';
 const execFileAsync = promisify(execFile);
 const cli = path.resolve('dist/cli.js');
 const fixture = path.resolve('tests/fixtures/cap-workspace');
 const traceFixture = path.resolve('tests/fixtures/trace-correctness-workspace');
+const pipeSafetyOutputFloorBytes = 128 * 1024;
 async function runResult(
   args: string[],
   cwd = path.resolve('.'),
@@ -26,6 +28,100 @@ async function run(
 ): Promise<string> {
   const { stdout } = await runResult(args, cwd, nodeArgs);
   return stdout;
+}
+
+interface ProcessExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+function waitForExit(child: ChildProcess): Promise<ProcessExit> {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+function readText(stream: Readable | null): Promise<string> {
+  if (!stream) return Promise.resolve('');
+  return new Promise((resolve, reject) => {
+    let text = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk: string) => { text += chunk; });
+    stream.once('error', reject);
+    stream.once('end', () => resolve(text));
+  });
+}
+
+async function runWithShortReader(args: string[]): Promise<{
+  producer: ProcessExit;
+  stderr: string;
+}> {
+  const reader = spawn('head', ['-c', '1'], {
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  if (!reader.stdin) throw new Error('Short reader stdin is unavailable');
+  const producer = spawn(process.execPath, [cli, ...args], {
+    cwd: path.resolve('.'),
+    stdio: ['ignore', reader.stdin, 'pipe'],
+  });
+  const stderr = readText(producer.stderr);
+  const [producerExit] = await Promise.all([
+    waitForExit(producer),
+    waitForExit(reader),
+  ]);
+  return { producer: producerExit, stderr: await stderr };
+}
+
+async function measureOutput(args: string[]): Promise<{
+  producer: ProcessExit;
+  outputBytes: number;
+  stderr: string;
+}> {
+  const producer = spawn(process.execPath, [cli, ...args], {
+    cwd: path.resolve('.'),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (!producer.stdout) throw new Error('Producer stdout is unavailable');
+  let outputBytes = 0;
+  producer.stdout.on('data', (chunk: Buffer) => { outputBytes += chunk.length; });
+  const stderr = readText(producer.stderr);
+  const producerExit = await waitForExit(producer);
+  return { producer: producerExit, outputBytes, stderr: await stderr };
+}
+
+function largeRemoteCallBody(): string {
+  const outputTargetBytes = pipeSafetyOutputFloorBytes;
+  const call = "    await client.send({ method: 'POST', path: '/dispatch' });\n";
+  return call.repeat(Math.ceil(outputTargetBytes / Buffer.byteLength(call)));
+}
+
+async function preparePipeOutputWorkspace(): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-pipe-output-'));
+  await writeFile(path.join(root, '.git-fixture'), '');
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({
+    name: '@neutral/pipe-output-app', version: '1.0.0',
+  }));
+  await writeFile(path.join(root, 'service.cds'), 'service PipeOutputService { action emitLarge(); }');
+  await writeFile(path.join(root, 'PipeOutputHandler.ts'), `import cds from '@sap/cds';
+import { Action, Handler } from 'cds-routing-handlers';
+@Handler()
+export class PipeOutputHandler {
+  @Action('emitLarge')
+  async emitLarge(): Promise<void> {
+    const client = await cds.connect.to('remote');
+${largeRemoteCallBody()}  }
+}
+`);
+  await writeFile(path.join(root, 'server.ts'), `import { createCombinedHandler } from 'cds-routing-handlers';
+import { PipeOutputHandler } from './PipeOutputHandler.js';
+createCombinedHandler({ handler: [PipeOutputHandler] });
+`);
+  const db = path.join(root, 'service-flow.db');
+  await runResult(['init', root, '--db', db]);
+  await runResult(['index', '--workspace', root, '--force']);
+  await runResult(['link', '--workspace', root, '--force']);
+  return root;
 }
 describe('service-flow CLI', () => {
   it('runs init index link trace graph list and doctor', async () => {
@@ -123,6 +219,26 @@ describe('service-flow CLI link wording', () => {
     expect(linkResult.stdout).toContain('remote operation calls resolved');
     expect(linkResult.stdout).toContain('local operation calls resolved');
     expect(linkResult.stdout).not.toContain('remote resolved');
+  });
+});
+
+describe('service-flow CLI pipe safety', () => {
+  it('finishes cleanly when a short Unix reader closes JSON, table, or Mermaid output', async () => {
+    const workspace = await preparePipeOutputWorkspace();
+    const commands = [
+      ['trace', '--workspace', workspace, '--repo', '@neutral/pipe-output-app', '--handler', 'PipeOutputHandler', '--format', 'json'],
+      ['trace', '--workspace', workspace, '--repo', '@neutral/pipe-output-app', '--handler', 'PipeOutputHandler', '--format', 'table'],
+      ['graph', '--workspace', workspace, '--repo', '@neutral/pipe-output-app', '--operation', 'emitLarge', '--format', 'mermaid'],
+    ];
+    for (const args of commands) {
+      const complete = await measureOutput(args);
+      expect(complete.producer).toEqual({ code: 0, signal: null });
+      expect(complete.stderr).toBe('');
+      expect(complete.outputBytes).toBeGreaterThan(pipeSafetyOutputFloorBytes);
+      const result = await runWithShortReader(args);
+      expect(result.producer).toEqual({ code: 0, signal: null });
+      expect(result.stderr).not.toMatch(/EPIPE|Unhandled 'error' event/i);
+    }
   });
 });
 
