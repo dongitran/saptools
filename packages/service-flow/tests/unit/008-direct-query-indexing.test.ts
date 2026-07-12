@@ -22,6 +22,7 @@ function isOwnedCallRow(value: unknown): value is {
   qualifiedName: string | null;
   sourceFile: string;
   sourceLine: number;
+  evidenceJson: string | null;
 } {
   return isRecord(value)
     && typeof value.callType === 'string'
@@ -29,7 +30,8 @@ function isOwnedCallRow(value: unknown): value is {
     && (typeof value.sourceSymbolId === 'number' || value.sourceSymbolId === null)
     && (typeof value.qualifiedName === 'string' || value.qualifiedName === null)
     && typeof value.sourceFile === 'string'
-    && typeof value.sourceLine === 'number';
+    && typeof value.sourceLine === 'number'
+    && (typeof value.evidenceJson === 'string' || value.evidenceJson === null);
 }
 
 function isDatabaseEdgeRow(value: unknown): value is {
@@ -60,12 +62,12 @@ async function createDirectQueryWorkspace(root: string): Promise<void> {
   await writeFixtureFile(
     root,
     'data-app/srv/service.cds',
-    'service DataService { action runDirect(); }',
+    'service DataService { action runDirect(); action runPromise(); action runAggregate(); }',
   );
   await writeFixtureFile(
     root,
     'data-app/srv/DirectQueryHandler.ts',
-    `import { Action, Handler, OnUpdate } from 'cds-routing-handlers';
+    `import { Action, BeforeCreate, Handler, OnUpdate } from 'cds-routing-handlers';
 @Handler()
 export class DirectQueryHandler {
   @OnUpdate()
@@ -73,9 +75,27 @@ export class DirectQueryHandler {
     await SELECT.from(LifecycleRows).where({ ID: 1 });
   }
 
+  @BeforeCreate()
+  async returnRows(): Promise<unknown> {
+    return SELECT.from(LifecycleReturnedRows).where({ ID: 1 });
+  }
+
   @Action('runDirect')
   async runDirect(): Promise<void> {
     await UPDATE.entity(OperationRows).set({ status: 'ready' });
+  }
+
+  @Action('runPromise')
+  loadReturned(): Promise<unknown> {
+    return INSERT.into(ReturnedOperationRows).entries({ ID: 1 });
+  }
+
+  @Action('runAggregate')
+  async runAggregate(): Promise<void> {
+    await Promise.all([
+      UPSERT.into(AggregateWriteRows).entries({ ID: 1 }),
+      SELECT.one.from(AggregateReadRows).where({ ID: 1 }),
+    ]);
   }
 }
 `,
@@ -135,12 +155,147 @@ describe('direct CAP query-builder outbound facts', () => {
       expect(typeof evidence.queryRootStartOffset).toBe('number');
       expect(typeof evidence.queryStatementStartOffset).toBe('number');
       expect(typeof evidence.queryStatementEndOffset).toBe('number');
+      expect(evidence.queryExecutionContext).toBe('await');
     }
   });
 
-  it('keeps one wrapper fact and never promotes nested query builders a second time', async () => {
+  it('indexes builders returned by async and guaranteed promise callables without promoting query factories', async () => {
+    const calls = await callsFor(`type Row = { ID: string };
+async function loadRows(): Promise<unknown> {
+  return (SELECT.from(AsyncReturnedRows).where({ active: true }) as unknown);
+}
+class QueryWorker {
+  async persist(input: Record<string, unknown>): Promise<unknown> {
+    return INSERT.into(AsyncReturnedWrites).entries(input);
+  }
+  loadWithContract(): globalThis.Promise<unknown> {
+    return SELECT.one.from(QualifiedPromiseRows).where({ ID: 1 });
+  }
+  parenthesizedContract(): (Promise<unknown>) {
+    return SELECT.from(ParenthesizedPromiseRows);
+  }
+  unionContract(): Promise<unknown> | PromiseLike<unknown> {
+    return SELECT.from(UnionPromiseRows);
+  }
+  intersectionContract(): Promise<unknown> & { tag: string } {
+    return SELECT.from(IntersectionPromiseRows) as unknown as Promise<unknown> & { tag: string };
+  }
+  async dynamic(entityName: string): Promise<unknown> {
+    return SELECT.from(this.model[entityName]).where({ ID: 1 });
+  }
+  dynamicWithContract(entityName: string): Promise<unknown> {
+    return SELECT.from(this.model[entityName]).where({ ID: 1 });
+  }
+}
+const implicit = async (): Promise<unknown> => (SELECT.from(ImplicitArrowRows).limit(1) as unknown);
+class PropertyWorker {
+  persist = async (input: Record<string, unknown>): Promise<unknown> =>
+    (UPSERT.into(PropertyArrowRows).entries(input) as unknown);
+}
+function queryFactory(): unknown {
+  return SELECT.from(FactoryRows);
+}
+function uncertainContract(): Promise<unknown> | undefined {
+  return SELECT.from(UncertainRows) as unknown as Promise<unknown> | undefined;
+}
+async function* lazyGenerator(): AsyncGenerator<unknown> {
+  return SELECT.from(GeneratorRows);
+}
+async function outer(): Promise<unknown> {
+  const nested = () => { return SELECT.from(NestedRows); };
+  void nested;
+  return SELECT.from(OuterRows);
+}
+`);
+
+    const databaseCalls = calls.filter((call) => call.callType === 'local_db_query');
+    expect(databaseCalls.map((call) => call.queryEntity)).toEqual([
+      'AsyncReturnedRows',
+      'AsyncReturnedWrites',
+      'QualifiedPromiseRows',
+      'ParenthesizedPromiseRows',
+      'UnionPromiseRows',
+      'IntersectionPromiseRows',
+      undefined,
+      undefined,
+      'ImplicitArrowRows',
+      'PropertyArrowRows',
+      'OuterRows',
+    ]);
+    expect(databaseCalls.map((call) => call.evidence?.queryExecutionContext)).toEqual([
+      'async_return',
+      'async_return',
+      'promise_return',
+      'promise_return',
+      'promise_return',
+      'promise_return',
+      'async_return',
+      'promise_return',
+      'async_return',
+      'async_return',
+      'async_return',
+    ]);
+    expect(databaseCalls.filter((call) => call.queryEntity === 'FactoryRows')).toHaveLength(0);
+    expect(databaseCalls.filter((call) => call.queryEntity === 'UncertainRows')).toHaveLength(0);
+    expect(databaseCalls.filter((call) => call.queryEntity === 'GeneratorRows')).toHaveLength(0);
+    expect(databaseCalls.filter((call) => call.queryEntity === 'NestedRows')).toHaveLength(0);
+    const dynamicCalls = databaseCalls.filter((call) => call.queryEntity === undefined);
+    expect(dynamicCalls).toHaveLength(2);
+    expect(dynamicCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ confidence: 0.55, unresolvedReason: 'dynamic_entity_expression' }),
+    ]));
+    expect(dynamicCalls.map((call) => call.evidence?.queryExecutionContext)).toEqual([
+      'async_return',
+      'promise_return',
+    ]);
+  });
+
+  it('indexes only direct builder elements in awaited Promise.all aggregates', async () => {
+    const calls = await callsFor(`async function run(entityName: string): Promise<void> {
+  await (Promise.all([
+    (INSERT.into(AggregateWriteRows).entries({ ID: 1 }) as unknown),
+    SELECT.one.from(AggregateReadRows).where({ ID: 1 }),
+    SELECT.from(this.model[entityName]).where({ ID: 1 }),
+  ]));
+  await Promise.all([await SELECT.from(AlreadyAwaitedRows)]);
+  Promise.all([SELECT.from(UnawaitedAggregateRows)]);
+  await Promise.allSettled([SELECT.from(SettledRows)]);
+  await worker.all([SELECT.from(OtherAggregateRows)]);
+}`);
+
+    const databaseCalls = calls.filter((call) => call.callType === 'local_db_query');
+    expect(databaseCalls.map((call) => call.queryEntity)).toEqual([
+      'AggregateWriteRows',
+      'AggregateReadRows',
+      undefined,
+      'AlreadyAwaitedRows',
+    ]);
+    expect(databaseCalls.map((call) => call.sourceLine)).toEqual([3, 4, 5, 7]);
+    expect(databaseCalls.map((call) => call.evidence?.queryExecutionContext)).toEqual([
+      'promise_aggregate',
+      'promise_aggregate',
+      'promise_aggregate',
+      'await',
+    ]);
+    expect(databaseCalls.find((call) => call.queryEntity === undefined)).toMatchObject({
+      confidence: 0.55,
+      unresolvedReason: 'dynamic_entity_expression',
+    });
+
+    const shadowed = await callsFor(`const Promise = {
+  all(values: unknown[]): unknown[] { return values; },
+};
+async function run(): Promise<void> {
+  await Promise.all([SELECT.from(ShadowedAggregateRows)]);
+}`);
+    expect(shadowed.filter((call) => call.callType === 'local_db_query')).toHaveLength(0);
+  });
+
+  it('keeps wrapper and service-client query payload classification exclusive of direct builders', async () => {
     const calls = await callsFor(`async function run(): Promise<void> {
   await cds.run(SELECT.from(WrappedRows).where({ ID: 1 }));
+  const remote = await cds.connect.to('remote-service');
+  await remote.send({ method: 'POST', query: SELECT.from(ClientPayloadRows) });
 }`);
 
     const databaseCalls = calls.filter((call) => call.callType === 'local_db_query');
@@ -150,6 +305,7 @@ describe('direct CAP query-builder outbound facts', () => {
       classifier: 'cap_query_run_wrapper',
       queryDispatch: 'cds_run_wrapper',
     });
+    expect(calls.filter((call) => call.callType === 'remote_query')).toHaveLength(1);
   });
 
   it('rejects member-name lookalikes while retaining a conservative dynamic direct query', async () => {
@@ -179,18 +335,32 @@ describe('direct CAP query-builder indexing and trace integration', () => {
 
     const rawCalls: unknown[] = db.prepare(`SELECT c.call_type callType,c.query_entity queryEntity,
       c.source_symbol_id sourceSymbolId,s.qualified_name qualifiedName,
-      c.source_file sourceFile,c.source_line sourceLine
+      c.source_file sourceFile,c.source_line sourceLine,c.evidence_json evidenceJson
       FROM outbound_calls c LEFT JOIN symbols s ON s.id=c.source_symbol_id
       WHERE c.call_type='local_db_query' ORDER BY c.source_line`).all();
     const calls = rawCalls.filter(isOwnedCallRow);
     expect(calls).toEqual([
       expect.objectContaining({ queryEntity: 'LifecycleRows', qualifiedName: 'DirectQueryHandler.refreshRows' }),
+      expect.objectContaining({ queryEntity: 'LifecycleReturnedRows', qualifiedName: 'DirectQueryHandler.returnRows' }),
       expect.objectContaining({ queryEntity: 'OperationRows', qualifiedName: 'DirectQueryHandler.runDirect' }),
+      expect.objectContaining({ queryEntity: 'ReturnedOperationRows', qualifiedName: 'DirectQueryHandler.loadReturned' }),
+      expect.objectContaining({ queryEntity: 'AggregateWriteRows', qualifiedName: 'DirectQueryHandler.runAggregate' }),
+      expect.objectContaining({ queryEntity: 'AggregateReadRows', qualifiedName: 'DirectQueryHandler.runAggregate' }),
     ]);
     expect(calls.every((call) => call.sourceSymbolId !== null)).toBe(true);
-    expect(calls.map((call) => call.sourceFile)).toEqual([
+    expect(calls.map((call) => call.sourceFile)).toEqual(Array(6).fill(
       'srv/DirectQueryHandler.ts',
-      'srv/DirectQueryHandler.ts',
+    ));
+    expect(calls.map((call) => {
+      const parsed: unknown = JSON.parse(call.evidenceJson ?? '{}');
+      return isRecord(parsed) ? parsed.queryExecutionContext : undefined;
+    })).toEqual([
+      'await',
+      'async_return',
+      'await',
+      'promise_return',
+      'promise_aggregate',
+      'promise_aggregate',
     ]);
 
     const rawEdges: unknown[] = db.prepare(`SELECT e.edge_type edgeType,e.to_kind toKind,e.to_id toId
@@ -199,7 +369,11 @@ describe('direct CAP query-builder indexing and trace integration', () => {
     const databaseEdges = rawEdges.filter(isDatabaseEdgeRow);
     expect(databaseEdges).toEqual([
       { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'LifecycleRows' },
+      { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'LifecycleReturnedRows' },
       { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'OperationRows' },
+      { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'ReturnedOperationRows' },
+      { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'AggregateWriteRows' },
+      { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'AggregateReadRows' },
     ]);
 
     const withoutDatabase = trace(
@@ -216,11 +390,15 @@ describe('direct CAP query-builder indexing and trace integration', () => {
     );
     expect(withDatabase.edges.filter((edge) => edge.type === 'local_db_query').map((edge) => edge.to)).toEqual([
       'Entity: LifecycleRows',
+      'Entity: LifecycleReturnedRows',
       'Entity: OperationRows',
+      'Entity: ReturnedOperationRows',
+      'Entity: AggregateWriteRows',
+      'Entity: AggregateReadRows',
     ]);
-    expect(renderTraceTable(withDatabase)).toContain('Entity: LifecycleRows');
-    expect(renderTraceJson(withDatabase)).toContain('"to": "Entity: OperationRows"');
-    expect(renderMermaid(withDatabase)).toContain('Entity: LifecycleRows');
+    expect(renderTraceTable(withDatabase)).toContain('Entity: LifecycleReturnedRows');
+    expect(renderTraceJson(withDatabase)).toContain('"to": "Entity: ReturnedOperationRows"');
+    expect(renderMermaid(withDatabase)).toContain('Entity: AggregateReadRows');
 
     const firstCallCount = calls.length;
     const firstEdgeCount = databaseEdges.length;

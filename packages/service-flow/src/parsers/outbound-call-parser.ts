@@ -8,6 +8,12 @@ import { summarizeExpression } from '../utils/redaction.js';
 import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
 import { parseServiceBindings } from './service-binding-parser.js';
 import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
+import {
+  directQueryBuilderStatement,
+  isCapQueryBuilderRootName,
+  queryBuilderRoot,
+  type DirectQueryBuilderStatement,
+} from './000-direct-query-execution.js';
 import type { RepositorySourceContext } from './ts-project.js';
 import {
   analyzeOperationPath,
@@ -53,81 +59,11 @@ function queryEntityFromAst(expr: ts.Expression, initializers = new Map<string, 
   if (ts.isCallExpression(unwrapped)) {
     const name = expressionName(unwrapped.expression);
     if (name === 'cds.run') return queryEntityFromAst(unwrapped.arguments[0], initializers);
-    if (capQueryBuilderRoots.has(name)) return entityFromExpression(unwrapped.arguments[0]);
+    if (isCapQueryBuilderRootName(name)) return entityFromExpression(unwrapped.arguments[0]);
     const receiver = ts.isPropertyAccessExpression(unwrapped.expression) ? unwrapped.expression.expression : undefined;
     if (receiver) return queryEntityFromAst(receiver, initializers);
   }
   return undefined;
-}
-const capQueryBuilderRoots = new Set([
-  'SELECT.from',
-  'SELECT.one.from',
-  'SELECT.one',
-  'INSERT.into',
-  'UPSERT.into',
-  'UPDATE.entity',
-  'UPDATE',
-  'DELETE.from',
-]);
-interface DirectQueryBuilderStatement {
-  root: ts.CallExpression;
-  logicalCall: ts.CallExpression;
-  awaitExpression: ts.AwaitExpression;
-}
-function wrapperParent(node: ts.Expression): ts.Expression | undefined {
-  const parent = node.parent;
-  if ((ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
-    || ts.isTypeAssertionExpression(parent) || ts.isNonNullExpression(parent)
-    || ts.isSatisfiesExpression(parent)) && parent.expression === node)
-    return parent;
-  return undefined;
-}
-function fluentCallParent(node: ts.Expression): ts.CallExpression | undefined {
-  const property = node.parent;
-  if (!ts.isPropertyAccessExpression(property) || property.expression !== node) return undefined;
-  const call = property.parent;
-  return ts.isCallExpression(call) && call.expression === property ? call : undefined;
-}
-function queryBuilderRoot(expr: ts.Expression): ts.CallExpression | undefined {
-  const unwrapped = unwrapQueryExpression(expr);
-  if (!ts.isCallExpression(unwrapped)) return undefined;
-  if (capQueryBuilderRoots.has(expressionName(unwrapped.expression))) return unwrapped;
-  return ts.isPropertyAccessExpression(unwrapped.expression)
-    ? queryBuilderRoot(unwrapped.expression.expression)
-    : undefined;
-}
-function outerFluentQueryCall(root: ts.CallExpression): ts.CallExpression {
-  let current: ts.Expression = root;
-  let outer = root;
-  while (true) {
-    const wrapper = wrapperParent(current);
-    if (wrapper) {
-      current = wrapper;
-      continue;
-    }
-    const next = fluentCallParent(current);
-    if (!next) return outer;
-    outer = next;
-    current = next;
-  }
-}
-function directQueryBuilderStatement(node: ts.CallExpression): DirectQueryBuilderStatement | undefined {
-  const root = queryBuilderRoot(node);
-  if (!root) return undefined;
-  const logicalCall = outerFluentQueryCall(root);
-  if (logicalCall !== node) return undefined;
-  let current: ts.Expression = logicalCall;
-  while (true) {
-    const wrapper = wrapperParent(current);
-    if (wrapper) {
-      current = wrapper;
-      continue;
-    }
-    const parent = current.parent;
-    return ts.isAwaitExpression(parent) && parent.expression === current
-      ? { root, logicalCall, awaitExpression: parent }
-      : undefined;
-  }
 }
 function queryBuilderEvidence(source: ts.SourceFile, statement: DirectQueryBuilderStatement): Record<string, unknown> {
   return {
@@ -136,8 +72,9 @@ function queryBuilderEvidence(source: ts.SourceFile, statement: DirectQueryBuild
     queryRoot: expressionName(statement.root.expression),
     queryRootStartOffset: statement.root.getStart(source),
     queryRootEndOffset: statement.root.getEnd(),
-    queryStatementStartOffset: statement.awaitExpression.getStart(source),
-    queryStatementEndOffset: statement.awaitExpression.getEnd(),
+    queryStatementStartOffset: statement.statement.getStart(source),
+    queryStatementEndOffset: statement.statement.getEnd(),
+    queryExecutionContext: statement.executionContext,
   };
 }
 function queryRunEvidence(

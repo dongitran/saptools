@@ -1,5 +1,11 @@
 # Service Flow Resolution Notes
 
+## 0.1.56 direct query execution-context notes
+
+- A structural direct CAP builder root now produces one `local_db_query` fact in four proven contexts: direct `await`, a return from the nearest `async` callable, a return from a callable with an AST-guaranteed `Promise` or `PromiseLike` contract, and a static direct element of awaited `Promise.all([...])`. Evidence adds `queryExecutionContext` as `await`, `async_return`, `promise_return`, or `promise_aggregate`, while retaining the existing direct dispatch and bounded source offsets.
+- Promise contracts accept direct, `globalThis`/`global` qualified, parenthesized, all-promise union, and promise-containing intersection forms. Plain returns, unresolved aliases, non-guaranteed unions, and async generators remain unindexed so a query factory is not mistaken for execution. Aggregate detection is limited to an awaited, unshadowed `Promise.all` array; arbitrary consumers and other aggregate methods are not promoted.
+- The parser still emits one fact for one logical statement. Direct builders nested in `cds.run(...)`, known service-client query payloads, or an already awaited aggregate element retain their established single owner/classifier. No schema or linker change is needed: normal source-symbol ownership, `HANDLER_RUNS_DB_QUERY` edges, and `--include-db` rendering consume these facts unchanged.
+
 ## 0.1.55 direct query-builder and stdout notes
 
 - Direct, awaited CAP builders now create one `local_db_query` fact when their AST root is a supported `SELECT`, `INSERT`, `UPSERT`, `UPDATE`, or `DELETE` form. The parser follows fluent continuations and transparent TypeScript wrappers, records the direct dispatch marker plus root and statement offsets, and keeps ordinary member-name lookalikes out of database facts. A builder nested in `cds.run(...)` remains one wrapper-dispatched fact.

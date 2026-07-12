@@ -174,7 +174,7 @@ Local CAP calls through `cds.services.<Service>.<operation>()`, bracket service 
 
 Conservative local symbol traversal intentionally excludes decorators, built-ins such as `JSON.parse`, collection methods, third-party APIs, and arbitrary property chains unless the callee can plausibly resolve to an indexed local symbol. Named export lists such as `export { loadTemplate as publicLoadTemplate }` are indexed with the public exported name so relative imports can resolve. One-level object-literal helpers are indexed as symbols named like `cacheHelper.getConfiguration`; nested object literals are not yet expanded beyond the first helper level. `parseGeneratedConstants` remains a public low-level parser export for callers that need it, but generated constants are not persisted as graph facts in this patch; linking uses the deterministic decorator normalizer described above.
 JSON output includes typed nodes for calls, operations, database entities,
-external destinations, and unresolved/dynamic candidates when edges exist. Chained CAP DB queries inside `cds.run(...)` and directly awaited supported builders are parsed with TypeScript AST evidence for `SELECT`, `INSERT`, `UPSERT`, `UPDATE`, and `DELETE` forms. Direct builders must have a recognized CAP root; unrelated methods named `from`, `where`, or `set` are not promoted to database facts. When the query target is genuinely dynamic, graph status remains terminal and JSON retains `parserWarning` evidence, while table and Mermaid render the target as `Entity: unknown` rather than a numeric call id.
+external destinations, and unresolved/dynamic candidates when edges exist. Chained CAP DB queries inside `cds.run(...)` and direct supported builders are parsed with TypeScript AST evidence for `SELECT`, `INSERT`, `UPSERT`, `UPDATE`, and `DELETE` forms. A direct builder needs both a recognized CAP root and a proven execution context: direct `await`, return from an `async` or syntactically guaranteed-Promise callable, or a static element of awaited `Promise.all([...])`. Plain query factories and unrelated methods named `from`, `where`, or `set` are not promoted to database facts. When the query target is genuinely dynamic, graph status remains terminal and JSON retains `parserWarning` evidence, while table and Mermaid render the target as `Entity: unknown` rather than a numeric call id.
 
 ```bash
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
@@ -274,10 +274,13 @@ External HTTP facts use semantic terminal nodes instead of outbound-call row ids
   a concrete client. Trace evidence includes the caller variable, returned
   property, imported helper, source file, exported symbol, placeholders, and
   transaction alias steps.
-- Direct awaited `SELECT.one.from(Entity)`, `SELECT.from(Entity)`,
+- Direct `SELECT.one.from(Entity)`, `SELECT.from(Entity)`,
   `INSERT.into(Entity)`, `UPSERT.into(Entity)`, `UPDATE(Entity)`, and
-  `DELETE.from(Entity)` statements, plus equivalent `cds.run(...)` queries,
-  are indexed as local database query entities when statically knowable.
+  `DELETE.from(Entity)` statements are indexed when directly awaited, returned
+  by an `async` or guaranteed-Promise callable, or supplied as static elements
+  to awaited `Promise.all([...])`; equivalent `cds.run(...)` queries retain
+  their wrapper classification. Plain non-promise query factories stay out of
+  local database facts.
 - `doctor` reports silent quality problems such as services without operations,
   handler repositories without CDS service facts, and an empty search index.
 
@@ -341,7 +344,7 @@ service-flow clean --workspace /path/to/workspace
 | Handler facts | `cds-routing-handlers` decorators, handler classes/methods, server registrations |
 | Service bindings | `cds.connect.to("alias")`, aliases from `package.json#cds.requires`, destination/service path expressions |
 | Outbound calls | `remote.send({ method, path })`, `remote.send({ query })`, `cds.services.Service.operation()`, service wrapper calls |
-| Local data access | direct awaited CAP query builders, `cds.run(SELECT...)`, and local entity query evidence |
+| Local data access | directly executed CAP query builders, `cds.run(SELECT...)`, and local entity query evidence |
 | Async channels | Event Mesh-style `emit`, `publish`, and `on` facts |
 | External calls | Cloud SDK-style HTTP/destination calls and external edge evidence |
 | Generated constants | low-level `parseGeneratedConstants` parser output for integrations; not persisted as first-class graph facts in this patch |

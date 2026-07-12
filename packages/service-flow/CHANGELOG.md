@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.56
+
+- Completed direct CAP query-builder execution-context indexing for builders returned by async or syntactically guaranteed-Promise callables and for static builder elements in awaited `Promise.all(...)`, while retaining one fact per logical statement and the existing conservative unknown-entity behavior.
+- Recorded stable direct execution-context evidence (`await`, `async_return`, `promise_return`, or `promise_aggregate`) without changing the SQLite schema, graph edge type, trace filters, or wrapper ownership.
+
 ## 0.1.55
 
 - Indexed directly awaited CAP query-builder statements as local database calls, preserving exact builder-root evidence, fluent statement offsets, dynamic-entity warnings, method ownership, and the existing single `cds.run(...)` fact.
