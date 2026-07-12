@@ -30,9 +30,17 @@ import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
+import { createStdoutWriter } from './output/000-stdout-policy.js';
 import { VERSION } from './version.js';
 import type { DynamicMode } from './types.js';
 import { cleanWorkspaceState } from './cli/000-clean.js';
+
+const stdout = createStdoutWriter(process.stdout, fail);
+
+function writeStdout(value: string): void {
+  stdout.write(value);
+}
+
 async function init(
   workspace: string,
   options: { db?: string; ignore?: string[] },
@@ -58,7 +66,7 @@ async function init(
     });
   }
   db.close();
-  process.stdout.write(
+  writeStdout(
     `Workspace: ${config.rootPath}\nDatabase: ${config.dbPath}\nRepositories: ${repos.length}\nIgnored: ${config.ignore.join(', ')}\nNext: service-flow index --workspace ${config.rootPath}\n`,
   );
 }
@@ -148,7 +156,7 @@ export function createProgram(): Command {
             repo: opts.repo,
             force: Boolean(opts.force),
           });
-          process.stdout.write(
+          writeStdout(
             `Indexed ${r.indexedCount} repositories, skipped ${r.skippedCount}, ${r.fileCount} files, ${r.diagnosticCount} diagnostics\n`,
           );
         }).catch(fail),
@@ -162,7 +170,7 @@ export function createProgram(): Command {
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
           const upgradeWarnings = linkUpgradeWarnings(db);
-          process.stdout.write(
+          writeStdout(
             `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved\n`,
           );
         }).catch(fail),
@@ -227,7 +235,7 @@ export function createProgram(): Command {
               maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
             },
           );
-          process.stdout.write(
+          writeStdout(
             opts.format === 'json'
               ? renderTraceJson(result)
               : opts.format === 'mermaid'
@@ -243,7 +251,7 @@ export function createProgram(): Command {
     .action(
       (opts: { workspace?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) =>
-          process.stdout.write(
+          writeStdout(
             renderJson(
               listRepositories(db, workspaceId).map((r) => ({
                 name: r.name,
@@ -265,7 +273,7 @@ export function createProgram(): Command {
             ? selectRepository(db, opts.repo, workspaceId)
             : {};
           if (selection.diagnostic) {
-            process.stdout.write(renderJson([selection.diagnostic]));
+            writeStdout(renderJson([selection.diagnostic]));
             return;
           }
           const repo = selection.repo;
@@ -274,7 +282,7 @@ export function createProgram(): Command {
               'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
             )
             .all(workspaceId, repo?.id, repo?.id);
-          process.stdout.write(renderJson(rows));
+          writeStdout(renderJson(rows));
         }).catch(fail),
     );
   list
@@ -289,7 +297,7 @@ export function createProgram(): Command {
             ? selectRepository(db, opts.repo, workspaceId)
             : {};
           if (selection.diagnostic) {
-            process.stdout.write(renderJson([selection.diagnostic]));
+            writeStdout(renderJson([selection.diagnostic]));
             return;
           }
           const repo = selection.repo;
@@ -298,7 +306,7 @@ export function createProgram(): Command {
               'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
             )
             .all(workspaceId, repo?.id, repo?.id, opts.service, opts.service);
-          process.stdout.write(renderJson(rows));
+          writeStdout(renderJson(rows));
         }).catch(fail),
     );
   list
@@ -313,7 +321,7 @@ export function createProgram(): Command {
             ? selectRepository(db, opts.repo, workspaceId)
             : {};
           if (selection.diagnostic) {
-            process.stdout.write(renderJson([selection.diagnostic]));
+            writeStdout(renderJson([selection.diagnostic]));
             return;
           }
           const repo = selection.repo;
@@ -330,7 +338,7 @@ export function createProgram(): Command {
               opts.operation ? `/${opts.operation}` : undefined,
               opts.operation ? `%${opts.operation}%` : undefined,
             );
-          process.stdout.write(renderJson(rows));
+          writeStdout(renderJson(rows));
         }).catch(fail),
     );
   program
@@ -382,7 +390,7 @@ export function createProgram(): Command {
               maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
             },
           );
-          process.stdout.write(
+          writeStdout(
             opts.format === 'json'
               ? renderTraceJson(result)
               : renderMermaid(result),
@@ -398,7 +406,7 @@ export function createProgram(): Command {
       (name: string, opts: { workspace?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
           const selection = selectRepository(db, name, workspaceId);
-          process.stdout.write(renderJson(
+          writeStdout(renderJson(
             selection.repo ?? selection.diagnostic ?? { error: 'repo not found' },
           ));
         }).catch(fail),
@@ -415,7 +423,7 @@ export function createProgram(): Command {
               'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
             )
             .all(workspaceId, selector, selector);
-          process.stdout.write(renderJson(rows));
+          writeStdout(renderJson(rows));
         }).catch(fail),
     );
   program
@@ -428,7 +436,7 @@ export function createProgram(): Command {
       (opts: { workspace?: string; strict?: boolean; detail?: boolean; format?: string }) =>
         void withReadOnlyWorkspace(opts.workspace, (db) => {
           const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), { detail: Boolean(opts.detail) });
-          process.stdout.write(renderDoctorDiagnostics(allDiagnostics, opts.format));
+          writeStdout(renderDoctorDiagnostics(allDiagnostics, opts.format));
         }).catch(fail),
     );
   program
@@ -440,7 +448,7 @@ export function createProgram(): Command {
         void (async () => {
           const config = await loadWorkspaceConfig(opts.workspace);
           await cleanWorkspaceState(config, Boolean(opts.dbOnly));
-          process.stdout.write('Cleaned service-flow state\n');
+          writeStdout('Cleaned service-flow state\n');
         })().catch(fail),
     );
   return program;

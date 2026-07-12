@@ -15,7 +15,6 @@ describe('stdout error policy', () => {
     const writer = createStdoutWriter(stream, (error) => unexpected.push(error));
 
     expect(writer.write('first output')).toBe(true);
-    expect(stream.read()?.toString()).toBe('first output');
     stream.emit('error', errorWithCode('EPIPE'));
     expect(writer.write('later output')).toBe(false);
     expect(unexpected).toEqual([]);

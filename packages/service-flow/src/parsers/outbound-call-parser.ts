@@ -129,10 +129,7 @@ function directQueryBuilderStatement(node: ts.CallExpression): DirectQueryBuilde
       : undefined;
   }
 }
-function queryBuilderEvidence(
-  source: ts.SourceFile,
-  statement: DirectQueryBuilderStatement,
-): Record<string, unknown> {
+function queryBuilderEvidence(source: ts.SourceFile, statement: DirectQueryBuilderStatement): Record<string, unknown> {
   return {
     classifier: 'cap_query_builder_direct',
     queryDispatch: 'direct_query_builder',
@@ -203,7 +200,6 @@ function nameOfProperty(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
   return undefined;
 }
-
 type ExpressionStatus = 'static' | 'dynamic' | 'ambiguous' | 'unknown';
 type ExpressionSourceKind = 'string_literal' | 'no_substitution_template' | 'template_with_substitutions' | 'const_alias' | 'conditional_candidates' | 'dynamic_expression';
 interface ExpressionResolution { status: ExpressionStatus; sourceKind: ExpressionSourceKind; value?: string; rawExpression?: string; placeholderKeys: string[]; evidence: string[]; constName?: string }
@@ -408,7 +404,6 @@ function externalHttpEvidence(node: ts.CallExpression, source: ts.SourceFile): {
   }
   return undefined;
 }
-
 function collectServiceVariables(source: ts.SourceFile): Set<string> {
   const vars = new Set<string>(['cds', 'messaging', 'messageClient', 'eventClient']);
   const visit = (node: ts.Node): void => {
