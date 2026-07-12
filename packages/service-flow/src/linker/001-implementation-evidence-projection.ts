@@ -1,14 +1,91 @@
 import {
   projectBounded,
+  projectBoundedInOrder,
   type BoundedProjection,
 } from '../utils/000-bounded-projection.js';
+
+export interface SelectedHandlerSource {
+  methodId: number;
+  className?: string;
+  methodName?: string;
+  repositoryId?: number;
+  repositoryName?: string;
+  repositoryPackageName?: string;
+  sourceFile?: string;
+  sourceLine?: number;
+}
+
+export interface SelectedHandlerProvenance {
+  status: 'selected';
+  accepted: true;
+  graphTargetId: string;
+  methodId: number;
+  className?: string;
+  methodName?: string;
+  repository?: {
+    id?: number;
+    name?: string;
+    packageName?: string;
+  };
+  sourceFile?: string;
+  sourceLine?: number;
+}
+
+export function selectedHandlerProvenance(
+  source: SelectedHandlerSource,
+): SelectedHandlerProvenance {
+  return {
+    status: 'selected',
+    accepted: true,
+    graphTargetId: String(source.methodId),
+    methodId: source.methodId,
+    className: source.className,
+    methodName: source.methodName,
+    repository: {
+      id: source.repositoryId,
+      name: source.repositoryName,
+      packageName: source.repositoryPackageName,
+    },
+    sourceFile: source.sourceFile,
+    sourceLine: source.sourceLine,
+  };
+}
+
+export function displayImplementationCandidates(
+  candidates: Array<Record<string, unknown>>,
+  selectedMethodId: number | undefined,
+): Array<Record<string, unknown>> {
+  return [...candidates]
+    .sort((left, right) => compareDisplayCandidate(
+      left, right, selectedMethodId,
+    ))
+    .map((candidate, index) => ({
+      ...candidate,
+      discoveryRank: candidate.rank,
+      displayRank: index + 1,
+      selected: selectedMethodId !== undefined
+        && Number(candidate.methodId) === selectedMethodId,
+    }));
+}
+
+function compareDisplayCandidate(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  selectedMethodId: number | undefined,
+): number {
+  return Number(Number(right.methodId) === selectedMethodId)
+    - Number(Number(left.methodId) === selectedMethodId)
+    || Number(right.accepted === true) - Number(left.accepted === true)
+    || numberValue(left.rank) - numberValue(right.rank)
+    || compareTargetCandidates(left, right);
+}
 
 export function boundedImplementationEvidence(
   evidence: Record<string, unknown>,
   targetCandidateCount: number,
 ): Record<string, unknown> {
   const candidates = recordArray(evidence.candidates);
-  const candidateProjection = projectBounded(candidates, compareCandidateEvidence);
+  const candidateProjection = projectBoundedInOrder(candidates);
   const families = recordArray(evidence.candidateFamilies);
   const familyProjection = projectBounded(families, compareFamilies);
   const hints = recordArray(evidence.implementationHintSuggestions);
@@ -78,11 +155,6 @@ function compareTargetCandidates(left: Record<string, unknown>, right: Record<st
   return Number(right.score ?? 0) - Number(left.score ?? 0)
     || String(left.className ?? '').localeCompare(String(right.className ?? ''))
     || Number(left.methodId ?? 0) - Number(right.methodId ?? 0);
-}
-
-function compareCandidateEvidence(left: Record<string, unknown>, right: Record<string, unknown>): number {
-  return Number(left.rank ?? 0) - Number(right.rank ?? 0)
-    || compareTargetCandidates(left, right);
 }
 
 function compareFamilies(left: Record<string, unknown>, right: Record<string, unknown>): number {

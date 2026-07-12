@@ -23,6 +23,25 @@ export function projectBounded<T>(
   };
 }
 
+/**
+ * Evidence producers establish semantic order before calling the generic
+ * recursive bounder. Re-sorting here would make a selected decision appear
+ * to be explained by a different candidate.
+ */
+export function projectBoundedInOrder<T>(
+  values: readonly T[],
+  limit = DEFAULT_EVIDENCE_CANDIDATE_LIMIT,
+): BoundedProjection<T> {
+  const normalizedLimit = positiveLimit(limit);
+  const items = values.slice(0, normalizedLimit);
+  return {
+    totalCount: values.length,
+    shownCount: items.length,
+    omittedCount: Math.max(0, values.length - items.length),
+    items,
+  };
+}
+
 export function positiveLimit(value: number | undefined): number {
   return Number.isFinite(value) && Number(value) > 0
     ? Math.floor(Number(value))
@@ -73,7 +92,7 @@ export function boundCandidateLikeEvidence(
       output[key] = boundNestedEvidence(value, limit);
       continue;
     }
-    const projection = projectBounded(value, compareEvidenceValue, limit);
+    const projection = projectBoundedInOrder(value, limit);
     output[key] = projection.items.map((item) => boundNestedEvidence(item, limit));
     addCollectionCounts(output, evidence, key, projection);
   }
@@ -136,20 +155,6 @@ function collectionStem(key: string): string {
     registrations: 'registration',
   };
   return stems[key] ?? 'candidate';
-}
-
-function compareEvidenceValue(left: unknown, right: unknown): number {
-  return stableProjectionValue(left).localeCompare(stableProjectionValue(right));
-}
-
-export function stableProjectionValue(value: unknown): string {
-  if (Array.isArray(value))
-    return `[${value.map(stableProjectionValue).join(',')}]`;
-  if (isEvidenceRecord(value)) {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${stableProjectionValue(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value) ?? '';
 }
 
 function numericValue(value: unknown): number {

@@ -1,13 +1,22 @@
 import type { TraceResult } from '../types.js';
 
 function location(evidence: Record<string, unknown>): string {
+  const selected = isRecord(evidence.selectedHandler)
+    ? evidence.selectedHandler : undefined;
+  const selectedFile = selected?.sourceFile;
+  const selectedLine = selected?.sourceLine;
+  if (selectedFile || selectedLine)
+    return `${String(selectedFile ?? '')}:${String(selectedLine ?? '')}`;
   const file = evidence.file ?? evidence.sourceFile ?? evidence.handlerSourceFile ?? evidence.operationSourceFile ?? evidence.registrationSourceFile;
   const line = evidence.line ?? evidence.sourceLine ?? evidence.handlerSourceLine ?? evidence.operationSourceLine ?? evidence.registrationSourceLine;
   if (file || line) return `${String(file ?? '')}:${String(line ?? '')}`;
   const candidates = evidence.candidates;
+  if (Array.isArray(candidates) && candidates.some((candidate) =>
+    isRecord(candidate) && candidate.methodId !== undefined)) return ':';
   if (Array.isArray(candidates) && candidates.length > 0) {
-    const first = candidates[0] as Record<string, unknown>;
-    return `${String(first.sourceFile ?? '')}:${String(first.sourceLine ?? '')}`;
+    const first = candidates.find(isRecord);
+    if (first)
+      return `${String(first.sourceFile ?? '')}:${String(first.sourceLine ?? '')}`;
   }
   return ':';
 }

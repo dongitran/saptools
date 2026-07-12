@@ -1,5 +1,12 @@
 # Service Flow Resolution Notes
 
+## 0.1.54 runtime-current diagnostics and selected handler notes
+
+- Contextual service-binding resolution now emits typed local trace state instead of passing a message string as control flow. `dynamic_missing`, `ambiguous_binding`, `ambiguous_operation`, `no_matching_operation`, and other conservative blockers remain distinguishable; `contextualPreSubstitutionState` preserves the historical attempt without changing a persisted graph row.
+- Dynamic analysis runs after supported route expressions receive supplied values. Its deterministic post-substitution missing-key set controls the edge reason, `effectiveResolution.unresolvedReason`, and `linker.reason`; a supplied-value no-match wins over a stale missing-variable state. Structural blockers remain in `contextualBlocker` and block automatic selection.
+- Resolved implementation evidence now stores `selectedHandler` derived from the actual graph `to_id`. It includes method/class/repository/source provenance and is checked again at trace time. A mismatch is diagnostic evidence; rendering uses the actual graph target rather than a candidate-array position, and a missing target blocks handler traversal.
+- Implementation candidate `rank` remains the discovery-score rank. `displayRank` and `selected` describe the presentation order, which puts a resolved selected handler first and then preserves deterministic accepted/rejected ordering. Generic bounded projections preserve producer-established semantic order; unordered producers retain their explicit comparators before projection.
+
 ## 0.1.53 call-scoped dynamic routing and bounded evidence notes
 
 - Runtime routing starts from the outbound call's selected binding when one exists. Its service path, alias, destination, source location, and helper-return chain form one call-scoped context; fallback repository references are marked as fallback and cannot override a selected binding. Multiple distinct fallback bindings are never combined into one derived route.

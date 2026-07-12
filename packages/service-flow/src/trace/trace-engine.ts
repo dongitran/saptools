@@ -1,8 +1,6 @@
 import type { Db } from '../db/connection.js';
 import { reposByName } from '../db/repositories.js';
 import { extractPlaceholders } from '../linker/dynamic-edge-resolver.js';
-import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
-import { resolveOperation } from '../linker/service-resolver.js';
 import type { ImplementationHint, TraceEdge, TraceOptions, TraceResult, TraceStart } from '../types.js';
 import { baseTraceEvidence, edgeTarget, runtimeNoCandidateDiagnostics, runtimeResolution, runtimeVariableDiagnostic, type TraceGraphRow } from './evidence.js';
 import { dynamicCandidateBranches } from './dynamic-branches.js';
@@ -15,8 +13,16 @@ import {
   contextualImplementationSelection,
   hintedImplementationSelection,
 } from './005-implementation-selection.js';
-import { boundedContextCandidates } from './006-contextual-projection.js';
 import { implementationStartDiagnostic } from './007-implementation-start-diagnostic.js';
+import {
+  contextualRuntimeResolution,
+  type ContextBinding,
+} from './008-contextual-runtime-state.js';
+import {
+  handlerMethodNode,
+  withSelectedHandlerProvenance,
+  type SelectedHandlerEvidence,
+} from './009-selected-handler-provenance.js';
 import { boundCandidateLikeEvidence } from '../utils/000-bounded-projection.js';
 import {
   ambiguousStartDiagnostic,
@@ -59,32 +65,6 @@ interface GraphRow extends Record<string, unknown> {
   evidence_json: string;
   unresolved_reason?: string;
   status?: string;
-}
-interface ContextBinding {
-  bindingId?: number;
-  alias?: string;
-  aliasExpr?: string;
-  destinationExpr?: string;
-  servicePathExpr?: string;
-  requireServicePath?: string;
-  requireDestination?: string;
-  effectiveServicePath?: string;
-  effectiveDestination?: string;
-  sourceFile?: string;
-  sourceLine?: number;
-  source: string;
-  callerArgument?: string;
-  callerProperty?: string;
-  calleeParameter?: string;
-  calleeObjectProperty?: string;
-  calleeLocalDestructuredIdentifier?: string;
-  parameterPropertyAliasKind?: unknown;
-  parameterPropertyAliasLine?: unknown;
-  calleeReceiver: string;
-  callerSite?: { sourceFile?: string; sourceLine?: number };
-  calleeSite?: { sourceFile?: string; sourceLine?: number };
-  resolutionStatus?: 'selected' | 'ambiguous';
-  bindingCandidates?: Array<Record<string, unknown>>;
 }
 interface ImplementationHintOptions {
   implementationRepo?: string;
@@ -218,11 +198,6 @@ function handlerFilesForOperation(db: Db, operationId: string): Set<string> {
 }
 function implementationEdge(db: Db, operationId: string): GraphRow | undefined {
   return db.prepare("SELECT * FROM graph_edges WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER' AND from_kind='operation' AND from_id=? ORDER BY CASE status WHEN 'resolved' THEN 0 WHEN 'ambiguous' THEN 1 ELSE 2 END,id LIMIT 1").get(operationId) as GraphRow | undefined;
-}
-function handlerMethodNode(db: Db, methodId: string): Record<string, unknown> | undefined {
-  const row = db.prepare(`SELECT hm.id methodId,hm.method_name methodName,hm.decorator_value decoratorValue,hm.source_line sourceLine,hc.class_name className,hc.source_file sourceFile,r.name repoName,r.id repoId FROM handler_methods hm JOIN handler_classes hc ON hc.id=hm.handler_class_id JOIN repositories r ON r.id=hc.repo_id WHERE hm.id=?`).get(methodId) as Record<string, unknown> | undefined;
-  if (!row) return undefined;
-  return { id: `handler_method:${methodId}`, kind: 'handler_method', label: `${String(row.repoName)}:${String(row.className)}.${String(row.methodName)}`, ...row };
 }
 function implementationScope(db: Db, operationId: string): { repoId?: number; files: Set<string>; symbolId?: number; edge?: GraphRow } {
   const edge = implementationEdge(db, operationId);
@@ -436,40 +411,6 @@ function contextForSymbolCall(db: Db, symbolCall: Record<string, unknown>, calle
   });
   return next;
 }
-function contextualRuntimeResolution(db: Db, call: CallRow, binding: ContextBinding | undefined, workspaceId: number | undefined, persistedRows: GraphRow[] = []): { row?: GraphRow; evidence?: Record<string, unknown>; unresolvedReason?: string } {
-  if (!binding || String(call.call_type) !== 'remote_action' || call.operation_path_expr === undefined || call.operation_path_expr === null) return {};
-  if (binding.resolutionStatus === 'ambiguous') {
-    const candidates = boundedContextCandidates(binding.bindingCandidates ?? []);
-    return {
-      evidence: {
-        contextualServiceBindingAttempted: true,
-        contextualBinding: {
-          source: binding.source,
-          status: 'tied',
-          candidates: candidates.candidates,
-          candidateCount: candidates.candidateCount,
-          shownCandidateCount: candidates.shownCandidateCount,
-          omittedCandidateCount: candidates.omittedCandidateCount,
-        },
-        contextualResolutionStatus: 'ambiguous',
-        contextualCandidateCount: candidates.candidateCount,
-      },
-      unresolvedReason: 'Ambiguous contextual service binding candidates',
-    };
-  }
-  const normalized = normalizeODataOperationInvocationPath(String(call.operation_path_expr));
-  const op = normalized?.normalizedOperationPath ?? (String(call.operation_path_expr).startsWith('/') ? String(call.operation_path_expr) : `/${String(call.operation_path_expr)}`);
-  const servicePath = binding.effectiveServicePath ?? binding.servicePathExpr ?? binding.requireServicePath;
-  const destination = binding.effectiveDestination ?? binding.destinationExpr ?? binding.requireDestination;
-  const resolution = resolveOperation(db, { servicePath, operationPath: op, alias: binding.aliasExpr ?? binding.alias, destination, hasExplicitOverride: true, isDynamic: false }, workspaceId);
-  const candidates = boundedContextCandidates(resolution.candidates);
-  const evidence: Record<string, unknown> = { contextualServiceBindingAttempted: true, contextualBinding: { source: binding.source, callerArgument: binding.callerArgument, callerProperty: binding.callerProperty, calleeParameter: binding.calleeParameter, calleeReceiver: binding.calleeReceiver, callerSite: binding.callerSite, calleeSite: binding.calleeSite, bindingSourceFile: binding.sourceFile, bindingSourceLine: binding.sourceLine, alias: binding.alias, aliasExpr: binding.aliasExpr, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination }, operationPath: op, rawOperationPath: normalized?.rawOperationPath, normalizedOperationPath: normalized?.wasInvocation ? normalized.normalizedOperationPath : undefined, invocationArgumentPlaceholderKeys: normalized?.invocationArgumentPlaceholderKeys.length ? normalized.invocationArgumentPlaceholderKeys : undefined, servicePath, serviceAlias: binding.alias, serviceAliasExpr: binding.aliasExpr, destination, requireServicePath: binding.requireServicePath, requireDestination: binding.requireDestination, effectiveServicePath: binding.effectiveServicePath, effectiveDestination: binding.effectiveDestination, contextualResolutionStatus: resolution.status, contextualCandidateCount: candidates.candidateCount, shownContextualCandidateCount: candidates.shownCandidateCount, omittedContextualCandidateCount: candidates.omittedCandidateCount, candidates: candidates.candidates, contextualResolutionReasons: resolution.reasons, resolutionReasons: resolution.reasons };
-  if (!resolution.target) return { evidence, unresolvedReason: resolution.status === 'ambiguous' ? 'Ambiguous contextual operation candidates' : resolution.status === 'dynamic' ? `Dynamic contextual target is missing runtime variables: ${resolution.reasons.join(', ')}` : 'No contextual operation candidate matched' };
-  const resolvedEvidence = { ...evidence, contextualServiceBindingSelected: true, targetRepo: resolution.target.repoName, targetServicePath: resolution.target.servicePath, targetOperationPath: resolution.target.operationPath, targetOperation: resolution.target.operationName };
-  const persistedResolved = persistedRows.find((item) => item.status === 'resolved');
-  if (persistedResolved) return { row: undefined, evidence: { ...resolvedEvidence, contextualPreservedPersistedResolvedEdge: true }, unresolvedReason: undefined };
-  return { row: { id: -Number(call.id), edge_type: 'REMOTE_CALL_RESOLVES_TO_OPERATION', from_id: String(call.id), to_kind: 'operation', to_id: String(resolution.target.operationId), confidence: resolution.target.score, evidence_json: JSON.stringify(resolvedEvidence), status: 'resolved' }, evidence: resolvedEvidence, unresolvedReason: undefined };
-}
 export function trace(
   db: Db,
   start: TraceStart,
@@ -512,11 +453,27 @@ export function trace(
     );
     if (impl.edge && (impl.edge.status === 'resolved' || startSelection.methodId)) {
       const selectedMethodId = impl.edge.status === 'resolved' ? impl.edge.to_id : startSelection.methodId;
-      const implEvidence = { ...parseEvidence(impl.edge.evidence_json), startResolution: { strategy: 'indexed_operation_graph', matchedOperationId: scope.startOperationId, implementationEdgeId: impl.edge.id, implementationStatus: impl.edge.status, selectedHandlerMethodId: selectedMethodId }, implementationSelection: startSelection.methodId ? startSelection.evidence : undefined };
-      const handlerNode = selectedMethodId ? handlerMethodNode(db, selectedMethodId) : undefined;
-      if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
+      const implEvidence = {
+        ...parseEvidence(impl.edge.evidence_json),
+        startResolution: {
+          strategy: 'indexed_operation_graph',
+          matchedOperationId: scope.startOperationId,
+          implementationEdgeId: impl.edge.id,
+          implementationStatus: impl.edge.status,
+          selectedHandlerMethodId: selectedMethodId,
+        },
+        implementationSelection: startSelection.methodId
+          ? startSelection.evidence : undefined,
+      };
+      const selected: SelectedHandlerEvidence = selectedMethodId
+        ? withSelectedHandlerProvenance(
+          implEvidence, selectedMethodId, handlerMethodNode(db, selectedMethodId),
+        )
+        : { evidence: implEvidence };
+      if (selected.diagnostic) prependTraceDiagnostic(diagnostics, selected.diagnostic);
+      if (selected.handler) nodes.set(String(selected.handler.id), selected.handler);
       seenEdges.add(Number(impl.edge.id));
-      edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `operation:${scope.startOperationId}`, to: handlerNode?.label ? String(handlerNode.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: implEvidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: impl.edge.status === 'resolved' || startSelection.methodId ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status) });
+      edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `operation:${scope.startOperationId}`, to: selected.handler?.label ? String(selected.handler.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: selected.evidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: selected.unresolvedReason ?? (impl.edge.status === 'resolved' || startSelection.methodId ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status)) });
     }
   }
   const seenScopes = new Set<string>();
@@ -581,7 +538,7 @@ export function trace(
           vars: options.vars,
           dynamicMode: options.dynamicMode ?? 'strict',
           maxDynamicCandidates: options.maxDynamicCandidates,
-        }, workspaceIdForCall(db, String(call.id)), contextual.unresolvedReason);
+        }, workspaceIdForCall(db, String(call.id)), contextual.state);
         const evidence = effective.evidence;
         const effectiveRow = effective.row;
         const targetNode = `${effectiveRow.to_kind}:${effectiveRow.to_id}`;
@@ -611,31 +568,59 @@ export function trace(
             hintOptions,
           );
           const contextMethodId = contextSelection.methodId;
-          const contextNode = contextMethodId ? handlerMethodNode(db, contextMethodId) : undefined;
+          let selectedHandlerAvailable = true;
           if (implementation.edge) {
             const implEvidence = parseEvidence(implementation.edge.evidence_json);
             const hintDiagnostic = implementationHintDiagnostic(contextSelection, implEvidence);
             if (hintDiagnostic) prependTraceDiagnostic(diagnostics, hintDiagnostic);
-            const handlerNode = implementation.edge.status === 'resolved' ? handlerMethodNode(db, implementation.edge.to_id) : contextNode;
-            const implTo = handlerNode?.label ? String(handlerNode.label) : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
-            if (handlerNode) nodes.set(String(handlerNode.id), handlerNode);
+            const selectedMethodId = implementation.edge.status === 'resolved'
+              ? implementation.edge.to_id : contextMethodId;
+            const selectionEvidence = contextMethodId
+              ? {
+                ...implEvidence,
+                contextualImplementationSelected:
+                  contextSelection.evidence.strategy !== 'implementation_repo_hint',
+                contextualImplementation: contextSelection.evidence,
+                implementationSelection: contextSelection.evidence,
+              }
+              : {
+                ...implEvidence,
+                contextualImplementation: contextSelection.evidence,
+                implementationSelection: contextSelection.evidence,
+              };
+            const selected: SelectedHandlerEvidence = selectedMethodId
+              ? withSelectedHandlerProvenance(
+                selectionEvidence,
+                selectedMethodId,
+                handlerMethodNode(db, selectedMethodId),
+              )
+              : { evidence: selectionEvidence };
+            selectedHandlerAvailable = !selected.unresolvedReason;
+            if (selected.diagnostic) prependTraceDiagnostic(diagnostics, selected.diagnostic);
+            const implTo = selected.handler?.label
+              ? String(selected.handler.label)
+              : `${implementation.edge.to_kind}:${implementation.edge.to_id}`;
+            if (selected.handler) nodes.set(String(selected.handler.id), selected.handler);
             edges.push({
               step: current.depth,
               type: 'operation_implemented_by_handler',
               from: to,
               to: implTo,
-              evidence: contextMethodId
-                ? { ...implEvidence, contextualImplementationSelected: contextSelection.evidence.strategy !== 'implementation_repo_hint', contextualImplementation: contextSelection.evidence, implementationSelection: contextSelection.evidence }
-                : { ...implEvidence, contextualImplementation: contextSelection.evidence, implementationSelection: contextSelection.evidence },
+              evidence: selected.evidence,
               confidence: Number(implementation.edge.confidence ?? 0),
-              unresolvedReason: implementation.edge.status === 'resolved' || contextMethodId ? undefined : String(implementation.edge.unresolved_reason ?? implementation.edge.status),
+              unresolvedReason: selected.unresolvedReason
+                ?? (implementation.edge.status === 'resolved' || contextMethodId
+                  ? undefined
+                  : String(implementation.edge.unresolved_reason ?? implementation.edge.status)),
             });
           }
           if (current.depth >= maxDepth) continue;
           const contextScope = contextMethodId ? handlerScope(db, contextMethodId) : undefined;
           const files = contextScope?.files ?? (implementation.files.size > 0 ? implementation.files : handlerFilesForOperation(db, effectiveRow.to_id));
           const symbolIds = contextScope?.symbolId ? new Set([contextScope.symbolId]) : implementation.symbolId ? new Set([implementation.symbolId]) : undefined;
-          if ((implementation.edge?.status === 'resolved' || contextScope) && files.size > 0) {
+          if (selectedHandlerAvailable
+            && (implementation.edge?.status === 'resolved' || contextScope)
+            && files.size > 0) {
             const targetRepoId = contextScope?.repoId ?? implementation.repoId ?? (db
               .prepare(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',

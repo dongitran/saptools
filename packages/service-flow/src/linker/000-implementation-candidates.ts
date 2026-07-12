@@ -4,6 +4,8 @@ import { normalizeDecoratorOperationSignal, normalizedOperationName } from './op
 import {
   boundedImplementationEvidence,
   boundedImplementationTargetIds,
+  displayImplementationCandidates,
+  selectedHandlerProvenance,
 } from './001-implementation-evidence-projection.js';
 
 interface ImplementationCandidate extends Record<string, unknown> {
@@ -107,6 +109,7 @@ function implementationDecision(
     : winners.length > 1 ? ['multiple_equal_score_implementation_candidates'] : [];
   const evidence = implementationEvidence(
     operation, implementationContext, candidates, duplicateFamilies, ambiguityReasons,
+    unique,
   );
   const hintProjection = implementationHintSuggestionProjection(evidence);
   return {
@@ -174,6 +177,7 @@ function implementationEvidence(
   candidates: ImplementationCandidate[],
   duplicateFamilies: Array<Record<string, unknown>>,
   ambiguityReasons: string[],
+  selected: ImplementationCandidate | undefined,
 ): Record<string, unknown> {
   return {
     servicePath: operation.servicePath,
@@ -191,7 +195,13 @@ function implementationEvidence(
     implementationOperationId: context.operationId,
     ambiguityReasons,
     candidateFamilies: duplicateFamilies,
-    candidates: candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
+    selectedHandler: selected
+      ? selectedHandlerProvenance(selectedHandlerSource(selected))
+      : undefined,
+    candidates: displayImplementationCandidates(
+      candidates.map((candidate, index) => candidateEvidence(candidate, index + 1)),
+      selected?.methodId,
+    ),
   };
 }
 
@@ -350,7 +360,7 @@ function implementationCandidates(
       hm.id methodId,hm.method_name methodName,hm.decorator_value decoratorValue,
       hm.decorator_raw_expression decoratorRawExpression,
       hm.decorator_resolution_json decoratorResolutionJson,hc.id classId,
-      hc.class_name className,hc.source_file sourceFile,hc.source_line sourceLine,
+      hc.class_name className,hc.source_file sourceFile,hm.source_line sourceLine,
       hr.id registrationId,hr.handler_class_id registrationHandlerClassId,
       hr.class_name registrationClassName,hr.repo_id applicationRepoId,
       hr.registration_file registrationFile,hr.registration_line registrationLine,
@@ -526,6 +536,7 @@ function ownershipScore(
 function candidateEvidence(candidate: ImplementationCandidate, rank: number): Record<string, unknown> {
   return {
     rank,
+    rankKind: 'discovery_score',
     score: candidate.score,
     accepted: candidate.accepted,
     acceptedReasons: candidate.acceptedReasons,
@@ -577,6 +588,28 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
       handlerDependsOnModel: flag(candidate.handlerDependsOnModel),
       sameRepoRegistration: flag(candidate.sameRepoRegistration),
     },
+  };
+}
+
+function selectedHandlerSource(candidate: ImplementationCandidate): {
+  methodId: number;
+  className?: string;
+  methodName?: string;
+  repositoryId?: number;
+  repositoryName?: string;
+  repositoryPackageName?: string;
+  sourceFile?: string;
+  sourceLine?: number;
+} {
+  return {
+    methodId: candidate.methodId,
+    className: stringValue(candidate.className),
+    methodName: stringValue(candidate.methodName),
+    repositoryId: numberValue(candidate.handlerRepoId),
+    repositoryName: stringValue(candidate.handlerRepo),
+    repositoryPackageName: stringValue(candidate.handlerPackage),
+    sourceFile: stringValue(candidate.sourceFile),
+    sourceLine: numberValue(candidate.sourceLine),
   };
 }
 

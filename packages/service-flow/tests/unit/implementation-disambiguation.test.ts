@@ -124,8 +124,10 @@ describe('implementation duplicate package disambiguation', () => {
       candidateFamilies?: Array<{ reason: string; packageName: string; count: number }>;
       implementationHintSuggestions?: Array<{ servicePath: string; operationPath: string; ambiguityReason: string; candidateFamily: string; selectableImplementationRepositories: string[]; implementationRepo: string; cli: string }>;
       candidates: Array<{ handlerPackage: { name: string; packageName: string }; accepted: boolean }>;
+      selectedHandler?: unknown;
     };
     expect(evidence.ambiguityReasons).toContain('duplicate_package_name_candidates');
+    expect(evidence.selectedHandler).toBeUndefined();
     expect(evidence.candidateFamilies).toContainEqual(expect.objectContaining({
       reason: 'duplicate_package_name_candidates',
       packageName: '@neutral/shared-helper',

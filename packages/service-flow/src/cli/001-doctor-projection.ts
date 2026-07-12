@@ -1,6 +1,5 @@
 import {
-  projectBounded,
-  stableProjectionValue,
+  projectBoundedInOrder,
   type BoundedProjection,
 } from '../utils/000-bounded-projection.js';
 
@@ -54,7 +53,8 @@ function boundDoctorValue(value: unknown): unknown {
       output[key] = boundDoctorValue(child);
       continue;
     }
-    const projection = projectBounded(child.map(boundDoctorValue), compareDiagnostic);
+    // Doctor producers already query or assemble deterministic semantic order.
+    const projection = projectBoundedInOrder(child.map(boundDoctorValue));
     output[key] = projection.items;
     addProjectionMetadata(output, input, key, projection);
   }
@@ -125,10 +125,6 @@ function projectionStem(key: string): string {
     serviceSuggestions: 'serviceSuggestion',
   };
   return stems[key] ?? 'repository';
-}
-
-function compareDiagnostic(left: unknown, right: unknown): number {
-  return stableProjectionValue(left).localeCompare(stableProjectionValue(right));
 }
 
 function numericValue(value: unknown): number {

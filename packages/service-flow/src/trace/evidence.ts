@@ -5,6 +5,11 @@ import { resolveOperation, type OperationTarget } from '../linker/service-resolv
 import type { DynamicMode } from '../types.js';
 import { analyzeDynamicTargetCandidates, type DynamicTargetAnalysis, type DynamicTargetCandidate } from './dynamic-targets.js';
 import { boundCandidateLikeEvidence } from '../utils/000-bounded-projection.js';
+import {
+  dynamicMissingReason,
+  isStructuralContextualBlocker,
+  type ContextualRuntimeState,
+} from './008-contextual-runtime-state.js';
 
 export interface TraceGraphRow extends Record<string, unknown> {
   id: number;
@@ -34,6 +39,12 @@ interface RuntimeDiagnosticTotals {
   candidateSuggestions: Record<string, unknown>[];
   rejectedCandidates: Record<string, unknown>[];
   suggestedVarSets: Record<string, unknown>[];
+}
+interface RuntimeResolutionResult {
+  row: TraceGraphRow;
+  evidence: Record<string, unknown>;
+  target?: OperationTarget;
+  unresolvedReason?: string;
 }
 
 export function baseTraceEvidence(
@@ -67,8 +78,8 @@ export function runtimeResolution(
   evidence: Record<string, unknown>,
   options: { vars?: Record<string, string>; dynamicMode?: DynamicMode; maxDynamicCandidates?: number },
   workspaceId: number | undefined,
-  contextualUnresolvedReason?: string,
-): { row: TraceGraphRow; evidence: Record<string, unknown>; target?: OperationTarget; unresolvedReason?: string } {
+  contextualState?: ContextualRuntimeState,
+): RuntimeResolutionResult {
   const dynamicMode = options.dynamicMode ?? 'strict';
   const candidateCap = positiveCandidateCap(options.maxDynamicCandidates);
   const boundedEvidence = boundCandidateLikeEvidence(evidence, candidateCap);
@@ -76,7 +87,7 @@ export function runtimeResolution(
     return unchangedRuntimeResolution(
       row,
       boundDynamicEvidence(boundedEvidence, candidateCap),
-      contextualUnresolvedReason,
+      contextualState,
     );
   const substituted = evidenceWithRuntimeVariables(boundedEvidence, options.vars);
   const analysis = analyzeDynamicTargetCandidates(
@@ -86,47 +97,83 @@ export function runtimeResolution(
     analysis ? evidenceWithDynamicAnalysis(substituted, analysis) : substituted,
     candidateCap,
   );
+  const appliedRuntimeValues = hasApplicableRuntimeVariables(evidence, options.vars);
+  const analyzed = analyzedRuntimeResolution(
+    row, enriched, analysis, dynamicMode, appliedRuntimeValues, contextualState,
+  );
+  if (analyzed) return analyzed;
+  if (!appliedRuntimeValues) {
+    const unresolvedReason = contextualReason(contextualState) ?? row.unresolved_reason;
+    const withSections = withEffectiveResolution(
+      enriched, row, unresolvedReason, undefined, contextualState,
+    );
+    return { row, evidence: withSections, unresolvedReason };
+  }
+  return resolveSuppliedRuntimeOperation(db, row, enriched, workspaceId, contextualState);
+}
+
+function analyzedRuntimeResolution(
+  row: TraceGraphRow,
+  evidence: Record<string, unknown>,
+  analysis: DynamicTargetAnalysis | undefined,
+  dynamicMode: DynamicMode,
+  appliedRuntimeValues: boolean,
+  contextualState: ContextualRuntimeState | undefined,
+): RuntimeResolutionResult | undefined {
   if (analysis && analysis.viableCandidateCount === 0
     && Object.keys(analysis.appliedSuppliedVariables).length > 0)
-    return noCandidateRuntimeResolution(row, enriched);
-  if (dynamicMode === 'infer') {
-    const inferred = inferredTarget(analysis);
-    if (inferred)
-      return resolvedRuntimeResolution(row, enriched, inferred, inferred.reasons);
-  }
-  if (analysis && analysis.missingVariables.length > 0) {
-    const unresolvedReason = contextualUnresolvedReason
-      ?? row.unresolved_reason
-      ?? 'Dynamic target still requires runtime variables';
+    return noCandidateRuntimeResolution(row, evidence, contextualState);
+  const inferred = dynamicMode === 'infer' ? inferredTarget(analysis) : undefined;
+  if (inferred && !isStructuralContextualBlocker(contextualState))
+    return resolvedRuntimeResolution(row, evidence, inferred, inferred.reasons);
+  if (analysis && analysis.missingVariables.length > 0 && appliedRuntimeValues) {
+    const unresolvedReason = dynamicMissingReason(analysis.missingVariables);
     return {
       row,
-      evidence: withEffectiveResolution(enriched, row, unresolvedReason),
+      evidence: withEffectiveResolution(
+        evidence, row, unresolvedReason, undefined, contextualState,
+      ),
       unresolvedReason,
     };
   }
-  if (!hasApplicableRuntimeVariables(evidence, options.vars)) {
-    const unresolvedReason = contextualUnresolvedReason ?? row.unresolved_reason;
-    const withSections = withEffectiveResolution(enriched, row, unresolvedReason);
-    return { row, evidence: withSections, unresolvedReason };
-  }
-  const resolution = resolveRuntimeOperation(db, enriched, workspaceId);
+  return isStructuralContextualBlocker(contextualState)
+    ? unchangedRuntimeResolution(row, evidence, contextualState)
+    : undefined;
+}
+
+function resolveSuppliedRuntimeOperation(
+  db: Db,
+  row: TraceGraphRow,
+  evidence: Record<string, unknown>,
+  workspaceId: number | undefined,
+  contextualState: ContextualRuntimeState | undefined,
+): RuntimeResolutionResult {
+  const resolution = resolveRuntimeOperation(db, evidence, workspaceId);
   if (resolution.target)
     return resolvedRuntimeResolution(
-      row, enriched, resolution.target, resolution.reasons,
+      row, evidence, resolution.target, resolution.reasons,
     );
   const unresolvedReason = runtimeUnresolvedReason(resolution);
-  return { row, evidence: withEffectiveResolution(enriched, row, unresolvedReason, resolution), unresolvedReason };
+  return {
+    row,
+    evidence: withEffectiveResolution(
+      evidence, row, unresolvedReason, resolution, contextualState,
+    ),
+    unresolvedReason,
+  };
 }
 
 function unchangedRuntimeResolution(
   row: TraceGraphRow,
   evidence: Record<string, unknown>,
-  contextualUnresolvedReason: string | undefined,
-): ReturnType<typeof runtimeResolution> {
-  const unresolvedReason = contextualUnresolvedReason ?? row.unresolved_reason;
+  contextualState: ContextualRuntimeState | undefined,
+): RuntimeResolutionResult {
+  const unresolvedReason = contextualReason(contextualState) ?? row.unresolved_reason;
   return {
     row,
-    evidence: withEffectiveResolution(evidence, row, unresolvedReason),
+    evidence: withEffectiveResolution(
+      evidence, row, unresolvedReason, undefined, contextualState,
+    ),
     unresolvedReason,
   };
 }
@@ -134,11 +181,14 @@ function unchangedRuntimeResolution(
 function noCandidateRuntimeResolution(
   row: TraceGraphRow,
   evidence: Record<string, unknown>,
-): ReturnType<typeof runtimeResolution> {
+  contextualState: ContextualRuntimeState | undefined,
+): RuntimeResolutionResult {
   const unresolvedReason = 'No candidate remained after runtime substitution';
   return {
     row,
-    evidence: withEffectiveResolution(evidence, row, unresolvedReason),
+    evidence: withEffectiveResolution(
+      evidence, row, unresolvedReason, undefined, contextualState,
+    ),
     unresolvedReason,
   };
 }
@@ -148,7 +198,7 @@ function resolvedRuntimeResolution(
   evidence: Record<string, unknown>,
   target: OperationTarget,
   reasons: string[],
-): ReturnType<typeof runtimeResolution> {
+): RuntimeResolutionResult {
   const resolvedRow = {
     ...row,
     status: 'resolved',
@@ -328,6 +378,7 @@ function effectiveResolution(
   evidence: Record<string, unknown>,
   unresolvedReason: string | undefined,
   resolution?: ReturnType<typeof resolveRuntimeOperation>,
+  contextualState?: ContextualRuntimeState,
 ): Record<string, unknown> {
   const target = resolution?.target;
   return {
@@ -342,6 +393,8 @@ function effectiveResolution(
     reasons: resolution?.reasons ?? evidence.resolutionReasons,
     unresolvedReason,
     edgeType: target ? 'REMOTE_CALL_RESOLVES_TO_OPERATION' : row.edge_type,
+    contextualBlocker: isStructuralContextualBlocker(contextualState)
+      ? contextualState : undefined,
   };
 }
 
@@ -350,11 +403,30 @@ function withEffectiveResolution(
   row: TraceGraphRow,
   unresolvedReason: string | undefined,
   resolution?: ReturnType<typeof resolveRuntimeOperation>,
+  contextualState?: ContextualRuntimeState,
 ): Record<string, unknown> {
-  const current = effectiveResolution(row, evidence, unresolvedReason, resolution);
+  const current = effectiveResolution(
+    row, evidence, unresolvedReason, resolution, contextualState,
+  );
   const rest = { ...evidence };
   delete rest.runtimeResolvedCandidate;
-  return { ...rest, effectiveResolution: current, linker: { status: current.status, confidence: current.confidence, reason: unresolvedReason, edgeType: current.edgeType } };
+  return {
+    ...rest,
+    effectiveResolution: current,
+    linker: {
+      status: current.status,
+      confidence: current.confidence,
+      reason: unresolvedReason,
+      edgeType: current.edgeType,
+      contextualBlocker: current.contextualBlocker,
+    },
+  };
+}
+
+function contextualReason(
+  state: ContextualRuntimeState | undefined,
+): string | undefined {
+  return state?.category === 'none' ? undefined : state?.message;
 }
 
 function resolveRuntimeOperation(db: Db, evidence: Record<string, unknown>, workspaceId: number | undefined): ReturnType<typeof resolveOperation> {

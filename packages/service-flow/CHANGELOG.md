@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.54
+
+- Made contextual dynamic trace diagnostics runtime-current after `--var` substitution while retaining labelled pre-substitution binding state and distinct structural blockers.
+- Added explicit selected-handler provenance to resolved implementation hops, so table, JSON, and Mermaid trace output follow the graph target rather than a rejected candidate.
+- Preserved semantic candidate order through bounded evidence projections, retaining raw discovery rank alongside selection-aware display rank and existing count metadata.
+
 ## 0.1.53
 
 - Validated dynamic routes from the outbound call's selected service binding, including helper-return provenance, exact template matches, and explicit alias/destination conflicts that now fail closed with structured no-match evidence.
