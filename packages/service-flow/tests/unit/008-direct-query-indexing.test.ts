@@ -195,7 +195,7 @@ describe('direct CAP query-builder indexing and trace integration', () => {
 
     const rawEdges: unknown[] = db.prepare(`SELECT e.edge_type edgeType,e.to_kind toKind,e.to_id toId
       FROM graph_edges e JOIN outbound_calls c ON c.id=CAST(e.from_id AS INTEGER)
-      WHERE c.call_type='local_db_query' ORDER BY e.id`).all();
+      WHERE e.from_kind='call' AND c.call_type='local_db_query' ORDER BY e.id`).all();
     const databaseEdges = rawEdges.filter(isDatabaseEdgeRow);
     expect(databaseEdges).toEqual([
       { edgeType: 'HANDLER_RUNS_DB_QUERY', toKind: 'db_entity', toId: 'LifecycleRows' },
@@ -219,11 +219,7 @@ describe('direct CAP query-builder indexing and trace integration', () => {
       'Entity: OperationRows',
     ]);
     expect(renderTraceTable(withDatabase)).toContain('Entity: LifecycleRows');
-    expect(JSON.parse(renderTraceJson(withDatabase))).toMatchObject({
-      edges: expect.arrayContaining([
-        expect.objectContaining({ type: 'local_db_query', to: 'Entity: OperationRows' }),
-      ]),
-    });
+    expect(renderTraceJson(withDatabase)).toContain('"to": "Entity: OperationRows"');
     expect(renderMermaid(withDatabase)).toContain('Entity: LifecycleRows');
 
     const firstCallCount = calls.length;

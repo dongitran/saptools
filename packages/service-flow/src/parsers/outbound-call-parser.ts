@@ -40,18 +40,123 @@ function variableInitializers(source: ts.SourceFile): Map<string, ts.Expression>
   }
   return initializers;
 }
+function unwrapQueryExpression(expr: ts.Expression): ts.Expression {
+  if (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)
+    || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr)
+    || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr))
+    return unwrapQueryExpression(expr.expression);
+  return expr;
+}
 function queryEntityFromAst(expr: ts.Expression, initializers = new Map<string, ts.Expression>()): string | undefined {
-  if (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) return queryEntityFromAst(expr.expression, initializers);
-  if (ts.isIdentifier(expr) && initializers.has(expr.text)) return queryEntityFromAst(initializers.get(expr.text) as ts.Expression, initializers);
-  if (ts.isCallExpression(expr)) {
-    const name = expressionName(expr.expression);
-    if (name === 'cds.run') return queryEntityFromAst(expr.arguments[0], initializers);
-    if (['SELECT.one.from', 'SELECT.from', 'SELECT.one', 'INSERT.into', 'UPSERT.into', 'DELETE.from', 'UPDATE.entity'].includes(name)) return entityFromExpression(expr.arguments[0]);
-    if (name === 'UPDATE') return entityFromExpression(expr.arguments[0]);
-    const receiver = ts.isPropertyAccessExpression(expr.expression) ? expr.expression.expression : undefined;
+  const unwrapped = unwrapQueryExpression(expr);
+  if (ts.isIdentifier(unwrapped) && initializers.has(unwrapped.text)) return queryEntityFromAst(initializers.get(unwrapped.text) as ts.Expression, initializers);
+  if (ts.isCallExpression(unwrapped)) {
+    const name = expressionName(unwrapped.expression);
+    if (name === 'cds.run') return queryEntityFromAst(unwrapped.arguments[0], initializers);
+    if (capQueryBuilderRoots.has(name)) return entityFromExpression(unwrapped.arguments[0]);
+    const receiver = ts.isPropertyAccessExpression(unwrapped.expression) ? unwrapped.expression.expression : undefined;
     if (receiver) return queryEntityFromAst(receiver, initializers);
   }
   return undefined;
+}
+const capQueryBuilderRoots = new Set([
+  'SELECT.from',
+  'SELECT.one.from',
+  'SELECT.one',
+  'INSERT.into',
+  'UPSERT.into',
+  'UPDATE.entity',
+  'UPDATE',
+  'DELETE.from',
+]);
+interface DirectQueryBuilderStatement {
+  root: ts.CallExpression;
+  logicalCall: ts.CallExpression;
+  awaitExpression: ts.AwaitExpression;
+}
+function wrapperParent(node: ts.Expression): ts.Expression | undefined {
+  const parent = node.parent;
+  if ((ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
+    || ts.isTypeAssertionExpression(parent) || ts.isNonNullExpression(parent)
+    || ts.isSatisfiesExpression(parent)) && parent.expression === node)
+    return parent;
+  return undefined;
+}
+function fluentCallParent(node: ts.Expression): ts.CallExpression | undefined {
+  const property = node.parent;
+  if (!ts.isPropertyAccessExpression(property) || property.expression !== node) return undefined;
+  const call = property.parent;
+  return ts.isCallExpression(call) && call.expression === property ? call : undefined;
+}
+function queryBuilderRoot(expr: ts.Expression): ts.CallExpression | undefined {
+  const unwrapped = unwrapQueryExpression(expr);
+  if (!ts.isCallExpression(unwrapped)) return undefined;
+  if (capQueryBuilderRoots.has(expressionName(unwrapped.expression))) return unwrapped;
+  return ts.isPropertyAccessExpression(unwrapped.expression)
+    ? queryBuilderRoot(unwrapped.expression.expression)
+    : undefined;
+}
+function outerFluentQueryCall(root: ts.CallExpression): ts.CallExpression {
+  let current: ts.Expression = root;
+  let outer = root;
+  while (true) {
+    const wrapper = wrapperParent(current);
+    if (wrapper) {
+      current = wrapper;
+      continue;
+    }
+    const next = fluentCallParent(current);
+    if (!next) return outer;
+    outer = next;
+    current = next;
+  }
+}
+function directQueryBuilderStatement(node: ts.CallExpression): DirectQueryBuilderStatement | undefined {
+  const root = queryBuilderRoot(node);
+  if (!root) return undefined;
+  const logicalCall = outerFluentQueryCall(root);
+  if (logicalCall !== node) return undefined;
+  let current: ts.Expression = logicalCall;
+  while (true) {
+    const wrapper = wrapperParent(current);
+    if (wrapper) {
+      current = wrapper;
+      continue;
+    }
+    const parent = current.parent;
+    return ts.isAwaitExpression(parent) && parent.expression === current
+      ? { root, logicalCall, awaitExpression: parent }
+      : undefined;
+  }
+}
+function queryBuilderEvidence(
+  source: ts.SourceFile,
+  statement: DirectQueryBuilderStatement,
+): Record<string, unknown> {
+  return {
+    classifier: 'cap_query_builder_direct',
+    queryDispatch: 'direct_query_builder',
+    queryRoot: expressionName(statement.root.expression),
+    queryRootStartOffset: statement.root.getStart(source),
+    queryRootEndOffset: statement.root.getEnd(),
+    queryStatementStartOffset: statement.awaitExpression.getStart(source),
+    queryStatementEndOffset: statement.awaitExpression.getEnd(),
+  };
+}
+function queryRunEvidence(
+  source: ts.SourceFile,
+  argument: ts.Expression | undefined,
+): Record<string, unknown> {
+  const root = argument ? queryBuilderRoot(argument) : undefined;
+  return {
+    classifier: 'cap_query_run_wrapper',
+    queryDispatch: 'cds_run_wrapper',
+    ...(root ? {
+      queryRoot: expressionName(root.expression),
+      queryRootStartOffset: root.getStart(source),
+      queryRootEndOffset: root.getEnd(),
+    } : {}),
+  };
 }
 function extractQueryEntity(expr: string): string | undefined {
   const source = ts.createSourceFile('query.ts', `const __query = (${expr});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -423,11 +528,16 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
       }
       const expr = node.expression;
       const exprText = expr.getText(source);
+      const directQuery = directQueryBuilderStatement(node);
       if (exprText === 'cds.run') {
         const arg = node.arguments[0];
         const entity = arg ? queryEntityFromAst(arg, initializers) : undefined;
         const payload = arg?.getText(source) ?? '';
-        add(node, { callType: 'local_db_query', queryEntity: entity, payloadSummary: summarizeExpression(payload), confidence: entity ? 0.9 : 0.55, unresolvedReason: entity ? undefined : queryWarning(payload) });
+        add(node, { callType: 'local_db_query', queryEntity: entity, payloadSummary: summarizeExpression(payload), confidence: entity ? 0.9 : 0.55, unresolvedReason: entity ? undefined : queryWarning(payload) }, queryRunEvidence(source, arg));
+      } else if (directQuery) {
+        const entity = queryEntityFromAst(directQuery.logicalCall, initializers);
+        const payload = directQuery.logicalCall.getText(source);
+        add(directQuery.logicalCall, { callType: 'local_db_query', queryEntity: entity, payloadSummary: summarizeExpression(payload), confidence: entity ? 0.9 : 0.55, unresolvedReason: entity ? undefined : queryWarning(payload) }, queryBuilderEvidence(source, directQuery));
       } else if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'send' && (ts.isIdentifier(expr.expression) || ts.isPropertyAccessExpression(expr.expression))) {
         const objectArg = node.arguments[0];
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
