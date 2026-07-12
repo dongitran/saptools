@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.55
+
+- Indexed directly awaited CAP query-builder statements as local database calls, preserving exact builder-root evidence, fluent statement offsets, dynamic-entity warnings, method ownership, and the existing single `cds.run(...)` fact.
+- Made normal CLI stdout pipeline-safe: an early downstream pipe close stops further output without an unhandled `EPIPE` stack trace, while unrelated stream failures remain non-zero diagnostics.
+
 ## 0.1.54
 
 - Made contextual dynamic trace diagnostics runtime-current after `--var` substitution while retaining labelled pre-substitution binding state and distinct structural blockers.

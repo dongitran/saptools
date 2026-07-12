@@ -1,5 +1,11 @@
 # Service Flow Resolution Notes
 
+## 0.1.55 direct query-builder and stdout notes
+
+- Direct, awaited CAP builders now create one `local_db_query` fact when their AST root is a supported `SELECT`, `INSERT`, `UPSERT`, `UPDATE`, or `DELETE` form. The parser follows fluent continuations and transparent TypeScript wrappers, records the direct dispatch marker plus root and statement offsets, and keeps ordinary member-name lookalikes out of database facts. A builder nested in `cds.run(...)` remains one wrapper-dispatched fact.
+- Static entities retain high confidence. Dynamic entity expressions retain the existing terminal unknown-entity behavior and parser warning; neither form evaluates application expressions. Fact insertion continues to use the logical statement location, so the narrowest executable symbol owns lifecycle and operation-method queries independently.
+- CLI command output uses one shared stdout policy. `EPIPE` from an early-closing Unix consumer marks output complete and suppresses later writes. Other stdout errors are reported through the existing failure path, so valid full JSON, table, and Mermaid bytes are unchanged and genuine failures still exit non-zero.
+
 ## 0.1.54 runtime-current diagnostics and selected handler notes
 
 - Contextual service-binding resolution now emits typed local trace state instead of passing a message string as control flow. `dynamic_missing`, `ambiguous_binding`, `ambiguous_operation`, `no_matching_operation`, and other conservative blockers remain distinguishable; `contextualPreSubstitutionState` preserves the historical attempt without changing a persisted graph row.
