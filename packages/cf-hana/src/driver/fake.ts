@@ -50,6 +50,21 @@ function fakeExec(sql: string): DriverExecResult {
   }
 
   const upperSql = sql.toUpperCase();
+  if (upperSql.includes("PRIVILEGE_ERROR_CODE")) {
+    throw new QueryError("insufficient privilege: not authorized", { databaseCode: 258 });
+  }
+  if (upperSql.includes("PRIVILEGE_ERROR_MESSAGE")) {
+    throw new QueryError("insufficient privilege: grant is missing");
+  }
+  if (upperSql.includes("NON_PRIVILEGE_ERROR")) {
+    throw new QueryError("fake unrelated query failure", { databaseCode: 999 });
+  }
+  if (
+    readEnv(envName("FAKE_PRIVILEGE_CATALOG")) === "1" &&
+    (upperSql.includes("SYS.TABLES") || upperSql.includes("SYS.TABLE_COLUMNS"))
+  ) {
+    throw new QueryError("insufficient privilege: catalog access denied", { databaseCode: 258 });
+  }
   if (upperSql.includes("SYS.TABLES") && upperSql.includes("SYS.VIEWS")) {
     if (readEnv(envName("FAKE_FAIL_CATALOG_ONCE")) === "1" && !catalogFailureInjected) {
       catalogFailureInjected = true;

@@ -135,7 +135,11 @@ describe("HanaClient", () => {
       selectorSource: "ambient",
       regionConfirmed: true,
       selectorCanBePinned: true,
+      bindingName: "hana-primary",
+      bindingIndex: 0,
+      availableBindingNames: ["hana-primary"],
     });
+    expect(client.databaseUser).toBe("DB_USER");
     await client.close();
   });
 

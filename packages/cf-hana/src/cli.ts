@@ -266,6 +266,44 @@ function printLobSortOrGroupHint(): void {
   process.stderr.write(`${lines.join("\n")}\n`);
 }
 
+function isInsufficientPrivilegeError(error: unknown): boolean {
+  return databaseCode(error) === 258 || /\binsufficient privilege\b/i.test(errorMessage(error));
+}
+
+function printInsufficientPrivilegeHint(
+  client: HanaClient,
+  schema: string,
+): void {
+  const binding = client.info.bindingName ??
+    (client.info.bindingIndex === undefined ? "unknown" : `#${String(client.info.bindingIndex)}`);
+  const otherBindings = (client.info.availableBindingNames ?? []).filter(
+    (name) => name !== client.info.bindingName,
+  );
+  const retryBinding = otherBindings[0];
+  const lines = [
+    `${CLI_NAME}: insufficient privilege for schema ${schema} as database user ` +
+      `${client.databaseUser || "unknown"} (current binding: ${binding}).`,
+  ];
+  if (retryBinding !== undefined) {
+    lines.push(
+      `${CLI_NAME}: other HANA bindings on this app: ${otherBindings.join(", ")}; ` +
+        `retry with --binding ${retryBinding}.`,
+    );
+  }
+  lines.push(
+    `${CLI_NAME}: try another app or full selector whose binding has the grant; ` +
+      "no automatic retry was attempted.",
+  );
+  process.stderr.write(`${lines.join("\n")}\n`);
+}
+
+function rethrowWithPrivilegeHint(error: unknown, client: HanaClient, schema: string): never {
+  if (isInsufficientPrivilegeError(error)) {
+    printInsufficientPrivilegeHint(client, schema);
+  }
+  throw error;
+}
+
 async function printColumnSuggestions(
   error: unknown,
   client: HanaClient,
@@ -326,6 +364,11 @@ async function enrichAndRethrowQueryError(
   sql: string,
   refresh: boolean,
 ): Promise<never> {
+  if (isInsufficientPrivilegeError(error)) {
+    const schema = extractMissingObjectName(sql)?.schema ?? client.info.schema;
+    printInsufficientPrivilegeHint(client, schema);
+    throw error;
+  }
   if (isLobSortOrGroupError(error)) {
     printLobSortOrGroupHint();
     throw error;
@@ -352,16 +395,10 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
     if (backup !== undefined) {
       process.stderr.write(`${CLI_NAME}: backup saved to ${backup.directory}\n`);
     }
-    const result = await client
-      .query(sql, params)
-      .catch(async (error: unknown): Promise<QueryResult> => {
-        return await enrichAndRethrowQueryError(
-          error,
-          client,
-          sql,
-          opts.refreshMetadata,
-        );
-      });
+    const result = await client.query(sql, params).catch(
+      async (error: unknown): Promise<QueryResult> =>
+        await enrichAndRethrowQueryError(error, client, sql, opts.refreshMetadata),
+    );
     if (result.statement === "select") {
       const compact = formatCompactCsv(result, cellLimit);
       if (opts.save) {
@@ -398,7 +435,10 @@ async function runTables(
   const opts = command.opts<FormattedCliOptions>();
   const client = await connectForCli(selector, toConnectOptions(opts));
   try {
-    const tables = await client.listTables(schema ?? client.info.schema);
+    const resolvedSchema = schema ?? client.info.schema;
+    const tables = await client.listTables(resolvedSchema).catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, resolvedSchema),
+    );
     const rows: readonly QueryRow[] = tables.map((table) => ({
       SCHEMA: table.schema,
       TABLE: table.name,
@@ -415,7 +455,9 @@ async function runColumns(selector: string, target: string, command: Command): P
   const { schema, table } = parseQualifiedName(target);
   const client = await connectForCli(selector, toConnectOptions(opts));
   try {
-    const columns = await client.listColumns(schema, table);
+    const columns = await client.listColumns(schema, table).catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, schema),
+    );
     const rows: readonly QueryRow[] = columns.map((column) => ({
       COLUMN: column.name,
       TYPE: column.dataType,
@@ -434,7 +476,9 @@ async function runCount(selector: string, target: string, command: Command): Pro
   const { schema, table } = parseQualifiedName(target);
   const client = await connectForCli(selector, toConnectOptions(opts));
   try {
-    const total = await client.count({ schema, table });
+    const total = await client.count({ schema, table }).catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, schema),
+    );
     print(String(total));
   } finally {
     await client.close();
@@ -446,7 +490,9 @@ async function runPing(selector: string, command: Command): Promise<void> {
   const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const started = Date.now();
-    await client.query("SELECT 1 FROM DUMMY");
+    await client.query("SELECT 1 FROM DUMMY").catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, client.info.schema),
+    );
     print(
       `OK  ${client.info.host}  schema=${client.info.schema}  ` +
         `${String(Date.now() - started)}ms`,

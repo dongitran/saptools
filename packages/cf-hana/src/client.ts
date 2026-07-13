@@ -45,6 +45,7 @@ export class HanaClient {
   constructor(
     private readonly pool: ConnectionPool,
     readonly info: HanaClientInfo,
+    readonly databaseUser = "",
   ) {}
 
   /** Open a client for a `region/org/space/app` selector (or a bare app name). */
@@ -52,6 +53,7 @@ export class HanaClient {
     const resolved = await resolveAppBindings(selector, options);
     const role: DbUserRole = options.role ?? "runtime";
     const binding = selectBinding(resolved.bindings, options);
+    const bindingIndex = resolved.bindings.indexOf(binding);
     const target = toConnectionTarget(binding, role);
     const driver = createDriver();
 
@@ -82,8 +84,13 @@ export class HanaClient {
       selectorSource: resolved.selectorSource,
       regionConfirmed: resolved.regionConfirmed,
       selectorCanBePinned: resolved.selectorCanBePinned,
+      ...(binding.name === undefined ? {} : { bindingName: binding.name }),
+      bindingIndex,
+      availableBindingNames: resolved.bindings.flatMap((candidate) =>
+        candidate.name === undefined ? [] : [candidate.name],
+      ),
     };
-    return new HanaClient(new ConnectionPool(driver, config, poolOptions), info);
+    return new HanaClient(new ConnectionPool(driver, config, poolOptions), info, target.user);
   }
 
   /** Run a SELECT (or any read) statement and return typed rows. */

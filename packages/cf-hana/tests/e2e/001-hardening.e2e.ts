@@ -19,6 +19,7 @@ interface FakeEnvOptions {
   readonly apiEndpoint?: string;
   readonly failStatement?: "select" | "dml";
   readonly multipleBindings?: boolean;
+  readonly privilegeCatalog?: boolean;
   readonly retargetAfterEnv?: boolean;
 }
 
@@ -51,6 +52,9 @@ function fakeEnv(options: FakeEnvOptions = {}): Record<string, string> {
       : { CF_HANA_FAKE_FAIL_STATEMENT: options.failStatement }),
     ...(options.multipleBindings === true
       ? { CF_HANA_FAKE_CF_MULTIPLE_BINDINGS: "1" }
+      : {}),
+    ...(options.privilegeCatalog === true
+      ? { CF_HANA_FAKE_PRIVILEGE_CATALOG: "1" }
       : {}),
     ...(options.retargetAfterEnv === true
       ? { CF_HANA_FAKE_CF_RETARGET_AFTER_ENV: "1" }
@@ -182,4 +186,53 @@ test("User still gets a hard error for ambiguous HANA bindings", async () => {
   expect(result.stderr).toContain("hana-primary");
   expect(result.stderr).toContain("hana-secondary");
   await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+});
+
+test("User gets binding-specific guidance for HANA error 258 without an automatic retry", async () => {
+  const sql = "SELECT * FROM APP_SCHEMA.PRIVILEGE_ERROR_CODE";
+  const result = await runCli(
+    ["query", "app-demo", sql, "--binding", "hana-primary"],
+    fakeEnv({ multipleBindings: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("insufficient privilege for schema APP_SCHEMA");
+  expect(result.stderr).toContain("database user DB_USER");
+  expect(result.stderr).toContain("current binding: hana-primary");
+  expect(result.stderr).toContain("other HANA bindings on this app: hana-secondary");
+  expect(result.stderr).toContain("--binding hana-secondary");
+  expect(result.stderr).toContain("insufficient privilege: not authorized");
+  const trace = await readFakeTraceEntries(home);
+  expect(trace).toEqual([{ sql: `${sql} LIMIT 101`, paramCount: 0 }]);
+});
+
+test("User gets the privilege hint when the driver omits error code 258", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM PRIVILEGE_ERROR_MESSAGE"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("insufficient privilege for schema APP_SCHEMA");
+  expect(result.stderr).toContain("database user DB_USER");
+});
+
+test("User does not get privilege guidance for unrelated query failures", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM NON_PRIVILEGE_ERROR"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("fake unrelated query failure");
+  expect(result.stderr).not.toContain("other HANA bindings");
+  expect(result.stderr).not.toContain("whose binding has the grant");
+});
+
+test("User gets the privilege hint from catalog read commands too", async () => {
+  const result = await runCli(["tables", SELECTOR], fakeEnv({ privilegeCatalog: true }));
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("insufficient privilege for schema APP_SCHEMA");
+  expect(result.stderr).toContain("database user DB_USER");
 });

@@ -115,6 +115,9 @@ export interface HanaClientInfo {
   readonly selectorSource?: SelectorSource;
   readonly regionConfirmed?: boolean;
   readonly selectorCanBePinned?: boolean;
+  readonly bindingName?: string;
+  readonly bindingIndex?: number;
+  readonly availableBindingNames?: readonly string[];
 }
 
 /** HANA binding credentials (from VCAP). */

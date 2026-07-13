@@ -27,6 +27,8 @@ export interface MetadataCacheScope {
   readonly schema: string;
   readonly role: string;
   readonly driver: string;
+  readonly bindingName?: string;
+  readonly bindingIndex?: number;
 }
 
 export interface MetadataCacheOptions {
@@ -46,6 +48,8 @@ export function toMetadataCacheScope(info: HanaClientInfo): MetadataCacheScope {
     schema: info.schema,
     role: info.role,
     driver: info.driver,
+    ...(info.bindingName === undefined ? {} : { bindingName: info.bindingName }),
+    ...(info.bindingIndex === undefined ? {} : { bindingIndex: info.bindingIndex }),
   };
 }
 
@@ -78,7 +82,9 @@ function isScope(value: unknown): value is MetadataCacheScope {
     typeof value["host"] === "string" &&
     typeof value["schema"] === "string" &&
     typeof value["role"] === "string" &&
-    typeof value["driver"] === "string"
+    typeof value["driver"] === "string" &&
+    (value["bindingName"] === undefined || typeof value["bindingName"] === "string") &&
+    (value["bindingIndex"] === undefined || typeof value["bindingIndex"] === "number")
   );
 }
 

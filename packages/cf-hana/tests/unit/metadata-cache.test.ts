@@ -77,8 +77,11 @@ describe("metadata cache", () => {
     const root = await mkdtemp(join(tmpdir(), "cf-hana-cache-"));
     const scope = toMetadataCacheScope(info);
     const key = metadataCacheKey(scope);
+    const otherBindingScope = toMetadataCacheScope({ ...info, bindingName: "other-binding" });
     expect(key).not.toContain("password");
     expect(metadataCacheKey({ ...scope, schema: "OTHER" })).not.toBe(key);
+    expect(otherBindingScope.bindingName).toBe("other-binding");
+    expect(metadataCacheKey(otherBindingScope)).not.toBe(key);
     const dir = join(root, "cf-hana", "metadata");
     await import("node:fs/promises").then(async (fs) => await fs.mkdir(dir, { recursive: true }));
     await writeFile(join(dir, `${key}.json`), "not-json", "utf8");
