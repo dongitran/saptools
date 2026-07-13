@@ -13,7 +13,8 @@ import {
 import { CfHanaError, QueryError, databaseCode, errorMessage } from "./errors.js";
 import { formatCompactCsv, formatResult, formatTable } from "./format.js";
 import { loadCatalogObjectsWithCache, toMetadataCacheScope } from "./metadata-cache.js";
-import { createResultSession } from "./result-store.js";
+import { createResultSession, tryCreateResultSession } from "./result-store.js";
+import type { ResultSession } from "./result-store.js";
 import { classifyStatement } from "./statements.js";
 import {
   extractInvalidColumnNameFromError,
@@ -54,6 +55,7 @@ interface FormattedCliOptions extends ConnectionCliOptions {
 interface QueryCliOptions extends ConnectionCliOptions {
   readonly param?: readonly string[];
   readonly save: boolean;
+  readonly autoSave: boolean;
   readonly cellLimit?: number;
   readonly resultTtlMinutes?: number;
 }
@@ -177,6 +179,46 @@ function assertQueryOptions(sql: string, opts: QueryCliOptions): void {
   if (opts.save && classifyStatement(sql) !== "select") {
     throw new CfHanaError("CONFIG", "--save is only available for SELECT/WITH statements");
   }
+}
+
+async function persistCompactResult(
+  result: QueryResult,
+  info: HanaClientInfo,
+  opts: QueryCliOptions,
+  truncatedCells: number,
+): Promise<ResultSession | undefined> {
+  const input = {
+    result,
+    info,
+    ...(opts.resultTtlMinutes === undefined ? {} : { ttlMinutes: opts.resultTtlMinutes }),
+  };
+  if (opts.save) {
+    const session = await createResultSession(input);
+    print(`ref=${session.ref}`);
+    return session;
+  }
+  if (!opts.autoSave || truncatedCells === 0) {
+    return void 0;
+  }
+  return await tryCreateResultSession(input);
+}
+
+function printCompactionHint(
+  truncatedCells: number,
+  session: ResultSession | undefined,
+  explicitlySaved: boolean,
+): void {
+  const prefix = `${CLI_NAME}: compacted ${String(truncatedCells)} cell(s);`;
+  if (session === undefined) {
+    process.stderr.write(`${prefix} rerun with --save or increase --cell-limit\n`);
+    return;
+  }
+  const saved = explicitlySaved ? "" : ` exact values auto-saved as ${session.ref};`;
+  process.stderr.write(
+    `${prefix}${saved} inspect exact values with ` +
+      `'${CLI_NAME} result show ${session.ref} --row <r> --column <c>' ` +
+      "or increase --cell-limit\n",
+  );
 }
 
 function rowsToResult(rows: readonly QueryRow[]): QueryResult {
@@ -401,23 +443,18 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
     );
     if (result.statement === "select") {
       const compact = formatCompactCsv(result, cellLimit);
-      if (opts.save) {
-        const session = await createResultSession({
-          result,
-          info: client.info,
-          ...(opts.resultTtlMinutes === undefined ? {} : { ttlMinutes: opts.resultTtlMinutes }),
-        });
-        print(`ref=${session.ref}`);
-      }
+      const session = await persistCompactResult(
+        result,
+        client.info,
+        opts,
+        compact.truncatedCells,
+      );
       print(compact.text);
       if (result.truncated) {
         process.stderr.write(`${CLI_NAME}: row limit reached; rerun with --limit for more rows\n`);
       }
       if (compact.truncatedCells > 0) {
-        process.stderr.write(
-          `${CLI_NAME}: compacted ${String(compact.truncatedCells)} cell(s); ` +
-            "use --save to inspect exact values by ref\n",
-        );
+        printCompactionHint(compact.truncatedCells, session, opts.save);
       }
       return;
     }
@@ -525,6 +562,7 @@ function buildProgram(): Command {
       .description("run a single SQL statement")
       .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, [])
       .option("--save", "save exact returned rows for follow-up inspection", false)
+      .option("--no-auto-save", "do not auto-save exact rows when compact output truncates cells")
       .option("--cell-limit <n>", "maximum visible characters per data cell", parseIntOption)
       .option(
         "--result-ttl-minutes <n>",

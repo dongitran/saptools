@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -235,4 +235,70 @@ test("User gets the privilege hint from catalog read commands too", async () => 
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("insufficient privilege for schema APP_SCHEMA");
   expect(result.stderr).toContain("database user DB_USER");
+});
+
+test("User can inspect auto-saved exact values after compact output truncates", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--cell-limit", "6"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("1,sample");
+  expect(result.stdout).not.toContain("ref=");
+  const match = /exact values auto-saved as (q[0-9a-f]{8})/.exec(result.stderr);
+  const ref = match?.[1] ?? "";
+  expect(ref).not.toBe("");
+  expect(result.stderr).toContain(
+    `cf-hana result show ${ref} --row <r> --column <c>`,
+  );
+
+  const exact = await runCli(
+    ["result", "show", ref, "--row", "1", "--column", "NAME", "--length", "50"],
+    fakeEnv(),
+  );
+  expect(exact.exitCode).toBe(0);
+  expect(exact.stdout).toContain("sample-row");
+});
+
+test("User can opt out of truncation-triggered result saves", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--cell-limit", "6", "--no-auto-save"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toContain("rerun with --save or increase --cell-limit");
+  expect(result.stderr).not.toContain("auto-saved as");
+  const listed = await runCli(["result", "list"], fakeEnv());
+  expect(listed.stdout).not.toMatch(/q[0-9a-f]{8}/);
+});
+
+test("User does not create an implicit result ref when no cell is truncated", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--cell-limit", "20"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).not.toContain("compacted");
+  expect(result.stderr).not.toContain("auto-saved as");
+  const listed = await runCli(["result", "list"], fakeEnv());
+  expect(listed.stdout).not.toMatch(/q[0-9a-f]{8}/);
+});
+
+test("User keeps compact query output when an automatic save fails", async () => {
+  const cfHanaRoot = join(home, ".saptools", "cf-hana");
+  await mkdir(cfHanaRoot, { recursive: true });
+  await writeFile(join(cfHanaRoot, "results"), "blocks result directory creation", "utf8");
+
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--cell-limit", "6"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("1,sample");
+  expect(result.stderr).toContain("rerun with --save or increase --cell-limit");
+  expect(result.stderr).not.toContain("auto-saved as");
 });

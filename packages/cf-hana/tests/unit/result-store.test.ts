@@ -10,6 +10,7 @@ import {
   listResultSessions,
   pruneResultSessions,
   readResultSession,
+  tryCreateResultSession,
 } from "../../src/result-store.js";
 import type { HanaClientInfo, QueryResult } from "../../src/types.js";
 
@@ -131,6 +132,16 @@ describe("result store", () => {
         { saptoolsRoot: rootDir, maxBytes: 10 },
       ),
     ).rejects.toThrow(/storage limit/);
+  });
+
+  it("fails soft when an automatic result save exceeds its byte ceiling", async () => {
+    await expect(
+      tryCreateResultSession(
+        { result: sampleResult(), info },
+        { saptoolsRoot: rootDir, maxBytes: 10 },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(listResultSessions({ saptoolsRoot: rootDir })).resolves.toEqual([]);
   });
 
   it("lists active sessions and prunes expired sessions", async () => {

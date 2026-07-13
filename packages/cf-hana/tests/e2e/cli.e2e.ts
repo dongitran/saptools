@@ -207,6 +207,10 @@ test("User can save a compact query and inspect it by ref", async () => {
   expect(result.stderr).toContain("compacted 2 cell(s)");
 
   const ref = lines[0]?.slice("ref=".length) ?? "";
+  expect(result.stderr).toContain(
+    `cf-hana result show ${ref} --row <r> --column <c>`,
+  );
+  expect(result.stderr).not.toContain("use --save to inspect");
   const cell = await runCli(
     ["result", "show", ref, "--row", "1", "--column", "NAME", "--length", "50"],
     fakeEnv(),

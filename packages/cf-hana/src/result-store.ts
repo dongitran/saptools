@@ -288,6 +288,18 @@ export async function createResultSession(
   return toSession(stored, options.saptoolsRoot);
 }
 
+/** Attempt an advisory result save without turning a successful query into a failure. */
+export async function tryCreateResultSession(
+  input: CreateResultSessionInput,
+  options: ResultStoreOptions = {},
+): Promise<ResultSession | undefined> {
+  try {
+    return await createResultSession(input, options);
+  } catch {
+    return void 0;
+  }
+}
+
 /** Read one active saved result by ref. */
 export async function readResultSession(
   ref: string,
