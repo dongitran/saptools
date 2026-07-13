@@ -211,4 +211,26 @@ describe("formatResult", () => {
     expect(formatResult(result, "json")).toBe(formatJson(result));
     expect(formatResult(result, "csv")).toBe(formatCsv(result));
   });
+
+  it("flattens one-column and preferred-column JSON compact results", () => {
+    const result = selectResult();
+    const oneColumn: QueryResult = {
+      ...result,
+      rows: result.rows.map((row) => ({ NAME: row["NAME"] ?? null })),
+      columns: [{ name: "NAME", typeName: "NVARCHAR" }],
+    };
+
+    expect(JSON.parse(formatResult(oneColumn, "json-compact"))).toEqual(["Alice", "Bob"]);
+    expect(JSON.parse(formatResult(result, "json-compact", "NAME"))).toEqual([
+      "Alice",
+      "Bob",
+    ]);
+  });
+
+  it("falls back to row objects for multi-column JSON compact results", () => {
+    expect(JSON.parse(formatResult(selectResult(), "json-compact"))).toEqual([
+      { ID: 1, NAME: "Alice" },
+      { ID: 2, NAME: "Bob" },
+    ]);
+  });
 });

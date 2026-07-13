@@ -31,7 +31,7 @@
     "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/fake-cf.mjs",
     "test:unit": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:fake": "playwright test tests/e2e/cli.e2e.ts",
+    "test:e2e:fake": "playwright test tests/e2e/cli.e2e.ts tests/e2e/001-hardening.e2e.ts",
     "test:e2e:live": "playwright test tests/e2e/live.e2e.ts"
   },
   "keywords": [

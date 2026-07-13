@@ -88,6 +88,17 @@ export function formatJson(result: QueryResult): string {
   return JSON.stringify(rows, null, 2);
 }
 
+function formatJsonCompact(result: QueryResult, preferredColumn?: string): string {
+  const singleColumn = result.columns.length === 1 ? result.columns[0]?.name : void 0;
+  const columnName = preferredColumn ?? singleColumn;
+  if (columnName === undefined) {
+    return formatJson(result);
+  }
+  const column = result.columns.find((item) => item.name === columnName);
+  const values = result.rows.map((row) => serializeCell(row[columnName] ?? null, column));
+  return JSON.stringify(values, null, 2);
+}
+
 /** Render a result as RFC 4180 CSV. */
 export function formatCsv(result: QueryResult): string {
   const headers = result.columns.map((column) => column.name);
@@ -121,12 +132,18 @@ export function formatCompactCsv(result: QueryResult, cellLimit: number): Compac
 }
 
 /** Render a query result in the requested output format. */
-export function formatResult(result: QueryResult, format: OutputFormat): string {
+export function formatResult(
+  result: QueryResult,
+  format: OutputFormat,
+  compactColumn?: string,
+): string {
   switch (format) {
     case "table":
       return formatTable(result);
     case "json":
       return formatJson(result);
+    case "json-compact":
+      return formatJsonCompact(result, compactColumn);
     case "csv":
       return formatCsv(result);
   }

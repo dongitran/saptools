@@ -183,13 +183,17 @@ test("Deprecated refresh flag is accepted but metadata cache uses refresh-metada
   expect(metadataReads).toHaveLength(1);
 });
 
-test("User sees a clear failure when requesting query format output", async () => {
+test("User can request lossless JSON query output", async () => {
   const result = await runCli(
-    ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--format", "json"],
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "json", "--cell-limit", "3"],
     fakeEnv(),
   );
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain("unknown option '--format'");
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([
+    { ID: 1, NAME: "sample-row" },
+    { ID: 2, NAME: "second-row" },
+  ]);
+  expect(result.stderr).not.toContain("compacted");
 });
 
 test("User can save a compact query and inspect it by ref", async () => {

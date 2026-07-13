@@ -17,7 +17,7 @@ export type CredentialSource = "live";
 export type SelectorSource = "explicit" | "ambient";
 
 /** Output rendering for CLI results. */
-export type OutputFormat = "table" | "json" | "csv";
+export type OutputFormat = "table" | "json" | "json-compact" | "csv";
 
 export interface QueryResultColumn {
   readonly name: string;

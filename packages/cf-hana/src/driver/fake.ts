@@ -81,6 +81,21 @@ function fakeExec(sql: string): DriverExecResult {
     };
   }
 
+  if (upperSql.includes("SYS.TABLES")) {
+    return {
+      rows: [
+        { SCHEMA_NAME: "APP_SCHEMA", TABLE_NAME: "EXISTING_TABLE", TABLE_TYPE: "COLUMN TABLE" },
+        { SCHEMA_NAME: "APP_SCHEMA", TABLE_NAME: "STATUS_ITEMS", TABLE_TYPE: "ROW TABLE" },
+      ],
+      columns: [
+        { name: "SCHEMA_NAME", typeName: "NVARCHAR" },
+        { name: "TABLE_NAME", typeName: "NVARCHAR" },
+        { name: "TABLE_TYPE", typeName: "NVARCHAR" },
+      ],
+      affectedRows: 0,
+    };
+  }
+
   if (upperSql.includes("SYS.TABLE_COLUMNS")) {
     return {
       rows: tableColumns(),
@@ -126,6 +141,14 @@ function fakeExec(sql: string): DriverExecResult {
         { name: "CLOB_CONTENT", typeName: "CLOB" },
         { name: "PAYLOAD", typeName: "BLOB" },
       ],
+      affectedRows: 0,
+    };
+  }
+
+  if (upperSql.includes("SINGLE_COLUMN_FIXTURE")) {
+    return {
+      rows: [{ VALUE: "alpha" }, { VALUE: "beta" }],
+      columns: [{ name: "VALUE", typeName: "NVARCHAR" }],
       affectedRows: 0,
     };
   }

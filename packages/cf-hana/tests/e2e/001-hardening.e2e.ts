@@ -302,3 +302,112 @@ test("User keeps compact query output when an automatic save fails", async () =>
   expect(result.stderr).toContain("rerun with --save or increase --cell-limit");
   expect(result.stderr).not.toContain("auto-saved as");
 });
+
+test("User can request lossless CSV and table query formats", async () => {
+  const csv = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "csv", "--cell-limit", "3"],
+    fakeEnv(),
+  );
+  const table = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "table", "--cell-limit", "3"],
+    fakeEnv(),
+  );
+
+  expect(csv.exitCode).toBe(0);
+  expect(csv.stdout.trim()).toBe("ID,NAME\r\n1,sample-row\r\n2,second-row");
+  expect(table.exitCode).toBe(0);
+  expect(table.stdout).toContain("sample-row");
+  expect(table.stdout).toContain("second-row");
+  expect(table.stderr).not.toContain("compacted");
+});
+
+test("User gets flat JSON for catalog names and single-column query values", async () => {
+  const tables = await runCli(["tables", SELECTOR, "--format", "json-compact"], fakeEnv());
+  const columns = await runCli(
+    ["columns", SELECTOR, "APP_SCHEMA.EXISTING_TABLE", "--format", "json-compact"],
+    fakeEnv(),
+  );
+  const query = await runCli(
+    ["query", SELECTOR, "SELECT VALUE FROM SINGLE_COLUMN_FIXTURE", "--format", "json-compact"],
+    fakeEnv(),
+  );
+
+  expect(JSON.parse(tables.stdout)).toEqual(["EXISTING_TABLE", "STATUS_ITEMS"]);
+  expect(JSON.parse(columns.stdout)).toEqual(["ID", "IS_ACTIVE", "SCOPE_NAME"]);
+  expect(JSON.parse(query.stdout)).toEqual(["alpha", "beta"]);
+});
+
+test("User gets row objects when JSON compact query output has multiple columns", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "json-compact"],
+    fakeEnv(),
+  );
+
+  expect(JSON.parse(result.stdout)).toEqual([
+    { ID: 1, NAME: "sample-row" },
+    { ID: 2, NAME: "second-row" },
+  ]);
+});
+
+test("User keeps existing catalog JSON object keys", async () => {
+  const tables = await runCli(["tables", SELECTOR, "--format", "json"], fakeEnv());
+  const columns = await runCli(
+    ["columns", SELECTOR, "APP_SCHEMA.EXISTING_TABLE", "--format", "json"],
+    fakeEnv(),
+  );
+
+  expect(JSON.parse(tables.stdout)).toEqual([
+    { SCHEMA: "APP_SCHEMA", TABLE: "EXISTING_TABLE", TYPE: "COLUMN TABLE" },
+    { SCHEMA: "APP_SCHEMA", TABLE: "STATUS_ITEMS", TYPE: "ROW TABLE" },
+  ]);
+  expect(JSON.parse(columns.stdout)).toEqual([
+    { COLUMN: "ID", TYPE: "INTEGER", LENGTH: null, NULLABLE: false, POSITION: 1 },
+    { COLUMN: "IS_ACTIVE", TYPE: "BOOLEAN", LENGTH: null, NULLABLE: true, POSITION: 2 },
+    { COLUMN: "SCOPE_NAME", TYPE: "NVARCHAR", LENGTH: 255, NULLABLE: true, POSITION: 3 },
+  ]);
+});
+
+test("User sees exact JSON shapes in query and catalog help", async () => {
+  const query = await runCli(["query", "--help"], fakeEnv());
+  const tables = await runCli(["tables", "--help"], fakeEnv());
+  const columns = await runCli(["columns", "--help"], fakeEnv());
+
+  expect(query.stdout).toContain("default SELECT: compact CSV");
+  expect(query.stdout).toContain("--format json: [{COLUMN: value, ...}]");
+  expect(tables.stdout).toContain("[{SCHEMA,TABLE,TYPE}]");
+  expect(columns.stdout).toContain("[{COLUMN,TYPE,LENGTH,NULLABLE,POSITION}]");
+  expect(tables.stdout).toContain("json-compact: [TABLE, ...]");
+  expect(columns.stdout).toContain("json-compact: [COLUMN, ...]");
+});
+
+test("User gets invalid format errors before any database statement runs", async () => {
+  const query = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "xml"],
+    fakeEnv(),
+  );
+  const tables = await runCli(["tables", SELECTOR, "--format", "xml"], fakeEnv());
+
+  expect(query.exitCode).toBe(1);
+  expect(tables.exitCode).toBe(1);
+  expect(query.stderr).toContain("Invalid --format");
+  expect(tables.stderr).toContain("Invalid --format");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+});
+
+test("User cannot combine structured query output with result refs or writes", async () => {
+  const saved = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "json", "--save"],
+    fakeEnv(),
+  );
+  const write = await runCli(
+    ["query", SELECTOR, "DELETE FROM ITEMS WHERE ID = 1", "--format", "json"],
+    fakeEnv(),
+  );
+
+  expect(saved.exitCode).toBe(1);
+  expect(saved.stderr).toContain("--save cannot be combined with --format");
+  expect(write.exitCode).toBe(1);
+  expect(write.stderr).toContain("--format is only available for SELECT/WITH statements");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
