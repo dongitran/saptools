@@ -9,6 +9,7 @@ import {
 import type { InspectorSession, PauseOnExceptionsState } from "../../inspector/index.js";
 import { parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
+import { DEFAULT_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { RemoteRootSetting, SnapshotResult } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";
@@ -26,7 +27,7 @@ interface PreparedExceptionCommand {
   readonly captures: readonly string[];
   readonly remoteRoot: RemoteRootSetting;
   readonly timeoutMs: number;
-  readonly maxValueLength?: number;
+  readonly maxValueLength: number;
   readonly stackDepth?: number;
   readonly stackCaptures: readonly string[];
   readonly throwOnSideEffect: boolean;
@@ -56,7 +57,8 @@ function prepareExceptionCommand(opts: ExceptionCommandOptions, target: Target):
     );
   }
   const timeoutSec = parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_EXCEPTION_TIMEOUT_SEC;
-  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_MAX_VALUE_LENGTH;
   const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
   return {
     target,
@@ -64,7 +66,7 @@ function prepareExceptionCommand(opts: ExceptionCommandOptions, target: Target):
     captures: parseCaptureList(opts.capture),
     remoteRoot: parseRemoteRoot(opts.remoteRoot),
     timeoutMs: timeoutSec * 1000,
-    ...(maxValueLength === undefined ? {} : { maxValueLength }),
+    maxValueLength,
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
     throwOnSideEffect: opts.allowMutation !== true,
@@ -87,7 +89,7 @@ async function runExceptionCommand(
       const snapshot = await captureSnapshot(session, pause, {
         captures: command.captures,
         includeScopes: opts.includeScopes === true,
-        ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+        maxValueLength: command.maxValueLength,
         ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
         stackCaptures: command.stackCaptures,
         throwOnSideEffect: command.throwOnSideEffect,

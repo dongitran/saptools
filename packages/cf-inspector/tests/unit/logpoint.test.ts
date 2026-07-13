@@ -246,6 +246,44 @@ describe("streamLogpoint", () => {
     expect(removeCall?.params["breakpointId"]).toBe("bp-1");
   });
 
+  it("propagates an explicit value limit into emitted log events", async () => {
+    const { session, fire, sendCalls } = makeSession();
+    const events: unknown[] = [];
+    const stream = streamLogpoint(session, {
+      location,
+      expression: "payload",
+      maxEvents: 1,
+      maxValueLength: 5,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    await new Promise<void>((resolveOnce) => setImmediate(resolveOnce));
+    const setCall = sendCalls.find((call) => call.method === "Debugger.setBreakpointByUrl");
+    const sentinelMatch = /__CFI_LOG_[0-9a-f]+__/.exec(String(setCall?.params["condition"]));
+    expect(sentinelMatch?.[0]).toBeDefined();
+    fire([
+      { type: "string", value: sentinelMatch?.[0] ?? "" },
+      { type: "string", value: JSON.stringify("abcdef") },
+    ]);
+    await expect(stream).resolves.toMatchObject({ emitted: 1, stoppedReason: "max-events" });
+    expect(events[0]).toMatchObject({
+      value: "abcde",
+      truncated: true,
+      originalLength: 6,
+    });
+  });
+
+  it("rejects an invalid maxValueLength value", async () => {
+    const { session } = makeSession();
+    await expect(streamLogpoint(session, {
+      location,
+      expression: "x",
+      maxValueLength: 0,
+      onEvent: (): void => void 0,
+    })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
   it("stops on AbortSignal with stoppedReason='signal'", async () => {
     const { session } = makeSession();
     const ac = new AbortController();

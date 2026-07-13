@@ -7,7 +7,9 @@ import {
   formatPrimitive,
   isPrimitive,
   limitValueLength,
+  textTruncationFields,
 } from "./values.js";
+import type { LimitedValue } from "./values.js";
 
 export function evalResultToCaptured(
   expression: string,
@@ -15,7 +17,12 @@ export function evalResultToCaptured(
   maxValueLength = DEFAULT_MAX_VALUE_LENGTH,
 ): CapturedExpression {
   if (result.exceptionDetails !== undefined) {
-    return { expression, error: readEvalError(result, maxValueLength) };
+    const limited = readEvalError(result, maxValueLength);
+    return {
+      expression,
+      error: limited.text,
+      ...textTruncationFields(limited),
+    };
   }
   const inner = result.result;
   if (!inner) {
@@ -23,8 +30,12 @@ export function evalResultToCaptured(
   }
   const type = typeof inner.type === "string" ? inner.type : undefined;
   const buildCaptured = (rendered: string): CapturedExpression => {
-    const sanitized = limitValueLength(rendered, maxValueLength);
-    const base: CapturedExpression = { expression, value: sanitized };
+    const limited = limitValueLength(rendered, maxValueLength);
+    const base: CapturedExpression = {
+      expression,
+      value: limited.text,
+      ...textTruncationFields(limited),
+    };
     return type === undefined ? base : { ...base, type };
   };
 
@@ -56,7 +67,7 @@ export function sideEffectRefusalToCaptured(expression: string): CapturedExpress
   };
 }
 
-function readEvalError(result: CdpEvalResult, maxValueLength: number): string {
+function readEvalError(result: CdpEvalResult, maxValueLength: number): LimitedValue {
   const text =
     typeof result.exceptionDetails?.exception?.description === "string"
       ? result.exceptionDetails.exception.description

@@ -11,6 +11,7 @@ import {
 import type { InspectorSession } from "../../inspector/types.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
+import { DEFAULT_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { BreakpointLocation, RemoteRootSetting, SnapshotResult } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";
@@ -37,7 +38,7 @@ interface PreparedSnapshotCommand {
   readonly captures: readonly string[];
   readonly remoteRoot: RemoteRootSetting;
   readonly timeoutMs: number;
-  readonly maxValueLength?: number;
+  readonly maxValueLength: number;
   readonly condition?: string;
   readonly hitCount?: number;
   readonly stackDepth?: number;
@@ -73,7 +74,8 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
     );
   }
   const timeoutSec = parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_BREAKPOINT_TIMEOUT_SEC;
-  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_MAX_VALUE_LENGTH;
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
@@ -93,7 +95,7 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
     remoteRoot: parseRemoteRoot(opts.remoteRoot),
     timeoutMs: timeoutSec * 1000,
     ...(condition === undefined ? {} : { condition }),
-    ...(maxValueLength === undefined ? {} : { maxValueLength }),
+    maxValueLength,
     ...(hitCount === undefined ? {} : { hitCount }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
@@ -154,7 +156,7 @@ async function runSnapshotOnSession(
   const snapshot = await captureSnapshot(session, pause, {
     captures: command.captures,
     includeScopes: opts.includeScopes === true,
-    ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+    maxValueLength: command.maxValueLength,
     ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
     stackCaptures: command.stackCaptures,
     throwOnSideEffect: command.throwOnSideEffect,

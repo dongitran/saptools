@@ -237,7 +237,7 @@ test("snapshot materializes object captures as readable JSON strings", async () 
         "--bp",
         "fixtures/sample-app.mjs:14",
         "--capture",
-        "payload",
+        'payload, "x".repeat(5000)',
         "--timeout",
         "10",
       ],
@@ -251,6 +251,12 @@ test("snapshot materializes object captures as readable JSON strings", async () 
     const payload = JSON.parse(payloadCapture?.value ?? "{}") as { id?: number; name?: string };
     expect(typeof payload.id).toBe("number");
     expect(typeof payload.name).toBe("string");
+    const largeCapture = parsed.captures.find((entry) => {
+      return entry.expression === '"x".repeat(5000)';
+    });
+    expect(largeCapture?.value).toHaveLength(5_002);
+    expect(largeCapture?.truncated).toBeUndefined();
+    expect(largeCapture?.originalLength).toBeUndefined();
   } finally {
     await fixture.close();
   }
@@ -279,8 +285,10 @@ test("snapshot honors a custom max value length", async () => {
     expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
     const parsed = JSON.parse(result.stdout) as SnapshotResult;
     const payloadCapture = parsed.captures.find((entry) => entry.expression === "payload");
-    expect(payloadCapture?.value?.endsWith("...")).toBe(true);
-    expect(payloadCapture?.value?.length).toBeLessThanOrEqual(33);
+    expect(payloadCapture?.value).toHaveLength(30);
+    expect(payloadCapture?.value?.endsWith("...")).toBe(false);
+    expect(payloadCapture?.truncated).toBe(true);
+    expect(payloadCapture?.originalLength).toBeGreaterThan(30);
   } finally {
     await fixture.close();
   }
@@ -733,6 +741,8 @@ test("capture command help includes mutation controls", async () => {
     const result = await runCli([command, "--help"], 15_000);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("--allow-mutation");
+    expect(result.stdout).toContain("--max-value-length <chars>");
+    expect(result.stdout).toContain(command === "watch" ? "default: 4096" : "default: 131072");
     if (command === "snapshot") {
       expect(result.stdout).toContain("--setup-eval <expr>");
     }
@@ -745,6 +755,10 @@ test("capture-free commands do not expose --allow-mutation", async () => {
     const result = await runCli([command, "--help"], 15_000);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("--allow-mutation");
+    if (command === "log") {
+      expect(result.stdout).toContain("--max-value-length <chars>");
+      expect(result.stdout).toContain("default: 4096");
+    }
   }
 });
 

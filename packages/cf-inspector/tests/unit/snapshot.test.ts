@@ -7,20 +7,22 @@ import type { CallFrameInfo, PauseEvent } from "../../src/types.js";
 const { limitValueLength, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;
 
 describe("limitValueLength", () => {
-  it("truncates values longer than the default limit", () => {
-    const long = "x".repeat(5000);
-    const out = limitValueLength(long);
-    expect(out.endsWith("...")).toBe(true);
-    expect(out.length).toBeLessThanOrEqual(4099);
+  it("keeps typical multi-kilobyte values under the one-shot default", () => {
+    const value = "x".repeat(5000);
+    expect(limitValueLength(value)).toEqual({ text: value, truncated: false });
   });
 
-  it("truncates values longer than a custom limit", () => {
-    expect(limitValueLength("abcdef", 3)).toBe("abc...");
+  it("honors a custom limit exactly and records the original length", () => {
+    expect(limitValueLength("abcdef", 5)).toEqual({
+      text: "abcde",
+      truncated: true,
+      originalLength: 6,
+    });
   });
 
   it("returns short values unchanged regardless of name", () => {
-    expect(limitValueLength("42")).toBe("42");
-    expect(limitValueLength("hunter2")).toBe("hunter2");
+    expect(limitValueLength("42")).toEqual({ text: "42", truncated: false });
+    expect(limitValueLength("hunter2")).toEqual({ text: "hunter2", truncated: false });
   });
 });
 
@@ -475,9 +477,12 @@ describe("captureSnapshot", () => {
       captures: ["user"],
       maxValueLength: 20,
     });
-    const value = snapshot.captures[0]?.value ?? "";
-    expect(value.endsWith("...")).toBe(true);
-    expect(value.length).toBeLessThanOrEqual(23);
+    expect(snapshot.captures[0]).toMatchObject({
+      value: expect.any(String) as unknown as string,
+      truncated: true,
+      originalLength: 26,
+    });
+    expect(snapshot.captures[0]?.value).toHaveLength(20);
   });
 
   it("rejects invalid max value length overrides", async () => {

@@ -3,6 +3,12 @@ import process from "node:process";
 import type { LogpointEvent } from "../logpoint/events.js";
 import type { ExceptionSnapshot, FrameSnapshot, SnapshotResult, WatchEvent } from "../types.js";
 
+interface TruncationSummary {
+  readonly truncated?: true;
+  readonly originalLength?: number;
+  readonly omittedCount?: number;
+}
+
 export function writeProgress(message: string): void {
   process.stderr.write(`[cf-inspector] ${message}\n`);
 }
@@ -31,7 +37,7 @@ export function writeHumanSnapshot(snapshot: SnapshotResult): void {
     lines.push("  captures:");
     for (const capture of snapshot.captures) {
       const detail = capture.error ?? capture.value ?? "undefined";
-      lines.push(`    ${capture.expression} = ${detail}`);
+      lines.push(`    ${capture.expression} = ${renderTruncated(detail, capture)}`);
     }
   }
   if (snapshot.stack !== undefined && snapshot.stack.length > 0) {
@@ -49,13 +55,17 @@ function appendFrameLines(lines: string[], frame: FrameSnapshot): void {
   lines.push(
     `  frame:   ${fnName} ${sourceUrl}:${frame.line.toString()}:${frame.column.toString()}`,
   );
+  if (frame.truncated === true) {
+    lines.push(`  scopes:  ${truncationLabel(frame)}`);
+  }
   if (frame.scopes === undefined) {
     return;
   }
   for (const scope of frame.scopes) {
-    lines.push(`  scope ${scope.type} (${scope.variables.length.toString()} vars):`);
+    const scopeSuffix = scope.truncated === true ? `; ${truncationLabel(scope)}` : "";
+    lines.push(`  scope ${scope.type} (${scope.variables.length.toString()} vars${scopeSuffix}):`);
     for (const variable of scope.variables) {
-      lines.push(`    ${variable.name} = ${variable.value}`);
+      lines.push(`    ${variable.name} = ${renderTruncated(variable.value, variable)}`);
     }
   }
 }
@@ -67,7 +77,7 @@ function appendStackFrameLine(lines: string[], frame: FrameSnapshot): void {
   if (frame.captures !== undefined) {
     for (const capture of frame.captures) {
       const detail = capture.error ?? capture.value ?? "undefined";
-      lines.push(`      ${capture.expression} = ${detail}`);
+      lines.push(`      ${capture.expression} = ${renderTruncated(detail, capture)}`);
     }
   }
 }
@@ -77,8 +87,7 @@ function appendExceptionLines(lines: string[], exception: ExceptionSnapshot): vo
     lines.push(`  exception: !err ${exception.error}`);
     return;
   }
-  const detail = exception.description ?? exception.value ?? "(unknown)";
-  lines.push(`  exception: ${detail}`);
+  lines.push(`  exception: ${renderExceptionDetail(exception)}`);
 }
 
 export function writeLogEvent(event: LogpointEvent, json: boolean): void {
@@ -87,10 +96,10 @@ export function writeLogEvent(event: LogpointEvent, json: boolean): void {
     return;
   }
   if (event.error !== undefined) {
-    process.stdout.write(`[${event.ts}] ${event.at} !err ${event.error}\n`);
+    process.stdout.write(`[${event.ts}] ${event.at} !err ${renderTruncated(event.error, event)}\n`);
     return;
   }
-  process.stdout.write(`[${event.ts}] ${event.at} ${event.value ?? ""}\n`);
+  process.stdout.write(`[${event.ts}] ${event.at} ${renderTruncated(event.value ?? "", event)}\n`);
 }
 
 export function writeWatchEvent(event: WatchEvent, json: boolean): void {
@@ -100,11 +109,50 @@ export function writeWatchEvent(event: WatchEvent, json: boolean): void {
   }
   process.stdout.write(`[${event.ts}] hit#${event.hit.toString()} ${event.at}\n`);
   if (event.exception !== undefined) {
-    const detail = event.exception.description ?? event.exception.value ?? event.exception.error ?? "(unknown)";
-    process.stdout.write(`  exception: ${detail}\n`);
+    process.stdout.write(`  exception: ${renderExceptionDetail(event.exception)}\n`);
   }
   for (const capture of event.captures) {
     const detail = capture.error ?? capture.value ?? "undefined";
-    process.stdout.write(`  ${capture.expression} = ${detail}\n`);
+    process.stdout.write(`  ${capture.expression} = ${renderTruncated(detail, capture)}\n`);
   }
+}
+
+function renderExceptionDetail(exception: ExceptionSnapshot): string {
+  if (exception.description !== undefined) {
+    const originalLength = exception.descriptionOriginalLength;
+    return renderTruncated(
+      exception.description,
+      originalLength === undefined ? {} : { truncated: true, originalLength },
+    );
+  }
+  if (exception.value !== undefined) {
+    const originalLength = exception.valueOriginalLength ?? exception.originalLength;
+    const summary: TruncationSummary = {
+      ...(originalLength === undefined ? {} : { truncated: true, originalLength }),
+      ...(exception.omittedCount === undefined
+        ? {}
+        : { truncated: true, omittedCount: exception.omittedCount }),
+    };
+    return renderTruncated(exception.value, summary);
+  }
+  return exception.error ?? "(unknown)";
+}
+
+function renderTruncated(value: string, summary: TruncationSummary): string {
+  if (summary.truncated !== true) {
+    return value;
+  }
+  const visualValue = summary.originalLength === undefined ? value : `${value}…`;
+  return `${visualValue} [${truncationLabel(summary)}]`;
+}
+
+function truncationLabel(summary: TruncationSummary): string {
+  const details: string[] = [];
+  if (summary.originalLength !== undefined) {
+    details.push(`original ${summary.originalLength.toString()} chars`);
+  }
+  if (summary.omittedCount !== undefined) {
+    details.push(`${summary.omittedCount.toString()} omitted`);
+  }
+  return details.length === 0 ? "truncated" : `truncated: ${details.join(", ")}`;
 }

@@ -11,6 +11,7 @@ import {
 import type { InspectorSession } from "../../inspector/types.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
+import { DEFAULT_STREAM_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { BreakpointHandle, BreakpointLocation, RemoteRootSetting, WatchEvent } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";
@@ -36,7 +37,7 @@ interface PreparedWatchCommand {
   readonly perHitTimeoutMs: number;
   readonly durationMs?: number;
   readonly maxEvents?: number;
-  readonly maxValueLength?: number;
+  readonly maxValueLength: number;
   readonly condition?: string;
   readonly hitCount?: number;
   readonly stackDepth?: number;
@@ -78,7 +79,8 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
   const perHitTimeoutSec = parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_BREAKPOINT_TIMEOUT_SEC;
   const durationSec = parsePositiveInt(opts.duration, "--duration");
   const maxEvents = parsePositiveInt(opts.maxEvents, "--max-events");
-  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_STREAM_MAX_VALUE_LENGTH;
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
   const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
@@ -99,7 +101,7 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
     perHitTimeoutMs: perHitTimeoutSec * 1000,
     ...(durationSec === undefined ? {} : { durationMs: durationSec * 1000 }),
     ...(maxEvents === undefined ? {} : { maxEvents }),
-    ...(maxValueLength === undefined ? {} : { maxValueLength }),
+    maxValueLength,
     ...(condition === undefined ? {} : { condition }),
     ...(hitCount === undefined ? {} : { hitCount }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
@@ -288,7 +290,7 @@ async function captureWatchEvent(
   const snapshot = await captureSnapshot(session, pause, {
     captures: command.captures,
     includeScopes: opts.includeScopes === true,
-    ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+    maxValueLength: command.maxValueLength,
     ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
     stackCaptures: command.stackCaptures,
     throwOnSideEffect: command.throwOnSideEffect,

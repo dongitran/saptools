@@ -159,6 +159,30 @@ describe("CLI output helpers", () => {
     expect(output).toContain("throwy = ReferenceError");
   });
 
+  it("uses field-local exception metadata in human watch output", () => {
+    const event: WatchEvent = {
+      ts: "2026-01-01T00:00:00.000Z",
+      at: "file:///app/src/handler.js:42",
+      hit: 1,
+      reason: "exception",
+      hitBreakpoints: [],
+      exception: {
+        value: '{"large":"partial',
+        description: "Error: short",
+        truncated: true,
+        originalLength: 50_000,
+        valueOriginalLength: 50_000,
+      },
+      captures: [],
+    };
+    const output = captureStdout(() => {
+      writeWatchEvent(event, false);
+    });
+    expect(output).toContain("exception: Error: short");
+    expect(output).not.toContain("50000");
+    expect(output).not.toContain("Error: short…");
+  });
+
   it("renders the exception block in human snapshot output", () => {
     const snapshot: SnapshotResult = {
       reason: "exception",
@@ -178,6 +202,29 @@ describe("CLI output helpers", () => {
       writeHumanSnapshot(snapshot);
     });
     expect(output).toContain("exception: Error: boom");
+  });
+
+  it("does not label a short exception description with hidden value truncation", () => {
+    const snapshot: SnapshotResult = {
+      reason: "exception",
+      hitBreakpoints: [],
+      capturedAt: "2026-01-01T00:00:00.000Z",
+      pausedDurationMs: 5,
+      exception: {
+        value: '{"large":"partial',
+        description: "Error: short",
+        truncated: true,
+        originalLength: 50_000,
+        valueOriginalLength: 50_000,
+      },
+      captures: [],
+    };
+    const output = captureStdout(() => {
+      writeHumanSnapshot(snapshot);
+    });
+    expect(output).toContain("exception: Error: short");
+    expect(output).not.toContain("50000");
+    expect(output).not.toContain("Error: short…");
   });
 
   it("renders the stack section in human snapshot output", () => {

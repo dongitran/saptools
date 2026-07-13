@@ -1,5 +1,9 @@
 import { removeBreakpoint, setBreakpoint } from "../inspector/breakpoints.js";
 import type { InspectorSession } from "../inspector/types.js";
+import {
+  DEFAULT_STREAM_MAX_VALUE_LENGTH,
+  resolveMaxValueLength,
+} from "../snapshot/values.js";
 import { CfInspectorError } from "../types.js";
 import type { BreakpointHandle, BreakpointLocation, RemoteRootSetting } from "../types.js";
 
@@ -21,6 +25,7 @@ export interface LogpointStreamOptions {
   readonly maxEvents?: number;
   readonly hitCount?: number;
   readonly condition?: string;
+  readonly maxValueLength?: number;
   readonly signal?: AbortSignal;
   readonly onEvent: (event: LogpointEvent) => void;
   readonly onBreakpointSet?: (handle: BreakpointHandle) => void;
@@ -65,6 +70,9 @@ export async function streamLogpoint(
 ): Promise<LogpointStreamResult> {
   const maxEvents = validateMaxEvents(options.maxEvents);
   const hitCount = validateHitCount(options.hitCount);
+  const maxValueLength = resolveMaxValueLength(
+    options.maxValueLength ?? DEFAULT_STREAM_MAX_VALUE_LENGTH,
+  );
   const sentinel = generateSentinel();
   const condition = buildLogpointCondition(sentinel, options.expression, {
     ...(options.condition === undefined ? {} : { predicate: options.condition }),
@@ -77,7 +85,7 @@ export async function streamLogpoint(
     if (maxEventsReached) {
       return;
     }
-    const event = toLogpointEvent(raw, sentinel, options.location);
+    const event = toLogpointEvent(raw, sentinel, options.location, maxValueLength);
     if (event === undefined) {
       return;
     }
@@ -126,13 +134,14 @@ function toLogpointEvent(
   raw: unknown,
   sentinel: string,
   location: BreakpointLocation,
+  maxValueLength: number,
 ): LogpointEvent | undefined {
   const params = raw as ConsoleAPICalledParams;
   if (asString(params.type) !== "log") {
     return undefined;
   }
   const ts = typeof params.timestamp === "number" ? params.timestamp : undefined;
-  return parseLogEvent(params.args, sentinel, location, ts);
+  return parseLogEvent(params.args, sentinel, location, ts, maxValueLength);
 }
 
 async function removeBreakpointBestEffort(

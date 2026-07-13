@@ -9,7 +9,7 @@ import type {
 
 import { evalResultToCaptured, sideEffectRefusalToCaptured } from "./evaluation.js";
 import { withSerializedObjectCapture } from "./objects.js";
-import { limitValueLength } from "./values.js";
+import { limitValueLength, textTruncationFields } from "./values.js";
 
 export const DEFAULT_STACK_DEPTH = 1;
 export const MAX_STACK_DEPTH = 64;
@@ -56,7 +56,12 @@ async function captureFrameExpression(
     return mutationRisk ? { ...serialized, mutationRisk: true } : serialized;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    const captured = { expression, error: limitValueLength(message, maxValueLength) };
+    const limited = limitValueLength(message, maxValueLength);
+    const captured: CapturedExpression = {
+      expression,
+      error: limited.text,
+      ...textTruncationFields(limited),
+    };
     return mutationRisk ? { ...captured, mutationRisk: true } : captured;
   }
 }

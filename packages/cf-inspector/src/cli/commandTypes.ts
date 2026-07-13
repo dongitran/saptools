@@ -78,6 +78,7 @@ export interface LogCommandOptions extends SharedTargetOptions {
   readonly maxEvents?: string;
   readonly hitCount?: string;
   readonly condition?: string;
+  readonly maxValueLength?: string;
   readonly json: boolean;
 }
 

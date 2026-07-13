@@ -97,11 +97,16 @@ export interface VariableSnapshot {
   readonly value: string;
   readonly type?: string;
   readonly children?: readonly VariableSnapshot[];
+  readonly truncated?: true;
+  readonly originalLength?: number;
+  readonly omittedCount?: number;
 }
 
 export interface ScopeSnapshot {
   readonly type: string;
   readonly variables: readonly VariableSnapshot[];
+  readonly truncated?: true;
+  readonly omittedCount?: number;
 }
 
 export interface FrameSnapshot {
@@ -111,6 +116,8 @@ export interface FrameSnapshot {
   readonly column: number;
   readonly scopes?: readonly ScopeSnapshot[];
   readonly captures?: readonly CapturedExpression[];
+  readonly truncated?: true;
+  readonly omittedCount?: number;
 }
 
 export interface CapturedExpression {
@@ -120,6 +127,9 @@ export interface CapturedExpression {
   readonly error?: string;
   readonly mutationRisk?: boolean;
   readonly blocked?: true;
+  readonly truncated?: true;
+  readonly originalLength?: number;
+  readonly omittedCount?: number;
 }
 
 export interface ExceptionSnapshot {
@@ -127,6 +137,11 @@ export interface ExceptionSnapshot {
   readonly type?: string;
   readonly description?: string;
   readonly error?: string;
+  readonly truncated?: true;
+  readonly originalLength?: number;
+  readonly valueOriginalLength?: number;
+  readonly descriptionOriginalLength?: number;
+  readonly omittedCount?: number;
 }
 
 export interface SnapshotCaptureResult {

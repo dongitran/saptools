@@ -1,3 +1,8 @@
+import {
+  DEFAULT_STREAM_MAX_VALUE_LENGTH,
+  limitValueLength,
+  textTruncationFields,
+} from "../snapshot/values.js";
 import type { BreakpointLocation } from "../types.js";
 
 export interface LogpointEvent {
@@ -6,6 +11,8 @@ export interface LogpointEvent {
   readonly value?: string;
   readonly error?: string;
   readonly raw?: string;
+  readonly truncated?: true;
+  readonly originalLength?: number;
 }
 
 interface CdpRemoteObject {
@@ -50,6 +57,7 @@ export function parseLogEvent(
   sentinel: string,
   location: BreakpointLocation,
   timestamp: number | undefined,
+  maxValueLength = DEFAULT_STREAM_MAX_VALUE_LENGTH,
 ): LogpointEvent | undefined {
   if (!Array.isArray(rawArgs) || rawArgs.length < 2) {
     return undefined;
@@ -62,19 +70,47 @@ export function parseLogEvent(
   const ts = new Date(typeof timestamp === "number" ? timestamp : Date.now()).toISOString();
   const at = `${location.file}:${location.line.toString()}`;
   if (payload.startsWith("!err:")) {
-    return { ts, at, error: payload.slice("!err:".length) };
+    const limited = limitValueLength(payload.slice("!err:".length), maxValueLength);
+    return {
+      ts,
+      at,
+      error: limited.text,
+      ...textTruncationFields(limited),
+    };
   }
-  return parsePayload(ts, at, payload);
+  return parsePayload(ts, at, payload, maxValueLength);
 }
 
-function parsePayload(ts: string, at: string, payload: string): LogpointEvent {
+function parsePayload(
+  ts: string,
+  at: string,
+  payload: string,
+  maxValueLength: number,
+): LogpointEvent {
   try {
     const parsed: unknown = JSON.parse(payload);
     if (typeof parsed === "string") {
-      return { ts, at, value: parsed };
+      return buildValueEvent(ts, at, parsed, maxValueLength);
     }
-    return { ts, at, value: JSON.stringify(parsed) };
+    return buildValueEvent(ts, at, JSON.stringify(parsed), maxValueLength);
   } catch {
-    return { ts, at, value: payload, raw: payload };
+    return buildValueEvent(ts, at, payload, maxValueLength, true);
   }
+}
+
+function buildValueEvent(
+  ts: string,
+  at: string,
+  value: string,
+  maxValueLength: number,
+  includeRaw = false,
+): LogpointEvent {
+  const limited = limitValueLength(value, maxValueLength);
+  return {
+    ts,
+    at,
+    value: limited.text,
+    ...(includeRaw ? { raw: limited.text } : {}),
+    ...textTruncationFields(limited),
+  };
 }

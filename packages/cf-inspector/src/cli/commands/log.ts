@@ -3,6 +3,7 @@ import process from "node:process";
 import { validateExpression } from "../../inspector/runtime.js";
 import { streamLogpoint } from "../../logpoint/stream.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
+import { DEFAULT_STREAM_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { LogCommandOptions } from "../commandTypes.js";
 import { writeLogEvent } from "../output.js";
@@ -21,6 +22,8 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const durationSec = parsePositiveInt(opts.duration, "--duration");
   const maxEvents = parsePositiveInt(opts.maxEvents, "--max-events");
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_STREAM_MAX_VALUE_LENGTH;
   const expression = opts.expr.trim();
   if (expression.length === 0) {
     throw new CfInspectorError("INVALID_EXPRESSION", "--expr must not be empty");
@@ -47,6 +50,7 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
         ...(maxEvents === undefined ? {} : { maxEvents }),
         ...(hitCount === undefined ? {} : { hitCount }),
         ...(condition === undefined ? {} : { condition }),
+        maxValueLength,
         signal,
         onEvent: (event) => {
           writeLogEvent(event, opts.json);

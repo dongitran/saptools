@@ -17,8 +17,10 @@ import { captureScopes, selectScopes } from "./scopes.js";
 import { DEFAULT_STACK_DEPTH, walkStack } from "./stack.js";
 import {
   DEFAULT_MAX_VALUE_LENGTH,
+  DEFAULT_STREAM_MAX_VALUE_LENGTH,
   limitValueLength,
   resolveMaxValueLength,
+  textTruncationFields,
 } from "./values.js";
 
 export interface CaptureSnapshotOptions {
@@ -48,8 +50,14 @@ export async function captureSnapshot(
       column: top.columnNumber + 1,
     };
     if (options.includeScopes === true) {
-      const scopes = await captureScopes(session, top, maxValueLength);
-      topFrame = { ...topFrame, scopes };
+      const capturedScopes = await captureScopes(session, top, maxValueLength);
+      topFrame = {
+        ...topFrame,
+        scopes: capturedScopes.scopes,
+        ...(capturedScopes.omittedCount === undefined
+          ? {}
+          : { truncated: true, omittedCount: capturedScopes.omittedCount }),
+      };
     }
     captures = await captureExpressions(
       session,
@@ -146,13 +154,19 @@ async function captureExpression(
     return mutationRisk ? { ...serialized, mutationRisk: true } : serialized;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    const captured = { expression, error: limitValueLength(message, maxValueLength) };
+    const limited = limitValueLength(message, maxValueLength);
+    const captured: CapturedExpression = {
+      expression,
+      error: limited.text,
+      ...textTruncationFields(limited),
+    };
     return mutationRisk ? { ...captured, mutationRisk: true } : captured;
   }
 }
 
 export const internalsForTesting = {
   DEFAULT_MAX_VALUE_LENGTH,
+  DEFAULT_STREAM_MAX_VALUE_LENGTH,
   limitValueLength,
   resolveMaxValueLength,
   describeProperty,

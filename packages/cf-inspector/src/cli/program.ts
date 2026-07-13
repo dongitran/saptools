@@ -97,7 +97,7 @@ function registerSnapshot(program: Command): void {
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
     .option("--setup-eval <expr>", "Evaluate a global setup expression before breakpoint setup (repeatable)", collectStrings, [] as readonly string[])
     .option("--timeout <seconds>", "How long to wait for the breakpoint to hit (default: 30)")
-    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 131072)")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option("--condition <expr>", "Only pause when this JS expression evaluates truthy in the paused frame")
     .option("--hit-count <n>", "Only pause after the breakpoint has been hit N or more times")
@@ -125,6 +125,7 @@ function registerLog(program: Command): void {
     .option("--max-events <n>", "Stop streaming after emitting N log events")
     .option("--hit-count <n>", "Start logging once the line has been hit N or more times")
     .option("--condition <expr>", "Only log when this JS expression evaluates truthy on the inspectee")
+    .option("--max-value-length <chars>", "Maximum characters per log value before truncation (default: 4096)")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
     .action(async (opts: LogCommandOptions): Promise<void> => {
       await handleLog(opts);
@@ -165,7 +166,7 @@ function registerException(program: Command): void {
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option("--timeout <seconds>", "How long to wait for an exception (default: 30)")
-    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 131072)")
     .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
     .option("--allow-mutation", "Allow mutation-capable capture expressions to run")
