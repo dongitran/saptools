@@ -1,10 +1,4 @@
-import process from "node:process";
-
 import {
-  readCurrentCfTarget,
-  requireCurrentCfRegion,
-  type CurrentCfTarget,
-  type CurrentCfTargetReadOptions,
   type SessionStatus,
 } from "@saptools/cf-debugger";
 
@@ -57,22 +51,33 @@ export function resolveTarget(opts: SharedTargetOptions, options: TargetResolveO
   if (port !== undefined) {
     return { kind: "port", port, host: opts.host ?? "127.0.0.1", ...targetIndexOption(targetIndex) };
   }
-  if (hasCfTarget(opts)) {
-    const tunnelTimeoutSec = parseTunnelTimeout(opts, options);
-    return {
-      kind: "cf",
-      region: opts.region,
-      ...(opts.apiEndpoint === undefined ? {} : { apiEndpoint: opts.apiEndpoint }),
-      org: opts.org,
-      space: opts.space,
-      app: opts.app,
-      tunnelTimeoutMs: tunnelTimeoutSec * 1000,
-      ...targetIndexOption(targetIndex),
-    };
+
+  const region = optionalText(opts.region);
+  const org = optionalText(opts.org);
+  const space = optionalText(opts.space);
+  const app = optionalText(opts.app);
+  const missingFlags = [
+    ...(region === undefined ? ["--region"] : []),
+    ...(org === undefined ? ["--org"] : []),
+    ...(space === undefined ? ["--space"] : []),
+    ...(app === undefined ? ["--app"] : []),
+  ];
+  if (region === undefined || org === undefined || space === undefined || app === undefined) {
+    throw new CfInspectorError(
+      "MISSING_TARGET",
+      `Cloud Foundry targeting requires explicit selectors. Missing: ${missingFlags.join(", ")}. ` +
+        "cf-inspector does not consult ambient `cf target` because it can silently change between runs.",
+    );
   }
-  throw new CfInspectorError(
-    "MISSING_TARGET",
-    "Provide either --port (and optionally --host) or all of --region, --org, --space, --app.",
+
+  return buildCfTarget(
+    region,
+    optionalText(opts.apiEndpoint),
+    org,
+    space,
+    app,
+    parseTunnelTimeout(opts, options),
+    targetIndex,
   );
 }
 
@@ -80,43 +85,7 @@ export async function resolveTargetWithCurrentCfTarget(
   opts: SharedTargetOptions,
   options: TargetResolveOptions = {},
 ): Promise<Target> {
-  const port = parsePositiveInt(opts.port, "--port");
-  const targetIndex = parseTargetIndex(opts.target);
-  if (port !== undefined) {
-    return { kind: "port", port, host: opts.host ?? "127.0.0.1", ...targetIndexOption(targetIndex) };
-  }
-
-  const app = optionalText(opts.app);
-  if (app === undefined) {
-    throw missingTargetError();
-  }
-
-  const tunnelTimeoutSec = parseTunnelTimeout(opts, options);
-  const region = optionalText(opts.region);
-  const apiEndpoint = optionalText(opts.apiEndpoint);
-  const org = optionalText(opts.org);
-  const space = optionalText(opts.space);
-  if (region !== undefined && org !== undefined && space !== undefined) {
-    return buildCfTarget(region, apiEndpoint, org, space, app, tunnelTimeoutSec, targetIndex);
-  }
-
-  const current = await readCurrentTarget();
-  if (current === undefined) {
-    throw new CfInspectorError(
-      "MISSING_TARGET",
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
-    );
-  }
-
-  return buildCfTarget(
-    region ?? currentRegion(current),
-    apiEndpoint ?? current.apiEndpoint,
-    org ?? current.org,
-    space ?? current.space,
-    app,
-    tunnelTimeoutSec,
-    targetIndex,
-  );
+  return await Promise.resolve(resolveTarget(opts, options));
 }
 
 function parseTunnelTimeout(opts: SharedTargetOptions, options: TargetResolveOptions): number {
@@ -139,21 +108,6 @@ function parseTargetIndex(raw: string | undefined): number | undefined {
 
 function targetIndexOption(targetIndex: number | undefined): { readonly targetIndex?: number } {
   return targetIndex === undefined ? {} : { targetIndex };
-}
-
-function hasCfTarget(opts: SharedTargetOptions): opts is SharedTargetOptions & {
-  readonly region: string;
-  readonly apiEndpoint?: string;
-  readonly org: string;
-  readonly space: string;
-  readonly app: string;
-} {
-  return (
-    opts.region !== undefined &&
-    opts.org !== undefined &&
-    opts.space !== undefined &&
-    opts.app !== undefined
-  );
 }
 
 function buildCfTarget(
@@ -180,39 +134,6 @@ function buildCfTarget(
 function optionalText(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
-}
-
-function currentCfOptions(): CurrentCfTargetReadOptions | undefined {
-  const command = process.env["CF_DEBUGGER_CF_BIN"];
-  return command === undefined ? undefined : { command };
-}
-
-async function readCurrentTarget(): Promise<CurrentCfTarget | undefined> {
-  try {
-    return await readCurrentCfTarget(currentCfOptions());
-  } catch (error: unknown) {
-    throw new CfInspectorError(
-      "MISSING_TARGET",
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
-      error instanceof Error ? error.message : String(error),
-    );
-  }
-}
-
-function currentRegion(current: CurrentCfTarget): string {
-  try {
-    return requireCurrentCfRegion(current, "Pass --region explicitly.");
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new CfInspectorError("MISSING_TARGET", message);
-  }
-}
-
-function missingTargetError(): CfInspectorError {
-  return new CfInspectorError(
-    "MISSING_TARGET",
-    "Provide either --port (and optionally --host), an --app with current cf target, or all of --region, --org, --space, --app.",
-  );
 }
 
 interface ResolvedTunnel {

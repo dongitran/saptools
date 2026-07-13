@@ -26,10 +26,10 @@ function applyTargetOptions(cmd: Command, options: { readonly includeTimeout?: b
   const withBaseOptions = cmd
     .option("--port <number>", "Local port the inspector or tunnel listens on")
     .option("--host <host>", "Hostname (default: 127.0.0.1)", "127.0.0.1")
-    .option("--region <key>", "CF region key (default: current cf target)")
+    .option("--region <key>", "CF region key (required with --app)")
     .option("--api-endpoint <url>", "CF API endpoint override for --region")
-    .option("--org <name>", "CF org name (default: current cf target)")
-    .option("--space <name>", "CF space name (default: current cf target)")
+    .option("--org <name>", "CF org name (required with --app)")
+    .option("--space <name>", "CF space name (required with --app)")
     .option("--app <name>", "CF app name when not using --port")
     .option("--target <index>", "Inspector target index from /json/list (default: 0)");
   return options.includeTimeout === false
