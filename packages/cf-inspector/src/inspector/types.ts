@@ -29,7 +29,20 @@ export interface InspectorSession {
   readonly pauseBuffer: PauseEvent[];
   readonly pauseWaitGate: PauseWaitGate;
   readonly debuggerState: DebuggerState;
+  readonly targetIndex?: number;
+  readonly targetCount?: number;
+  readonly workerIndex?: number;
+  readonly workerTargets?: readonly InspectorWorkerTarget[];
+  readonly workerDiscoverySupported?: boolean;
   dispose(): Promise<void>;
+}
+
+export interface InspectorWorkerTarget {
+  readonly sessionId: string;
+  readonly workerId: string;
+  readonly type: string;
+  readonly title: string;
+  readonly url: string;
 }
 
 export interface CdpCallFrame {

@@ -48,6 +48,11 @@ interface ParsedMessage {
   readonly error?: { readonly code: number; readonly message: string };
 }
 
+interface NodeWorkerEventParams {
+  readonly sessionId?: unknown;
+  readonly message?: unknown;
+}
+
 function parseMessage(raw: string): ParsedMessage | undefined {
   try {
     const value: unknown = JSON.parse(raw);
@@ -335,4 +340,122 @@ export class CdpClient {
     this.emitter.emit("__close__", reason);
     this.emitter.removeAllListeners();
   }
+}
+
+class NodeWorkerTransport implements CdpTransport {
+  private readonly emitter = new EventEmitter();
+  private readonly detachParentListeners: readonly (() => void)[];
+  public readyState = 1;
+
+  public constructor(
+    private readonly parent: CdpClient,
+    private readonly sessionId: string,
+  ) {
+    this.detachParentListeners = [
+      parent.on("NodeWorker.receivedMessageFromWorker", (raw) => {
+        this.forwardWorkerMessage(raw);
+      }),
+      parent.on("NodeWorker.detachedFromWorker", (raw) => {
+        this.handleWorkerDetach(raw);
+      }),
+      parent.onClose((error) => {
+        this.closeWithError(error);
+      }),
+    ];
+  }
+
+  public send(payload: string): void {
+    if (this.readyState !== 1) {
+      throw new CfInspectorError("INSPECTOR_CONNECTION_FAILED", "Worker inspector session is closed");
+    }
+    void this.parent.send("NodeWorker.sendMessageToWorker", {
+      sessionId: this.sessionId,
+      message: payload,
+    }).catch((error: unknown) => {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      this.closeWithError(normalized);
+    });
+  }
+
+  public close(): void {
+    this.finishClose();
+  }
+
+  public on<E extends keyof CdpTransportEventMap>(
+    event: E,
+    listener: CdpTransportEventMap[E],
+  ): void {
+    this.emitter.on(event, listener);
+  }
+
+  public off<E extends keyof CdpTransportEventMap>(
+    event: E,
+    listener: CdpTransportEventMap[E],
+  ): void {
+    this.emitter.off(event, listener);
+  }
+
+  private forwardWorkerMessage(raw: unknown): void {
+    const params = asNodeWorkerEventParams(raw);
+    if (params.sessionId !== this.sessionId || typeof params.message !== "string") {
+      return;
+    }
+    this.emitter.emit("message", params.message);
+  }
+
+  private handleWorkerDetach(raw: unknown): void {
+    const params = asNodeWorkerEventParams(raw);
+    if (params.sessionId === this.sessionId) {
+      this.finishClose();
+    }
+  }
+
+  private closeWithError(error: Error): void {
+    if (this.readyState !== 1) {
+      return;
+    }
+    this.emitter.emit("error", error);
+    this.finishClose();
+  }
+
+  private finishClose(): void {
+    if (this.readyState !== 1) {
+      return;
+    }
+    this.readyState = 3;
+    for (const detach of this.detachParentListeners) {
+      detach();
+    }
+    this.emitter.emit("close");
+    this.emitter.removeAllListeners();
+  }
+}
+
+function asNodeWorkerEventParams(raw: unknown): NodeWorkerEventParams {
+  if (!isUnknownRecord(raw)) {
+    return {};
+  }
+  const sessionId = raw["sessionId"];
+  const message = raw["message"];
+  return {
+    ...(typeof sessionId === "string" ? { sessionId } : {}),
+    ...(typeof message === "string" ? { message } : {}),
+  };
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export async function createNodeWorkerClient(
+  parent: CdpClient,
+  sessionId: string,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<CdpClient> {
+  const transport = new NodeWorkerTransport(parent, sessionId);
+  return await CdpClient.connect({
+    url: `node-worker://${sessionId}`,
+    transportFactory: (): Promise<CdpTransport> => Promise.resolve(transport),
+    requestTimeoutMs,
+  });
 }

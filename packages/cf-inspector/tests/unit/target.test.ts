@@ -142,6 +142,21 @@ describe("Cloud Foundry target timeout", () => {
     });
   });
 
+  it("preserves an explicit NodeWorker sub-session selector", () => {
+    expect(resolveTarget({ port: "9229", worker: "0" })).toEqual({
+      kind: "port",
+      port: 9229,
+      host: "127.0.0.1",
+      workerIndex: 0,
+    });
+  });
+
+  it.each(["-1", "1.5", "worker"])("rejects invalid --worker index %s", (worker) => {
+    expect(() => resolveTarget({ port: "9229", worker })).toThrow(
+      expect.objectContaining({ code: "INVALID_ARGUMENT" }),
+    );
+  });
+
   it("rejects incomplete --app targeting before every command can invoke cf target", async () => {
     const commands: readonly (readonly [string, ...string[]])[] = [
       ["snapshot", "--bp", "src/app.js:1"],

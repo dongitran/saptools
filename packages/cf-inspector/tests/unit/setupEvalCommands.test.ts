@@ -168,6 +168,36 @@ describe("watch setup-eval execution ordering", () => {
     ).rejects.toMatchObject({ code: "SETUP_EVAL_FAILED", message: "setup failed" });
     expect(calls).toEqual(["Runtime.evaluate"]);
   });
+
+  it("warns after a bound zero-hit watch is stopped by a signal", async () => {
+    const writeErrorSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const session = makeSession(async (method) => {
+      if (method === "Debugger.setBreakpointByUrl") {
+        return {
+          breakpointId: "bp-1",
+          locations: [{ scriptId: "script-1", lineNumber: 13 }],
+        };
+      }
+      return {};
+    });
+    const command = watchInternals.prepareWatchCommand(watchOptions(), target);
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      const result = await watchInternals.runWatchLoop(
+        session,
+        command,
+        watchOptions(),
+        controller.signal,
+      );
+      expect(result).toEqual({ emitted: 0, stoppedReason: "signal" });
+      const output = writeErrorSpy.mock.calls.flatMap((call) => call).join("");
+      expect(output).toContain("no hit was observed");
+      expect(output).toContain("worker isolate");
+    } finally {
+      writeErrorSpy.mockRestore();
+    }
+  });
 });
 
 describe("snapshot setup-eval execution ordering", () => {

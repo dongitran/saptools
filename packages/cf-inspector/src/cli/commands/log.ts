@@ -8,7 +8,11 @@ import type { LogCommandOptions } from "../commandTypes.js";
 import { writeLogEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
-import { warnOnMutationRisk, warnOnUnboundBreakpoints } from "../warnings.js";
+import {
+  warnOnBoundBreakpointWithoutHit,
+  warnOnMutationRisk,
+  warnOnUnboundBreakpoints,
+} from "../warnings.js";
 
 export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts);
@@ -51,6 +55,12 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
           warnOnUnboundBreakpoints([handle]);
         },
       });
+      if (
+        result.emitted === 0 &&
+        (result.stoppedReason === "duration" || result.stoppedReason === "signal")
+      ) {
+        warnOnBoundBreakpointWithoutHit([result.handle]);
+      }
       writeLogSummary(result.stoppedReason, result.emitted, opts.json);
     });
   });

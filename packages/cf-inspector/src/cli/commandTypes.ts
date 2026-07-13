@@ -7,6 +7,7 @@ export interface PortTarget {
   readonly port: number;
   readonly host: string;
   readonly targetIndex?: number;
+  readonly workerIndex?: number;
 }
 
 export interface CfTarget {
@@ -18,6 +19,7 @@ export interface CfTarget {
   readonly app: string;
   readonly tunnelTimeoutMs: number;
   readonly targetIndex?: number;
+  readonly workerIndex?: number;
 }
 
 export type Target = PortTarget | CfTarget;
@@ -32,6 +34,7 @@ export interface SharedTargetOptions {
   readonly app?: string;
   readonly timeout?: string;
   readonly target?: string;
+  readonly worker?: string;
 }
 
 export interface SnapshotCommandOptions extends SharedTargetOptions {

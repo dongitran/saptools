@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import type { InspectorSession } from "../inspector/types.js";
 import { CfInspectorError } from "../types.js";
 import type { BreakpointHandle, PauseEvent, SnapshotCaptureResult, SnapshotResult } from "../types.js";
 
@@ -63,6 +64,47 @@ export function warnOnUnboundBreakpoints(handles: readonly BreakpointHandle[]): 
       );
     }
   }
+}
+
+export function warnOnImplicitInspectorSelection(
+  session: Pick<
+    InspectorSession,
+    "targetCount" | "targetIndex" | "workerTargets"
+  >,
+  targetWasExplicit: boolean,
+  workerWasExplicit: boolean,
+): void {
+  const targetCount = session.targetCount ?? 1;
+  const targetIndex = session.targetIndex ?? 0;
+  if (!targetWasExplicit && targetCount > 1) {
+    process.stderr.write(
+      `[cf-inspector] notice: attached to inspector target ${targetIndex.toString()} of ` +
+        `${targetCount.toString()}; pass --target <index> to pick another.\n`,
+    );
+  }
+  const workerCount = session.workerTargets?.length ?? 0;
+  if (!workerWasExplicit && workerCount > 0) {
+    process.stderr.write(
+      `[cf-inspector] notice: attached to the main isolate; ${workerCount.toString()} Node ` +
+        `${workerCount === 1 ? "worker is" : "workers are"} available. ` +
+        "Run list-targets and pass --worker <index> to inspect one.\n",
+    );
+  }
+}
+
+export function warnOnBoundBreakpointWithoutHit(handles: readonly BreakpointHandle[]): void {
+  const boundCount = handles.reduce((count, handle) => {
+    return count + handle.resolvedLocations.length;
+  }, 0);
+  if (boundCount === 0) {
+    return;
+  }
+  process.stderr.write(
+    `[cf-inspector] warning: ${boundCount.toString()} breakpoint ` +
+      `${boundCount === 1 ? "location bound" : "locations bound"}, but no hit was observed. ` +
+      "The code may be running in another worker isolate. Run list-targets and retry with " +
+      "--worker <index> for a NodeWorker sub-session or --target <index> for a raw target.\n",
+  );
 }
 
 export function roundDurationMs(durationMs: number): number {

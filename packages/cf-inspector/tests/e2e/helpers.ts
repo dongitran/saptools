@@ -29,6 +29,7 @@ export interface SpawnedFixture {
 export interface SpawnFixtureOptions {
   readonly env?: Readonly<Record<string, string>>;
   readonly fixturePath?: string;
+  readonly readyText?: string;
 }
 
 interface InspectorList {
@@ -86,12 +87,53 @@ function parseDebuggerListening(stderr: string): number | undefined {
   return Number.parseInt(match[1], 10);
 }
 
+function waitForFixtureOutput(
+  child: ChildProcess,
+  expected: string,
+  timeoutMs: number,
+): Promise<void> {
+  const stdout = child.stdout;
+  if (stdout === null) {
+    return Promise.reject(new Error("Fixture stdout is unavailable"));
+  }
+  return new Promise<void>((resolveOnce, rejectOnce) => {
+    let output = "";
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      stdout.off("data", onData);
+      child.off("exit", onExit);
+    };
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString("utf8");
+      if (output.includes(expected)) {
+        cleanup();
+        resolveOnce();
+      }
+    };
+    const onExit = (): void => {
+      cleanup();
+      rejectOnce(new Error(`Fixture exited before emitting ${JSON.stringify(expected)}`));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectOnce(
+        new Error(`Fixture did not emit ${JSON.stringify(expected)} within ${timeoutMs.toString()}ms`),
+      );
+    }, timeoutMs);
+    stdout.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
 export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<SpawnedFixture> {
   const fixture = options.fixturePath ?? FIXTURE_PATH;
   const child = spawn(process.execPath, ["--inspect=0", fixture], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...options.env },
   });
+  const fixtureReady = options.readyText === undefined
+    ? Promise.resolve()
+    : waitForFixtureOutput(child, options.readyText, 10_000);
 
   let stderrBuf = "";
   const port = await new Promise<number>((resolveOnce, rejectOnce) => {
@@ -111,6 +153,7 @@ export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<S
   });
 
   await waitForInspector(port, 10_000);
+  await fixtureReady;
 
   const close = async (): Promise<void> => {
     if (child.exitCode !== null || child.signalCode !== null) {

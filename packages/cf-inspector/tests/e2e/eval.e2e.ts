@@ -57,9 +57,20 @@ test("list-targets emits selectable inspector target indices", async () => {
   try {
     const result = await runCli(["list-targets", "--port", fixture.port.toString()], 30_000);
     expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
-    const parsed = JSON.parse(result.stdout) as readonly { index?: number; webSocketDebuggerUrl?: string }[];
+    const parsed = JSON.parse(result.stdout) as readonly {
+      index?: number;
+      likelyWorker?: boolean;
+      webSocketDebuggerUrl?: string;
+      workers?: readonly unknown[];
+    }[];
     expect(parsed[0]?.index).toBe(0);
+    expect(parsed[0]?.likelyWorker).toBe(false);
     expect(typeof parsed[0]?.webSocketDebuggerUrl).toBe("string");
+    expect(parsed[0]?.workers).toEqual([]);
+    expect(result.stderr).toContain("1 raw inspector target; 0 workers");
+    expect(result.stderr).toContain("only the main inspector target is reachable");
+    expect(result.stderr).toContain("ensure the worker is alive");
+    expect(result.stderr).toContain("separate inspector port");
   } finally {
     await fixture.close();
   }

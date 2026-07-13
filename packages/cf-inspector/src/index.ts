@@ -48,6 +48,7 @@ export type {
   EvaluateOnFrameOptions,
   InspectorSession,
   InspectorTarget,
+  InspectorWorkerTarget,
   PauseOnExceptionsState,
   SetBreakpointInput,
   WaitForPauseOptions,

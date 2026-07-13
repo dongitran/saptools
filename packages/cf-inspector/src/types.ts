@@ -165,6 +165,7 @@ export interface InspectorConnectOptions {
   readonly host?: string;
   readonly connectTimeoutMs?: number;
   readonly targetIndex?: number;
+  readonly workerIndex?: number;
 }
 
 export type CdpMessage =

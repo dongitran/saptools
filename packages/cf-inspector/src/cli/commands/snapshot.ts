@@ -23,6 +23,7 @@ import {
   enforceNativeConditionMutationPolicy,
   roundDurationMs,
   warnOnCaptureMutationRisk,
+  warnOnBoundBreakpointWithoutHit,
   warnOnMutationRisk,
   warnOnUnboundBreakpoints,
   warnOnUnmatchedPause,
@@ -190,18 +191,28 @@ async function waitForCommandPause(
   timeoutMs: number,
 ): ReturnType<typeof waitForPause> {
   let warnedUnmatchedPause = false;
-  return await waitForPause(session, {
-    timeoutMs,
-    breakpointIds: handles.map((h) => h.breakpointId),
-    unmatchedPausePolicy: opts.failOnUnmatchedPause === true ? "fail" : "wait-for-resume",
-    onUnmatchedPause: (unmatchedPause) => {
-      if (warnedUnmatchedPause || opts.failOnUnmatchedPause === true) {
-        return;
-      }
-      warnedUnmatchedPause = true;
-      warnOnUnmatchedPause(unmatchedPause);
-    },
-  });
+  try {
+    return await waitForPause(session, {
+      timeoutMs,
+      breakpointIds: handles.map((h) => h.breakpointId),
+      unmatchedPausePolicy: opts.failOnUnmatchedPause === true ? "fail" : "wait-for-resume",
+      onUnmatchedPause: (unmatchedPause) => {
+        if (warnedUnmatchedPause || opts.failOnUnmatchedPause === true) {
+          return;
+        }
+        warnedUnmatchedPause = true;
+        warnOnUnmatchedPause(unmatchedPause);
+      },
+    });
+  } catch (error: unknown) {
+    if (
+      error instanceof CfInspectorError &&
+      (error.code === "BREAKPOINT_NOT_HIT" || error.code === "UNRELATED_PAUSE_TIMEOUT")
+    ) {
+      warnOnBoundBreakpointWithoutHit(handles);
+    }
+    throw error;
+  }
 }
 
 async function resumeAfterSnapshot(

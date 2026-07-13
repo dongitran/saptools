@@ -9,7 +9,9 @@ import {
 } from "../../src/cli/output.js";
 import {
   enforceNativeConditionMutationPolicy,
+  warnOnBoundBreakpointWithoutHit,
   warnOnCaptureMutationRisk,
+  warnOnImplicitInspectorSelection,
   warnOnMutationRisk,
 } from "../../src/cli/warnings.js";
 import type { LogpointEvent } from "../../src/logpoint/events.js";
@@ -255,5 +257,73 @@ describe("mutation warnings", () => {
     expect(output).toContain("log --expr");
     expect(output).toContain("eval --expr");
     expect(output).toContain("live inspectee");
+  });
+});
+
+describe("worker diagnostics", () => {
+  it("makes implicit raw-target and main-isolate selection visible", () => {
+    const output = captureStderr(() => {
+      warnOnImplicitInspectorSelection({
+        targetCount: 3,
+        targetIndex: 0,
+        workerTargets: [{
+          sessionId: "session-1",
+          workerId: "1",
+          type: "worker",
+          title: "[worker 1]",
+          url: "file:///app/worker.mjs",
+        }],
+      }, false, false);
+    });
+    expect(output).toContain("target 0 of 3");
+    expect(output).toContain("--target <index>");
+    expect(output).toContain("main isolate");
+    expect(output).toContain("--worker <index>");
+  });
+
+  it("does not warn when raw-target and worker selectors are explicit", () => {
+    const output = captureStderr(() => {
+      warnOnImplicitInspectorSelection({
+        targetCount: 3,
+        targetIndex: 2,
+        workerTargets: [{
+          sessionId: "session-1",
+          workerId: "1",
+          type: "worker",
+          title: "[worker 1]",
+          url: "file:///app/worker.mjs",
+        }],
+      }, true, true);
+    });
+    expect(output).toBe("");
+  });
+
+  it("warns when a bound breakpoint never fires", () => {
+    const output = captureStderr(() => {
+      warnOnBoundBreakpointWithoutHit([{
+        breakpointId: "bp-1",
+        file: "src/worker.js",
+        line: 7,
+        urlRegex: "worker",
+        resolvedLocations: [{ scriptId: "script-1", lineNumber: 6 }],
+      }]);
+    });
+    expect(output).toContain("no hit was observed");
+    expect(output).toContain("worker isolate");
+    expect(output).toContain("list-targets");
+    expect(output).toContain("--worker <index>");
+  });
+
+  it("does not emit the worker hint for an unbound breakpoint", () => {
+    const output = captureStderr(() => {
+      warnOnBoundBreakpointWithoutHit([{
+        breakpointId: "bp-1",
+        file: "src/missing.js",
+        line: 7,
+        urlRegex: "missing",
+        resolvedLocations: [],
+      }]);
+    });
+    expect(output).toBe("");
   });
 });

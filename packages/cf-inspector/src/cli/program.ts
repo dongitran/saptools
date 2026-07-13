@@ -22,7 +22,10 @@ import { handleLog } from "./commands/log.js";
 import { handleSnapshot } from "./commands/snapshot.js";
 import { handleWatch } from "./commands/watch.js";
 
-function applyTargetOptions(cmd: Command, options: { readonly includeTimeout?: boolean } = {}): Command {
+function applyTargetOptions(
+  cmd: Command,
+  options: { readonly includeTimeout?: boolean; readonly includeWorker?: boolean } = {},
+): Command {
   const withBaseOptions = cmd
     .option("--port <number>", "Local port the inspector or tunnel listens on")
     .option("--host <host>", "Hostname (default: 127.0.0.1)", "127.0.0.1")
@@ -32,9 +35,12 @@ function applyTargetOptions(cmd: Command, options: { readonly includeTimeout?: b
     .option("--space <name>", "CF space name (required with --app)")
     .option("--app <name>", "CF app name when not using --port")
     .option("--target <index>", "Inspector target index from /json/list (default: 0)");
-  return options.includeTimeout === false
+  const withWorkerOption = options.includeWorker === false
     ? withBaseOptions
-    : withBaseOptions.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
+    : withBaseOptions.option("--worker <index>", "NodeWorker sub-session index listed by list-targets");
+  return options.includeTimeout === false
+    ? withWorkerOption
+    : withWorkerOption.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
 }
 
 const collectStrings = (value: string, prev: readonly string[] = []): readonly string[] => [
@@ -195,7 +201,10 @@ function registerListScripts(program: Command): void {
 
 function registerListTargets(program: Command): void {
   applyTargetOptions(
-    program.command("list-targets").description("Print inspector targets from /json/list for selecting workers with --target"),
+    program.command("list-targets").description(
+      "List raw /json/list targets and nested workers; use --target or --worker on other commands",
+    ),
+    { includeWorker: false },
   )
     .option("--no-json", "Print index<TAB>type<TAB>title<TAB>url instead of JSON")
     .action(async (opts: ListTargetsCommandOptions): Promise<void> => {

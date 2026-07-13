@@ -1,7 +1,10 @@
 import process from "node:process";
 
 import { discoverInspectorTargets } from "../../inspector/discovery.js";
+import type { InspectorTarget } from "../../inspector/discovery.js";
 import { listScripts } from "../../inspector/runtime.js";
+import { discoverNodeWorkerTargets } from "../../inspector/session.js";
+import type { InspectorWorkerTarget } from "../../inspector/types.js";
 import type { ListScriptsCommandOptions, ListTargetsCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
 import { openTarget, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
@@ -28,16 +31,117 @@ export async function handleListTargets(opts: ListTargetsCommandOptions): Promis
   const tunnel = await openTarget(target);
   try {
     const targets = await discoverInspectorTargets(tunnel.host, tunnel.port, 5_000);
-    const indexedTargets = targets.map((entry, index) => ({ index, ...entry }));
+    const indexedTargets = await buildListedTargets(targets);
+    const workerCount = indexedTargets.reduce((count, targetEntry) => {
+      return count + targetEntry.workers.length;
+    }, 0);
+    writeTargetCountSummary(indexedTargets.length, workerCount);
+    warnOnMissingWorkers(indexedTargets.length, workerCount, indexedTargets);
     if (opts.json) {
       writeJson(indexedTargets);
       return;
     }
-    for (const entry of indexedTargets) {
-      process.stdout.write(`${entry.index.toString()}\t${entry.type}\t${entry.title}\t${entry.url}\n`);
-    }
+    writeHumanTargets(indexedTargets);
   } finally {
     await tunnel.dispose();
+  }
+}
+
+interface ListedWorkerTarget {
+  readonly index: number;
+  readonly workerId: string;
+  readonly type: string;
+  readonly title: string;
+  readonly url: string;
+}
+
+interface ListedInspectorTarget extends InspectorTarget {
+  readonly index: number;
+  readonly likelyWorker: boolean;
+  readonly workerDiscoverySupported: boolean;
+  readonly workers: readonly ListedWorkerTarget[];
+}
+
+async function buildListedTargets(
+  targets: readonly InspectorTarget[],
+): Promise<readonly ListedInspectorTarget[]> {
+  return await Promise.all(targets.map(async (target, index) => {
+    try {
+      const workerResult = await discoverNodeWorkerTargets(target);
+      return buildListedTarget(target, index, workerResult.supported, workerResult.workers);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `[cf-inspector] warning: worker discovery failed for raw target ${index.toString()}: ${message}\n`,
+      );
+      return buildListedTarget(target, index, false, []);
+    }
+  }));
+}
+
+function buildListedTarget(
+  target: InspectorTarget,
+  index: number,
+  workerDiscoverySupported: boolean,
+  workers: readonly InspectorWorkerTarget[],
+): ListedInspectorTarget {
+  return {
+    index,
+    ...target,
+    likelyWorker: looksLikeWorkerTarget(target),
+    workerDiscoverySupported,
+    workers: workers.map((worker, workerIndex) => ({
+      index: workerIndex,
+      workerId: worker.workerId,
+      type: worker.type,
+      title: worker.title,
+      url: worker.url,
+    })),
+  };
+}
+
+function looksLikeWorkerTarget(target: InspectorTarget): boolean {
+  return `${target.type} ${target.title} ${target.url}`.toLowerCase().includes("worker");
+}
+
+function writeTargetCountSummary(targetCount: number, workerCount: number): void {
+  process.stderr.write(
+    `[cf-inspector] ${targetCount.toString()} raw inspector ` +
+      `${targetCount === 1 ? "target" : "targets"}; ${workerCount.toString()} ` +
+      `${workerCount === 1 ? "worker" : "workers"}.\n`,
+  );
+}
+
+function warnOnMissingWorkers(
+  targetCount: number,
+  workerCount: number,
+  targets: readonly ListedInspectorTarget[],
+): void {
+  if (targetCount !== 1 || workerCount !== 0) {
+    return;
+  }
+  const supported = targets[0]?.workerDiscoverySupported === true;
+  const supportHint = supported
+    ? "NodeWorker discovery is available, but no live worker attached."
+    : "This runtime did not expose NodeWorker discovery.";
+  process.stderr.write(
+    `[cf-inspector] warning: only the main inspector target is reachable. ${supportHint} ` +
+      "If worker code is expected, ensure the worker is alive and rerun list-targets. " +
+      "A worker on a separate inspector port is not carried by a single Cloud Foundry tunnel.\n",
+  );
+}
+
+function writeHumanTargets(targets: readonly ListedInspectorTarget[]): void {
+  for (const target of targets) {
+    const workerLabel = target.likelyWorker ? "\tlikely-worker" : "";
+    process.stdout.write(
+      `${target.index.toString()}\ttarget\t${target.type}\t${target.title}\t${target.url}${workerLabel}\n`,
+    );
+    for (const worker of target.workers) {
+      process.stdout.write(
+        `  ${worker.index.toString()}\tworker\t${worker.type}\t${worker.title}\t${worker.url}\n`,
+      );
+    }
   }
 }
 

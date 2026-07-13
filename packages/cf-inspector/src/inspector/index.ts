@@ -19,6 +19,7 @@ export type {
   DebuggerState,
   InspectorSession,
   InspectorTarget,
+  InspectorWorkerTarget,
   PauseWaitGate,
   SetBreakpointInput,
   WaitForPauseOptions,

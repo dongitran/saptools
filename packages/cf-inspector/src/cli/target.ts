@@ -9,6 +9,7 @@ import { CfInspectorError } from "../types.js";
 
 import { DEFAULT_CF_TIMEOUT_SEC } from "./commandTypes.js";
 import type { SharedTargetOptions, Target } from "./commandTypes.js";
+import { warnOnImplicitInspectorSelection } from "./warnings.js";
 
 export type ProgressReporter = (message: string) => void;
 
@@ -48,8 +49,14 @@ export interface TargetResolveOptions {
 export function resolveTarget(opts: SharedTargetOptions, options: TargetResolveOptions = {}): Target {
   const port = parsePositiveInt(opts.port, "--port");
   const targetIndex = parseTargetIndex(opts.target);
+  const workerIndex = parseSelectionIndex(opts.worker, "--worker");
   if (port !== undefined) {
-    return { kind: "port", port, host: opts.host ?? "127.0.0.1", ...targetIndexOption(targetIndex) };
+    return {
+      kind: "port",
+      port,
+      host: opts.host ?? "127.0.0.1",
+      ...selectionOptions(targetIndex, workerIndex),
+    };
   }
 
   const region = optionalText(opts.region);
@@ -78,6 +85,7 @@ export function resolveTarget(opts: SharedTargetOptions, options: TargetResolveO
     app,
     parseTunnelTimeout(opts, options),
     targetIndex,
+    workerIndex,
   );
 }
 
@@ -96,18 +104,35 @@ function parseTunnelTimeout(opts: SharedTargetOptions, options: TargetResolveOpt
 }
 
 function parseTargetIndex(raw: string | undefined): number | undefined {
+  return parseSelectionIndex(raw, "--target");
+}
+
+function parseSelectionIndex(raw: string | undefined, label: string): number | undefined {
   if (raw === undefined) {
     return undefined;
   }
   const value = Number.parseInt(raw, 10);
   if (Number.isNaN(value) || value < 0 || value.toString() !== raw.trim()) {
-    throw new CfInspectorError("INVALID_ARGUMENT", `Invalid --target: "${raw}" — expected a non-negative integer`);
+    throw new CfInspectorError(
+      "INVALID_ARGUMENT",
+      `Invalid ${label}: "${raw}" — expected a non-negative integer`,
+    );
   }
   return value;
 }
 
 function targetIndexOption(targetIndex: number | undefined): { readonly targetIndex?: number } {
   return targetIndex === undefined ? {} : { targetIndex };
+}
+
+function selectionOptions(
+  targetIndex: number | undefined,
+  workerIndex: number | undefined,
+): { readonly targetIndex?: number; readonly workerIndex?: number } {
+  return {
+    ...targetIndexOption(targetIndex),
+    ...(workerIndex === undefined ? {} : { workerIndex }),
+  };
 }
 
 function buildCfTarget(
@@ -118,6 +143,7 @@ function buildCfTarget(
   app: string,
   tunnelTimeoutSec: number,
   targetIndex: number | undefined,
+  workerIndex: number | undefined,
 ): Target {
   return {
     kind: "cf",
@@ -127,7 +153,7 @@ function buildCfTarget(
     space,
     app,
     tunnelTimeoutMs: tunnelTimeoutSec * 1000,
-    ...targetIndexOption(targetIndex),
+    ...selectionOptions(targetIndex, workerIndex),
   };
 }
 
@@ -156,8 +182,13 @@ export async function withSession<T>(
     session = await connectInspector({
       port: tunnel.port,
       host: tunnel.host,
-      ...targetIndexOption(target.targetIndex),
+      ...selectionOptions(target.targetIndex, target.workerIndex),
     });
+    warnOnImplicitInspectorSelection(
+      session,
+      target.targetIndex !== undefined,
+      target.workerIndex !== undefined,
+    );
     reportProgress?.("Inspector session is ready.");
     return await fn(session, tunnel.port);
   } finally {

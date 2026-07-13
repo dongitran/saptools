@@ -21,6 +21,7 @@ import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import {
   enforceNativeConditionMutationPolicy,
+  warnOnBoundBreakpointWithoutHit,
   warnOnCaptureMutationRisk,
   warnOnMutationRisk,
   warnOnUnboundBreakpoints,
@@ -199,6 +200,9 @@ async function runWatchLoop(
     transportClosed.cancel();
   }
 
+  if (emitted === 0 && (state.reason === "duration" || state.reason === "signal")) {
+    warnOnBoundBreakpointWithoutHit(handles);
+  }
   return { emitted, stoppedReason: state.reason };
 }
 
