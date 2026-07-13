@@ -24,20 +24,32 @@ import { handleWatch } from "./commands/watch.js";
 
 function applyTargetOptions(
   cmd: Command,
-  options: { readonly includeTimeout?: boolean; readonly includeWorker?: boolean } = {},
+  options: {
+    readonly includeTarget?: boolean;
+    readonly includeTimeout?: boolean;
+    readonly includeWorker?: boolean;
+  } = {},
 ): Command {
-  const withBaseOptions = cmd
+  const withEndpointOptions = cmd
     .option("--port <number>", "Local port the inspector or tunnel listens on")
     .option("--host <host>", "Hostname (default: 127.0.0.1)", "127.0.0.1")
     .option("--region <key>", "CF region key (required with --app)")
     .option("--api-endpoint <url>", "CF API endpoint override for --region")
     .option("--org <name>", "CF org name (required with --app)")
     .option("--space <name>", "CF space name (required with --app)")
-    .option("--app <name>", "CF app name when not using --port")
-    .option("--target <index>", "Inspector target index from /json/list (default: 0)");
+    .option(
+      "--app <name>",
+      "CF app name; requires explicit --region/--org/--space (ambient cf target is ignored)",
+    );
+  const withTargetOption = options.includeTarget === false
+    ? withEndpointOptions
+    : withEndpointOptions.option(
+        "--target <index>",
+        "Inspector target index from /json/list (default: 0)",
+      );
   const withWorkerOption = options.includeWorker === false
-    ? withBaseOptions
-    : withBaseOptions.option("--worker <index>", "NodeWorker sub-session index listed by list-targets");
+    ? withTargetOption
+    : withTargetOption.option("--worker <index>", "NodeWorker sub-session index listed by list-targets");
   return options.includeTimeout === false
     ? withWorkerOption
     : withWorkerOption.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
@@ -205,9 +217,12 @@ function registerListTargets(program: Command): void {
     program.command("list-targets").description(
       "List raw /json/list targets and nested workers; use --target or --worker on other commands",
     ),
-    { includeWorker: false },
+    { includeTarget: false, includeWorker: false },
   )
-    .option("--no-json", "Print index<TAB>type<TAB>title<TAB>url instead of JSON")
+    .option(
+      "--no-json",
+      "Print tab-separated target/worker rows: index, kind, type, title, and URL",
+    )
     .action(async (opts: ListTargetsCommandOptions): Promise<void> => {
       await handleListTargets(opts);
     });
@@ -216,6 +231,7 @@ function registerListTargets(program: Command): void {
 function registerAttach(program: Command): void {
   applyTargetOptions(
     program.command("attach").description("Connect, fetch the inspector version, and disconnect (smoke-test)"),
+    { includeTarget: false, includeWorker: false },
   )
     .option("--no-json", "Print a multi-line summary instead of JSON")
     .action(async (opts: AttachCommandOptions): Promise<void> => {

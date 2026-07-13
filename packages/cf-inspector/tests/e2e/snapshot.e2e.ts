@@ -743,6 +743,7 @@ test("capture command help includes mutation controls", async () => {
     expect(result.stdout).toContain("--allow-mutation");
     expect(result.stdout).toContain("--max-value-length <chars>");
     expect(result.stdout).toContain(command === "watch" ? "default: 4096" : "default: 131072");
+    expect(result.stdout).toMatch(/ambient\s+cf\s+target\s+is\s+ignored/u);
     if (command === "snapshot") {
       expect(result.stdout).toContain("--setup-eval <expr>");
     }
@@ -755,9 +756,17 @@ test("capture-free commands do not expose --allow-mutation", async () => {
     const result = await runCli([command, "--help"], 15_000);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).not.toContain("--allow-mutation");
+    expect(result.stdout).toMatch(/ambient\s+cf\s+target\s+is\s+ignored/u);
+    if (command === "list-targets" || command === "attach") {
+      expect(result.stdout).not.toContain("--target <index>");
+      expect(result.stdout).not.toContain("--worker <index>");
+    }
     if (command === "log") {
       expect(result.stdout).toContain("--max-value-length <chars>");
       expect(result.stdout).toContain("default: 4096");
+    }
+    if (command === "list-targets") {
+      expect(result.stdout).toMatch(/index,\s+kind,\s+type,\s+title,\s+and\s+URL/u);
     }
   }
 });
