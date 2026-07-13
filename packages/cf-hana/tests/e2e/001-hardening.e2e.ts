@@ -8,6 +8,7 @@ import {
   fakeCfTracePath,
   fakeTracePath,
   readBackupFiles,
+  readFakeCfTraceEntries,
   readFakeTraceEntries,
   runCli,
   setupFakeCfBin,
@@ -18,8 +19,10 @@ const SELECTOR = "eu10/example-org/space-demo/app-demo";
 interface FakeEnvOptions {
   readonly apiEndpoint?: string;
   readonly failStatement?: "select" | "dml";
+  readonly maxStoreBytes?: number;
   readonly multipleBindings?: boolean;
   readonly privilegeCatalog?: boolean;
+  readonly ambientTargetAba?: boolean;
   readonly retargetAfterEnv?: boolean;
 }
 
@@ -50,11 +53,17 @@ function fakeEnv(options: FakeEnvOptions = {}): Record<string, string> {
     ...(options.failStatement === undefined
       ? {}
       : { CF_HANA_FAKE_FAIL_STATEMENT: options.failStatement }),
+    ...(options.maxStoreBytes === undefined
+      ? {}
+      : { CF_HANA_FAKE_MAX_STORE_BYTES: String(options.maxStoreBytes) }),
     ...(options.multipleBindings === true
       ? { CF_HANA_FAKE_CF_MULTIPLE_BINDINGS: "1" }
       : {}),
     ...(options.privilegeCatalog === true
       ? { CF_HANA_FAKE_PRIVILEGE_CATALOG: "1" }
+      : {}),
+    ...(options.ambientTargetAba === true
+      ? { CF_HANA_FAKE_CF_AMBIENT_TARGET_ABA: "1" }
       : {}),
     ...(options.retargetAfterEnv === true
       ? { CF_HANA_FAKE_CF_RETARGET_AFTER_ENV: "1" }
@@ -126,6 +135,43 @@ test("User cannot run MERGE when its backup SELECT fails", async () => {
   await expect(readBackupFiles(home)).resolves.toEqual([]);
 });
 
+test("User cannot run a write when its backup exceeds the storage cap", async () => {
+  const sql = "UPDATE ORDERS SET STATUS = 'DONE' WHERE ID = 7";
+  const result = await runCli(["query", SELECTOR, sql], fakeEnv({ maxStoreBytes: 16 }));
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("Write backup exceeds the storage limit");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([
+    { sql: "SELECT * FROM ORDERS WHERE ID = 7", paramCount: 0 },
+  ]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User must approve an unconditional matched DELETE before its backed MERGE runs", async () => {
+  const sql =
+    "MERGE INTO ORDERS target USING SOURCE_ROWS source ON target.ID = source.ID " +
+    "WHEN MATCHED THEN DELETE";
+  const selectSql =
+    "SELECT target.* FROM ORDERS target " +
+    "WHERE EXISTS (SELECT 1 FROM SOURCE_ROWS source WHERE (target.ID = source.ID))";
+  const blocked = await runCli(["query", SELECTOR, sql], fakeEnv());
+
+  expect(blocked.exitCode).toBe(1);
+  expect(blocked.stderr).toContain("destructive statement blocked");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+
+  const allowed = await runCli(
+    ["query", SELECTOR, sql, "--allow-destructive"],
+    fakeEnv(),
+  );
+  expect(allowed.exitCode).toBe(0);
+  expect(allowed.stderr).toContain("backup saved to");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([
+    { sql: selectSql, paramCount: 0 },
+    { sql, paramCount: 0 },
+  ]);
+});
+
 test("User sees ambient target provenance on every connecting command", async () => {
   const commands: readonly (readonly string[])[] = [
     ["query", "app-demo", "SELECT 1 FROM DUMMY"],
@@ -172,6 +218,25 @@ test("User cannot query through a bare selector when cf target changes mid-resol
 
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("CF target changed during binding discovery");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+});
+
+test("User cannot query through a bare selector when cf target switches A to B and back", async () => {
+  const result = await runCli(
+    ["query", "app-demo", "SELECT 1 FROM DUMMY"],
+    fakeEnv({ ambientTargetAba: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain(
+    "CF env application identity did not match the resolved ambient target",
+  );
+  const cfTrace = await readFakeCfTraceEntries(home);
+  expect(cfTrace.map((entry) => ({ kind: entry.kind, org: entry.org }))).toEqual([
+    { kind: "target-read", org: "example-org" },
+    { kind: "env", org: "different-org" },
+    { kind: "target-read", org: "example-org" },
+  ]);
   await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
 });
 
@@ -287,6 +352,20 @@ test("User does not create an implicit result ref when no cell is truncated", as
   expect(listed.stdout).not.toMatch(/q[0-9a-f]{8}/);
 });
 
+test("User keeps compact output when an automatic save exceeds the storage cap", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--cell-limit", "6"],
+    fakeEnv({ maxStoreBytes: 64 }),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toContain("1,sample");
+  expect(result.stderr).toContain("rerun with --save or increase --cell-limit");
+  expect(result.stderr).not.toContain("auto-saved as");
+  const listed = await runCli(["result", "list"], fakeEnv());
+  expect(listed.stdout).not.toMatch(/q[0-9a-f]{8}/);
+});
+
 test("User keeps compact query output when an automatic save fails", async () => {
   const cfHanaRoot = join(home, ".saptools", "cf-hana");
   await mkdir(cfHanaRoot, { recursive: true });
@@ -319,6 +398,20 @@ test("User can request lossless CSV and table query formats", async () => {
   expect(table.stdout).toContain("sample-row");
   expect(table.stdout).toContain("second-row");
   expect(table.stderr).not.toContain("compacted");
+});
+
+test("User can request lossless JSON query output", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "json", "--cell-limit", "3"],
+    fakeEnv(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([
+    { ID: 1, NAME: "sample-row" },
+    { ID: 2, NAME: "second-row" },
+  ]);
+  expect(result.stderr).not.toContain("compacted");
 });
 
 test("User gets flat JSON for catalog names and single-column query values", async () => {

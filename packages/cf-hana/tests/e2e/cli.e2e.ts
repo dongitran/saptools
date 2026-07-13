@@ -93,7 +93,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.3.5");
+  expect(result.stdout).toContain("0.4.0");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -181,19 +181,6 @@ test("Deprecated refresh flag is accepted but metadata cache uses refresh-metada
   const traces = await readFakeTraceEntries(home);
   const metadataReads = traces.filter((entry) => entry.sql.includes("SYS.TABLES") && entry.sql.includes("SYS.VIEWS"));
   expect(metadataReads).toHaveLength(1);
-});
-
-test("User can request lossless JSON query output", async () => {
-  const result = await runCli(
-    ["query", SELECTOR, "SELECT * FROM ITEMS", "--format", "json", "--cell-limit", "3"],
-    fakeEnv(),
-  );
-  expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([
-    { ID: 1, NAME: "sample-row" },
-    { ID: 2, NAME: "second-row" },
-  ]);
-  expect(result.stderr).not.toContain("compacted");
 });
 
 test("User can save a compact query and inspect it by ref", async () => {

@@ -5,6 +5,7 @@ import {
   cfEnvDirect,
   cfTargetSpace,
   classifyCfError,
+  extractCfEnvApplicationIdentity,
   extractHanaBindingsFromCfEnv,
   formatCurrentCfAppSelector,
   getApiEndpointForRegion,
@@ -12,6 +13,7 @@ import {
   readCurrentCfTarget,
   withCfSession,
 } from "./cf.js";
+import type { CfEnvApplicationIdentity } from "./cf.js";
 import { readSapCredentials } from "./config.js";
 import type { SapCredentials } from "./config.js";
 import { CfHanaError, CredentialsNotFoundError } from "./errors.js";
@@ -152,6 +154,36 @@ async function assertAmbientTargetUnchanged(target: ResolvedAppTarget): Promise<
   }
 }
 
+function readCfEnvApplicationIdentity(stdout: string): CfEnvApplicationIdentity {
+  try {
+    return extractCfEnvApplicationIdentity(stdout);
+  } catch (error) {
+    throw new CfHanaError(
+      "CONFIG",
+      "Could not verify cf env application identity for the ambient target; no database connection was opened. " +
+        "Retry or use an explicit region/org/space/app selector.",
+      { cause: error },
+    );
+  }
+}
+
+function assertCfEnvApplicationMatchesTarget(
+  target: ResolvedAppTarget,
+  application: CfEnvApplicationIdentity,
+): void {
+  const matches =
+    application.apiEndpoint === target.apiEndpoint &&
+    application.orgName === target.orgName &&
+    application.spaceName === target.spaceName &&
+    application.appName === target.appName;
+  if (matches) {return;}
+  throw new CfHanaError(
+    "CONFIG",
+    "CF env application identity did not match the resolved ambient target; no database connection was opened. " +
+      "Retry or use an explicit region/org/space/app selector.",
+  );
+}
+
 async function readIsolatedBindings(
   target: ResolvedAppTarget,
   sap: SapCredentials,
@@ -191,7 +223,9 @@ async function readBareBindings(
     }
     return await readIsolatedBindings(target, sap);
   }
+  const application = readCfEnvApplicationIdentity(stdout);
   await assertAmbientTargetUnchanged(target);
+  assertCfEnvApplicationMatchesTarget(target, application);
   return extractHanaBindingsFromCfEnv(stdout);
 }
 

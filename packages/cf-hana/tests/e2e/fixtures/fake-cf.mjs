@@ -39,11 +39,12 @@ if (cmd === "target") {
   }
   const apiEndpoint = process.env.CF_HANA_FAKE_CF_API_ENDPOINT ?? "https://api.cf.eu10-005.hana.ondemand.com";
   const retargeted = process.env.CF_HANA_FAKE_CF_RETARGET_AFTER_ENV === "1" && targetReadCount() > 0;
-  trace({ kind: "target-read", apiEndpoint, cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  const org = retargeted ? "different-org" : "example-org";
+  trace({ kind: "target-read", apiEndpoint, org, space: "space-demo", cfHome: process.env.CF_HOME ? "isolated" : "current" });
   out(`api endpoint:   ${apiEndpoint}
 api version:    3.XX.X
 user:           user@example.com
-org:            ${retargeted ? "different-org" : "example-org"}
+org:            ${org}
 space:          space-demo`);
   process.exit(0);
 }
@@ -63,7 +64,11 @@ if (cmd === "auth") {
 
 if (cmd === "env") {
   const app = args[1] || "app-demo";
-  trace({ kind: "env", app, cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  const org =
+    process.env.CF_HANA_FAKE_CF_AMBIENT_TARGET_ABA === "1"
+      ? "different-org"
+      : "example-org";
+  trace({ kind: "env", app, org, space: "space-demo", cfHome: process.env.CF_HOME ? "isolated" : "current" });
   if (process.env.CF_HANA_FAKE_CF_DIRECT_AUTH_FAIL === "1" && !process.env.CF_HOME) err("not logged in");
   if (app === "app-demo" || app.includes("app-demo")) {
     const vcap = {
@@ -104,9 +109,16 @@ if (cmd === "env") {
           : []),
       ],
     };
+    const apiEndpoint = process.env.CF_HANA_FAKE_CF_API_ENDPOINT ?? "https://api.cf.eu10-005.hana.ondemand.com";
+    const vcapApplication = {
+      application_name: app,
+      cf_api: apiEndpoint,
+      organization_name: org,
+      space_name: "space-demo",
+    };
     out("VCAP_SERVICES:");
     out(JSON.stringify(vcap));
-    out("VCAP_APPLICATION:{}");
+    out(`VCAP_APPLICATION:${JSON.stringify(vcapApplication)}`);
     process.exit(0);
   }
   err(`App ${app} not found or has no HANA binding (fake)`);

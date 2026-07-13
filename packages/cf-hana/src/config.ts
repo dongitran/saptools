@@ -1,5 +1,5 @@
 export const CLI_NAME = "cf-hana";
-export const CLI_VERSION = "0.3.5";
+export const CLI_VERSION = "0.4.0";
 export const ENV_PREFIX = "CF_HANA";
 
 export const DEFAULT_QUERY_TIMEOUT_MS = 60_000;
@@ -11,8 +11,22 @@ export const DEFAULT_CELL_LIMIT = 128;
 export const MAX_CELL_LIMIT = 10_000;
 export const DEFAULT_RESULT_TTL_MINUTES = 10_080;
 export const DEFAULT_RESULT_SEARCH_LIMIT = 20;
-export const MAX_RESULT_STORE_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_RESULT_STORE_BYTES = 256 * 1024 * 1024;
+export const MAX_RESULT_STORE_BYTES = resolveMaxResultStoreBytes();
 export const HANA_CLOUD_DEFAULT_PORT = 443;
+
+function resolveMaxResultStoreBytes(): number {
+  // The fake driver can lower the cap so E2E tests exercise refusal without
+  // allocating hundreds of MiB. Real HANA connections always use the hard cap.
+  if (readEnv(envName("DRIVER")) !== "fake") {
+    return DEFAULT_MAX_RESULT_STORE_BYTES;
+  }
+  const raw = readEnv(envName("FAKE_MAX_STORE_BYTES"));
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_RESULT_STORE_BYTES;
+}
 
 /** Build a `CF_HANA_*` environment variable name from a suffix. */
 export function envName(suffix: string): string {

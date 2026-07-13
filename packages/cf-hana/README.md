@@ -11,6 +11,8 @@ password re-authentication.
 ## Features
 
 - **Selector-based connect** — `region/org/space/app` or a bare app name.
+- **Visible target provenance** — every connecting CLI command confirms the
+  resolved selector on stderr and labels ambient versus explicit targeting.
 - **Credentials, handled for you** — HANA bindings are read live from Cloud Foundry.
   Bare app names use the current CF session first; explicit selectors use isolated live authentication.
 - **Parameterized queries** — values always travel as bound `?` parameters, never
@@ -21,14 +23,18 @@ password re-authentication.
   `deleteFrom` — query a table by name without writing SQL.
 - **Schema introspection** — list schemas, tables, and columns.
 - **Table-name recovery** — failed CLI queries for missing tables/views show nearby schema-local suggestions on stderr.
+- **Privilege recovery** — HANA error 258 identifies the active schema,
+  technical user, binding, and any sibling bindings worth trying explicitly.
 - **Local SQL history** — direct SQL calls are appended to dated JSONL files
   under `~/.saptools/cf-hana/histories/` with five-day retention.
-- **Write backups** — CLI `UPDATE`, `UPSERT`, and `DELETE` statements create a local CSV
-  backup of matching rows before the write runs.
+- **Write backups** — CLI `UPDATE`, `UPSERT`, `REPLACE`, matched `MERGE`, and
+  `DELETE` statements preserve pre-image rows before the write runs.
 - **Compact CLI results** — CLI `SELECT`/`WITH` output is compact CSV with
-  bounded cells and optional saved refs for exact follow-up inspection.
+  bounded cells; truncated exact values are retained automatically for follow-up inspection.
+- **Lossless CLI formats** — `query --format table|json|json-compact|csv`
+  provides exact cell values without changing the compact-CSV default.
 - **Safety guard** — opt-in read-only mode and a destructive-statement guard
-  (blocks `DROP`/`TRUNCATE`/`ALTER` and unscoped `UPDATE`/`DELETE`).
+  (blocks destructive DDL, unscoped `UPDATE`/`DELETE`, and unconditional matched deletes).
 - **Typed results** — `query<TRow>()` returns typed rows.
 - **CLI + API** — a `cf-hana` CLI and an ergonomic TypeScript API.
 
@@ -76,6 +82,15 @@ Every entry point takes a selector as its first argument:
   (current org/space/API endpoint) and fetched with `cf env app-demo` using your
   existing CF session before any isolated re-auth fallback.
 
+Every connecting CLI command prints the resolved selector to stderr. A bare
+selector is labeled as inherited from ambient `cf target`; an explicit selector
+is labeled as pinned. For the direct bare-app path, cf-hana verifies the app,
+API, org, and space embedded in the same `VCAP_APPLICATION` payload as the
+bindings, then reads `cf target` again. Missing or mismatched identity, including
+an A-to-B-to-A target race, is refused before a database connection is opened.
+If the ambient API cannot be mapped to a supported region, the notice says the
+region is unconfirmed instead of presenting `current/...` as a usable pin.
+
 ## CLI
 
 ```
@@ -91,10 +106,11 @@ cf-hana result  <command>                   Inspect saved query refs
 Common options: `--refresh` (deprecated compatibility flag; binding discovery is already live), `--role <runtime|hdi>`, `--binding <name>` /
 `--binding-index <n>`, `--timeout <ms>`, `--read-only`, `--allow-destructive`,
 `--limit <n>`, `--no-auto-limit`. The `query` command also accepts
-`--param <value>` (repeatable), `--cell-limit <n>`, `--save`,
-`--result-ttl-minutes <n>`, and `--refresh-metadata`. `tables` and `columns` still support
-`--format <table|json|csv>`. CLI `UPDATE`, `UPSERT`, and `DELETE` statements are backed up
-automatically before the write runs.
+`--param <value>` (repeatable), `--cell-limit <n>`, `--save`, `--no-auto-save`,
+`--format <table|json|json-compact|csv>`, `--result-ttl-minutes <n>`, and
+`--refresh-metadata`. `tables` and `columns` support the same four format values.
+CLI `UPDATE`, `UPSERT`, `REPLACE`, matched `MERGE`, and `DELETE` statements are
+backed up automatically before the write runs.
 
 ```bash
 cf-hana query eu10/example-org/space-demo/app-demo "SELECT ID, STATUS FROM ORDERS WHERE STATUS = ?" \
@@ -106,6 +122,27 @@ cf-hana columns app-demo ORDERS_APP.ORDERS
 cf-hana ping eu10/example-org/space-demo/app-demo
 ```
 
+## Output formats and schemas
+
+With no `query --format`, successful `SELECT`/`WITH` output remains compact CSV
+for backward compatibility. An explicit format is lossless at the cell level:
+
+- `query --format json` returns `[{COLUMN: value, ...}]`.
+- `query --format json-compact` returns `[value, ...]` for a single-column
+  projection and falls back to row objects for multiple columns.
+- `query --format csv` returns lossless RFC 4180 CSV.
+- `query --format table` returns a lossless aligned table.
+- `tables --format json` returns `[{SCHEMA,TABLE,TYPE}]`; its `json-compact`
+  mode returns `[TABLE, ...]`.
+- `columns --format json` returns
+  `[{COLUMN,TYPE,LENGTH,NULLABLE,POSITION}]`; its `json-compact` mode returns
+  `[COLUMN, ...]`.
+
+The existing uppercase catalog keys are unchanged. Query formats are available
+only for `SELECT`/`WITH`. `--save` cannot be combined with `--format`, which
+keeps JSON and CSV stdout valid machine output. The automatic row cap still
+applies unless changed with `--limit` or `--no-auto-limit`.
+
 ## Compact query output and saved refs
 
 For CLI `SELECT` and `WITH` statements, stdout is CSV. Bare reads return at most
@@ -113,7 +150,14 @@ For CLI `SELECT` and `WITH` statements, stdout is CSV. Bare reads return at most
 disable the automatic cap. Data cells display at most 128 Unicode characters by
 default; pass `--cell-limit <n>` to choose a value from 1 through 10,000.
 
-Use `--save` when you need exact values later:
+When compact output actually shortens one or more cells, cf-hana automatically
+saves the exact returned rows and prints a concrete `result show` command with
+the generated ref to stderr. This does not add a `ref=` line to stdout. Disable
+implicit retention with `--no-auto-save`. If an implicit save exceeds the
+256 MiB store ceiling or local storage is unavailable, the query still succeeds
+and the hint recommends `--save` or a larger `--cell-limit`.
+
+Use explicit `--save` when you want a ref regardless of whether cells are shortened:
 
 ```bash
 cf-hana query app-demo "SELECT ID, CONTENT FROM ORDERS" --read-only --save
@@ -145,9 +189,18 @@ cf-hana result prune
 cf-hana result clear
 ```
 
-`--save` is available only for `SELECT` and `WITH` statements. The programmatic
-API keeps returning full-fidelity `QueryResult` values and does not write result
-refs.
+`--save` is available only for `SELECT` and `WITH` statements and remains a
+hard failure if the result cannot be stored. The programmatic API keeps
+returning full-fidelity `QueryResult` values and does not write result refs.
+
+## Insufficient-privilege guidance
+
+When HANA reports error code 258, or the equivalent `insufficient privilege`
+message without a numeric code, cf-hana keeps the original failure and exit
+status and adds a stderr hint. The hint identifies the schema, role-selected
+technical user, current binding, and other named HANA bindings already found on
+the app. It suggests an explicit `--binding <name>` or another app/full
+selector. It never retries the SQL automatically under another database user.
 
 ## Invalid table/view suggestions and metadata cache
 
@@ -167,8 +220,9 @@ only schema, object name, and object type under:
 Metadata cache files are private (`0700` directories, `0600` files), written
 atomically, and expire after exactly 30 minutes. The cache key is derived from
 non-secret connection identity: selector, app name, host, active schema, role,
-and driver. It does not include passwords, certificates, tokens, SQL parameter
-values, result rows, or table data, and malformed cache files are treated as
+driver, and selected binding name/index. It does not include passwords,
+certificates, tokens, SQL parameter values, result rows, or table data, and
+malformed cache files are treated as
 misses. Pass `--refresh-metadata` to bypass this cache for a query. The legacy
 `--refresh` flag is accepted for compatibility but does not bypass the metadata
 cache and is not a credential-cache control because binding discovery is already
@@ -189,6 +243,12 @@ query error and simply omits suggestions.
 `bindingIndex`, `readOnly`, `allowDestructive`, `autoLimit`, `queryTimeoutMs`,
 `connectTimeoutMs`, deprecated `refresh`, `pool`.
 
+`HanaClient.info` additively exposes optional target and binding provenance for
+programmatic checks: `selectorSource`, `regionConfirmed`,
+`selectorCanBePinned`, `bindingName`, `bindingIndex`, and
+`availableBindingNames`. Library connections remain silent; only the CLI writes
+the resolved-target notice to stderr.
+
 ## Credentials
 
 Credential discovery is **live-only** and does not read `@saptools/cf-sync`
@@ -198,6 +258,8 @@ snapshots or `~/.saptools/cf-db-bindings.json`.
   validated API endpoint, and first run `cf env app-demo` with your current CF
   session. This path does not require `SAP_EMAIL` or `SAP_PASSWORD` while the
   current session is healthy.
+- A successful direct `cf env` is accepted only if a second `cf target` read
+  confirms the same API endpoint, org, and space.
 - If that direct bare-app call fails with an auth/session error, cf-hana falls
   back to an isolated temporary `CF_HOME`, runs `cf api <current-endpoint>`,
   authenticates with `SAP_EMAIL` / `SAP_PASSWORD` (or the programmatic `email` /
@@ -212,6 +274,10 @@ has no credential-cache meaning; binding discovery is already live. Use
 `--refresh-metadata` when you specifically want to bypass the table/view
 suggestion metadata cache. Credential resolution writes no binding credentials
 under `~/.saptools/`.
+
+Cloud Foundry shell-outs use 60-second bounded timeouts and retry transient
+timeout/network failures. HANA connection and query timeout defaults are also
+60 seconds unless overridden with `--timeout` or API options.
 
 ## SQL history
 
@@ -233,15 +299,26 @@ history.
 
 ## Write backups
 
-When `cf-hana query` receives an `UPDATE`, `UPSERT`, or `DELETE`, it first builds and runs a
-matching `SELECT`:
+When `cf-hana query` receives a supported write, it first builds and runs a
+pre-image `SELECT`:
 
 - `UPDATE <target> SET ... WHERE ...` becomes
   `SELECT * FROM <target> WHERE ...`.
 - `UPSERT <target> VALUES ... WHERE ...` becomes
   `SELECT * FROM <target> WHERE ...`.
+- `REPLACE` follows the same plan as its HANA `UPSERT` synonym.
+- A reliably parsed matched `MERGE INTO` uses a correlated `EXISTS` query for
+  the matched target rows. If the target is unambiguous but an exact matched set
+  is not, cf-hana backs up the whole target table.
 - `DELETE FROM <target> WHERE ...` becomes
   `SELECT * FROM <target> WHERE ...`.
+
+UPSERT/REPLACE subquery forms use a conservative whole-target pre-image.
+Insert-only MERGE statements need no pre-image. For the supported write forms
+above, cf-hana refuses execution if it cannot identify a trustworthy target,
+derive a safe pre-image, preserve the backup within the 256 MiB ceiling, or
+write the backup files. This refusal cannot be overridden with
+`--allow-destructive`.
 
 The backup is saved before the write runs:
 
@@ -258,12 +335,15 @@ shape. The companion `.statement.sql` file contains the original write statement
 and `.json` contains non-secret metadata for auditability. Backup files are not
 deleted by `cf-hana`; clean them up manually when they are no longer needed. The
 backup path is printed to stderr so stdout remains parseable.
+Backup directories use mode `0700`; statement, CSV, and metadata files use
+mode `0600`.
 
 ## Safety
 
 - **Read-only mode** (`readOnly` / `--read-only`) rejects every DML and DDL statement.
 - **Destructive guard** blocks `DROP` / `TRUNCATE` / `ALTER` and `UPDATE` / `DELETE`
-  without a `WHERE` clause unless `allowDestructive` / `--allow-destructive` is set.
+  without a top-level `WHERE`, plus unconditional matched `MERGE DELETE`, unless
+  `allowDestructive` / `--allow-destructive` is set.
 - **Auto-limit** appends a `LIMIT` to bare `SELECT` statements (default 100);
   `QueryResult.truncated` reports when it clipped the result. Disable with
   `autoLimit: false` / `--no-auto-limit`.

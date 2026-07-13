@@ -2,7 +2,13 @@ import { execFile } from "node:child_process";
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
-import { cfEnvDirect, readCurrentCfTarget, cfAuth, withCfSession } from "../../src/cf.js";
+import {
+  cfAuth,
+  cfEnvDirect,
+  extractCfEnvApplicationIdentity,
+  readCurrentCfTarget,
+  withCfSession,
+} from "../../src/cf.js";
 
 vi.mock("node:child_process", () => {
   return {
@@ -167,5 +173,53 @@ describe("CF CLI retries for network resilience", () => {
       expect(err.message).toBe("cf auth failed: Invalid username or password");
       expect(err.message).not.toContain("secret-password");
     }
+  });
+});
+
+describe("extractCfEnvApplicationIdentity", () => {
+  it("parses the application identity from cf env output", () => {
+    const stdout = `VCAP_SERVICES: {}
+VCAP_APPLICATION: {
+  "application_name": "app-demo",
+  "cf_api": "https://api.cf.eu10-005.hana.ondemand.com/",
+  "organization_name": "example-org",
+  "space_name": "space-demo"
+}
+User-Provided:
+(empty)`;
+
+    expect(extractCfEnvApplicationIdentity(stdout)).toEqual({
+      appName: "app-demo",
+      apiEndpoint: "https://api.cf.eu10-005.hana.ondemand.com",
+      orgName: "example-org",
+      spaceName: "space-demo",
+    });
+  });
+
+  it.each([
+    "application_name",
+    "cf_api",
+    "organization_name",
+    "space_name",
+  ])("rejects a missing %s identity field", (missingField) => {
+    const identity = Object.fromEntries(
+      Object.entries({
+        application_name: "app-demo",
+        cf_api: "https://api.cf.eu10-005.hana.ondemand.com",
+        organization_name: "example-org",
+        space_name: "space-demo",
+      }).filter(([field]) => field !== missingField),
+    );
+    const stdout = `VCAP_SERVICES: {}\nVCAP_APPLICATION: ${JSON.stringify(identity)}`;
+
+    expect(() => extractCfEnvApplicationIdentity(stdout)).toThrow(missingField);
+  });
+
+  it("rejects malformed VCAP_APPLICATION JSON", () => {
+    expect(() =>
+      extractCfEnvApplicationIdentity(
+        "VCAP_SERVICES: {}\nVCAP_APPLICATION: {\"application_name\":\"app-demo\"",
+      ),
+    ).toThrow(/Malformed VCAP_APPLICATION JSON/);
   });
 });

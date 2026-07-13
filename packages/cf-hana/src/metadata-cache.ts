@@ -74,18 +74,26 @@ function isCatalogObject(value: unknown): value is CatalogObjectInfo {
   );
 }
 
-function isScope(value: unknown): value is MetadataCacheScope {
+function hasRequiredScopeFields(value: Record<string, unknown>): boolean {
   return (
-    isRecord(value) &&
     typeof value["selector"] === "string" &&
     typeof value["appName"] === "string" &&
     typeof value["host"] === "string" &&
     typeof value["schema"] === "string" &&
     typeof value["role"] === "string" &&
-    typeof value["driver"] === "string" &&
+    typeof value["driver"] === "string"
+  );
+}
+
+function hasOptionalScopeFields(value: Record<string, unknown>): boolean {
+  return (
     (value["bindingName"] === undefined || typeof value["bindingName"] === "string") &&
     (value["bindingIndex"] === undefined || typeof value["bindingIndex"] === "number")
   );
+}
+
+function isScope(value: unknown): value is MetadataCacheScope {
+  return isRecord(value) && hasRequiredScopeFields(value) && hasOptionalScopeFields(value);
 }
 
 function scopesEqual(left: MetadataCacheScope, right: MetadataCacheScope): boolean {
