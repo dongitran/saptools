@@ -25,6 +25,37 @@ describe("inspectStatement", () => {
     expect(inspectStatement("DELETE FROM T WHERE ID = 2").destructive).toBe(false);
   });
 
+  it("does not mistake a nested subquery WHERE for an outer UPDATE scope", () => {
+    expect(
+      inspectStatement(
+        "UPDATE T SET TOTAL = (SELECT COUNT(*) FROM ITEMS WHERE ITEMS.T_ID = T.ID)",
+      ).destructive,
+    ).toBe(true);
+  });
+
+  it("guards unconditional matched MERGE deletes but not conditional matches", () => {
+    expect(
+      inspectStatement(
+        "MERGE INTO T USING S ON T.ID = S.ID WHEN MATCHED THEN DELETE",
+      ).destructive,
+    ).toBe(true);
+    expect(
+      inspectStatement(
+        "MERGE INTO T USING S ON T.ID = S.ID WHEN MATCHED AND T.STATE = 'OLD' THEN DELETE",
+      ).destructive,
+    ).toBe(false);
+    expect(
+      inspectStatement(
+        "MERGE INTO T USING S ON T.ID = S.ID WHEN MATCHED THEN UPDATE SET T.X = S.X",
+      ).destructive,
+    ).toBe(false);
+  });
+
+  it("keeps supported REPLACE values consistent with UPSERT and flags malformed REPLACE", () => {
+    expect(inspectStatement("REPLACE T VALUES (1)").destructive).toBe(false);
+    expect(inspectStatement("REPLACE").destructive).toBe(true);
+  });
+
   it("ignores WHERE-like text in comments and quoted identifiers", () => {
     expect(inspectStatement("DELETE FROM T -- where ID = 1").destructive).toBe(true);
     expect(inspectStatement('UPDATE T SET X = 1 WHERE "where" = ?').destructive).toBe(false);

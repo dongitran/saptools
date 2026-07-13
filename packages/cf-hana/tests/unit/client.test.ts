@@ -230,6 +230,48 @@ describe("HanaClient", () => {
     await expect(readBackupCsvFiles()).resolves.toEqual(["ID,STATUS\r\n7,OPEN"]);
   });
 
+  it("backs up rows for REPLACE before callers execute it", async () => {
+    const { driver, client } = makeClient();
+    const sql = "REPLACE ORDERS VALUES (?, ?) WHERE ID = ?";
+
+    const backup = await client.backupWriteStatement(sql, [7, "DONE", 7]);
+    await client.query(sql, [7, "DONE", 7]);
+
+    expect(backup?.rowCount).toBe(1);
+    expect(driver.connections[0]?.execCalls.map((call) => call.sql)).toEqual([
+      "SELECT * FROM ORDERS WHERE ID = ?",
+      sql,
+    ]);
+  });
+
+  it("backs up matched MERGE rows before callers execute it", async () => {
+    const { driver, client } = makeClient();
+    const sql =
+      "MERGE INTO ORDERS target USING SOURCE_ROWS source ON target.ID = source.ID " +
+      "WHEN MATCHED THEN UPDATE SET target.STATUS = source.STATUS";
+
+    const backup = await client.backupWriteStatement(sql);
+    await client.query(sql);
+
+    expect(backup?.rowCount).toBe(1);
+    expect(driver.connections[0]?.execCalls.map((call) => call.sql)).toEqual([
+      "SELECT target.* FROM ORDERS target " +
+        "WHERE EXISTS (SELECT 1 FROM SOURCE_ROWS source WHERE (target.ID = source.ID))",
+      sql,
+    ]);
+  });
+
+  it("refuses an unbackable MERGE before opening a database connection", async () => {
+    const { driver, client } = makeClient();
+    await expect(
+      client.backupWriteStatement(
+        "MERGE INTO (SELECT * FROM ORDERS) target USING SOURCE_ROWS source " +
+          "ON target.ID = source.ID WHEN MATCHED THEN DELETE",
+      ),
+    ).rejects.toThrow(/trustworthy backup target/i);
+    expect(driver.connections).toHaveLength(0);
+  });
+
   it("does not create a backup for non-write statements", async () => {
     const { client } = makeClient();
     await expect(client.backupWriteStatement("SELECT * FROM ORDERS")).resolves.toBeUndefined();

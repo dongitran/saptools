@@ -4,6 +4,7 @@ export type CfHanaErrorCode =
   | "AMBIGUOUS_BINDING"
   | "CONNECTION"
   | "QUERY"
+  | "BACKUP_REQUIRED"
   | "READ_ONLY_VIOLATION"
   | "DESTRUCTIVE_BLOCKED"
   | "TIMEOUT"
@@ -48,6 +49,14 @@ export class QueryError extends CfHanaError {
     this.name = "QueryError";
     this.sqlState = options?.sqlState;
     this.databaseCode = options?.databaseCode;
+  }
+}
+
+/** A CLI write was refused because its required pre-image could not be preserved. */
+export class BackupRequiredError extends CfHanaError {
+  constructor(message: string, options?: CfHanaErrorOptions) {
+    super("BACKUP_REQUIRED", message, options);
+    this.name = "BackupRequiredError";
   }
 }
 

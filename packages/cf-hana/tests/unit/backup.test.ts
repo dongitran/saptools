@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 
@@ -133,6 +133,125 @@ describe("write backup planning", () => {
     });
   });
 
+  it("derives a SELECT for REPLACE with the same grammar as UPSERT", () => {
+    expect(
+      buildWriteBackupPlan(
+        "REPLACE APP.ORDERS (ID, STATUS) VALUES (?, ?) WHERE ID = ?",
+        [7, "DONE", 7],
+      ),
+    ).toEqual({
+      operation: "replace",
+      statementSql: "REPLACE APP.ORDERS (ID, STATUS) VALUES (?, ?) WHERE ID = ?",
+      selectSql: "SELECT * FROM APP.ORDERS WHERE ID = ?",
+      selectParams: [7],
+    });
+  });
+
+  it("backs up the whole REPLACE target for WITH PRIMARY KEY", () => {
+    expect(buildWriteBackupPlan("REPLACE ORDERS VALUES (?, ?) WITH PRIMARY KEY", [7, "DONE"]))
+      .toEqual({
+        operation: "replace",
+        statementSql: "REPLACE ORDERS VALUES (?, ?) WITH PRIMARY KEY",
+        selectSql: "SELECT * FROM ORDERS",
+        selectParams: [],
+      });
+  });
+
+  it("backs up the whole UPSERT or REPLACE target for subquery forms", () => {
+    expect(buildWriteBackupPlan("UPSERT ORDERS SELECT ID, STATUS FROM SOURCE_ROWS", [])).toEqual({
+      operation: "upsert",
+      statementSql: "UPSERT ORDERS SELECT ID, STATUS FROM SOURCE_ROWS",
+      selectSql: "SELECT * FROM ORDERS",
+      selectParams: [],
+    });
+    expect(buildWriteBackupPlan("REPLACE ORDERS SELECT ID, STATUS FROM SOURCE_ROWS", []))
+      .toEqual({
+        operation: "replace",
+        statementSql: "REPLACE ORDERS SELECT ID, STATUS FROM SOURCE_ROWS",
+        selectSql: "SELECT * FROM ORDERS",
+        selectParams: [],
+      });
+  });
+
+  it("uses the unpartitioned base target as a conservative REPLACE pre-image", () => {
+    expect(
+      buildWriteBackupPlan(
+        "REPLACE APP.ORDERS PARTITION (1) (ID, STATUS) VALUES (?, ?)",
+        [7, "DONE"],
+      ),
+    ).toMatchObject({
+      operation: "replace",
+      selectSql: "SELECT * FROM APP.ORDERS",
+      selectParams: [],
+    });
+  });
+
+  it("derives an exact matched-row pre-image for MERGE INTO", () => {
+    const sql =
+      "MERGE INTO APP.ORDERS AS target " +
+      "USING (SELECT ID, STATUS FROM SOURCE_ROWS WHERE GROUP_ID = ?) AS source " +
+      "ON target.ID = source.ID AND target.TENANT = ? " +
+      "WHEN MATCHED AND target.STATE = ? THEN UPDATE SET target.STATUS = ? " +
+      "WHEN NOT MATCHED THEN INSERT (ID, STATUS) VALUES (?, ?)";
+
+    expect(buildWriteBackupPlan(sql, [4, "TENANT", "OPEN", "DONE", 7, "NEW"]))
+      .toEqual({
+        operation: "merge",
+        statementSql: sql,
+        selectSql:
+          "SELECT target.* FROM APP.ORDERS AS target " +
+          "WHERE EXISTS (SELECT 1 FROM " +
+          "(SELECT ID, STATUS FROM SOURCE_ROWS WHERE GROUP_ID = ?) AS source " +
+          "WHERE (target.ID = source.ID AND target.TENANT = ?) " +
+          "AND (target.STATE = ?))",
+        selectParams: [4, "TENANT", "OPEN"],
+      });
+  });
+
+  it("backs up matched MERGE DELETE rows", () => {
+    const sql =
+      "MERGE INTO ORDERS target USING SOURCE_ROWS source ON target.ID = source.ID " +
+      "WHEN MATCHED THEN DELETE";
+    expect(buildWriteBackupPlan(sql)).toMatchObject({
+      operation: "merge",
+      selectSql:
+        "SELECT target.* FROM ORDERS target " +
+        "WHERE EXISTS (SELECT 1 FROM SOURCE_ROWS source WHERE (target.ID = source.ID))",
+      selectParams: [],
+    });
+  });
+
+  it("falls back to a whole-target MERGE pre-image when matched clauses are ambiguous", () => {
+    const sql =
+      "MERGE INTO ORDERS target USING SOURCE_ROWS source ON target.ID = source.ID " +
+      "WHEN MATCHED THEN UPDATE SET target.STATUS = source.STATUS " +
+      "WHEN MATCHED THEN DELETE";
+    expect(buildWriteBackupPlan(sql)).toMatchObject({
+      operation: "merge",
+      selectSql: "SELECT * FROM ORDERS",
+      selectParams: [],
+    });
+  });
+
+  it("does not back up insert-only MERGE or MERGE DELTA statements", () => {
+    expect(
+      buildWriteBackupPlan(
+        "MERGE INTO ORDERS target USING SOURCE_ROWS source ON target.ID = source.ID " +
+          "WHEN NOT MATCHED THEN INSERT (ID) VALUES (source.ID)",
+      ),
+    ).toBeUndefined();
+    expect(buildWriteBackupPlan("MERGE DELTA OF ORDERS")).toBeUndefined();
+  });
+
+  it("refuses a modifying MERGE whose base target is ambiguous", () => {
+    expect(() =>
+      buildWriteBackupPlan(
+        "MERGE INTO (SELECT * FROM ORDERS) target USING SOURCE_ROWS source " +
+          "ON target.ID = source.ID WHEN MATCHED THEN DELETE",
+      ),
+    ).toThrow(/cannot derive a trustworthy backup target/i);
+  });
+
   it("returns undefined for non-write statements", () => {
     expect(buildWriteBackupPlan("SELECT * FROM ORDERS", [])).toBeUndefined();
   });
@@ -171,5 +290,38 @@ describe("writeSqlBackup", () => {
       "eu10/example-org/space-demo/app-demo",
     );
     expect(record.rowCount).toBe(1);
+  });
+
+  it("creates private backup directories and files", async () => {
+    const record = await writeSqlBackup(sampleBackupInput(), {
+      now: fixedNow(),
+      saptoolsRoot: join(rootDir, ".saptools"),
+    });
+
+    expect((await stat(record.directory)).mode & 0o777).toBe(0o700);
+    await expect(Promise.all([
+      stat(record.statementPath),
+      stat(record.backupPath),
+      stat(record.metadataPath),
+    ])).resolves.toEqual([
+      expect.objectContaining({ mode: expect.any(Number) }),
+      expect.objectContaining({ mode: expect.any(Number) }),
+      expect.objectContaining({ mode: expect.any(Number) }),
+    ]);
+    for (const path of [record.statementPath, record.backupPath, record.metadataPath]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("refuses an oversized backup before creating local files", async () => {
+    const saptoolsRoot = join(rootDir, ".saptools");
+    await expect(
+      writeSqlBackup(sampleBackupInput(), {
+        now: fixedNow(),
+        saptoolsRoot,
+        maxBytes: 10,
+      }),
+    ).rejects.toThrow(/backup exceeds the storage limit/i);
+    await expect(stat(cfHanaBackupRoot(saptoolsRoot))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

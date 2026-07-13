@@ -107,7 +107,7 @@ export class HanaClient {
     return result;
   }
 
-  /** Back up rows matched by an UPDATE or DELETE before the caller runs it. */
+  /** Back up pre-image rows required by a supported write before the caller runs it. */
   async backupWriteStatement(
     sql: string,
     params?: readonly SqlParam[],
