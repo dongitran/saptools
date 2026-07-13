@@ -17,6 +17,22 @@ test("eval prints a primitive value", async () => {
   }
 });
 
+test("eval warns before running a mutation-capable expression", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      ["eval", "--port", fixture.port.toString(), "--expr", "globalThis.__probe = 7"],
+      30_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.stderr).toContain("eval --expr");
+    expect(result.stderr).toContain("live inspectee");
+  } finally {
+    await fixture.close();
+  }
+});
+
 
 test("list-scripts filters script URLs", async () => {
   ensureCliBuilt();

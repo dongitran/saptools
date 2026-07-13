@@ -19,7 +19,12 @@ import type { Target, WatchCommandOptions } from "../commandTypes.js";
 import { writeJson, writeWatchEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
-import { warnOnUnboundBreakpoints } from "../warnings.js";
+import {
+  enforceNativeConditionMutationPolicy,
+  warnOnCaptureMutationRisk,
+  warnOnMutationRisk,
+  warnOnUnboundBreakpoints,
+} from "../warnings.js";
 
 interface PreparedWatchCommand {
   readonly target: Target;
@@ -35,6 +40,7 @@ interface PreparedWatchCommand {
   readonly hitCount?: number;
   readonly stackDepth?: number;
   readonly stackCaptures: readonly string[];
+  readonly throwOnSideEffect: boolean;
 }
 
 type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed";
@@ -42,6 +48,13 @@ type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed"
 export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareWatchCommand(opts, target);
+  warnOnCaptureMutationRisk(
+    [...prepared.captures, ...prepared.stackCaptures],
+    opts.allowMutation === true,
+  );
+  for (const expression of prepared.setupEvals) {
+    warnOnMutationRisk(expression, "watch --setup-eval");
+  }
   let stoppedReason: WatchStopReason = "signal";
   let emitted = 0;
   await withTerminationSignal(async (signal) => {
@@ -71,6 +84,11 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
     ? opts.condition.trim()
     : undefined;
   const setupEvals = parseSetupEvals(opts.setupEval);
+  enforceNativeConditionMutationPolicy(
+    condition ?? "",
+    opts.allowMutation === true,
+    "watch --condition",
+  );
   return {
     target,
     setupEvals,
@@ -85,6 +103,7 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
     ...(hitCount === undefined ? {} : { hitCount }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
+    throwOnSideEffect: opts.allowMutation !== true,
   };
 }
 
@@ -268,6 +287,7 @@ async function captureWatchEvent(
     ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
     ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
     stackCaptures: command.stackCaptures,
+    throwOnSideEffect: command.throwOnSideEffect,
   });
   const at = formatLocation(command, snapshot.topFrame);
   const base: WatchEvent = {

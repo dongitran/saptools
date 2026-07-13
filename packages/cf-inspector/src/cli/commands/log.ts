@@ -8,7 +8,7 @@ import type { LogCommandOptions } from "../commandTypes.js";
 import { writeLogEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
-import { warnOnUnboundBreakpoints } from "../warnings.js";
+import { warnOnMutationRisk, warnOnUnboundBreakpoints } from "../warnings.js";
 
 export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts);
@@ -24,6 +24,10 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
+  warnOnMutationRisk(expression, "log --expr");
+  if (condition !== undefined) {
+    warnOnMutationRisk(condition, "log --condition");
+  }
 
   await withTerminationSignal(async (signal) => {
     await withSession(target, async (session) => {

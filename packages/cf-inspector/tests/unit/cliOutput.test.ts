@@ -7,6 +7,11 @@ import {
   writeProgress,
   writeWatchEvent,
 } from "../../src/cli/output.js";
+import {
+  enforceNativeConditionMutationPolicy,
+  warnOnCaptureMutationRisk,
+  warnOnMutationRisk,
+} from "../../src/cli/warnings.js";
 import type { LogpointEvent } from "../../src/logpoint/events.js";
 import type { SnapshotResult, WatchEvent } from "../../src/types.js";
 
@@ -209,5 +214,46 @@ describe("CLI output helpers", () => {
     expect(output).toContain("deepest");
     expect(output).toContain("outer");
     expect(output).toContain("x = 1");
+  });
+});
+
+describe("mutation warnings", () => {
+  it("explains that suspicious captures are guarded before they run", () => {
+    const output = captureStderr(() => {
+      warnOnCaptureMutationRisk(["items.push(1)"], false);
+    });
+    expect(output).toContain("V8 side-effect guard");
+    expect(output).toContain("--allow-mutation");
+  });
+
+  it("warns when explicit opt-in lets suspicious captures run", () => {
+    const output = captureStderr(() => {
+      warnOnCaptureMutationRisk(["state.value = 1"], true);
+    });
+    expect(output).toContain("will run without the V8 side-effect guard");
+  });
+
+  it("rejects mutation-shaped native conditions without opt-in", () => {
+    expect(() => {
+      enforceNativeConditionMutationPolicy("items.push(1)", false, "--condition");
+    }).toThrow(expect.objectContaining({ code: "MUTATION_NOT_ALLOWED" }));
+  });
+
+  it("warns that allowed native conditions cannot be side-effect-gated", () => {
+    const output = captureStderr(() => {
+      enforceNativeConditionMutationPolicy("state.value = 1", true, "--condition");
+    });
+    expect(output).toContain("native breakpoint condition");
+    expect(output).toContain("cannot be side-effect-gated");
+  });
+
+  it("warns for unrestricted mutation-capable eval and log expressions", () => {
+    const output = captureStderr(() => {
+      warnOnMutationRisk("items.push(1)", "log --expr");
+      warnOnMutationRisk("globalThis.ready = true", "eval --expr");
+    });
+    expect(output).toContain("log --expr");
+    expect(output).toContain("eval --expr");
+    expect(output).toContain("live inspectee");
   });
 });

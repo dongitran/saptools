@@ -16,7 +16,7 @@ import { DEFAULT_EXCEPTION_TIMEOUT_SEC } from "../commandTypes.js";
 import type { ExceptionCommandOptions, Target } from "../commandTypes.js";
 import { writeHumanSnapshot, writeJson } from "../output.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
-import { roundDurationMs, withPausedDuration } from "../warnings.js";
+import { roundDurationMs, warnOnCaptureMutationRisk, withPausedDuration } from "../warnings.js";
 
 const VALID_PAUSE_TYPES: readonly PauseOnExceptionsState[] = ["uncaught", "caught", "all"];
 
@@ -29,11 +29,16 @@ interface PreparedExceptionCommand {
   readonly maxValueLength?: number;
   readonly stackDepth?: number;
   readonly stackCaptures: readonly string[];
+  readonly throwOnSideEffect: boolean;
 }
 
 export async function handleException(opts: ExceptionCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareExceptionCommand(opts, target);
+  warnOnCaptureMutationRisk(
+    [...prepared.captures, ...prepared.stackCaptures],
+    opts.allowMutation === true,
+  );
   const result = await runExceptionCommand(prepared, opts);
   if (opts.json) {
     writeJson(result);
@@ -62,6 +67,7 @@ function prepareExceptionCommand(opts: ExceptionCommandOptions, target: Target):
     ...(maxValueLength === undefined ? {} : { maxValueLength }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
+    throwOnSideEffect: opts.allowMutation !== true,
   };
 }
 
@@ -84,6 +90,7 @@ async function runExceptionCommand(
         ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
         ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
         stackCaptures: command.stackCaptures,
+        throwOnSideEffect: command.throwOnSideEffect,
       });
       if (opts.keepPaused === true) {
         return withPausedDuration(snapshot, null);
@@ -118,3 +125,7 @@ async function disablePauseOnExceptionsBestEffort(session: InspectorSession): Pr
     // best-effort: tunnel may be gone
   }
 }
+
+export const internalsForTesting = {
+  prepareExceptionCommand,
+};

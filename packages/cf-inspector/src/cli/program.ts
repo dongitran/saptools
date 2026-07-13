@@ -97,6 +97,7 @@ function registerSnapshot(program: Command): void {
     .option("--hit-count <n>", "Only pause after the breakpoint has been hit N or more times")
     .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1, only top frame)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
+    .option("--allow-mutation", "Allow mutation-capable captures and native breakpoint conditions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--no-json", "Print a human-readable summary instead of JSON")
     .option("--quiet", "Suppress progress messages on stderr")
@@ -141,6 +142,7 @@ function registerWatch(program: Command): void {
     .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
     .option("--stack-depth <n>", "Walk this many call frames per hit (default: 1)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame")
+    .option("--allow-mutation", "Allow mutation-capable captures and native breakpoint conditions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes per hit")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
     .action(async (opts: WatchCommandOptions): Promise<void> => {
@@ -160,6 +162,7 @@ function registerException(program: Command): void {
     .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
     .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
+    .option("--allow-mutation", "Allow mutation-capable capture expressions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
     .option("--no-json", "Print a human-readable summary instead of JSON")

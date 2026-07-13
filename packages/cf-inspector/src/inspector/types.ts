@@ -66,8 +66,18 @@ export interface CdpResolvedLocation {
 }
 
 export interface CdpEvalResult {
-  result?: { type?: unknown; value?: unknown; description?: unknown; objectId?: unknown };
-  exceptionDetails?: { text?: unknown; exception?: { description?: unknown } };
+  result?: {
+    type?: unknown;
+    subtype?: unknown;
+    className?: unknown;
+    value?: unknown;
+    description?: unknown;
+    objectId?: unknown;
+  };
+  exceptionDetails?: {
+    text?: unknown;
+    exception?: { className?: unknown; description?: unknown };
+  };
 }
 
 export interface CdpProperty {

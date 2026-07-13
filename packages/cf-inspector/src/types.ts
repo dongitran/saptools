@@ -3,6 +3,7 @@ export type CfInspectorErrorCode =
   | "INVALID_BREAKPOINT"
   | "INVALID_REMOTE_ROOT"
   | "INVALID_EXPRESSION"
+  | "MUTATION_NOT_ALLOWED"
   | "SETUP_EVAL_FAILED"
   | "INVALID_HIT_COUNT"
   | "INVALID_PAUSE_TYPE"
@@ -117,6 +118,8 @@ export interface CapturedExpression {
   readonly value?: string;
   readonly type?: string;
   readonly error?: string;
+  readonly mutationRisk?: boolean;
+  readonly blocked?: true;
 }
 
 export interface ExceptionSnapshot {

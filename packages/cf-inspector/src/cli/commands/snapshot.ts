@@ -20,7 +20,10 @@ import { writeHumanSnapshot, writeJson, writeProgress } from "../output.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import type { ProgressReporter } from "../target.js";
 import {
+  enforceNativeConditionMutationPolicy,
   roundDurationMs,
+  warnOnCaptureMutationRisk,
+  warnOnMutationRisk,
   warnOnUnboundBreakpoints,
   warnOnUnmatchedPause,
   withPausedDuration,
@@ -38,11 +41,19 @@ interface PreparedSnapshotCommand {
   readonly hitCount?: number;
   readonly stackDepth?: number;
   readonly stackCaptures: readonly string[];
+  readonly throwOnSideEffect: boolean;
 }
 
 export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareSnapshotCommand(opts, target);
+  warnOnCaptureMutationRisk(
+    [...prepared.captures, ...prepared.stackCaptures],
+    opts.allowMutation === true,
+  );
+  for (const expression of prepared.setupEvals) {
+    warnOnMutationRisk(expression, "snapshot --setup-eval");
+  }
   const reportProgress = opts.quiet === true ? undefined : writeProgress;
   const result = await runSnapshotCommand(prepared, opts, reportProgress);
   if (opts.json) {
@@ -68,6 +79,11 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
   const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
   const setupEvals = parseSetupEvals(opts.setupEval);
+  enforceNativeConditionMutationPolicy(
+    condition ?? "",
+    opts.allowMutation === true,
+    "snapshot --condition",
+  );
   return {
     target,
     setupEvals,
@@ -80,6 +96,7 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
     ...(hitCount === undefined ? {} : { hitCount }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
+    throwOnSideEffect: opts.allowMutation !== true,
   };
 }
 
@@ -139,6 +156,7 @@ async function runSnapshotOnSession(
     ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
     ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
     stackCaptures: command.stackCaptures,
+    throwOnSideEffect: command.throwOnSideEffect,
   });
   if (opts.keepPaused === true) {
     reportProgress?.("Snapshot captured; leaving the target paused as requested.");

@@ -1,6 +1,54 @@
 import process from "node:process";
 
+import { CfInspectorError } from "../types.js";
 import type { BreakpointHandle, PauseEvent, SnapshotCaptureResult, SnapshotResult } from "../types.js";
+
+import { looksLikeMutation } from "./captureParser.js";
+
+export function warnOnCaptureMutationRisk(
+  expressions: readonly string[],
+  allowMutation: boolean,
+): void {
+  const riskyCount = expressions.filter(looksLikeMutation).length;
+  if (riskyCount === 0) {
+    return;
+  }
+  const suffix = allowMutation
+    ? "will run without the V8 side-effect guard because --allow-mutation was passed."
+    : "will be checked by the V8 side-effect guard and blocked unless V8 proves them safe; pass --allow-mutation to run them unrestricted.";
+  process.stderr.write(
+    `[cf-inspector] warning: ${riskyCount.toString()} capture ` +
+      `${riskyCount === 1 ? "expression looks" : "expressions look"} mutation-capable and ${suffix}\n`,
+  );
+}
+
+export function enforceNativeConditionMutationPolicy(
+  expression: string,
+  allowMutation: boolean,
+  context: string,
+): void {
+  if (!looksLikeMutation(expression)) {
+    return;
+  }
+  if (!allowMutation) {
+    throw new CfInspectorError(
+      "MUTATION_NOT_ALLOWED",
+      `${context} looks mutation-capable. Native breakpoint conditions cannot be protected by V8's side-effect guard; pass --allow-mutation to arm it explicitly.`,
+    );
+  }
+  process.stderr.write(
+    `[cf-inspector] warning: ${context} looks mutation-capable and will run as a native breakpoint condition; native conditions cannot be side-effect-gated.\n`,
+  );
+}
+
+export function warnOnMutationRisk(expression: string, context: string): void {
+  if (!looksLikeMutation(expression)) {
+    return;
+  }
+  process.stderr.write(
+    `[cf-inspector] warning: ${context} looks mutation-capable and will execute against the live inspectee without a side-effect guard.\n`,
+  );
+}
 
 export function warnOnUnboundBreakpoints(handles: readonly BreakpointHandle[]): void {
   for (const handle of handles) {

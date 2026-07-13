@@ -7,9 +7,12 @@ export function parseCaptureList(raw: string | undefined): readonly string[] {
 
 type QuoteChar = "'" | "\"" | "`";
 
-interface CaptureSplitState {
+interface QuoteScanState {
   quote: QuoteChar | undefined;
   escaped: boolean;
+}
+
+interface CaptureSplitState extends QuoteScanState {
   parenDepth: number;
   bracketDepth: number;
   braceDepth: number;
@@ -21,7 +24,7 @@ function isQuoteChar(value: string): value is QuoteChar {
   return value === "'" || value === "\"" || value === "`";
 }
 
-function consumeQuotedChar(state: CaptureSplitState, char: string): boolean {
+function consumeQuotedChar(state: QuoteScanState, char: string): boolean {
   if (state.quote === undefined) {
     return false;
   }
@@ -37,6 +40,34 @@ function consumeQuotedChar(state: CaptureSplitState, char: string): boolean {
     state.quote = undefined;
   }
   return true;
+}
+
+function stripQuotedText(expression: string): string {
+  const state: QuoteScanState = { quote: undefined, escaped: false };
+  let stripped = "";
+  for (const char of expression) {
+    if (consumeQuotedChar(state, char)) {
+      stripped += " ";
+      continue;
+    }
+    if (isQuoteChar(char)) {
+      state.quote = char;
+      stripped += " ";
+      continue;
+    }
+    stripped += char;
+  }
+  return stripped;
+}
+
+export function looksLikeMutation(expression: string): boolean {
+  const stripped = stripQuotedText(expression);
+  const hasUpdate = /(?:\+\+|--)/u.test(stripped);
+  const hasAssignment = /(?:\*\*=|&&=|\|\|=|\?\?=|[+\-*/%&|^]=|(?:^|[^=!<>])=(?!=|>))/u.test(stripped);
+  const hasDelete = /\bdelete\b/u.test(stripped);
+  const hasMutatingMethod = /\.\s*(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin|set|add|delete|clear)\s*\(/u.test(stripped);
+  const hasObjectMutation = /\bObject\s*\.\s*(?:assign|defineProperty|defineProperties)\s*\(/u.test(stripped);
+  return hasUpdate || hasAssignment || hasDelete || hasMutatingMethod || hasObjectMutation;
 }
 
 function updateCaptureDepth(state: CaptureSplitState, char: string): void {

@@ -465,6 +465,13 @@ describe("evaluateOnFrame / evaluateGlobal / getProperties", () => {
     expect(calls[0]?.params["callFrameId"]).toBe("frame-1");
     expect(calls[0]?.params["expression"]).toBe("1+1");
     expect(calls[0]?.params["silent"]).toBe(true);
+    expect(calls[0]?.params).not.toHaveProperty("throwOnSideEffect");
+  });
+
+  it("evaluateOnFrame forwards an explicit throwOnSideEffect guard", async () => {
+    const { session, calls } = makeSendSession(() => ({ result: { type: "number", value: 2 } }));
+    await evaluateOnFrame(session, "frame-1", "1+1", { throwOnSideEffect: true });
+    expect(calls[0]?.params["throwOnSideEffect"]).toBe(true);
   });
 
   it("evaluateGlobal routes via Runtime.evaluate with silent: true", async () => {

@@ -113,4 +113,66 @@ describe("walkStack", () => {
     expect(stack[0]?.captures?.[0]?.error).toContain("eval backend down");
     expect(stack[1]?.captures?.[0]?.error).toContain("eval backend down");
   });
+
+  it("blocks side-effecting stack captures through V8's side-effect guard", async () => {
+    const session = makeSession((method, params) => {
+      if (method === "Debugger.evaluateOnCallFrame") {
+        expect(params["throwOnSideEffect"]).toBe(true);
+        return {
+          result: {
+            type: "object",
+            subtype: "error",
+            className: "EvalError",
+            description: "EvalError: Possible side-effect in debug-evaluate",
+          },
+          exceptionDetails: {
+            text: "Uncaught",
+            exception: {
+              className: "EvalError",
+              description: "EvalError: Possible side-effect in debug-evaluate",
+            },
+          },
+        };
+      }
+      return {};
+    });
+    const stack = await walkStack(
+      session,
+      [frame("f0", "deepest", 0), frame("f1", "outer", 0)],
+      {
+        stackDepth: 2,
+        stackCaptures: ["items.push(1)"],
+        maxValueLength: 4096,
+        throwOnSideEffect: true,
+      },
+    );
+    expect(stack[0]?.captures?.[0]).toMatchObject({
+      blocked: true,
+      mutationRisk: true,
+      error: expect.stringContaining("MUTATION_NOT_ALLOWED") as unknown as string,
+    });
+    expect(stack[1]?.captures?.[0]?.error).toContain("--allow-mutation");
+  });
+
+  it("annotates allowed mutations in stack captures", async () => {
+    const session = makeSession((method, params) => {
+      if (method === "Debugger.evaluateOnCallFrame") {
+        expect(params["throwOnSideEffect"]).toBe(false);
+        return { result: { type: "number", value: 1 } };
+      }
+      return {};
+    });
+    const stack = await walkStack(
+      session,
+      [frame("f0", "deepest", 0), frame("f1", "outer", 0)],
+      {
+        stackDepth: 2,
+        stackCaptures: ["items.push(1)"],
+        maxValueLength: 4096,
+        throwOnSideEffect: false,
+      },
+    );
+    expect(stack[0]?.captures?.[0]).toMatchObject({ value: "1", mutationRisk: true });
+    expect(stack[1]?.captures?.[0]).toMatchObject({ value: "1", mutationRisk: true });
+  });
 });

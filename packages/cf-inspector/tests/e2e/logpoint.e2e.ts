@@ -76,6 +76,35 @@ test("log --expr with a syntax error fails fast with INVALID_EXPRESSION", async 
   }
 });
 
+test("log warns when its native expression or condition looks mutation-capable", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "log",
+        "--port",
+        fixture.port.toString(),
+        "--at",
+        "fixtures/sample-app.mjs:14",
+        "--expr",
+        "accumulator.push('logged')",
+        "--condition",
+        "(counter += 1) >= 0",
+        "--max-events",
+        "1",
+      ],
+      30_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.stderr).toContain("log --expr");
+    expect(result.stderr).toContain("log --condition");
+    expect(result.stderr).toContain("live inspectee");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("log --max-events stops the stream after N events with stoppedReason='max-events'", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

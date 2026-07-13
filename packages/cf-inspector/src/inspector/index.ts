@@ -11,7 +11,7 @@ export {
   setPauseOnExceptions,
   validateExpression,
 } from "./runtime.js";
-export type { PauseOnExceptionsState } from "./runtime.js";
+export type { EvaluateOnFrameOptions, PauseOnExceptionsState } from "./runtime.js";
 export { connectInspector } from "./session.js";
 export type {
   CdpEvalResult,

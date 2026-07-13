@@ -45,6 +45,7 @@ export {
 } from "./inspector/index.js";
 export type {
   DebuggerState,
+  EvaluateOnFrameOptions,
   InspectorSession,
   InspectorTarget,
   PauseOnExceptionsState,

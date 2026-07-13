@@ -136,6 +136,35 @@ describe("captureSnapshot", () => {
       }
       if (method === "Debugger.evaluateOnCallFrame") {
         const expression = params["expression"];
+        if (
+          params["throwOnSideEffect"] === true &&
+          (expression === "user.id = 8" || expression === "items.push(1)" || expression === "effectful()")
+        ) {
+          return {
+            result: {
+              type: "object",
+              subtype: "error",
+              className: "EvalError",
+              description: "EvalError: Possible side-effect in debug-evaluate",
+            },
+            exceptionDetails: {
+              text: "Uncaught",
+              exception: {
+                className: "EvalError",
+                description: "EvalError: Possible side-effect in debug-evaluate",
+              },
+            },
+          };
+        }
+        if (expression === "user.id = 8") {
+          return { result: { type: "number", value: 8 } };
+        }
+        if (expression === "items.push(1)") {
+          return { result: { type: "number", value: 4 } };
+        }
+        if (expression === "effectful()") {
+          return { result: { type: "string", value: "ran" } };
+        }
         if (expression === "user.id") {
           return { result: { type: "number", value: 7 } };
         }
@@ -291,6 +320,44 @@ describe("captureSnapshot", () => {
     };
     const snapshot = await captureSnapshot(session, pause, { captures: ["boom"] });
     expect(snapshot.captures[0]?.error).toContain("network down");
+  });
+
+  it.each(["user.id = 8", "items.push(1)", "effectful()"]) (
+    "blocks side-effecting capture %s when throwOnSideEffect is enabled",
+    async (expression) => {
+      const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+        captures: [expression],
+        throwOnSideEffect: true,
+      });
+      expect(snapshot.captures[0]).toMatchObject({
+        expression,
+        blocked: true,
+        mutationRisk: true,
+        error: expect.stringContaining("MUTATION_NOT_ALLOWED") as unknown as string,
+      });
+      expect(snapshot.captures[0]?.error).toContain("--allow-mutation");
+    },
+  );
+
+  it("allows and annotates likely mutations when the guard is disabled", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id = 8", "items.push(1)"],
+      throwOnSideEffect: false,
+    });
+    expect(snapshot.captures[0]).toMatchObject({ value: "8", mutationRisk: true });
+    expect(snapshot.captures[1]).toMatchObject({ value: "4", mutationRisk: true });
+  });
+
+  it("leaves a pure read unannotated when the guard is enabled", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id"],
+      throwOnSideEffect: true,
+    });
+    expect(snapshot.captures[0]).toEqual({
+      expression: "user.id",
+      value: "7",
+      type: "number",
+    });
   });
 
   it("keeps readable scopes when one top-level scope property read fails", async () => {

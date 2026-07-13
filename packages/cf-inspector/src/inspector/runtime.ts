@@ -5,6 +5,10 @@ import type { CdpEvalResult, CdpProperty, InspectorSession } from "./types.js";
 
 export type PauseOnExceptionsState = "none" | "uncaught" | "caught" | "all";
 
+export interface EvaluateOnFrameOptions {
+  readonly throwOnSideEffect?: boolean;
+}
+
 export async function resume(session: InspectorSession): Promise<void> {
   await session.client.send("Debugger.resume");
 }
@@ -20,6 +24,7 @@ export async function evaluateOnFrame(
   session: InspectorSession,
   callFrameId: string,
   expression: string,
+  options: EvaluateOnFrameOptions = {},
 ): Promise<CdpEvalResult> {
   return await session.client.send<CdpEvalResult>("Debugger.evaluateOnCallFrame", {
     callFrameId,
@@ -27,7 +32,27 @@ export async function evaluateOnFrame(
     returnByValue: false,
     generatePreview: true,
     silent: true,
+    ...(options.throwOnSideEffect === undefined
+      ? {}
+      : { throwOnSideEffect: options.throwOnSideEffect }),
   });
+}
+
+export function isSideEffectRefusal(result: CdpEvalResult): boolean {
+  const classNames = [
+    result.result?.className,
+    result.exceptionDetails?.exception?.className,
+  ];
+  const descriptions = [
+    result.result?.description,
+    result.exceptionDetails?.exception?.description,
+  ];
+  const isEvalError = classNames.includes("EvalError");
+  return isEvalError && descriptions.some(
+    (description) =>
+      typeof description === "string" &&
+      description.toLowerCase().includes("possible side-effect in debug-evaluate"),
+  );
 }
 
 export async function evaluateGlobal(

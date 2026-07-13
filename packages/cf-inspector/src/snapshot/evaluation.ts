@@ -1,4 +1,5 @@
 import type { CdpEvalResult } from "../inspector/types.js";
+import { CfInspectorError } from "../types.js";
 import type { CapturedExpression } from "../types.js";
 
 import {
@@ -40,6 +41,19 @@ export function evalResultToCaptured(
     return buildCaptured(formatPrimitive(inner.value));
   }
   return buildCaptured("undefined");
+}
+
+export function sideEffectRefusalToCaptured(expression: string): CapturedExpression {
+  const error = new CfInspectorError(
+    "MUTATION_NOT_ALLOWED",
+    `V8 blocked the capture expression "${expression}" because it may have side effects. Pass --allow-mutation to run it explicitly.`,
+  );
+  return {
+    expression,
+    error: `${error.code}: ${error.message}`,
+    mutationRisk: true,
+    blocked: true,
+  };
 }
 
 function readEvalError(result: CdpEvalResult, maxValueLength: number): string {
