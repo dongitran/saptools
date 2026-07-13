@@ -4,8 +4,10 @@ import { evaluateGlobal } from "../../inspector/runtime.js";
 import type { EvalCommandOptions } from "../commandTypes.js";
 import { writeJson } from "../output.js";
 import { resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
+import { warnOnMutationRisk } from "../warnings.js";
 
 export async function handleEval(opts: EvalCommandOptions): Promise<void> {
+  warnOnMutationRisk(opts.expr, "eval --expr");
   const target = await resolveTargetWithCurrentCfTarget(opts);
   const result = await withSession(target, async (session) => {
     return await evaluateGlobal(session, opts.expr);

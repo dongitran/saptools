@@ -57,6 +57,34 @@ test("watch streams a JSON-line snapshot for each hit and stops on duration", as
   }
 });
 
+test("User can detect compact-default truncation in a watch event", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const expression = '"x".repeat(5000)';
+    const result = await runCli([
+      "watch",
+      "--port",
+      fixture.port.toString(),
+      "--bp",
+      "fixtures/sample-app.mjs:14",
+      "--capture",
+      expression,
+      "--max-events",
+      "1",
+    ], 45_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const capture = parseEvents(result.stdout)[0]?.captures.find((entry) => {
+      return entry.expression === expression;
+    });
+    expect(capture?.value).toHaveLength(4_096);
+    expect(capture?.truncated).toBe(true);
+    expect(capture?.originalLength).toBe(5_002);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("watch stops when --max-events is reached", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();

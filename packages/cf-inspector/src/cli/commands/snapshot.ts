@@ -11,6 +11,7 @@ import {
 import type { InspectorSession } from "../../inspector/types.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
+import { DEFAULT_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { BreakpointLocation, RemoteRootSetting, SnapshotResult } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";
@@ -20,7 +21,11 @@ import { writeHumanSnapshot, writeJson, writeProgress } from "../output.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
 import type { ProgressReporter } from "../target.js";
 import {
+  enforceNativeConditionMutationPolicy,
   roundDurationMs,
+  warnOnCaptureMutationRisk,
+  warnOnBoundBreakpointWithoutHit,
+  warnOnMutationRisk,
   warnOnUnboundBreakpoints,
   warnOnUnmatchedPause,
   withPausedDuration,
@@ -33,16 +38,24 @@ interface PreparedSnapshotCommand {
   readonly captures: readonly string[];
   readonly remoteRoot: RemoteRootSetting;
   readonly timeoutMs: number;
-  readonly maxValueLength?: number;
+  readonly maxValueLength: number;
   readonly condition?: string;
   readonly hitCount?: number;
   readonly stackDepth?: number;
   readonly stackCaptures: readonly string[];
+  readonly throwOnSideEffect: boolean;
 }
 
 export async function handleSnapshot(opts: SnapshotCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareSnapshotCommand(opts, target);
+  warnOnCaptureMutationRisk(
+    [...prepared.captures, ...prepared.stackCaptures],
+    opts.allowMutation === true,
+  );
+  for (const expression of prepared.setupEvals) {
+    warnOnMutationRisk(expression, "snapshot --setup-eval");
+  }
   const reportProgress = opts.quiet === true ? undefined : writeProgress;
   const result = await runSnapshotCommand(prepared, opts, reportProgress);
   if (opts.json) {
@@ -61,13 +74,19 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
     );
   }
   const timeoutSec = parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_BREAKPOINT_TIMEOUT_SEC;
-  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_MAX_VALUE_LENGTH;
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
   const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
   const setupEvals = parseSetupEvals(opts.setupEval);
+  enforceNativeConditionMutationPolicy(
+    condition ?? "",
+    opts.allowMutation === true,
+    "snapshot --condition",
+  );
   return {
     target,
     setupEvals,
@@ -76,10 +95,11 @@ function prepareSnapshotCommand(opts: SnapshotCommandOptions, target: Target): P
     remoteRoot: parseRemoteRoot(opts.remoteRoot),
     timeoutMs: timeoutSec * 1000,
     ...(condition === undefined ? {} : { condition }),
-    ...(maxValueLength === undefined ? {} : { maxValueLength }),
+    maxValueLength,
     ...(hitCount === undefined ? {} : { hitCount }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
+    throwOnSideEffect: opts.allowMutation !== true,
   };
 }
 
@@ -136,9 +156,10 @@ async function runSnapshotOnSession(
   const snapshot = await captureSnapshot(session, pause, {
     captures: command.captures,
     includeScopes: opts.includeScopes === true,
-    ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+    maxValueLength: command.maxValueLength,
     ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
     stackCaptures: command.stackCaptures,
+    throwOnSideEffect: command.throwOnSideEffect,
   });
   if (opts.keepPaused === true) {
     reportProgress?.("Snapshot captured; leaving the target paused as requested.");
@@ -172,18 +193,28 @@ async function waitForCommandPause(
   timeoutMs: number,
 ): ReturnType<typeof waitForPause> {
   let warnedUnmatchedPause = false;
-  return await waitForPause(session, {
-    timeoutMs,
-    breakpointIds: handles.map((h) => h.breakpointId),
-    unmatchedPausePolicy: opts.failOnUnmatchedPause === true ? "fail" : "wait-for-resume",
-    onUnmatchedPause: (unmatchedPause) => {
-      if (warnedUnmatchedPause || opts.failOnUnmatchedPause === true) {
-        return;
-      }
-      warnedUnmatchedPause = true;
-      warnOnUnmatchedPause(unmatchedPause);
-    },
-  });
+  try {
+    return await waitForPause(session, {
+      timeoutMs,
+      breakpointIds: handles.map((h) => h.breakpointId),
+      unmatchedPausePolicy: opts.failOnUnmatchedPause === true ? "fail" : "wait-for-resume",
+      onUnmatchedPause: (unmatchedPause) => {
+        if (warnedUnmatchedPause || opts.failOnUnmatchedPause === true) {
+          return;
+        }
+        warnedUnmatchedPause = true;
+        warnOnUnmatchedPause(unmatchedPause);
+      },
+    });
+  } catch (error: unknown) {
+    if (
+      error instanceof CfInspectorError &&
+      (error.code === "BREAKPOINT_NOT_HIT" || error.code === "UNRELATED_PAUSE_TIMEOUT")
+    ) {
+      warnOnBoundBreakpointWithoutHit(handles);
+    }
+    throw error;
+  }
 }
 
 async function resumeAfterSnapshot(

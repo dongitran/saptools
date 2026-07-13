@@ -3,10 +3,15 @@ import type { CapturedExpression } from "../types.js";
 
 import {
   captureProperties,
+  countPropertyOmissions,
   MAX_SCOPE_VARIABLES,
   MAX_VARIABLE_DEPTH,
 } from "./properties.js";
-import { limitValueLength, toStructuredValue } from "./values.js";
+import {
+  limitValueLength,
+  textTruncationFields,
+  toStructuredValue,
+} from "./values.js";
 
 function objectIdFromEvalResult(result: CdpEvalResult): string | undefined {
   const inner = result.result;
@@ -20,24 +25,31 @@ function objectIdFromEvalResult(result: CdpEvalResult): string | undefined {
   return objectId;
 }
 
+interface RenderedObjectCapture {
+  readonly value: string;
+  readonly omittedCount: number;
+}
+
 async function renderObjectCapture(
   session: InspectorSession,
   objectId: string,
-  maxValueLength: number,
-): Promise<string | undefined> {
+): Promise<RenderedObjectCapture | undefined> {
   try {
-    const properties = await captureProperties(
+    const captured = await captureProperties(
       session,
       objectId,
       MAX_SCOPE_VARIABLES,
       MAX_VARIABLE_DEPTH,
-      maxValueLength,
+      Number.MAX_SAFE_INTEGER,
     );
     const structured: Record<string, unknown> = {};
-    for (const variable of properties) {
+    for (const variable of captured.variables) {
       structured[variable.name] = toStructuredValue(variable);
     }
-    return JSON.stringify(structured);
+    return {
+      value: JSON.stringify(structured),
+      omittedCount: countPropertyOmissions(captured),
+    };
   } catch {
     return undefined;
   }
@@ -67,16 +79,22 @@ export async function withSerializedObjectCapture(
   if (objectId === undefined) {
     return captured;
   }
-  const rendered = await renderObjectCapture(session, objectId, maxValueLength);
+  const rendered = await renderObjectCapture(session, objectId);
   if (rendered === undefined) {
     return captured;
   }
-  const normalized = normalizeRenderedObjectCapture(rendered, captured.value);
+  const normalized = normalizeRenderedObjectCapture(rendered.value, captured.value);
   if (normalized === undefined) {
     return captured;
   }
-  const value = limitValueLength(normalized, maxValueLength);
-  return captured.type === undefined
-    ? { expression, value }
-    : { expression, value, type: captured.type };
+  const limited = limitValueLength(normalized, maxValueLength);
+  const base: CapturedExpression = {
+    expression,
+    value: limited.text,
+    ...textTruncationFields(limited),
+    ...(captured.type === undefined ? {} : { type: captured.type }),
+  };
+  return rendered.omittedCount === 0
+    ? base
+    : { ...base, truncated: true, omittedCount: rendered.omittedCount };
 }

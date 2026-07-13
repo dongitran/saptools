@@ -3,12 +3,17 @@ import process from "node:process";
 import { validateExpression } from "../../inspector/runtime.js";
 import { streamLogpoint } from "../../logpoint/stream.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
+import { DEFAULT_STREAM_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { LogCommandOptions } from "../commandTypes.js";
 import { writeLogEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
-import { warnOnUnboundBreakpoints } from "../warnings.js";
+import {
+  warnOnBoundBreakpointWithoutHit,
+  warnOnMutationRisk,
+  warnOnUnboundBreakpoints,
+} from "../warnings.js";
 
 export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts);
@@ -17,6 +22,8 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const durationSec = parsePositiveInt(opts.duration, "--duration");
   const maxEvents = parsePositiveInt(opts.maxEvents, "--max-events");
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_STREAM_MAX_VALUE_LENGTH;
   const expression = opts.expr.trim();
   if (expression.length === 0) {
     throw new CfInspectorError("INVALID_EXPRESSION", "--expr must not be empty");
@@ -24,6 +31,10 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
+  warnOnMutationRisk(expression, "log --expr");
+  if (condition !== undefined) {
+    warnOnMutationRisk(condition, "log --condition");
+  }
 
   await withTerminationSignal(async (signal) => {
     await withSession(target, async (session) => {
@@ -39,6 +50,7 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
         ...(maxEvents === undefined ? {} : { maxEvents }),
         ...(hitCount === undefined ? {} : { hitCount }),
         ...(condition === undefined ? {} : { condition }),
+        maxValueLength,
         signal,
         onEvent: (event) => {
           writeLogEvent(event, opts.json);
@@ -47,6 +59,12 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
           warnOnUnboundBreakpoints([handle]);
         },
       });
+      if (
+        result.emitted === 0 &&
+        (result.stoppedReason === "duration" || result.stoppedReason === "signal")
+      ) {
+        warnOnBoundBreakpointWithoutHit([result.handle]);
+      }
       writeLogSummary(result.stoppedReason, result.emitted, opts.json);
     });
   });

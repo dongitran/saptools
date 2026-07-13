@@ -7,6 +7,13 @@ import {
   writeProgress,
   writeWatchEvent,
 } from "../../src/cli/output.js";
+import {
+  enforceNativeConditionMutationPolicy,
+  warnOnBoundBreakpointWithoutHit,
+  warnOnCaptureMutationRisk,
+  warnOnImplicitInspectorSelection,
+  warnOnMutationRisk,
+} from "../../src/cli/warnings.js";
 import type { LogpointEvent } from "../../src/logpoint/events.js";
 import type { SnapshotResult, WatchEvent } from "../../src/types.js";
 
@@ -152,6 +159,30 @@ describe("CLI output helpers", () => {
     expect(output).toContain("throwy = ReferenceError");
   });
 
+  it("uses field-local exception metadata in human watch output", () => {
+    const event: WatchEvent = {
+      ts: "2026-01-01T00:00:00.000Z",
+      at: "file:///app/src/handler.js:42",
+      hit: 1,
+      reason: "exception",
+      hitBreakpoints: [],
+      exception: {
+        value: '{"large":"partial',
+        description: "Error: short",
+        truncated: true,
+        originalLength: 50_000,
+        valueOriginalLength: 50_000,
+      },
+      captures: [],
+    };
+    const output = captureStdout(() => {
+      writeWatchEvent(event, false);
+    });
+    expect(output).toContain("exception: Error: short");
+    expect(output).not.toContain("50000");
+    expect(output).not.toContain("Error: short…");
+  });
+
   it("renders the exception block in human snapshot output", () => {
     const snapshot: SnapshotResult = {
       reason: "exception",
@@ -171,6 +202,29 @@ describe("CLI output helpers", () => {
       writeHumanSnapshot(snapshot);
     });
     expect(output).toContain("exception: Error: boom");
+  });
+
+  it("does not label a short exception description with hidden value truncation", () => {
+    const snapshot: SnapshotResult = {
+      reason: "exception",
+      hitBreakpoints: [],
+      capturedAt: "2026-01-01T00:00:00.000Z",
+      pausedDurationMs: 5,
+      exception: {
+        value: '{"large":"partial',
+        description: "Error: short",
+        truncated: true,
+        originalLength: 50_000,
+        valueOriginalLength: 50_000,
+      },
+      captures: [],
+    };
+    const output = captureStdout(() => {
+      writeHumanSnapshot(snapshot);
+    });
+    expect(output).toContain("exception: Error: short");
+    expect(output).not.toContain("50000");
+    expect(output).not.toContain("Error: short…");
   });
 
   it("renders the stack section in human snapshot output", () => {
@@ -209,5 +263,114 @@ describe("CLI output helpers", () => {
     expect(output).toContain("deepest");
     expect(output).toContain("outer");
     expect(output).toContain("x = 1");
+  });
+});
+
+describe("mutation warnings", () => {
+  it("explains that suspicious captures are guarded before they run", () => {
+    const output = captureStderr(() => {
+      warnOnCaptureMutationRisk(["items.push(1)"], false);
+    });
+    expect(output).toContain("V8 side-effect guard");
+    expect(output).toContain("--allow-mutation");
+  });
+
+  it("warns when explicit opt-in lets suspicious captures run", () => {
+    const output = captureStderr(() => {
+      warnOnCaptureMutationRisk(["state.value = 1"], true);
+    });
+    expect(output).toContain("will run without the V8 side-effect guard");
+  });
+
+  it("rejects mutation-shaped native conditions without opt-in", () => {
+    expect(() => {
+      enforceNativeConditionMutationPolicy("items.push(1)", false, "--condition");
+    }).toThrow(expect.objectContaining({ code: "MUTATION_NOT_ALLOWED" }));
+  });
+
+  it("warns that allowed native conditions cannot be side-effect-gated", () => {
+    const output = captureStderr(() => {
+      enforceNativeConditionMutationPolicy("state.value = 1", true, "--condition");
+    });
+    expect(output).toContain("native breakpoint condition");
+    expect(output).toContain("cannot be side-effect-gated");
+  });
+
+  it("warns for unrestricted mutation-capable eval and log expressions", () => {
+    const output = captureStderr(() => {
+      warnOnMutationRisk("items.push(1)", "log --expr");
+      warnOnMutationRisk("globalThis.ready = true", "eval --expr");
+    });
+    expect(output).toContain("log --expr");
+    expect(output).toContain("eval --expr");
+    expect(output).toContain("live inspectee");
+  });
+});
+
+describe("worker diagnostics", () => {
+  it("makes implicit raw-target and main-isolate selection visible", () => {
+    const output = captureStderr(() => {
+      warnOnImplicitInspectorSelection({
+        targetCount: 3,
+        targetIndex: 0,
+        workerTargets: [{
+          sessionId: "session-1",
+          workerId: "1",
+          type: "worker",
+          title: "[worker 1]",
+          url: "file:///app/worker.mjs",
+        }],
+      }, false, false);
+    });
+    expect(output).toContain("target 0 of 3");
+    expect(output).toContain("--target <index>");
+    expect(output).toContain("main isolate");
+    expect(output).toContain("--worker <index>");
+  });
+
+  it("does not warn when raw-target and worker selectors are explicit", () => {
+    const output = captureStderr(() => {
+      warnOnImplicitInspectorSelection({
+        targetCount: 3,
+        targetIndex: 2,
+        workerTargets: [{
+          sessionId: "session-1",
+          workerId: "1",
+          type: "worker",
+          title: "[worker 1]",
+          url: "file:///app/worker.mjs",
+        }],
+      }, true, true);
+    });
+    expect(output).toBe("");
+  });
+
+  it("warns when a bound breakpoint never fires", () => {
+    const output = captureStderr(() => {
+      warnOnBoundBreakpointWithoutHit([{
+        breakpointId: "bp-1",
+        file: "src/worker.js",
+        line: 7,
+        urlRegex: "worker",
+        resolvedLocations: [{ scriptId: "script-1", lineNumber: 6 }],
+      }]);
+    });
+    expect(output).toContain("no hit was observed");
+    expect(output).toContain("worker isolate");
+    expect(output).toContain("list-targets");
+    expect(output).toContain("--worker <index>");
+  });
+
+  it("does not emit the worker hint for an unbound breakpoint", () => {
+    const output = captureStderr(() => {
+      warnOnBoundBreakpointWithoutHit([{
+        breakpointId: "bp-1",
+        file: "src/missing.js",
+        line: 7,
+        urlRegex: "missing",
+        resolvedLocations: [],
+      }]);
+    });
+    expect(output).toBe("");
   });
 });

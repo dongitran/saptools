@@ -7,20 +7,22 @@ import type { CallFrameInfo, PauseEvent } from "../../src/types.js";
 const { limitValueLength, describeProperty, selectScopes, evalResultToCaptured } = internalsForTesting;
 
 describe("limitValueLength", () => {
-  it("truncates values longer than the default limit", () => {
-    const long = "x".repeat(5000);
-    const out = limitValueLength(long);
-    expect(out.endsWith("...")).toBe(true);
-    expect(out.length).toBeLessThanOrEqual(4099);
+  it("keeps typical multi-kilobyte values under the one-shot default", () => {
+    const value = "x".repeat(5000);
+    expect(limitValueLength(value)).toEqual({ text: value, truncated: false });
   });
 
-  it("truncates values longer than a custom limit", () => {
-    expect(limitValueLength("abcdef", 3)).toBe("abc...");
+  it("honors a custom limit exactly and records the original length", () => {
+    expect(limitValueLength("abcdef", 5)).toEqual({
+      text: "abcde",
+      truncated: true,
+      originalLength: 6,
+    });
   });
 
   it("returns short values unchanged regardless of name", () => {
-    expect(limitValueLength("42")).toBe("42");
-    expect(limitValueLength("hunter2")).toBe("hunter2");
+    expect(limitValueLength("42")).toEqual({ text: "42", truncated: false });
+    expect(limitValueLength("hunter2")).toEqual({ text: "hunter2", truncated: false });
   });
 });
 
@@ -136,6 +138,35 @@ describe("captureSnapshot", () => {
       }
       if (method === "Debugger.evaluateOnCallFrame") {
         const expression = params["expression"];
+        if (
+          params["throwOnSideEffect"] === true &&
+          (expression === "user.id = 8" || expression === "items.push(1)" || expression === "effectful()")
+        ) {
+          return {
+            result: {
+              type: "object",
+              subtype: "error",
+              className: "EvalError",
+              description: "EvalError: Possible side-effect in debug-evaluate",
+            },
+            exceptionDetails: {
+              text: "Uncaught",
+              exception: {
+                className: "EvalError",
+                description: "EvalError: Possible side-effect in debug-evaluate",
+              },
+            },
+          };
+        }
+        if (expression === "user.id = 8") {
+          return { result: { type: "number", value: 8 } };
+        }
+        if (expression === "items.push(1)") {
+          return { result: { type: "number", value: 4 } };
+        }
+        if (expression === "effectful()") {
+          return { result: { type: "string", value: "ran" } };
+        }
         if (expression === "user.id") {
           return { result: { type: "number", value: 7 } };
         }
@@ -293,6 +324,44 @@ describe("captureSnapshot", () => {
     expect(snapshot.captures[0]?.error).toContain("network down");
   });
 
+  it.each(["user.id = 8", "items.push(1)", "effectful()"]) (
+    "blocks side-effecting capture %s when throwOnSideEffect is enabled",
+    async (expression) => {
+      const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+        captures: [expression],
+        throwOnSideEffect: true,
+      });
+      expect(snapshot.captures[0]).toMatchObject({
+        expression,
+        blocked: true,
+        mutationRisk: true,
+        error: expect.stringContaining("MUTATION_NOT_ALLOWED") as unknown as string,
+      });
+      expect(snapshot.captures[0]?.error).toContain("--allow-mutation");
+    },
+  );
+
+  it("allows and annotates likely mutations when the guard is disabled", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id = 8", "items.push(1)"],
+      throwOnSideEffect: false,
+    });
+    expect(snapshot.captures[0]).toMatchObject({ value: "8", mutationRisk: true });
+    expect(snapshot.captures[1]).toMatchObject({ value: "4", mutationRisk: true });
+  });
+
+  it("leaves a pure read unannotated when the guard is enabled", async () => {
+    const snapshot = await captureSnapshot(makeSession(), makePauseEvent(), {
+      captures: ["user.id"],
+      throwOnSideEffect: true,
+    });
+    expect(snapshot.captures[0]).toEqual({
+      expression: "user.id",
+      value: "7",
+      type: "number",
+    });
+  });
+
   it("keeps readable scopes when one top-level scope property read fails", async () => {
     const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
       if (method === "Runtime.getProperties") {
@@ -408,9 +477,12 @@ describe("captureSnapshot", () => {
       captures: ["user"],
       maxValueLength: 20,
     });
-    const value = snapshot.captures[0]?.value ?? "";
-    expect(value.endsWith("...")).toBe(true);
-    expect(value.length).toBeLessThanOrEqual(23);
+    expect(snapshot.captures[0]).toMatchObject({
+      value: expect.any(String) as unknown as string,
+      truncated: true,
+      originalLength: 26,
+    });
+    expect(snapshot.captures[0]?.value).toHaveLength(20);
   });
 
   it("rejects invalid max value length overrides", async () => {

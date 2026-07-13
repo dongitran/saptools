@@ -26,6 +26,8 @@ interface NodeSystemError extends Error {
   readonly port?: number;
 }
 
+class InvalidDiscoveryPayloadError extends CfInspectorError {}
+
 async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
   const deadline = performance.now() + timeoutMs;
   let lastError: unknown;
@@ -68,6 +70,9 @@ async function fetchJson<T>(url: string, timeoutMs: number): Promise<T> {
         req.end();
       });
     } catch (err: unknown) {
+      if (err instanceof InvalidDiscoveryPayloadError) {
+        throw err;
+      }
       lastError = err;
       const now = performance.now();
       if (now < deadline) {
@@ -126,7 +131,10 @@ function parseJsonResponse(chunks: readonly Buffer[]): unknown {
 
 function parseDiscoveryError(url: string, err: unknown): CfInspectorError {
   const message = err instanceof Error ? err.message : String(err);
-  return newDiscoveryError(`Failed to parse inspector discovery response from ${url}: ${message}`);
+  return new InvalidDiscoveryPayloadError(
+    "INSPECTOR_DISCOVERY_FAILED",
+    `Failed to parse inspector discovery response from ${url}: ${message}`,
+  );
 }
 
 function newDiscoveryError(message: string): CfInspectorError {

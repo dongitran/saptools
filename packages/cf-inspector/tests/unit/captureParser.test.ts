@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCaptureList } from "../../src/cli/captureParser.js";
+import { looksLikeMutation, parseCaptureList } from "../../src/cli/captureParser.js";
 
 describe("parseCaptureList", () => {
   it("returns an empty list for undefined or blank input", () => {
@@ -41,5 +41,42 @@ describe("parseCaptureList", () => {
 
   it("drops empty pieces produced by adjacent or trailing separators", () => {
     expect(parseCaptureList("first,, second, ")).toEqual(["first", "second"]);
+  });
+});
+
+describe("looksLikeMutation", () => {
+  it.each([
+    "user.id = 7",
+    "count += 1",
+    "mask &&= next",
+    "index++",
+    "--remaining",
+    "delete payload.secret",
+    "items.push(1)",
+    "items.splice(0, 1)",
+    "cache.set('key', value)",
+    "roles.clear()",
+    "Object.assign(target, source)",
+    "Object.defineProperty(target, 'id', descriptor)",
+  ])("detects advisory mutation syntax in %s", (expression) => {
+    expect(looksLikeMutation(expression)).toBe(true);
+  });
+
+  it.each([
+    "user.id",
+    "x === 1",
+    "x == 1",
+    "x !== 1",
+    "x != 1",
+    "x <= 1",
+    "x >= 1",
+    "items.filter((entry) => entry.active)",
+    "items.map((entry) => entry.id)",
+    "(value) => value + 1",
+    "'k=v'",
+    "\"items.push(1)\"",
+    "`count += 1`",
+  ])("does not flag read/comparison/quoted syntax in %s", (expression) => {
+    expect(looksLikeMutation(expression)).toBe(false);
   });
 });

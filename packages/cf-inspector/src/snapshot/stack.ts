@@ -1,4 +1,5 @@
-import { evaluateOnFrame } from "../inspector/runtime.js";
+import { looksLikeMutation } from "../cli/captureParser.js";
+import { evaluateOnFrame, isSideEffectRefusal } from "../inspector/runtime.js";
 import type { InspectorSession } from "../inspector/types.js";
 import type {
   CallFrameInfo,
@@ -6,9 +7,9 @@ import type {
   FrameSnapshot,
 } from "../types.js";
 
-import { evalResultToCaptured } from "./evaluation.js";
+import { evalResultToCaptured, sideEffectRefusalToCaptured } from "./evaluation.js";
 import { withSerializedObjectCapture } from "./objects.js";
-import { limitValueLength } from "./values.js";
+import { limitValueLength, textTruncationFields } from "./values.js";
 
 export const DEFAULT_STACK_DEPTH = 1;
 export const MAX_STACK_DEPTH = 64;
@@ -34,14 +35,34 @@ async function captureFrameExpression(
   callFrameId: string,
   expression: string,
   maxValueLength: number,
+  throwOnSideEffect: boolean | undefined,
 ): Promise<CapturedExpression> {
+  const mutationRisk = throwOnSideEffect === false && looksLikeMutation(expression);
   try {
-    const result = await evaluateOnFrame(session, callFrameId, expression);
+    const result = await evaluateOnFrame(session, callFrameId, expression, {
+      ...(throwOnSideEffect === undefined ? {} : { throwOnSideEffect }),
+    });
+    if (isSideEffectRefusal(result)) {
+      return sideEffectRefusalToCaptured(expression);
+    }
     const captured = evalResultToCaptured(expression, result, maxValueLength);
-    return await withSerializedObjectCapture(session, expression, result, captured, maxValueLength);
+    const serialized = await withSerializedObjectCapture(
+      session,
+      expression,
+      result,
+      captured,
+      maxValueLength,
+    );
+    return mutationRisk ? { ...serialized, mutationRisk: true } : serialized;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { expression, error: limitValueLength(message, maxValueLength) };
+    const limited = limitValueLength(message, maxValueLength);
+    const captured: CapturedExpression = {
+      expression,
+      error: limited.text,
+      ...textTruncationFields(limited),
+    };
+    return mutationRisk ? { ...captured, mutationRisk: true } : captured;
   }
 }
 
@@ -50,13 +71,20 @@ async function captureFrameExpressions(
   frame: CallFrameInfo,
   expressions: readonly string[],
   maxValueLength: number,
+  throwOnSideEffect: boolean | undefined,
 ): Promise<readonly CapturedExpression[]> {
   if (expressions.length === 0) {
     return [];
   }
   return await Promise.all(
     expressions.map((expression) =>
-      captureFrameExpression(session, frame.callFrameId, expression, maxValueLength),
+      captureFrameExpression(
+        session,
+        frame.callFrameId,
+        expression,
+        maxValueLength,
+        throwOnSideEffect,
+      ),
     ),
   );
 }
@@ -65,6 +93,7 @@ export interface WalkStackOptions {
   readonly stackDepth: number;
   readonly stackCaptures: readonly string[];
   readonly maxValueLength: number;
+  readonly throwOnSideEffect?: boolean;
 }
 
 export async function walkStack(
@@ -88,6 +117,7 @@ export async function walkStack(
         frame,
         options.stackCaptures,
         options.maxValueLength,
+        options.throwOnSideEffect,
       );
       return { ...base, captures };
     }),

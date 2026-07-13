@@ -22,19 +22,37 @@ import { handleLog } from "./commands/log.js";
 import { handleSnapshot } from "./commands/snapshot.js";
 import { handleWatch } from "./commands/watch.js";
 
-function applyTargetOptions(cmd: Command, options: { readonly includeTimeout?: boolean } = {}): Command {
-  const withBaseOptions = cmd
+function applyTargetOptions(
+  cmd: Command,
+  options: {
+    readonly includeTarget?: boolean;
+    readonly includeTimeout?: boolean;
+    readonly includeWorker?: boolean;
+  } = {},
+): Command {
+  const withEndpointOptions = cmd
     .option("--port <number>", "Local port the inspector or tunnel listens on")
     .option("--host <host>", "Hostname (default: 127.0.0.1)", "127.0.0.1")
-    .option("--region <key>", "CF region key (default: current cf target)")
+    .option("--region <key>", "CF region key (required with --app)")
     .option("--api-endpoint <url>", "CF API endpoint override for --region")
-    .option("--org <name>", "CF org name (default: current cf target)")
-    .option("--space <name>", "CF space name (default: current cf target)")
-    .option("--app <name>", "CF app name when not using --port")
-    .option("--target <index>", "Inspector target index from /json/list (default: 0)");
+    .option("--org <name>", "CF org name (required with --app)")
+    .option("--space <name>", "CF space name (required with --app)")
+    .option(
+      "--app <name>",
+      "CF app name; requires explicit --region/--org/--space (ambient cf target is ignored)",
+    );
+  const withTargetOption = options.includeTarget === false
+    ? withEndpointOptions
+    : withEndpointOptions.option(
+        "--target <index>",
+        "Inspector target index from /json/list (default: 0)",
+      );
+  const withWorkerOption = options.includeWorker === false
+    ? withTargetOption
+    : withTargetOption.option("--worker <index>", "NodeWorker sub-session index listed by list-targets");
   return options.includeTimeout === false
-    ? withBaseOptions
-    : withBaseOptions.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
+    ? withWorkerOption
+    : withWorkerOption.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
 }
 
 const collectStrings = (value: string, prev: readonly string[] = []): readonly string[] => [
@@ -91,12 +109,13 @@ function registerSnapshot(program: Command): void {
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
     .option("--setup-eval <expr>", "Evaluate a global setup expression before breakpoint setup (repeatable)", collectStrings, [] as readonly string[])
     .option("--timeout <seconds>", "How long to wait for the breakpoint to hit (default: 30)")
-    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 131072)")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option("--condition <expr>", "Only pause when this JS expression evaluates truthy in the paused frame")
     .option("--hit-count <n>", "Only pause after the breakpoint has been hit N or more times")
     .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1, only top frame)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
+    .option("--allow-mutation", "Allow mutation-capable captures and native breakpoint conditions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--no-json", "Print a human-readable summary instead of JSON")
     .option("--quiet", "Suppress progress messages on stderr")
@@ -118,6 +137,7 @@ function registerLog(program: Command): void {
     .option("--max-events <n>", "Stop streaming after emitting N log events")
     .option("--hit-count <n>", "Start logging once the line has been hit N or more times")
     .option("--condition <expr>", "Only log when this JS expression evaluates truthy on the inspectee")
+    .option("--max-value-length <chars>", "Maximum characters per log value before truncation (default: 4096)")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
     .action(async (opts: LogCommandOptions): Promise<void> => {
       await handleLog(opts);
@@ -141,6 +161,7 @@ function registerWatch(program: Command): void {
     .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
     .option("--stack-depth <n>", "Walk this many call frames per hit (default: 1)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame")
+    .option("--allow-mutation", "Allow mutation-capable captures and native breakpoint conditions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes per hit")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
     .action(async (opts: WatchCommandOptions): Promise<void> => {
@@ -157,9 +178,10 @@ function registerException(program: Command): void {
     .option("--capture <expr,…>", "Top-level comma-separated expressions to evaluate in the paused frame")
     .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
     .option("--timeout <seconds>", "How long to wait for an exception (default: 30)")
-    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 4096)")
+    .option("--max-value-length <chars>", "Maximum characters per captured value before truncation (default: 131072)")
     .option("--stack-depth <n>", "Walk this many call frames when capturing (default: 1)")
     .option("--stack-captures <expr,…>", "Expressions to evaluate on each call frame in the stack")
+    .option("--allow-mutation", "Allow mutation-capable capture expressions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
     .option("--no-json", "Print a human-readable summary instead of JSON")
@@ -192,9 +214,15 @@ function registerListScripts(program: Command): void {
 
 function registerListTargets(program: Command): void {
   applyTargetOptions(
-    program.command("list-targets").description("Print inspector targets from /json/list for selecting workers with --target"),
+    program.command("list-targets").description(
+      "List raw /json/list targets and nested workers; use --target or --worker on other commands",
+    ),
+    { includeTarget: false, includeWorker: false },
   )
-    .option("--no-json", "Print index<TAB>type<TAB>title<TAB>url instead of JSON")
+    .option(
+      "--no-json",
+      "Print tab-separated target/worker rows: index, kind, type, title, and URL",
+    )
     .action(async (opts: ListTargetsCommandOptions): Promise<void> => {
       await handleListTargets(opts);
     });
@@ -203,6 +231,7 @@ function registerListTargets(program: Command): void {
 function registerAttach(program: Command): void {
   applyTargetOptions(
     program.command("attach").description("Connect, fetch the inspector version, and disconnect (smoke-test)"),
+    { includeTarget: false, includeWorker: false },
   )
     .option("--no-json", "Print a multi-line summary instead of JSON")
     .action(async (opts: AttachCommandOptions): Promise<void> => {

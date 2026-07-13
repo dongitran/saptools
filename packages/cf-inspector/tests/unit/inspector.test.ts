@@ -17,6 +17,7 @@ import {
   validateExpression,
   waitForPause,
 } from "../../src/inspector/index.js";
+import { internalsForTesting as sessionInternals } from "../../src/inspector/session.js";
 import { CfInspectorError } from "../../src/types.js";
 import type { PauseEvent, ScriptInfo } from "../../src/types.js";
 
@@ -278,6 +279,101 @@ describe("waitForPause", () => {
   });
 });
 
+describe("NodeWorker discovery", () => {
+  function makeWorkerClient(
+    options: { readonly failEnable?: boolean; readonly unsupported?: boolean } = {},
+  ): {
+    readonly client: CdpClient;
+    readonly calls: { readonly method: string; readonly params: Record<string, unknown> }[];
+    readonly fire: (method: string, params: unknown) => void;
+  } {
+    const listeners = new Map<string, ((params: unknown) => void)[]>();
+    const calls: { method: string; params: Record<string, unknown> }[] = [];
+    const fire = (method: string, params: unknown): void => {
+      for (const listener of listeners.get(method) ?? []) {
+        listener(params);
+      }
+    };
+    const client = {
+      on: (method: string, listener: (params: unknown) => void): (() => void) => {
+        const current = listeners.get(method) ?? [];
+        current.push(listener);
+        listeners.set(method, current);
+        return (): void => {
+          listeners.set(method, (listeners.get(method) ?? []).filter((entry) => entry !== listener));
+        };
+      },
+      send: vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+        calls.push({ method, params });
+        if (method === "NodeWorker.enable" && options.unsupported === true) {
+          throw new CfInspectorError(
+            "CDP_REQUEST_FAILED",
+            "method not found",
+            JSON.stringify({ code: -32601, message: "method not found" }),
+          );
+        }
+        if (method === "NodeWorker.enable" && options.failEnable === true) {
+          throw new CfInspectorError("CDP_REQUEST_FAILED", "NodeWorker.enable timed out");
+        }
+        if (method === "NodeWorker.enable") {
+          fire("NodeWorker.attachedToWorker", {
+            sessionId: "session-2",
+            workerInfo: { workerId: "2", type: "worker", title: "[worker 2]", url: "worker-2.mjs" },
+          });
+          fire("NodeWorker.attachedToWorker", {
+            sessionId: "session-1",
+            workerInfo: { workerId: "1", type: "worker", title: "[worker 1]", url: "worker-1.mjs" },
+          });
+        }
+        return {};
+      }),
+    } as unknown as CdpClient;
+    return { client, calls, fire };
+  }
+
+  it("collects existing workers before NodeWorker.enable resolves and sorts stable indices", async () => {
+    const { client, calls } = makeWorkerClient();
+    const discovery = await sessionInternals.startNodeWorkerDiscovery(client);
+    expect(discovery.supported).toBe(true);
+    expect(discovery.list().map((worker) => worker.workerId)).toEqual(["1", "2"]);
+    expect(calls[0]).toEqual({
+      method: "NodeWorker.enable",
+      params: { waitForDebuggerOnStart: false },
+    });
+    await discovery.dispose();
+    expect(calls.at(-1)?.method).toBe("NodeWorker.disable");
+  });
+
+  it("tracks workers that attach and detach after discovery starts", async () => {
+    const { client, fire } = makeWorkerClient();
+    const discovery = await sessionInternals.startNodeWorkerDiscovery(client);
+    fire("NodeWorker.attachedToWorker", {
+      sessionId: "session-3",
+      workerInfo: { workerId: "3", type: "worker", title: "[worker 3]", url: "" },
+    });
+    expect(discovery.list()).toHaveLength(3);
+    fire("NodeWorker.detachedFromWorker", { sessionId: "session-2" });
+    expect(discovery.list().map((worker) => worker.workerId)).toEqual(["1", "3"]);
+    await discovery.dispose();
+  });
+
+  it("keeps main-isolate debugging available when NodeWorker is unsupported", async () => {
+    const { client } = makeWorkerClient({ unsupported: true });
+    const discovery = await sessionInternals.startNodeWorkerDiscovery(client);
+    expect(discovery.supported).toBe(false);
+    expect(discovery.list()).toEqual([]);
+    await discovery.dispose();
+  });
+
+  it("does not misreport a NodeWorker protocol failure as unsupported", async () => {
+    const { client } = makeWorkerClient({ failEnable: true });
+    await expect(sessionInternals.startNodeWorkerDiscovery(client)).rejects.toMatchObject({
+      code: "CDP_REQUEST_FAILED",
+      message: "NodeWorker.enable timed out",
+    });
+  });
+});
+
 interface SendCall {
   readonly method: string;
   readonly params: Record<string, unknown>;
@@ -465,6 +561,13 @@ describe("evaluateOnFrame / evaluateGlobal / getProperties", () => {
     expect(calls[0]?.params["callFrameId"]).toBe("frame-1");
     expect(calls[0]?.params["expression"]).toBe("1+1");
     expect(calls[0]?.params["silent"]).toBe(true);
+    expect(calls[0]?.params).not.toHaveProperty("throwOnSideEffect");
+  });
+
+  it("evaluateOnFrame forwards an explicit throwOnSideEffect guard", async () => {
+    const { session, calls } = makeSendSession(() => ({ result: { type: "number", value: 2 } }));
+    await evaluateOnFrame(session, "frame-1", "1+1", { throwOnSideEffect: true });
+    expect(calls[0]?.params["throwOnSideEffect"]).toBe(true);
   });
 
   it("evaluateGlobal routes via Runtime.evaluate with silent: true", async () => {

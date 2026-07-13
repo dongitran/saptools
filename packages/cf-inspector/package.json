@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-inspector",
-  "version": "0.4.12",
+  "version": "0.5.0",
   "description": "Set breakpoints, capture variable snapshots, and evaluate expressions on a SAP BTP Cloud Foundry Node.js app via the Chrome DevTools Protocol — agent-friendly, no IDE required.",
   "type": "module",
   "publishConfig": {
@@ -27,7 +27,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/sample-app.mjs --ignore-pattern tests/e2e/fixtures/sample-stack.mjs",
+    "lint": "eslint src tests --ignore-pattern tests/e2e/fixtures/sample-app.mjs --ignore-pattern tests/e2e/fixtures/sample-stack.mjs --ignore-pattern tests/e2e/fixtures/000-thread-host.mjs --ignore-pattern tests/e2e/fixtures/001-thread-worker.mjs",
     "test:unit": "vitest run --coverage",
     "test:e2e": "playwright test"
   },

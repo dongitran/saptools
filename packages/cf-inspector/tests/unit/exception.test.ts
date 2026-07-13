@@ -136,7 +136,43 @@ describe("captureException", () => {
       pauseFor("exception", { type: "string", value: "a".repeat(20) }),
       8,
     );
-    expect(result?.value?.endsWith("...")).toBe(true);
-    expect(result?.value?.length ?? 0).toBeLessThanOrEqual(11);
+    expect(result).toMatchObject({
+      value: "\"aaaaaaa",
+      truncated: true,
+      originalLength: 22,
+      valueOriginalLength: 22,
+    });
+  });
+
+  it("preserves string output and field-local length for a truncated message override", async () => {
+    const session = makeSession((method, params) => {
+      if (method === "Runtime.getProperties" && params["objectId"] === "exc-long") {
+        return {
+          result: [
+            { name: "message", value: { type: "string", value: "message-too-long" } },
+            { name: "name", value: { type: "string", value: "Error" } },
+          ],
+        };
+      }
+      return {};
+    });
+    const result = await captureException(
+      session,
+      pauseFor("exception", {
+        type: "object",
+        description: "Error: message-too-long",
+        objectId: "exc-long",
+      }),
+      8,
+    );
+    expect(result).toMatchObject({
+      description: "message-",
+      truncated: true,
+      descriptionOriginalLength: 16,
+      valueOriginalLength: expect.any(Number) as unknown as number,
+      originalLength: expect.any(Number) as unknown as number,
+    });
+    expect(result?.originalLength).toBe(result?.valueOriginalLength);
+    expect(typeof result?.description).toBe("string");
   });
 });

@@ -1,4 +1,5 @@
-import { evaluateOnFrame } from "../inspector/runtime.js";
+import { looksLikeMutation } from "../cli/captureParser.js";
+import { evaluateOnFrame, isSideEffectRefusal } from "../inspector/runtime.js";
 import type { InspectorSession } from "../inspector/types.js";
 import type {
   CapturedExpression,
@@ -8,7 +9,7 @@ import type {
   SnapshotCaptureResult,
 } from "../types.js";
 
-import { evalResultToCaptured } from "./evaluation.js";
+import { evalResultToCaptured, sideEffectRefusalToCaptured } from "./evaluation.js";
 import { captureException } from "./exception.js";
 import { withSerializedObjectCapture } from "./objects.js";
 import { describeProperty } from "./properties.js";
@@ -16,8 +17,10 @@ import { captureScopes, selectScopes } from "./scopes.js";
 import { DEFAULT_STACK_DEPTH, walkStack } from "./stack.js";
 import {
   DEFAULT_MAX_VALUE_LENGTH,
+  DEFAULT_STREAM_MAX_VALUE_LENGTH,
   limitValueLength,
   resolveMaxValueLength,
+  textTruncationFields,
 } from "./values.js";
 
 export interface CaptureSnapshotOptions {
@@ -26,6 +29,7 @@ export interface CaptureSnapshotOptions {
   readonly maxValueLength?: number;
   readonly stackDepth?: number;
   readonly stackCaptures?: readonly string[];
+  readonly throwOnSideEffect?: boolean;
 }
 
 export async function captureSnapshot(
@@ -46,14 +50,29 @@ export async function captureSnapshot(
       column: top.columnNumber + 1,
     };
     if (options.includeScopes === true) {
-      const scopes = await captureScopes(session, top, maxValueLength);
-      topFrame = { ...topFrame, scopes };
+      const capturedScopes = await captureScopes(session, top, maxValueLength);
+      topFrame = {
+        ...topFrame,
+        scopes: capturedScopes.scopes,
+        ...(capturedScopes.omittedCount === undefined
+          ? {}
+          : { truncated: true, omittedCount: capturedScopes.omittedCount }),
+      };
     }
-    captures = await captureExpressions(session, top.callFrameId, options.captures, maxValueLength);
+    captures = await captureExpressions(
+      session,
+      top.callFrameId,
+      options.captures,
+      maxValueLength,
+      options.throwOnSideEffect,
+    );
     stack = await walkStack(session, pause.callFrames, {
       stackDepth: options.stackDepth ?? DEFAULT_STACK_DEPTH,
       stackCaptures: options.stackCaptures ?? [],
       maxValueLength,
+      ...(options.throwOnSideEffect === undefined
+        ? {}
+        : { throwOnSideEffect: options.throwOnSideEffect }),
     });
   }
   const exception = await captureException(session, pause, maxValueLength);
@@ -91,13 +110,20 @@ async function captureExpressions(
   callFrameId: string,
   captures: readonly string[] | undefined,
   maxValueLength: number,
+  throwOnSideEffect: boolean | undefined,
 ): Promise<CapturedExpression[]> {
   if (captures === undefined || captures.length === 0) {
     return [];
   }
   return await Promise.all(
     captures.map(async (expression): Promise<CapturedExpression> => {
-      return await captureExpression(session, callFrameId, expression, maxValueLength);
+      return await captureExpression(
+        session,
+        callFrameId,
+        expression,
+        maxValueLength,
+        throwOnSideEffect,
+      );
     }),
   );
 }
@@ -107,19 +133,40 @@ async function captureExpression(
   callFrameId: string,
   expression: string,
   maxValueLength: number,
+  throwOnSideEffect: boolean | undefined,
 ): Promise<CapturedExpression> {
+  const mutationRisk = throwOnSideEffect === false && looksLikeMutation(expression);
   try {
-    const result = await evaluateOnFrame(session, callFrameId, expression);
+    const result = await evaluateOnFrame(session, callFrameId, expression, {
+      ...(throwOnSideEffect === undefined ? {} : { throwOnSideEffect }),
+    });
+    if (isSideEffectRefusal(result)) {
+      return sideEffectRefusalToCaptured(expression);
+    }
     const captured = evalResultToCaptured(expression, result, maxValueLength);
-    return await withSerializedObjectCapture(session, expression, result, captured, maxValueLength);
+    const serialized = await withSerializedObjectCapture(
+      session,
+      expression,
+      result,
+      captured,
+      maxValueLength,
+    );
+    return mutationRisk ? { ...serialized, mutationRisk: true } : serialized;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { expression, error: limitValueLength(message, maxValueLength) };
+    const limited = limitValueLength(message, maxValueLength);
+    const captured: CapturedExpression = {
+      expression,
+      error: limited.text,
+      ...textTruncationFields(limited),
+    };
+    return mutationRisk ? { ...captured, mutationRisk: true } : captured;
   }
 }
 
 export const internalsForTesting = {
   DEFAULT_MAX_VALUE_LENGTH,
+  DEFAULT_STREAM_MAX_VALUE_LENGTH,
   limitValueLength,
   resolveMaxValueLength,
   describeProperty,

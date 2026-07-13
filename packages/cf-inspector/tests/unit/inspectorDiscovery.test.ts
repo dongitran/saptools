@@ -251,6 +251,7 @@ describe("fetchInspectorVersion", () => {
   });
 
   it("rejects malformed JSON with the discovery error code", async () => {
+    const startedAt = performance.now();
     await withServer(
       { "/json/version": { body: "{" } },
       async ({ host, port }) => {
@@ -260,6 +261,7 @@ describe("fetchInspectorVersion", () => {
         });
       },
     );
+    expect(performance.now() - startedAt).toBeLessThan(250);
   });
 
   it("wraps request failures with the discovery error code", async () => {

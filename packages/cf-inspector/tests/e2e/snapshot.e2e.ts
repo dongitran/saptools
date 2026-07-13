@@ -42,6 +42,7 @@ test("User can capture a snapshot and see ordered progress", async () => {
     );
     expect(captures["user.id"]).toBeDefined();
     expect(captures["accumulator.length"]).toBe("4");
+    expect(parsed.captures.find((capture) => capture.expression === "user.id")?.mutationRisk).toBeUndefined();
 
     const expectedProgress = [
       `Connecting to the Node.js inspector at 127.0.0.1:${fixture.port.toString()}...`,
@@ -154,6 +155,76 @@ test("snapshot exposes sensitive-looking values by default", async () => {
   }
 });
 
+test("snapshot blocks side-effecting captures by default without mutating live state", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--capture",
+        "counter = 999, accumulator.push('mutated'), mutationProbe(), counter, accumulator.length",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    for (const expression of ["counter = 999", "accumulator.push('mutated')", "mutationProbe()"]) {
+      expect(parsed.captures.find((capture) => capture.expression === expression)).toMatchObject({
+        blocked: true,
+        mutationRisk: true,
+        error: expect.stringContaining("MUTATION_NOT_ALLOWED") as unknown as string,
+      });
+    }
+    expect(parsed.captures.find((capture) => capture.expression === "counter")?.value).not.toBe("999");
+    expect(parsed.captures.find((capture) => capture.expression === "accumulator.length")?.value).toBe("4");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --allow-mutation runs and annotates a mutation", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-app.mjs:14",
+        "--capture",
+        "counter = 999, accumulator.push('mutated')",
+        "--allow-mutation",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const parsed = JSON.parse(result.stdout) as SnapshotResult;
+    expect(parsed.captures[0]).toMatchObject({
+      expression: "counter = 999",
+      value: "999",
+      mutationRisk: true,
+    });
+    expect(parsed.captures[1]).toMatchObject({
+      expression: "accumulator.push('mutated')",
+      value: "5",
+      mutationRisk: true,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("snapshot materializes object captures as readable JSON strings", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();
@@ -166,7 +237,7 @@ test("snapshot materializes object captures as readable JSON strings", async () 
         "--bp",
         "fixtures/sample-app.mjs:14",
         "--capture",
-        "payload",
+        'payload, "x".repeat(5000)',
         "--timeout",
         "10",
       ],
@@ -180,6 +251,12 @@ test("snapshot materializes object captures as readable JSON strings", async () 
     const payload = JSON.parse(payloadCapture?.value ?? "{}") as { id?: number; name?: string };
     expect(typeof payload.id).toBe("number");
     expect(typeof payload.name).toBe("string");
+    const largeCapture = parsed.captures.find((entry) => {
+      return entry.expression === '"x".repeat(5000)';
+    });
+    expect(largeCapture?.value).toHaveLength(5_002);
+    expect(largeCapture?.truncated).toBeUndefined();
+    expect(largeCapture?.originalLength).toBeUndefined();
   } finally {
     await fixture.close();
   }
@@ -208,8 +285,10 @@ test("snapshot honors a custom max value length", async () => {
     expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
     const parsed = JSON.parse(result.stdout) as SnapshotResult;
     const payloadCapture = parsed.captures.find((entry) => entry.expression === "payload");
-    expect(payloadCapture?.value?.endsWith("...")).toBe(true);
-    expect(payloadCapture?.value?.length).toBeLessThanOrEqual(33);
+    expect(payloadCapture?.value).toHaveLength(30);
+    expect(payloadCapture?.value?.endsWith("...")).toBe(false);
+    expect(payloadCapture?.truncated).toBe(true);
+    expect(payloadCapture?.originalLength).toBeGreaterThan(30);
   } finally {
     await fixture.close();
   }
@@ -352,6 +431,9 @@ test("snapshot --condition that never matches returns BREAKPOINT_NOT_HIT after t
     );
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("BREAKPOINT_NOT_HIT");
+    expect(result.stderr).toContain("no hit was observed");
+    expect(result.stderr).toContain("worker isolate");
+    expect(result.stderr).toContain("list-targets");
   } finally {
     await fixture.close();
   }
@@ -558,6 +640,69 @@ test("snapshot --stack-depth captures multiple frames and runs --stack-captures 
   }
 });
 
+test("snapshot applies the mutation guard to --stack-captures", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: STACK_FIXTURE_PATH });
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-stack.mjs:13",
+        "--stack-depth",
+        "2",
+        "--stack-captures",
+        "tagged.id = 999",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect((JSON.parse(result.stdout) as SnapshotResult).stack?.[0]?.captures?.[0]).toMatchObject({
+      blocked: true,
+      mutationRisk: true,
+      error: expect.stringContaining("MUTATION_NOT_ALLOWED") as unknown as string,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("snapshot --allow-mutation runs and annotates a stack capture mutation", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: STACK_FIXTURE_PATH });
+  try {
+    const result = await runCli(
+      [
+        "snapshot",
+        "--port",
+        fixture.port.toString(),
+        "--bp",
+        "fixtures/sample-stack.mjs:13",
+        "--stack-depth",
+        "2",
+        "--stack-captures",
+        "tagged.id = 999",
+        "--allow-mutation",
+        "--timeout",
+        "10",
+      ],
+      45_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect((JSON.parse(result.stdout) as SnapshotResult).stack?.[0]?.captures?.[0]).toMatchObject({
+      expression: "tagged.id = 999",
+      value: "999",
+      mutationRisk: true,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("snapshot accepts repeated --bp and captures the first hit (multi-bp)", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();
@@ -590,11 +735,60 @@ test("snapshot accepts repeated --bp and captures the first hit (multi-bp)", asy
   }
 });
 
-test("snapshot --help includes --setup-eval", async () => {
+test("capture command help includes mutation controls", async () => {
   ensureCliBuilt();
-  const result = await runCli(["snapshot", "--help"], 15_000);
-  expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("--setup-eval <expr>");
+  for (const command of ["snapshot", "watch", "exception"]) {
+    const result = await runCli([command, "--help"], 15_000);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("--allow-mutation");
+    expect(result.stdout).toContain("--max-value-length <chars>");
+    expect(result.stdout).toContain(command === "watch" ? "default: 4096" : "default: 131072");
+    expect(result.stdout).toMatch(/ambient\s+cf\s+target\s+is\s+ignored/u);
+    if (command === "snapshot") {
+      expect(result.stdout).toContain("--setup-eval <expr>");
+    }
+  }
+});
+
+test("capture-free commands do not expose --allow-mutation", async () => {
+  ensureCliBuilt();
+  for (const command of ["eval", "log", "list-scripts", "list-targets", "attach"]) {
+    const result = await runCli([command, "--help"], 15_000);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("--allow-mutation");
+    expect(result.stdout).toMatch(/ambient\s+cf\s+target\s+is\s+ignored/u);
+    if (command === "list-targets" || command === "attach") {
+      expect(result.stdout).not.toContain("--target <index>");
+      expect(result.stdout).not.toContain("--worker <index>");
+    }
+    if (command === "log") {
+      expect(result.stdout).toContain("--max-value-length <chars>");
+      expect(result.stdout).toContain("default: 4096");
+    }
+    if (command === "list-targets") {
+      expect(result.stdout).toMatch(/index,\s+kind,\s+type,\s+title,\s+and\s+URL/u);
+    }
+  }
+});
+
+test("snapshot rejects mutation-shaped native conditions without opt-in", async () => {
+  ensureCliBuilt();
+  const result = await runCli(
+    [
+      "snapshot",
+      "--port",
+      "9229",
+      "--bp",
+      "fixtures/sample-app.mjs:14",
+      "--condition",
+      "counter = 999",
+    ],
+    15_000,
+  );
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("MUTATION_NOT_ALLOWED");
+  expect(result.stderr).toContain("--allow-mutation");
+  expect(result.stderr).not.toContain("Connecting to the Node.js inspector");
 });
 
 test("snapshot setup eval can initialize a global before breakpoint capture", async () => {
@@ -623,6 +817,7 @@ test("snapshot setup eval can initialize a global before breakpoint capture", as
     const parsed = JSON.parse(result.stdout) as SnapshotResult;
     expect(parsed.captures.find((c) => c.expression === "globalThis.__cfInspectorSetup.value")?.value).toBe("42");
     expect(result.stderr).toContain("Running 2 setup evaluations");
+    expect(result.stderr).toContain("snapshot --setup-eval");
   } finally {
     await fixture.close();
   }

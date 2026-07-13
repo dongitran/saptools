@@ -11,6 +11,7 @@ import {
 import type { InspectorSession } from "../../inspector/types.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
+import { DEFAULT_STREAM_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { BreakpointHandle, BreakpointLocation, RemoteRootSetting, WatchEvent } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";
@@ -19,7 +20,13 @@ import type { Target, WatchCommandOptions } from "../commandTypes.js";
 import { writeJson, writeWatchEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
-import { warnOnUnboundBreakpoints } from "../warnings.js";
+import {
+  enforceNativeConditionMutationPolicy,
+  warnOnBoundBreakpointWithoutHit,
+  warnOnCaptureMutationRisk,
+  warnOnMutationRisk,
+  warnOnUnboundBreakpoints,
+} from "../warnings.js";
 
 interface PreparedWatchCommand {
   readonly target: Target;
@@ -30,11 +37,12 @@ interface PreparedWatchCommand {
   readonly perHitTimeoutMs: number;
   readonly durationMs?: number;
   readonly maxEvents?: number;
-  readonly maxValueLength?: number;
+  readonly maxValueLength: number;
   readonly condition?: string;
   readonly hitCount?: number;
   readonly stackDepth?: number;
   readonly stackCaptures: readonly string[];
+  readonly throwOnSideEffect: boolean;
 }
 
 type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed";
@@ -42,6 +50,13 @@ type WatchStopReason = "duration" | "signal" | "max-events" | "transport-closed"
 export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts, { useTimeoutForTunnel: false });
   const prepared = prepareWatchCommand(opts, target);
+  warnOnCaptureMutationRisk(
+    [...prepared.captures, ...prepared.stackCaptures],
+    opts.allowMutation === true,
+  );
+  for (const expression of prepared.setupEvals) {
+    warnOnMutationRisk(expression, "watch --setup-eval");
+  }
   let stoppedReason: WatchStopReason = "signal";
   let emitted = 0;
   await withTerminationSignal(async (signal) => {
@@ -64,13 +79,19 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
   const perHitTimeoutSec = parsePositiveInt(opts.timeout, "--timeout") ?? DEFAULT_BREAKPOINT_TIMEOUT_SEC;
   const durationSec = parsePositiveInt(opts.duration, "--duration");
   const maxEvents = parsePositiveInt(opts.maxEvents, "--max-events");
-  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length");
+  const maxValueLength = parsePositiveInt(opts.maxValueLength, "--max-value-length")
+    ?? DEFAULT_STREAM_MAX_VALUE_LENGTH;
   const hitCount = parsePositiveInt(opts.hitCount, "--hit-count");
   const stackDepth = parsePositiveInt(opts.stackDepth, "--stack-depth");
   const condition = opts.condition !== undefined && opts.condition.trim().length > 0
     ? opts.condition.trim()
     : undefined;
   const setupEvals = parseSetupEvals(opts.setupEval);
+  enforceNativeConditionMutationPolicy(
+    condition ?? "",
+    opts.allowMutation === true,
+    "watch --condition",
+  );
   return {
     target,
     setupEvals,
@@ -80,11 +101,12 @@ function prepareWatchCommand(opts: WatchCommandOptions, target: Target): Prepare
     perHitTimeoutMs: perHitTimeoutSec * 1000,
     ...(durationSec === undefined ? {} : { durationMs: durationSec * 1000 }),
     ...(maxEvents === undefined ? {} : { maxEvents }),
-    ...(maxValueLength === undefined ? {} : { maxValueLength }),
+    maxValueLength,
     ...(condition === undefined ? {} : { condition }),
     ...(hitCount === undefined ? {} : { hitCount }),
     ...(stackDepth === undefined ? {} : { stackDepth }),
     stackCaptures: parseCaptureList(opts.stackCaptures),
+    throwOnSideEffect: opts.allowMutation !== true,
   };
 }
 
@@ -180,6 +202,9 @@ async function runWatchLoop(
     transportClosed.cancel();
   }
 
+  if (emitted === 0 && (state.reason === "duration" || state.reason === "signal")) {
+    warnOnBoundBreakpointWithoutHit(handles);
+  }
   return { emitted, stoppedReason: state.reason };
 }
 
@@ -265,9 +290,10 @@ async function captureWatchEvent(
   const snapshot = await captureSnapshot(session, pause, {
     captures: command.captures,
     includeScopes: opts.includeScopes === true,
-    ...(command.maxValueLength === undefined ? {} : { maxValueLength: command.maxValueLength }),
+    maxValueLength: command.maxValueLength,
     ...(command.stackDepth === undefined ? {} : { stackDepth: command.stackDepth }),
     stackCaptures: command.stackCaptures,
+    throwOnSideEffect: command.throwOnSideEffect,
   });
   const at = formatLocation(command, snapshot.topFrame);
   const base: WatchEvent = {

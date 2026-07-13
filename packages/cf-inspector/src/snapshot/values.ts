@@ -1,7 +1,26 @@
 import { CfInspectorError } from "../types.js";
 import type { VariableSnapshot } from "../types.js";
 
-export const DEFAULT_MAX_VALUE_LENGTH = 4096;
+export const DEFAULT_MAX_VALUE_LENGTH = 131_072;
+export const DEFAULT_STREAM_MAX_VALUE_LENGTH = 4_096;
+
+export interface TruncatedValue {
+  readonly text: string;
+  readonly truncated: true;
+  readonly originalLength: number;
+}
+
+export interface CompleteValue {
+  readonly text: string;
+  readonly truncated: false;
+}
+
+export type LimitedValue = TruncatedValue | CompleteValue;
+
+export interface TextTruncationFields {
+  readonly truncated?: true;
+  readonly originalLength?: number;
+}
 
 export function isPrimitive(value: unknown): value is string | number | boolean | bigint | symbol {
   const t = typeof value;
@@ -31,11 +50,24 @@ export function resolveMaxValueLength(value: number | undefined): number {
   return value;
 }
 
-export function limitValueLength(raw: string, maxValueLength = DEFAULT_MAX_VALUE_LENGTH): string {
+export function limitValueLength(
+  raw: string,
+  maxValueLength = DEFAULT_MAX_VALUE_LENGTH,
+): LimitedValue {
   if (raw.length <= maxValueLength) {
-    return raw;
+    return { text: raw, truncated: false };
   }
-  return `${raw.slice(0, maxValueLength)}...`;
+  return {
+    text: raw.slice(0, maxValueLength),
+    truncated: true,
+    originalLength: raw.length,
+  };
+}
+
+export function textTruncationFields(limited: LimitedValue): TextTruncationFields {
+  return limited.truncated
+    ? { truncated: true, originalLength: limited.originalLength }
+    : {};
 }
 
 function parseQuotedString(value: string): string {

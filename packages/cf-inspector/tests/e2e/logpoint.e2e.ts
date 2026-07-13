@@ -48,6 +48,31 @@ test("log streams JSON Lines from a logpoint and stops on duration", async () =>
   }
 });
 
+test("User can detect compact-default truncation in a log event", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli([
+      "log",
+      "--port",
+      fixture.port.toString(),
+      "--at",
+      "fixtures/sample-app.mjs:14",
+      "--expr",
+      '"x".repeat(5000)',
+      "--max-events",
+      "1",
+    ], 30_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const event = JSON.parse(result.stdout.trim()) as LogpointEvent;
+    expect(event.value).toHaveLength(4_096);
+    expect(event.truncated).toBe(true);
+    expect(event.originalLength).toBe(5_000);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("log --expr with a syntax error fails fast with INVALID_EXPRESSION", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture();
@@ -71,6 +96,35 @@ test("log --expr with a syntax error fails fast with INVALID_EXPRESSION", async 
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("INVALID_EXPRESSION");
     expect(elapsed).toBeLessThan(5_000);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("log warns when its native expression or condition looks mutation-capable", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture();
+  try {
+    const result = await runCli(
+      [
+        "log",
+        "--port",
+        fixture.port.toString(),
+        "--at",
+        "fixtures/sample-app.mjs:14",
+        "--expr",
+        "accumulator.push('logged')",
+        "--condition",
+        "(counter += 1) >= 0",
+        "--max-events",
+        "1",
+      ],
+      30_000,
+    );
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect(result.stderr).toContain("log --expr");
+    expect(result.stderr).toContain("log --condition");
+    expect(result.stderr).toContain("live inspectee");
   } finally {
     await fixture.close();
   }

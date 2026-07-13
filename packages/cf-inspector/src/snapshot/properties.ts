@@ -2,7 +2,12 @@ import { getProperties } from "../inspector/runtime.js";
 import type { CdpProperty, InspectorSession } from "../inspector/types.js";
 import type { VariableSnapshot } from "../types.js";
 
-import { formatPrimitive, isPrimitive, limitValueLength } from "./values.js";
+import {
+  formatPrimitive,
+  isPrimitive,
+  limitValueLength,
+  textTruncationFields,
+} from "./values.js";
 
 export const MAX_SCOPE_VARIABLES = 20;
 export const MAX_CHILD_VARIABLES = 8;
@@ -12,6 +17,11 @@ interface DescribedProperty {
   value: string;
   type?: string;
   objectId?: string;
+}
+
+export interface CapturedProperties {
+  readonly variables: readonly VariableSnapshot[];
+  readonly omittedCount?: number;
 }
 
 function buildDescribed(value: string, type: string | undefined, objectId?: string): DescribedProperty {
@@ -66,7 +76,7 @@ export async function captureProperties(
   limit: number,
   depth: number,
   maxValueLength: number,
-): Promise<readonly VariableSnapshot[]> {
+): Promise<CapturedProperties> {
   const properties = await getProperties(session, objectId);
   const limited = properties.slice(0, limit);
   const variables = await Promise.all(
@@ -74,7 +84,8 @@ export async function captureProperties(
       return await captureProperty(session, prop, depth, maxValueLength);
     }),
   );
-  return variables;
+  const omittedCount = Math.max(properties.length - limited.length, 0);
+  return omittedCount === 0 ? { variables } : { variables, omittedCount };
 }
 
 async function captureProperty(
@@ -85,11 +96,27 @@ async function captureProperty(
 ): Promise<VariableSnapshot> {
   const name = typeof prop.name === "string" ? prop.name : "?";
   const described = describeProperty(prop);
-  const children = await capturePropertyChildren(session, described, depth, maxValueLength);
-  const sanitizedValue = limitValueLength(described.value, maxValueLength);
-  const base: VariableSnapshot = { name, value: sanitizedValue };
+  const capturedChildren = await capturePropertyChildren(
+    session,
+    described,
+    depth,
+    maxValueLength,
+  );
+  const limited = limitValueLength(described.value, maxValueLength);
+  const base: VariableSnapshot = {
+    name,
+    value: limited.text,
+    ...textTruncationFields(limited),
+  };
   const withType = described.type === undefined ? base : { ...base, type: described.type };
-  return children === undefined ? withType : { ...withType, children };
+  const children = capturedChildren?.variables;
+  const withChildren = children === undefined || children.length === 0
+    ? withType
+    : { ...withType, children };
+  const omittedCount = capturedChildren?.omittedCount ?? 0;
+  return omittedCount === 0
+    ? withChildren
+    : { ...withChildren, truncated: true, omittedCount };
 }
 
 async function capturePropertyChildren(
@@ -97,20 +124,45 @@ async function capturePropertyChildren(
   described: DescribedProperty,
   depth: number,
   maxValueLength: number,
-): Promise<readonly VariableSnapshot[] | undefined> {
-  if (depth <= 0 || described.objectId === undefined || !isExpandable(described.type)) {
+): Promise<CapturedProperties | undefined> {
+  if (described.objectId === undefined || !isExpandable(described.type)) {
     return undefined;
   }
+  if (depth <= 0) {
+    return await countDepthOmissions(session, described.objectId);
+  }
   try {
-    const nested = await captureProperties(
+    return await captureProperties(
       session,
       described.objectId,
       MAX_CHILD_VARIABLES,
       depth - 1,
       maxValueLength,
     );
-    return nested.length > 0 ? nested : undefined;
   } catch {
     return undefined;
   }
+}
+
+async function countDepthOmissions(
+  session: InspectorSession,
+  objectId: string,
+): Promise<CapturedProperties | undefined> {
+  try {
+    const properties = await getProperties(session, objectId);
+    return properties.length === 0
+      ? undefined
+      : { variables: [], omittedCount: properties.length };
+  } catch {
+    return undefined;
+  }
+}
+
+export function countPropertyOmissions(captured: CapturedProperties): number {
+  return (captured.omittedCount ?? 0) + captured.variables.reduce((total, variable) => {
+    const childOmissions = variable.children === undefined
+      ? 0
+      : countPropertyOmissions({ variables: variable.children });
+    return total + (variable.omittedCount ?? 0) + childOmissions;
+  }, 0);
 }

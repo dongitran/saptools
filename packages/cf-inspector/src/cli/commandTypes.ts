@@ -7,6 +7,7 @@ export interface PortTarget {
   readonly port: number;
   readonly host: string;
   readonly targetIndex?: number;
+  readonly workerIndex?: number;
 }
 
 export interface CfTarget {
@@ -18,6 +19,7 @@ export interface CfTarget {
   readonly app: string;
   readonly tunnelTimeoutMs: number;
   readonly targetIndex?: number;
+  readonly workerIndex?: number;
 }
 
 export type Target = PortTarget | CfTarget;
@@ -32,6 +34,7 @@ export interface SharedTargetOptions {
   readonly app?: string;
   readonly timeout?: string;
   readonly target?: string;
+  readonly worker?: string;
 }
 
 export interface SnapshotCommandOptions extends SharedTargetOptions {
@@ -50,6 +53,7 @@ export interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly failOnUnmatchedPause?: boolean;
   readonly includeScopes?: boolean;
   readonly quiet?: boolean;
+  readonly allowMutation?: boolean;
 }
 
 export interface EvalCommandOptions extends SharedTargetOptions {
@@ -74,6 +78,7 @@ export interface LogCommandOptions extends SharedTargetOptions {
   readonly maxEvents?: string;
   readonly hitCount?: string;
   readonly condition?: string;
+  readonly maxValueLength?: string;
   readonly json: boolean;
 }
 
@@ -96,6 +101,7 @@ export interface WatchCommandOptions extends SharedTargetOptions {
   readonly stackCaptures?: string;
   readonly includeScopes?: boolean;
   readonly json: boolean;
+  readonly allowMutation?: boolean;
 }
 
 export interface ExceptionCommandOptions extends SharedTargetOptions {
@@ -109,4 +115,5 @@ export interface ExceptionCommandOptions extends SharedTargetOptions {
   readonly includeScopes?: boolean;
   readonly keepPaused?: boolean;
   readonly json: boolean;
+  readonly allowMutation?: boolean;
 }

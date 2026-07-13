@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { CdpClient } from "../../src/cdp/client.js";
+import { CdpClient, createNodeWorkerClient } from "../../src/cdp/client.js";
 import type { CdpTransport } from "../../src/cdp/client.js";
 import { CfInspectorError } from "../../src/types.js";
 
@@ -235,5 +235,68 @@ describe("CdpClient", () => {
     transport.receive({ id: parsed.id, result: { ok: true } });
     await expect(sendPromise).resolves.toEqual({ ok: true });
     client.dispose();
+  });
+
+  it("routes nested worker requests through NodeWorker.sendMessageToWorker", async () => {
+    const { client: parent, transport } = await connect();
+    const worker = await createNodeWorkerClient(parent, "worker-session-1");
+    const resultPromise = worker.send("Runtime.evaluate", { expression: "workerValue" });
+    const outer = JSON.parse(transport.sent[0] ?? "{}") as {
+      id?: number;
+      method?: string;
+      params?: { sessionId?: string; message?: string };
+    };
+    expect(outer.method).toBe("NodeWorker.sendMessageToWorker");
+    expect(outer.params?.sessionId).toBe("worker-session-1");
+    const inner = JSON.parse(outer.params?.message ?? "{}") as { id?: number; method?: string };
+    expect(inner.method).toBe("Runtime.evaluate");
+    transport.receive({ id: outer.id, result: {} });
+    transport.receive({
+      method: "NodeWorker.receivedMessageFromWorker",
+      params: {
+        sessionId: "worker-session-1",
+        message: JSON.stringify({ id: inner.id, result: { result: { value: 42 } } }),
+      },
+    });
+    await expect(resultPromise).resolves.toEqual({ result: { value: 42 } });
+    worker.dispose();
+    parent.dispose();
+  });
+
+  it("isolates nested worker events by session id", async () => {
+    const { client: parent, transport } = await connect();
+    const first = await createNodeWorkerClient(parent, "worker-session-1");
+    const second = await createNodeWorkerClient(parent, "worker-session-2");
+    const firstListener = vi.fn();
+    const secondListener = vi.fn();
+    first.on("Debugger.paused", firstListener);
+    second.on("Debugger.paused", secondListener);
+    transport.receive({
+      method: "NodeWorker.receivedMessageFromWorker",
+      params: {
+        sessionId: "worker-session-2",
+        message: JSON.stringify({ method: "Debugger.paused", params: { reason: "other" } }),
+      },
+    });
+    expect(firstListener).not.toHaveBeenCalled();
+    expect(secondListener).toHaveBeenCalledWith({ reason: "other" });
+    first.dispose();
+    second.dispose();
+    parent.dispose();
+  });
+
+  it("closes only the matching nested client when a worker detaches", async () => {
+    const { client: parent, transport } = await connect();
+    const first = await createNodeWorkerClient(parent, "worker-session-1");
+    const second = await createNodeWorkerClient(parent, "worker-session-2");
+    transport.receive({
+      method: "NodeWorker.detachedFromWorker",
+      params: { sessionId: "worker-session-1" },
+    });
+    expect(first.isClosed).toBe(true);
+    expect(second.isClosed).toBe(false);
+    expect(parent.isClosed).toBe(false);
+    second.dispose();
+    parent.dispose();
   });
 });

@@ -25,11 +25,13 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 - 🪜 **Stack capture** — `--stack-depth N --stack-captures 'this, args'` walks call frames and evaluates expressions per frame
 - 🔁 **Watch streaming** — `cf-inspector watch --bp file:line --capture user.id --duration 30` re-captures on every hit and emits JSON Lines (the streaming counterpart of `snapshot`)
 - 💥 **Exception breakpoints** — `cf-inspector exception --type uncaught --capture err.message` pauses on the next thrown error and materializes the exception value
-- 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes, **without ever pausing the inspectee** (safe for production traffic), with optional `--condition`, `--hit-count`, `--max-events`
-- 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shape, bounded value previews for large debugger payloads
+- 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes without pausing the inspectee, with optional `--condition`, `--hit-count`, and `--max-events`
+- 🛡️ **Read-only capture guard** — snapshot, watch, and exception captures use V8's side-effect analysis by default; `--allow-mutation` is an explicit escape hatch
+- 🧵 **Worker-aware sessions** — `list-targets` discovers raw inspector targets and nested NodeWorker sessions; use `--target` or `--worker` to select an isolate
+- 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shapes, and explicit `truncated`/`originalLength`/`omittedCount` metadata for bounded values
 - 🧭 **Path mapping** — local `src/handler.ts:42` is matched against the remote URL via a `urlRegex`, with optional `--remote-root` literal or regex (same DSL as `cds-debug`)
 - 🔁 **Composes with `cf-debugger`** — pass `--app/--region/--org/--space` and the tunnel is opened automatically; pass `--port` to attach to anything CDP-speaking
-- 🪶 **Tiny dependency footprint** — `commander` + `ws` only, no heavy CDP framework
+- 🪶 **Tiny dependency footprint** — `@saptools/cf-debugger` + `commander` + `ws`, with no heavy CDP framework
 - 🧩 **Typed API** — every CLI command has a programmatic equivalent with full TypeScript definitions
 
 ---
@@ -46,7 +48,7 @@ cf-inspector --version
 
 > [!NOTE]
 > Requires **Node.js ≥ 20**.
-> For Cloud Foundry targets, also install [`@saptools/cf-debugger`](https://www.npmjs.com/package/@saptools/cf-debugger) (added automatically as a peer-style runtime dep).
+> Cloud Foundry support uses [`@saptools/cf-debugger`](https://www.npmjs.com/package/@saptools/cf-debugger), which is installed automatically as a normal runtime dependency.
 
 ---
 
@@ -65,6 +67,11 @@ cf-inspector snapshot \
 ```
 
 This command internally calls `@saptools/cf-debugger` to open the SSH tunnel, runs the snapshot through it, and tears the tunnel down on exit.
+
+Cloud Foundry targeting is deliberately deterministic: `--app` requires
+`--region`, `--org`, and `--space`. The CLI never inherits missing selectors
+from ambient `cf target` state. Use `--api-endpoint` only when the selected
+region needs an explicit endpoint override.
 
 ---
 
@@ -92,15 +99,20 @@ cf-inspector snapshot --port 9229 \
 | Flag | Description |
 | --- | --- |
 | `--port <number>` | Local port the inspector or tunnel listens on. **Required** unless `--app/--region/--org/--space` are all set |
+| `--region/--org/--space/--app` | Explicit Cloud Foundry target. All four are required when `--port` is omitted; ambient `cf target` is never consulted |
+| `--api-endpoint <url>` | Override the API endpoint resolved from `--region` |
+| `--target <index>` | Raw `/json/list` target index (default: `0`) |
+| `--worker <index>` | Nested NodeWorker index reported under the selected raw target by `list-targets` |
 | `--bp <file:line>` | **Required.** Source location to break at. Pass multiple times to race several locations — the first one to hit wins |
-| `--condition <expr>` | Only pause when this JS expression evaluates truthy in the paused frame. Errors in the condition are silently treated as `false` by V8 |
+| `--condition <expr>` | Native breakpoint condition. It is compile-checked before arming; mutation-shaped conditions require `--allow-mutation` because CDP provides no side-effect guard for native conditions |
 | `--hit-count <n>` | Skip the first N − 1 hits and only pause on the Nth (combines with `--condition` via logical AND) |
-| `--capture <expr,…>` | Top-level comma-separated expressions to evaluate in the paused frame; nested commas inside objects, arrays, calls, or strings are preserved. Object results are materialized to JSON strings when serializable, with fallback to CDP descriptions for non-serializable values |
-| `--setup-eval <expr>` | Repeatable, order-preserving global expression evaluated inside the inspected process before breakpoint setup. It can mutate runtime state, so use it only in controlled debug sessions |
+| `--capture <expr,…>` | Top-level comma-separated expressions evaluated in the paused frame under V8's side-effect guard. Nested commas inside objects, arrays, calls, or strings are preserved. Objects are materialized to JSON strings when serializable |
+| `--setup-eval <expr>` | Repeatable, order-preserving global expression evaluated before breakpoint setup. It is mutation-capable and only receives an advisory warning |
 | `--stack-depth <n>` | Walk this many call frames per hit (default: `1`, top frame only). When `> 1`, the result includes a `stack` array |
-| `--stack-captures <expr,…>` | Expressions to evaluate on each call frame in the captured stack |
+| `--stack-captures <expr,…>` | Expressions evaluated on each captured call frame under the same side-effect guard as `--capture` |
+| `--allow-mutation` | Disable V8's capture side-effect guard and explicitly allow mutation-shaped native conditions. Heuristic matches are annotated with `mutationRisk: true` |
 | `--timeout <seconds>` | How long to wait for the breakpoint to hit (default: `30`) |
-| `--max-value-length <chars>` | Maximum characters per captured value before truncation (default: `4096`) |
+| `--max-value-length <chars>` | Maximum characters per captured value before truncation (one-shot default: `131072`). Explicit values are honored exactly |
 | `--remote-root <value>` | Optional path-mapping anchor: literal path or `regex:<pattern>` / `/pattern/flags` |
 | `--include-scopes` | Include expanded paused-frame scopes under `topFrame.scopes`. Omitted by default to keep targeted captures concise |
 | `--no-json` | Print a human-readable summary instead of JSON |
@@ -119,6 +131,56 @@ Snapshot JSON includes frame metadata and `captures` by default. `topFrame.scope
 is only present with `--include-scopes` because scope objects can be large and
 drown out targeted captures. Values are raw debugger values, so be careful when
 sharing logs.
+
+Capture expressions are read-only by default. `cf-inspector` sends
+`throwOnSideEffect: true` to V8 for both `--capture` and `--stack-captures`.
+Assignments, mutating methods such as `push`, and calls V8 cannot prove pure
+are returned as a blocked capture with `blocked: true`, `mutationRisk: true`,
+and a `MUTATION_NOT_ALLOWED` error. Pass `--allow-mutation` only when changing
+the live inspectee is intentional. The opt-in disables the V8 guard and adds
+`mutationRisk: true` when the advisory syntax scan recognizes a likely
+mutation; arbitrary function calls can still mutate without being recognized.
+
+`--condition` is different: V8 executes it internally as a native breakpoint
+condition, where CDP has no `throwOnSideEffect` option. Mutation-shaped native
+conditions are rejected unless `--allow-mutation` is present. `--setup-eval`
+and the standalone `eval` command remain mutation-capable by design and emit
+advisory warnings for recognizable mutation syntax.
+
+A blocked capture remains a normal additive `CapturedExpression`, so one unsafe
+expression does not corrupt the rest of the snapshot:
+
+```json
+{"expression":"items.push(1)","error":"MUTATION_NOT_ALLOWED: V8 blocked the capture expression ...","mutationRisk":true,"blocked":true}
+```
+
+With `--allow-mutation`, recognized mutation syntax runs and the result carries
+`"mutationRisk": true`; ordinary reads do not gain the field.
+
+#### Truncation contract
+
+JSON truncation is always out-of-band. A text value longer than the effective
+limit is cut to exactly that many JavaScript characters and gains
+`"truncated": true` plus its full `"originalLength"`; no ellipsis is appended
+to the JSON value. These fields are absent when no cut occurs. Human output may
+add a visual ellipsis.
+
+Expanded objects and scopes also report bounded structural capture. The
+`VariableSnapshot`, `ScopeSnapshot`, or `FrameSnapshot` whose properties,
+variables, or scopes were cut gains `truncated: true` and the exact direct
+`omittedCount`. A serialized object capture propagates the aggregate known
+omission count to its `CapturedExpression`. `ExceptionSnapshot` additionally
+uses `valueOriginalLength` and `descriptionOriginalLength` so consumers can
+identify which field was cut; its compatibility `originalLength` is the larger
+reported field length.
+
+One-shot `snapshot` and `exception` commands default to `131072` characters.
+Repeated `watch` and `log` events default to `4096`. All four accept
+`--max-value-length`, and an explicit limit is applied exactly.
+
+```json
+{"expression":"largeText","value":"exactly-N-characters","type":"string","truncated":true,"originalLength":250000}
+```
 
 `pausedDurationMs` measures the client-observed time from receiving the matching
 pause event until `Debugger.resume` completes. With `--keep-paused`, it is `null`
@@ -139,7 +201,9 @@ readiness keeps the 180-second default.
 
 ### 📡 `cf-inspector log`
 
-Set a non-pausing logpoint and stream the evaluated expression each time the line executes. Safe for production traffic — the inspectee **never pauses**.
+Set a non-pausing logpoint and stream the evaluated expression each time the
+line executes. The inspectee does not pause, but the expression and condition
+still execute against live state and can mutate it.
 
 ```bash
 # Stream user IDs hitting handler.ts:42 for 30 seconds
@@ -168,14 +232,21 @@ When the user expression throws, the event is emitted with `error` instead of `v
 | Flag | Description |
 | --- | --- |
 | `--port <number>` | Local port the inspector or tunnel listens on. **Required** unless `--app/--region/--org/--space` are all set |
+| `--target <index>` / `--worker <index>` | Select a raw inspector target or nested NodeWorker session from `list-targets` |
 | `--at <file:line>` | **Required.** Source location to log at |
-| `--expr <expression>` | **Required.** JS expression to evaluate at each hit (wrapped in try/catch on the inspectee side) |
+| `--expr <expression>` | **Required.** JavaScript expression evaluated at each hit, wrapped in try/catch on the inspectee side. It is mutation-capable; recognizable risks produce a warning |
 | `--duration <seconds>` | Stop streaming after N seconds (default: run until SIGINT) |
 | `--max-events <n>` | Stop streaming after emitting N log events. The trailer reports `stopped: "max-events"` |
 | `--hit-count <n>` | Start emitting once the line has been hit N or more times |
-| `--condition <expr>` | Only log when this JS expression evaluates truthy on the inspectee. Composes with `--hit-count` via logical AND |
+| `--condition <expr>` | Mutation-capable native condition evaluated on the inspectee. Recognizable risks produce a warning. Composes with `--hit-count` via logical AND |
+| `--max-value-length <chars>` | Maximum characters per log value (streaming default: `4096`). Truncated events include `truncated` and `originalLength` |
 | `--remote-root <value>` | Optional path-mapping anchor (same DSL as `snapshot`) |
 | `--no-json` | Print human-readable lines instead of JSON Lines |
+
+Native logpoint expressions and conditions have no V8 side-effect gate. The
+CLI warns when its best-effort syntax scan recognizes assignments or common
+mutating calls, but that scan cannot prove an arbitrary function is pure. Treat
+logpoint expressions as executable live code.
 
 ### 🔁 `cf-inspector watch`
 
@@ -203,19 +274,21 @@ Each event is a `WatchEvent`:
 
 | Flag | Description |
 | --- | --- |
-| `--port <number>` | Local port the inspector or tunnel listens on |
+| `--port <number>` | Local port the inspector or tunnel listens on. Otherwise pass all explicit Cloud Foundry selectors |
+| `--target <index>` / `--worker <index>` | Select a raw inspector target or nested NodeWorker session from `list-targets` |
 | `--bp <file:line>` | **Required.** Source location to capture on (repeatable) |
-| `--capture <expr,…>` | Top-level comma-separated expressions to evaluate per hit |
-| `--setup-eval <expr>` | Repeatable, order-preserving global expression evaluated inside the inspected process before breakpoint setup. It can mutate runtime state, so use it only in controlled debug sessions |
-| `--condition <expr>` | Only emit hits where this expression evaluates truthy |
+| `--capture <expr,…>` | Top-level comma-separated expressions evaluated per hit under V8's side-effect guard |
+| `--setup-eval <expr>` | Repeatable mutation-capable global expression evaluated before breakpoint setup; recognizable risks produce a warning |
+| `--condition <expr>` | Native condition; mutation-shaped conditions require `--allow-mutation` |
 | `--hit-count <n>` | Start emitting once the line has been hit N or more times |
 | `--remote-root <value>` | Path-mapping anchor (same DSL as `snapshot`) |
 | `--duration <seconds>` | Stop streaming after N seconds (default: until SIGINT) |
 | `--max-events <n>` | Stop streaming after emitting N events |
 | `--timeout <seconds>` | How long to wait for the next hit before giving up (default: `30`) |
-| `--max-value-length <chars>` | Maximum characters per captured value before truncation |
+| `--max-value-length <chars>` | Maximum characters per captured value (streaming default: `4096`) |
 | `--stack-depth <n>` | Walk this many call frames per hit (default: `1`) |
-| `--stack-captures <expr,…>` | Expressions to evaluate on each call frame |
+| `--stack-captures <expr,…>` | Expressions evaluated on each call frame under the capture side-effect guard |
+| `--allow-mutation` | Disable the capture side-effect guard and explicitly allow mutation-shaped native conditions |
 | `--include-scopes` | Include expanded paused-frame scopes per hit |
 | `--no-json` | Print human-readable lines instead of JSON Lines |
 
@@ -250,20 +323,29 @@ Result is a `SnapshotResult` with an extra `exception` field:
 
 | Flag | Description |
 | --- | --- |
+| `--port` or explicit `--region/--org/--space/--app` | Select the local inspector or deterministic Cloud Foundry target |
+| `--target <index>` / `--worker <index>` | Select a raw inspector target or nested NodeWorker session from `list-targets` |
 | `--type <state>` | Pause on which exceptions: `uncaught` (default), `caught`, or `all` |
-| `--capture <expr,…>` | Top-level expressions to evaluate in the paused frame |
+| `--capture <expr,…>` | Top-level expressions evaluated in the paused frame under V8's side-effect guard |
 | `--stack-depth <n>` | Walk this many call frames (default: `1`) |
-| `--stack-captures <expr,…>` | Expressions to evaluate on each frame |
+| `--stack-captures <expr,…>` | Expressions evaluated on each frame under V8's side-effect guard |
+| `--allow-mutation` | Disable the capture side-effect guard; heuristic matches gain `mutationRisk: true` |
 | `--include-scopes` | Include paused-frame scopes |
 | `--remote-root <value>` | Path-mapping anchor (only used if you also wire snapshot helpers) |
 | `--timeout <seconds>` | How long to wait for an exception (default: `30`) |
-| `--max-value-length <chars>` | Maximum characters per captured value before truncation |
+| `--max-value-length <chars>` | Maximum characters per captured value (one-shot default: `131072`) |
 | `--keep-paused` | Skip `Debugger.resume` after capture |
 | `--no-json` | Print a human-readable summary instead of JSON |
 
 ### 🧮 `cf-inspector eval`
 
-Evaluate one expression with `Runtime.evaluate` in the global scope and print the result. For paused-frame values, use `snapshot --capture` or the programmatic `evaluateOnFrame(...)` API.
+Evaluate one expression with `Runtime.evaluate` in the selected isolate's
+global scope and print the result. `eval` is intentionally mutation-capable and
+has no side-effect gate; recognizable mutation syntax emits an advisory warning
+to `stderr`. For read-only paused-frame values, use `snapshot --capture` or call
+the programmatic `evaluateOnFrame(..., { throwOnSideEffect: true })` API. Plain
+`evaluateOnFrame(...)` remains unrestricted by default for backward
+compatibility.
 
 ```bash
 cf-inspector eval --port 9229 --expr 'process.uptime()'
@@ -279,14 +361,55 @@ cf-inspector list-scripts --port 9229 --filter 'dist/.+\.js'
 
 ### 🎯 `cf-inspector list-targets`
 
-Print `/json/list` inspector targets with stable indexes. Use the index with `--target <index>` when a long-running worker thread appears as a separate target.
+Print raw `/json/list` inspector targets with stable `index` values, likely
+worker labels, and the total target/worker counts on `stderr`. For each raw
+target, the command also probes Node's `NodeWorker` CDP domain and lists live
+nested workers with their own indexes.
 
 ```bash
 cf-inspector list-targets --port 9229
+cf-inspector snapshot --port 9229 --worker 0 --bp dist/worker.js:42
+# If a runtime publishes a worker as another raw /json/list target instead:
 cf-inspector snapshot --port 9229 --target 1 --bp dist/worker.js:42
 ```
 
-If `list-targets`, `attach`, or another command reports `ECONNREFUSED`, the local inspector or tunnel on that port is usually stale/closed. Restart the local Node inspector or tunnel and retry; for Cloud Foundry targets, prefer `--app/--region/--org/--space` so `cf-inspector` can open a fresh tunnel.
+JSON output nests workers beneath their raw target:
+
+```json
+[
+  {
+    "index": 0,
+    "description": "node.js instance",
+    "id": "target-id",
+    "type": "node",
+    "title": "app.mjs",
+    "url": "file:///app/app.mjs",
+    "webSocketDebuggerUrl": "ws://127.0.0.1:9229/target-id",
+    "likelyWorker": false,
+    "workerDiscoverySupported": true,
+    "workers": [
+      {"index": 0, "workerId": "1", "type": "worker", "title": "jobs", "url": "file:///app/worker.mjs"}
+    ]
+  }
+]
+```
+
+`--target` selects a complete raw inspector endpoint. `--worker` selects a
+nested NodeWorker session under the chosen raw target (raw target `0` unless
+`--target` is also passed). Modern Node.js 20–25 verification found workers on
+the `NodeWorker` path, including workers already alive before post-hoc
+`SIGUSR1` inspector activation; the raw-target selector remains supported for
+runtimes that publish that shape.
+
+When multiple raw targets or nested workers exist and no selector is passed,
+commands attach to raw target `0` and print a selection notice. A bound
+breakpoint that sees no hit prints a worker-isolate hint. If only one raw target
+and no workers are visible, `list-targets` explains that the worker may have
+exited, the runtime may not expose NodeWorker discovery, or a separate worker
+port may be unreachable through the single Cloud Foundry tunnel. Rerun the
+command while the worker is alive before selecting an index.
+
+If `list-targets`, `attach`, or another command reports `ECONNREFUSED`, the local inspector or tunnel on that port is usually stale/closed. Restart the local Node inspector or tunnel and retry; for Cloud Foundry targets, pass the complete `--region/--org/--space/--app` selector so `cf-inspector` can open a fresh tunnel.
 
 ### 🔗 `cf-inspector attach`
 
@@ -296,19 +419,23 @@ Connect, fetch the runtime version, print it, disconnect. Useful as a smoke-test
 cf-inspector attach --port 9229
 ```
 
+`attach` checks the port-level `/json/version` endpoint, so raw-target and
+worker selectors do not apply to this smoke test.
+
 ---
 
 ## 🔭 How it works
 
 ```
 ┌──────────────────────┐   1. GET http://127.0.0.1:<port>/json/list
-│ cf-inspector         │   2. Open ws:// debugger URL
-│  snapshot --bp X:Y   │ ─►3. Debugger.enable + Runtime.enable
-└──────────────────────┘   4. Debugger.setBreakpointByUrl({ urlRegex, lineNumber: Y - 1 })
-            │              5. Wait for `Debugger.paused`
-            ▼              6. Debugger.evaluateOnCallFrame(...)  for each --capture expression
-   JSON snapshot           7. Runtime.getProperties(scopeChain[i].object.objectId) when --include-scopes is set
-                           8. Debugger.resume   (unless --keep-paused)
+│ cf-inspector         │   2. Open the selected raw WebSocket target
+│  snapshot --bp X:Y   │ ─►3. Optionally attach to a selected NodeWorker sub-session
+└──────────────────────┘   4. Debugger.enable + Runtime.enable
+            │              5. Debugger.setBreakpointByUrl({ urlRegex, lineNumber: Y - 1 })
+            ▼              6. Wait for `Debugger.paused`
+   JSON snapshot           7. Debugger.evaluateOnCallFrame({ throwOnSideEffect: true, ... })
+                           8. Runtime.getProperties(...) when object/scopes are expanded
+                           9. Debugger.resume   (unless --keep-paused)
 ```
 
 Path mapping uses CDP's first-class `urlRegex`:
@@ -326,7 +453,14 @@ Path mapping uses CDP's first-class `urlRegex`:
 
 ## ⚙️ Composing with `cf-debugger`
 
-If `--port` is omitted but `--region/--org/--space/--app` are given, the CLI internally calls `startDebugger(...)` from `@saptools/cf-debugger`, attaches over the SSH tunnel, and disposes the tunnel on exit. You get the same one-shot UX whether the target is local or in CF.
+If `--port` is omitted, all of `--region/--org/--space/--app` are required. The
+CLI does not read ambient `cf target` state. It calls `startDebugger(...)` from
+`@saptools/cf-debugger`, attaches over the SSH tunnel, and disposes the tunnel
+on exit. You get the same one-shot UX whether the target is local or in CF.
+
+The tunnel forwards one inspector port. Nested NodeWorker sessions carried by
+that inspector connection are selectable with `--worker`; a worker exposing
+only an unrelated separate port is outside that tunnel's reach.
 
 ```bash
 cf-inspector snapshot \

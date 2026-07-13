@@ -4,10 +4,12 @@ import type { ExceptionSnapshot, PauseEvent } from "../types.js";
 
 import {
   captureProperties,
+  countPropertyOmissions,
   MAX_SCOPE_VARIABLES,
   MAX_VARIABLE_DEPTH,
 } from "./properties.js";
 import { limitValueLength, toStructuredValue } from "./values.js";
+import type { LimitedValue } from "./values.js";
 
 interface CdpExceptionData {
   readonly type?: unknown;
@@ -20,27 +22,34 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+interface MaterializedObject {
+  readonly value: string;
+  readonly omittedCount: number;
+}
+
 async function materializeObject(
   session: InspectorSession,
   objectId: string,
-  maxValueLength: number,
-): Promise<string | undefined> {
+): Promise<MaterializedObject | undefined> {
   try {
-    const properties = await captureProperties(
+    const captured = await captureProperties(
       session,
       objectId,
       MAX_SCOPE_VARIABLES,
       MAX_VARIABLE_DEPTH,
-      maxValueLength,
+      Number.MAX_SAFE_INTEGER,
     );
-    if (properties.length === 0) {
+    if (captured.variables.length === 0) {
       return undefined;
     }
     const structured: Record<string, unknown> = {};
-    for (const variable of properties) {
+    for (const variable of captured.variables) {
       structured[variable.name] = toStructuredValue(variable);
     }
-    return JSON.stringify(structured);
+    return {
+      value: JSON.stringify(structured),
+      omittedCount: countPropertyOmissions(captured),
+    };
   } catch {
     return undefined;
   }
@@ -103,10 +112,15 @@ export async function captureException(
     return { error: "exception data has no objectId or value" };
   }
   const message = await readPropertyDescription(session, objectId, "message");
-  const rendered = await materializeObject(session, objectId, maxValueLength);
+  const rendered = await materializeObject(session, objectId);
   if (rendered !== undefined) {
-    const result = buildResult(type, description, rendered, maxValueLength);
-    return message === undefined ? result : { ...result, description: limitValueLength(message, maxValueLength) };
+    return buildResult(
+      type,
+      message ?? description,
+      rendered.value,
+      maxValueLength,
+      rendered.omittedCount,
+    );
   }
   return buildResult(type, description, description ?? "[exception]", maxValueLength);
 }
@@ -116,9 +130,48 @@ function buildResult(
   description: string | undefined,
   value: string,
   maxValueLength: number,
+  omittedCount = 0,
 ): ExceptionSnapshot {
-  const safeValue = limitValueLength(value, maxValueLength);
-  const base: ExceptionSnapshot = { value: safeValue };
+  const limitedValue = limitValueLength(value, maxValueLength);
+  const limitedDescription = description === undefined
+    ? undefined
+    : limitValueLength(description, maxValueLength);
+  const base: ExceptionSnapshot = {
+    value: limitedValue.text,
+    ...exceptionTruncationFields(limitedValue, limitedDescription),
+  };
   const withType = type === undefined ? base : { ...base, type };
-  return description === undefined ? withType : { ...withType, description: limitValueLength(description, maxValueLength) };
+  const withDescription = limitedDescription === undefined
+    ? withType
+    : { ...withType, description: limitedDescription.text };
+  return omittedCount === 0
+    ? withDescription
+    : { ...withDescription, truncated: true, omittedCount };
+}
+
+function exceptionTruncationFields(
+  value: LimitedValue,
+  description: LimitedValue | undefined,
+): Pick<
+  ExceptionSnapshot,
+  "truncated" | "originalLength" | "valueOriginalLength" | "descriptionOriginalLength"
+> {
+  const valueLength = value.truncated ? value.originalLength : undefined;
+  const descriptionLength = description?.truncated === true
+    ? description.originalLength
+    : undefined;
+  const lengths = [valueLength, descriptionLength].filter(
+    (length): length is number => length !== undefined,
+  );
+  if (lengths.length === 0) {
+    return {};
+  }
+  return {
+    truncated: true,
+    originalLength: Math.max(...lengths),
+    ...(valueLength === undefined ? {} : { valueOriginalLength: valueLength }),
+    ...(descriptionLength === undefined
+      ? {}
+      : { descriptionOriginalLength: descriptionLength }),
+  };
 }
