@@ -48,6 +48,7 @@ export type {
   QueryResult,
   QueryResultColumn,
   QueryRow,
+  SelectorSource,
   SelectSpec,
   SqlParam,
   StatementKind,

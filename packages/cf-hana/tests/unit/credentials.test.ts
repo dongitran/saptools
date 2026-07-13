@@ -28,7 +28,26 @@ VCAP_APPLICATION:{}`);
 
     const resolved = await resolveAppBindings("app-demo", {});
     expect(resolved.source).toBe("live");
+    expect(resolved.selectorSource).toBe("ambient");
+    expect(resolved.regionConfirmed).toBe(true);
+    expect(resolved.selectorCanBePinned).toBe(true);
     expect(resolved.bindings).toHaveLength(1);
+  });
+
+  it("refuses a bare selector when the ambient CF target changes during discovery", async () => {
+    vi.spyOn(cf, "readCurrentCfTarget")
+      .mockResolvedValueOnce(sampleTarget as CurrentCfTarget)
+      .mockResolvedValueOnce({
+        ...sampleTarget,
+        orgName: "different-org",
+      } as CurrentCfTarget);
+    vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:{}`);
+
+    await expect(resolveAppBindings("app-demo", {})).rejects.toThrow(
+      /CF target changed during binding discovery/,
+    );
   });
 
   it("falls back to SAP auth only on classified auth error for bare", async () => {
@@ -84,11 +103,17 @@ VCAP_APPLICATION:{}`);
     vi.stubEnv("SAP_EMAIL", "u@example.com");
     vi.stubEnv("SAP_PASSWORD", "p");
 
-    await resolveAppBindings("cn40/example-org/space-demo/app-demo", {});
-    await resolveAppBindings("eu20-001/example-org/space-demo/app-demo", {});
+    const china = await resolveAppBindings("cn40/example-org/space-demo/app-demo", {});
+    const indexed = await resolveAppBindings("eu20-001/example-org/space-demo/app-demo", {});
 
     expect(cfApi).toHaveBeenCalledWith("https://api.cf.cn40.platform.sapcloud.cn", { cfHome: "/tmp/fake" });
     expect(cfApi).toHaveBeenCalledWith("https://api.cf.eu20-001.hana.ondemand.com", { cfHome: "/tmp/fake" });
+    expect(china).toMatchObject({
+      selectorSource: "explicit",
+      regionConfirmed: true,
+      selectorCanBePinned: true,
+    });
+    expect(indexed.selectorSource).toBe("explicit");
   });
 
   it("rejects invalid explicit selector shapes and unknown regions before auth", async () => {

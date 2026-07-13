@@ -79,6 +79,9 @@ export class HanaClient {
       role,
       driver: driver.name,
       credentialSource: resolved.source,
+      selectorSource: resolved.selectorSource,
+      regionConfirmed: resolved.regionConfirmed,
+      selectorCanBePinned: resolved.selectorCanBePinned,
     };
     return new HanaClient(new ConnectionPool(driver, config, poolOptions), info);
   }

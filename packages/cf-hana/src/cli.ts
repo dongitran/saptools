@@ -62,6 +62,32 @@ function print(text: string): void {
   process.stdout.write(`${text}\n`);
 }
 
+function printResolvedTarget(info: HanaClientInfo): void {
+  if (info.selectorSource !== "ambient") {
+    process.stderr.write(`${CLI_NAME}: target ${info.selector} (explicit selector)\n`);
+    return;
+  }
+  if (info.regionConfirmed === false) {
+    process.stderr.write(
+      `${CLI_NAME}: target ${info.selector} (resolved from ambient 'cf target'; ` +
+        "region could not be mapped, so pin with a known region/org/space/app selector)\n",
+    );
+    return;
+  }
+  const pinHint = info.selectorCanBePinned === false
+    ? "the resolved region is not accepted as an explicit selector"
+    : `pass ${info.selector} to pin`;
+  process.stderr.write(
+    `${CLI_NAME}: target ${info.selector} (resolved from ambient 'cf target'; ${pinHint})\n`,
+  );
+}
+
+async function connectForCli(selector: string, options: ConnectOptions): Promise<HanaClient> {
+  const client = await connect(selector, options);
+  printResolvedTarget(client.info);
+  return client;
+}
+
 function fail(message: string): never {
   process.stderr.write(`${CLI_NAME}: ${message}\n`);
   process.exit(1);
@@ -314,7 +340,7 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
   const opts = command.opts<QueryCliOptions>();
   assertQueryOptions(sql, opts);
   const cellLimit = resolveCellLimit(opts.cellLimit);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const params = opts.param ?? [];
     let backup: Awaited<ReturnType<HanaClient["backupWriteStatement"]>>;
@@ -370,7 +396,7 @@ async function runTables(
   command: Command,
 ): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const tables = await client.listTables(schema ?? client.info.schema);
     const rows: readonly QueryRow[] = tables.map((table) => ({
@@ -387,7 +413,7 @@ async function runTables(
 async function runColumns(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const columns = await client.listColumns(schema, table);
     const rows: readonly QueryRow[] = columns.map((column) => ({
@@ -406,7 +432,7 @@ async function runColumns(selector: string, target: string, command: Command): P
 async function runCount(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const total = await client.count({ schema, table });
     print(String(total));
@@ -417,7 +443,7 @@ async function runCount(selector: string, target: string, command: Command): Pro
 
 async function runPing(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const started = Date.now();
     await client.query("SELECT 1 FROM DUMMY");
@@ -432,7 +458,7 @@ async function runPing(selector: string, command: Command): Promise<void> {
 
 async function runInfo(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     print(formatInfo(client.info));
   } finally {

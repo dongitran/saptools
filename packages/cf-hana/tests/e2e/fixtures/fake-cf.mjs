@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -19,17 +19,31 @@ function err(text) {
   process.exit(1);
 }
 
+function targetReadCount() {
+  const file = process.env.CF_HANA_FAKE_CF_TRACE_FILE;
+  if (!file) return 0;
+  try {
+    return readFileSync(file, "utf8")
+      .trim()
+      .split("\n")
+      .filter((line) => line.includes('"kind":"target-read"')).length;
+  } catch {
+    return 0;
+  }
+}
+
 if (cmd === "target") {
   if (args[1] === "-o") {
     trace({ kind: "target-space", org: args[2], space: args[4], cfHome: process.env.CF_HOME ? "isolated" : "current" });
     process.exit(0);
   }
   const apiEndpoint = process.env.CF_HANA_FAKE_CF_API_ENDPOINT ?? "https://api.cf.eu10-005.hana.ondemand.com";
+  const retargeted = process.env.CF_HANA_FAKE_CF_RETARGET_AFTER_ENV === "1" && targetReadCount() > 0;
   trace({ kind: "target-read", apiEndpoint, cfHome: process.env.CF_HOME ? "isolated" : "current" });
   out(`api endpoint:   ${apiEndpoint}
 api version:    3.XX.X
 user:           user@example.com
-org:            example-org
+org:            ${retargeted ? "different-org" : "example-org"}
 space:          space-demo`);
   process.exit(0);
 }
@@ -69,6 +83,25 @@ if (cmd === "env") {
             certificate: "test-certificate",
           },
         },
+        ...(process.env.CF_HANA_FAKE_CF_MULTIPLE_BINDINGS === "1"
+          ? [
+              {
+                name: "hana-secondary",
+                credentials: {
+                  host: "hana.example.internal",
+                  port: "443",
+                  user: "DB_USER_SECONDARY",
+                  password: "db-password-secondary",
+                  schema: "APP_SCHEMA",
+                  hdi_user: "HDI_USER_SECONDARY",
+                  hdi_password: "hdi-password-secondary",
+                  url: "jdbc:sap://hana.example.internal:443",
+                  database_id: "DB-1",
+                  certificate: "test-certificate",
+                },
+              },
+            ]
+          : []),
       ],
     };
     out("VCAP_SERVICES:");

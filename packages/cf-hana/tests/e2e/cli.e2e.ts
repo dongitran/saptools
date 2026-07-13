@@ -128,7 +128,7 @@ test("Bare current-session commands use direct cf env on eu10-005 without isolat
   }
 
   const traces = await readFakeCfTraceEntries(home);
-  expect(traces.filter((entry) => entry.kind === "target-read")).toHaveLength(commands.length);
+  expect(traces.filter((entry) => entry.kind === "target-read")).toHaveLength(commands.length * 2);
   expect(traces.filter((entry) => entry.kind === "env" && entry.cfHome === "current")).toHaveLength(commands.length);
   expect(traces.some((entry) => entry.kind === "api" || entry.kind === "auth" || entry.kind === "target-space")).toBe(false);
 });

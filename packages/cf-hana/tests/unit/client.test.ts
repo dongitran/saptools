@@ -126,6 +126,19 @@ afterEach(async () => {
 });
 
 describe("HanaClient", () => {
+  it("exposes ambient selector provenance in additive connection metadata", async () => {
+    vi.stubEnv("CF_HANA_DRIVER", "fake");
+    const client = await HanaClient.connect("app-demo");
+
+    expect(client.info).toMatchObject({
+      selector: "eu10/example-org/space-demo/app-demo",
+      selectorSource: "ambient",
+      regionConfirmed: true,
+      selectorCanBePinned: true,
+    });
+    await client.close();
+  });
+
   it("runs a query", async () => {
     const { client } = makeClient();
     await expect(client.query("SELECT * FROM ORDERS")).resolves.toMatchObject({
