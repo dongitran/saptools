@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import type { Db } from './connection.js';
 import { projectBounded } from '../utils/000-bounded-projection.js';
 import type {
@@ -390,34 +391,88 @@ export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]
   for (const r of rows) {
     const caller = callerStmt.get(repoId, r.sourceFile, r.callerQualifiedName) as { id?: number } | undefined;
     const target = resolveSymbolCallTarget(db, repoId, r);
-    insertStmt.run(repoId, caller?.id, target.id, r.calleeExpression, r.importSource, r.sourceFile, r.sourceLine, target.status, 0.8, JSON.stringify({ ...r.evidence, candidateStrategy: target.strategy, candidateCount: target.candidateCount }), target.reason);
+    insertStmt.run(repoId, caller?.id, target.id, r.calleeExpression, r.importSource, r.sourceFile, r.sourceLine, target.status, 0.8, JSON.stringify({ ...r.evidence, candidateStrategy: target.strategy, candidateCount: target.candidateCount, resolvedModulePath: target.resolvedModulePath }), target.reason);
   }
+}
+interface SymbolTargetRow { id: number; kind?: string; sourceFile?: string | null; evidenceJson?: string | null }
+interface SymbolCallResolution { id: number | null; status: 'resolved' | 'ambiguous' | 'unresolved'; reason: string | null; strategy: string; candidateCount: number; resolvedModulePath?: string }
+const stripExt = (value: string): string => value.replace(/\.(ts|tsx|js|jsx|cds)$/, '');
+function symbolTargetRows(rows: Array<Record<string, unknown>>): SymbolTargetRow[] {
+  return rows.flatMap((row) => typeof row.id === 'number' ? [{ id: row.id, kind: typeof row.kind === 'string' ? row.kind : undefined, sourceFile: nullableString(row.sourceFile), evidenceJson: nullableString(row.evidenceJson) }] : []);
+}
+function relativeModuleTargets(callerSourceFile: string, importSource: string): Set<string> {
+  const base = posix.dirname(callerSourceFile);
+  const joined = stripExt(posix.normalize(posix.join(base, importSource)));
+  return new Set([joined, `${joined}/index`]);
+}
+function moduleRows(rows: SymbolTargetRow[], r: SymbolCallFact): SymbolTargetRow[] {
+  if (!r.importSource) return [];
+  const targets = relativeModuleTargets(r.sourceFile, r.importSource);
+  return rows.filter((row) => typeof row.sourceFile === 'string' && targets.has(stripExt(row.sourceFile)));
+}
+function resolvedSymbol(row: SymbolTargetRow, strategy: string, candidateCount: number, moduleScoped = false): SymbolCallResolution {
+  return { id: row.id, status: 'resolved', reason: null, strategy, candidateCount, resolvedModulePath: moduleScoped && row.sourceFile ? stripExt(row.sourceFile) : undefined };
+}
+function exportedSymbolRows(db: Db, repoId: number, r: SymbolCallFact): SymbolTargetRow[] {
+  return symbolTargetRows(db.prepare('SELECT id,kind,source_file sourceFile,evidence_json evidenceJson FROM symbols WHERE repo_id=? AND source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName));
 }
 function isRelativeImportedSymbolCall(r: SymbolCallFact): boolean {
   return Boolean(r.importSource?.startsWith('.'));
 }
-function resolveSymbolCallTarget(db: Db, repoId: number, r: SymbolCallFact): { id: number | null; status: string; reason: string | null; strategy: string; candidateCount: number } {
-  const evidence = r.evidence as { relation?: unknown };
-  const localRows = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND (name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName) as Array<{ id: number }>;
-  if (localRows.length === 1) return { id: localRows[0]?.id ?? null, status: 'resolved', reason: null, strategy: 'same_file_exact', candidateCount: 1 };
-  if (localRows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple same-file symbol targets matched exactly', strategy: 'same_file_exact', candidateCount: localRows.length };
-  if (evidence.relation === 'class_instance_method' && isRelativeImportedSymbolCall(r)) {
-    const classRows = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file<>? AND qualified_name=? ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName) as Array<{ id: number }>;
-    if (classRows.length === 1) return { id: classRows[0]?.id ?? null, status: 'resolved', reason: null, strategy: 'relative_import_class_instance_method', candidateCount: 1 };
-    if (classRows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple relative class instance method targets matched exactly', strategy: 'relative_import_class_instance_method', candidateCount: classRows.length };
+function sameFileResolution(db: Db, repoId: number, r: SymbolCallFact, relation: unknown): SymbolCallResolution | undefined {
+  const bareImport = relation === 'relative_import' && isRelativeImportedSymbolCall(r) && !String(r.calleeLocalName).includes('.');
+  if (bareImport || relation === 'relative_import_namespace_member' || relation === 'package_import') return undefined;
+  const rows = symbolTargetRows(db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND (name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName));
+  if (rows.length === 1 && rows[0]) return resolvedSymbol(rows[0], 'same_file_exact', 1);
+  return rows.length > 1 ? { id: null, status: 'ambiguous', reason: 'Multiple same-file symbol targets matched exactly', strategy: 'same_file_exact', candidateCount: rows.length } : undefined;
+}
+function classInstanceResolution(db: Db, repoId: number, r: SymbolCallFact, relation: unknown): SymbolCallResolution | undefined {
+  if (relation !== 'class_instance_method' || !isRelativeImportedSymbolCall(r)) return undefined;
+  const rows = symbolTargetRows(db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file<>? AND qualified_name=? ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName));
+  if (rows.length === 1 && rows[0]) return resolvedSymbol(rows[0], 'relative_import_class_instance_method', 1);
+  return rows.length > 1 ? { id: null, status: 'ambiguous', reason: 'Multiple relative class instance method targets matched exactly', strategy: 'relative_import_class_instance_method', candidateCount: rows.length } : undefined;
+}
+function namespaceResolution(db: Db, repoId: number, r: SymbolCallFact, relation: unknown): SymbolCallResolution | undefined {
+  if (relation !== 'relative_import_namespace_member' || !isRelativeImportedSymbolCall(r)) return undefined;
+  const rows = moduleRows(exportedSymbolRows(db, repoId, r), r);
+  if (rows.length === 1 && rows[0]) return resolvedSymbol(rows[0], 'relative_import_namespace_member', 1, true);
+  if (rows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple namespace member targets matched the imported module', strategy: 'relative_import_namespace_member', candidateCount: rows.length };
+  return { id: null, status: 'unresolved', reason: 'No namespace member target matched the imported module', strategy: 'relative_import_namespace_member', candidateCount: 0 };
+}
+function proxyResolution(rows: SymbolTargetRow[], r: SymbolCallFact, relation: unknown): SymbolCallResolution | undefined {
+  if (relation !== 'relative_import_proxy_member' || rows.length <= 1) return undefined;
+  const mapped = rows.filter((row) => String(row.evidenceJson ?? '').includes('exported_object_shorthand') || String(row.evidenceJson ?? '').includes('exported_object_literal'));
+  if (mapped.length > 0) {
+    const concrete = rows.find((row) => row.kind !== 'object_alias') ?? mapped[0];
+    return { id: concrete?.id ?? null, status: 'resolved', reason: null, strategy: 'proxy_member_exported_object_map', candidateCount: rows.length };
   }
-  const rows = db.prepare('SELECT id,kind,evidence_json evidenceJson FROM symbols WHERE repo_id=? AND source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName) as Array<{ id: number; kind?: string; evidenceJson?: string | null }>;
-  if (evidence.relation === 'relative_import_proxy_member' && rows.length > 1) {
-    const objectMapRows = rows.filter((row) => String(row.evidenceJson ?? '').includes('exported_object_shorthand') || String(row.evidenceJson ?? '').includes('exported_object_literal'));
-    if (objectMapRows.length > 0) {
-      const concrete = rows.find((row) => row.kind !== 'object_alias') ?? objectMapRows[0];
-      return { id: concrete?.id ?? null, status: 'resolved', reason: null, strategy: 'proxy_member_exported_object_map', candidateCount: rows.length };
-    }
-    return { id: null, status: 'ambiguous', reason: 'Proxy member target requires explicit factory/module/type evidence; global member name is ambiguous', strategy: 'proxy_member_no_global_name_fallback', candidateCount: rows.length };
-  }
-  if (rows.length === 1) return { id: rows[0]?.id ?? null, status: 'resolved', reason: null, strategy: evidence.relation === 'relative_import_proxy_member' ? 'proxy_member_unique_exported_candidate' : 'relative_import_exported_exact', candidateCount: 1 };
-  if (rows.length > 1) return { id: null, status: 'ambiguous', reason: 'Multiple exported symbol targets matched exactly', strategy: 'exported_exact', candidateCount: rows.length };
-  return { id: null, status: 'unresolved', reason: 'No local symbol target matched exactly', strategy: evidence.relation === 'relative_import_proxy_member' ? 'proxy_member_no_global_name_fallback' : 'exact_symbol_match', candidateCount: 0 };
+  const scoped = moduleRows(rows, r);
+  if (scoped.length === 1 && scoped[0]) return resolvedSymbol(scoped[0], 'relative_import_path_disambiguated', rows.length, true);
+  return { id: null, status: 'ambiguous', reason: 'Proxy member target requires explicit factory/module/type evidence; global member name is ambiguous', strategy: 'proxy_member_no_global_name_fallback', candidateCount: rows.length };
+}
+function exportedResolution(rows: SymbolTargetRow[], r: SymbolCallFact, relation: unknown): SymbolCallResolution | undefined {
+  if (rows.length === 1 && rows[0]) return resolvedSymbol(rows[0], relation === 'relative_import_proxy_member' ? 'proxy_member_unique_exported_candidate' : 'relative_import_exported_exact', 1, moduleRows(rows, r).length === 1);
+  if (rows.length <= 1) return undefined;
+  const scoped = isRelativeImportedSymbolCall(r) ? moduleRows(rows, r) : [];
+  if (scoped.length === 1 && scoped[0]) return resolvedSymbol(scoped[0], 'relative_import_path_disambiguated', rows.length, true);
+  return { id: null, status: 'ambiguous', reason: 'Multiple exported symbol targets matched exactly', strategy: 'exported_exact', candidateCount: rows.length };
+}
+function accessorResolution(db: Db, repoId: number, r: SymbolCallFact, relation: unknown): SymbolCallResolution | undefined {
+  if (relation !== 'relative_import' || !isRelativeImportedSymbolCall(r) || !/^[^.]+\.[^.]+$/.test(String(r.calleeLocalName))) return undefined;
+  const methodRows = symbolTargetRows(db.prepare("SELECT id,kind,source_file sourceFile FROM symbols WHERE repo_id=? AND source_file<>? AND kind='method' AND qualified_name=? ORDER BY id").all(repoId, r.sourceFile, r.calleeLocalName));
+  const scoped = moduleRows(methodRows, r);
+  if (scoped.length === 1 && scoped[0]) return resolvedSymbol(scoped[0], 'relative_import_static_accessor_instance_method', 1, true);
+  return scoped.length > 1 ? { id: null, status: 'ambiguous', reason: 'Multiple static-accessor instance method targets matched the imported module', strategy: 'relative_import_static_accessor_instance_method', candidateCount: scoped.length } : undefined;
+}
+function resolveSymbolCallTarget(db: Db, repoId: number, r: SymbolCallFact): SymbolCallResolution {
+  const relation = r.evidence.relation;
+  const early = sameFileResolution(db, repoId, r, relation) ?? classInstanceResolution(db, repoId, r, relation) ?? namespaceResolution(db, repoId, r, relation);
+  if (early) return early;
+  const rows = relation === 'package_import' ? [] : exportedSymbolRows(db, repoId, r);
+  const matched = proxyResolution(rows, r, relation) ?? exportedResolution(rows, r, relation) ?? accessorResolution(db, repoId, r, relation);
+  if (matched) return matched;
+  if (relation === 'package_import') return { id: null, status: 'unresolved', reason: 'Package import target resolution requires a post-publication workspace pass', strategy: 'package_import_unresolved', candidateCount: 0 };
+  return { id: null, status: 'unresolved', reason: 'No local symbol target matched exactly', strategy: relation === 'relative_import_proxy_member' ? 'proxy_member_no_global_name_fallback' : 'exact_symbol_match', candidateCount: 0 };
 }
 export function insertCalls(
   db: Db,

@@ -444,10 +444,17 @@ describe('executable symbol parser trace-quality cases', () => {
     const parsedEntry = await helper.parseExecutableSymbols(root, 'src/entry.ts');
     expect(parsedEntry.calls.map((call) => call.calleeExpression).sort()).toEqual([
       'cacheHelper.getConfiguration',
+      'externalLib.doThing',
       'localHelper',
       'publicLoadMetadata',
       'this.otherMethod',
     ]);
+    const externalCall = parsedEntry.calls.find((call) => call.calleeExpression === 'externalLib.doThing');
+    expect(externalCall).toMatchObject({ calleeLocalName: 'doThing', importSource: 'external-lib' });
+    expect(externalCall?.evidence).toMatchObject({ relation: 'package_import', targetName: 'doThing' });
+    const objectHelperCall = parsedEntry.calls.find((call) => call.calleeExpression === 'cacheHelper.getConfiguration');
+    expect(objectHelperCall).toMatchObject({ calleeLocalName: 'cacheHelper.getConfiguration', importSource: './helper' });
+    expect(objectHelperCall?.evidence).toMatchObject({ relation: 'relative_import', targetName: 'cacheHelper.getConfiguration' });
   });
 
 
@@ -485,8 +492,11 @@ describe('executable symbol parser trace-quality cases', () => {
     expect(parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'DomainWorker.hidden')?.exported).toBe(false);
     expect(parsedWorker.symbols.find((symbol) => symbol.qualifiedName === 'InternalWorker.instance')?.exported).toBe(false);
     const parsedHandler = await parseExecutableSymbols(root, 'src/handler.ts');
-    expect(parsedHandler.calls.map((call) => call.calleeExpression).sort()).toEqual(['DomainWorker.instance', 'worker.runHeavyCheck']);
+    expect(parsedHandler.calls.map((call) => call.calleeExpression).sort()).toEqual(['DomainWorker.instance', 'PackageWorker.instance', 'worker.runHeavyCheck']);
     expect(parsedHandler.calls.find((call) => call.calleeExpression === 'worker.runHeavyCheck')?.evidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'handle', targetName: 'runHeavyCheck', factory: 'DomainWorker.instance' });
+    const packageWorkerCall = parsedHandler.calls.find((call) => call.calleeExpression === 'PackageWorker.instance');
+    expect(packageWorkerCall).toMatchObject({ calleeLocalName: 'instance', importSource: '@scope/worker' });
+    expect(packageWorkerCall?.evidence).toMatchObject({ relation: 'package_import', targetName: 'instance' });
   });
 
 
