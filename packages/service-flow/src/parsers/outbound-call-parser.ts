@@ -10,10 +10,16 @@ import { parseServiceBindings } from './service-binding-parser.js';
 import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
 import {
   directQueryBuilderStatement,
-  isCapQueryBuilderRootName,
   queryBuilderRoot,
   type DirectQueryBuilderStatement,
 } from './000-direct-query-execution.js';
+import {
+  expressionName,
+  maxAliasDepth,
+  queryEntityFromAst,
+  resolveBinding,
+  variableInitializers,
+} from './001-query-entity-resolution.js';
 import type { RepositorySourceContext } from './ts-project.js';
 import {
   analyzeOperationPath,
@@ -23,47 +29,6 @@ import {
 } from './operation-path-analysis.js';
 function lineOf(text: string, idx: number): number {
   return text.slice(0, idx).split('\n').length;
-}
-function entityFromExpression(expr: ts.Expression | undefined): string | undefined {
-  if (!expr) return undefined;
-  if (ts.isIdentifier(expr) || ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
-  if (ts.isPropertyAccessExpression(expr) && expr.expression.kind === ts.SyntaxKind.ThisKeyword) return expr.name.text;
-  if (ts.isElementAccessExpression(expr) && expr.argumentExpression && (ts.isStringLiteral(expr.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(expr.argumentExpression))) return expr.argumentExpression.text;
-  return undefined;
-}
-function expressionName(expr: ts.Expression): string {
-  if (ts.isIdentifier(expr)) return expr.text;
-  if (ts.isPropertyAccessExpression(expr)) return `${expressionName(expr.expression)}.${expr.name.text}`;
-  return expr.getText();
-}
-function variableInitializers(source: ts.SourceFile): Map<string, ts.Expression> {
-  const initializers = new Map<string, ts.Expression>();
-  for (const statement of source.statements) {
-    if (!ts.isVariableStatement(statement) || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (ts.isIdentifier(declaration.name) && declaration.initializer) initializers.set(declaration.name.text, declaration.initializer);
-    }
-  }
-  return initializers;
-}
-function unwrapQueryExpression(expr: ts.Expression): ts.Expression {
-  if (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)
-    || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr)
-    || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr))
-    return unwrapQueryExpression(expr.expression);
-  return expr;
-}
-function queryEntityFromAst(expr: ts.Expression, initializers = new Map<string, ts.Expression>()): string | undefined {
-  const unwrapped = unwrapQueryExpression(expr);
-  if (ts.isIdentifier(unwrapped) && initializers.has(unwrapped.text)) return queryEntityFromAst(initializers.get(unwrapped.text) as ts.Expression, initializers);
-  if (ts.isCallExpression(unwrapped)) {
-    const name = expressionName(unwrapped.expression);
-    if (name === 'cds.run') return queryEntityFromAst(unwrapped.arguments[0], initializers);
-    if (isCapQueryBuilderRootName(name)) return entityFromExpression(unwrapped.arguments[0]);
-    const receiver = ts.isPropertyAccessExpression(unwrapped.expression) ? unwrapped.expression.expression : undefined;
-    if (receiver) return queryEntityFromAst(receiver, initializers);
-  }
-  return undefined;
 }
 function queryBuilderEvidence(source: ts.SourceFile, statement: DirectQueryBuilderStatement): Record<string, unknown> {
   return {
@@ -140,64 +105,12 @@ function nameOfProperty(name: ts.PropertyName): string | undefined {
 type ExpressionStatus = 'static' | 'dynamic' | 'ambiguous' | 'unknown';
 type ExpressionSourceKind = 'string_literal' | 'no_substitution_template' | 'template_with_substitutions' | 'const_alias' | 'conditional_candidates' | 'dynamic_expression';
 interface ExpressionResolution { status: ExpressionStatus; sourceKind: ExpressionSourceKind; value?: string; rawExpression?: string; placeholderKeys: string[]; evidence: string[]; constName?: string }
-interface BindingResolution { declaration?: ts.VariableDeclaration | ts.ParameterDeclaration; initializer?: ts.Expression; immutable: boolean; evidence: string[] }
-const maxAliasDepth = 5;
 function safeRaw(expr: ts.Expression): string | undefined {
   if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr) || ts.isIdentifier(expr) || ts.isTemplateExpression(expr)) return expr.getText(expr.getSourceFile());
   return undefined;
 }
 function placeholders(expr: ts.TemplateExpression): string[] {
   return expr.templateSpans.map((span) => span.expression.getText(expr.getSourceFile()));
-}
-function isFunctionLikeScope(node: ts.Node): boolean {
-  return ts.isFunctionLike(node) || ts.isSourceFile(node);
-}
-function nodeContains(parent: ts.Node, child: ts.Node): boolean {
-  const source = child.getSourceFile();
-  return child.getStart(source) >= parent.getStart(source) && child.getEnd() <= parent.getEnd();
-}
-function declarationScope(node: ts.VariableDeclaration | ts.ParameterDeclaration): ts.Node {
-  if (ts.isParameter(node)) return node.parent;
-  if (ts.isCatchClause(node.parent) && node.parent.variableDeclaration === node) return node.parent;
-  const list = node.parent;
-  const blockScoped = (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) !== 0;
-  let current: ts.Node = list.parent;
-  if (!blockScoped) {
-    while (current.parent && !isFunctionLikeScope(current)) current = current.parent;
-    return current;
-  }
-  while (current.parent && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isModuleBlock(current) && !ts.isCaseBlock(current) && !isLoopInitializerScope(node, current) && !isFunctionLikeScope(current)) current = current.parent;
-  return current;
-}
-function isLoopInitializerScope(declaration: ts.VariableDeclaration, scope: ts.Node): boolean {
-  const list = declaration.parent;
-  return (ts.isForStatement(scope) && scope.initializer === list) || ((ts.isForInStatement(scope) || ts.isForOfStatement(scope)) && scope.initializer === list);
-}
-function catchBindingScope(declaration: ts.VariableDeclaration | ts.ParameterDeclaration): ts.CatchClause | undefined {
-  if (ts.isParameter(declaration)) return undefined;
-  return ts.isCatchClause(declaration.parent) && declaration.parent.variableDeclaration === declaration ? declaration.parent : undefined;
-}
-function isAccessibleDeclaration(declaration: ts.VariableDeclaration | ts.ParameterDeclaration, use: ts.Node): boolean {
-  const source = use.getSourceFile();
-  if (declaration.name.getStart(source) >= use.getStart(source)) return false;
-  const catchScope = catchBindingScope(declaration);
-  if (catchScope) return nodeContains(catchScope.block, use);
-  const scope = declarationScope(declaration);
-  if (ts.isForStatement(scope) || ts.isForInStatement(scope) || ts.isForOfStatement(scope)) return nodeContains(scope.statement, use);
-  return ts.isSourceFile(scope) || nodeContains(scope, use);
-}
-function resolveBinding(identifier: ts.Identifier, use: ts.Node): BindingResolution {
-  const source = use.getSourceFile();
-  let best: ts.VariableDeclaration | ts.ParameterDeclaration | undefined;
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && isAccessibleDeclaration(node, use)) best = node;
-    if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.name.text === identifier.text && isAccessibleDeclaration(node, use)) best = node;
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  if (!best) return { immutable: false, evidence: ['binding_not_found'] };
-  const immutable = ts.isVariableDeclaration(best) && (best.parent.flags & ts.NodeFlags.Const) !== 0;
-  return { declaration: best, initializer: ts.isVariableDeclaration(best) ? best.initializer : undefined, immutable, evidence: [immutable ? 'lexical_const_binding_before_use' : 'lexical_mutable_or_parameter_binding'] };
 }
 function resolveExpression(expr: ts.Expression | undefined, use: ts.Node, policy: 'operation_path' | 'external' | 'literal', depth = 0, seen = new Set<ts.Node>()): ExpressionResolution {
   if (!expr) return { status: 'unknown', sourceKind: 'dynamic_expression', placeholderKeys: [], evidence: ['expression_missing'] };

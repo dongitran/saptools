@@ -4,6 +4,8 @@ const capQueryBuilderRoots = new Set([
   'SELECT.from',
   'SELECT.one.from',
   'SELECT.one',
+  'SELECT.distinct.from',
+  'SELECT.distinct.one.from',
   'INSERT.into',
   'UPSERT.into',
   'UPDATE.entity',
