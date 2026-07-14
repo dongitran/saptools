@@ -1,17 +1,48 @@
 import { QueryError } from "./errors.js";
 import type { SqlParam, StatementKind } from "./types.js";
 
-const LEADING_NOISE = /^(?:\s|--[^\n]*\n?|\/\*[\s\S]*?\*\/)+/;
-
 const SELECT_KEYWORDS = new Set(["SELECT", "WITH"]);
 const DML_KEYWORDS = new Set(["INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE"]);
 const DDL_KEYWORDS = new Set(["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "COMMENT"]);
 
 /** The leading SQL keyword, upper-cased, skipping comments and whitespace. */
 export function firstKeyword(sql: string): string {
-  const stripped = sql.replace(LEADING_NOISE, "");
-  const match = /^[A-Za-z]+/.exec(stripped);
-  return (match?.[0] ?? "").toUpperCase();
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql.charAt(index);
+    if (char.trim().length === 0) {
+      index += 1;
+      continue;
+    }
+    if (char === "-" && sql[index + 1] === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n") {
+        index += 1;
+      }
+      continue;
+    }
+    if (char === "/" && sql[index + 1] === "*") {
+      const commentEnd = sql.indexOf("*/", index + 2);
+      if (commentEnd === -1) {
+        return "";
+      }
+      index = commentEnd + 2;
+      continue;
+    }
+    break;
+  }
+
+  let keywordEnd = index;
+  while (keywordEnd < sql.length) {
+    const code = sql.charCodeAt(keywordEnd);
+    const isUpperCase = code >= 65 && code <= 90;
+    const isLowerCase = code >= 97 && code <= 122;
+    if (!isUpperCase && !isLowerCase) {
+      break;
+    }
+    keywordEnd += 1;
+  }
+  return sql.slice(index, keywordEnd).toUpperCase();
 }
 
 /** Classify a SQL statement by its leading keyword. */

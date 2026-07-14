@@ -58,7 +58,12 @@ const WRITE_KEYWORDS = new Set<string>([
 const MERGE_MODIFY_ACTIONS = new Set<string>(["UPDATE", "DELETE"]);
 
 function trimStatementSql(sql: string): string {
-  return sql.trim().replace(/;+\s*$/, "").trim();
+  const trimmed = sql.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charAt(end - 1) === ";") {
+    end -= 1;
+  }
+  return trimmed.slice(0, end).trim();
 }
 
 function isMergeClauseStart(tokens: readonly TopLevelToken[], index: number): boolean {

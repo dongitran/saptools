@@ -99,6 +99,27 @@ describe("write backup planning", () => {
     });
   });
 
+  it("removes a long contiguous run of trailing statement terminators", () => {
+    const sql = `DELETE FROM ORDERS${";".repeat(20_000)}  `;
+    expect(buildWriteBackupPlan(sql)).toMatchObject({
+      operation: "delete",
+      statementSql: "DELETE FROM ORDERS",
+      selectSql: "SELECT * FROM ORDERS",
+    });
+  });
+
+  it("preserves non-trailing and whitespace-separated semicolons", () => {
+    const sql = `UPDATE ORDERS SET STATUS = 1 ${";".repeat(20_000)}X`;
+    expect(buildWriteBackupPlan(sql)).toMatchObject({
+      operation: "update",
+      statementSql: sql,
+      selectSql: "SELECT * FROM ORDERS",
+    });
+    expect(buildWriteBackupPlan("DELETE FROM ORDERS ; ;")).toMatchObject({
+      statementSql: "DELETE FROM ORDERS ;",
+    });
+  });
+
   it("derives a SELECT for UPSERT with a WHERE clause", () => {
     expect(
       buildWriteBackupPlan("UPSERT ORDERS VALUES (?, ?) WHERE ID = ?", [7, "DONE", 7]),
