@@ -1,9 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { PACKAGE_ANNOTATION } from "./types.js";
-import type { HanaLensDefinition, HanaLensElement } from "./types.js";
+import type { CompileVia, HanaLensDefinition, HanaLensElement } from "./types.js";
 import { isRecord } from "./validation.js";
 
 type CdsCompile = (models: readonly string[]) => Promise<unknown>;
@@ -13,21 +15,38 @@ function isCdsCompile(value: unknown): value is CdsCompile {
   return typeof value === "function";
 }
 
-async function compileWithCds(): Promise<unknown> {
-  const cdsModule: unknown = await import("@sap/cds");
-  if (!isRecord(cdsModule)) {
-    throw new Error("@sap/cds compile API is unavailable");
+function resolveCdsEntry(targetDirectory: string): string | undefined {
+  const bases = [pathToFileURL(path.join(targetDirectory, "package.json")).href, import.meta.url];
+  for (const base of bases) {
+    try {
+      return createRequire(base).resolve("@sap/cds");
+    } catch {
+      continue;
+    }
   }
-  const cdsCandidate = isRecord(cdsModule["default"]) ? cdsModule["default"] : cdsModule;
-  if (!isCdsCompile(cdsCandidate["compile"])) {
-    throw new Error("@sap/cds compile API is unavailable");
+  return undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents -- undefined is the explicit resolution-miss sentinel.
+async function compileWithCds(targetDirectory: string): Promise<unknown | undefined> {
+  const entry = resolveCdsEntry(targetDirectory);
+  if (entry === undefined) {
+    return undefined;
+  }
+  const cdsModule: unknown = await import(pathToFileURL(entry).href);
+  const cdsCandidate = isRecord(cdsModule) && isRecord(cdsModule["default"])
+    ? cdsModule["default"]
+    : cdsModule;
+  if (!isRecord(cdsCandidate) || !isCdsCompile(cdsCandidate["compile"])) {
+    throw new Error("@sap/cds resolved but exposes no compile() API");
   }
   return await cdsCandidate["compile"](["*"]);
 }
 
 async function findCdsFiles(directory: string): Promise<readonly string[]> {
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-  const files = await Promise.all(entries.map(async (entry) => {
+  const sortedEntries = [...entries].sort((left, right) => left.name.localeCompare(right.name));
+  const files = await Promise.all(sortedEntries.map(async (entry) => {
     const fullPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       if (IGNORED_MODEL_DIRECTORIES.has(entry.name)) {
@@ -92,24 +111,32 @@ async function compileWithFallbackParser(): Promise<{ readonly definitions: Reco
   return { definitions };
 }
 
-async function compileCsn(): Promise<unknown> {
-  try {
-    return await compileWithCds();
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("Cannot find package '@sap/cds'")) {
-      return await compileWithFallbackParser();
-    }
-    throw error;
+async function compileCsn(
+  targetDirectory: string,
+  allowFallback: boolean,
+): Promise<{ readonly csn: unknown; readonly via: CompileVia }> {
+  const csn = await compileWithCds(targetDirectory);
+  if (csn !== undefined) {
+    return { csn, via: "cds" };
   }
+  if (!allowFallback) {
+    throw new Error(
+      `@sap/cds is not resolvable from ${targetDirectory}. Install it in the analyzed workspace `
+      + "(npm i @sap/cds) or alongside the hana-lens CLI. Pass --allow-fallback to accept a "
+      + "DEGRADED cache from the regex parser (it omits projections, aspect-inheriting entities "
+      + 'like "entity X : managed {", enums, and numeric precision).',
+    );
+  }
+  return { csn: await compileWithFallbackParser(), via: "fallback" };
 }
 
 async function main(): Promise<void> {
-  const [targetDirectory, packageName] = process.argv.slice(2);
+  const [targetDirectory, packageName, allowFallbackRaw] = process.argv.slice(2);
   if (targetDirectory === undefined || packageName === undefined) {
-    throw new Error("Usage: compile-worker <targetDir> <packageName>");
+    throw new Error("Usage: compile-worker <targetDir> <packageName> [allowFallback]");
   }
   process.chdir(targetDirectory);
-  const csn = await compileCsn();
+  const { csn, via } = await compileCsn(targetDirectory, allowFallbackRaw === "1");
   if (!isRecord(csn) || !isRecord(csn["definitions"])) {
     throw new Error("@sap/cds returned a CSN without definitions");
   }
@@ -119,7 +146,7 @@ async function main(): Promise<void> {
       definitions[name] = { ...definition, [PACKAGE_ANNOTATION]: packageName } as HanaLensDefinition;
     }
   }
-  process.stdout.write(`${JSON.stringify({ packageName, definitions })}\n`);
+  process.stdout.write(`${JSON.stringify({ packageName, definitions, via })}\n`);
 }
 
 try {

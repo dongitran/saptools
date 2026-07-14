@@ -22,14 +22,15 @@ Scan every matching CAP package in a workspace, virtually link local siblings, c
 
 - 🧭 **Workspace package discovery** — recursively finds `package.json` files whose `name` starts with your CAP package prefix
 - 🔗 **Virtual sibling links** — creates local `node_modules/<scope>` symlinks so cross-package CDS references resolve without publishing packages
-- 🧪 **Isolated CAP compilation** — runs one fresh Node.js worker per package to avoid `@sap/cds` global compiler cache collisions
+- 🧪 **Isolated CAP compilation** — resolves `@sap/cds` from the analyzed workspace first, then runs one fresh Node.js worker per package
+- 🧯 **Resilient cache builds** — skips individual model failures by default, reports them, and provides `--strict` CI enforcement
 - 🏷️ **Origin-aware CSN** — injects `@hanaLens.packageName` into definitions so results show the package that produced each entity
 - 🪶 **Minified mega cache** — writes `.hana-lens-cache.json` with plain `JSON.stringify(ast)` and no formatting whitespace
 - 🔍 **Fuzzy + regex search** — typo-tolerant case-insensitive search by default, with `--regex` for precise patterns
 - 🧾 **Dense descriptions** — prints compact field/type/key lines designed for terminals and LLM context windows
 - 🛡️ **Safe association expansion** — follows `cds.Association` and `cds.Composition` targets with depth and circular-reference guards
 - 🧩 **CLI & typed API** — core cache, search, describe, package scanning, and build functions are exported for scripts
-- 🪶 **Small + boring** — zero required runtime dependencies, optional `@sap/cds` integration when available, and no resident daemon
+- 🪶 **Small + boring** — zero bundled runtime dependencies, explicit CAP compiler requirements, and no resident daemon
 
 ---
 
@@ -46,7 +47,7 @@ npm install @saptools/hana-lens
 ```
 
 > [!NOTE]
-> Requires **Node.js ≥ 20**. For full CAP fidelity, install **`@sap/cds`** in the analyzed workspace; `hana-lens` falls back to a small parser for simple local test fixtures when CDS is unavailable.
+> Requires **Node.js ≥ 20**. `build-cache` requires **`@sap/cds`** in the analyzed workspace (recommended) or alongside the `hana-lens` CLI. The regex parser is available only with `--allow-fallback`; it is degraded and omits aspect-inheriting entities, projections, enums, and numeric precision.
 
 ---
 
@@ -72,19 +73,22 @@ After the first cache build, `./workspace/.hana-lens-cache.json` is ready for of
 
 ## 🧰 CLI
 
-### 🏗️ `hana-lens build-cache --dir <workspace_path> --prefix <package_prefix>`
+### 🏗️ `hana-lens build-cache --dir <workspace_path> --prefix <package_prefix> [--allow-fallback] [--strict]`
 
 Scan a CAP workspace, compile every matching package in isolation, and write a minified mega CSN cache.
 
 ```bash
 hana-lens build-cache --dir ./workspace --prefix @my-cap/
 hana-lens build-cache --dir ~/code/customer-cap --prefix @customer/
+hana-lens build-cache --dir ./workspace --prefix @my-cap/ --strict
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--dir <workspace_path>` | Root directory to scan recursively |
 | `--prefix <package_prefix>` | Package-name prefix to include, for example `@my-cap/` |
+| `--allow-fallback` | Opt into the degraded regex parser only for packages where `@sap/cds` cannot be resolved |
+| `--strict` | Abort if any package fails to compile or any definition name has conflicting shapes |
 
 What it does:
 
@@ -94,9 +98,13 @@ What it does:
 - creates virtual sibling links under each package's `node_modules/<scope>`
 - removes broken symlinks before relinking
 - spawns one worker process per package before calling `@sap/cds.compile(['*'])`
+- resolves `@sap/cds` from each analyzed package/workspace before trying the CLI installation
+- skips failed packages with a bounded stderr summary by default; `--strict` restores abort-on-any-failure behavior
 - annotates definitions with `@hanaLens.packageName`
-- rejects duplicate CSN definition names instead of silently overwriting them
+- silently collapses identical shared definitions, while different definitions with the same fully qualified name warn and deterministically keep one, preferring persistence definitions over projections (`--strict` makes conflicts fatal)
 - writes `.hana-lens-cache.json` as newline-free minified JSON
+
+The success summary preserves `cached=`, `packages=`, and `file=`, then reports `compiled=`, `skipped=`, and `via=`. `packages=` is the discovered total, `compiled=` counts successful workers (including empty CSN payloads), and `skipped=` counts failed workers. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`. Any fallback use also prints a prominent degraded-cache warning to stderr.
 
 > [!TIP]
 > `build-cache` is the expensive step. Run it after model changes, then use `search` and `describe` repeatedly without recompiling the workspace.
@@ -253,6 +261,17 @@ pnpm --filter @saptools/hana-lens test:e2e
 ```
 
 The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it does not require live SAP BTP, CF, or SharePoint credentials.
+
+---
+
+## 🗒️ Changelog
+
+### `0.3.1` — RC1
+
+- resolves `@sap/cds` workspace-first and CLI-second, fails closed when CDS is entirely unavailable, and makes degraded fallback explicit with `--allow-fallback` plus `via=` reporting
+- isolates per-package compiler failures with deterministic settled outcomes and summaries; `--strict` aborts for CI
+- replaces unconditional duplicate-name failures with signature-aware identical-definition collapse and visible conflict handling
+- keeps cache reads and the `search`, `search-field`, `references`, and `describe` output formats unchanged
 
 ---
 

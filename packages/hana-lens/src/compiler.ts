@@ -2,8 +2,11 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { CompileResult, SapPackage } from "./types.js";
+import type { CompileOutcome, CompileResult, SapPackage } from "./types.js";
 import { isRecord } from "./validation.js";
+
+const FAILURE_NAME_LIMIT = 5;
+const FAILURE_REASON_LIMIT = 2_000;
 
 function workerPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "compile-worker.js");
@@ -14,6 +17,7 @@ export function parseCompileResult(raw: string, packageName: string): CompileRes
   if (payloads.length === 0) {
     throw new Error(`Compile worker for ${packageName} returned no JSON payload`);
   }
+  let foundJson = false;
   for (const payload of payloads) {
     let parsed: unknown;
     try {
@@ -21,17 +25,27 @@ export function parseCompileResult(raw: string, packageName: string): CompileRes
     } catch {
       continue;
     }
+    foundJson = true;
     if (!isRecord(parsed) || parsed["packageName"] !== packageName || !isRecord(parsed["definitions"])) {
-      throw new Error(`Compile worker for ${packageName} returned an invalid payload`);
+      continue;
     }
-    return { packageName, definitions: parsed["definitions"] as CompileResult["definitions"] };
+    const via = parsed["via"] ?? "cds";
+    if (via !== "cds" && via !== "fallback") {
+      continue;
+    }
+    return { packageName, definitions: parsed["definitions"] as CompileResult["definitions"], via };
   }
-  throw new Error(`Compile worker for ${packageName} returned malformed JSON`);
+  throw new Error(`Compile worker for ${packageName} returned ${foundJson ? "an invalid payload" : "malformed JSON"}`);
 }
 
-export async function compilePackage(targetPackage: SapPackage): Promise<CompileResult> {
+export async function compilePackage(targetPackage: SapPackage, allowFallback: boolean): Promise<CompileResult> {
   return await new Promise<CompileResult>((resolve, reject) => {
-    const child = spawn(process.execPath, [workerPath(), targetPackage.directory, targetPackage.name], {
+    const child = spawn(process.execPath, [
+      workerPath(),
+      targetPackage.directory,
+      targetPackage.name,
+      allowFallback ? "1" : "0",
+    ], {
       cwd: targetPackage.directory,
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
@@ -58,6 +72,42 @@ export async function compilePackage(targetPackage: SapPackage): Promise<Compile
   });
 }
 
-export async function compilePackages(packages: readonly SapPackage[]): Promise<readonly CompileResult[]> {
-  return await Promise.all(packages.map(async (targetPackage) => await compilePackage(targetPackage)));
+export async function compilePackages(
+  packages: readonly SapPackage[],
+  allowFallback: boolean,
+  strict: boolean,
+): Promise<CompileOutcome> {
+  const settled = await Promise.allSettled(
+    packages.map(async (targetPackage) => await compilePackage(targetPackage, allowFallback)),
+  );
+  const compiled: CompileResult[] = [];
+  const skipped: CompileOutcome["skipped"][number][] = [];
+  for (const [index, result] of settled.entries()) {
+    const targetPackage = packages[index];
+    if (targetPackage === undefined) {
+      throw new Error("Compilation outcome did not match its package");
+    }
+    if (result.status === "fulfilled") {
+      compiled.push(result.value);
+      continue;
+    }
+    const reason: unknown = result.reason;
+    skipped.push({
+      package: targetPackage.name,
+      reason: reason instanceof Error ? reason.message : String(reason),
+    });
+  }
+  if (strict && skipped.length > 0) {
+    const names = skipped.slice(0, FAILURE_NAME_LIMIT).map((skip) => skip.package).join(", ");
+    const remaining = skipped.length - FAILURE_NAME_LIMIT;
+    const suffix = remaining > 0 ? `, ... (+${remaining.toString()} more)` : "";
+    const firstReason = skipped[0]?.reason ?? "Unknown compilation failure";
+    const boundedReason = firstReason.length > FAILURE_REASON_LIMIT
+      ? `${firstReason.slice(0, FAILURE_REASON_LIMIT)}...`
+      : firstReason;
+    throw new Error(
+      `Strict mode: ${skipped.length.toString()} package(s) failed to compile: ${names}${suffix}. First failure: ${boundedReason}`,
+    );
+  }
+  return { compiled, skipped };
 }
