@@ -1,0 +1,4 @@
+interface:
+  display_name: "Service Flow"
+  short_description: "Trace SAP CAP service flows safely"
+  default_prompt: "Use $service-flow to index, link, trace, and diagnose a SAP CAP workspace."
