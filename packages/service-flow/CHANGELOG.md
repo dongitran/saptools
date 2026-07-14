@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.58
+
+- Completed RC5 with a deterministic link-phase workspace pass that resolves package-import symbol calls to uniquely matching exported symbols in uniquely identified indexed sibling packages, including package subpath imports and receiver-qualified member calls.
+- Kept external packages, same-repository imports, missing or non-exported names, unsafe aliases/default imports, deeper member chains, duplicate package mappings, and duplicate exported targets fail-closed as unresolved or ambiguous.
+- Recomputed owned package-import rows on every link without a schema, edge, trace-engine, or CLI output change, preserving bounded evidence and cross-package `local_symbol_call` trace descent across repeated link and force-index/relink runs.
+
 ## 0.1.57
 
 - Made local executable symbol-call resolution import-binding-aware: relative helper shadowing now bypasses same-file methods (RC1), namespace members resolve within their imported module (RC2), duplicate exports use fail-closed path disambiguation while barrels remain ambiguous (RC3), and singleton-accessor chains reach non-exported instance methods in the imported class module (RC4).
