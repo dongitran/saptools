@@ -45,7 +45,20 @@ export interface SearchResult {
   readonly score: number;
 }
 
+export type CompileVia = "cds" | "fallback";
+
 export interface CompileResult {
   readonly packageName: string;
   readonly definitions: Readonly<Record<string, HanaLensDefinition>>;
+  readonly via: CompileVia;
+}
+
+export interface PackageSkip {
+  readonly package: string;
+  readonly reason: string;
+}
+
+export interface CompileOutcome {
+  readonly compiled: readonly CompileResult[];
+  readonly skipped: readonly PackageSkip[];
 }
