@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.57
+
+- Made local executable symbol-call resolution import-binding-aware: relative helper shadowing now bypasses same-file methods (RC1), namespace members resolve within their imported module (RC2), duplicate exports use fail-closed path disambiguation while barrels remain ambiguous (RC3), and singleton-accessor chains reach non-exported instance methods in the imported class module (RC4).
+- Recorded non-relative package-import calls with `package_import` evidence instead of silently dropping them (RC5 minimal-safe); they remain deterministically unresolved until a post-publication workspace pass can resolve sibling-package symbols without index-order or stale-ID risk.
+- Persisted bounded module-path and candidate-strategy evidence without a schema migration or trace/rendering shape change, with neutral parser, SQLite, trace-edge, and repeated force-index/relink coverage.
+
 ## 0.1.56
 
 - Completed direct CAP query-builder execution-context indexing for builders returned by async or syntactically guaranteed-Promise callables and for static builder elements in awaited `Promise.all(...)`, while retaining one fact per logical statement and the existing conservative unknown-entity behavior.

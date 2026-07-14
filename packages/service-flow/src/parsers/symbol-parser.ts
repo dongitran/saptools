@@ -184,6 +184,7 @@ export async function parseExecutableSymbols(
   const symbols: ExecutableSymbolFact[] = [];
   const calls: SymbolCallFact[] = [];
   const imports = new Map<string, string>();
+  const namespaceImports = new Set<string>();
   const exportNames = exportDeclarations(source);
   const objectExports = new Set<string>();
   const exportedClasses = new Set<string>();
@@ -214,7 +215,10 @@ export async function parseExecutableSymbols(
       if (clause?.name) imports.set(clause.name.text, sourceText);
       const named = clause?.namedBindings;
       if (named && ts.isNamedImports(named)) for (const el of named.elements) imports.set(el.name.text, sourceText);
-      if (named && ts.isNamespaceImport(named)) imports.set(named.name.text, sourceText);
+      if (named && ts.isNamespaceImport(named)) {
+        imports.set(named.name.text, sourceText);
+        namespaceImports.add(named.name.text);
+      }
     }
     if (ts.isVariableStatement(node)) {
       for (const declaration of node.declarationList.declarations) {
@@ -330,7 +334,9 @@ export async function parseExecutableSymbols(
         const instance = (callee.local ? classInstances.get(callee.local) : undefined) ?? (callee.receiver ? classInstances.get(callee.receiver) : undefined);
         const importSource = instance?.importSource ?? proxy?.importSource ?? (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
         const directThisMethod = callee.receiver === 'this';
-        const targetName = instance && callee.member ? `${instance.className}.${callee.member}` : proxy && callee.member ? callee.member : directThisMethod ? callee.member : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
+        const namespaceMember = Boolean(callee.member && callee.local && namespaceImports.has(callee.local));
+        const packageImport = Boolean(importSource && !isRelativeImport(importSource));
+        const targetName = instance && callee.member ? `${instance.className}.${callee.member}` : proxy && callee.member ? callee.member : directThisMethod ? callee.member : namespaceMember ? callee.member : packageImport ? (callee.member ?? callee.local) : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
         const className = caller.qualifiedName.includes('.') ? caller.qualifiedName.split('.')[0] : undefined;
         const thisTarget = directThisMethod && className && callee.member ? `${className}.${callee.member}` : undefined;
         const loggerLike = callee.receiver?.endsWith('.logger') || callee.local === 'logger' || (callee.expression.startsWith('this.logger.') && callee.member ? loggerMembers.has(callee.member) : false);
@@ -339,11 +345,11 @@ export async function parseExecutableSymbols(
         const provenThisMethod = Boolean(thisTarget && localCallables.has(thisTarget));
         const provenRelativeImport = Boolean(isRelativeImport(importSource) && targetName);
         const provenClassInstance = Boolean(instance && callee.member && targetName);
-        const importedFromPackage = Boolean(importSource && !isRelativeImport(importSource));
-        const ignored = loggerLike || terminalMember || importedFromPackage || ignoredFrameworkCall(callee);
+        const provenPackageImport = Boolean(packageImport && targetName);
+        const ignored = loggerLike || terminalMember || ignoredFrameworkCall(callee);
         const resolvedTarget = provenThisMethod ? thisTarget : targetName;
-        const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport || provenClassInstance);
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? (callee.local ?? callee.receiver) : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? (instance.propertyName ?? callee.local) : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
+        const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport || provenClassInstance || provenPackageImport);
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? (callee.local ?? callee.receiver) : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : packageImport ? 'package_import' : namespaceMember ? 'relative_import_namespace_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? (instance.propertyName ?? callee.local) : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
       }
     }
     ts.forEachChild(node, visitCalls);
