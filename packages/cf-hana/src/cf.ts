@@ -26,6 +26,14 @@ export interface CurrentCfTarget {
   readonly regionKey?: string;
 }
 
+/** Application identity embedded in the same `cf env` response as service credentials. */
+export interface CfEnvApplicationIdentity {
+  readonly apiEndpoint: string;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly appName: string;
+}
+
 const REGION_API_MAP: Record<string, string> = {
   ae01: "https://api.cf.ae01.hana.ondemand.com",
   ap01: "https://api.cf.ap01.hana.ondemand.com",
@@ -322,6 +330,82 @@ export function formatCurrentCfAppSelector(target: CurrentCfTarget, appName: str
 }
 
 /* VCAP parser */
+
+function findJsonObjectEnd(source: string, startIndex: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = startIndex; index < source.length; index++) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString && character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {continue;}
+    if (character === "{") {
+      depth++;
+      continue;
+    }
+    if (character === "}" && --depth === 0) {return index;}
+  }
+  return -1;
+}
+
+function extractVcapApplicationJson(stdout: string): string {
+  const marker = "VCAP_APPLICATION:";
+  const markerIndex = stdout.indexOf(marker);
+  if (markerIndex === -1) {
+    throw new Error("VCAP_APPLICATION section not found in cf env output");
+  }
+  const afterMarker = stdout.slice(markerIndex + marker.length);
+  const openIndex = afterMarker.indexOf("{");
+  if (openIndex === -1) {
+    throw new Error("VCAP_APPLICATION JSON payload not found in cf env output");
+  }
+  const closeIndex = findJsonObjectEnd(afterMarker, openIndex);
+  if (closeIndex === -1) {
+    throw new Error("Malformed VCAP_APPLICATION JSON in cf env output");
+  }
+  return afterMarker.slice(openIndex, closeIndex + 1);
+}
+
+function requireApplicationField(
+  application: Record<string, unknown>,
+  field: string,
+): string {
+  const value = application[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`VCAP_APPLICATION.${field} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+export function extractCfEnvApplicationIdentity(stdout: string): CfEnvApplicationIdentity {
+  let application: unknown;
+  try {
+    application = JSON.parse(extractVcapApplicationJson(stdout));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("VCAP_APPLICATION is not valid JSON", { cause: error });
+    }
+    throw error;
+  }
+  if (!isRecord(application)) {throw new Error("VCAP_APPLICATION must be an object");}
+  return {
+    appName: requireApplicationField(application, "application_name"),
+    apiEndpoint: normalizeSapCfApiEndpoint(requireApplicationField(application, "cf_api")),
+    orgName: requireApplicationField(application, "organization_name"),
+    spaceName: requireApplicationField(application, "space_name"),
+  };
+}
 
 function extractVcapSection(stdout: string): string {
   const start = stdout.indexOf("VCAP_SERVICES:");

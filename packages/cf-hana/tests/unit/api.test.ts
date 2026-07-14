@@ -22,7 +22,7 @@ beforeEach(async () => {
   vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
   vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
 {"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
-VCAP_APPLICATION:{}`);
+VCAP_APPLICATION:{"application_name":"app-demo","cf_api":"https://api.cf.eu10.hana.ondemand.com","organization_name":"example-org","space_name":"space-demo"}`);
   vi.stubEnv("HOME", tempHome);
   vi.stubEnv("USERPROFILE", tempHome);
   vi.stubEnv("CF_HANA_DRIVER", "fake");

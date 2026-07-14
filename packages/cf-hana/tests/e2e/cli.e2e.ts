@@ -93,7 +93,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.3.5");
+  expect(result.stdout).toContain("0.4.0");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -128,7 +128,7 @@ test("Bare current-session commands use direct cf env on eu10-005 without isolat
   }
 
   const traces = await readFakeCfTraceEntries(home);
-  expect(traces.filter((entry) => entry.kind === "target-read")).toHaveLength(commands.length);
+  expect(traces.filter((entry) => entry.kind === "target-read")).toHaveLength(commands.length * 2);
   expect(traces.filter((entry) => entry.kind === "env" && entry.cfHome === "current")).toHaveLength(commands.length);
   expect(traces.some((entry) => entry.kind === "api" || entry.kind === "auth" || entry.kind === "target-space")).toBe(false);
 });
@@ -183,15 +183,6 @@ test("Deprecated refresh flag is accepted but metadata cache uses refresh-metada
   expect(metadataReads).toHaveLength(1);
 });
 
-test("User sees a clear failure when requesting query format output", async () => {
-  const result = await runCli(
-    ["query", SELECTOR, "SELECT 1 FROM DUMMY", "--format", "json"],
-    fakeEnv(),
-  );
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain("unknown option '--format'");
-});
-
 test("User can save a compact query and inspect it by ref", async () => {
   const result = await runCli(
     ["query", SELECTOR, "SELECT * FROM ITEMS", "--save", "--cell-limit", "6"],
@@ -207,6 +198,10 @@ test("User can save a compact query and inspect it by ref", async () => {
   expect(result.stderr).toContain("compacted 2 cell(s)");
 
   const ref = lines[0]?.slice("ref=".length) ?? "";
+  expect(result.stderr).toContain(
+    `cf-hana result show ${ref} --row <r> --column <c>`,
+  );
+  expect(result.stderr).not.toContain("use --save to inspect");
   const cell = await runCli(
     ["result", "show", ref, "--row", "1", "--column", "NAME", "--length", "50"],
     fakeEnv(),

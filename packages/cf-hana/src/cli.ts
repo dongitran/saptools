@@ -1,5 +1,9 @@
 import { Command } from "commander";
 
+import {
+  enrichAndRethrowQueryError,
+  rethrowWithPrivilegeHint,
+} from "./002-cli-query-hints.js";
 import { connect } from "./api.js";
 import { registerResultCommands } from "./cli-results.js";
 import type { HanaClient } from "./client.js";
@@ -10,21 +14,11 @@ import {
   DEFAULT_CELL_LIMIT,
   MAX_CELL_LIMIT,
 } from "./config.js";
-import { CfHanaError, QueryError, databaseCode, errorMessage } from "./errors.js";
+import { CfHanaError, errorMessage } from "./errors.js";
 import { formatCompactCsv, formatResult, formatTable } from "./format.js";
-import { loadCatalogObjectsWithCache, toMetadataCacheScope } from "./metadata-cache.js";
-import { createResultSession } from "./result-store.js";
+import { createResultSession, tryCreateResultSession } from "./result-store.js";
+import type { ResultSession } from "./result-store.js";
 import { classifyStatement } from "./statements.js";
-import {
-  extractInvalidColumnNameFromError,
-  extractMissingObjectName,
-  extractMissingObjectNameFromError,
-  formatColumnSuggestions,
-  formatSuggestions,
-  isInvalidCatalogObjectError,
-  rankCatalogSuggestions,
-  rankNameSuggestions,
-} from "./suggestions.js";
 import type {
   ConnectOptions,
   DbUserRole,
@@ -54,12 +48,40 @@ interface FormattedCliOptions extends ConnectionCliOptions {
 interface QueryCliOptions extends ConnectionCliOptions {
   readonly param?: readonly string[];
   readonly save: boolean;
+  readonly autoSave: boolean;
+  readonly format?: string;
   readonly cellLimit?: number;
   readonly resultTtlMinutes?: number;
 }
 
 function print(text: string): void {
   process.stdout.write(`${text}\n`);
+}
+
+function printResolvedTarget(info: HanaClientInfo): void {
+  if (info.selectorSource !== "ambient") {
+    process.stderr.write(`${CLI_NAME}: target ${info.selector} (explicit selector)\n`);
+    return;
+  }
+  if (info.regionConfirmed === false) {
+    process.stderr.write(
+      `${CLI_NAME}: target ${info.selector} (resolved from ambient 'cf target'; ` +
+        "region could not be mapped, so pin with a known region/org/space/app selector)\n",
+    );
+    return;
+  }
+  const pinHint = info.selectorCanBePinned === false
+    ? "the resolved region is not accepted as an explicit selector"
+    : `pass ${info.selector} to pin`;
+  process.stderr.write(
+    `${CLI_NAME}: target ${info.selector} (resolved from ambient 'cf target'; ${pinHint})\n`,
+  );
+}
+
+async function connectForCli(selector: string, options: ConnectOptions): Promise<HanaClient> {
+  const client = await connect(selector, options);
+  printResolvedTarget(client.info);
+  return client;
 }
 
 function fail(message: string): never {
@@ -103,10 +125,18 @@ function parseRole(role: string): DbUserRole {
 }
 
 function parseFormat(format: string): OutputFormat {
-  if (format === "table" || format === "json" || format === "csv") {
+  if (
+    format === "table" ||
+    format === "json" ||
+    format === "json-compact" ||
+    format === "csv"
+  ) {
     return format;
   }
-  throw new CfHanaError("CONFIG", `Invalid --format "${format}" (expected table, json, or csv)`);
+  throw new CfHanaError(
+    "CONFIG",
+    `Invalid --format "${format}" (expected table, json, json-compact, or csv)`,
+  );
 }
 
 function parseQualifiedName(value: string): { readonly schema: string; readonly table: string } {
@@ -148,8 +178,77 @@ function resolveCellLimit(value: number | undefined): number {
 function assertQueryOptions(sql: string, opts: QueryCliOptions): void {
   resolveCellLimit(opts.cellLimit);
   assertPositiveOption("--result-ttl-minutes", opts.resultTtlMinutes);
-  if (opts.save && classifyStatement(sql) !== "select") {
+  const isSelect = classifyStatement(sql) === "select";
+  if (opts.save && !isSelect) {
     throw new CfHanaError("CONFIG", "--save is only available for SELECT/WITH statements");
+  }
+  if (opts.format !== undefined && !isSelect) {
+    throw new CfHanaError("CONFIG", "--format is only available for SELECT/WITH statements");
+  }
+  if (opts.save && opts.format !== undefined) {
+    throw new CfHanaError("CONFIG", "--save cannot be combined with --format");
+  }
+}
+
+async function persistCompactResult(
+  result: QueryResult,
+  info: HanaClientInfo,
+  opts: QueryCliOptions,
+  truncatedCells: number,
+): Promise<ResultSession | undefined> {
+  const input = {
+    result,
+    info,
+    ...(opts.resultTtlMinutes === undefined ? {} : { ttlMinutes: opts.resultTtlMinutes }),
+  };
+  if (opts.save) {
+    const session = await createResultSession(input);
+    print(`ref=${session.ref}`);
+    return session;
+  }
+  if (!opts.autoSave || truncatedCells === 0) {
+    return void 0;
+  }
+  return await tryCreateResultSession(input);
+}
+
+function printCompactionHint(
+  truncatedCells: number,
+  session: ResultSession | undefined,
+  explicitlySaved: boolean,
+): void {
+  const prefix = `${CLI_NAME}: compacted ${String(truncatedCells)} cell(s);`;
+  if (session === undefined) {
+    process.stderr.write(`${prefix} rerun with --save or increase --cell-limit\n`);
+    return;
+  }
+  const saved = explicitlySaved ? "" : ` exact values auto-saved as ${session.ref};`;
+  process.stderr.write(
+    `${prefix}${saved} inspect exact values with ` +
+      `'${CLI_NAME} result show ${session.ref} --row <r> --column <c>' ` +
+      "or increase --cell-limit\n",
+  );
+}
+
+async function printSelectResult(
+  result: QueryResult,
+  info: HanaClientInfo,
+  opts: QueryCliOptions,
+  cellLimit: number,
+  format: OutputFormat | undefined,
+): Promise<void> {
+  if (format === undefined) {
+    const compact = formatCompactCsv(result, cellLimit);
+    const session = await persistCompactResult(result, info, opts, compact.truncatedCells);
+    print(compact.text);
+    if (compact.truncatedCells > 0) {
+      printCompactionHint(compact.truncatedCells, session, opts.save);
+    }
+  } else {
+    print(formatResult(result, format));
+  }
+  if (result.truncated) {
+    process.stderr.write(`${CLI_NAME}: row limit reached; rerun with --limit for more rows\n`);
   }
 }
 
@@ -198,123 +297,17 @@ function withConnectionOptions(command: Command): Command {
 function withFormattedConnectionOptions(command: Command): Command {
   return withConnectionOptions(command).option(
     "--format <format>",
-    "output format: table, json, or csv",
+    "output format: table, json, json-compact, or csv",
     "table",
   );
-}
-
-async function loadSuggestionCatalogObjects(
-  client: HanaClient,
-  refresh: boolean,
-): Promise<Awaited<ReturnType<HanaClient["listCatalogObjects"]>>> {
-  try {
-    return await loadCatalogObjectsWithCache(
-      toMetadataCacheScope(client.info),
-      refresh,
-      async () => await client.listCatalogObjects(client.info.schema),
-    );
-  } catch {
-    // Retry one direct catalog read for transient metadata lookup failures. The
-    // retry intentionally bypasses cache writes so another cache failure cannot
-    // hide useful suggestions or the original query error.
-    return await client.listCatalogObjects(client.info.schema);
-  }
-}
-
-function isLobSortOrGroupError(error: unknown): boolean {
-  const code = databaseCode(error);
-  if (code !== 266 && code !== 274) {
-    return false;
-  }
-  return (
-    error instanceof QueryError &&
-    /LOB type is not allowed in (?:ORDER BY|GROUP BY) clause/i.test(error.message)
-  );
-}
-
-function printLobSortOrGroupHint(): void {
-  const lines = [
-    `${CLI_NAME}: HANA cannot ORDER BY or GROUP BY NCLOB/CLOB/BLOB columns directly.`,
-    `${CLI_NAME}: Remove the LOB column from ORDER BY/GROUP BY or wrap it as TO_VARCHAR(<column>).`,
-  ];
-  process.stderr.write(`${lines.join("\n")}\n`);
-}
-
-async function printColumnSuggestions(
-  error: unknown,
-  client: HanaClient,
-  sql: string,
-): Promise<void> {
-  if (databaseCode(error) !== 260) {
-    return;
-  }
-  const columnName = extractInvalidColumnNameFromError(error);
-  const tableName = extractMissingObjectName(sql);
-  if (columnName === undefined || tableName === undefined) {
-    return;
-  }
-
-  try {
-    const columns = await client.listColumns(
-      tableName.schema ?? client.info.schema,
-      tableName.name,
-    );
-    const text = formatColumnSuggestions(rankNameSuggestions(columnName, columns));
-    if (text !== undefined) {
-      process.stderr.write(`${text}\n`);
-    }
-  } catch {
-    // Column metadata failures are intentionally silent: stderr should stay
-    // focused on the original query failure unless reliable suggestions exist.
-  }
-}
-
-async function printCatalogObjectSuggestions(
-  error: unknown,
-  client: HanaClient,
-  sql: string,
-  refresh: boolean,
-): Promise<void> {
-  if (!isInvalidCatalogObjectError(error)) {
-    return;
-  }
-  const requested = extractMissingObjectNameFromError(error) ?? extractMissingObjectName(sql);
-  if (requested === undefined) {
-    return;
-  }
-  try {
-    const objects = await loadSuggestionCatalogObjects(client, refresh);
-    const text = formatSuggestions(rankCatalogSuggestions(requested, objects));
-    if (text !== undefined) {
-      process.stderr.write(`${text}\n`);
-    }
-  } catch {
-    // Metadata lookup failures are intentionally silent: stderr should stay
-    // focused on the original query failure unless reliable suggestions exist.
-  }
-}
-
-async function enrichAndRethrowQueryError(
-  error: unknown,
-  client: HanaClient,
-  sql: string,
-  refresh: boolean,
-): Promise<never> {
-  if (isLobSortOrGroupError(error)) {
-    printLobSortOrGroupHint();
-    throw error;
-  }
-
-  await printColumnSuggestions(error, client, sql);
-  await printCatalogObjectSuggestions(error, client, sql, refresh);
-  throw error;
 }
 
 async function runQuery(selector: string, sql: string, command: Command): Promise<void> {
   const opts = command.opts<QueryCliOptions>();
   assertQueryOptions(sql, opts);
   const cellLimit = resolveCellLimit(opts.cellLimit);
-  const client = await connect(selector, toConnectOptions(opts));
+  const format = opts.format === undefined ? void 0 : parseFormat(opts.format);
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const params = opts.param ?? [];
     let backup: Awaited<ReturnType<HanaClient["backupWriteStatement"]>>;
@@ -326,36 +319,12 @@ async function runQuery(selector: string, sql: string, command: Command): Promis
     if (backup !== undefined) {
       process.stderr.write(`${CLI_NAME}: backup saved to ${backup.directory}\n`);
     }
-    const result = await client
-      .query(sql, params)
-      .catch(async (error: unknown): Promise<QueryResult> => {
-        return await enrichAndRethrowQueryError(
-          error,
-          client,
-          sql,
-          opts.refreshMetadata,
-        );
-      });
+    const result = await client.query(sql, params).catch(
+      async (error: unknown): Promise<QueryResult> =>
+        await enrichAndRethrowQueryError(error, client, sql, opts.refreshMetadata),
+    );
     if (result.statement === "select") {
-      const compact = formatCompactCsv(result, cellLimit);
-      if (opts.save) {
-        const session = await createResultSession({
-          result,
-          info: client.info,
-          ...(opts.resultTtlMinutes === undefined ? {} : { ttlMinutes: opts.resultTtlMinutes }),
-        });
-        print(`ref=${session.ref}`);
-      }
-      print(compact.text);
-      if (result.truncated) {
-        process.stderr.write(`${CLI_NAME}: row limit reached; rerun with --limit for more rows\n`);
-      }
-      if (compact.truncatedCells > 0) {
-        process.stderr.write(
-          `${CLI_NAME}: compacted ${String(compact.truncatedCells)} cell(s); ` +
-            "use --save to inspect exact values by ref\n",
-        );
-      }
+      await printSelectResult(result, client.info, opts, cellLimit, format);
       return;
     }
     print(formatTable(result));
@@ -370,15 +339,19 @@ async function runTables(
   command: Command,
 ): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const format = parseFormat(opts.format);
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
-    const tables = await client.listTables(schema ?? client.info.schema);
+    const resolvedSchema = schema ?? client.info.schema;
+    const tables = await client.listTables(resolvedSchema).catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, resolvedSchema),
+    );
     const rows: readonly QueryRow[] = tables.map((table) => ({
       SCHEMA: table.schema,
       TABLE: table.name,
       TYPE: table.type,
     }));
-    print(formatResult(rowsToResult(rows), parseFormat(opts.format)));
+    print(formatResult(rowsToResult(rows), format, "TABLE"));
   } finally {
     await client.close();
   }
@@ -387,9 +360,12 @@ async function runTables(
 async function runColumns(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<FormattedCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(selector, toConnectOptions(opts));
+  const format = parseFormat(opts.format);
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
-    const columns = await client.listColumns(schema, table);
+    const columns = await client.listColumns(schema, table).catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, schema),
+    );
     const rows: readonly QueryRow[] = columns.map((column) => ({
       COLUMN: column.name,
       TYPE: column.dataType,
@@ -397,7 +373,7 @@ async function runColumns(selector: string, target: string, command: Command): P
       NULLABLE: column.nullable,
       POSITION: column.position,
     }));
-    print(formatResult(rowsToResult(rows), parseFormat(opts.format)));
+    print(formatResult(rowsToResult(rows), format, "COLUMN"));
   } finally {
     await client.close();
   }
@@ -406,9 +382,11 @@ async function runColumns(selector: string, target: string, command: Command): P
 async function runCount(selector: string, target: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
   const { schema, table } = parseQualifiedName(target);
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
-    const total = await client.count({ schema, table });
+    const total = await client.count({ schema, table }).catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, schema),
+    );
     print(String(total));
   } finally {
     await client.close();
@@ -417,10 +395,12 @@ async function runCount(selector: string, target: string, command: Command): Pro
 
 async function runPing(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     const started = Date.now();
-    await client.query("SELECT 1 FROM DUMMY");
+    await client.query("SELECT 1 FROM DUMMY").catch((error: unknown): never =>
+      rethrowWithPrivilegeHint(error, client, client.info.schema),
+    );
     print(
       `OK  ${client.info.host}  schema=${client.info.schema}  ` +
         `${String(Date.now() - started)}ms`,
@@ -432,12 +412,88 @@ async function runPing(selector: string, command: Command): Promise<void> {
 
 async function runInfo(selector: string, command: Command): Promise<void> {
   const opts = command.opts<ConnectionCliOptions>();
-  const client = await connect(selector, toConnectOptions(opts));
+  const client = await connectForCli(selector, toConnectOptions(opts));
   try {
     print(formatInfo(client.info));
   } finally {
     await client.close();
   }
+}
+
+const QUERY_OUTPUT_HELP = `
+Output shapes:
+  default SELECT: compact CSV (cells may be shortened to --cell-limit)
+  --format json: [{COLUMN: value, ...}] (lossless)
+  --format json-compact: [value, ...] for one column; multiple columns use objects
+  --format csv: lossless RFC 4180 CSV
+  --format table: lossless aligned table
+`;
+const TABLES_OUTPUT_HELP = `
+JSON shapes:
+  json: [{SCHEMA,TABLE,TYPE}]
+  json-compact: [TABLE, ...]
+`;
+const COLUMNS_OUTPUT_HELP = `
+JSON shapes:
+  json: [{COLUMN,TYPE,LENGTH,NULLABLE,POSITION}]
+  json-compact: [COLUMN, ...]
+`;
+
+function registerQueryCommand(program: Command): void {
+  const command = program
+    .command("query <selector> <sql>")
+    .description("run a single SQL statement")
+    .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, [])
+    .option("--save", "save exact returned rows for follow-up inspection", false)
+    .option("--no-auto-save", "do not auto-save exact rows when compact output truncates cells")
+    .option("--format <format>", "lossless format: table, json, json-compact, or csv")
+    .option("--cell-limit <n>", "maximum visible characters per data cell", parseIntOption)
+    .option("--result-ttl-minutes <n>", "minutes before a saved result expires", parseIntOption)
+    .addHelpText("after", QUERY_OUTPUT_HELP);
+  withConnectionOptions(command).action(
+    async (selector: string, sql: string, _options: unknown, action: Command) => {
+      await runQuery(selector, sql, action);
+    },
+  );
+}
+
+function registerCatalogCommands(program: Command): void {
+  const tables = program
+    .command("tables <selector> [schema]")
+    .description("list tables in a schema")
+    .addHelpText("after", TABLES_OUTPUT_HELP);
+  withFormattedConnectionOptions(tables).action(
+    async (selector: string, schema: string | undefined, _options: unknown, action: Command) => {
+      await runTables(selector, schema, action);
+    },
+  );
+  const columns = program
+    .command("columns <selector> <schema.table>")
+    .description("list the columns of a table")
+    .addHelpText("after", COLUMNS_OUTPUT_HELP);
+  withFormattedConnectionOptions(columns).action(
+    async (selector: string, target: string, _options: unknown, action: Command) => {
+      await runColumns(selector, target, action);
+    },
+  );
+}
+
+function registerConnectionCommands(program: Command): void {
+  withConnectionOptions(
+    program.command("count <selector> <schema.table>").description("count rows in a table"),
+  ).action(async (selector: string, target: string, _options: unknown, command: Command) => {
+    await runCount(selector, target, command);
+  });
+  withConnectionOptions(
+    program.command("ping <selector>").description("connect and measure round-trip latency"),
+  ).action(async (selector: string, _options: unknown, command: Command) => {
+    await runPing(selector, command);
+  });
+  withConnectionOptions(
+    program.command("info <selector>").description("print the resolved connection metadata"),
+  ).action(async (selector: string, _options: unknown, command: Command) => {
+    await runInfo(selector, command);
+  });
 }
 
 function buildProgram(): Command {
@@ -446,59 +502,10 @@ function buildProgram(): Command {
     .name(CLI_NAME)
     .description("Run SQL against SAP HANA Cloud databases bound to a Cloud Foundry app")
     .version(CLI_VERSION);
-
-  withConnectionOptions(
-    program
-      .command("query <selector> <sql>")
-      .description("run a single SQL statement")
-      .option("--param <value>", "bind a SQL parameter (repeatable)", collectParam, [])
-      .option("--save", "save exact returned rows for follow-up inspection", false)
-      .option("--cell-limit <n>", "maximum visible characters per data cell", parseIntOption)
-      .option(
-        "--result-ttl-minutes <n>",
-        "minutes before a saved result expires",
-        parseIntOption,
-      ),
-  ).action(async (selector: string, sql: string, _options: unknown, command: Command) => {
-    await runQuery(selector, sql, command);
-  });
-
-  withFormattedConnectionOptions(
-    program.command("tables <selector> [schema]").description("list tables in a schema"),
-  ).action(
-    async (selector: string, schema: string | undefined, _options: unknown, command: Command) => {
-      await runTables(selector, schema, command);
-    },
-  );
-
-  withFormattedConnectionOptions(
-    program
-      .command("columns <selector> <schema.table>")
-      .description("list the columns of a table"),
-  ).action(async (selector: string, target: string, _options: unknown, command: Command) => {
-    await runColumns(selector, target, command);
-  });
-
-  withConnectionOptions(
-    program.command("count <selector> <schema.table>").description("count rows in a table"),
-  ).action(async (selector: string, target: string, _options: unknown, command: Command) => {
-    await runCount(selector, target, command);
-  });
-
-  withConnectionOptions(
-    program.command("ping <selector>").description("connect and measure round-trip latency"),
-  ).action(async (selector: string, _options: unknown, command: Command) => {
-    await runPing(selector, command);
-  });
-
-  withConnectionOptions(
-    program.command("info <selector>").description("print the resolved connection metadata"),
-  ).action(async (selector: string, _options: unknown, command: Command) => {
-    await runInfo(selector, command);
-  });
-
+  registerQueryCommand(program);
+  registerCatalogCommands(program);
+  registerConnectionCommands(program);
   registerResultCommands(program);
-
   return program;
 }
 

@@ -26,6 +26,7 @@ export type {
 export { formatCsv, formatJson, formatResult, formatTable } from "./format.js";
 export type { CatalogObjectInfo } from "./metadata-cache.js";
 export {
+  BackupRequiredError,
   CfHanaError,
   CredentialsNotFoundError,
   DestructiveStatementError,
@@ -47,6 +48,7 @@ export type {
   QueryResult,
   QueryResultColumn,
   QueryRow,
+  SelectorSource,
   SelectSpec,
   SqlParam,
   StatementKind,

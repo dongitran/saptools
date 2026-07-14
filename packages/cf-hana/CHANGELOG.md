@@ -2,6 +2,21 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.4.0 - 2026-07-14
+
+- Back up `REPLACE` and matched `MERGE INTO` pre-images, cap backup size, and
+  refuse those statements when their target or safe pre-image cannot be derived.
+- Confirm every resolved CLI target on stderr, distinguish ambient from explicit
+  selectors, and verify direct `cf env` identity against the ambient target.
+- Add actionable insufficient-privilege guidance with schema, technical user,
+  current binding, and sibling binding names without automatic retries.
+- Auto-save exact rows only when compact CSV shortens cells, add
+  `--no-auto-save`, and make implicit storage failures non-fatal.
+- Add lossless `query --format table|json|json-compact|csv`, flat catalog name
+  output, and exact per-command JSON schemas in help while preserving defaults.
+- Scope metadata suggestions by binding identity and document the existing
+  bounded CF retries and 60-second timeout defaults.
+
 ## 0.3.5 - 2026-07-06
 
 - Normalize HANA `BOOLEAN` result columns that arrive from the driver as `1`/`0`

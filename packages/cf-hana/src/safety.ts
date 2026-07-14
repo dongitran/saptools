@@ -91,8 +91,41 @@ function maskIgnoredSqlText(sql: string): string {
   return masked;
 }
 
-function hasWhereClause(sql: string): boolean {
-  return /\bwhere\b/i.test(maskIgnoredSqlText(sql));
+function hasTopLevelKeyword(sql: string, keyword: string): boolean {
+  const masked = maskIgnoredSqlText(sql);
+  let depth = 0;
+  for (let index = 0; index < masked.length; index += 1) {
+    const char = masked[index];
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (
+      depth === 0 &&
+      masked.slice(index, index + keyword.length).toUpperCase() === keyword &&
+      !/[A-Za-z0-9_$#]/.test(masked.charAt(index - 1)) &&
+      !/[A-Za-z0-9_$#]/.test(masked.charAt(index + keyword.length))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isUnconditionalMergeDelete(sql: string): boolean {
+  return /\bWHEN\s+MATCHED\s+THEN\s+DELETE\b/i.test(maskIgnoredSqlText(sql));
+}
+
+function isMalformedReplace(sql: string): boolean {
+  return (
+    !hasTopLevelKeyword(sql, "VALUES") &&
+    !hasTopLevelKeyword(sql, "SELECT") &&
+    !hasTopLevelKeyword(sql, "WITH")
+  );
 }
 
 function trailingLineCommentIndex(sql: string): number | undefined {
@@ -139,9 +172,13 @@ export function inspectStatement(sql: string): StatementInspection {
     return { kind, destructive: DESTRUCTIVE_DDL_KEYWORDS.has(keyword) };
   }
   if (kind === "dml") {
+    const destructive =
+      (UNSCOPED_WRITE_KEYWORDS.has(keyword) && !hasTopLevelKeyword(sql, "WHERE")) ||
+      (keyword === "MERGE" && isUnconditionalMergeDelete(sql)) ||
+      (keyword === "REPLACE" && isMalformedReplace(sql));
     return {
       kind,
-      destructive: UNSCOPED_WRITE_KEYWORDS.has(keyword) && !hasWhereClause(sql),
+      destructive,
     };
   }
   return { kind, destructive: false };
@@ -169,7 +206,8 @@ export function evaluateGuard(sql: string, config: GuardConfig): GuardDecision {
       destructive: true,
       violation: "destructive",
       reason:
-        "destructive statement blocked (DROP/TRUNCATE/ALTER or unscoped UPDATE/DELETE); " +
+        "destructive statement blocked (DROP/TRUNCATE/ALTER, unscoped UPDATE/DELETE, " +
+        "or unconditional matched MERGE DELETE); " +
         "allow it explicitly to proceed",
     };
   }

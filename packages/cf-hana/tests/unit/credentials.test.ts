@@ -7,12 +7,22 @@ import { CredentialsNotFoundError } from "../../src/errors.js";
 
 import { sampleBinding, sampleCredentials } from "./fixtures/samples.js";
 
-const sampleTarget = {
+const sampleTarget: CurrentCfTarget = {
   apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
   orgName: "example-org",
   spaceName: "space-demo",
   regionKey: "eu10",
 };
+
+function vcapApplication(overrides: Readonly<Record<string, string>> = {}): string {
+  return JSON.stringify({
+    application_name: "app-demo",
+    cf_api: sampleTarget.apiEndpoint,
+    organization_name: sampleTarget.orgName,
+    space_name: sampleTarget.spaceName,
+    ...overrides,
+  });
+}
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -21,18 +31,60 @@ afterEach(() => {
 
 describe("resolveAppBindings", () => {
   it("resolves bare using current target + direct (no SAP needed)", async () => {
-    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget);
+    vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:${vcapApplication()}`);
+
+    const resolved = await resolveAppBindings("app-demo", {});
+    expect(resolved.source).toBe("live");
+    expect(resolved.selectorSource).toBe("ambient");
+    expect(resolved.regionConfirmed).toBe(true);
+    expect(resolved.selectorCanBePinned).toBe(true);
+    expect(resolved.bindings).toHaveLength(1);
+  });
+
+  it("refuses a bare selector when the ambient CF target changes during discovery", async () => {
+    vi.spyOn(cf, "readCurrentCfTarget")
+      .mockResolvedValueOnce(sampleTarget)
+      .mockResolvedValueOnce({
+        ...sampleTarget,
+        orgName: "different-org",
+      });
+    vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:${vcapApplication()}`);
+
+    await expect(resolveAppBindings("app-demo", {})).rejects.toThrow(
+      /CF target changed during binding discovery/,
+    );
+  });
+
+  it("refuses an A-to-B-to-A ambient retarget using the cf env application identity", async () => {
+    const readTarget = vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget);
+    vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
+{"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
+VCAP_APPLICATION:${vcapApplication({ organization_name: "different-org" })}`);
+
+    await expect(resolveAppBindings("app-demo", {})).rejects.toThrow(
+      /CF env application identity did not match the resolved ambient target/,
+    );
+    expect(readTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses direct credentials when cf env omits application identity fields", async () => {
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget);
     vi.spyOn(cf, "cfEnvDirect").mockResolvedValue(`VCAP_SERVICES:
 {"hana":[{"name":"hana-primary","credentials":{"host":"hana.example.internal","port":"443","user":"DB_USER","password":"db-password","schema":"APP_SCHEMA","hdi_user":"HDI_USER","hdi_password":"HDI_PASSWORD","url":"","database_id":"DB-1","certificate":"test-certificate"}}]}
 VCAP_APPLICATION:{}`);
 
-    const resolved = await resolveAppBindings("app-demo", {});
-    expect(resolved.source).toBe("live");
-    expect(resolved.bindings).toHaveLength(1);
+    await expect(resolveAppBindings("app-demo", {})).rejects.toThrow(
+      /Could not verify cf env application identity/,
+    );
   });
 
   it("falls back to SAP auth only on classified auth error for bare", async () => {
-    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget);
     vi.spyOn(cf, "cfEnvDirect").mockRejectedValue({ stderr: "not logged in" });
     vi.spyOn(cf, "withCfSession").mockImplementation(async (_work: unknown) => [sampleBinding()]);
     vi.stubEnv("SAP_EMAIL", "u@example.com");
@@ -43,7 +95,7 @@ VCAP_APPLICATION:{}`);
   });
 
   it("throws specific error for non-auth problem in bare (no SAP forced)", async () => {
-    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget as CurrentCfTarget);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(sampleTarget);
     vi.spyOn(cf, "cfEnvDirect").mockRejectedValue({ stderr: "app not found" });
 
     await expect(resolveAppBindings("ghost-app", {})).rejects.toThrow(/current target/);
@@ -84,11 +136,17 @@ VCAP_APPLICATION:{}`);
     vi.stubEnv("SAP_EMAIL", "u@example.com");
     vi.stubEnv("SAP_PASSWORD", "p");
 
-    await resolveAppBindings("cn40/example-org/space-demo/app-demo", {});
-    await resolveAppBindings("eu20-001/example-org/space-demo/app-demo", {});
+    const china = await resolveAppBindings("cn40/example-org/space-demo/app-demo", {});
+    const indexed = await resolveAppBindings("eu20-001/example-org/space-demo/app-demo", {});
 
     expect(cfApi).toHaveBeenCalledWith("https://api.cf.cn40.platform.sapcloud.cn", { cfHome: "/tmp/fake" });
     expect(cfApi).toHaveBeenCalledWith("https://api.cf.eu20-001.hana.ondemand.com", { cfHome: "/tmp/fake" });
+    expect(china).toMatchObject({
+      selectorSource: "explicit",
+      regionConfirmed: true,
+      selectorCanBePinned: true,
+    });
+    expect(indexed.selectorSource).toBe("explicit");
   });
 
   it("rejects invalid explicit selector shapes and unknown regions before auth", async () => {

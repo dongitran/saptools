@@ -27,6 +27,8 @@ export interface MetadataCacheScope {
   readonly schema: string;
   readonly role: string;
   readonly driver: string;
+  readonly bindingName?: string;
+  readonly bindingIndex?: number;
 }
 
 export interface MetadataCacheOptions {
@@ -46,6 +48,8 @@ export function toMetadataCacheScope(info: HanaClientInfo): MetadataCacheScope {
     schema: info.schema,
     role: info.role,
     driver: info.driver,
+    ...(info.bindingName === undefined ? {} : { bindingName: info.bindingName }),
+    ...(info.bindingIndex === undefined ? {} : { bindingIndex: info.bindingIndex }),
   };
 }
 
@@ -70,9 +74,8 @@ function isCatalogObject(value: unknown): value is CatalogObjectInfo {
   );
 }
 
-function isScope(value: unknown): value is MetadataCacheScope {
+function hasRequiredScopeFields(value: Record<string, unknown>): boolean {
   return (
-    isRecord(value) &&
     typeof value["selector"] === "string" &&
     typeof value["appName"] === "string" &&
     typeof value["host"] === "string" &&
@@ -80,6 +83,17 @@ function isScope(value: unknown): value is MetadataCacheScope {
     typeof value["role"] === "string" &&
     typeof value["driver"] === "string"
   );
+}
+
+function hasOptionalScopeFields(value: Record<string, unknown>): boolean {
+  return (
+    (value["bindingName"] === undefined || typeof value["bindingName"] === "string") &&
+    (value["bindingIndex"] === undefined || typeof value["bindingIndex"] === "number")
+  );
+}
+
+function isScope(value: unknown): value is MetadataCacheScope {
+  return isRecord(value) && hasRequiredScopeFields(value) && hasOptionalScopeFields(value);
 }
 
 function scopesEqual(left: MetadataCacheScope, right: MetadataCacheScope): boolean {

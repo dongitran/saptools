@@ -13,8 +13,11 @@ export type DbUserRole = "runtime" | "hdi";
 /** Where resolved credentials came from. */
 export type CredentialSource = "live";
 
+/** Whether the app selector was pinned by the caller or inherited from `cf target`. */
+export type SelectorSource = "explicit" | "ambient";
+
 /** Output rendering for CLI results. */
-export type OutputFormat = "table" | "json" | "csv";
+export type OutputFormat = "table" | "json" | "json-compact" | "csv";
 
 export interface QueryResultColumn {
   readonly name: string;
@@ -109,6 +112,12 @@ export interface HanaClientInfo {
   readonly role: DbUserRole;
   readonly driver: string;
   readonly credentialSource: CredentialSource;
+  readonly selectorSource?: SelectorSource;
+  readonly regionConfirmed?: boolean;
+  readonly selectorCanBePinned?: boolean;
+  readonly bindingName?: string;
+  readonly bindingIndex?: number;
+  readonly availableBindingNames?: readonly string[];
 }
 
 /** HANA binding credentials (from VCAP). */

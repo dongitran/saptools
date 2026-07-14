@@ -20,6 +20,7 @@ import type {
   ColumnInfo,
   ConnectOptions,
   DbUserRole,
+  HanaBinding,
   HanaClientInfo,
   PoolOptions,
   QueryOptions,
@@ -32,9 +33,36 @@ import type {
 
 let explainStatementCounter = 0;
 
+interface SelectedBindingInfo {
+  readonly bindingName?: string;
+  readonly bindingIndex: number;
+  readonly availableBindingNames: readonly string[];
+}
+
 function nextExplainStatementName(): string {
   explainStatementCounter = (explainStatementCounter + 1) % Number.MAX_SAFE_INTEGER;
   return `cf_hana_${String(process.pid)}_${String(Date.now())}_${String(explainStatementCounter)}`;
+}
+
+function toPoolOptions(options: ConnectOptions): PoolOptions {
+  if (options.pool === false) {
+    return { max: 1 };
+  }
+  return options.pool ?? {};
+}
+
+function toSelectedBindingInfo(
+  bindings: readonly HanaBinding[],
+  selected: HanaBinding,
+): SelectedBindingInfo {
+  const availableBindingNames = bindings.flatMap((binding) =>
+    binding.name === undefined ? [] : [binding.name],
+  );
+  return {
+    ...(selected.name === undefined ? {} : { bindingName: selected.name }),
+    bindingIndex: bindings.indexOf(selected),
+    availableBindingNames,
+  };
 }
 
 /**
@@ -45,6 +73,7 @@ export class HanaClient {
   constructor(
     private readonly pool: ConnectionPool,
     readonly info: HanaClientInfo,
+    readonly databaseUser = "",
   ) {}
 
   /** Open a client for a `region/org/space/app` selector (or a bare app name). */
@@ -52,6 +81,7 @@ export class HanaClient {
     const resolved = await resolveAppBindings(selector, options);
     const role: DbUserRole = options.role ?? "runtime";
     const binding = selectBinding(resolved.bindings, options);
+    const bindingInfo = toSelectedBindingInfo(resolved.bindings, binding);
     const target = toConnectionTarget(binding, role);
     const driver = createDriver();
 
@@ -68,8 +98,7 @@ export class HanaClient {
       allowDestructive: options.allowDestructive ?? false,
       autoLimit: options.autoLimit ?? DEFAULT_AUTO_LIMIT,
     };
-    const poolOptions: PoolOptions =
-      options.pool === false ? { max: 1 } : (options.pool ?? {});
+    const poolOptions = toPoolOptions(options);
 
     const info: HanaClientInfo = {
       selector: resolved.selector,
@@ -79,8 +108,12 @@ export class HanaClient {
       role,
       driver: driver.name,
       credentialSource: resolved.source,
+      selectorSource: resolved.selectorSource,
+      regionConfirmed: resolved.regionConfirmed,
+      selectorCanBePinned: resolved.selectorCanBePinned,
+      ...bindingInfo,
     };
-    return new HanaClient(new ConnectionPool(driver, config, poolOptions), info);
+    return new HanaClient(new ConnectionPool(driver, config, poolOptions), info, target.user);
   }
 
   /** Run a SELECT (or any read) statement and return typed rows. */
@@ -107,7 +140,7 @@ export class HanaClient {
     return result;
   }
 
-  /** Back up rows matched by an UPDATE or DELETE before the caller runs it. */
+  /** Back up pre-image rows required by a supported write before the caller runs it. */
   async backupWriteStatement(
     sql: string,
     params?: readonly SqlParam[],

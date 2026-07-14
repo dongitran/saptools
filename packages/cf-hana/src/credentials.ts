@@ -5,6 +5,7 @@ import {
   cfEnvDirect,
   cfTargetSpace,
   classifyCfError,
+  extractCfEnvApplicationIdentity,
   extractHanaBindingsFromCfEnv,
   formatCurrentCfAppSelector,
   getApiEndpointForRegion,
@@ -12,9 +13,11 @@ import {
   readCurrentCfTarget,
   withCfSession,
 } from "./cf.js";
+import type { CfEnvApplicationIdentity } from "./cf.js";
 import { readSapCredentials } from "./config.js";
+import type { SapCredentials } from "./config.js";
 import { CfHanaError, CredentialsNotFoundError } from "./errors.js";
-import type { CredentialSource, DbUserRole, HanaBinding } from "./types.js";
+import type { CredentialSource, DbUserRole, HanaBinding, SelectorSource } from "./types.js";
 
 export interface ResolveBindingsOptions {
   /** Deprecated compatibility flag. Binding discovery is always live. */
@@ -32,6 +35,20 @@ export interface ResolvedBindings {
   readonly appName: string;
   readonly bindings: readonly HanaBinding[];
   readonly source: CredentialSource;
+  readonly selectorSource: SelectorSource;
+  readonly regionConfirmed: boolean;
+  readonly selectorCanBePinned: boolean;
+}
+
+interface ResolvedAppTarget {
+  readonly selector: string;
+  readonly apiEndpoint: string;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly appName: string;
+  readonly selectorSource: SelectorSource;
+  readonly regionConfirmed: boolean;
+  readonly selectorCanBePinned: boolean;
 }
 
 export interface BindingSelector {
@@ -49,156 +66,208 @@ export interface SelectedConnectionTarget {
   readonly databaseId: string;
 }
 
-/**
- * Resolve an app's HANA bindings.
- *
- * Bare app name: resolve it against the current `cf target`.
- *   - First try the user's *existing* CF session directly via cfEnvDirect (no re-auth).
- *   - Only fall back to SAP + isolated re-auth if the error is classified as auth/session problem.
- * Explicit selector: Always full authenticated isolated path.
- *
- * This is the professional realization of the request:
- * When only an app is provided, the current CF target supplies org and space.
- * Auth/re-auth ONLY on session/unauthorize (per user feedback).
- */
+function parseExplicitTarget(selector: string): ResolvedAppTarget {
+  const [regionKey, orgName, spaceName, appName, extra] = selector
+    .split("/")
+    .map((part) => part.trim());
+  if (extra !== undefined || !regionKey || !orgName || !spaceName || !appName) {
+    throw new CfHanaError(
+      "CONFIG",
+      `Invalid selector "${selector}". Use region/org/space/app or a bare app name.`,
+    );
+  }
+  const apiEndpoint = getApiEndpointForRegion(regionKey);
+  if (apiEndpoint === undefined) {
+    throw new CfHanaError(
+      "CONFIG",
+      `Unknown SAP CF region "${regionKey}". Verify the current SAP region list or use the current CF target.`,
+    );
+  }
+  try {
+    return {
+      selector,
+      apiEndpoint: normalizeSapCfApiEndpoint(apiEndpoint),
+      orgName,
+      spaceName,
+      appName,
+      selectorSource: "explicit",
+      regionConfirmed: true,
+      selectorCanBePinned: true,
+    };
+  } catch (error) {
+    throw new CfHanaError("CONFIG", errorMessageFromUnknown(error), { cause: error });
+  }
+}
+
+async function resolveTarget(selector: string): Promise<ResolvedAppTarget> {
+  if (selector.includes("/")) {
+    return parseExplicitTarget(selector);
+  }
+  const current = await readCurrentCfTarget();
+  if (current === undefined) {
+    throw new CfHanaError(
+      "CONFIG",
+      "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
+    );
+  }
+  return {
+    selector: formatCurrentCfAppSelector(current, selector),
+    apiEndpoint: current.apiEndpoint,
+    orgName: current.orgName,
+    spaceName: current.spaceName,
+    appName: selector,
+    selectorSource: "ambient",
+    regionConfirmed: current.regionKey !== undefined,
+    selectorCanBePinned:
+      current.regionKey !== undefined && getApiEndpointForRegion(current.regionKey) !== undefined,
+  };
+}
+
+function commandErrorText(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return "";
+  }
+  if ("stderr" in error && typeof error.stderr === "string" && error.stderr.length > 0) {
+    return error.stderr;
+  }
+  return "message" in error && typeof error.message === "string" ? error.message : "";
+}
+
+function isSameTarget(
+  target: ResolvedAppTarget,
+  current: Awaited<ReturnType<typeof readCurrentCfTarget>>,
+): boolean {
+  return (
+    current?.apiEndpoint === target.apiEndpoint &&
+    current.orgName === target.orgName &&
+    current.spaceName === target.spaceName
+  );
+}
+
+async function assertAmbientTargetUnchanged(target: ResolvedAppTarget): Promise<void> {
+  const current = await readCurrentCfTarget();
+  if (!isSameTarget(target, current)) {
+    throw new CfHanaError(
+      "CONFIG",
+      "CF target changed during binding discovery; no database connection was opened. Retry or use an explicit region/org/space/app selector.",
+    );
+  }
+}
+
+function readCfEnvApplicationIdentity(stdout: string): CfEnvApplicationIdentity {
+  try {
+    return extractCfEnvApplicationIdentity(stdout);
+  } catch (error) {
+    throw new CfHanaError(
+      "CONFIG",
+      "Could not verify cf env application identity for the ambient target; no database connection was opened. " +
+        "Retry or use an explicit region/org/space/app selector.",
+      { cause: error },
+    );
+  }
+}
+
+function assertCfEnvApplicationMatchesTarget(
+  target: ResolvedAppTarget,
+  application: CfEnvApplicationIdentity,
+): void {
+  const matches =
+    application.apiEndpoint === target.apiEndpoint &&
+    application.orgName === target.orgName &&
+    application.spaceName === target.spaceName &&
+    application.appName === target.appName;
+  if (matches) {return;}
+  throw new CfHanaError(
+    "CONFIG",
+    "CF env application identity did not match the resolved ambient target; no database connection was opened. " +
+      "Retry or use an explicit region/org/space/app selector.",
+  );
+}
+
+async function readIsolatedBindings(
+  target: ResolvedAppTarget,
+  sap: SapCredentials,
+): Promise<readonly HanaBinding[]> {
+  return await withCfSession(async (ctx) => {
+    await cfApi(target.apiEndpoint, ctx);
+    await cfAuth(sap.email, sap.password, ctx);
+    await cfTargetSpace(target.orgName, target.spaceName, ctx);
+    return extractHanaBindingsFromCfEnv(await cfEnv(target.appName, ctx));
+  });
+}
+
+async function readBareBindings(
+  target: ResolvedAppTarget,
+  options: ResolveBindingsOptions,
+): Promise<readonly HanaBinding[]> {
+  let stdout: string;
+  try {
+    stdout = await cfEnvDirect(target.appName);
+  } catch (directError) {
+    const classified = classifyCfError(commandErrorText(directError));
+    if (!classified.isAuthError) {
+      throw new CfHanaError(
+        "CONFIG",
+        `Failed to get HANA bindings for bare app "${target.appName}" using current target (org=${target.orgName}, space=${target.spaceName}). ` +
+          `Verify with "cf target" and "cf env ${target.appName}".`,
+        { cause: directError },
+      );
+    }
+    const sap = readSapCredentials({ email: options.email, password: options.password });
+    if (sap === undefined) {
+      throw new CredentialsNotFoundError(
+        `Current CF session problem for bare app "${target.appName}" (${classified.reason}).\n` +
+          `Run "cf login" + "cf target", or provide SAP_EMAIL + SAP_PASSWORD.`,
+        { cause: directError },
+      );
+    }
+    return await readIsolatedBindings(target, sap);
+  }
+  const application = readCfEnvApplicationIdentity(stdout);
+  await assertAmbientTargetUnchanged(target);
+  assertCfEnvApplicationMatchesTarget(target, application);
+  return extractHanaBindingsFromCfEnv(stdout);
+}
+
+/** Resolve every HANA binding for a pinned selector or the current CF target. */
 export async function resolveAppBindings(
   rawSelector: string,
   options: ResolveBindingsOptions,
 ): Promise<ResolvedBindings> {
   const selector = rawSelector.trim();
-  if (!selector) {
+  if (selector.length === 0) {
     throw new CfHanaError("CONFIG", "App selector is required");
   }
-
-  let target: {
-    selector: string;
-    apiEndpoint: string;
-    orgName: string;
-    spaceName: string;
-    appName: string;
-  };
-
-  const isBare = !selector.includes("/");
-
-  if (isBare) {
-    // A bare app inherits region, org, and space from the current CF target.
-    const current = await readCurrentCfTarget();
-    if (!current) {
-      throw new CfHanaError(
-        "CONFIG",
-        "No current CF target found. Run `cf target -o <org> -s <space>` or pass a full region/org/space/app selector.",
-      );
-    }
-    const displaySelector = current.regionKey
-      ? formatCurrentCfAppSelector(current, selector)
-      : `current/${current.orgName}/${current.spaceName}/${selector}`;
-    target = {
-      selector: displaySelector,
-      apiEndpoint: current.apiEndpoint,
-      orgName: current.orgName,
-      spaceName: current.spaceName,
-      appName: selector,
-    };
-  } else {
-    // Explicit: region/org/space/app
-    const parts = selector.split("/").map((p) => p.trim());
-    if (parts.length !== 4 || !parts[0] || !parts[1] || !parts[2] || !parts[3]) {
-      throw new CfHanaError(
-        "CONFIG",
-        `Invalid selector "${selector}". Use region/org/space/app or a bare app name.`,
-      );
-    }
-    const [regionKey, orgName, spaceName, appName] = parts as [string, string, string, string];
-    const apiEndpoint = getApiEndpointForRegion(regionKey);
-    if (!apiEndpoint) {
-      throw new CfHanaError(
-        "CONFIG",
-        `Unknown SAP CF region "${regionKey}". Verify the current SAP region list or use the current CF target.`,
-      );
-    }
-    let normalizedApiEndpoint: string;
-    try {
-      normalizedApiEndpoint = normalizeSapCfApiEndpoint(apiEndpoint);
-    } catch (error) {
-      throw new CfHanaError("CONFIG", errorMessageFromUnknown(error), { cause: error });
-    }
-    target = { selector, apiEndpoint: normalizedApiEndpoint, orgName, spaceName, appName };
-  }
-
-  let bindings: readonly HanaBinding[];
-  const source: CredentialSource = "live";
-
-  if (isBare) {
-    // Preferred fast path for bare: use whatever CF context the user already has.
-    // NO re-auth, NO new CF_HOME.
-    try {
-      const stdout = await cfEnvDirect(target.appName);
-      bindings = extractHanaBindingsFromCfEnv(stdout);
-    } catch (directError: unknown) {
-      // Professional classification: only re-auth for real auth/session problems.
-      let stderr = "";
-      if (directError && typeof directError === "object") {
-        const e = directError as { stderr?: unknown; message?: unknown };
-        stderr =
-          (typeof e.stderr === "string" ? e.stderr : "") ||
-          (typeof e.message === "string" ? e.message : "");
-      }
-      const classified = classifyCfError(stderr);
-      if (classified.isAuthError) {
-        const sap = readSapCredentials({ email: options.email, password: options.password });
-        if (!sap) {
-          throw new CredentialsNotFoundError(
-            `Current CF session problem for bare app "${target.appName}" (${classified.reason}).\n` +
-              `Run "cf login" + "cf target", or provide SAP_EMAIL + SAP_PASSWORD.`,
-            { cause: directError },
-          );
-        }
-        const api = target.apiEndpoint;
-        bindings = await withCfSession(async (ctx) => {
-          await cfApi(api, ctx);
-          await cfAuth(sap.email, sap.password, ctx);
-          await cfTargetSpace(target.orgName, target.spaceName, ctx);
-          const stdout = await cfEnv(target.appName, ctx);
-          return extractHanaBindingsFromCfEnv(stdout);
-        });
-      } else {
-        // Not auth-related (e.g. app not present in current space)
-        throw new CfHanaError(
-          "CONFIG",
-          `Failed to get HANA bindings for bare app "${target.appName}" using current target (org=${target.orgName}, space=${target.spaceName}). ` +
-            `Verify with "cf target" and "cf env ${target.appName}". ${stderr ? `Details: ${stderr}` : ""}`,
-          { cause: directError },
-        );
-      }
-    }
-  } else {
-    // Explicit selector always uses full authenticated isolated path
-    const sap = readSapCredentials({ email: options.email, password: options.password });
-    if (!sap) {
-      throw new CredentialsNotFoundError(
-        `SAP_EMAIL and SAP_PASSWORD are required to fetch HANA bindings for explicit selector "${selector}".`,
-      );
-    }
-    const api = target.apiEndpoint;
-    bindings = await withCfSession(async (ctx) => {
-      await cfApi(api, ctx);
-      await cfAuth(sap.email, sap.password, ctx);
-      await cfTargetSpace(target.orgName, target.spaceName, ctx);
-      const stdout = await cfEnv(target.appName, ctx);
-      return extractHanaBindingsFromCfEnv(stdout);
-    });
-  }
-
+  const target = await resolveTarget(selector);
+  const bindings =
+    target.selectorSource === "ambient"
+      ? await readBareBindings(target, options)
+      : await readExplicitBindings(target, options);
   if (bindings.length === 0) {
     throw new CredentialsNotFoundError(`App "${target.selector}" has no HANA service binding.`);
   }
-
   return {
     selector: target.selector,
     appName: target.appName,
     bindings,
-    source,
+    source: "live",
+    selectorSource: target.selectorSource,
+    regionConfirmed: target.regionConfirmed,
+    selectorCanBePinned: target.selectorCanBePinned,
   };
+}
+
+async function readExplicitBindings(
+  target: ResolvedAppTarget,
+  options: ResolveBindingsOptions,
+): Promise<readonly HanaBinding[]> {
+  const sap = readSapCredentials({ email: options.email, password: options.password });
+  if (sap === undefined) {
+    throw new CredentialsNotFoundError(
+      `SAP_EMAIL and SAP_PASSWORD are required to fetch HANA bindings for explicit selector "${target.selector}".`,
+    );
+  }
+  return await readIsolatedBindings(target, sap);
 }
 
 /** Pick a single HANA binding from an app's bindings. */
