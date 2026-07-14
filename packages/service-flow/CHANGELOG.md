@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.59
+
+- Fixed RC-A by making local DB query entities lexical-binding-aware: parameters, simple mutable locals, runtime const aliases, destructuring from runtime or reassigned sources, and direct `this.<field>` targets now remain dynamic at the existing low-confidence warning path instead of becoming fabricated entities.
+- Preserved concrete imported/global and string entities, bounded immutable aliases, literal element access, `<x>.entities.Name`, and P1/P2/P3 entity destructuring from CAP entity collections or `#cds-models`; aliased destructuring records the public source property. Direct `this.<field>` entity caches deliberately pay the fail-closed compatibility cost, including in isolated remote-query hints, while remote identifier reparsing remains a known follow-up.
+- Fixed RC-B by recognizing `SELECT.distinct.from` and `SELECT.distinct.one.from` as CAP query-builder roots for both direct and `cds.run(...)` execution, retaining one fact per fluent statement without schema, linker, trace, or output-shape changes.
+
 ## 0.1.58
 
 - Completed RC5 with a deterministic link-phase workspace pass that resolves package-import symbol calls to uniquely matching exported symbols in uniquely identified indexed sibling packages, including package subpath imports and receiver-qualified member calls.
