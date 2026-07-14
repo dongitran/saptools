@@ -12,6 +12,7 @@ import {
   objectJson,
   objectValue,
 } from './002-call-evidence.js';
+import { linkPackageImportSymbolCalls } from './003-package-import-symbol-resolver.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;
@@ -32,6 +33,7 @@ export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, 
     const generation = nextGraphGeneration(db, workspaceId);
     db.prepare('DELETE FROM graph_edges WHERE workspace_id=?').run(workspaceId);
     const deps = linkHelperPackages(db, workspaceId, generation);
+    linkPackageImportSymbolCalls(db, workspaceId);
     const impl = linkCanonicalImplementations(db, workspaceId, generation);
     const callSummary = linkCalls(db, workspaceId, vars, generation);
     db.prepare("UPDATE repositories SET graph_generation=?, graph_stale_reason=NULL, graph_stale_at=NULL WHERE workspace_id=?").run(generation, workspaceId);
