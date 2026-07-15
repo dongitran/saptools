@@ -1,17 +1,18 @@
 import { describeEntity, formatCsnExpression } from "../../src/describe.js";
-import { PACKAGE_ANNOTATION, type HanaLensCsn } from "../../src/types.js";
+import { PACKAGE_ANNOTATION, type HanaLensCsn, type HanaLensElement } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
 import { describe, it } from "../helpers/test.js";
 
 const ast: HanaLensCsn = { definitions: {
-  A: { elements: { ID: { type: "cds.String", key: true, length: 36 }, computed: { type: "cds.Timestamp", "@Core.Computed": true }, toB: { type: "cds.Association", target: "B" } } },
+  A: { elements: { ID: { type: "cds.String", key: true, length: 36 }, computed: { type: "cds.Timestamp", "@Core.Computed": true }, generatedID: { type: "cds.UUID", key: true, "@Core.Computed": true }, toB: { type: "cds.Association", target: "B" } } },
   B: { elements: { BID: { type: "cds.Integer" }, toA: { type: "cds.Association", target: "A" }, toMissing: { type: "cds.Composition", target: "Missing" } } },
   Empty: {},
+  EmptyElements: { elements: {} },
 } };
 
 describe("describeEntity", () => {
   it("prints dense fields with key, computed, type, and length information", () => {
-    expect(describeEntity(ast, "A", false)).toBe("[PK] ID: cds.String(36)\n[computed] computed: cds.Timestamp\ntoB: cds.Association");
+    expect(describeEntity(ast, "A", false)).toBe("[PK] ID: cds.String(36)\n[computed] computed: cds.Timestamp\n[PK] [computed] generatedID: cds.UUID\ntoB: cds.Association to B");
   });
 
   it("prints Decimal precision and scale while preserving length parameters", () => {
@@ -42,12 +43,12 @@ describe("describeEntity", () => {
   it("always prints enum keys and gates element annotations behind an option", () => {
     const csn: HanaLensCsn = { definitions: {
       Project: { elements: {
-        status: { type: "cds.String", enum: { ACTIVE: {}, INACTIVE: {} }, "@readonly": true, "@title": "Status", "@Common.ValueList": { CollectionPath: "Statuses" } },
+        status: { type: "cds.String", enum: { ACTIVE: { val: "A" }, INACTIVE: { val: "INACTIVE" }, PENDING: { val: 0 }, UNSET: { val: undefined } }, "@readonly": true, "@title": "Status", "@Common.ValueList": { CollectionPath: "Statuses" } },
       } },
     } };
 
-    expect(describeEntity(csn, "Project", false)).toBe("status: cds.String enum[ACTIVE, INACTIVE]");
-    expect(describeEntity(csn, "Project", false, true)).toBe('status: cds.String enum[ACTIVE, INACTIVE] @Common.ValueList={"CollectionPath":"Statuses"} @readonly=true @title="Status"');
+    expect(describeEntity(csn, "Project", false)).toBe('status: cds.String enum[ACTIVE = "A", INACTIVE, PENDING = 0, UNSET]');
+    expect(describeEntity(csn, "Project", false, true)).toBe('status: cds.String enum[ACTIVE = "A", INACTIVE, PENDING = 0, UNSET] @Common.ValueList={"CollectionPath":"Statuses"} @readonly=true @title="Status"');
   });
 
   it("expands associations with circular and missing target guards", () => {
@@ -77,8 +78,8 @@ describe("describeEntity", () => {
       Project: { elements: { projectID: { type: "cds.String", key: true } } },
     } };
 
-    expect(describeEntity(csn, "Employee", false)).toContain("departmentRef: cds.Association ON [departmentRef.deptID = deptID and departmentRef.tenantID = tenantID]");
-    expect(describeEntity(csn, "Employee", false)).toContain("projectRef: cds.Association ON [projectRef.projectID = projectID]");
+    expect(describeEntity(csn, "Employee", false)).toContain("departmentRef: cds.Association to Department ON [departmentRef.deptID = deptID and departmentRef.tenantID = tenantID]");
+    expect(describeEntity(csn, "Employee", false)).toContain("projectRef: cds.Association to Project ON [projectRef.projectID = projectID]");
   });
 
   it("prints composition ON conditions while preserving expanded target traversal", () => {
@@ -88,6 +89,7 @@ describe("describeEntity", () => {
         tasks: {
           type: "cds.Composition",
           target: "Task",
+          cardinality: { max: "*" },
           on: [{ ref: ["tasks", "projectID"] }, "=", { ref: ["ID"] }],
         },
       } },
@@ -96,7 +98,7 @@ describe("describeEntity", () => {
 
     const output = describeEntity(csn, "Project", true);
 
-    expect(output).toContain("tasks: cds.Composition ON [tasks.projectID = ID]");
+    expect(output).toContain("tasks: cds.Composition to many Task ON [tasks.projectID = ID]");
     expect(output).toContain("- [PK] taskID: cds.String");
   });
 
@@ -106,7 +108,20 @@ describe("describeEntity", () => {
       Department: { elements: { ID: { type: "cds.String", key: true } } },
     } };
 
-    expect(describeEntity(csn, "Employee", false)).toBe("departmentRef: cds.Association");
+    expect(describeEntity(csn, "Employee", false)).toBe("departmentRef: cds.Association to Department");
+  });
+
+  it("prints numeric cardinality targets and safely ignores malformed non-array ON values", () => {
+    const manager: HanaLensElement = { type: "cds.Association", target: "Employee", cardinality: { max: 1 } };
+    Object.defineProperty(manager, "on", { value: "malformed" });
+    const csn: HanaLensCsn = { definitions: {
+      Employee: { elements: {
+        manager,
+        reports: { type: "cds.Association", target: "Employee", cardinality: { max: 2 } },
+      } },
+    } };
+
+    expect(describeEntity(csn, "Employee", false)).toBe("manager: cds.Association to Employee\nreports: cds.Association to many Employee");
   });
 
   it("expands a short association target when it uniquely resolves to a full definition name", () => {
@@ -170,14 +185,39 @@ describe("describeEntity", () => {
 
   it("prints a compact empty marker for definitions without elements", () => {
     expect(describeEntity(ast, "Empty", false)).toBe("(no elements)");
+    expect(describeEntity(ast, "EmptyElements", false)).toBe("(no elements)");
   });
 
   it("prints definition-level enum values when an enum type has no elements", () => {
     const csn: HanaLensCsn = { definitions: {
-      RequestStatus: { kind: "type", type: "cds.String", enum: { SUBMITTED: {}, REJECTED: {}, WARNING: {} } },
+      RequestStatus: { kind: "type", type: "cds.String", enum: { SUBMITTED: { val: "S" }, REJECTED: { val: "REJECTED" }, WARNING: {}, ZERO: { val: 0 } } },
     } };
 
-    expect(describeEntity(csn, "RequestStatus", false)).toBe("cds.String enum[SUBMITTED, REJECTED, WARNING]");
+    expect(describeEntity(csn, "RequestStatus", false)).toBe('cds.String enum[SUBMITTED = "S", REJECTED, WARNING, ZERO = 0]');
+  });
+
+  it("prints scalar and association type definitions instead of an empty marker", () => {
+    const csn: HanaLensCsn = { definitions: {
+      UserName: { kind: "type", type: "cds.String", length: 255 },
+      OwnerLink: { kind: "type", type: "cds.Association", target: "acme.Owner" },
+    } };
+
+    expect(describeEntity(csn, "UserName", false)).toBe("cds.String(255)");
+    expect(describeEntity(csn, "OwnerLink", false)).toBe("cds.Association to acme.Owner");
+  });
+
+  it("prints action and function parameters plus return types", () => {
+    const csn: HanaLensCsn = { definitions: {
+      LookupOwner: {
+        kind: "function",
+        params: { ownerID: { type: "cds.UUID" }, includeInactive: { type: "cds.Boolean" } },
+        returns: { type: "cds.String", length: 80 },
+      },
+      ArchiveOwner: { kind: "action", params: { ownerID: { type: "cds.UUID" } } },
+    } };
+
+    expect(describeEntity(csn, "LookupOwner", false)).toBe("(function)\n- param ownerID: cds.UUID\n- param includeInactive: cds.Boolean\n- returns: cds.String(80)");
+    expect(describeEntity(csn, "ArchiveOwner", false)).toBe("(action)\n- param ownerID: cds.UUID");
   });
 
   it("throws for missing entities", () => {

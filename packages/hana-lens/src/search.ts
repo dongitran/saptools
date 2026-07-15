@@ -1,10 +1,15 @@
 import { levenshtein } from "./levenshtein.js";
 import { findTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
 import { PACKAGE_ANNOTATION } from "./types.js";
-import type { FieldSearchResult, HanaLensCsn, IncomingReference, SearchResult } from "./types.js";
+import type { FieldSearchResult, HanaLensCsn, HanaLensDefinition, IncomingReference, SearchResult } from "./types.js";
 
 const DEFINITION_RESULT_LIMIT = 10;
 const FIELD_RESULT_LIMIT = 25;
+const REFERENCE_RESULT_LIMIT = 25;
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function packageNameOf(definition: HanaLensCsn["definitions"][string]): string {
   return definition[PACKAGE_ANNOTATION] ?? "unknown";
@@ -53,12 +58,15 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
       .sort((a, b) => a.name.localeCompare(b.name));
   }
   const normalizedKeyword = trimmedKeyword.toLowerCase();
+  // Keep this relevance threshold aligned with field search below.
+  const threshold = Math.max(2, Math.ceil(normalizedKeyword.length / 3));
   return entries
     .map(([name, definition]) => ({
       name,
       packageName: packageNameOf(definition),
       score: fuzzyScore(normalizedKeyword, name),
     }))
+    .filter((result) => result.score <= threshold)
     .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
 }
 
@@ -78,11 +86,12 @@ export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boole
     }
     const matches = Object.keys(elements)
       .map((fieldName) => {
-        const exact = fieldName.toLowerCase() === normalizedKeyword;
         if (pattern !== undefined) {
-          return pattern.test(fieldName) ? { entityName, exact, matchedField: fieldName, score: exact ? -1000 : 0 } : undefined;
+          return pattern.test(fieldName) ? { entityName, exact: false, matchedField: fieldName, score: 0 } : undefined;
         }
+        const exact = fieldName.toLowerCase() === normalizedKeyword;
         const score = fuzzyScore(normalizedKeyword, fieldName);
+        // Keep this relevance threshold aligned with definition search above.
         return exact || fieldName.toLowerCase().includes(normalizedKeyword) || score <= Math.max(2, Math.ceil(normalizedKeyword.length / 3))
           ? { entityName, exact, matchedField: fieldName, score }
           : undefined;
@@ -96,26 +105,65 @@ export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boole
     || a.matchedField.localeCompare(b.matchedField));
 }
 
+function projectionSources(definition: HanaLensDefinition): readonly string[] {
+  const sources = new Set<string>();
+
+  function visit(node: unknown): void {
+    if (Array.isArray(node)) {
+      const items: readonly unknown[] = node;
+      for (const item of items) {
+        visit(item);
+      }
+      return;
+    }
+    if (!isRecord(node)) {
+      return;
+    }
+    const ref = node["ref"];
+    if (Array.isArray(ref)) {
+      const first: unknown = ref[0];
+      if (typeof first === "string") {
+        sources.add(first);
+      }
+    }
+    visit(node["from"]);
+    visit(node["SELECT"]);
+    visit(node["SET"]);
+    visit(node["args"]);
+    visit(node["join"]);
+  }
+
+  visit(definition.projection);
+  visit(definition.query);
+  return [...sources];
+}
+
 export function findIncomingReferences(csn: HanaLensCsn, entityName: string): readonly IncomingReference[] {
   const requestedTargets = new Set(findTargetCandidates(csn, entityName).map((candidate) => candidate.name));
   if (requestedTargets.size === 0) {
-    return [];
+    throw new Error(`Entity not found: ${entityName}`);
   }
 
   const references: IncomingReference[] = [];
   for (const [sourceName, definition] of Object.entries(csn.definitions)) {
     const elements = definition.elements;
-    if (elements === undefined) {
-      continue;
-    }
-    for (const [fieldName, element] of Object.entries(elements)) {
-      const targetName = element.target;
-      if (!isAssociationElement(element) || targetName === undefined) {
-        continue;
+    if (elements !== undefined) {
+      for (const [fieldName, element] of Object.entries(elements)) {
+        const targetName = element.target;
+        if (!isAssociationElement(element) || targetName === undefined) {
+          continue;
+        }
+        const resolution = resolveTarget(csn, targetName, definition);
+        if (resolution.status === "resolved" && requestedTargets.has(resolution.target.name)) {
+          references.push({ entityName: sourceName, fieldName });
+        }
       }
-      const resolution = resolveTarget(csn, targetName, definition);
+    }
+    for (const source of projectionSources(definition)) {
+      const resolution = resolveTarget(csn, source, definition);
       if (resolution.status === "resolved" && requestedTargets.has(resolution.target.name)) {
-        references.push({ entityName: sourceName, fieldName });
+        references.push({ entityName: sourceName, fieldName: "(projection)" });
+        break;
       }
     }
   }
@@ -135,7 +183,7 @@ export function formatFieldSearchResults(keyword: string, results: readonly Fiel
   const shown = results.slice(0, FIELD_RESULT_LIMIT);
   const lines = [`Field matching ${JSON.stringify(keyword)} found in:`];
   for (const result of shown) {
-    const suffix = result.exact ? "exact match" : `matched: ${result.matchedField}`;
+    const suffix = result.exact ? `exact: ${result.matchedField}` : `matched: ${result.matchedField}`;
     lines.push(`- ${result.entityName} (${suffix})`);
   }
   if (results.length > shown.length) {
@@ -145,7 +193,11 @@ export function formatFieldSearchResults(keyword: string, results: readonly Fiel
 }
 
 export function formatIncomingReferences(entityName: string, references: readonly IncomingReference[]): string {
+  const shown = references.slice(0, REFERENCE_RESULT_LIMIT);
   const lines = [`Incoming References to [${entityName}]:`];
-  lines.push(...references.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`));
+  lines.push(...shown.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`));
+  if (references.length > shown.length) {
+    lines.push(`... showing ${shown.length.toString()} of ${references.length.toString()} references`);
+  }
   return lines.join("\n");
 }

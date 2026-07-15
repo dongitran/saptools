@@ -1,6 +1,8 @@
 import { cachePath, writeCache } from "./cache.js";
 import { compilePackages } from "./compiler.js";
 import { autoLinkPackages, normalizePackagePrefix, scanForPackages } from "./packages.js";
+import { applyCacheKindFilter, parseCacheKind } from "./scope.js";
+import type { CacheKind } from "./scope.js";
 import type { CompileResult, HanaLensCsn, PackageSkip, SapPackage } from "./types.js";
 
 const FAILURE_REASON_LIMIT = 2_000;
@@ -8,6 +10,7 @@ const FAILURE_REASON_LIMIT = 2_000;
 export interface BuildCacheOptions {
   readonly allowFallback?: boolean;
   readonly strict?: boolean;
+  readonly kind?: CacheKind;
 }
 
 export interface BuildCacheResult {
@@ -23,6 +26,7 @@ export async function buildCache(
   prefix: string,
   options: BuildCacheOptions = {},
 ): Promise<BuildCacheResult> {
+  const kind = parseCacheKind(options.kind);
   const normalizedPrefix = normalizePackagePrefix(prefix);
   const packages = await scanForPackages(workspaceDirectory, normalizedPrefix);
   if (packages.length === 0) {
@@ -42,7 +46,8 @@ export async function buildCache(
     const detail = boundedFailure === undefined ? "" : ` First failure: ${boundedFailure}`;
     throw new Error(`No packages compiled successfully in ${workspaceDirectory}.${detail}`);
   }
-  const ast = await writeCache(workspaceDirectory, outcome.compiled, options.strict ?? false);
+  const scopedResults = applyCacheKindFilter(outcome.compiled, kind);
+  const ast = await writeCache(workspaceDirectory, scopedResults, options.strict ?? false);
   return {
     ast,
     packages,

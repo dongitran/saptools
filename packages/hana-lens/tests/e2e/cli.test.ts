@@ -87,6 +87,32 @@ async function writeCache(directory: string, csn: HanaLensCsn | string): Promise
   await writeFile(path.join(directory, CACHE_FILE_NAME), typeof csn === "string" ? csn : JSON.stringify(csn));
 }
 
+async function writeScopedCacheFixture(root: string): Promise<void> {
+  await writeWorkspaceCds(root);
+  const externalFromDb = { kind: "entity", "@cds.external": true, elements: { ID: { type: "cds.UUID", key: true } } };
+  const externalFromService = { kind: "entity", "@cds.external": true, elements: { ID: { type: "cds.UUID", key: true }, label: { type: "cds.String" } } };
+  await writeCsnPackage(
+    path.join(root, "packages", "db_catalog"),
+    "@acme/db_catalog",
+    "namespace acme.catalog; type Status : String enum { ACTIVE; }; entity Widget { key ID: UUID; status: Status; }",
+    { csn: { definitions: {
+      "acme.catalog.Status": { kind: "type", type: "cds.String", enum: { ACTIVE: {} } },
+      "acme.catalog.Widget": { kind: "entity", elements: { ID: { type: "cds.UUID", key: true }, status: { type: "acme.catalog.Status" } } },
+      "remote.catalog.Product": externalFromDb,
+    } } },
+  );
+  await writeCsnPackage(
+    path.join(root, "packages", "srv_catalog"),
+    "@acme/srv_catalog",
+    "using { acme.catalog as db } from '@acme/db_catalog'; service CatalogService { entity Widgets as projection on db.Widget; }",
+    { csn: { definitions: {
+      "acme.api.CatalogService": { kind: "service" },
+      "acme.api.CatalogService.Widgets": { kind: "entity", projection: { from: { ref: ["acme.catalog.Widget"] } } },
+      "remote.catalog.Product": externalFromService,
+    } } },
+  );
+}
+
 async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-e2e-"));
   try {
@@ -96,11 +122,11 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
   }
 }
 
-  it("documents fallback and strict build-cache flags in help", () => {
+  it("documents cache kind, fallback, and strict build-cache flags in help", () => {
     const help = runCli(["--help"], process.cwd());
     expect(help.status).toBe(0);
     expect(help.stderr).toBe("");
-    expect(help.stdout).toContain("build-cache --dir <workspace_path> --prefix <package_prefix> [--allow-fallback] [--strict]");
+    expect(help.stdout).toContain("build-cache --dir <workspace_path> --prefix <package_prefix> [--kind db|service|all] [--allow-fallback] [--strict]");
   });
 
   it("build-cache compiles matching CAP packages, ignores generated folders, writes minified origin metadata, and links siblings", async () => {
@@ -118,7 +144,7 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(build.status).toBe(0);
       expect(build.stderr).toContain("WARNING: DEGRADED regex fallback used for 2 package(s)");
       expect(build.stdout).toContain("packages=2");
-      expect(build.stdout).toContain("compiled=2 skipped=0 via=fallback");
+      expect(build.stdout).toContain("compiled=2 skipped=0 via=fallback kind=db");
       expect(build.stdout).toContain(CACHE_FILE_NAME);
 
       const rawCache = await readFile(path.join(root, CACHE_FILE_NAME), "utf8");
@@ -180,11 +206,61 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(build.status).toBe(0);
       expect(build.stderr).toBe("");
       expect(build.stdout).toContain("packages=1");
-      expect(build.stdout).toContain("compiled=1 skipped=0 via=cds");
+      expect(build.stdout).toContain("compiled=1 skipped=0 via=cds kind=db");
       const parsed = await readCache(root);
       expect(parsed.definitions["acme.Widget"]?.elements?.["ID"]).toEqual({ key: true, type: "cds.UUID" });
       expect(parsed.definitions["acme.Widget"]?.elements?.["name"]).toEqual({ type: "cds.String", length: 40 });
       expect(parsed.definitions["acme.Widget"]?.[PACKAGE_ANNOTATION]).toBe("@acme/db_catalog");
+    });
+  }, 30_000);
+
+  it("scopes caches to db by default and supports service, all, invalid, and deterministic builds", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeScopedCacheFixture(root);
+
+      const firstDb = runBuild(root);
+      const firstDbCache = await readFile(path.join(root, CACHE_FILE_NAME), "utf8");
+      const secondDb = runBuild(root);
+      const secondDbCache = await readFile(path.join(root, CACHE_FILE_NAME), "utf8");
+
+      expect(firstDb.status).toBe(0);
+      expect(firstDb.stderr).toBe("");
+      expect(firstDb.stdout).toContain("cached=2");
+      expect(firstDb.stdout).toContain("compiled=2 skipped=0 via=cds kind=db");
+      expect(Object.keys((await readCache(root)).definitions)).toEqual(["acme.catalog.Status", "acme.catalog.Widget"]);
+      expect(secondDbCache).toBe(firstDbCache);
+      expect(secondDb.stdout).toBe(firstDb.stdout);
+      expect(secondDb.stderr).toBe(firstDb.stderr);
+
+      const all = runBuild(root, ["--kind", "all"]);
+      expect(all.status).toBe(0);
+      expect(all.stdout).toContain("cached=5");
+      expect(all.stdout).toContain("compiled=2 skipped=0 via=cds kind=all");
+      expect(all.stderr).toContain("WARNING: 1 definition name(s) defined differently in >1 package");
+      expect(Object.keys((await readCache(root)).definitions)).toEqual([
+        "acme.catalog.Status",
+        "acme.catalog.Widget",
+        "remote.catalog.Product",
+        "acme.api.CatalogService",
+        "acme.api.CatalogService.Widgets",
+      ]);
+
+      const service = runBuild(root, ["--kind", "service"]);
+      expect(service.status).toBe(0);
+      expect(service.stdout).toContain("cached=4");
+      expect(service.stdout).toContain("compiled=2 skipped=0 via=cds kind=service");
+      expect(Object.keys((await readCache(root)).definitions)).toEqual([
+        "acme.catalog.Status",
+        "remote.catalog.Product",
+        "acme.api.CatalogService",
+        "acme.api.CatalogService.Widgets",
+      ]);
+
+      await rm(path.join(root, CACHE_FILE_NAME), { force: true });
+      const invalid = runBuild(root, ["--kind", "bogus"]);
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain('--kind must be one of db|service|all (got "bogus")');
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
     });
   }, 30_000);
 
@@ -371,7 +447,7 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
         ...Object.fromEntries(Array.from({ length: 20 }, (_value, index) => [`demo.generated.Entity${(19 - index).toString().padStart(2, "0")}`, { [PACKAGE_ANNOTATION]: "@demo/generated" }])),
       } });
 
-      const fuzzy = runCli(["search", "BusinesReq"], root);
+      const fuzzy = runCli(["search", "BusinessReq"], root);
       expect(fuzzy.status).toBe(0);
       expect(fuzzy.stderr).toBe("");
       expect(fuzzy.stdout).toContain("demo.sales.BusinessRequest|@demo/sales");
@@ -403,9 +479,13 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
   it("describe reads an existing cache offline, prints dense fields, expands associations, and guards circular or missing targets", async () => {
     await withTempWorkspace(async (root) => {
       await writeCache(root, { definitions: {
-        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, amount: { type: "cds.Decimal", precision: 3, scale: 1 }, history: { items: { type: "cds.Map" } }, labels: { items: { elements: { value: { type: "cds.String" }, label: { type: "cds.String" } } } }, status: { type: "cds.String", enum: { ACTIVE: {}, INACTIVE: {} }, "@readonly": true, "@title": "Status" }, statusText: { type: "cds.String" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
+        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, generatedID: { key: true, "@Core.Computed": true, type: "cds.UUID" }, amount: { type: "cds.Decimal", precision: 3, scale: 1 }, history: { items: { type: "cds.Map" } }, labels: { items: { elements: { value: { type: "cds.String" }, label: { type: "cds.String" } } } }, status: { type: "cds.String", enum: { ACTIVE: { val: "A" }, INACTIVE: { val: "INACTIVE" } }, "@readonly": true, "@title": "Status" }, statusText: { type: "cds.String" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing", cardinality: { max: "*" } } } },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
-        "demo.common.RequestStatus": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", enum: { SUBMITTED: {}, REJECTED: {} } },
+        "demo.sales.BusinessRequestView": { [PACKAGE_ANNOTATION]: "@demo/service", kind: "entity", projection: { from: { ref: ["demo.sales.BusinessRequest"] } } },
+        "demo.common.RequestStatus": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", enum: { SUBMITTED: { val: "S" }, REJECTED: { val: "REJECTED" } } },
+        "demo.common.UserName": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", length: 255 },
+        "demo.common.CustomerLink": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.Association", target: "demo.master.Customer" },
+        "demo.operations.Lookup": { [PACKAGE_ANNOTATION]: "@demo/operations", kind: "function", params: { requestID: { type: "cds.UUID" } }, returns: { type: "cds.Boolean" } },
         "demo.empty.EmptyEntity": { [PACKAGE_ANNOTATION]: "@demo/empty" },
       } });
 
@@ -414,27 +494,36 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(compact.stdout).toContain("[PK] reqID: cds.String(36)");
       expect(compact.stdout).toContain("[PK] tenantID: cds.String(36)");
       expect(compact.stdout).toContain("[computed] createdAt: cds.Timestamp");
+      expect(compact.stdout).toContain("[PK] [computed] generatedID: cds.UUID");
       expect(compact.stdout).toContain("amount: cds.Decimal(3, 1)");
       expect(compact.stdout).toContain("history: array of cds.Map");
       expect(compact.stdout).toContain("labels: array of { value, label }");
-      expect(compact.stdout).toContain("status: cds.String enum[ACTIVE, INACTIVE]");
+      expect(compact.stdout).toContain('status: cds.String enum[ACTIVE = "A", INACTIVE]');
       expect(compact.stdout.includes("@readonly=true")).toBe(false);
-      expect(compact.stdout).toContain("customer: cds.Association ON [customer.ID = customerID and customer.tenantID = tenantID]");
+      expect(compact.stdout).toContain("customer: cds.Association to Customer ON [customer.ID = customerID and customer.tenantID = tenantID]");
+      expect(compact.stdout).toContain("missing: cds.Composition to many demo.master.Missing");
       expect(compact.stdout.includes("- [PK] ID")).toBe(false);
 
       const annotated = runCli(["describe", "demo.sales.BusinessRequest", "--with-annotations"], root);
       expect(annotated.status).toBe(0);
-      expect(annotated.stdout).toContain('status: cds.String enum[ACTIVE, INACTIVE] @readonly=true @title="Status"');
+      expect(annotated.stdout).toContain('status: cds.String enum[ACTIVE = "A", INACTIVE] @readonly=true @title="Status"');
 
       const references = runCli(["references", "demo.sales.BusinessRequest"], root);
       expect(references.status).toBe(0);
-      expect(references.stdout).toBe("Incoming References to [demo.sales.BusinessRequest]:\n- demo.master.Customer (via field: request)\n");
+      expect(references.stdout).toBe("Incoming References to [demo.sales.BusinessRequest]:\n- demo.master.Customer (via field: request)\n- demo.sales.BusinessRequestView (via field: (projection))\n");
 
       const fieldSearch = runCli(["search-field", "status"], root);
       expect(fieldSearch.status).toBe(0);
-      expect(fieldSearch.stdout).toBe('Field matching "status" found in:\n- demo.sales.BusinessRequest (exact match)\n- demo.sales.BusinessRequest (matched: statusText)\n');
+      expect(fieldSearch.stdout).toBe('Field matching "status" found in:\n- demo.sales.BusinessRequest (exact: status)\n- demo.sales.BusinessRequest (matched: statusText)\n');
 
-      expect(runCli(["describe", "demo.common.RequestStatus"], root).stdout).toBe("cds.String enum[SUBMITTED, REJECTED]\n");
+      expect(runCli(["describe", "demo.common.RequestStatus"], root).stdout).toBe('cds.String enum[SUBMITTED = "S", REJECTED]\n');
+      expect(runCli(["describe", "demo.common.UserName"], root).stdout).toBe("cds.String(255)\n");
+      expect(runCli(["describe", "demo.common.CustomerLink"], root).stdout).toBe("cds.Association to demo.master.Customer\n");
+      expect(runCli(["describe", "demo.operations.Lookup"], root).stdout).toBe("(function)\n- param requestID: cds.UUID\n- returns: cds.Boolean\n");
+
+      const nonsense = runCli(["search", "utterly-nonsensical-query"], root);
+      expect(nonsense.status).toBe(0);
+      expect(nonsense.stdout).toBe("");
 
       const expanded = runCli(["describe", "demo.sales.BusinessRequest", "--expand"], root);
       expect(expanded.status).toBe(0);
@@ -471,6 +560,10 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       const missingEntity = runCli(["describe", "Missing"], root);
       expect(missingEntity.status).toBe(1);
       expect(missingEntity.stderr).toContain("Entity not found: Missing");
+
+      const missingReferences = runCli(["references", "Missing"], root);
+      expect(missingReferences.status).toBe(1);
+      expect(missingReferences.stderr).toContain("Entity not found: Missing");
     });
   });
 

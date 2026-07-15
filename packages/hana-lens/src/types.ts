@@ -14,14 +14,27 @@ export interface HanaLensElement {
   readonly items?: HanaLensElement;
   readonly elements?: Readonly<Record<string, HanaLensElement>>;
   readonly cardinality?: { readonly max?: string | number };
+  readonly params?: Readonly<Record<string, HanaLensElement>>;
+  readonly returns?: HanaLensElement;
   readonly [key: `@${string}`]: unknown;
 }
 
 export interface HanaLensDefinition {
   readonly kind?: string;
   readonly type?: string;
+  readonly length?: number;
+  readonly precision?: number;
+  readonly scale?: number;
+  readonly target?: string;
+  readonly on?: readonly unknown[];
   readonly enum?: Readonly<Record<string, unknown>>;
+  readonly items?: HanaLensElement;
   readonly elements?: Readonly<Record<string, HanaLensElement>>;
+  readonly cardinality?: { readonly max?: string | number };
+  readonly params?: Readonly<Record<string, HanaLensElement>>;
+  readonly returns?: HanaLensElement;
+  readonly projection?: Readonly<Record<string, unknown>>;
+  readonly query?: Readonly<Record<string, unknown>>;
   readonly [PACKAGE_ANNOTATION]?: string;
 }
 

@@ -31,6 +31,7 @@ function definitionSignature(definition: unknown): string {
   return JSON.stringify(normalizeSignatureValue(definition, true));
 }
 
+// Keep this property-presence check aligned with cache scope classification in scope.ts.
 function isProjection(definition: unknown): boolean {
   return isRecord(definition)
     && (definition["query"] !== undefined || definition["projection"] !== undefined);

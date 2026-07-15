@@ -24,8 +24,9 @@ Scan every matching CAP package in a workspace, virtually link local siblings, c
 - 🔗 **Virtual sibling links** — creates local `node_modules/<scope>` symlinks so cross-package CDS references resolve without publishing packages
 - 🧪 **Isolated CAP compilation** — resolves `@sap/cds` from the analyzed workspace first, then runs one fresh Node.js worker per package
 - 🧯 **Resilient cache builds** — skips individual model failures by default, reports them, and provides `--strict` CI enforcement
+- 🎯 **Purpose-scoped caches** — defaults to HANA persistence definitions, with explicit service-layer and full-model views
 - 🏷️ **Origin-aware CSN** — injects `@hanaLens.packageName` into definitions so results show the package that produced each entity
-- 🪶 **Minified mega cache** — writes `.hana-lens-cache.json` with plain `JSON.stringify(ast)` and no formatting whitespace
+- 🪶 **Minified cache** — writes `.hana-lens-cache.json` with plain `JSON.stringify(ast)` and no formatting whitespace
 - 🔍 **Fuzzy + regex search** — returns deterministic definition and field matches, with explicit totals whenever bounded CLI output is truncated
 - 🧾 **Dense descriptions** — preserves type parameters, arrays, enum members, keys, and computed markers in compact terminal-friendly lines
 - 🛡️ **Safe association expansion** — follows `cds.Association` and `cds.Composition` targets with depth and circular-reference guards
@@ -54,17 +55,17 @@ npm install @saptools/hana-lens
 ## 🚀 Quick Start
 
 ```bash
-# 1. Build one compact cache for every matching CAP package
+# 1. Build a persistence-oriented DB cache (the default scope)
 hana-lens build-cache --dir ./workspace --prefix @my-cap/
 
 # 2. Search definitions with typo-tolerant fuzzy matching
-hana-lens search BusinesReq
+hana-lens search BusinessReq
 
-# 3. Describe an entity in dense form
-hana-lens describe my.service.BusinessRequest
+# 3. Describe a persistence entity in dense form
+hana-lens describe my.data.BusinessRequest
 
 # 4. Expand associations/compositions when you need nearby columns too
-hana-lens describe my.service.BusinessRequest --expand
+hana-lens describe my.data.BusinessRequest --expand
 ```
 
 After the first cache build, `./workspace/.hana-lens-cache.json` is ready for offline `search` and `describe` commands. Run those commands from the directory that contains the cache.
@@ -73,13 +74,21 @@ After the first cache build, `./workspace/.hana-lens-cache.json` is ready for of
 
 ## 🧰 CLI
 
-### 🏗️ `hana-lens build-cache --dir <workspace_path> --prefix <package_prefix> [--allow-fallback] [--strict]`
+### 🏗️ `hana-lens build-cache --dir <workspace_path> --prefix <package_prefix> [--kind db|service|all] [--allow-fallback] [--strict]`
 
-Scan a CAP workspace, compile every matching package in isolation, and write a minified mega CSN cache.
+Scan a CAP workspace, compile every matching package in isolation, and write a minified, purpose-scoped CSN cache.
 
 ```bash
+# Default: persistence entities and their supporting types/aspects
 hana-lens build-cache --dir ./workspace --prefix @my-cap/
-hana-lens build-cache --dir ~/code/customer-cap --prefix @customer/
+
+# Service/OData definitions
+hana-lens build-cache --dir ./workspace --prefix @my-cap/ --kind service
+
+# Compatibility mode: retain the complete pre-0.4 model
+hana-lens build-cache --dir ./workspace --prefix @my-cap/ --kind all
+
+# Fail if any package or conflicting definition fails
 hana-lens build-cache --dir ./workspace --prefix @my-cap/ --strict
 ```
 
@@ -87,6 +96,7 @@ hana-lens build-cache --dir ./workspace --prefix @my-cap/ --strict
 | --- | --- |
 | `--dir <workspace_path>` | Root directory to scan recursively |
 | `--prefix <package_prefix>` | Package-name prefix to include, for example `@my-cap/` |
+| `--kind db\|service\|all` | Cache scope: persistence-oriented `db` (default), service/OData `service`, or the prior full-model `all` |
 | `--allow-fallback` | Opt into the degraded regex parser only for packages where `@sap/cds` cannot be resolved |
 | `--strict` | Abort if any package fails to compile or any definition name has conflicting shapes |
 
@@ -100,11 +110,21 @@ What it does:
 - spawns one worker process per package before calling `@sap/cds.compile(['*'])`
 - resolves `@sap/cds` from each analyzed package/workspace before trying the CLI installation
 - skips failed packages with a bounded stderr summary by default; `--strict` restores abort-on-any-failure behavior
+- filters successful compiler output by CAP semantics before merging and writing the cache
 - annotates definitions with `@hanaLens.packageName`
 - silently collapses identical shared definitions, while different definitions with the same fully qualified name warn and deterministically keep one, preferring persistence definitions over projections (`--strict` makes conflicts fatal)
 - writes `.hana-lens-cache.json` as newline-free minified JSON
 
-The success summary preserves `cached=`, `packages=`, and `file=`, then reports `compiled=`, `skipped=`, and `via=`. `packages=` is the discovered total, `compiled=` counts successful workers (including empty CSN payloads), and `skipped=` counts failed workers. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`. Any fallback use also prints a prominent degraded-cache warning to stderr.
+| Kind | Cached definitions |
+| --- | --- |
+| `db` (default) | Non-service-owned persistence entities plus free types/aspects. Queries and projections (including DB views), external definitions, persistence-skipped definitions, and standalone contexts are excluded. |
+| `service` | Service-owned definitions, queries/projections, external or persistence-skipped definitions, operations, and free types/aspects. Ordinary persistence entities and standalone contexts are excluded. |
+| `all` | The complete compiled model, matching the pre-0.4 cache scope. |
+
+All matching packages are still compiled before scoping. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
+
+> [!WARNING]
+> `--allow-fallback` cannot reliably identify service ownership, queries/projections, or CAP persistence flags. Its `db` and `service` scopes are therefore incomplete in addition to the parser limitations described above; any fallback use prints a degraded-cache warning to stderr.
 
 > [!TIP]
 > `build-cache` is the expensive step. Run it after model changes, then use `search` and `describe` repeatedly without recompiling the workspace.
@@ -114,7 +134,7 @@ The success summary preserves `cached=`, `packages=`, and `file=`, then reports 
 Search through cached `csn.definitions` keys and print up to 10 matches in dense `entity|package` form.
 
 ```bash
-hana-lens search BusinesReq
+hana-lens search BusinessReq
 hana-lens search businessrequest
 hana-lens search '^my\.service\..*Request$' --regex
 ```
@@ -130,21 +150,33 @@ my.service.BusinessRequest|@my-cap/sales
 my.service.BusinessRequestItem|@my-cap/sales
 ```
 
-Default mode is case-insensitive and typo-tolerant, ordered by fuzzy score and then definition name. Regex mode is best when you need exact namespaces, suffixes, or naming conventions; its matches are ordered by definition name. The typed API returns the full sorted set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
+Default mode is case-insensitive and typo-tolerant, ordered by fuzzy score and then definition name. Substring matches are retained, while distant fuzzy guesses are filtered out, so an unrelated query can return no rows. Regex mode is best for exact namespaces, suffixes, or naming conventions; its matches are ordered by definition name. The typed API returns the full sorted match set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
 
 ### 🔎 `hana-lens search-field <keyword> [--regex]`
 
-Search cached element names and report every matching field, including multiple matches from the same entity. Results are ordered by score, entity name, and field name; the CLI prints up to 25 rows and appends `... showing 25 of M matches` when more are available.
+Search cached element names and report every matching field, including multiple matches from the same entity. Fuzzy matches are ranked deterministically; regex matches are ranked by matched field and never labeled exact. The CLI prints up to 25 rows and appends `... showing 25 of M matches` when more are available.
 
 ```text
 Field matching "status" found in:
-- my.service.BusinessRequest (exact match)
+- my.service.BusinessRequest (exact: status)
 - my.service.BusinessRequest (matched: statusText)
 ```
 
-### 🧾 `hana-lens describe <entity_name> [--expand]`
+### 🔗 `hana-lens references <entity_name>`
 
-Print one cached entity's elements without padded columns, tables, or emojis.
+List definitions that point to an entity through an association/composition or a projection/query source. Direct references name the field; projection/query sources use the stable `(projection)` marker and appear once per source.
+
+```text
+Incoming References to [my.master.Customer]:
+- my.service.BusinessRequest (via field: customer)
+- my.service.CustomerView (via field: (projection))
+```
+
+Rows are sorted by entity and field. The CLI shows at most 25 rows, then appends `... showing 25 of M references` when truncated. Requesting an entity absent from the cache fails with `Entity not found: <name>`.
+
+### 🧾 `hana-lens describe <definition_name> [--expand]`
+
+Print one cached definition without padded columns, tables, or emojis.
 
 ```bash
 hana-lens describe my.service.BusinessRequest
@@ -158,17 +190,32 @@ hana-lens describe my.service.BusinessRequest --expand
 Dense output example:
 
 ```text
-[PK] reqID: cds.String(36)
+[PK] [computed] reqID: cds.String(36)
 [computed] createdAt: cds.Timestamp
 amount: cds.Decimal(3, 1)
 history: array of cds.Map
 labels: array of { value, label }
-customer: cds.Association
+customer: cds.Association to my.master.Customer
+items: cds.Composition to many my.service.BusinessRequestItem ON [items.requestID = reqID]
 - [PK] ID: cds.Integer
 - name: cds.String(80)
 ```
 
-`[PK]` is printed only for `key: true` elements; `[computed]` marks `@Core.Computed` elements. Named enum definitions render their base type and keys, for example `cds.String enum[SUBMITTED, REJECTED]`. Expansion reports compact `missing` or `circular` markers when a target cannot be expanded safely.
+`[PK]` marks `key: true`; `[computed]` marks `@Core.Computed`; both appear when both properties are present. Associations and compositions include their target, add `many` for to-many cardinality, and append a valid `ON` expression when present. Expansion reports compact `missing`, `ambiguous`, or `circular` markers when a target cannot be expanded safely.
+
+Definitions without elements retain their useful type information. Scalar and association typedefs use the same type text as fields, enums include assigned values when they differ from their key, and actions/functions start with `(action)`/`(function)` before their parameters and return type:
+
+```text
+cds.String(120)
+cds.Association to my.master.Customer
+cds.String enum[SUBMITTED = "submitted", REJECTED]
+
+(action)
+- param requestID: cds.UUID
+- returns: cds.Boolean
+```
+
+Definitions without elements, a usable type, an enum, or an operation signature print `(no elements)`.
 
 ---
 
@@ -210,14 +257,17 @@ The cache is intentionally newline-free JSON to reduce disk I/O and make follow-
 ## 🧩 Typed API
 
 ```ts
-import { describeEntity, readCache, searchDefinitions } from "@saptools/hana-lens";
+import { CACHE_KINDS, buildCache, describeEntity, readCache, searchDefinitions } from "@saptools/hana-lens";
+import type { CacheKind } from "@saptools/hana-lens";
 
+const kind: CacheKind = CACHE_KINDS.DB;
+await buildCache("./workspace", "@my-cap/", { kind });
 const cache = await readCache("./workspace");
-const matches = searchDefinitions(cache, "BusinesReq", false);
+const matches = searchDefinitions(cache, "BusinessReq", false);
 const description = describeEntity(cache, matches[0].name, true);
 ```
 
-Exported helpers include cache IO, workspace package scanning/linking, cache building, search, and describe functions.
+Exported helpers include cache IO, workspace package scanning/linking, cache building, search, and describe functions. `CACHE_KINDS`, `CacheKind`, `parseCacheKind`, and `applyCacheKindFilter` expose the same scope contract to typed callers.
 
 ---
 
@@ -278,6 +328,14 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 ---
 
 ## 🗒️ Changelog
+
+### `0.4.0` — RC2 A+B
+
+- changes `build-cache` to a persistence-oriented `db` scope by default, adds `--kind db|service|all`, reports `kind=`, and exposes the scope contract through the typed API
+- preserves full package compilation and failure reporting while filtering cached definitions before merge; `--kind all` retains the pre-0.4 full-model behavior
+- renders association targets/cardinality, typedefs, operations, assigned enum values, and independent key/computed markers from cached CSN
+- filters irrelevant fuzzy guesses, makes field labels/ranking truthful, and includes bounded projection/query references with honest totals and missing-entity errors
+- keeps compilation, cache filename/schema, read compatibility, and deterministic output unchanged
 
 ### `0.3.2` — RC2-B
 

@@ -1,3 +1,4 @@
+// cspell:ignore businesrequest
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "../../src/search.js";
 import type { HanaLensCsn } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
@@ -12,7 +13,7 @@ const ast: HanaLensCsn = { definitions: {
 
 describe("searchDefinitions", () => {
   it("returns dense case-insensitive fuzzy matches", () => {
-    const results = searchDefinitions(ast, "businesreq", false);
+    const results = searchDefinitions(ast, "businesrequest", false);
     expect(results[0]?.name).toBe("srv.BusinessRequest");
     expect(formatSearchResults(results.slice(0, 1))).toBe("srv.BusinessRequest|@demo/sales");
   });
@@ -42,6 +43,16 @@ describe("searchDefinitions", () => {
     expect(formatSearchResults(results.slice(0, 10)).includes("showing")).toBe(false);
   });
 
+  it("filters fuzzy results to relevant matches while preserving substring hits", () => {
+    const generated = searchDefinitions(ast, "generated", false);
+
+    expect(generated).toHaveLength(20);
+    expect(generated[0]?.name).toBe("srv.Generated00");
+    expect(searchDefinitions(ast, "utterly-nonsensical-query", false)).toEqual([]);
+    expect(searchDefinitions(ast, "requests", false)).toEqual([]);
+    expect(searchDefinitions(ast, "request", false).map((result) => result.name)).toEqual(["srv.BusinessRequest"]);
+  });
+
   it("formats an empty definition result without adding a total line", () => {
     expect(formatSearchResults([])).toBe("");
   });
@@ -63,7 +74,25 @@ describe("searchFields", () => {
   it("keeps every matching field per entity with exact and matched labels", () => {
     const results = searchFields(fieldAst, "status", false);
 
-    expect(formatFieldSearchResults("status", results)).toBe('Field matching "status" found in:\n- Employee (exact match)\n- Project (exact match)\n- Employee (matched: statusText)\n- Task (matched: taskStatus)');
+    expect(formatFieldSearchResults("status", results)).toBe('Field matching "status" found in:\n- Employee (exact: status)\n- Project (exact: status)\n- Employee (matched: statusText)\n- Task (matched: taskStatus)');
+  });
+
+  it("treats regex field hits as name-ranked matches rather than literal exact matches", () => {
+    const regexAst: HanaLensCsn = { definitions: {
+      Record: { elements: {
+        statusZulu: { type: "cds.String" },
+        status: { type: "cds.String" },
+        statusAlpha: { type: "cds.String" },
+      } },
+    } };
+    const results = searchFields(regexAst, "status", true);
+
+    expect(results.map((result) => ({ exact: result.exact, matchedField: result.matchedField, score: result.score }))).toEqual([
+      { exact: false, matchedField: "status", score: 0 },
+      { exact: false, matchedField: "statusAlpha", score: 0 },
+      { exact: false, matchedField: "statusZulu", score: 0 },
+    ]);
+    expect(formatFieldSearchResults("status", results).includes("exact")).toBe(false);
   });
 
   it("caps formatted field rows and reports the full match total", () => {
@@ -96,16 +125,47 @@ describe("findIncomingReferences", () => {
   it("finds associations and compositions that target the requested entity", () => {
     const csn: HanaLensCsn = { definitions: {
       Project: { elements: { ID: { type: "cds.String" } } },
-      EmployeeTask: { elements: { projectRef: { type: "cds.Association", target: "Project" } } },
+      EmployeeTask: { elements: {
+        zProjectRef: { type: "cds.Association", target: "Project" },
+        aProjectRef: { type: "cds.Association", target: "Project" },
+      } },
       Department: { elements: { activeProject: { type: "cds.Composition", target: "Project" } } },
       Employee: { elements: { department: { type: "cds.Association", target: "Department" } } },
     } };
 
-    expect(formatIncomingReferences("Project", findIncomingReferences(csn, "Project"))).toBe("Incoming References to [Project]:\n- Department (via field: activeProject)\n- EmployeeTask (via field: projectRef)");
+    expect(formatIncomingReferences("Project", findIncomingReferences(csn, "Project"))).toBe("Incoming References to [Project]:\n- Department (via field: activeProject)\n- EmployeeTask (via field: aProjectRef)\n- EmployeeTask (via field: zProjectRef)");
   });
 
-  it("handles non-existent entities without crashing", () => {
-    expect(formatIncomingReferences("Missing", findIncomingReferences({ definitions: {} }, "Missing"))).toBe("Incoming References to [Missing]:");
+  it("finds projection and query sources once per referencing definition", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.Project": { elements: { ID: { type: "cds.UUID", key: true } } },
+      "acme.ProjectProjection": { projection: { from: { ref: ["acme.Project"] } } },
+      "acme.ProjectQuery": { query: { SELECT: { from: { ref: ["acme.Project"] } } } },
+      "acme.ProjectUnion": {
+        query: {
+          SET: {
+            args: [
+              { SELECT: { from: { ref: ["acme.Project"] } } },
+              { join: "inner", args: [{ ref: ["acme.Project"] }, { ref: ["acme.Other"] }] },
+            ],
+          },
+        },
+      },
+      "acme.UnrelatedProjection": { projection: { from: { ref: ["acme.Other"] }, columns: [{ ref: ["acme.Project"] }] } },
+      "acme.Other": { elements: { ID: { type: "cds.UUID", key: true } } },
+    } };
+
+    expect(formatIncomingReferences("acme.Project", findIncomingReferences(csn, "acme.Project"))).toBe("Incoming References to [acme.Project]:\n- acme.ProjectProjection (via field: (projection))\n- acme.ProjectQuery (via field: (projection))\n- acme.ProjectUnion (via field: (projection))");
+  });
+
+  it("throws for non-existent entities", () => {
+    expect(() => findIncomingReferences({ definitions: {} }, "Missing")).toThrow("Entity not found: Missing");
+  });
+
+  it("keeps the compact header when an existing entity has no incoming references", () => {
+    const csn: HanaLensCsn = { definitions: { Project: { elements: {} } } };
+
+    expect(formatIncomingReferences("Project", findIncomingReferences(csn, "Project"))).toBe("Incoming References to [Project]:");
   });
 
   it("uses same-package target resolution and skips ambiguous short targets", () => {
@@ -117,5 +177,17 @@ describe("findIncomingReferences", () => {
     } };
 
     expect(formatIncomingReferences("demo.sales.Project", findIncomingReferences(csn, "demo.sales.Project"))).toBe("Incoming References to [demo.sales.Project]:\n- demo.sales.Task (via field: projectRef)");
+  });
+
+  it("caps formatted references and reports the full total", () => {
+    const references = Array.from({ length: 30 }, (_value, index) => ({
+      entityName: `acme.Source${index.toString().padStart(2, "0")}`,
+      fieldName: "project",
+    }));
+    const output = formatIncomingReferences("acme.Project", references);
+
+    expect(output.split("\n")).toHaveLength(27);
+    expect(output.split("\n").at(-1)).toBe("... showing 25 of 30 references");
+    expect(formatIncomingReferences("acme.Project", references.slice(0, 25)).includes("showing")).toBe(false);
   });
 });

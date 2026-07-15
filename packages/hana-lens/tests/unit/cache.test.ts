@@ -4,6 +4,8 @@ import path from "node:path";
 import { mock } from "node:test";
 
 import { cachePath, mergeCompileResults, readCache, writeCache } from "../../src/cache.js";
+import { describeEntity } from "../../src/describe.js";
+import { applyCacheKindFilter, CACHE_KINDS, parseCacheKind } from "../../src/scope.js";
 import type { HanaLensCsn } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
 import { describe, it } from "../helpers/test.js";
@@ -106,5 +108,113 @@ describe("cache IO", () => {
     } finally {
       stderrWrite.mock.restore();
     }
+  });
+});
+
+describe("cache kind scope", () => {
+  const mixedResult = {
+    packageName: "@acme/model",
+    via: "cds",
+    definitions: {
+      "acme.Inventory": { kind: "entity", elements: { ID: { key: true, type: "cds.UUID" } } },
+      "acme.ExistingInventory": { kind: "entity", "@cds.persistence.exists": true },
+      "acme.InventoryView": { kind: "entity", query: { SELECT: { from: { ref: ["acme.Inventory"] } } } },
+      "acme.InventoryProjection": { kind: "entity", projection: { from: { ref: ["acme.Inventory"] } } },
+      "remote.Inventory": { kind: "entity", "@cds.external": true },
+      "acme.TransientInventory": { kind: "entity", "@cds.persistence.skip": true },
+      "acme.InventoryCode": { kind: "type", type: "cds.String" },
+      "acme.managed": { kind: "aspect", elements: { createdAt: { type: "cds.Timestamp" } } },
+      "acme.InventoryService": { kind: "service" },
+      "acme.restock": { kind: "action" },
+      "acme.stockLevel": { kind: "function" },
+      "acme.Model": { kind: "context" },
+    },
+  } as const;
+
+  it("defaults to db and validates explicit cache kinds", () => {
+    expect(parseCacheKind(undefined)).toBe(CACHE_KINDS.DB);
+    expect(parseCacheKind("db")).toBe(CACHE_KINDS.DB);
+    expect(parseCacheKind("service")).toBe(CACHE_KINDS.SERVICE);
+    expect(parseCacheKind("all")).toBe(CACHE_KINDS.ALL);
+    expect(() => parseCacheKind("bogus")).toThrow('--kind must be one of db|service|all (got "bogus")');
+  });
+
+  it("classifies persistence, service-layer, support, and container definitions by CAP semantics", () => {
+    const db = applyCacheKindFilter([mixedResult], CACHE_KINDS.DB);
+    const service = applyCacheKindFilter([mixedResult], CACHE_KINDS.SERVICE);
+    const all = applyCacheKindFilter([mixedResult], CACHE_KINDS.ALL);
+
+    expect(Object.keys(db[0]?.definitions ?? {})).toEqual([
+      "acme.Inventory",
+      "acme.ExistingInventory",
+      "acme.InventoryCode",
+      "acme.managed",
+    ]);
+    expect(Object.keys(service[0]?.definitions ?? {})).toEqual([
+      "acme.InventoryView",
+      "acme.InventoryProjection",
+      "remote.Inventory",
+      "acme.TransientInventory",
+      "acme.InventoryCode",
+      "acme.managed",
+      "acme.InventoryService",
+      "acme.restock",
+      "acme.stockLevel",
+    ]);
+    expect(Object.keys(all[0]?.definitions ?? {})).toEqual(Object.keys(mixedResult.definitions));
+    expect(all[0]?.packageName).toBe("@acme/model");
+    expect(all[0]?.via).toBe("cds");
+  });
+
+  it("uses the global service list and dotted ancestors without package-name heuristics", () => {
+    const results = [
+      {
+        packageName: "@acme/service-declarations",
+        via: "cds",
+        definitions: { "acme.api.InventoryService": { kind: "service" } },
+      },
+      {
+        packageName: "@acme/srv_inventory",
+        via: "cds",
+        definitions: {
+          "acme.api.InventoryService.Stock": { kind: "entity" },
+          "acme.api.InventoryService.Code": { kind: "type", type: "cds.String" },
+          "acme.api.InventoryService.Container": { kind: "context" },
+          "acme.api.InventoryService2.Stock": { kind: "entity" },
+          "acme.common.Code": { kind: "type", type: "cds.String" },
+        },
+      },
+    ] as const;
+
+    expect(applyCacheKindFilter(results, CACHE_KINDS.DB).map((result) => Object.keys(result.definitions))).toEqual([
+      [],
+      ["acme.api.InventoryService2.Stock", "acme.common.Code"],
+    ]);
+    expect(applyCacheKindFilter(results, CACHE_KINDS.SERVICE).map((result) => Object.keys(result.definitions))).toEqual([
+      ["acme.api.InventoryService"],
+      [
+        "acme.api.InventoryService.Stock",
+        "acme.api.InventoryService.Code",
+        "acme.api.InventoryService.Container",
+        "acme.common.Code",
+      ],
+    ]);
+  });
+
+  it("keeps persistence association targets reference-closed for describe expansion", () => {
+    const scoped = applyCacheKindFilter([{
+      packageName: "@acme/db_inventory",
+      via: "cds",
+      definitions: {
+        "acme.Stock": { kind: "entity", elements: { location: { type: "cds.Association", target: "acme.Location" } } },
+        "acme.Location": { kind: "entity", elements: { ID: { key: true, type: "cds.UUID" } } },
+        "acme.StockService": { kind: "service" },
+      },
+    } as const], CACHE_KINDS.DB);
+    const output = describeEntity(mergeCompileResults(scoped), "acme.Stock", true);
+
+    expect(output).toContain("location: cds.Association to acme.Location");
+    expect(output).toContain("- [PK] ID: cds.UUID");
+    expect(output.includes("missing")).toBe(false);
   });
 });

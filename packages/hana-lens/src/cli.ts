@@ -4,6 +4,7 @@ import process from "node:process";
 import { buildCache } from "./build-cache.js";
 import { readCache } from "./cache.js";
 import { describeEntity } from "./describe.js";
+import { parseCacheKind } from "./scope.js";
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "./search.js";
 
 type BuildResult = Awaited<ReturnType<typeof buildCache>>;
@@ -17,6 +18,15 @@ function requireOption(args: readonly string[], name: string): string {
     throw new Error(`Missing required option: ${name}`);
   }
   return value;
+}
+
+function readOption(args: readonly string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  if (index === -1) {
+    return undefined;
+  }
+  const value = args[index + 1];
+  return value === undefined || value.startsWith("--") ? undefined : value;
 }
 
 function requireArgument(args: readonly string[], name: string): string {
@@ -60,20 +70,26 @@ function printBuildWarnings(result: BuildResult): void {
 }
 
 async function runBuildCache(args: readonly string[]): Promise<void> {
+  const kind = parseCacheKind(readOption(args, "--kind"));
   const result = await buildCache(
     requireOption(args, "--dir"),
     requireOption(args, "--prefix"),
-    { allowFallback: hasFlag(args, "--allow-fallback"), strict: hasFlag(args, "--strict") },
+    {
+      allowFallback: hasFlag(args, "--allow-fallback"),
+      strict: hasFlag(args, "--strict"),
+      kind,
+    },
   );
   printBuildWarnings(result);
   process.stdout.write(
     `cached=${Object.keys(result.ast.definitions).length.toString()} packages=${result.packages.length.toString()} file=${result.cacheFile}`
-    + ` compiled=${result.compiled.length.toString()} skipped=${result.skipped.length.toString()} via=${aggregateCompileVia(result.compiled)}\n`,
+    + ` compiled=${result.compiled.length.toString()} skipped=${result.skipped.length.toString()} via=${aggregateCompileVia(result.compiled)}`
+    + ` kind=${kind}\n`,
   );
 }
 
 function printHelp(): void {
-  process.stdout.write("hana-lens <command>\n\nCommands:\n  build-cache --dir <workspace_path> --prefix <package_prefix> [--allow-fallback] [--strict]\n  search <keyword> [--regex]\n  search-field <keyword> [--regex]\n  references <entity_name>\n  describe <entity_name> [--expand] [--with-annotations]\n");
+  process.stdout.write("hana-lens <command>\n\nCommands:\n  build-cache --dir <workspace_path> --prefix <package_prefix> [--kind db|service|all] [--allow-fallback] [--strict]\n  search <keyword> [--regex]\n  search-field <keyword> [--regex]\n  references <entity_name>\n  describe <entity_name> [--expand] [--with-annotations]\n");
 }
 
 export async function main(argv: readonly string[]): Promise<void> {

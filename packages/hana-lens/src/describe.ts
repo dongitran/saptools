@@ -3,20 +3,28 @@ import type { HanaLensCsn, HanaLensDefinition, HanaLensElement } from "./types.j
 
 const MAX_EXPAND_DEPTH = 2;
 
+type HanaLensTypeNode = HanaLensDefinition | HanaLensElement;
+
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function formatEnum(element: HanaLensElement): string {
+function formatEnum(element: HanaLensTypeNode): string {
   const enumValue = element.enum;
   if (enumValue === undefined) {
     return "";
   }
-  const keys = Object.keys(enumValue);
-  return keys.length === 0 ? "" : ` enum[${keys.join(", ")}]`;
+  const members = Object.entries(enumValue).map(([key, member]) => {
+    const value = isRecord(member) ? member["val"] : undefined;
+    if (value === undefined || value === key) {
+      return key;
+    }
+    return `${key} = ${formatUnknownExpressionNode(value)}`;
+  });
+  return members.length === 0 ? "" : ` enum[${members.join(", ")}]`;
 }
 
-function typeParams(element: HanaLensElement): string {
+function typeParams(element: HanaLensTypeNode): string {
   if (element.length !== undefined) {
     return `(${element.length.toString()})`;
   }
@@ -28,7 +36,7 @@ function typeParams(element: HanaLensElement): string {
     : `(${element.precision.toString()}, ${element.scale.toString()})`;
 }
 
-function typeText(element: HanaLensElement): string {
+function typeText(element: HanaLensTypeNode): string {
   if (element.type === undefined && isRecord(element.items)) {
     return `array of ${typeText(element.items)}`;
   }
@@ -137,12 +145,19 @@ function formatAnnotations(element: HanaLensElement, withAnnotations: boolean): 
   return annotations.length === 0 ? "" : ` ${annotations.join(" ")}`;
 }
 
-function typeTextWithCondition(element: HanaLensElement): string {
+function typeTextWithCondition(element: HanaLensTypeNode): string {
   const text = typeText(element);
-  if (!isAssociationElement(element) || element.on === undefined || element.on.length === 0) {
+  const target = element.target;
+  const isAssociation = element.type === "cds.Association" || element.type === "cds.Composition";
+  if (!isAssociation || typeof target !== "string") {
     return text;
   }
-  return `${text} ON [${formatCsnExpression(element.on)}]`;
+  const maximum = element.cardinality?.max;
+  const many = maximum === "*" || Number(maximum) > 1 ? "many " : "";
+  const condition = Array.isArray(element.on) && element.on.length > 0
+    ? ` ON [${formatCsnExpression(element.on)}]`
+    : "";
+  return `${text} to ${many}${target}${condition}`;
 }
 
 function isPrimary(element: HanaLensElement): boolean {
@@ -151,12 +166,29 @@ function isPrimary(element: HanaLensElement): boolean {
 
 function formatElement(name: string, element: HanaLensElement, depth: number, withAnnotations: boolean): string {
   const prefix = depth === 0 ? "" : `${"-".repeat(depth)} `;
-  const marker = isPrimary(element) ? "[PK] " : element["@Core.Computed"] === true ? "[computed] " : "";
+  const marker = `${isPrimary(element) ? "[PK] " : ""}${element["@Core.Computed"] === true ? "[computed] " : ""}`;
   return `${prefix}${marker}${name}: ${typeTextWithCondition(element)}${formatAnnotations(element, withAnnotations)}`;
 }
 
 function nestedPrefix(depth: number): string {
   return `${"-".repeat(depth + 1)} `;
+}
+
+function describeOperation(definition: HanaLensDefinition): readonly string[] {
+  const lines = [`(${definition.kind ?? "operation"})`];
+  const params = definition.params;
+  if (isRecord(params)) {
+    for (const [name, parameter] of Object.entries(params)) {
+      if (isRecord(parameter)) {
+        lines.push(`- param ${name}: ${typeTextWithCondition(parameter)}`);
+      }
+    }
+  }
+  const returns = definition.returns;
+  if (isRecord(returns)) {
+    lines.push(`- returns: ${typeTextWithCondition(returns)}`);
+  }
+  return lines;
 }
 
 function describeExpandedTarget(csn: HanaLensCsn, definition: HanaLensDefinition, element: HanaLensElement, expand: boolean, withAnnotations: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
@@ -182,10 +214,17 @@ function describeExpandedTarget(csn: HanaLensCsn, definition: HanaLensDefinition
 
 function describeDefinition(csn: HanaLensCsn, definition: HanaLensDefinition, expand: boolean, withAnnotations: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
   const elements = definition.elements;
-  if (elements === undefined) {
+  if (elements === undefined || Object.keys(elements).length === 0) {
     if (isRecord(definition.enum)) {
       const base = definition.type ?? "enum";
-      return [`${base} enum[${Object.keys(definition.enum).join(", ")}]`];
+      const formattedEnum = formatEnum(definition);
+      return [`${base}${formattedEnum === "" ? " enum[]" : formattedEnum}`];
+    }
+    if (definition.type !== undefined || definition.items !== undefined) {
+      return [typeTextWithCondition(definition)];
+    }
+    if (definition.kind === "action" || definition.kind === "function") {
+      return describeOperation(definition);
     }
     return ["(no elements)"];
   }
