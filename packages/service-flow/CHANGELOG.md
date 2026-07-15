@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.62
+
+- Assigned every distinct Mermaid trace/graph node its own stable per-render identifier instead of truncating normalized endpoint strings to 60 characters, preventing nodes with long shared prefixes from collapsing into one.
+- Preserved full node labels, edge order and types, table/JSON output, trace behavior, and the SQLite schema.
+
 ## 0.1.61
 
 - Recorded public static arrow-function and function-expression properties on exported classes as exported qualified symbols, matching static method declarations and enabling unique cross-package and relative `Class.member` resolution with `local_symbol_call` trace descent.
