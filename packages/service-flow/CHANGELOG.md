@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.60
+
+- Fixed RC-A by resolving remote `send({ query: ... })` entities from the original query initializer AST and its real lexical scope, removing the isolated text reparse that fabricated parameter, mutable-local, runtime-const, runtime-destructured, and shadowed entity names while preserving genuine static entities and top-level query aliases.
+- Fixed RC-B by assigning the existing query warning to query-present remote calls whose entity stays dynamic, matching local query diagnostics without changing the `remote_query` call type, confidence, schema, linker, trace, or output shape and completing the remote identifier-reparsing follow-up documented in 0.1.59.
+
 ## 0.1.59
 
 - Fixed RC-A by making local DB query entities lexical-binding-aware: parameters, simple mutable locals, runtime const aliases, destructuring from runtime or reassigned sources, and direct `this.<field>` targets now remain dynamic at the existing low-confidence warning path instead of becoming fabricated entities.

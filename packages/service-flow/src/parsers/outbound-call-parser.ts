@@ -57,18 +57,6 @@ function queryRunEvidence(
     } : {}),
   };
 }
-function extractQueryEntity(expr: string): string | undefined {
-  const source = ts.createSourceFile('query.ts', `const __query = (${expr});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const initializers = variableInitializers(source);
-  let found: string | undefined;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (ts.isParenthesizedExpression(node)) found = queryEntityFromAst(node.expression, initializers);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return found;
-}
 function queryWarning(expr: string): string {
   if (/^\s*[`'"]/.test(expr)) return 'raw_sql_or_cql_expression';
   if (/^\s*\w+\s*$/.test(expr)) return 'query_variable_without_static_initializer';
@@ -387,7 +375,7 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const objectArg = node.arguments[0];
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
           const receiver = receiverName(expr.expression);
-          const query = objectPropertyText(objectArg, 'query');
+          const queryExpression = propertyInitializer(objectArg, 'query');
           const method = stripQuotes(resolveExpression(propertyInitializer(objectArg, 'method'), node, 'literal').value ?? objectPropertyText(objectArg, 'method') ?? 'POST');
           const pathExpr = propertyInitializer(objectArg, 'path') ?? propertyInitializer(objectArg, 'event');
           const pathAnalysis = analyzeOperationPath(pathExpr, node, method);
@@ -398,8 +386,13 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const entityCallTypes: Record<string, OutboundCallFact['callType']> = { entity_mutation: 'remote_entity_mutation', entity_delete: 'remote_entity_delete', entity_media: 'remote_entity_media', entity_candidate: 'remote_entity_candidate' };
           const entityCallType = entityCallTypes[intent.kind];
           const isODataQueryRead = method.toUpperCase() === 'GET' && ['entity_query', 'entity_key_read', 'entity_navigation_query'].includes(intent.kind);
-          const unresolvedReason = !query && pathExpr ? pathUnresolvedReason(pathAnalysis) : undefined;
-          add(node, { callType: query ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity: query ? extractQueryEntity(query) : isODataQueryRead ? intent.entitySegment : undefined, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || query ? 0.8 : 0.4, unresolvedReason }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, rawPathExpression: pathAnalysis.rawExpression, literalPathSource: literalPathSource(pathAnalysis), odataPathIntent: operationPathExpr ? intent : undefined, pathAnalysis, staticPathCandidates: legacyPathCandidates(pathAnalysis), parserWarning: unresolvedReason });
+          const queryEntity = queryExpression
+            ? queryEntityFromAst(queryExpression, initializers)
+            : isODataQueryRead ? intent.entitySegment : undefined;
+          const unresolvedReason = queryExpression
+            ? queryEntity ? undefined : queryWarning(queryExpression.getText(source))
+            : pathExpr ? pathUnresolvedReason(pathAnalysis) : undefined;
+          add(node, { callType: queryExpression ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || queryExpression ? 0.8 : 0.4, unresolvedReason }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, rawPathExpression: pathAnalysis.rawExpression, literalPathSource: literalPathSource(pathAnalysis), odataPathIntent: operationPathExpr ? intent : undefined, pathAnalysis, staticPathCandidates: legacyPathCandidates(pathAnalysis), parserWarning: unresolvedReason });
         } else {
           const receiver = receiverName(expr.expression);
           const rootReceiver = rootReceiverName(expr.expression);
