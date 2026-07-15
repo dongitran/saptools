@@ -242,7 +242,17 @@ export async function parseExecutableSymbols(
       if (localName) addSymbol('method', localName, node, parentClass);
     } else if (ts.isPropertyDeclaration(node) && parentClass && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
       const localName = nameOf(node.name);
-      if (localName) addSymbol('method', localName, node.initializer, parentClass, undefined, { source: 'class_property_function', memberKind: ts.isArrowFunction(node.initializer) ? 'arrow_function_property' : 'function_expression_property' });
+      if (localName) {
+        const flags = ts.getCombinedModifierFlags(node);
+        const staticPublicExported = exportedClasses.has(parentClass) && (flags & ts.ModifierFlags.Static) !== 0 && (flags & ts.ModifierFlags.Private) === 0 && (flags & ts.ModifierFlags.Protected) === 0;
+        const isArrow = ts.isArrowFunction(node.initializer);
+        const memberKind = isArrow
+          ? (staticPublicExported ? 'static_arrow_function' : 'arrow_function_property')
+          : (staticPublicExported ? 'static_function_expression' : 'function_expression_property');
+        addSymbol('method', localName, node.initializer, parentClass, staticPublicExported ? `${parentClass}.${localName}` : undefined, staticPublicExported
+          ? { source: 'exported_class_member', exportedClass: parentClass, memberKind }
+          : { source: 'class_property_function', memberKind });
+      }
     } else if (ts.isFunctionDeclaration(node) && node.name) addSymbol('function', node.name.text, node, undefined, exported(node) ? node.name.text : undefined);
     else if (ts.isVariableStatement(node)) {
       for (const d of node.declarationList.declarations) {

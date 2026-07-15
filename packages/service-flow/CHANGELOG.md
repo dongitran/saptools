@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.61
+
+- Recorded public static arrow-function and function-expression properties on exported classes as exported qualified symbols, matching static method declarations and enabling unique cross-package and relative `Class.member` resolution with `local_symbol_call` trace descent.
+- Kept instance properties, private/protected static properties, and members of non-exported classes fail-closed as unexported, with no schema, linker-edge, trace, CLI, or output-shape change.
+
 ## 0.1.60
 
 - Fixed RC-A by resolving remote `send({ query: ... })` entities from the original query initializer AST and its real lexical scope, removing the isolated text reparse that fabricated parameter, mutable-local, runtime-const, runtime-destructured, and shadowed entity names while preserving genuine static entities and top-level query aliases.
