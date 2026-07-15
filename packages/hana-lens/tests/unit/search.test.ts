@@ -17,12 +17,33 @@ describe("searchDefinitions", () => {
     expect(formatSearchResults(results.slice(0, 1))).toBe("srv.BusinessRequest|@demo/sales");
   });
 
-  it("uses regex without fuzzy ordering", () => {
-    expect(searchDefinitions(ast, "Customer$", true)).toEqual([{ name: "srv.Customer", packageName: "@demo/master", score: 0 }]);
+  it("sorts every regex match before the formatter applies its visible limit", () => {
+    const results = searchDefinitions(ast, "^srv\\.", true);
+
+    expect(results).toHaveLength(23);
+    expect(results.slice(0, 4).map((result) => result.name)).toEqual([
+      "srv.BusinessRequest",
+      "srv.Customer",
+      "srv.Generated00",
+      "srv.Generated01",
+    ]);
+    const names = results.map((result) => result.name);
+    expect(names).toEqual([...names].sort((left, right) => left.localeCompare(right)));
+    expect(formatSearchResults(results).split("\n").at(-1)).toBe("... showing 10 of 23 matches");
   });
 
-  it("limits output to the top ten matches", () => {
-    expect(searchDefinitions(ast, "srv", false)).toHaveLength(10);
+  it("returns every fuzzy match and reports the formatter limit against the total", () => {
+    const results = searchDefinitions(ast, "srv", false);
+
+    expect(results).toHaveLength(23);
+    expect(formatSearchResults(results).split("\n")).toHaveLength(11);
+    expect(formatSearchResults(results).split("\n").at(-1)).toBe("... showing 10 of 23 matches");
+    expect(formatSearchResults(results.slice(0, 10)).split("\n")).toHaveLength(10);
+    expect(formatSearchResults(results.slice(0, 10)).includes("showing")).toBe(false);
+  });
+
+  it("formats an empty definition result without adding a total line", () => {
+    expect(formatSearchResults([])).toBe("");
   });
 
   it("surfaces invalid regular expressions and rejects empty keywords", () => {
@@ -33,16 +54,33 @@ describe("searchDefinitions", () => {
 
 describe("searchFields", () => {
   const fieldAst: HanaLensCsn = { definitions: {
-    Employee: { elements: { ID: { type: "cds.String" }, status: { type: "cds.String" }, tenantID: { type: "cds.String" } } },
+    Employee: { elements: { ID: { type: "cds.String" }, status: { type: "cds.String" }, statusText: { type: "cds.String" }, tenantID: { type: "cds.String" } } },
     Project: { elements: { projectID: { type: "cds.String" }, status: { type: "cds.String" } } },
     Task: { elements: { taskStatus: { type: "cds.String" } } },
     Department: {},
   } };
 
-  it("groups field-name matches by entity with exact and matched labels", () => {
+  it("keeps every matching field per entity with exact and matched labels", () => {
     const results = searchFields(fieldAst, "status", false);
 
-    expect(formatFieldSearchResults("status", results)).toBe('Field matching "status" found in:\n- Employee (exact match)\n- Project (exact match)\n- Task (matched: taskStatus)');
+    expect(formatFieldSearchResults("status", results)).toBe('Field matching "status" found in:\n- Employee (exact match)\n- Project (exact match)\n- Employee (matched: statusText)\n- Task (matched: taskStatus)');
+  });
+
+  it("caps formatted field rows and reports the full match total", () => {
+    const manyFields: HanaLensCsn = { definitions: {
+      Record: { elements: Object.fromEntries(Array.from({ length: 30 }, (_value, index) => [
+        `match${index.toString().padStart(2, "0")}`,
+        { type: "cds.String" },
+      ])) },
+    } };
+    const results = searchFields(manyFields, "^match", true);
+    const output = formatFieldSearchResults("^match", results);
+
+    expect(results).toHaveLength(30);
+    expect(output.split("\n")).toHaveLength(27);
+    expect(output.split("\n").at(-1)).toBe("... showing 25 of 30 matches");
+    expect(formatFieldSearchResults("^match", results.slice(0, 25)).split("\n")).toHaveLength(26);
+    expect(formatFieldSearchResults("^match", results.slice(0, 25)).includes("showing")).toBe(false);
   });
 
   it("returns a dense empty result header without crashing", () => {

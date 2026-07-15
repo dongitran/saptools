@@ -11,7 +11,32 @@ const ast: HanaLensCsn = { definitions: {
 
 describe("describeEntity", () => {
   it("prints dense fields with key, computed, type, and length information", () => {
-    expect(describeEntity(ast, "A", false)).toBe("[PK] ID: cds.String(36)\n[PK] computed: cds.Timestamp\ntoB: cds.Association");
+    expect(describeEntity(ast, "A", false)).toBe("[PK] ID: cds.String(36)\n[computed] computed: cds.Timestamp\ntoB: cds.Association");
+  });
+
+  it("prints Decimal precision and scale while preserving length parameters", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Measurement: { elements: {
+        lowerTolerance: { type: "cds.Decimal", precision: 3, scale: 1 },
+        upperTolerance: { type: "cds.Decimal", precision: 5 },
+        label: { type: "cds.String", length: 255 },
+      } },
+    } };
+
+    expect(describeEntity(csn, "Measurement", false)).toBe("lowerTolerance: cds.Decimal(3, 1)\nupperTolerance: cds.Decimal(5)\nlabel: cds.String(255)");
+  });
+
+  it("prints arrays of scalar and anonymous structured items", () => {
+    const requiredStringItem = { type: "cds.String", notNull: true };
+    const csn: HanaLensCsn = { definitions: {
+      Request: { elements: {
+        history: { items: { type: "cds.Map" } },
+        tags: { items: requiredStringItem },
+        labels: { items: { elements: { value: { type: "cds.String" }, label: { type: "cds.String" } } } },
+      } },
+    } };
+
+    expect(describeEntity(csn, "Request", false)).toBe("history: array of cds.Map\ntags: array of cds.String\nlabels: array of { value, label }");
   });
 
   it("always prints enum keys and gates element annotations behind an option", () => {
@@ -145,6 +170,14 @@ describe("describeEntity", () => {
 
   it("prints a compact empty marker for definitions without elements", () => {
     expect(describeEntity(ast, "Empty", false)).toBe("(no elements)");
+  });
+
+  it("prints definition-level enum values when an enum type has no elements", () => {
+    const csn: HanaLensCsn = { definitions: {
+      RequestStatus: { kind: "type", type: "cds.String", enum: { SUBMITTED: {}, REJECTED: {}, WARNING: {} } },
+    } };
+
+    expect(describeEntity(csn, "RequestStatus", false)).toBe("cds.String enum[SUBMITTED, REJECTED, WARNING]");
   });
 
   it("throws for missing entities", () => {

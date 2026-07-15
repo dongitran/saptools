@@ -26,8 +26,8 @@ Scan every matching CAP package in a workspace, virtually link local siblings, c
 - 🧯 **Resilient cache builds** — skips individual model failures by default, reports them, and provides `--strict` CI enforcement
 - 🏷️ **Origin-aware CSN** — injects `@hanaLens.packageName` into definitions so results show the package that produced each entity
 - 🪶 **Minified mega cache** — writes `.hana-lens-cache.json` with plain `JSON.stringify(ast)` and no formatting whitespace
-- 🔍 **Fuzzy + regex search** — typo-tolerant case-insensitive search by default, with `--regex` for precise patterns
-- 🧾 **Dense descriptions** — prints compact field/type/key lines designed for terminals and LLM context windows
+- 🔍 **Fuzzy + regex search** — returns deterministic definition and field matches, with explicit totals whenever bounded CLI output is truncated
+- 🧾 **Dense descriptions** — preserves type parameters, arrays, enum members, keys, and computed markers in compact terminal-friendly lines
 - 🛡️ **Safe association expansion** — follows `cds.Association` and `cds.Composition` targets with depth and circular-reference guards
 - 🧩 **CLI & typed API** — core cache, search, describe, package scanning, and build functions are exported for scripts
 - 🪶 **Small + boring** — zero bundled runtime dependencies, explicit CAP compiler requirements, and no resident daemon
@@ -111,7 +111,7 @@ The success summary preserves `cached=`, `packages=`, and `file=`, then reports 
 
 ### 🔍 `hana-lens search <keyword> [--regex]`
 
-Search through cached `csn.definitions` keys and print the top 10 matches in dense `entity|package` form.
+Search through cached `csn.definitions` keys and print up to 10 matches in dense `entity|package` form.
 
 ```bash
 hana-lens search BusinesReq
@@ -130,7 +130,17 @@ my.service.BusinessRequest|@my-cap/sales
 my.service.BusinessRequestItem|@my-cap/sales
 ```
 
-Default mode is case-insensitive and typo-tolerant. Regex mode is best when you need exact namespaces, suffixes, or naming conventions.
+Default mode is case-insensitive and typo-tolerant, ordered by fuzzy score and then definition name. Regex mode is best when you need exact namespaces, suffixes, or naming conventions; its matches are ordered by definition name. The typed API returns the full sorted set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
+
+### 🔎 `hana-lens search-field <keyword> [--regex]`
+
+Search cached element names and report every matching field, including multiple matches from the same entity. Results are ordered by score, entity name, and field name; the CLI prints up to 25 rows and appends `... showing 25 of M matches` when more are available.
+
+```text
+Field matching "status" found in:
+- my.service.BusinessRequest (exact match)
+- my.service.BusinessRequest (matched: statusText)
+```
 
 ### 🧾 `hana-lens describe <entity_name> [--expand]`
 
@@ -149,13 +159,16 @@ Dense output example:
 
 ```text
 [PK] reqID: cds.String(36)
-createdAt: cds.Timestamp
+[computed] createdAt: cds.Timestamp
+amount: cds.Decimal(3, 1)
+history: array of cds.Map
+labels: array of { value, label }
 customer: cds.Association
 - [PK] ID: cds.Integer
 - name: cds.String(80)
 ```
 
-`[PK]` is printed for `key: true` elements and `@Core.Computed` fields. Expansion reports compact `missing` or `circular` markers when a target cannot be expanded safely.
+`[PK]` is printed only for `key: true` elements; `[computed]` marks `@Core.Computed` elements. Named enum definitions render their base type and keys, for example `cds.String enum[SUBMITTED, REJECTED]`. Expansion reports compact `missing` or `circular` markers when a target cannot be expanded safely.
 
 ---
 
@@ -265,6 +278,13 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 ---
 
 ## 🗒️ Changelog
+
+### `0.3.2` — RC2-B
+
+- preserves CAP type fidelity in `describe` for Decimal precision/scale, scalar and anonymous-struct arrays, and named enum definitions
+- separates `[PK]` (`key: true`) from `[computed]` (`@Core.Computed`)
+- returns full deterministic definition and field search results from the APIs while bounding CLI output to 10/25 rows with honest `... showing N of M matches` totals
+- leaves compilation, cache schema, and `build-cache` package scope unchanged
 
 ### `0.3.1` — RC1
 

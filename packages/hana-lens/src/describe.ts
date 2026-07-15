@@ -16,10 +16,27 @@ function formatEnum(element: HanaLensElement): string {
   return keys.length === 0 ? "" : ` enum[${keys.join(", ")}]`;
 }
 
+function typeParams(element: HanaLensElement): string {
+  if (element.length !== undefined) {
+    return `(${element.length.toString()})`;
+  }
+  if (element.precision === undefined) {
+    return "";
+  }
+  return element.scale === undefined
+    ? `(${element.precision.toString()})`
+    : `(${element.precision.toString()}, ${element.scale.toString()})`;
+}
+
 function typeText(element: HanaLensElement): string {
+  if (element.type === undefined && isRecord(element.items)) {
+    return `array of ${typeText(element.items)}`;
+  }
+  if (element.type === undefined && isRecord(element.elements)) {
+    return `{ ${Object.keys(element.elements).join(", ")} }`;
+  }
   const base = element.type ?? "unknown";
-  const text = element.length === undefined ? base : `${base}(${element.length.toString()})`;
-  return `${text}${formatEnum(element)}`;
+  return `${base}${typeParams(element)}${formatEnum(element)}`;
 }
 
 function formatUnknownExpressionNode(node: unknown): string {
@@ -129,12 +146,12 @@ function typeTextWithCondition(element: HanaLensElement): string {
 }
 
 function isPrimary(element: HanaLensElement): boolean {
-  return element.key === true || element["@Core.Computed"] === true;
+  return element.key === true;
 }
 
 function formatElement(name: string, element: HanaLensElement, depth: number, withAnnotations: boolean): string {
   const prefix = depth === 0 ? "" : `${"-".repeat(depth)} `;
-  const marker = isPrimary(element) ? "[PK] " : "";
+  const marker = isPrimary(element) ? "[PK] " : element["@Core.Computed"] === true ? "[computed] " : "";
   return `${prefix}${marker}${name}: ${typeTextWithCondition(element)}${formatAnnotations(element, withAnnotations)}`;
 }
 
@@ -166,6 +183,10 @@ function describeExpandedTarget(csn: HanaLensCsn, definition: HanaLensDefinition
 function describeDefinition(csn: HanaLensCsn, definition: HanaLensDefinition, expand: boolean, withAnnotations: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
   const elements = definition.elements;
   if (elements === undefined) {
+    if (isRecord(definition.enum)) {
+      const base = definition.type ?? "enum";
+      return [`${base} enum[${Object.keys(definition.enum).join(", ")}]`];
+    }
     return ["(no elements)"];
   }
   const lines: string[] = [];

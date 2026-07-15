@@ -368,7 +368,7 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
         "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales" },
         "demo.sales.BusinessRequestItem": { [PACKAGE_ANNOTATION]: "@demo/sales" },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master" },
-        ...Object.fromEntries(Array.from({ length: 20 }, (_value, index) => [`demo.generated.Entity${index.toString().padStart(2, "0")}`, { [PACKAGE_ANNOTATION]: "@demo/generated" }])),
+        ...Object.fromEntries(Array.from({ length: 20 }, (_value, index) => [`demo.generated.Entity${(19 - index).toString().padStart(2, "0")}`, { [PACKAGE_ANNOTATION]: "@demo/generated" }])),
       } });
 
       const fuzzy = runCli(["search", "BusinesReq"], root);
@@ -382,7 +382,17 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       const limited = runCli(["search", "demo"], root);
       expect(limited.status).toBe(0);
-      expect(limited.stdout.trim().split("\n")).toHaveLength(10);
+      expect(limited.stdout.trim().split("\n")).toHaveLength(11);
+      expect(limited.stdout).toContain("... showing 10 of 23 matches\n");
+
+      const regexLimited = runCli(["search", "^demo\\.generated\\.", "--regex"], root);
+      expect(regexLimited.status).toBe(0);
+      expect(regexLimited.stdout.split("\n")[0]).toBe("demo.generated.Entity00|@demo/generated");
+      expect(regexLimited.stdout).toContain("... showing 10 of 20 matches\n");
+
+      const empty = runCli(["search", "NeverMatches$", "--regex"], root);
+      expect(empty.status).toBe(0);
+      expect(empty.stdout).toBe("");
 
       const invalidRegex = runCli(["search", "[", "--regex"], root);
       expect(invalidRegex.status).toBe(1);
@@ -393,8 +403,9 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
   it("describe reads an existing cache offline, prints dense fields, expands associations, and guards circular or missing targets", async () => {
     await withTempWorkspace(async (root) => {
       await writeCache(root, { definitions: {
-        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, status: { type: "cds.String", enum: { ACTIVE: {}, INACTIVE: {} }, "@readonly": true, "@title": "Status" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
+        "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, amount: { type: "cds.Decimal", precision: 3, scale: 1 }, history: { items: { type: "cds.Map" } }, labels: { items: { elements: { value: { type: "cds.String" }, label: { type: "cds.String" } } } }, status: { type: "cds.String", enum: { ACTIVE: {}, INACTIVE: {} }, "@readonly": true, "@title": "Status" }, statusText: { type: "cds.String" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing" } } },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
+        "demo.common.RequestStatus": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", enum: { SUBMITTED: {}, REJECTED: {} } },
         "demo.empty.EmptyEntity": { [PACKAGE_ANNOTATION]: "@demo/empty" },
       } });
 
@@ -402,7 +413,10 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(compact.status).toBe(0);
       expect(compact.stdout).toContain("[PK] reqID: cds.String(36)");
       expect(compact.stdout).toContain("[PK] tenantID: cds.String(36)");
-      expect(compact.stdout).toContain("[PK] createdAt: cds.Timestamp");
+      expect(compact.stdout).toContain("[computed] createdAt: cds.Timestamp");
+      expect(compact.stdout).toContain("amount: cds.Decimal(3, 1)");
+      expect(compact.stdout).toContain("history: array of cds.Map");
+      expect(compact.stdout).toContain("labels: array of { value, label }");
       expect(compact.stdout).toContain("status: cds.String enum[ACTIVE, INACTIVE]");
       expect(compact.stdout.includes("@readonly=true")).toBe(false);
       expect(compact.stdout).toContain("customer: cds.Association ON [customer.ID = customerID and customer.tenantID = tenantID]");
@@ -418,7 +432,9 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       const fieldSearch = runCli(["search-field", "status"], root);
       expect(fieldSearch.status).toBe(0);
-      expect(fieldSearch.stdout).toBe('Field matching "status" found in:\n- demo.sales.BusinessRequest (exact match)\n');
+      expect(fieldSearch.stdout).toBe('Field matching "status" found in:\n- demo.sales.BusinessRequest (exact match)\n- demo.sales.BusinessRequest (matched: statusText)\n');
+
+      expect(runCli(["describe", "demo.common.RequestStatus"], root).stdout).toBe("cds.String enum[SUBMITTED, REJECTED]\n");
 
       const expanded = runCli(["describe", "demo.sales.BusinessRequest", "--expand"], root);
       expect(expanded.status).toBe(0);

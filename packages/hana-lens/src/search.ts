@@ -3,6 +3,9 @@ import { findTargetCandidates, isAssociationElement, resolveTarget } from "./tar
 import { PACKAGE_ANNOTATION } from "./types.js";
 import type { FieldSearchResult, HanaLensCsn, IncomingReference, SearchResult } from "./types.js";
 
+const DEFINITION_RESULT_LIMIT = 10;
+const FIELD_RESULT_LIMIT = 25;
+
 function packageNameOf(definition: HanaLensCsn["definitions"][string]): string {
   return definition[PACKAGE_ANNOTATION] ?? "unknown";
 }
@@ -46,8 +49,8 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
     const pattern = new RegExp(trimmedKeyword, "iu");
     return entries
       .filter(([name]) => pattern.test(name))
-      .slice(0, 10)
-      .map(([name, definition]) => ({ name, packageName: packageNameOf(definition), score: 0 }));
+      .map(([name, definition]) => ({ name, packageName: packageNameOf(definition), score: 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
   const normalizedKeyword = trimmedKeyword.toLowerCase();
   return entries
@@ -56,8 +59,7 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
       packageName: packageNameOf(definition),
       score: fuzzyScore(normalizedKeyword, name),
     }))
-    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))
-    .slice(0, 10);
+    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
 }
 
 export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly FieldSearchResult[] {
@@ -87,12 +89,11 @@ export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boole
       })
       .filter((match): match is FieldSearchResult => match !== undefined)
       .sort((a, b) => a.score - b.score || a.matchedField.localeCompare(b.matchedField));
-    const best = matches[0];
-    if (best !== undefined) {
-      results.push(best);
-    }
+    results.push(...matches);
   }
-  return results.sort((a, b) => a.score - b.score || a.entityName.localeCompare(b.entityName)).slice(0, 25);
+  return results.sort((a, b) => a.score - b.score
+    || a.entityName.localeCompare(b.entityName)
+    || a.matchedField.localeCompare(b.matchedField));
 }
 
 export function findIncomingReferences(csn: HanaLensCsn, entityName: string): readonly IncomingReference[] {
@@ -122,14 +123,23 @@ export function findIncomingReferences(csn: HanaLensCsn, entityName: string): re
 }
 
 export function formatSearchResults(results: readonly SearchResult[]): string {
-  return results.map((result) => `${result.name}|${result.packageName}`).join("\n");
+  const shown = results.slice(0, DEFINITION_RESULT_LIMIT);
+  const lines = shown.map((result) => `${result.name}|${result.packageName}`);
+  if (results.length > shown.length) {
+    lines.push(`... showing ${shown.length.toString()} of ${results.length.toString()} matches`);
+  }
+  return lines.join("\n");
 }
 
 export function formatFieldSearchResults(keyword: string, results: readonly FieldSearchResult[]): string {
+  const shown = results.slice(0, FIELD_RESULT_LIMIT);
   const lines = [`Field matching ${JSON.stringify(keyword)} found in:`];
-  for (const result of results) {
+  for (const result of shown) {
     const suffix = result.exact ? "exact match" : `matched: ${result.matchedField}`;
     lines.push(`- ${result.entityName} (${suffix})`);
+  }
+  if (results.length > shown.length) {
+    lines.push(`... showing ${shown.length.toString()} of ${results.length.toString()} matches`);
   }
   return lines.join("\n");
 }

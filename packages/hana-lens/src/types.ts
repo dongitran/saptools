@@ -4,16 +4,23 @@ export const PACKAGE_ANNOTATION = "@hanaLens.packageName";
 export interface HanaLensElement {
   readonly type?: string;
   readonly length?: number;
+  readonly precision?: number;
+  readonly scale?: number;
   readonly key?: boolean;
   readonly target?: string;
   readonly "@Core.Computed"?: boolean;
   readonly on?: readonly unknown[];
   readonly enum?: Readonly<Record<string, unknown>>;
+  readonly items?: HanaLensElement;
+  readonly elements?: Readonly<Record<string, HanaLensElement>>;
+  readonly cardinality?: { readonly max?: string | number };
   readonly [key: `@${string}`]: unknown;
 }
 
 export interface HanaLensDefinition {
   readonly kind?: string;
+  readonly type?: string;
+  readonly enum?: Readonly<Record<string, unknown>>;
   readonly elements?: Readonly<Record<string, HanaLensElement>>;
   readonly [PACKAGE_ANNOTATION]?: string;
 }
