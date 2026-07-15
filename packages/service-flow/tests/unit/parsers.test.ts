@@ -824,13 +824,13 @@ describe('outbound AST parser hardening', () => {
     expect(symbols.some((symbol) => symbol.qualifiedName.includes('#callback:'))).toBe(false);
   });
 
-  it('creates a synthetic owner for indexed top-level CAP event registrations', async () => {
+  it('keeps a synthetic owner for CAP lifecycle registrations without an async fact', async () => {
     const { calls, symbols } = await parseSource(`
       cds.on('served', async () => {
         logger.info('ready');
       });
     `);
-    expect(calls).toEqual([expect.objectContaining({ callType: 'async_subscribe', eventNameExpr: 'served' })]);
+    expect(calls).toHaveLength(0);
     expect(symbols.some((symbol) => symbol.kind === 'event_registration' && symbol.qualifiedName.includes('module:src/handler.ts#event:served:'))).toBe(true);
   });
 });

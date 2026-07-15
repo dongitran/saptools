@@ -76,13 +76,9 @@ function literalText(expr: ts.Expression | undefined): string | undefined {
   if (isStringLike(expr)) return expr.text;
   return undefined;
 }
-function objectPropertyText(object: ts.ObjectLiteralExpression, key: string): string | undefined {
-  const prop = object.properties.find((property): property is ts.PropertyAssignment | ts.ShorthandPropertyAssignment =>
-    (ts.isPropertyAssignment(property) && nameOfProperty(property.name) === key) || (ts.isShorthandPropertyAssignment(property) && property.name.text === key),
-  );
-  if (!prop) return undefined;
-  return ts.isShorthandPropertyAssignment(prop) ? prop.name.text : prop.initializer.getText();
-}
+const CDS_LIFECYCLE_EVENTS = new Set([
+  'bootstrap', 'loaded', 'connect', 'serving', 'served', 'listening', 'shutdown',
+]);
 function objectPropertyIsShorthand(object: ts.ObjectLiteralExpression, key: string): boolean {
   return object.properties.some((property) => ts.isShorthandPropertyAssignment(property) && property.name.text === key);
 }
@@ -376,7 +372,10 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         if (objectArg && ts.isObjectLiteralExpression(objectArg)) {
           const receiver = receiverName(expr.expression);
           const queryExpression = propertyInitializer(objectArg, 'query');
-          const method = stripQuotes(resolveExpression(propertyInitializer(objectArg, 'method'), node, 'literal').value ?? objectPropertyText(objectArg, 'method') ?? 'POST');
+          const methodExpression = propertyInitializer(objectArg, 'method');
+          const methodResolution = resolveExpression(methodExpression, node, 'literal');
+          const method = stripQuotes(methodResolution.value ?? 'POST');
+          const dynamicMethodDefaulted = Boolean(methodExpression && methodResolution.value === undefined);
           const pathExpr = propertyInitializer(objectArg, 'path') ?? propertyInitializer(objectArg, 'event');
           const pathAnalysis = analyzeOperationPath(pathExpr, node, method);
           const op = pathExpr ? operationPathExpression(pathAnalysis) ?? pathExpr.getText(source) : undefined;
@@ -392,7 +391,7 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
           const unresolvedReason = queryExpression
             ? queryEntity ? undefined : queryWarning(queryExpression.getText(source))
             : pathExpr ? pathUnresolvedReason(pathAnalysis) : undefined;
-          add(node, { callType: queryExpression ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || queryExpression ? 0.8 : 0.4, unresolvedReason }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, rawPathExpression: pathAnalysis.rawExpression, literalPathSource: literalPathSource(pathAnalysis), odataPathIntent: operationPathExpr ? intent : undefined, pathAnalysis, staticPathCandidates: legacyPathCandidates(pathAnalysis), parserWarning: unresolvedReason });
+          add(node, { callType: queryExpression ? 'remote_query' : entityCallType ?? (isODataQueryRead ? 'remote_query' : 'remote_action'), serviceVariableName: receiver, method, operationPathExpr, queryEntity, payloadSummary: summarizeExpression(objectArg.getText(source)), confidence: op || queryExpression ? 0.8 : 0.4, unresolvedReason }, { receiver, classifier: 'service_client_send_object', operationPathExpression: shorthandPath ? op : undefined, rawPathExpression: pathAnalysis.rawExpression, literalPathSource: literalPathSource(pathAnalysis), odataPathIntent: operationPathExpr ? intent : undefined, pathAnalysis, staticPathCandidates: legacyPathCandidates(pathAnalysis), parserWarning: unresolvedReason, ...(dynamicMethodDefaulted ? { dynamicMethodDefaulted: true } : {}) });
         } else {
           const receiver = receiverName(expr.expression);
           const rootReceiver = rootReceiverName(expr.expression);
@@ -434,7 +433,11 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
         const rootReceiver = rootReceiverName(expr.expression);
         if (isSupportedEventReceiver(receiver, rootReceiver, serviceVariables)) {
           const eventName = literalText(node.arguments[0]);
-          if (eventName) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: rootReceiver ?? receiver, eventNameExpr: eventName }, { receiver, rootReceiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit', receiverClassification: 'cap_evidence' });
+          const effectiveReceiver = rootReceiver ?? receiver;
+          const lifecycleHook = effectiveReceiver === 'cds'
+            && CDS_LIFECYCLE_EVENTS.has(eventName ?? '');
+          const errorHook = expr.name.text === 'on' && eventName === 'error';
+          if (eventName && !lifecycleHook && !errorHook) add(node, { callType: expr.name.text === 'on' ? 'async_subscribe' : 'async_emit', serviceVariableName: effectiveReceiver, eventNameExpr: eventName }, { receiver, rootReceiver, classifier: expr.name.text === 'on' ? 'cap_service_event_subscription' : 'cap_service_event_emit', receiverClassification: 'cap_evidence' });
         }
       } else {
         const external = externalHttpEvidence(node, source);

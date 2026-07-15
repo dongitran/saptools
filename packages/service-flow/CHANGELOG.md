@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.63
+
+- Stopped recording CAP runtime lifecycle activity on the `cds` facade (`bootstrap`, `loaded`, `connect`, `serving`, `served`, `listening`, and `shutdown`) and supported-receiver `on('error')` hooks as asynchronous domain-event facts or derived event edges, while preserving custom facade events, lifecycle-named service events, domain messaging events, error emissions, and synthetic event-registration symbols.
+- Made object-form `send({ method, ... })` calls with a dynamic method default to `POST` with bounded `dynamicMethodDefaulted` parser evidence instead of storing a property name or expression as the HTTP verb, without a schema, linker, trace-engine, or output-shape change.
+
 ## 0.1.62
 
 - Assigned every distinct Mermaid trace/graph node its own stable per-render identifier instead of truncating normalized endpoint strings to 60 characters, preventing nodes with long shared prefixes from collapsing into one.
