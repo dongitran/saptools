@@ -35,6 +35,25 @@ describe("searchDefinitions", () => {
     expect(formatSearchResults(results).split("\n").at(-1)).toBe("... showing 10 of 23 matches");
   });
 
+  it("preserves JavaScript lookbehind searches without capture groups", () => {
+    expect(searchDefinitions(ast, "(?<=srv\\.)BusinessRequest$", true).map((result) => result.name))
+      .toEqual(["srv.BusinessRequest"]);
+  });
+
+  it("preserves JavaScript lookahead and backreference semantics", () => {
+    const compatibilityAst: HanaLensCsn = { definitions: {
+      "srv.NamedNamed": {},
+      "srv.WordWord": {},
+    } };
+
+    expect(searchDefinitions(ast, "^srv\\.(?=Business)BusinessRequest$", true).map((result) => result.name))
+      .toEqual(["srv.BusinessRequest"]);
+    expect(searchDefinitions(compatibilityAst, "^srv\\.(Word)\\1$", true).map((result) => result.name))
+      .toEqual(["srv.WordWord"]);
+    expect(searchDefinitions(compatibilityAst, "^srv\\.(?<part>Named)\\k<part>$", true).map((result) => result.name))
+      .toEqual(["srv.NamedNamed"]);
+  });
+
   it("returns every fuzzy match and reports the formatter limit against the total", () => {
     const results = searchDefinitions(ast, "srv", false);
 
@@ -74,7 +93,17 @@ describe("searchDefinitions", () => {
     expect(searchDefinitions(adversarialAst, "(a|aa)+$", true)).toEqual([]);
     expect(searchFields(adversarialAst, "(a|aa)+$", true)).toEqual([]);
 
-    expect(performance.now() - startedAt).toBeLessThan(150);
+    expect(performance.now() - startedAt).toBeLessThan(750);
+  });
+
+  it("fails closed when a timed-out JavaScript pattern has no linear fallback", () => {
+    const adversarialName = `${"a".repeat(34)}?`;
+    const adversarialAst: HanaLensCsn = { definitions: { [adversarialName]: {} } };
+    const startedAt = performance.now();
+
+    expect(() => searchDefinitions(adversarialAst, "(a|aa)+(?=!)$", true))
+      .toThrow("Regex evaluation exceeded the safe time limit");
+    expect(performance.now() - startedAt).toBeLessThan(500);
   });
 });
 

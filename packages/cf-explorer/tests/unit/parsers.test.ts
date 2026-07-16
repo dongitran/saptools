@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -100,6 +102,20 @@ describe("output parsers", () => {
     ]);
   });
 
+  it("rejects adversarial legacy grep rows within a bounded time", () => {
+    const payload = `a:9:${"a:9:a".repeat(20_000)}\u2028X`;
+    const startedAt = performance.now();
+
+    expect(parseGrepOutput(`CFX\tGREP\t${payload}`, 0, true)).toEqual([]);
+    expect(performance.now() - startedAt).toBeLessThan(150);
+  });
+
+  it("keeps Windows-style legacy grep paths", () => {
+    expect(parseGrepOutput("CFX\tGREP\tC:\\app\\file.js:12:preview", 0, true)).toEqual([
+      { instance: 0, path: "C:\\app\\file.js", line: 12, preview: "preview" },
+    ]);
+  });
+
   it("parses view line rows", () => {
     expect(parseViewOutput("CFX\tLINE\t0\tbad\nCFX\tLINE\t8\tfirst\nCFX\tLINE\t9\tsecond\n")).toEqual([
       { line: 8, text: "first" },
@@ -132,6 +148,14 @@ describe("output parsers", () => {
     expect(parseCfAppInstances(table)).toEqual([
       { index: 0, state: "running", since: "2026-01-01T00:00:00Z" },
     ]);
+  });
+
+  it("rejects adversarial instance rows within a bounded time", () => {
+    const row = `9 - ${" ".repeat(60_000)}X\u2028Y\u2028Z`;
+    const startedAt = performance.now();
+
+    expect(parseCfAppInstances(row)).toEqual([]);
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 
   it("combines inspect output and suggested breakpoints", () => {

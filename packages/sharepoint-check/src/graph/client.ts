@@ -81,12 +81,12 @@ interface GraphErrorBody {
 
 function resolveBaseUrl(explicit?: string): string {
   if (explicit !== undefined && explicit.length > 0) {
-    return explicit.replace(/\/+$/, "");
+    return explicit.replace(/(?<!\/)\/+$/, "");
   }
 
   const fromEnv = process.env[ENV_GRAPH_BASE];
   if (fromEnv !== undefined && fromEnv.length > 0) {
-    return fromEnv.replace(/\/+$/, "");
+    return fromEnv.replace(/(?<!\/)\/+$/, "");
   }
 
   return DEFAULT_GRAPH_BASE;

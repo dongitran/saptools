@@ -455,7 +455,11 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@26.0.1)(yaml@2.9.0)
 
-  packages/hana-lens: {}
+  packages/hana-lens:
+    dependencies:
+      re2js:
+        specifier: 2.8.6
+        version: 2.8.6
 
   packages/jira:
     dependencies:
@@ -4440,6 +4444,10 @@ packages:
   raw-body@2.5.3:
     resolution: {integrity: sha512-s4VSOf6yN0rvbRZGxs8Om5CWj6seneMwK3oDb4lWDH0UPhWcxwOWw5+qk24bxq87szX1ydrwylIOp2uG1ojUpA==}
     engines: {node: '>= 0.8'}
+
+  re2js@2.8.6:
+    resolution: {integrity: sha512-xLgQil4kIUCrAzVk9fRSkxkFNwmygLFjVxXrLc65aE1F0+Zsb8rxumFBy4XKyvgMCTL6kilDq3EZ0piE2dP/Dg==}
+    engines: {node: '>=18.0.0'}
 
   read-package-up@11.0.0:
     resolution: {integrity: sha512-MbgfoNPANMdb4oRBNg5eqLbB2t2r+o5Ua1pNt8BqGp4I0FJZhuVSOj3PaBPni4azWuSzEdNn2evevzVmEk1ohQ==}
@@ -9451,6 +9459,8 @@ snapshots:
       http-errors: 2.0.1
       iconv-lite: 0.4.24
       unpipe: 1.0.0
+
+  re2js@2.8.6: {}
 
   read-package-up@11.0.0:
     dependencies:

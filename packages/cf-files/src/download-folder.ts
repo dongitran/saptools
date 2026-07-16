@@ -11,7 +11,7 @@ import { DEFAULT_APP_PATH, type DownloadFolderOptions, type DownloadFolderResult
 const TAR_MAX_BUFFER = 256 * 1024 * 1024;
 
 export function normalizeFilerPath(p: string): string {
-  const normalized = p.replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const normalized = p.replace(/^\.?\/+/, "").replace(/(?<!\/)\/+$/, "");
   const segments = normalized.split("/");
   if (segments.some((segment) => segment === "." || segment === "..")) {
     throw new Error("Filter paths must not contain . or .. segments");

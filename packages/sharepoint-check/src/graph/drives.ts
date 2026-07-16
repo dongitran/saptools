@@ -127,7 +127,7 @@ export async function listDriveChildren(
   driveId: string,
   relativePath: string,
 ): Promise<readonly DriveItemSummary[]> {
-  const normalized = relativePath.replace(/^\/+|\/+$/g, "");
+  const normalized = relativePath.replace(/^\/+|(?<!\/)\/+$/g, "");
   if (normalized.length === 0) {
     return await listDriveRoot(client, driveId);
   }
@@ -143,7 +143,7 @@ export async function getDriveItemByPath(
   driveId: string,
   relativePath: string,
 ): Promise<DriveItemSummary | null> {
-  const normalized = relativePath.replace(/^\/+|\/+$/g, "");
+  const normalized = relativePath.replace(/^\/+|(?<!\/)\/+$/g, "");
   const url =
     normalized.length === 0
       ? `/drives/${encodeURIComponent(driveId)}/root`
@@ -166,7 +166,7 @@ export async function createFolder(
   parentPath: string,
   folderName: string,
 ): Promise<DriveItemSummary> {
-  const normalized = parentPath.replace(/^\/+|\/+$/g, "");
+  const normalized = parentPath.replace(/^\/+|(?<!\/)\/+$/g, "");
   const url =
     normalized.length === 0
       ? `/drives/${encodeURIComponent(driveId)}/root/children`

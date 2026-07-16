@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -119,6 +120,16 @@ describe("parseSourceMergeRequestRef", () => {
     expect(spec.sourceRepo.original).toBe("/tmp/example/repo-a.git");
     expect(spec.sourceRepo.projectPath).toBe("repo-a");
     expect(spec.sourceMergeRequestIid).toBe(123);
+  });
+
+  it("parses adversarial local MR refs within a bounded time", () => {
+    const repoPath = `/tmp/${"/".repeat(50_000)}repo-a.git`;
+    const startedAt = performance.now();
+    const spec = parseSourceMergeRequestRef(`${repoPath}/-/merge_requests/123`);
+
+    expect(spec.sourceRepo.name).toBe("repo-a");
+    expect(spec.sourceMergeRequestIid).toBe(123);
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 
   it("normalizes local MR tab refs into the base MR ref", () => {

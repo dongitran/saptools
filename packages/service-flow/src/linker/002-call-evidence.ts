@@ -7,6 +7,7 @@ import {
   projectBounded,
   type BoundedProjection,
 } from '../utils/000-bounded-projection.js';
+import { extractPlaceholderKeys } from '../utils/001-placeholders.js';
 
 export interface LinkedOperationResolution {
   target?: {
@@ -200,10 +201,7 @@ function compactCandidateScores(
 }
 
 function placeholderKeys(values: Array<string | undefined>): string[] {
-  const keys = values.flatMap((value) => [...(value ?? '')
-    .matchAll(/\$\{([^}]*)\}/g)]
-    .map((match) => (match[1] ?? '').trim())
-    .filter(Boolean));
+  const keys = values.flatMap(extractPlaceholderKeys);
   return [...new Set(keys)].sort();
 }
 

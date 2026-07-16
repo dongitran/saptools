@@ -111,7 +111,7 @@ export function normalizeSapCfApiEndpoint(apiEndpoint: string): string {
     parsed.username !== "" ||
     parsed.password !== "" ||
     parsed.port !== "" ||
-    parsed.pathname.replace(/\/+$/, "") !== "" ||
+    parsed.pathname.replace(/(?<!\/)\/+$/, "") !== "" ||
     parsed.search !== "" ||
     parsed.hash !== ""
   ) {

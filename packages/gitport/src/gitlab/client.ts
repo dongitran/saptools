@@ -72,7 +72,7 @@ export interface GitLabClient {
 
 function createRequestContext(options: GitLabClientOptions): GitLabRequestContext {
   return {
-    baseUrl: options.baseUrl.replace(/\/+$/, ""),
+    baseUrl: options.baseUrl.replace(/(?<!\/)\/+$/, ""),
     token: options.token,
     fetchFn: options.fetchFn ?? fetch,
     secrets: [options.token],

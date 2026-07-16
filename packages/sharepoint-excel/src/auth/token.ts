@@ -24,12 +24,12 @@ const DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
 
 function resolveAuthBase(options: AcquireTokenOptions): string {
   if (options.authBase !== undefined && options.authBase.length > 0) {
-    return options.authBase.replace(/\/+$/, "");
+    return options.authBase.replace(/(?<!\/)\/+$/, "");
   }
   const fromEnv = (options.env ?? process.env)[ENV_AUTH_BASE];
   return fromEnv === undefined || fromEnv.length === 0
     ? DEFAULT_AUTH_BASE
-    : fromEnv.replace(/\/+$/, "");
+    : fromEnv.replace(/(?<!\/)\/+$/, "");
 }
 
 function assertString(value: unknown, field: string): string {

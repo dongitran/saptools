@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -42,6 +44,14 @@ describe("resolveRemotePath", () => {
 
   it("handles nested relative paths", () => {
     expect(resolveRemotePath("src/main/handler.js", "/app")).toBe("/app/src/main/handler.js");
+  });
+
+  it("joins adversarial app paths within a bounded time", () => {
+    const appPath = `/app${"/".repeat(50_000)}root`;
+    const startedAt = performance.now();
+
+    expect(resolveRemotePath("file", appPath)).toBe(`${appPath}/file`);
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 });
 

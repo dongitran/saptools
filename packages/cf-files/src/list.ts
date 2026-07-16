@@ -22,7 +22,7 @@ export function resolveRemotePath(target: string, appPath: string): string {
   if (target.startsWith("/")) {
     return target;
   }
-  const base = appPath.replace(/\/+$/, "");
+  const base = appPath.replace(/(?<!\/)\/+$/, "");
   const clean = target.replace(/^\/+/, "");
   return clean.length === 0 ? base : `${base}/${clean}`;
 }

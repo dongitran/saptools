@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it } from "vitest";
 
 import { GitLabHttpError, createGitLabClient } from "../../src/gitlab.js";
@@ -53,6 +55,22 @@ describe("GitLab client", () => {
     });
 
     await expect(client.getCurrentUser()).resolves.toEqual({ id: 42, username: "gitport-bot" });
+  });
+
+  it("normalizes adversarial API bases within a bounded time", async () => {
+    const baseUrl = `https://gitlab.example.com/api${"/".repeat(50_000)}v4`;
+    const startedAt = performance.now();
+    const client = createGitLabClient({
+      baseUrl,
+      token: "token-1",
+      fetchFn: async (url) => {
+        expect(url).toBe(`${baseUrl}/user`);
+        return jsonResponse({ id: 42, username: "gitport-bot" });
+      },
+    });
+
+    await expect(client.getCurrentUser()).resolves.toEqual({ id: 42, username: "gitport-bot" });
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 
   it("creates Draft MRs with draft=true, the provided title, and assignee", async () => {

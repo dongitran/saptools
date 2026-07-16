@@ -38,8 +38,10 @@ function textBody(buffer) {
 }
 
 function normalizePath(value) {
-  return decodeURIComponent(value).replace(/^\/+|\/+$/g, "");
+  return decodeURIComponent(value).replace(/^\/+|(?<!\/)\/+$/g, "");
 }
+
+const INTERNAL_ERROR_MESSAGE = "An internal fake Graph error occurred";
 
 function itemPayload(file) {
   return {
@@ -238,8 +240,8 @@ async function dispatch(req, res, state) {
 
 const state = createState(readScenario());
 const server = createServer((req, res) => {
-  dispatch(req, res, state).catch((err) => {
-    sendError(res, 500, "internalError", err instanceof Error ? err.message : String(err));
+  dispatch(req, res, state).catch(() => {
+    sendError(res, 500, "internalError", INTERNAL_ERROR_MESSAGE);
   });
 });
 

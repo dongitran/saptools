@@ -159,15 +159,30 @@ function parseLegacyGrepLine(
   instance: number,
   includePreview: boolean,
 ): GrepMatch | undefined {
-  const match = /^(.+?):(\d+):(.*)$/.exec(payload);
-  if (match === null) {
-    return undefined;
+  let separator = payload.indexOf(":", 1);
+  while (separator >= 0) {
+    let cursor = separator + 1;
+    while (cursor < payload.length) {
+      const code = payload.charCodeAt(cursor);
+      if (code < 48 || code > 57) {
+        break;
+      }
+      cursor += 1;
+    }
+    if (cursor > separator + 1 && payload[cursor] === ":") {
+      const preview = payload.slice(cursor + 1);
+      if (!/[\n\r\u2028\u2029]/u.test(preview)) {
+        return toGrepMatch({
+          path: payload.slice(0, separator),
+          line: payload.slice(separator + 1, cursor),
+          preview,
+        }, instance, includePreview);
+      }
+      return undefined;
+    }
+    separator = payload.indexOf(":", separator + 1);
   }
-  return toGrepMatch({
-    path: match[1] ?? "",
-    line: match[2] ?? "",
-    preview: match[3] ?? "",
-  }, instance, includePreview);
+  return undefined;
 }
 
 function toGrepMatch(
@@ -188,19 +203,61 @@ function toGrepMatch(
   };
 }
 
+function isWhitespace(value: string | undefined): boolean {
+  return value !== undefined && /\s/u.test(value);
+}
+
+function advanceWhile(
+  value: string,
+  start: number,
+  predicate: (character: string | undefined) => boolean,
+): number {
+  let cursor = start;
+  while (cursor < value.length && predicate(value[cursor])) {
+    cursor += 1;
+  }
+  return cursor;
+}
+
 function parseInstanceRow(line: string): InstanceInfo | undefined {
-  const match = /^#?(\d+)\s+([a-zA-Z_-]+)(?:\s+(\S+))?(?:\s+.*)?$/.exec(line);
-  if (match === null) {
+  let cursor = line.startsWith("#") ? 1 : 0;
+  const indexStart = cursor;
+  cursor = advanceWhile(line, cursor, (character) => /[0-9]/u.test(character ?? ""));
+  if (cursor === indexStart || !isWhitespace(line[cursor])) {
     return undefined;
   }
-  const index = parseNonNegativeDecimal(match[1] ?? "");
+  const index = parseNonNegativeDecimal(line.slice(indexStart, cursor));
   if (index === undefined) {
+    return undefined;
+  }
+  cursor = advanceWhile(line, cursor, isWhitespace);
+  const stateStart = cursor;
+  cursor = advanceWhile(line, cursor, (character) => /[A-Za-z_-]/u.test(character ?? ""));
+  if (cursor === stateStart) {
+    return undefined;
+  }
+  const state = line.slice(stateStart, cursor);
+  if (cursor === line.length) {
+    return { index, state };
+  }
+  if (!isWhitespace(line[cursor])) {
+    return undefined;
+  }
+  cursor = advanceWhile(line, cursor, isWhitespace);
+  const sinceStart = cursor;
+  cursor = advanceWhile(line, cursor, (character) => !isWhitespace(character));
+  const since = line.slice(sinceStart, cursor);
+  if (since.length === 0) {
+    return { index, state };
+  }
+  cursor = advanceWhile(line, cursor, isWhitespace);
+  if (/[\n\r\u2028\u2029]/u.test(line.slice(cursor))) {
     return undefined;
   }
   return {
     index,
-    state: match[2] ?? "unknown",
-    ...(match[3] === undefined ? {} : { since: match[3].trim() }),
+    state,
+    since,
   };
 }
 

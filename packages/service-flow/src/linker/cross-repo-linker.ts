@@ -139,7 +139,7 @@ function insertCallEdge(db: Db, workspaceId: number, call: Record<string, unknow
   }
   if (isRemoteEntityCall) {
     const target = buildRemoteQueryTarget({ queryEntity: intent.entitySegment ?? call.query_entity, servicePath, serviceAlias: call.alias, serviceAliasExpr: call.aliasExpr, destination: destination ? applyVariables(destination, vars) : undefined, isDynamic, parserWarning: evidence.parserWarning });
-    const entityKind = callType.replace('remote_entity_', 'remote_entity_');
+    const entityKind = callType;
     db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(workspaceId, 'HANDLER_ACCESSES_REMOTE_ENTITY', 'terminal', 'call', String(call.id), target.toKind, target.toId, Number(call.confidence ?? 0.5), JSON.stringify({ ...evidence, ...target.evidence, remoteEntityAccess: entityKind }), 0, generation);
     return { status: 'terminal', callType };
   }

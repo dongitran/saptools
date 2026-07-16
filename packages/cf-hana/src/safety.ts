@@ -154,12 +154,12 @@ function trailingLineCommentIndex(sql: string): number | undefined {
 }
 
 function appendLimit(sql: string, limit: number): string {
-  const trimmed = sql.replace(/[\s;]+$/, "");
+  const trimmed = sql.replace(/(?<![\s;])[\s;]+$/, "");
   const commentIndex = trailingLineCommentIndex(trimmed);
   if (commentIndex === undefined) {
     return `${trimmed} LIMIT ${String(limit)}`;
   }
-  const beforeComment = trimmed.slice(0, commentIndex).replace(/[\s;]+$/, "");
+  const beforeComment = trimmed.slice(0, commentIndex).replace(/(?<![\s;])[\s;]+$/, "");
   const comment = trimmed.slice(commentIndex);
   return `${beforeComment} LIMIT ${String(limit)} ${comment}`;
 }

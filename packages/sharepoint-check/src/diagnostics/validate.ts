@@ -3,8 +3,8 @@ import { getDriveItemByPath } from "../graph/drives.js";
 import type { ValidateExpectation, ValidateResult, ValidateResultEntry } from "../types.js";
 
 function joinPath(parent: string, child: string): string {
-  const normalizedParent = parent.replace(/^\/+|\/+$/g, "");
-  const normalizedChild = child.replace(/^\/+|\/+$/g, "");
+  const normalizedParent = parent.replace(/^\/+|(?<!\/)\/+$/g, "");
+  const normalizedChild = child.replace(/^\/+|(?<!\/)\/+$/g, "");
   if (normalizedParent.length === 0) {
     return normalizedChild;
   }
@@ -32,7 +32,7 @@ export async function validateLayout(
   driveId: string,
   expectation: ValidateExpectation,
 ): Promise<ValidateResult> {
-  const rootPath = expectation.rootPath.replace(/^\/+|\/+$/g, "");
+  const rootPath = expectation.rootPath.replace(/^\/+|(?<!\/)\/+$/g, "");
   const root = await probe(client, driveId, rootPath);
 
   const subdirectories: ValidateResultEntry[] = [];

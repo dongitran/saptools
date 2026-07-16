@@ -262,7 +262,7 @@ function isImageContentType(value: string): boolean {
 }
 
 function safePathSegment(value: string): string {
-  const safe = value.trim().replaceAll(/[^0-9A-Za-z._-]+/gu, "_").replaceAll(/^_+|_+$/gu, "");
+  const safe = value.trim().replaceAll(/[^0-9A-Za-z._-]+/gu, "_").replaceAll(/^_+|(?<!_)_+$/gu, "");
   return safe.length === 0 ? "unknown" : safe;
 }
 

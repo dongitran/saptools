@@ -26,7 +26,7 @@ function stripGitSuffix(value: string): string {
 }
 
 function repoNameFromPath(value: string): string {
-  const withoutTrailingSlash = value.replace(/\/+$/, "");
+  const withoutTrailingSlash = value.replace(/(?<!\/)\/+$/, "");
   return stripGitSuffix(basename(withoutTrailingSlash));
 }
 
@@ -42,7 +42,7 @@ function parseHttpRepoRef(input: string): RepoRef | undefined {
         "Repo URL must not include embedded credentials; pass --token or set GITPORT_GITLAB_TOKEN",
       );
     }
-    const normalizedPath = url.pathname.replace(/^\/+/, "").replace(/\/+$/, "");
+    const normalizedPath = url.pathname.replace(/^\/+/, "").replace(/(?<!\/)\/+$/, "");
     const projectPath = stripGitSuffix(decodeURIComponent(normalizedPath));
     if (projectPath.length === 0) {
       throw new GitportError(GITPORT_ERROR_CODE.InvalidInput, `Invalid repo URL: ${input}`);
@@ -105,9 +105,9 @@ function normalizeMergeRequestInput(input: string): string {
     const url = new URL(input);
     url.search = "";
     url.hash = "";
-    return url.toString().replace(/\/+$/, "");
+    return url.toString().replace(/(?<!\/)\/+$/, "");
   } catch {
-    return input.replace(/\/+$/, "");
+    return input.replace(/(?<!\/)\/+$/, "");
   }
 }
 

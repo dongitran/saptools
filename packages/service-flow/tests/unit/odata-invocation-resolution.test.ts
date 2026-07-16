@@ -105,6 +105,10 @@ describe('OData operation invocation resolution', () => {
       });
       expect(entityRow?.edgeType).not.toContain('OPERATION');
     }
+    const mediaEvidence = JSON.parse(
+      rows.find((row) => row.path === "/Documents('1')/$value")?.evidenceJson ?? '{}',
+    ) as unknown;
+    expect(mediaEvidence).toMatchObject({ remoteEntityAccess: 'remote_entity_media' });
     db.close();
   });
 });

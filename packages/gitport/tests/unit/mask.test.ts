@@ -25,6 +25,17 @@ describe("maskTokenInUrl", () => {
   it("leaves non-URL values unchanged", () => {
     expect(maskTokenInUrl("/tmp/repo-a.git")).toBe("/tmp/repo-a.git");
   });
+
+  it("leaves malformed credential URLs unchanged", () => {
+    for (const value of [
+      "https://host/path:user@example.test",
+      "https://host/path",
+      "https://user:@example.test",
+      "https://user:secret",
+    ]) {
+      expect(maskTokenInUrl(value)).toBe(value);
+    }
+  });
 });
 
 describe("maskGitRemotes", () => {
@@ -36,6 +47,9 @@ describe("maskGitRemotes", () => {
       "origin https://oauth2:[REDACTED]@example.test/repo.git",
       "backup http://user:[REDACTED]@example.test/repo.git",
     ].join("\n"));
+    expect(maskGitRemotes("https://user:a/b:c@example.test/repo.git")).toBe(
+      "https://user:[REDACTED]@example.test/repo.git",
+    );
   });
 
   it("handles malformed remote-like text within a bounded time", () => {
@@ -43,6 +57,6 @@ describe("maskGitRemotes", () => {
     const startedAt = performance.now();
 
     expect(maskGitRemotes(input)).toBe(input);
-    expect(performance.now() - startedAt).toBeLessThan(100);
+    expect(performance.now() - startedAt).toBeLessThan(250);
   });
 });

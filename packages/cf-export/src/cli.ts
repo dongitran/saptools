@@ -72,10 +72,10 @@ function parseCfTargetOutput(stdout: string): { region?: string; org?: string; s
 
   let region: string | undefined;
   if (apiEndpoint) {
-    const normalized = apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+    const normalized = apiEndpoint.trim().replace(/(?<!\/)\/+$/, "").toLowerCase();
     for (const [key, reg] of Object.entries(REGIONS)) {
       const regionObj = reg as { apiEndpoint?: string };
-      const regApi = regionObj.apiEndpoint?.trim().replace(/\/+$/, "").toLowerCase();
+      const regApi = regionObj.apiEndpoint?.trim().replace(/(?<!\/)\/+$/, "").toLowerCase();
       if (regApi === normalized) {
         region = key;
         break;

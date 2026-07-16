@@ -44,7 +44,7 @@ export interface RemoteMutationResult extends RemoteWorkbookResult {
 }
 
 function normalizeWorkbookPath(path: string): string {
-  const normalized = path.trim().replace(/^\/+|\/+$/g, "");
+  const normalized = path.trim().replace(/^\/+|(?<!\/)\/+$/g, "");
   if (normalized.length === 0) {
     throw new Error("Workbook path is required");
   }

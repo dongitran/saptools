@@ -65,7 +65,7 @@ export function getApiEndpointForRegion(regionKey: string): string | undefined {
 }
 
 export function getRegionKeyForApi(apiEndpoint: string): string | undefined {
-  const normalized = apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+  const normalized = apiEndpoint.trim().replace(/(?<!\/)\/+$/, "").toLowerCase();
   for (const [key, api] of Object.entries(REGION_API_MAP)) {
     if (api.toLowerCase() === normalized) {
       return key;

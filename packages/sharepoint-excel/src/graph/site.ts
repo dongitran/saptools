@@ -53,7 +53,7 @@ export function parseSiteRef(input: string): SharePointSiteRef {
     throw new Error("Site reference is empty");
   }
   const { hostname, rawPath } = parseSiteInput(trimmed);
-  const sitePath = decodeSitePath(rawPath.replace(/^\/+|\/+$/g, ""), trimmed);
+  const sitePath = decodeSitePath(rawPath.replace(/^\/+|(?<!\/)\/+$/g, ""), trimmed);
   if (hostname.length === 0 || sitePath.length === 0) {
     throw new Error(`Invalid site reference "${trimmed}". Missing hostname or site path`);
   }

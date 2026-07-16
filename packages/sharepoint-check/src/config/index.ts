@@ -85,7 +85,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): ResolvedConfi
   if (options.requireRoot === true && rootRaw === undefined) {
     throw new Error(`Root directory is required (pass --root or set ${ENV_ROOT})`);
   }
-  const rootPath = (rootRaw ?? "").replace(/^\/+|\/+$/g, "");
+  const rootPath = (rootRaw ?? "").replace(/^\/+|(?<!\/)\/+$/g, "");
   const subdirectories = parseSubdirs(pickValue(overrides.subdirs, ENV_SUBDIRS, env));
 
   return {

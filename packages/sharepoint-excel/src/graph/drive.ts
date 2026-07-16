@@ -110,7 +110,7 @@ export async function getDriveItemByPath(
   driveId: string,
   relativePath: string,
 ): Promise<DriveItemSummary | null> {
-  const normalized = relativePath.replace(/^\/+|\/+$/g, "");
+  const normalized = relativePath.replace(/^\/+|(?<!\/)\/+$/g, "");
   const path =
     normalized.length === 0
       ? `/drives/${encodeURIComponent(driveId)}/root`
@@ -130,7 +130,7 @@ export async function downloadDriveFile(
   driveId: string,
   relativePath: string,
 ): Promise<Uint8Array> {
-  const encodedPath = encodeDrivePath(relativePath.replace(/^\/+|\/+$/g, ""));
+  const encodedPath = encodeDrivePath(relativePath.replace(/^\/+|(?<!\/)\/+$/g, ""));
   return await client.requestBytes(`/drives/${encodeURIComponent(driveId)}/root:/${encodedPath}:/content`, {
     headers: { Accept: XLSX_CONTENT_TYPE },
   });
@@ -141,7 +141,7 @@ async function createUploadSession(
   driveId: string,
   relativePath: string,
 ): Promise<string> {
-  const encodedPath = encodeDrivePath(relativePath.replace(/^\/+|\/+$/g, ""));
+  const encodedPath = encodeDrivePath(relativePath.replace(/^\/+|(?<!\/)\/+$/g, ""));
   const response = await client.requestJson<UploadSessionResponse>(
     `/drives/${encodeURIComponent(driveId)}/root:/${encodedPath}:/createUploadSession`,
     {
@@ -187,7 +187,7 @@ export async function replaceDriveFile(
   eTag: string,
   bytes: Uint8Array,
 ): Promise<DriveItemSummary> {
-  const encodedPath = encodeDrivePath(relativePath.replace(/^\/+|\/+$/g, ""));
+  const encodedPath = encodeDrivePath(relativePath.replace(/^\/+|(?<!\/)\/+$/g, ""));
   const raw = await client.requestJson<RawDriveItem>(
     `/drives/${encodeURIComponent(driveId)}/root:/${encodedPath}:/content`,
     {

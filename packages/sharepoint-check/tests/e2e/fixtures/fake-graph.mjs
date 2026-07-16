@@ -26,8 +26,10 @@ function readScenario() {
 }
 
 function normalizePath(input) {
-  return input.replace(/^\/+|\/+$/g, "");
+  return input.replace(/^\/+|(?<!\/)\/+$/g, "");
 }
+
+const INTERNAL_ERROR_MESSAGE = "An internal fake Graph error occurred";
 
 function findFolder(root, segments) {
   let node = root;
@@ -377,12 +379,12 @@ const server = createServer((req, res) => {
         return;
       }
       await dispatchGraph(req, pathname, res, scenario);
-    } catch (err) {
-      sendError(res, 500, "internalError", err instanceof Error ? err.message : String(err));
+    } catch {
+      sendError(res, 500, "internalError", INTERNAL_ERROR_MESSAGE);
     }
-  })().catch((err) => {
+  })().catch(() => {
     try {
-      sendError(res, 500, "internalError", err instanceof Error ? err.message : String(err));
+      sendError(res, 500, "internalError", INTERNAL_ERROR_MESSAGE);
     } catch {}
   });
 });

@@ -64,12 +64,12 @@ function parseRetryAfter(header: string | null): number | undefined {
 
 function resolveBaseUrl(options: GraphClientOptions): string {
   if (options.baseUrl !== undefined && options.baseUrl.length > 0) {
-    return options.baseUrl.replace(/\/+$/, "");
+    return options.baseUrl.replace(/(?<!\/)\/+$/, "");
   }
   const fromEnv = (options.env ?? process.env)[ENV_GRAPH_BASE];
   return fromEnv === undefined || fromEnv.length === 0
     ? DEFAULT_GRAPH_BASE
-    : fromEnv.replace(/\/+$/, "");
+    : fromEnv.replace(/(?<!\/)\/+$/, "");
 }
 
 function resolveUrl(base: string, path: string, includeAuthorization: boolean): string {

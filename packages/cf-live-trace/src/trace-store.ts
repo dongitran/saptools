@@ -415,12 +415,12 @@ function targetSlug(target: TraceTargetIdentity): string {
     return fullSlug;
   }
   const hash = createHash("sha256").update(fullSlug).digest("hex").slice(0, 12);
-  const prefix = fullSlug.slice(0, MAX_TARGET_SLUG_BYTES - hash.length - 1).replace(/-+$/, "");
+  const prefix = fullSlug.slice(0, MAX_TARGET_SLUG_BYTES - hash.length - 1).replace(/(?<!-)-+$/, "");
   return `${prefix}-${hash}`;
 }
 
 function sanitizePathPart(value: string): string {
-  const sanitized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  const sanitized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|(?<!-)-+$/g, "");
   return sanitized.length === 0 ? "unknown" : sanitized;
 }
 

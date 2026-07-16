@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -82,6 +83,15 @@ describe("internals.normalizeFilerPath", () => {
   it("leaves plain paths unchanged", async () => {
     const { internals } = await import("../../src/download-folder.js");
     expect(internals.normalizeFilerPath("deps/@vendor")).toBe("deps/@vendor");
+  });
+
+  it("normalizes adversarial filter paths within a bounded time", async () => {
+    const { internals } = await import("../../src/download-folder.js");
+    const filterPath = `deps${"/".repeat(50_000)}file`;
+    const startedAt = performance.now();
+
+    expect(internals.normalizeFilerPath(filterPath)).toBe(filterPath);
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 
   it("rejects parent traversal segments", async () => {

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -32,6 +33,15 @@ describe("Jira issue image files", () => {
 
     expect(directory).toContain(join(tmpdir(), "saptools-jira", "issue-images"));
     expect(directory).toContain("OPS_123_bad_key");
+  });
+
+  it("sanitizes adversarial issue keys within a bounded time", () => {
+    const issueKey = `OPS${"_".repeat(50_000)}123`;
+    const startedAt = performance.now();
+    const directory = createJiraIssueImageOutputDir(issueKey);
+
+    expect(directory).toContain(issueKey);
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 
   it("saves direct image responses with file URLs", async () => {

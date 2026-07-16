@@ -1,4 +1,5 @@
 import type { Db } from '../db/connection.js';
+import { extractPlaceholderKeys } from '../utils/001-placeholders.js';
 import { canonicalImplementationEvidence } from './000-implementation-candidates.js';
 export interface OperationTarget {
   operationId: number;
@@ -72,7 +73,8 @@ export function resolveOperation(
   },
   workspaceId?: number,
 ): OperationResolution {
-  const missing = [signals.servicePath, signals.alias, signals.destination, signals.operationPath].flatMap((value) => [...(value ?? '').matchAll(/\$\{([^}]*)\}/g)].map((match) => (match[1] ?? '').trim())).filter(Boolean);
+  const missing = [signals.servicePath, signals.alias, signals.destination, signals.operationPath]
+    .flatMap(extractPlaceholderKeys);
   if (missing.length > 0)
     return {
       status: 'dynamic',

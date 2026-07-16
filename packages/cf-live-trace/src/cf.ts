@@ -267,7 +267,7 @@ function regionKeyForApiEndpoint(apiEndpoint: string): string | undefined {
 }
 
 function normalizeApiEndpoint(apiEndpoint: string): string {
-  return apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+  return apiEndpoint.trim().replace(/(?<!\/)\/+$/, "").toLowerCase();
 }
 
 function parseSshStatus(stdout: string): "enabled" | "disabled" {

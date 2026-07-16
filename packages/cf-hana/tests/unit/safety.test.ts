@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it } from "vitest";
 
 import { applyAutoLimit, evaluateGuard, inspectStatement } from "../../src/safety.js";
@@ -124,6 +126,19 @@ describe("applyAutoLimit", () => {
 
   it("strips a trailing semicolon before appending LIMIT", () => {
     expect(applyAutoLimit("SELECT * FROM T;", 10).sql).toBe("SELECT * FROM T LIMIT 11");
+  });
+
+  it("handles adversarial trailing SQL text within a bounded time", () => {
+    const sql = `SELECT 1${"\t".repeat(50_000)}x`;
+    const startedAt = performance.now();
+
+    expect(applyAutoLimit(sql, 10).sql).toBe(`${sql} LIMIT 11`);
+    expect(performance.now() - startedAt).toBeLessThan(150);
+  });
+
+  it("removes mixed whitespace and semicolons before a limit or trailing comment", () => {
+    expect(applyAutoLimit("SELECT 1; \t;\n", 10).sql).toBe("SELECT 1 LIMIT 11");
+    expect(applyAutoLimit("SELECT 1; \t; -- note", 10).sql).toBe("SELECT 1 LIMIT 11 -- note");
   });
 
   it("does not touch a SELECT that already has a LIMIT", () => {

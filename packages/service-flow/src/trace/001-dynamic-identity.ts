@@ -1,4 +1,5 @@
 import type { Db } from '../db/connection.js';
+import { scanPlaceholders } from '../utils/001-placeholders.js';
 import type {
   DynamicTargetCandidate,
   DynamicTemplates,
@@ -131,10 +132,11 @@ function matchIdentityTemplate(
   identity: string,
   npmPackage: boolean,
 ): { key: string; value: string; normalizedIdentity: string } | undefined {
-  const matches = [...template.matchAll(/\$\{([^}]*)\}/g)];
-  if (matches.length !== 1 || !matches[0]?.[1]) return undefined;
-  const placeholder = matches[0][0];
-  const sentinel = 'dynamicplaceholdertoken';
+  const matches = scanPlaceholders(template);
+  const matchSpan = matches[0];
+  if (matches.length !== 1 || !matchSpan?.key) return undefined;
+  const placeholder = template.slice(matchSpan.start, matchSpan.end);
+  const sentinel = 'dynamic_placeholder_token';
   const normalizedTemplate = normalizeIdentity(template.replace(placeholder, sentinel));
   const [prefix, suffix, extra] = normalizedTemplate.split(sentinel);
   if (!prefix || !suffix || extra !== undefined) return undefined;
@@ -142,7 +144,7 @@ function matchIdentityTemplate(
   const match = new RegExp(`^${escapeRegex(prefix)}([a-z0-9]+)${escapeRegex(suffix)}$`)
     .exec(normalizedIdentity);
   if (!match?.[1]) return undefined;
-  return { key: matches[0][1].trim(), value: match[1], normalizedIdentity };
+  return { key: matchSpan.key.trim(), value: match[1], normalizedIdentity };
 }
 
 function competingIdentityKeys(
@@ -292,7 +294,7 @@ function normalizeIdentity(value: string, npmPackage = false): string {
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+    .replace(/^_+|(?<!_)_+$/g, '');
 }
 
 function stringValue(value: unknown): string | undefined {

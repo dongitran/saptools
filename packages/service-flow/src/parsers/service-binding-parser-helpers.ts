@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
 import { normalizePath } from '../utils/path-utils.js';
+import { extractPlaceholderKeys } from '../utils/001-placeholders.js';
 import type { RepositorySourceContext } from './ts-project.js';
 
 export interface HelperBinding {
@@ -43,7 +44,7 @@ function stringValue(node: ts.Expression | undefined): string | undefined {
 }
 
 function placeholders(value?: string): string[] {
-  return [...(value ?? '').matchAll(/\$\{([^}]*)\}/g)].map((m) => (m[1] ?? '').trim()).filter(Boolean);
+  return extractPlaceholderKeys(value);
 }
 
 export function connectFactFromCall(call: ts.CallExpression): Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'> | undefined {

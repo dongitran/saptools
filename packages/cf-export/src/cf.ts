@@ -253,7 +253,7 @@ export async function ensureSshEnabled(appName: string, context?: CfExecContext)
 
 export function buildRemoteFilePaths(fileName: string, remoteRoot: string | undefined): readonly string[] {
   const paths: string[] = [];
-  const normalized = remoteRoot?.trim().replace(/\/+$/, "");
+  const normalized = remoteRoot?.trim().replace(/(?<!\/)\/+$/, "");
   if (normalized !== undefined && normalized.length > 0) {
     paths.push(`${normalized}/${fileName}`);
   }

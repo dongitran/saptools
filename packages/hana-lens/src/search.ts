@@ -1,3 +1,4 @@
+import { matchRegexCandidates } from "./001-regex-search.js";
 import { levenshtein } from "./levenshtein.js";
 import { findTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
 import { PACKAGE_ANNOTATION } from "./types.js";
@@ -51,9 +52,9 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
   const entries = Object.entries(csn.definitions);
   if (regexMode) {
     assertSafeRegexPattern(trimmedKeyword);
-    const pattern = new RegExp(trimmedKeyword, "iu");
+    const matches = matchRegexCandidates(trimmedKeyword, entries.map(([name]) => name));
     return entries
-      .filter(([name]) => pattern.test(name))
+      .filter((_entry, index) => matches[index] === true)
       .map(([name, definition]) => ({ name, packageName: packageNameOf(definition), score: 0 }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -76,31 +77,29 @@ export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boole
   if (regexMode) {
     assertSafeRegexPattern(trimmedKeyword);
   }
-  const pattern = regexMode ? new RegExp(trimmedKeyword, "iu") : undefined;
-
-  const results: FieldSearchResult[] = [];
+  const fields: { readonly entityName: string; readonly fieldName: string }[] = [];
   for (const [entityName, definition] of Object.entries(csn.definitions)) {
-    const elements = definition.elements;
-    if (elements === undefined) {
-      continue;
+    if (definition.elements !== undefined) {
+      fields.push(...Object.keys(definition.elements).map((fieldName) => ({ entityName, fieldName })));
     }
-    const matches = Object.keys(elements)
-      .map((fieldName) => {
-        if (pattern !== undefined) {
-          return pattern.test(fieldName) ? { entityName, exact: false, matchedField: fieldName, score: 0 } : undefined;
-        }
-        const exact = fieldName.toLowerCase() === normalizedKeyword;
-        const score = fuzzyScore(normalizedKeyword, fieldName);
-        // Keep this relevance threshold aligned with definition search above.
-        return exact || fieldName.toLowerCase().includes(normalizedKeyword) || score <= Math.max(2, Math.ceil(normalizedKeyword.length / 3))
-          ? { entityName, exact, matchedField: fieldName, score }
-          : undefined;
-      })
-      .filter((match): match is FieldSearchResult => match !== undefined)
-      .sort((a, b) => a.score - b.score || a.matchedField.localeCompare(b.matchedField));
-    results.push(...matches);
   }
-  return results.sort((a, b) => a.score - b.score
+  const regexMatches = regexMode
+    ? matchRegexCandidates(trimmedKeyword, fields.map(({ fieldName }) => fieldName))
+    : undefined;
+  return fields.map(({ entityName, fieldName }, index) => {
+    if (regexMatches !== undefined) {
+      return regexMatches[index] === true
+        ? { entityName, exact: false, matchedField: fieldName, score: 0 }
+        : undefined;
+    }
+    const exact = fieldName.toLowerCase() === normalizedKeyword;
+    const score = fuzzyScore(normalizedKeyword, fieldName);
+    // Keep this relevance threshold aligned with definition search above.
+    return exact || fieldName.toLowerCase().includes(normalizedKeyword) || score <= Math.max(2, Math.ceil(normalizedKeyword.length / 3))
+      ? { entityName, exact, matchedField: fieldName, score }
+      : undefined;
+  }).filter((match): match is FieldSearchResult => match !== undefined)
+    .sort((a, b) => a.score - b.score
     || a.entityName.localeCompare(b.entityName)
     || a.matchedField.localeCompare(b.matchedField));
 }

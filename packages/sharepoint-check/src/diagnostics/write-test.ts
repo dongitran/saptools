@@ -30,7 +30,7 @@ export async function runWriteTest(
   client: GraphClient,
   options: WriteTestOptions,
 ): Promise<WriteTestResult> {
-  const rootPath = (options.rootPath ?? "").replace(/^\/+|\/+$/g, "");
+  const rootPath = (options.rootPath ?? "").replace(/^\/+|(?<!\/)\/+$/g, "");
   const prefix = options.probePrefix ?? "sharepoint-check-probe-";
   const folderName = buildProbeName(prefix);
   const probePath = joinPath(rootPath, folderName);

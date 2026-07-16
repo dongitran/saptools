@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { parseExecutableSymbols } from '../../src/parsers/symbol-parser.js';
 import {
   discoverRepositories,
@@ -396,6 +397,14 @@ describe('service-flow parsers', () => {
     expect(redactText('authorization: Bearer token password=abc')).toContain(
       '[REDACTED]',
     );
+    expect(redactText('authorization: "Bearer abc", password=\'abc\', secret=`abc`, key:plain}'))
+      .toBe('authorization: "Bearer abc", password: [REDACTED], secret: [REDACTED], key: [REDACTED]}');
+    expect(redactText('token=\'mismatch" cookie=ok')).toBe('token=\'mismatch" cookie: [REDACTED]');
+    expect(redactText('monkey=value')).toBe('monkey: [REDACTED]');
+    const adversarial = 'key:!'.repeat(20_000);
+    const startedAt = performance.now();
+    expect(redactText(adversarial)).toBe('key: [REDACTED]');
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
   it('resolves dynamic templates', () => {
     expect(

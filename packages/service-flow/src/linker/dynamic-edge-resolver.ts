@@ -1,3 +1,5 @@
+import { extractPlaceholderKeys, scanPlaceholders } from '../utils/001-placeholders.js';
+
 export interface RuntimeSubstitution {
   original?: string;
   effective?: string;
@@ -7,8 +9,6 @@ export interface RuntimeSubstitution {
   changed: boolean;
 }
 
-const PLACEHOLDER = /\$\{([^}]*)\}/g;
-
 export function applyVariables(
   template: string | undefined,
   vars: Record<string, string>,
@@ -17,9 +17,7 @@ export function applyVariables(
 }
 
 export function extractPlaceholders(template: string | undefined): string[] {
-  return [...(template ?? '').matchAll(PLACEHOLDER)]
-    .map((m) => (m[1] ?? '').trim())
-    .filter(Boolean);
+  return extractPlaceholderKeys(template);
 }
 
 export function matchRuntimeTemplate(
@@ -50,10 +48,15 @@ export function substituteVariables(
   const placeholders = [...new Set(extractPlaceholders(template))];
   const supplied = placeholders.filter((key) => Object.hasOwn(vars, key));
   const missing = placeholders.filter((key) => !Object.hasOwn(vars, key));
-  const effective = template.replace(PLACEHOLDER, (_m, key: string) => {
-    const trimmed = key.trim();
-    return Object.hasOwn(vars, trimmed) ? vars[trimmed] ?? '' : `\${${trimmed}}`;
-  });
+  let lastIndex = 0;
+  let effective = '';
+  for (const span of scanPlaceholders(template)) {
+    const trimmed = span.key.trim();
+    const replacement = Object.hasOwn(vars, trimmed) ? vars[trimmed] ?? '' : `\${${trimmed}}`;
+    effective += template.slice(lastIndex, span.start) + replacement;
+    lastIndex = span.end;
+  }
+  effective += template.slice(lastIndex);
   return {
     original: template,
     effective,
@@ -67,10 +70,10 @@ export function substituteVariables(
 function runtimeTemplatePattern(template: string): string {
   let pattern = '';
   let lastIndex = 0;
-  for (const match of template.matchAll(PLACEHOLDER)) {
-    pattern += escapeRegex(template.slice(lastIndex, match.index));
+  for (const span of scanPlaceholders(template)) {
+    pattern += escapeRegex(template.slice(lastIndex, span.start));
     pattern += '([^/]+?)';
-    lastIndex = (match.index ?? 0) + match[0].length;
+    lastIndex = span.end;
   }
   return `${pattern}${escapeRegex(template.slice(lastIndex))}`;
 }

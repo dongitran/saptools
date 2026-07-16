@@ -31,7 +31,7 @@ Scan every matching CAP package in a workspace, virtually link local siblings, c
 - 🧾 **Dense descriptions** — preserves type parameters, arrays, enum members, keys, and computed markers in compact terminal-friendly lines
 - 🛡️ **Safe association expansion** — follows `cds.Association` and `cds.Composition` targets with depth and circular-reference guards
 - 🧩 **CLI & typed API** — core cache, search, describe, package scanning, and build functions are exported for scripts
-- 🪶 **Small + boring** — zero bundled runtime dependencies, explicit CAP compiler requirements, and no resident daemon
+- 🪶 **Small + boring** — bounded isolated regex execution with a linear-time fallback, explicit CAP compiler requirements, and no resident daemon
 
 ---
 
@@ -141,7 +141,7 @@ hana-lens search '^my\.service\..*Request$' --regex
 
 | Flag | Description |
 | --- | --- |
-| `--regex` | Treat `<keyword>` as a JavaScript regular expression and disable fuzzy matching |
+| `--regex` | Treat `<keyword>` as a case-insensitive JavaScript regular expression and disable fuzzy matching |
 
 Example output:
 

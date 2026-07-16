@@ -98,7 +98,7 @@ export async function walkFolderTree(
   options: WalkFolderTreeOptions,
 ): Promise<FolderTreeNode> {
   const limits = resolveLimits(options.limits);
-  const rootPath = (options.rootPath ?? "").replace(/^\/+|\/+$/g, "");
+  const rootPath = (options.rootPath ?? "").replace(/^\/+|(?<!\/)\/+$/g, "");
   const name = rootPath.length === 0 ? "/" : (rootPath.split("/").pop() ?? rootPath);
   const budget: WalkBudget = { remaining: limits.maxTotalEntries };
   return await walkFolder(client, options.driveId, rootPath, name, 0, limits, budget);

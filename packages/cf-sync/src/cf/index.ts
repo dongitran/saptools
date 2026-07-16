@@ -322,5 +322,5 @@ function parseCfTargetFields(stdout: string): Map<string, string> {
 }
 
 function normalizeApiEndpoint(apiEndpoint: string): string {
-  return apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
+  return apiEndpoint.trim().replace(/(?<!\/)\/+$/, "").toLowerCase();
 }
