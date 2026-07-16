@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import { describe, expect, it } from 'vitest';
 import { substituteVariables } from '../../src/linker/dynamic-edge-resolver.js';
 import { resolveOperation } from '../../src/linker/service-resolver.js';
@@ -18,6 +20,16 @@ describe('runtime substitution and resolution correctness', () => {
     expect(result.effective).toBe('/svc/alpha/${operation}');
     expect(result.supplied).toEqual(['tenant']);
     expect(result.missing).toEqual(['operation']);
+  });
+
+  it('handles unmatched placeholder openers within a bounded time', () => {
+    const template = '${{|'.repeat(12_000);
+    const startedAt = performance.now();
+    const result = substituteVariables(template, {});
+
+    expect(result.effective).toBe(template);
+    expect(result.placeholders).toEqual([]);
+    expect(performance.now() - startedAt).toBeLessThan(100);
   });
 
   it('clamps explicit runtime confidence to one', () => {

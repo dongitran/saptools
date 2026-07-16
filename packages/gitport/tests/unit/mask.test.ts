@@ -1,6 +1,8 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it } from "vitest";
 
-import { maskSensitiveText, maskTokenInUrl } from "../../src/mask.js";
+import { maskGitRemotes, maskSensitiveText, maskTokenInUrl } from "../../src/mask.js";
 
 describe("maskSensitiveText", () => {
   it("redacts explicit token values from text", () => {
@@ -22,5 +24,25 @@ describe("maskTokenInUrl", () => {
 
   it("leaves non-URL values unchanged", () => {
     expect(maskTokenInUrl("/tmp/repo-a.git")).toBe("/tmp/repo-a.git");
+  });
+});
+
+describe("maskGitRemotes", () => {
+  it("redacts every credential-bearing remote URL", () => {
+    expect(maskGitRemotes([
+      "origin https://oauth2:first@example.test/repo.git",
+      "backup http://user:second@example.test/repo.git",
+    ].join("\n"))).toBe([
+      "origin https://oauth2:[REDACTED]@example.test/repo.git",
+      "backup http://user:[REDACTED]@example.test/repo.git",
+    ].join("\n"));
+  });
+
+  it("handles malformed remote-like text within a bounded time", () => {
+    const input = "http://!:!".repeat(10_000);
+    const startedAt = performance.now();
+
+    expect(maskGitRemotes(input)).toBe(input);
+    expect(performance.now() - startedAt).toBeLessThan(100);
   });
 });

@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it } from "vitest";
 
 import { resolveConfig } from "../../src/config/index.js";
@@ -73,6 +75,15 @@ describe("resolveConfig", () => {
   it("strips leading/trailing slashes from root", () => {
     const cfg = resolveConfig({ env: env({ ...baseEnv, SHAREPOINT_ROOT_DIR: "/Apps/sample/" }) });
     expect(cfg.rootPath).toBe("Apps/sample");
+  });
+
+  it("normalizes adversarial root paths within a bounded time", () => {
+    const root = `Apps${"/".repeat(50_000)}sample`;
+    const startedAt = performance.now();
+    const cfg = resolveConfig({ env: baseEnv, overrides: { root } });
+
+    expect(cfg.rootPath).toBe(root);
+    expect(performance.now() - startedAt).toBeLessThan(100);
   });
 
   it("throws when tenant is missing", () => {

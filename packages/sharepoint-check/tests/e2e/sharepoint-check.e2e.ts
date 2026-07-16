@@ -295,6 +295,28 @@ test.describe("fake-graph CLI flow", () => {
     expect(parsed.probePath.startsWith("Apps/")).toBe(true);
   });
 
+  test("User receives a generic fake-Graph response for unexpected server errors", async () => {
+    expect(server).toBeDefined();
+    const response = await fetch(
+      `http://127.0.0.1:${String(server?.port)}/v1.0/drives/drive-docs/root:/Apps:/children`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{",
+      },
+    );
+    const body = await response.text();
+
+    expect(response.status).toBe(500);
+    expect(JSON.parse(body)).toEqual({
+      error: {
+        code: "internalError",
+        message: "An internal fake Graph error occurred",
+      },
+    });
+    expect(body).not.toMatch(/SyntaxError|JSON|position|fake-graph\.mjs|\n\s+at /u);
+  });
+
   test("User can run write-test in human-readable output", async () => {
     const result = await runCli({
       args: ["write-test", "--drive", "Documents", "--root", "Apps"],

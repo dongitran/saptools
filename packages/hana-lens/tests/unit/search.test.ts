@@ -1,4 +1,6 @@
 // cspell:ignore businesrequest
+import { performance } from "node:perf_hooks";
+
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "../../src/search.js";
 import type { HanaLensCsn } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
@@ -60,6 +62,19 @@ describe("searchDefinitions", () => {
   it("surfaces invalid regular expressions and rejects empty keywords", () => {
     expect(() => searchDefinitions(ast, "[", true)).toThrow();
     expect(() => searchDefinitions(ast, "   ", false)).toThrow("Search keyword must not be empty");
+  });
+
+  it("evaluates adversarial regex searches within a bounded time", () => {
+    const adversarialName = `${"a".repeat(34)}!`;
+    const adversarialAst: HanaLensCsn = { definitions: {
+      [adversarialName]: { elements: { [adversarialName]: { type: "cds.String" } } },
+    } };
+    const startedAt = performance.now();
+
+    expect(searchDefinitions(adversarialAst, "(a|aa)+$", true)).toEqual([]);
+    expect(searchFields(adversarialAst, "(a|aa)+$", true)).toEqual([]);
+
+    expect(performance.now() - startedAt).toBeLessThan(150);
   });
 });
 
