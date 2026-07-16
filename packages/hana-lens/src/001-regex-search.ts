@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { RE2JS } from "re2js";
-
-const REGEX_TIMEOUT_MS = 250;
+const REGEX_TIMEOUT_MS = 200;
+const LINEAR_REGEX_TIMEOUT_MS = 1_000;
 const REGEX_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const WORKER_PATH = fileURLToPath(new URL("./002-regex-worker.js", import.meta.url));
+const LINEAR_WORKER_PATH = fileURLToPath(new URL("./003-linear-regex-worker.js", import.meta.url));
 
 type RegexWorkerResponse =
   | { readonly status: "ok"; readonly matches: readonly boolean[] }
@@ -49,12 +49,24 @@ function parseWorkerResponse(raw: string, candidateCount: number): RegexWorkerRe
 }
 
 function matchWithLinearEngine(pattern: string, candidates: readonly string[]): readonly boolean[] {
-  try {
-    const regex = RE2JS.compile(pattern, RE2JS.CASE_INSENSITIVE | RE2JS.LOOKBEHINDS);
-    return candidates.map((candidate) => regex.test(candidate));
-  } catch {
+  const result = spawnSync(process.execPath, [LINEAR_WORKER_PATH], {
+    encoding: "utf8",
+    env: { ...process.env, NODE_OPTIONS: "", NODE_PATH: "" },
+    input: JSON.stringify({ pattern, candidates }),
+    killSignal: "SIGKILL",
+    maxBuffer: REGEX_MAX_BUFFER_BYTES,
+    shell: false,
+    timeout: LINEAR_REGEX_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  if (result.error !== undefined || result.status !== 0 || typeof result.stdout !== "string") {
     throw new Error("Regex evaluation exceeded the safe time limit");
   }
+  const response = parseWorkerResponse(result.stdout, candidates.length);
+  if (response?.status !== "ok") {
+    throw new Error("Regex evaluation exceeded the safe time limit");
+  }
+  return response.matches;
 }
 
 function isTimeoutError(error: Error | undefined): boolean {

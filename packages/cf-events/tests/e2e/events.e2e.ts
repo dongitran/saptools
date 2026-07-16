@@ -97,8 +97,18 @@ test("events emits a space-wide JSON array with --json", async () => {
 });
 
 test("events --since uses a CF-compatible timestamp and returns recent app events", async () => {
+  const now = Date.now();
   const paths = await prepareCase(ROOT, "since-no-millis", makeScenario([
-    fakeAuditEvent({ guid: "recent", type: "audit.app.start", created_at: "2026-07-06T08:19:03Z" }),
+    fakeAuditEvent({
+      guid: "recent",
+      type: "audit.app.start",
+      created_at: new Date(now - 60 * 60_000).toISOString(),
+    }),
+    fakeAuditEvent({
+      guid: "old",
+      type: "audit.app.start",
+      created_at: new Date(now - 48 * 60 * 60_000).toISOString(),
+    }),
   ]));
   const result = await runCli(createEnv(paths), [
     "events",
