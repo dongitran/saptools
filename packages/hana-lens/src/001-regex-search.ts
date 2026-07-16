@@ -63,6 +63,9 @@ function matchWithLinearEngine(pattern: string, candidates: readonly string[]): 
     throw new Error("Regex evaluation exceeded the safe time limit");
   }
   const response = parseWorkerResponse(result.stdout, candidates.length);
+  if (response?.status === "invalid") {
+    throw new SyntaxError(response.message);
+  }
   if (response?.status !== "ok") {
     throw new Error("Regex evaluation exceeded the safe time limit");
   }

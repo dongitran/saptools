@@ -117,11 +117,11 @@ What it does:
 
 | Kind | Cached definitions |
 | --- | --- |
-| `db` (default) | Non-service-owned persistence entities plus free types/aspects. Queries and projections (including DB views), external definitions, persistence-skipped definitions, and standalone contexts are excluded. |
-| `service` | Service-owned definitions, queries/projections, external or persistence-skipped definitions, operations, and free types/aspects. Ordinary persistence entities and standalone contexts are excluded. |
+| `db` (default) | Persistence entities classified by CAP shape, including physical tables declared inside a service body, plus free types/aspects. Queries and projections (including DB views), external definitions, persistence-skipped definitions, and contexts are excluded. |
+| `service` | The non-persistence layer: service-owned definitions, queries/projections, external or persistence-skipped definitions, operations, contexts/events/annotations, and free types/aspects. Physical persistence entities are excluded even when declared inside a service body. |
 | `all` | The complete compiled model, matching the pre-0.4 cache scope. |
 
-All matching packages are still compiled before scoping. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
+All matching packages are still compiled before scoping. Together, `db` and `service` account for every `all` definition; free top-level types/aspects intentionally appear in both for reference closure. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
 
 > [!WARNING]
 > `--allow-fallback` cannot reliably identify service ownership, queries/projections, or CAP persistence flags. Its `db` and `service` scopes are therefore incomplete in addition to the parser limitations described above; any fallback use prints a degraded-cache warning to stderr.
@@ -137,11 +137,12 @@ Search through cached `csn.definitions` keys and print up to 10 matches in dense
 hana-lens search BusinessReq
 hana-lens search businessrequest
 hana-lens search '^my\.service\..*Request$' --regex
+hana-lens search '^BusinessRequest$' --regex
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--regex` | Treat `<keyword>` as a case-insensitive JavaScript regular expression and disable fuzzy matching |
+| `--regex` | Treat `<keyword>` verbatim as a case-insensitive regular expression and disable fuzzy matching |
 
 Example output:
 
@@ -150,7 +151,7 @@ my.service.BusinessRequest|@my-cap/sales
 my.service.BusinessRequestItem|@my-cap/sales
 ```
 
-Default mode is case-insensitive and typo-tolerant, ordered by fuzzy score and then definition name. Substring matches are retained, while distant fuzzy guesses are filtered out, so an unrelated query can return no rows. Regex mode is best for exact namespaces, suffixes, or naming conventions; its matches are ordered by definition name. The typed API returns the full sorted match set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
+Default mode is case-insensitive and typo-tolerant, ordered by fuzzy score and then definition name. Substring matches are retained, while distant fuzzy guesses are filtered out. A query with no results prints `No matches for "<keyword>"`. Regex mode tests both each fully qualified definition name and its final segment, so `^BusinessRequest$` can match `my.service.BusinessRequest`; matches remain deduplicated and ordered by definition name. Regex input is preserved verbatim, capped at 256 characters, and evaluated in an isolated native-JavaScript worker with a fixed timeout before a linear RE2JS fallback. This worker boundary provides the ReDoS protection; if the fallback cannot compile a JavaScript-only construct, its syntax error is reported. The typed API returns the full sorted match set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
 
 ### 🔎 `hana-lens search-field <keyword> [--regex]`
 
@@ -162,6 +163,8 @@ Field matching "status" found in:
 - my.service.BusinessRequest (matched: statusText)
 ```
 
+When no field matches, the command prints `No field matches for "<keyword>"` and exits successfully.
+
 ### 🔗 `hana-lens references <entity_name>`
 
 List definitions that point to an entity through an association/composition or a projection/query source. Direct references name the field; projection/query sources use the stable `(projection)` marker and appear once per source.
@@ -172,7 +175,7 @@ Incoming References to [my.master.Customer]:
 - my.service.CustomerView (via field: (projection))
 ```
 
-Rows are sorted by entity and field. The CLI shows at most 25 rows, then appends `... showing 25 of M references` when truncated. Requesting an entity absent from the cache fails with `Entity not found: <name>`.
+Rows are sorted by entity and field. An exact fully qualified name wins over longer suffix matches. A unique short name resolves directly; when a short name matches multiple definitions, the CLI explicitly lists the bounded candidate set and states that the displayed references are their union. The CLI shows at most 25 rows, then appends `... showing 25 of M references` when truncated. Requesting an entity absent from the cache fails with `Entity not found: <name>`.
 
 ### 🧾 `hana-lens describe <definition_name> [--expand]`
 
@@ -181,6 +184,7 @@ Print one cached definition without padded columns, tables, or emojis.
 ```bash
 hana-lens describe my.service.BusinessRequest
 hana-lens describe my.service.BusinessRequest --expand
+hana-lens describe BusinessRequest
 ```
 
 | Flag | Description |
@@ -202,6 +206,8 @@ items: cds.Composition to many my.service.BusinessRequestItem ON [items.requestI
 ```
 
 `[PK]` marks `key: true`; `[computed]` marks `@Core.Computed`; both appear when both properties are present. Associations and compositions include their target, add `many` for to-many cardinality, and append a valid `ON` expression when present. Expansion reports compact `missing`, `ambiguous`, or `circular` markers when a target cannot be expanded safely.
+
+`describe` accepts either an exact fully qualified name or a unique final segment. Ambiguous short names fail with a deterministic, bounded candidate list and ask for the full name instead of selecting an arbitrary definition.
 
 Definitions without elements retain their useful type information. Scalar and association typedefs use the same type text as fields, enums include assigned values when they differ from their key, and actions/functions start with `(action)`/`(function)` before their parameters and return type:
 
@@ -328,6 +334,21 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 ---
 
 ## 🗒️ Changelog
+
+### `0.4.2` — Scope correctness and read-command consistency
+
+- classifies plain service-local entities by persistence shape before service ownership, retaining physical CAP tables in the default `db` cache
+- makes `db`/`service` scope coverage complete by routing contexts, events, annotations, and other non-persistence definitions to `service`
+- removes the obsolete nested-quantifier regex heuristic while preserving the parent length error and isolated worker timeout plus linear fallback
+- preserves whitespace-significant regexes, matches definition regexes against both FQNs and final segments, and surfaces linear-engine compile errors honestly
+- resolves unique short names in `describe`, reports deterministic ambiguity, gives exact reference targets precedence, and discloses multi-target reference unions
+- prints explicit no-match messages for definition and field searches while preserving the existing 10/25/25 result caps
+
+### `0.4.1` — Regex execution hardening
+
+- isolates native JavaScript regex evaluation in a bounded worker with a 200 ms timeout and forced termination
+- falls back to the linear RE2JS engine after native timeouts while preserving native JavaScript matching as the primary path
+- validates worker requests and responses, clears inherited Node injection variables, and keeps invalid-pattern errors deterministic
 
 ### `0.4.0` — RC2 A+B
 

@@ -51,6 +51,13 @@ function isFreeSupportKind(kind: unknown): boolean {
   return kind === "type" || kind === "aspect";
 }
 
+function isPersistenceEntity(definition: Record<string, unknown>): boolean {
+  const hasServiceShape = hasProjectionShape(definition)
+    || definition["@cds.external"] === true
+    || definition["@cds.persistence.skip"] === true;
+  return definition["kind"] === "entity" && !hasServiceShape;
+}
+
 function isInScope(
   name: string,
   definition: Record<string, unknown>,
@@ -60,22 +67,17 @@ function isInScope(
   if (kind === CACHE_KINDS.ALL) {
     return true;
   }
+  // CAP persists plain entities declared inside service bodies, so shape must win over ownership.
+  if (isPersistenceEntity(definition)) {
+    return kind === CACHE_KINDS.DB;
+  }
   if (isServiceOwned(name, serviceNames)) {
     return kind === CACHE_KINDS.SERVICE;
   }
   if (isFreeSupportKind(definition["kind"])) {
     return true;
   }
-  const hasServiceShape = hasProjectionShape(definition)
-    || definition["@cds.external"] === true
-    || definition["@cds.persistence.skip"] === true;
-  if (kind === CACHE_KINDS.DB) {
-    return definition["kind"] === "entity" && !hasServiceShape;
-  }
-  return hasServiceShape
-    || definition["kind"] === "service"
-    || definition["kind"] === "action"
-    || definition["kind"] === "function";
+  return kind === CACHE_KINDS.SERVICE;
 }
 
 function filterDefinitions(

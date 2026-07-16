@@ -1,4 +1,4 @@
-import { isAssociationElement, resolveTarget } from "./targets.js";
+import { findPreferredTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
 import type { HanaLensCsn, HanaLensDefinition, HanaLensElement } from "./types.js";
 
 const MAX_EXPAND_DEPTH = 2;
@@ -236,9 +236,30 @@ function describeDefinition(csn: HanaLensCsn, definition: HanaLensDefinition, ex
 }
 
 export function describeEntity(csn: HanaLensCsn, entityName: string, expand: boolean, withAnnotations = false): string {
-  const definition = csn.definitions[entityName];
-  if (definition === undefined) {
+  const candidates = findPreferredTargetCandidates(csn, entityName);
+  if (candidates.length === 0) {
     throw new Error(`Entity not found: ${entityName}`);
   }
-  return describeDefinition(csn, definition, expand, withAnnotations, 0, new Set([entityName])).join("\n");
+  if (candidates.length > 1) {
+    const names = candidates.map((candidate) => candidate.name).sort((left, right) => left.localeCompare(right));
+    const shown = names.slice(0, 5);
+    const remaining = names.length - shown.length;
+    const suffix = remaining > 0 ? `, ... (+${remaining.toString()} more)` : "";
+    throw new Error(
+      `Ambiguous name ${JSON.stringify(entityName)} matches ${names.length.toString()} definitions: `
+      + `${shown.join(", ")}${suffix}; specify the full name.`,
+    );
+  }
+  const candidate = candidates[0];
+  if (candidate === undefined) {
+    throw new Error(`Entity not found: ${entityName}`);
+  }
+  return describeDefinition(
+    csn,
+    candidate.definition,
+    expand,
+    withAnnotations,
+    0,
+    new Set([candidate.name]),
+  ).join("\n");
 }

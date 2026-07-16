@@ -108,6 +108,8 @@ async function writeScopedCacheFixture(root: string): Promise<void> {
     { csn: { definitions: {
       "acme.api.CatalogService": { kind: "service" },
       "acme.api.CatalogService.Widgets": { kind: "entity", projection: { from: { ref: ["acme.catalog.Widget"] } } },
+      "acme.api.CatalogService.UploadBuffer": { kind: "entity", elements: { ID: { type: "cds.UUID", key: true }, content: { type: "cds.LargeBinary" } } },
+      "acme.shared": { kind: "context" },
       "remote.catalog.Product": externalFromService,
     } } },
   );
@@ -225,16 +227,20 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       expect(firstDb.status).toBe(0);
       expect(firstDb.stderr).toBe("");
-      expect(firstDb.stdout).toContain("cached=2");
+      expect(firstDb.stdout).toContain("cached=3");
       expect(firstDb.stdout).toContain("compiled=2 skipped=0 via=cds kind=db");
-      expect(Object.keys((await readCache(root)).definitions)).toEqual(["acme.catalog.Status", "acme.catalog.Widget"]);
+      expect(Object.keys((await readCache(root)).definitions)).toEqual([
+        "acme.catalog.Status",
+        "acme.catalog.Widget",
+        "acme.api.CatalogService.UploadBuffer",
+      ]);
       expect(secondDbCache).toBe(firstDbCache);
       expect(secondDb.stdout).toBe(firstDb.stdout);
       expect(secondDb.stderr).toBe(firstDb.stderr);
 
       const all = runBuild(root, ["--kind", "all"]);
       expect(all.status).toBe(0);
-      expect(all.stdout).toContain("cached=5");
+      expect(all.stdout).toContain("cached=7");
       expect(all.stdout).toContain("compiled=2 skipped=0 via=cds kind=all");
       expect(all.stderr).toContain("WARNING: 1 definition name(s) defined differently in >1 package");
       expect(Object.keys((await readCache(root)).definitions)).toEqual([
@@ -243,17 +249,20 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
         "remote.catalog.Product",
         "acme.api.CatalogService",
         "acme.api.CatalogService.Widgets",
+        "acme.api.CatalogService.UploadBuffer",
+        "acme.shared",
       ]);
 
       const service = runBuild(root, ["--kind", "service"]);
       expect(service.status).toBe(0);
-      expect(service.stdout).toContain("cached=4");
+      expect(service.stdout).toContain("cached=5");
       expect(service.stdout).toContain("compiled=2 skipped=0 via=cds kind=service");
       expect(Object.keys((await readCache(root)).definitions)).toEqual([
         "acme.catalog.Status",
         "remote.catalog.Product",
         "acme.api.CatalogService",
         "acme.api.CatalogService.Widgets",
+        "acme.shared",
       ]);
 
       await rm(path.join(root, CACHE_FILE_NAME), { force: true });
@@ -456,6 +465,14 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(regex.status).toBe(0);
       expect(regex.stdout).toBe("demo.master.Customer|@demo/master\n");
 
+      const shortRegex = runCli(["search", "^Customer$", "--regex"], root);
+      expect(shortRegex.status).toBe(0);
+      expect(shortRegex.stdout).toBe("demo.master.Customer|@demo/master\n");
+
+      const groupedRegex = runCli(["search", "^(demo\\.master\\..*)?Customer$", "--regex"], root);
+      expect(groupedRegex.status).toBe(0);
+      expect(groupedRegex.stdout).toBe("demo.master.Customer|@demo/master\n");
+
       const limited = runCli(["search", "demo"], root);
       expect(limited.status).toBe(0);
       expect(limited.stdout.trim().split("\n")).toHaveLength(11);
@@ -468,7 +485,7 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       const empty = runCli(["search", "NeverMatches$", "--regex"], root);
       expect(empty.status).toBe(0);
-      expect(empty.stdout).toBe("");
+      expect(empty.stdout).toBe('No matches for "NeverMatches$"\n');
 
       const invalidRegex = runCli(["search", "[", "--regex"], root);
       expect(invalidRegex.status).toBe(1);
@@ -481,6 +498,8 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       await writeCache(root, { definitions: {
         "demo.sales.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/sales", elements: { reqID: { key: true, type: "cds.String", length: 36 }, tenantID: { key: true, type: "cds.String", length: 36 }, createdAt: { "@Core.Computed": true, type: "cds.Timestamp" }, generatedID: { key: true, "@Core.Computed": true, type: "cds.UUID" }, amount: { type: "cds.Decimal", precision: 3, scale: 1 }, history: { items: { type: "cds.Map" } }, labels: { items: { elements: { value: { type: "cds.String" }, label: { type: "cds.String" } } } }, status: { type: "cds.String", enum: { ACTIVE: { val: "A" }, INACTIVE: { val: "INACTIVE" } }, "@readonly": true, "@title": "Status" }, statusText: { type: "cds.String" }, customer: { type: "cds.Association", target: "Customer", on: [{ ref: ["customer", "ID"] }, "=", { ref: ["customerID"] }, "and", { ref: ["customer", "tenantID"] }, "=", { ref: ["tenantID"] }] }, missing: { type: "cds.Composition", target: "demo.master.Missing", cardinality: { max: "*" } } } },
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
+        "demo.other.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/other", elements: { ID: { key: true, type: "cds.UUID" } } },
+        "demo.other.RequestAudit": { [PACKAGE_ANNOTATION]: "@demo/other", elements: { request: { type: "cds.Association", target: "demo.other.BusinessRequest" } } },
         "demo.sales.BusinessRequestView": { [PACKAGE_ANNOTATION]: "@demo/service", kind: "entity", projection: { from: { ref: ["demo.sales.BusinessRequest"] } } },
         "demo.common.RequestStatus": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", enum: { SUBMITTED: { val: "S" }, REJECTED: { val: "REJECTED" } } },
         "demo.common.UserName": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", length: 255 },
@@ -512,9 +531,27 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(references.status).toBe(0);
       expect(references.stdout).toBe("Incoming References to [demo.sales.BusinessRequest]:\n- demo.master.Customer (via field: request)\n- demo.sales.BusinessRequestView (via field: (projection))\n");
 
+      const shortReferences = runCli(["references", "BusinessRequest"], root);
+      expect(shortReferences.status).toBe(0);
+      expect(shortReferences.stdout).toContain('Note: "BusinessRequest" matched 2 definitions (demo.other.BusinessRequest, demo.sales.BusinessRequest); references below are the union.');
+      expect(shortReferences.stdout).toContain("- demo.master.Customer (via field: request)");
+      expect(shortReferences.stdout).toContain("- demo.other.RequestAudit (via field: request)");
+
+      const shortDescribe = runCli(["describe", "Customer"], root);
+      expect(shortDescribe.status).toBe(0);
+      expect(shortDescribe.stdout).toContain("[PK] ID: cds.Integer");
+
+      const ambiguousDescribe = runCli(["describe", "BusinessRequest"], root);
+      expect(ambiguousDescribe.status).toBe(1);
+      expect(ambiguousDescribe.stderr).toContain('Ambiguous name "BusinessRequest" matches 2 definitions');
+
       const fieldSearch = runCli(["search-field", "status"], root);
       expect(fieldSearch.status).toBe(0);
       expect(fieldSearch.stdout).toBe('Field matching "status" found in:\n- demo.sales.BusinessRequest (exact: status)\n- demo.sales.BusinessRequest (matched: statusText)\n');
+
+      const emptyFieldSearch = runCli(["search-field", "neverMatches"], root);
+      expect(emptyFieldSearch.status).toBe(0);
+      expect(emptyFieldSearch.stdout).toBe('No field matches for "neverMatches"\n');
 
       expect(runCli(["describe", "demo.common.RequestStatus"], root).stdout).toBe('cds.String enum[SUBMITTED = "S", REJECTED]\n');
       expect(runCli(["describe", "demo.common.UserName"], root).stdout).toBe("cds.String(255)\n");
@@ -523,7 +560,7 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       const nonsense = runCli(["search", "utterly-nonsensical-query"], root);
       expect(nonsense.status).toBe(0);
-      expect(nonsense.stdout).toBe("");
+      expect(nonsense.stdout).toBe('No matches for "utterly-nonsensical-query"\n');
 
       const expanded = runCli(["describe", "demo.sales.BusinessRequest", "--expand"], root);
       expect(expanded.status).toBe(0);

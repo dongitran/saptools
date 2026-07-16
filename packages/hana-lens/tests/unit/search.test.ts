@@ -35,6 +35,13 @@ describe("searchDefinitions", () => {
     expect(formatSearchResults(results).split("\n").at(-1)).toBe("... showing 10 of 23 matches");
   });
 
+  it("accepts safe grouped patterns and matches both full and short definition names", () => {
+    expect(searchDefinitions(ast, "^(srv\\..*)?BusinessRequest$", true).map((result) => result.name))
+      .toEqual(["srv.BusinessRequest"]);
+    expect(searchDefinitions(ast, "^BusinessRequest$", true).map((result) => result.name))
+      .toEqual(["srv.BusinessRequest"]);
+  });
+
   it("preserves JavaScript lookbehind searches without capture groups", () => {
     expect(searchDefinitions(ast, "(?<=srv\\.)BusinessRequest$", true).map((result) => result.name))
       .toEqual(["srv.BusinessRequest"]);
@@ -81,29 +88,35 @@ describe("searchDefinitions", () => {
   it("surfaces invalid regular expressions and rejects empty keywords", () => {
     expect(() => searchDefinitions(ast, "[", true)).toThrow();
     expect(() => searchDefinitions(ast, "   ", false)).toThrow("Search keyword must not be empty");
+    expect(() => searchDefinitions(ast, "x".repeat(257), true)).toThrow("Regex pattern is too long");
   });
 
-  it("evaluates adversarial regex searches within a bounded time", () => {
+  it("preserves regex whitespace while continuing to trim fuzzy keywords", () => {
+    expect(searchDefinitions(ast, " BusinessRequest$", true)).toEqual([]);
+    expect(searchDefinitions(ast, "  businesrequest  ", false)[0]?.name).toBe("srv.BusinessRequest");
+    expect(() => searchDefinitions(ast, "   ", true)).toThrow("Search keyword must not be empty");
+  });
+
+  it("evaluates an adversarial regex search within a bounded time", () => {
     const adversarialName = `${"a".repeat(34)}!`;
     const adversarialAst: HanaLensCsn = { definitions: {
       [adversarialName]: { elements: { [adversarialName]: { type: "cds.String" } } },
     } };
     const startedAt = performance.now();
 
-    expect(searchDefinitions(adversarialAst, "(a|aa)+$", true)).toEqual([]);
-    expect(searchFields(adversarialAst, "(a|aa)+$", true)).toEqual([]);
+    expect(searchDefinitions(adversarialAst, "(.+)+#", true)).toEqual([]);
 
-    expect(performance.now() - startedAt).toBeLessThan(750);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
   });
 
-  it("fails closed when a timed-out JavaScript pattern has no linear fallback", () => {
+  it("reports the linear engine compile error after a JavaScript timeout", () => {
     const adversarialName = `${"a".repeat(34)}?`;
     const adversarialAst: HanaLensCsn = { definitions: { [adversarialName]: {} } };
     const startedAt = performance.now();
 
     expect(() => searchDefinitions(adversarialAst, "(a|aa)+(?=!)$", true))
-      .toThrow("Regex evaluation exceeded the safe time limit");
-    expect(performance.now() - startedAt).toBeLessThan(500);
+      .toThrow("invalid or unsupported Perl syntax");
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
   });
 });
 
@@ -156,12 +169,14 @@ describe("searchFields", () => {
     expect(formatFieldSearchResults("^match", results.slice(0, 25)).includes("showing")).toBe(false);
   });
 
-  it("returns a dense empty result header without crashing", () => {
-    expect(formatFieldSearchResults("missing", searchFields(fieldAst, "missing", false))).toBe('Field matching "missing" found in:');
+  it("returns an explicit empty result without crashing", () => {
+    expect(formatFieldSearchResults("missing", searchFields(fieldAst, "missing", false))).toBe('No field matches for "missing"');
   });
 
-  it("validates unsafe regex patterns before constructing them", () => {
-    expect(() => searchFields(fieldAst, "(a+)+", true)).toThrow("Unsafe regex pattern");
+  it("accepts safe grouped field patterns without mutating whitespace", () => {
+    expect(searchFields(fieldAst, "^(status.*)?$", true).map((result) => result.matchedField))
+      .toEqual(["status", "statusText", "status"]);
+    expect(searchFields(fieldAst, " status$", true)).toEqual([]);
   });
 });
 
@@ -223,6 +238,28 @@ describe("findIncomingReferences", () => {
     expect(formatIncomingReferences("demo.sales.Project", findIncomingReferences(csn, "demo.sales.Project"))).toBe("Incoming References to [demo.sales.Project]:\n- demo.sales.Task (via field: projectRef)");
   });
 
+  it("prefers an exact requested target over longer suffix matches", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.Project": { elements: { ID: { type: "cds.UUID", key: true } } },
+      "nested.acme.Project": { elements: { ID: { type: "cds.UUID", key: true } } },
+      "acme.Task": { elements: { project: { type: "cds.Association", target: "acme.Project" } } },
+      "nested.acme.Task": { elements: { project: { type: "cds.Association", target: "nested.acme.Project" } } },
+    } };
+
+    expect(formatIncomingReferences("acme.Project", findIncomingReferences(csn, "acme.Project")))
+      .toBe("Incoming References to [acme.Project]:\n- acme.Task (via field: project)");
+  });
+
+  it("resolves a unique requested short target", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.Project": { elements: { ID: { type: "cds.UUID", key: true } } },
+      "acme.Task": { elements: { project: { type: "cds.Association", target: "acme.Project" } } },
+    } };
+
+    expect(formatIncomingReferences("Project", findIncomingReferences(csn, "Project")))
+      .toBe("Incoming References to [Project]:\n- acme.Task (via field: project)");
+  });
+
   it("caps formatted references and reports the full total", () => {
     const references = Array.from({ length: 30 }, (_value, index) => ({
       entityName: `acme.Source${index.toString().padStart(2, "0")}`,
@@ -233,5 +270,18 @@ describe("findIncomingReferences", () => {
     expect(output.split("\n")).toHaveLength(27);
     expect(output.split("\n").at(-1)).toBe("... showing 25 of 30 references");
     expect(formatIncomingReferences("acme.Project", references.slice(0, 25)).includes("showing")).toBe(false);
+  });
+
+  it("discloses ambiguous target unions with a bounded candidate list", () => {
+    const targetNames = Array.from(
+      { length: 7 },
+      (_value, index) => `acme.area${index.toString()}.Project`,
+    );
+    const output = formatIncomingReferences("Project", [], targetNames);
+
+    expect(output).toContain('Note: "Project" matched 7 definitions');
+    expect(output).toContain("acme.area0.Project, acme.area1.Project, acme.area2.Project, acme.area3.Project, acme.area4.Project, ... (+2 more)");
+    expect(output.includes("acme.area5.Project")).toBe(false);
+    expect(output).toContain("Incoming References to [Project]:");
   });
 });

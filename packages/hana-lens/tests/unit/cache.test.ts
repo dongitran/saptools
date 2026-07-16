@@ -128,6 +128,8 @@ describe("cache kind scope", () => {
       "acme.restock": { kind: "action" },
       "acme.stockLevel": { kind: "function" },
       "acme.Model": { kind: "context" },
+      "acme.StockChanged": { kind: "event" },
+      "acme.PersistenceNote": { kind: "annotation" },
     },
   } as const;
 
@@ -160,10 +162,18 @@ describe("cache kind scope", () => {
       "acme.InventoryService",
       "acme.restock",
       "acme.stockLevel",
+      "acme.Model",
+      "acme.StockChanged",
+      "acme.PersistenceNote",
     ]);
     expect(Object.keys(all[0]?.definitions ?? {})).toEqual(Object.keys(mixedResult.definitions));
     expect(all[0]?.packageName).toBe("@acme/model");
     expect(all[0]?.via).toBe("cds");
+    const dbNames = new Set(Object.keys(db[0]?.definitions ?? {}));
+    const serviceNames = new Set(Object.keys(service[0]?.definitions ?? {}));
+    for (const name of Object.keys(all[0]?.definitions ?? {})) {
+      expect(dbNames.has(name) || serviceNames.has(name)).toBe(true);
+    }
   });
 
   it("uses the global service list and dotted ancestors without package-name heuristics", () => {
@@ -188,12 +198,15 @@ describe("cache kind scope", () => {
 
     expect(applyCacheKindFilter(results, CACHE_KINDS.DB).map((result) => Object.keys(result.definitions))).toEqual([
       [],
-      ["acme.api.InventoryService2.Stock", "acme.common.Code"],
+      [
+        "acme.api.InventoryService.Stock",
+        "acme.api.InventoryService2.Stock",
+        "acme.common.Code",
+      ],
     ]);
     expect(applyCacheKindFilter(results, CACHE_KINDS.SERVICE).map((result) => Object.keys(result.definitions))).toEqual([
       ["acme.api.InventoryService"],
       [
-        "acme.api.InventoryService.Stock",
         "acme.api.InventoryService.Code",
         "acme.api.InventoryService.Container",
         "acme.common.Code",

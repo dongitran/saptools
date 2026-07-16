@@ -6,6 +6,7 @@ import { readCache } from "./cache.js";
 import { describeEntity } from "./describe.js";
 import { parseCacheKind } from "./scope.js";
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "./search.js";
+import { findPreferredTargetCandidates } from "./targets.js";
 
 type BuildResult = Awaited<ReturnType<typeof buildCache>>;
 
@@ -108,7 +109,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     const keyword = requireArgument(args, "keyword");
     const ast = await readCache();
     const output = formatSearchResults(searchDefinitions(ast, keyword, hasFlag(args, "--regex")));
-    process.stdout.write(output.length > 0 ? `${output}\n` : "");
+    process.stdout.write(output.length > 0 ? `${output}\n` : `No matches for ${JSON.stringify(keyword)}\n`);
     return;
   }
 
@@ -122,7 +123,11 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (command === "references") {
     const entityName = requireArgument(args, "entity_name");
     const ast = await readCache();
-    process.stdout.write(`${formatIncomingReferences(entityName, findIncomingReferences(ast, entityName))}\n`);
+    const matchedTargetNames = findPreferredTargetCandidates(ast, entityName)
+      .map((candidate) => candidate.name);
+    process.stdout.write(
+      `${formatIncomingReferences(entityName, findIncomingReferences(ast, entityName), matchedTargetNames)}\n`,
+    );
     return;
   }
 

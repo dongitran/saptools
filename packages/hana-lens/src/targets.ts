@@ -27,6 +27,13 @@ export function findTargetCandidates(csn: HanaLensCsn, targetName: string): read
     .map(([name, definition]) => ({ name, definition }));
 }
 
+export function findPreferredTargetCandidates(csn: HanaLensCsn, targetName: string): readonly ResolvedTarget[] {
+  const exact = csn.definitions[targetName];
+  return exact === undefined
+    ? findTargetCandidates(csn, targetName)
+    : [{ name: targetName, definition: exact }];
+}
+
 function packageNameOf(definition: HanaLensDefinition): string | undefined {
   return definition[PACKAGE_ANNOTATION];
 }
@@ -41,12 +48,7 @@ function singleCandidate(candidates: readonly ResolvedTarget[]): ResolvedTarget 
 }
 
 export function resolveTarget(csn: HanaLensCsn, targetName: string, sourceDefinition: HanaLensDefinition): TargetResolution {
-  const exact = csn.definitions[targetName];
-  if (exact !== undefined) {
-    return resolved({ name: targetName, definition: exact });
-  }
-
-  const candidates = findTargetCandidates(csn, targetName);
+  const candidates = findPreferredTargetCandidates(csn, targetName);
   if (candidates.length === 0) {
     return { status: "missing" };
   }

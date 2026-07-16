@@ -223,6 +223,50 @@ describe("describeEntity", () => {
   it("throws for missing entities", () => {
     expect(() => describeEntity(ast, "Missing", false)).toThrow("Entity not found: Missing");
   });
+
+  it("describes a unique short name using its canonical definition", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.inventory.Stock": { elements: { ID: { key: true, type: "cds.UUID" } } },
+    } };
+
+    expect(describeEntity(csn, "Stock", false)).toBe("[PK] ID: cds.UUID");
+  });
+
+  it("rejects ambiguous short names with deterministic candidates", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.sales.BusinessPartner": { elements: { ID: { key: true, type: "cds.UUID" } } },
+      "acme.master.BusinessPartner": { elements: { ID: { key: true, type: "cds.UUID" } } },
+    } };
+    let thrown: unknown;
+    try {
+      describeEntity(csn, "BusinessPartner", false);
+    } catch (error) {
+      thrown = error;
+    }
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+
+    expect(message).toContain('Ambiguous name "BusinessPartner" matches 2 definitions');
+    expect(message).toContain("acme.master.BusinessPartner, acme.sales.BusinessPartner");
+    expect(message).toContain("specify the full name");
+  });
+
+  it("bounds long ambiguous short-name candidate lists", () => {
+    const csn: HanaLensCsn = { definitions: Object.fromEntries(Array.from(
+      { length: 7 },
+      (_value, index) => [`acme.area${index.toString()}.Stock`, { kind: "entity" }],
+    )) };
+    let thrown: unknown;
+    try {
+      describeEntity(csn, "Stock", false);
+    } catch (error) {
+      thrown = error;
+    }
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+
+    expect(message).toContain('Ambiguous name "Stock" matches 7 definitions');
+    expect(message).toContain("acme.area0.Stock, acme.area1.Stock, acme.area2.Stock, acme.area3.Stock, acme.area4.Stock, ... (+2 more)");
+    expect(message.includes("acme.area5.Stock")).toBe(false);
+  });
 });
 
 describe("formatCsnExpression", () => {

@@ -38,8 +38,15 @@ function run(): void {
     writeResponse({ status: "error" });
     return;
   }
+  let regex: RE2JS;
   try {
-    const regex = RE2JS.compile(request.pattern, RE2JS.CASE_INSENSITIVE | RE2JS.LOOKBEHINDS);
+    regex = RE2JS.compile(request.pattern, RE2JS.CASE_INSENSITIVE | RE2JS.LOOKBEHINDS);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid regular expression";
+    writeResponse({ status: "invalid", message });
+    return;
+  }
+  try {
     const matches = request.candidates.map((candidate) => regex.test(candidate) ? "1" : "0").join("");
     writeResponse({ status: "ok", matches });
   } catch {

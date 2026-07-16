@@ -1,6 +1,6 @@
 import { matchRegexCandidates } from "./001-regex-search.js";
 import { levenshtein } from "./levenshtein.js";
-import { findTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
+import { findPreferredTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
 import { PACKAGE_ANNOTATION } from "./types.js";
 import type { FieldSearchResult, HanaLensCsn, HanaLensDefinition, IncomingReference, SearchResult } from "./types.js";
 
@@ -29,36 +29,46 @@ function fuzzyScore(keyword: string, definitionName: string): number {
   }));
 }
 
-function assertSafeRegexPattern(pattern: string): void {
+function assertRegexLength(pattern: string): void {
   if (pattern.length > 256) {
     throw new Error("Regex pattern is too long");
   }
-  // Reject common catastrophic-backtracking constructs such as nested quantifiers.
-  if (/\([^)]*[+*][^)]*\)[+*?{]/u.test(pattern)) {
-    throw new Error("Unsafe regex pattern");
-  }
 }
 
-function assertKeyword(keyword: string): string {
+function assertKeyword(keyword: string, regexMode: boolean): string {
   const trimmedKeyword = keyword.trim();
   if (trimmedKeyword.length === 0) {
     throw new Error("Search keyword must not be empty");
   }
-  return trimmedKeyword;
+  return regexMode ? keyword : trimmedKeyword;
 }
 
 export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly SearchResult[] {
-  const trimmedKeyword = assertKeyword(keyword);
+  const searchKeyword = assertKeyword(keyword, regexMode);
   const entries = Object.entries(csn.definitions);
   if (regexMode) {
-    assertSafeRegexPattern(trimmedKeyword);
-    const matches = matchRegexCandidates(trimmedKeyword, entries.map(([name]) => name));
+    // Worker timeouts plus the linear fallback are the ReDoS boundary; the parent keeps only a clear length error.
+    assertRegexLength(searchKeyword);
+    const candidateGroups = entries.map(([name]) => ({ name, candidates: searchableNameParts(name) }));
+    const matches = matchRegexCandidates(
+      searchKeyword,
+      candidateGroups.flatMap((group) => group.candidates),
+    );
+    const matchingNames = new Set<string>();
+    let matchIndex = 0;
+    for (const group of candidateGroups) {
+      const nextMatchIndex = matchIndex + group.candidates.length;
+      if (matches.slice(matchIndex, nextMatchIndex).some((matched) => matched)) {
+        matchingNames.add(group.name);
+      }
+      matchIndex = nextMatchIndex;
+    }
     return entries
-      .filter((_entry, index) => matches[index] === true)
+      .filter(([name]) => matchingNames.has(name))
       .map(([name, definition]) => ({ name, packageName: packageNameOf(definition), score: 0 }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
-  const normalizedKeyword = trimmedKeyword.toLowerCase();
+  const normalizedKeyword = searchKeyword.toLowerCase();
   // Keep this relevance threshold aligned with field search below.
   const threshold = Math.max(2, Math.ceil(normalizedKeyword.length / 3));
   return entries
@@ -72,10 +82,10 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
 }
 
 export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly FieldSearchResult[] {
-  const trimmedKeyword = assertKeyword(keyword);
-  const normalizedKeyword = trimmedKeyword.toLowerCase();
+  const searchKeyword = assertKeyword(keyword, regexMode);
+  const normalizedKeyword = searchKeyword.toLowerCase();
   if (regexMode) {
-    assertSafeRegexPattern(trimmedKeyword);
+    assertRegexLength(searchKeyword);
   }
   const fields: { readonly entityName: string; readonly fieldName: string }[] = [];
   for (const [entityName, definition] of Object.entries(csn.definitions)) {
@@ -84,7 +94,7 @@ export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boole
     }
   }
   const regexMatches = regexMode
-    ? matchRegexCandidates(trimmedKeyword, fields.map(({ fieldName }) => fieldName))
+    ? matchRegexCandidates(searchKeyword, fields.map(({ fieldName }) => fieldName))
     : undefined;
   return fields.map(({ entityName, fieldName }, index) => {
     if (regexMatches !== undefined) {
@@ -125,6 +135,7 @@ function projectionSources(definition: HanaLensDefinition): readonly string[] {
         sources.add(first);
       }
     }
+    // Only source-bearing FROM/JOIN nodes count; field refs in columns or filters are not target definitions.
     visit(node["from"]);
     visit(node["SELECT"]);
     visit(node["SET"]);
@@ -138,7 +149,7 @@ function projectionSources(definition: HanaLensDefinition): readonly string[] {
 }
 
 export function findIncomingReferences(csn: HanaLensCsn, entityName: string): readonly IncomingReference[] {
-  const requestedTargets = new Set(findTargetCandidates(csn, entityName).map((candidate) => candidate.name));
+  const requestedTargets = new Set(findPreferredTargetCandidates(csn, entityName).map((candidate) => candidate.name));
   if (requestedTargets.size === 0) {
     throw new Error(`Entity not found: ${entityName}`);
   }
@@ -179,6 +190,9 @@ export function formatSearchResults(results: readonly SearchResult[]): string {
 }
 
 export function formatFieldSearchResults(keyword: string, results: readonly FieldSearchResult[]): string {
+  if (results.length === 0) {
+    return `No field matches for ${JSON.stringify(keyword)}`;
+  }
   const shown = results.slice(0, FIELD_RESULT_LIMIT);
   const lines = [`Field matching ${JSON.stringify(keyword)} found in:`];
   for (const result of shown) {
@@ -191,10 +205,26 @@ export function formatFieldSearchResults(keyword: string, results: readonly Fiel
   return lines.join("\n");
 }
 
-export function formatIncomingReferences(entityName: string, references: readonly IncomingReference[]): string {
+export function formatIncomingReferences(
+  entityName: string,
+  references: readonly IncomingReference[],
+  matchedTargetNames: readonly string[] = [],
+): string {
   const shown = references.slice(0, REFERENCE_RESULT_LIMIT);
-  const lines = [`Incoming References to [${entityName}]:`];
-  lines.push(...shown.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`));
+  const targets = [...new Set(matchedTargetNames)].sort((left, right) => left.localeCompare(right));
+  let note: string | undefined;
+  if (targets.length > 1) {
+    const visibleTargets = targets.slice(0, 5);
+    const remainingTargets = targets.length - visibleTargets.length;
+    const suffix = remainingTargets > 0 ? `, ... (+${remainingTargets.toString()} more)` : "";
+    note = `Note: ${JSON.stringify(entityName)} matched ${targets.length.toString()} definitions `
+      + `(${visibleTargets.join(", ")}${suffix}); references below are the union.`;
+  }
+  const lines = [
+    ...(note === undefined ? [] : [note]),
+    `Incoming References to [${entityName}]:`,
+    ...shown.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`),
+  ];
   if (references.length > shown.length) {
     lines.push(`... showing ${shown.length.toString()} of ${references.length.toString()} references`);
   }
