@@ -62,26 +62,91 @@ export interface BreakpointHandle {
   readonly resolvedLocations: readonly ResolvedLocation[];
 }
 
-export interface ResolvedLocation {
+export interface ScriptLocation {
   readonly scriptId: string;
-  readonly url?: string;
   readonly lineNumber: number;
   readonly columnNumber?: number;
+}
+
+export interface BreakLocation extends ScriptLocation {
+  readonly type?: string;
+}
+
+export interface ResolvedLocation extends ScriptLocation {
+  readonly url?: string;
+}
+
+export interface GetPossibleBreakpointsOptions {
+  readonly start: ScriptLocation;
+  readonly end?: ScriptLocation;
+  readonly restrictToFunction?: boolean;
+}
+
+export interface SetBreakpointAtLocationInput {
+  readonly location: ScriptLocation;
+  readonly condition?: string;
+}
+
+export interface ExactBreakpointHandle {
+  readonly breakpointId: string;
+  readonly requestedLocation: ScriptLocation;
+  readonly actualLocation: ScriptLocation;
+}
+
+export interface RemoteObjectInfo {
+  readonly type: string;
+  readonly subtype?: string;
+  readonly className?: string;
+  readonly completeness?: "truncated" | "unavailable";
+  readonly value?: unknown;
+  readonly unserializableValue?: string;
+  readonly description?: string;
+  readonly deepSerializedValue?: unknown;
+  readonly objectId?: string;
+  readonly preview?: unknown;
+  readonly customPreview?: unknown;
+}
+
+export interface StackTraceIdInfo {
+  readonly id: string;
+  readonly debuggerId?: string;
+}
+
+export interface StackTraceFrameInfo {
+  readonly functionName: string;
+  readonly scriptId: string;
+  readonly url: string;
+  readonly lineNumber: number;
+  readonly columnNumber: number;
+}
+
+export interface StackTraceInfo {
+  readonly description?: string;
+  readonly callFrames: readonly StackTraceFrameInfo[];
+  readonly parent?: StackTraceInfo;
+  readonly parentId?: StackTraceIdInfo;
 }
 
 export interface CallFrameInfo {
   readonly callFrameId: string;
   readonly functionName: string;
+  readonly scriptId?: string;
+  readonly functionLocation?: ScriptLocation;
   readonly url?: string;
   readonly lineNumber: number;
   readonly columnNumber: number;
   readonly scopeChain: readonly ScopeInfo[];
+  readonly thisObject?: RemoteObjectInfo;
+  readonly returnValue?: RemoteObjectInfo;
 }
 
 export interface ScopeInfo {
   readonly type: string;
   readonly objectId?: string;
+  readonly object?: RemoteObjectInfo;
   readonly name?: string;
+  readonly startLocation?: ScriptLocation;
+  readonly endLocation?: ScriptLocation;
 }
 
 export interface PauseEvent {
@@ -90,6 +155,9 @@ export interface PauseEvent {
   readonly callFrames: readonly CallFrameInfo[];
   readonly receivedAtMs?: number;
   readonly data?: unknown;
+  readonly asyncStackTrace?: StackTraceInfo;
+  readonly asyncStackTraceId?: StackTraceIdInfo;
+  readonly asyncCallStackTraceId?: StackTraceIdInfo;
 }
 
 export interface VariableSnapshot {
@@ -173,6 +241,19 @@ export interface WatchEvent {
 export interface ScriptInfo {
   readonly scriptId: string;
   readonly url: string;
+  readonly startLine?: number;
+  readonly startColumn?: number;
+  readonly endLine?: number;
+  readonly endColumn?: number;
+  readonly executionContextId?: number;
+  readonly hash?: string;
+  readonly buildId?: string;
+  readonly executionContextAuxData?: unknown;
+  readonly sourceMapURL?: string;
+  readonly hasSourceURL?: boolean;
+  readonly isModule?: boolean;
+  readonly length?: number;
+  readonly stackTrace?: StackTraceInfo;
 }
 
 export interface InspectorConnectOptions {

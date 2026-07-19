@@ -1,20 +1,29 @@
 export { CfInspectorError } from "./types.js";
 export type {
+  BreakLocation,
   BreakpointHandle,
   BreakpointLocation,
   CallFrameInfo,
   CapturedExpression,
   CfInspectorErrorCode,
   ExceptionSnapshot,
+  ExactBreakpointHandle,
   FrameSnapshot,
   InspectorConnectOptions,
+  GetPossibleBreakpointsOptions,
   PauseEvent,
   RemoteRootSetting,
+  RemoteObjectInfo,
   ResolvedLocation,
+  ScriptLocation,
+  SetBreakpointAtLocationInput,
   ScopeInfo,
   ScopeSnapshot,
   SnapshotCaptureResult,
   ScriptInfo,
+  StackTraceFrameInfo,
+  StackTraceIdInfo,
+  StackTraceInfo,
   SnapshotResult,
   VariableSnapshot,
   WatchEvent,
@@ -33,13 +42,21 @@ export {
   evaluateGlobal,
   evaluateOnFrame,
   fetchInspectorVersion,
+  getPossibleBreakpoints,
   getProperties,
+  getScriptSource,
   listScripts,
   removeBreakpoint,
+  releaseObject,
+  releaseObjectGroup,
   resume,
   runSetupEvals,
   setBreakpoint,
+  setBreakpointAtLocation,
   setPauseOnExceptions,
+  stepInto,
+  stepOut,
+  stepOver,
   validateExpression,
   waitForPause,
 } from "./inspector/index.js";
@@ -51,6 +68,7 @@ export type {
   InspectorWorkerTarget,
   PauseOnExceptionsState,
   SetBreakpointInput,
+  StepIntoOptions,
   WaitForPauseOptions,
 } from "./inspector/index.js";
 
@@ -72,5 +90,5 @@ export type {
   LogpointStreamResult,
 } from "./logpoint/stream.js";
 
-export { openCfTunnel } from "./cf/tunnel.js";
+export { openCfTunnel, openOwnedCfTunnel } from "./cf/tunnel.js";
 export type { OpenedTunnel, TunnelTarget } from "./cf/tunnel.js";

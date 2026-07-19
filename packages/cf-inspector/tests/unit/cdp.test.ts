@@ -104,6 +104,49 @@ describe("CdpClient", () => {
     client.dispose();
   });
 
+  it("waitFor rejects immediately when its signal is already aborted", async () => {
+    const { client } = await connect();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(client.waitFor("Debugger.paused", {
+      timeoutMs: 200,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ code: "ABORTED" });
+    client.dispose();
+  });
+
+  it("waitFor rejects when its signal aborts during an active wait", async () => {
+    const { client } = await connect();
+    const controller = new AbortController();
+    const pending = client.waitFor("Debugger.paused", {
+      timeoutMs: 200,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ code: "ABORTED" });
+    client.dispose();
+  });
+
+  it("cleans up an aborted wait so the client can wait for the same event again", async () => {
+    const { client, transport } = await connect();
+    const controller = new AbortController();
+    const aborted = client.waitFor("Debugger.paused", {
+      timeoutMs: 200,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ code: "ABORTED" });
+
+    const next = client.waitFor<{ reason: string }>("Debugger.paused", { timeoutMs: 200 });
+    transport.receive({ method: "Debugger.paused", params: { reason: "step" } });
+
+    await expect(next).resolves.toEqual({ reason: "step" });
+    client.dispose();
+  });
+
   it("rejects pending requests when the transport closes", async () => {
     const { client, transport } = await connect();
     const promise = client.send("Debugger.enable");

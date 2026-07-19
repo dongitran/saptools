@@ -1,9 +1,28 @@
 import { buildBreakpointUrlRegex } from "../pathMapper.js";
 import { CfInspectorError } from "../types.js";
-import type { BreakpointHandle, RemoteRootSetting } from "../types.js";
+import type {
+  BreakLocation,
+  BreakpointHandle,
+  ExactBreakpointHandle,
+  GetPossibleBreakpointsOptions,
+  RemoteRootSetting,
+  ScriptLocation,
+  SetBreakpointAtLocationInput,
+} from "../types.js";
 
-import { asString, toResolvedLocations } from "./conversions.js";
-import type { CdpSetBreakpointResult, InspectorSession, SetBreakpointInput } from "./types.js";
+import {
+  asString,
+  toBreakLocations,
+  toResolvedLocations,
+  toScriptLocation,
+} from "./conversions.js";
+import type {
+  CdpPossibleBreakpointsResult,
+  CdpSetBreakpointResult,
+  CdpSetExactBreakpointResult,
+  InspectorSession,
+  SetBreakpointInput,
+} from "./types.js";
 
 const HITS_GLOBAL = "globalThis.__CFI_HITS";
 let counterKeyCounter = 0;
@@ -97,4 +116,103 @@ export async function removeBreakpoint(
   breakpointId: string,
 ): Promise<void> {
   await session.client.send("Debugger.removeBreakpoint", { breakpointId });
+}
+
+function validateCoordinate(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new CfInspectorError(
+      "INVALID_ARGUMENT",
+      `${label} must be a non-negative integer, received: ${value.toString()}`,
+    );
+  }
+}
+
+function validateScriptLocation(location: ScriptLocation, label: string): void {
+  if (location.scriptId.trim().length === 0) {
+    throw new CfInspectorError("INVALID_ARGUMENT", `${label}.scriptId must not be empty`);
+  }
+  validateCoordinate(location.lineNumber, `${label}.lineNumber`);
+  if (location.columnNumber !== undefined) {
+    validateCoordinate(location.columnNumber, `${label}.columnNumber`);
+  }
+}
+
+function isSameScriptLocation(
+  requested: ScriptLocation,
+  actual: ScriptLocation,
+): boolean {
+  return requested.scriptId === actual.scriptId
+    && requested.lineNumber === actual.lineNumber
+    && (requested.columnNumber ?? 0) === (actual.columnNumber ?? 0);
+}
+
+export async function getPossibleBreakpoints(
+  session: InspectorSession,
+  options: GetPossibleBreakpointsOptions,
+): Promise<readonly BreakLocation[]> {
+  validateScriptLocation(options.start, "start");
+  if (options.end !== undefined) {
+    validateScriptLocation(options.end, "end");
+    if (options.end.scriptId !== options.start.scriptId) {
+      throw new CfInspectorError("INVALID_ARGUMENT", "start and end must refer to the same scriptId");
+    }
+  }
+  const result = await session.client.send<CdpPossibleBreakpointsResult>(
+    "Debugger.getPossibleBreakpoints",
+    {
+      start: options.start,
+      ...(options.end === undefined ? {} : { end: options.end }),
+      ...(options.restrictToFunction === undefined
+        ? {}
+        : { restrictToFunction: options.restrictToFunction }),
+    },
+  );
+  if (!Array.isArray(result.locations)) {
+    throw new CfInspectorError(
+      "CDP_REQUEST_FAILED",
+      "Debugger.getPossibleBreakpoints did not return a locations array",
+    );
+  }
+  return toBreakLocations(result.locations);
+}
+
+export async function setBreakpointAtLocation(
+  session: InspectorSession,
+  input: SetBreakpointAtLocationInput,
+): Promise<ExactBreakpointHandle> {
+  validateScriptLocation(input.location, "location");
+  const result = await session.client.send<CdpSetExactBreakpointResult>("Debugger.setBreakpoint", {
+    location: input.location,
+    ...(input.condition === undefined || input.condition.length === 0
+      ? {}
+      : { condition: input.condition }),
+  });
+  const breakpointId = asString(result.breakpointId);
+  const actualLocation = toScriptLocation(result.actualLocation);
+  const wrongLocation = actualLocation !== undefined
+    && !isSameScriptLocation(input.location, actualLocation);
+  if (breakpointId.length === 0 || actualLocation === undefined || wrongLocation) {
+    if (breakpointId.length > 0) {
+      try {
+        await removeBreakpoint(session, breakpointId);
+      } catch {
+        // The invalid binding is already unusable; preserve the validation failure.
+      }
+    }
+    if (wrongLocation) {
+      throw new CfInspectorError(
+        "INVALID_BREAKPOINT",
+        "Debugger.setBreakpoint resolved the breakpoint at a different script, line, or column",
+      );
+    }
+    throw new CfInspectorError(
+      "CDP_REQUEST_FAILED",
+      "Debugger.setBreakpoint did not return a breakpointId and actualLocation",
+    );
+  }
+  return {
+    breakpointId,
+    requestedLocation: input.location,
+    actualLocation,
+  };
 }

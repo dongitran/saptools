@@ -48,15 +48,26 @@ export interface InspectorWorkerTarget {
 export interface CdpCallFrame {
   callFrameId?: unknown;
   functionName?: unknown;
-  location?: { scriptId?: unknown; lineNumber?: unknown; columnNumber?: unknown };
+  functionLocation?: CdpLocation;
+  location?: CdpLocation;
   url?: unknown;
   scopeChain?: unknown;
+  this?: unknown;
+  returnValue?: unknown;
+}
+
+export interface CdpLocation {
+  scriptId?: unknown;
+  lineNumber?: unknown;
+  columnNumber?: unknown;
 }
 
 export interface CdpScope {
   type?: unknown;
   name?: unknown;
-  object?: { objectId?: unknown };
+  object?: unknown;
+  startLocation?: CdpLocation;
+  endLocation?: CdpLocation;
 }
 
 export interface CdpPauseParams {
@@ -64,10 +75,22 @@ export interface CdpPauseParams {
   hitBreakpoints?: unknown;
   callFrames?: unknown;
   data?: unknown;
+  asyncStackTrace?: unknown;
+  asyncStackTraceId?: unknown;
+  asyncCallStackTraceId?: unknown;
 }
 
 export interface CdpSetBreakpointResult {
   breakpointId?: unknown;
+  locations?: unknown;
+}
+
+export interface CdpSetExactBreakpointResult {
+  breakpointId?: unknown;
+  actualLocation?: unknown;
+}
+
+export interface CdpPossibleBreakpointsResult {
   locations?: unknown;
 }
 
@@ -101,6 +124,19 @@ export interface CdpProperty {
 export interface ScriptParsedParams {
   scriptId?: unknown;
   url?: unknown;
+  startLine?: unknown;
+  startColumn?: unknown;
+  endLine?: unknown;
+  endColumn?: unknown;
+  executionContextId?: unknown;
+  hash?: unknown;
+  buildId?: unknown;
+  executionContextAuxData?: unknown;
+  sourceMapURL?: unknown;
+  hasSourceURL?: unknown;
+  isModule?: unknown;
+  length?: unknown;
+  stackTrace?: unknown;
 }
 
 export interface SetBreakpointInput extends BreakpointLocation {
@@ -115,6 +151,7 @@ export interface WaitForPauseOptions {
   readonly pauseReasons?: readonly string[];
   readonly unmatchedPausePolicy?: "wait-for-resume" | "fail";
   readonly onUnmatchedPause?: (pause: PauseEvent) => void;
+  readonly signal?: AbortSignal;
 }
 
 export type { InspectorTarget } from "./discovery.js";

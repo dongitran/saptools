@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 - 2026-07-19
+
+### Exact function tracing primitives
+
+- Added loaded script metadata and exact source retrieval through `Debugger.getScriptSource`.
+- Added validated `Debugger.getPossibleBreakpoints` and exact-location breakpoint APIs with
+  requested/actual location metadata.
+- Exact-location setup now removes and rejects bindings that V8 relocates to another script, line,
+  or zero-based column.
+- Added step into/over/out and remote object/group release wrappers.
+- Preserved rich pause frames, scopes, `this`, return values, script metadata, and async stack data.
+- Remote descriptors now mark proxy values unavailable and internal-slot subtypes truncated when
+  own-property traversal cannot represent their complete logical value.
+- Made pause waits abortable without leaking event listeners or timers.
+- Forwarded Cloud Foundry process, instance, and Node PID selectors through `openCfTunnel`.
+- Added fail-closed `openOwnedCfTunnel` for consumers that must own cleanup. The existing
+  `openCfTunnel` keeps its legacy same-machine port-reuse behavior for backward compatibility.
+
 ## 0.5.0 - 2026-07-13
 
 ### Deterministic Cloud Foundry targeting

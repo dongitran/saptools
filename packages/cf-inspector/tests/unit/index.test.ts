@@ -12,17 +12,26 @@ import {
   evaluateGlobal,
   evaluateOnFrame,
   fetchInspectorVersion,
+  getPossibleBreakpoints,
   getProperties,
+  getScriptSource,
   listScripts,
   openCfTunnel,
+  openOwnedCfTunnel,
   parseBreakpointSpec,
   parseRemoteRoot,
   removeBreakpoint,
+  releaseObject,
+  releaseObjectGroup,
   resume,
   runSetupEvals,
   setBreakpoint,
+  setBreakpointAtLocation,
   setPauseOnExceptions,
   streamLogpoint,
+  stepInto,
+  stepOut,
+  stepOver,
   validateExpression,
   waitForPause,
   walkStack,
@@ -40,17 +49,26 @@ describe("public package API", () => {
     expect(evaluateGlobal).toEqual(expect.any(Function));
     expect(evaluateOnFrame).toEqual(expect.any(Function));
     expect(fetchInspectorVersion).toEqual(expect.any(Function));
+    expect(getPossibleBreakpoints).toEqual(expect.any(Function));
     expect(getProperties).toEqual(expect.any(Function));
+    expect(getScriptSource).toEqual(expect.any(Function));
     expect(listScripts).toEqual(expect.any(Function));
     expect(openCfTunnel).toEqual(expect.any(Function));
+    expect(openOwnedCfTunnel).toEqual(expect.any(Function));
     expect(parseBreakpointSpec).toEqual(expect.any(Function));
     expect(parseRemoteRoot).toEqual(expect.any(Function));
     expect(removeBreakpoint).toEqual(expect.any(Function));
+    expect(releaseObject).toEqual(expect.any(Function));
+    expect(releaseObjectGroup).toEqual(expect.any(Function));
     expect(resume).toEqual(expect.any(Function));
     expect(runSetupEvals).toEqual(expect.any(Function));
     expect(setBreakpoint).toEqual(expect.any(Function));
+    expect(setBreakpointAtLocation).toEqual(expect.any(Function));
     expect(setPauseOnExceptions).toEqual(expect.any(Function));
     expect(streamLogpoint).toEqual(expect.any(Function));
+    expect(stepInto).toEqual(expect.any(Function));
+    expect(stepOut).toEqual(expect.any(Function));
+    expect(stepOver).toEqual(expect.any(Function));
     expect(validateExpression).toEqual(expect.any(Function));
     expect(waitForPause).toEqual(expect.any(Function));
     expect(walkStack).toEqual(expect.any(Function));

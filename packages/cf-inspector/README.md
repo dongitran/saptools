@@ -422,6 +422,57 @@ cf-inspector attach --port 9229
 `attach` checks the port-level `/json/version` endpoint, so raw-target and
 worker selectors do not apply to this smoke test.
 
+### Exact CDP tracing APIs
+
+The library also exports lower-level, validated primitives for tools that need to plan and step an
+exact loaded function instead of using a URL-regex breakpoint:
+
+```ts
+const scripts = listScripts(session);
+const source = await getScriptSource(session, scripts[0].scriptId);
+const locations = await getPossibleBreakpoints(session, {
+  start: { scriptId: scripts[0].scriptId, lineNumber: 10 },
+  restrictToFunction: true,
+});
+const breakpoint = await setBreakpointAtLocation(session, { location: locations[0] });
+const pause = await waitForPause(session, {
+  timeoutMs: 30_000,
+  breakpointIds: [breakpoint.breakpointId],
+  signal: abortController.signal,
+});
+await stepOver(session);
+await releaseObject(session, objectId);
+```
+
+`ScriptLocation` and `BreakLocation` use CDP-native zero-based line and column numbers. Exact
+breakpoint setup returns both the requested and actual location, then fails closed and removes the
+breakpoint if V8 resolves a different script, line, or column. An omitted column means CDP column
+zero. `RemoteObjectInfo.completeness` is `truncated` for logical values stored in internal slots
+(including maps, sets, promises, and dates) and `unavailable` for proxies; it is omitted for
+ordinary objects. `waitForPause` accepts an `AbortSignal` and cleans its event listener and timer
+on success, timeout, abort, or session close. The same layer exports `stepInto`, `stepOver`,
+`stepOut`, `releaseObject`, and `releaseObjectGroup` for bounded controllers.
+
+Programmatic Cloud Foundry tunnels can select the same process instance and Node PID used for both
+the remote signal and SSH forwarding:
+
+```ts
+const tunnel = await openCfTunnel({
+  region: "eu10",
+  org: "my-org",
+  space: "dev",
+  app: "orders-srv",
+  process: "worker",
+  instance: 2,
+  nodePid: 4312,
+});
+```
+
+`openCfTunnel` retains backward-compatible reuse when `cf-debugger` reports a healthy local port
+for an existing session. Controllers that must prove they own and can dispose the tunnel should use
+`openOwnedCfTunnel`; it propagates `SESSION_ALREADY_RUNNING` instead of parsing or borrowing a
+pre-existing session.
+
 ---
 
 ## 🔭 How it works

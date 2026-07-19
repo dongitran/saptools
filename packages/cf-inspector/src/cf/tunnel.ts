@@ -7,6 +7,10 @@ export interface TunnelTarget {
   readonly org: string;
   readonly space: string;
   readonly app: string;
+  readonly process?: string;
+  readonly instance?: number;
+  readonly nodePid?: number;
+  readonly allowSshEnableRestart?: boolean;
   readonly tunnelReadyTimeoutMs?: number;
   readonly preferredPort?: number;
   readonly verbose?: boolean;
@@ -20,70 +24,83 @@ export interface OpenedTunnel {
   dispose(): Promise<void>;
 }
 
-export async function openCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> {
-  const opts: StartDebuggerOptions = {
-    region: target.region,
+function targetOptions(
+  target: TunnelTarget,
+): Pick<StartDebuggerOptions, "apiEndpoint" | "process" | "instance" | "nodePid"> {
+  return {
     ...(target.apiEndpoint === undefined ? {} : { apiEndpoint: target.apiEndpoint }),
-    org: target.org,
-    space: target.space,
-    app: target.app,
+    ...(target.process === undefined ? {} : { process: target.process }),
+    ...(target.instance === undefined ? {} : { instance: target.instance }),
+    ...(target.nodePid === undefined ? {} : { nodePid: target.nodePid }),
+  };
+}
+
+function lifecycleOptions(
+  target: TunnelTarget,
+): Pick<
+  StartDebuggerOptions,
+  "allowSshEnableRestart" | "tunnelReadyTimeoutMs" | "preferredPort" | "verbose" | "signal" | "onStatus"
+> {
+  return {
+    ...(target.allowSshEnableRestart === undefined ? {} : { allowSshEnableRestart: target.allowSshEnableRestart }),
     ...(target.tunnelReadyTimeoutMs === undefined ? {} : { tunnelReadyTimeoutMs: target.tunnelReadyTimeoutMs }),
     ...(target.preferredPort === undefined ? {} : { preferredPort: target.preferredPort }),
     ...(target.verbose === undefined ? {} : { verbose: target.verbose }),
     ...(target.signal === undefined ? {} : { signal: target.signal }),
     ...(target.onStatus === undefined ? {} : { onStatus: target.onStatus }),
   };
-  try {
-    const handle = await startDebugger(opts);
-    return {
-      localPort: handle.session.localPort,
-      handle,
-      dispose: async (): Promise<void> => {
-        await handle.dispose();
-      },
-    };
-  } catch (err: unknown) {
-    return reuseExistingTunnelOrThrow(err, target.onStatus);
-  }
 }
 
-function reuseExistingTunnelOrThrow(
-  err: unknown,
-  onStatus: TunnelTarget["onStatus"],
-): OpenedTunnel {
-  if (!isSessionAlreadyRunningError(err)) {
-    throw err;
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  const port = extractExistingTunnelPort(message);
-  if (port === undefined) {
-    throw err;
-  }
-  const warning = `Reusing existing tunnel on port ${port.toString()}`;
-  onStatus?.("ready", warning);
+function toStartDebuggerOptions(target: TunnelTarget): StartDebuggerOptions {
   return {
-    localPort: port,
-    dispose: (): Promise<void> => Promise.resolve(),
+    region: target.region,
+    org: target.org,
+    space: target.space,
+    app: target.app,
+    ...targetOptions(target),
+    ...lifecycleOptions(target),
   };
 }
 
-function isSessionAlreadyRunningError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) {
-    return false;
-  }
-  const code = (err as { readonly code?: unknown }).code;
-  return code === "SESSION_ALREADY_RUNNING";
+export async function openOwnedCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> {
+  const opts = toStartDebuggerOptions(target);
+  const handle = await startDebugger(opts);
+  return {
+    localPort: handle.session.localPort,
+    handle,
+    dispose: async (): Promise<void> => {
+      await handle.dispose();
+    },
+  };
 }
 
-function extractExistingTunnelPort(message: string): number | undefined {
-  const match = /on port (\d+)/i.exec(message);
-  if (match === null) {
+function isExistingSessionError(error: unknown): error is Error & { readonly code: "SESSION_ALREADY_RUNNING" } {
+  return error instanceof Error
+    && "code" in error
+    && error.code === "SESSION_ALREADY_RUNNING";
+}
+
+function existingTunnelPort(error: unknown): number | undefined {
+  if (!isExistingSessionError(error)) {
     return undefined;
   }
-  const rawPort = match[1];
+  const rawPort = /\bon port (\d+)\b/iu.exec(error.message)?.[1];
   if (rawPort === undefined) {
     return undefined;
   }
   const port = Number.parseInt(rawPort, 10);
-  return Number.isNaN(port) ? undefined : port;
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : undefined;
+}
+
+export async function openCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> {
+  try {
+    return await openOwnedCfTunnel(target);
+  } catch (error: unknown) {
+    const localPort = existingTunnelPort(error);
+    if (localPort === undefined) {
+      throw error;
+    }
+    target.onStatus?.("ready", `Reusing existing tunnel on port ${localPort.toString()}`);
+    return { localPort, dispose: (): Promise<void> => Promise.resolve() };
+  }
 }

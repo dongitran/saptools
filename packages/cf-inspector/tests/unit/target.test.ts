@@ -5,14 +5,23 @@ import { join } from "node:path";
 import process from "node:process";
 
 import type { SessionStatus } from "@saptools/cf-debugger";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { main } from "../../src/cli/program.js";
 import {
   formatCfTunnelStatus,
+  openTarget,
   resolveTarget,
   resolveTargetWithCurrentCfTarget,
 } from "../../src/cli/target.js";
+
+const mocks = vi.hoisted(() => ({
+  openCfTunnel: vi.fn(),
+}));
+
+vi.mock("../../src/cf/tunnel.js", () => ({
+  openCfTunnel: mocks.openCfTunnel,
+}));
 
 describe("Cloud Foundry tunnel progress", () => {
   it.each<readonly [SessionStatus, string]>([
@@ -29,6 +38,30 @@ describe("Cloud Foundry tunnel progress", () => {
     ["error", "Cloud Foundry inspector tunnel failed."],
   ])("maps %s without exposing raw status detail", (status, expected) => {
     expect(formatCfTunnelStatus(status)).toBe(expected);
+  });
+});
+
+describe("Cloud Foundry tunnel cancellation", () => {
+  beforeEach(() => {
+    mocks.openCfTunnel.mockReset();
+  });
+
+  it("forwards the caller abort signal while opening the tunnel", async () => {
+    const controller = new AbortController();
+    const dispose = vi.fn(async (): Promise<void> => undefined);
+    mocks.openCfTunnel.mockResolvedValueOnce({ localPort: 20_001, dispose });
+
+    const tunnel = await openTarget(
+      resolveTarget({ region: "eu10", org: "org-a", space: "dev", app: "demo" }),
+      undefined,
+      controller.signal,
+    );
+
+    expect(mocks.openCfTunnel).toHaveBeenCalledWith(expect.objectContaining({
+      signal: controller.signal,
+    }));
+    await tunnel.dispose();
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });
 

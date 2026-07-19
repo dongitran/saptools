@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openCfTunnel } from "../../src/cf/tunnel.js";
+import { openCfTunnel, openOwnedCfTunnel } from "../../src/cf/tunnel.js";
 
 const mocks = vi.hoisted(() => ({
   startDebugger: vi.fn(),
@@ -15,37 +15,73 @@ describe("openCfTunnel", () => {
     mocks.startDebugger.mockReset();
   });
 
-  it("reuses an already-running debugger tunnel when the existing port is reported", async () => {
+  it("refuses to reuse an already-running tunnel whose exact target cannot be proven", async () => {
     const err = Object.assign(new Error("A debugger session is already running on port 20000"), {
       code: "SESSION_ALREADY_RUNNING",
     });
-    const statuses: string[] = [];
     mocks.startDebugger.mockRejectedValueOnce(err);
 
-    const tunnel = await openCfTunnel({
+    await expect(openOwnedCfTunnel({
       region: "eu10",
       org: "org-a",
       space: "dev",
       app: "demo",
-      onStatus: (_status, message): void => {
-        if (message !== undefined) {
-          statuses.push(message);
-        }
-      },
-    });
+      nodePid: 314,
+    })).rejects.toBe(err);
+  });
 
-    expect(tunnel.localPort).toBe(20000);
+  it("preserves legacy verified-port reuse for existing openCfTunnel consumers", async () => {
+    const err = Object.assign(new Error("A debugger session is already running on port 20000"), {
+      code: "SESSION_ALREADY_RUNNING",
+    });
+    mocks.startDebugger.mockRejectedValueOnce(err);
+
+    const tunnel = await openCfTunnel({ region: "eu10", org: "org-a", space: "dev", app: "demo" });
+
+    expect(tunnel.localPort).toBe(20_000);
     expect(tunnel.handle).toBeUndefined();
-    expect(statuses).toEqual(["Reusing existing tunnel on port 20000"]);
     await expect(tunnel.dispose()).resolves.toBeUndefined();
   });
 
-  it("rethrows already-running errors when the port cannot be inferred", async () => {
+  it("rethrows already-running errors without parsing their message", async () => {
     const err = Object.assign(new Error("A debugger session is already running"), {
       code: "SESSION_ALREADY_RUNNING",
     });
     mocks.startDebugger.mockRejectedValueOnce(err);
 
     await expect(openCfTunnel({ region: "eu10", org: "org-a", space: "dev", app: "demo" })).rejects.toBe(err);
+  });
+
+  it("forwards process, instance, and remote Node PID to cf-debugger", async () => {
+    const controller = new AbortController();
+    const dispose = vi.fn(async (): Promise<void> => undefined);
+    mocks.startDebugger.mockResolvedValueOnce({
+      session: { localPort: 20_001 },
+      dispose,
+      waitForExit: vi.fn(),
+    });
+
+    const tunnel = await openCfTunnel({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo",
+      process: "worker",
+      instance: 2,
+      nodePid: 314,
+      allowSshEnableRestart: false,
+      signal: controller.signal,
+    });
+
+    expect(mocks.startDebugger).toHaveBeenCalledWith(expect.objectContaining({
+      process: "worker",
+      instance: 2,
+      nodePid: 314,
+      allowSshEnableRestart: false,
+      signal: controller.signal,
+    }));
+    expect(tunnel.localPort).toBe(20_001);
+    await tunnel.dispose();
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });

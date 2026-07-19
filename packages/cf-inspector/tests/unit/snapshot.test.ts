@@ -1,3 +1,4 @@
+// cspell:word effectful
 import { describe, expect, it, vi } from "vitest";
 
 import type { CdpEvalResult, CdpProperty, InspectorSession } from "../../src/inspector/index.js";

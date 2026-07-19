@@ -64,7 +64,7 @@ export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
       const result = await runWatchLoop(session, prepared, opts, signal);
       stoppedReason = result.stoppedReason;
       emitted = result.emitted;
-    });
+    }, undefined, signal);
   });
   writeWatchSummary(stoppedReason, emitted, opts.json);
 }
@@ -266,9 +266,13 @@ async function waitForNextWatchPause(
       timeoutMs,
       breakpointIds: handles.map((h) => h.breakpointId),
       unmatchedPausePolicy: "wait-for-resume",
+      signal,
     });
   } catch (err: unknown) {
     if (err instanceof CfInspectorError) {
+      if (err.code === "ABORTED") {
+        return "signal";
+      }
       if (err.code === "BREAKPOINT_NOT_HIT") {
         return "timeout";
       }

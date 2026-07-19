@@ -66,7 +66,7 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
         warnOnBoundBreakpointWithoutHit([result.handle]);
       }
       writeLogSummary(result.stoppedReason, result.emitted, opts.json);
-    });
+    }, undefined, signal);
   });
 }
 

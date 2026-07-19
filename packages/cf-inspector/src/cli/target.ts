@@ -172,8 +172,9 @@ export async function withSession<T>(
   target: Target,
   fn: (session: InspectorSession, port: number) => Promise<T>,
   reportProgress?: ProgressReporter,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const tunnel = await openTarget(target, reportProgress);
+  const tunnel = await openTarget(target, reportProgress, signal);
   let session: InspectorSession | undefined;
   try {
     reportProgress?.(
@@ -204,6 +205,7 @@ export async function withSession<T>(
 export async function openTarget(
   target: Target,
   reportProgress?: ProgressReporter,
+  signal?: AbortSignal,
 ): Promise<ResolvedTunnel> {
   if (target.kind === "port") {
     return {
@@ -220,6 +222,7 @@ export async function openTarget(
     space: target.space,
     app: target.app,
     tunnelReadyTimeoutMs: target.tunnelTimeoutMs,
+    ...(signal === undefined ? {} : { signal }),
     ...(reportProgress === undefined
       ? {}
       : {

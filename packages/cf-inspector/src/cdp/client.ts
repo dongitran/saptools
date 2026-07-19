@@ -34,6 +34,12 @@ export interface CdpClientOptions {
   readonly connectTimeoutMs?: number;
 }
 
+export interface CdpWaitOptions<T> {
+  readonly timeoutMs: number;
+  readonly predicate?: (params: T) => boolean;
+  readonly signal?: AbortSignal;
+}
+
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
@@ -171,64 +177,78 @@ export class CdpClient {
 
   public async waitFor<T = unknown>(
     method: string,
-    options: { readonly timeoutMs: number; readonly predicate?: (params: T) => boolean } = {
+    options: CdpWaitOptions<T> = {
       timeoutMs: this.requestTimeoutMs,
     },
   ): Promise<T> {
     if (this.closed) {
       throw this.closeReason ?? new CfInspectorError("INSPECTOR_CONNECTION_FAILED", "Connection closed");
     }
-    return await new Promise<T>((resolve, reject) => {
+    if (options.signal?.aborted === true) {
+      throw this.createWaitAbortError(method);
+    }
+    return await this.createEventWait(method, options);
+  }
+
+  private createEventWait<T>(method: string, options: CdpWaitOptions<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
       let settled = false;
+      let offEvent = (): void => undefined;
+      let offClose = (): void => undefined;
       const cleanup = (): void => {
         clearTimeout(timer);
         offEvent();
         offClose();
+        options.signal?.removeEventListener("abort", onAbort);
       };
-      const finish = (value: T): void => {
+      const resolveOnce = (value: T): void => {
+        if (settled) {
+          return;
+        }
         settled = true;
         cleanup();
         resolve(value);
       };
-      const offEvent = this.on(method, (raw) => {
-        if (settled) {
-          return;
-        }
-        const params = raw as T;
-        if (options.predicate) {
-          // A throwing predicate must not propagate up through emitter.emit
-          // (which would crash the message handler and the WS pipeline).
-          // Treat a throw as a predicate rejection so the caller times out
-          // instead of bringing the process down.
-          let accepted: boolean;
-          try {
-            accepted = options.predicate(params);
-          } catch {
-            return;
-          }
-          if (!accepted) {
-            return;
-          }
-        }
-        finish(params);
-      });
-      const offClose = this.onClose((err) => {
+      const rejectOnce = (error: Error): void => {
         if (settled) {
           return;
         }
         settled = true;
         cleanup();
-        reject(err);
-      });
+        reject(error);
+      };
+      const onAbort = (): void => {
+        rejectOnce(this.createWaitAbortError(method));
+      };
       const timer = setTimeout(() => {
-        if (settled) {
+        rejectOnce(this.createWaitTimeoutError(method, options.timeoutMs));
+      }, options.timeoutMs);
+      offEvent = this.on(method, (raw) => {
+        const params = raw as T;
+        if (!this.eventMatches(params, options.predicate)) {
           return;
         }
-        settled = true;
-        cleanup();
-        reject(this.createWaitTimeoutError(method, options.timeoutMs));
-      }, options.timeoutMs);
+        resolveOnce(params);
+      });
+      offClose = this.onClose((error) => {
+        rejectOnce(error);
+      });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options.signal?.aborted === true) {
+        onAbort();
+      }
     });
+  }
+
+  private eventMatches<T>(params: T, predicate: ((params: T) => boolean) | undefined): boolean {
+    if (predicate === undefined) {
+      return true;
+    }
+    try {
+      return predicate(params);
+    } catch {
+      return false;
+    }
   }
 
   public onClose(listener: (err: Error) => void): () => void {
@@ -307,6 +327,10 @@ export class CdpClient {
       "BREAKPOINT_NOT_HIT",
       `Timed out waiting for ${method} after ${timeoutMs.toString()}ms`,
     );
+  }
+
+  private createWaitAbortError(method: string): CfInspectorError {
+    return new CfInspectorError("ABORTED", `Aborted while waiting for ${method}`);
   }
 
   private sendPayload(

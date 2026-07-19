@@ -7,6 +7,11 @@ export type PauseOnExceptionsState = "none" | "uncaught" | "caught" | "all";
 
 export interface EvaluateOnFrameOptions {
   readonly throwOnSideEffect?: boolean;
+  readonly objectGroup?: string;
+}
+
+export interface StepIntoOptions {
+  readonly breakOnAsyncCall?: boolean;
 }
 
 export async function resume(session: InspectorSession): Promise<void> {
@@ -35,6 +40,7 @@ export async function evaluateOnFrame(
     ...(options.throwOnSideEffect === undefined
       ? {}
       : { throwOnSideEffect: options.throwOnSideEffect }),
+    ...(options.objectGroup === undefined ? {} : { objectGroup: options.objectGroup }),
   });
 }
 
@@ -134,6 +140,59 @@ export async function getProperties(
     return [];
   }
   return result.result as readonly CdpProperty[];
+}
+
+export async function getScriptSource(
+  session: InspectorSession,
+  scriptId: string,
+): Promise<string> {
+  if (scriptId.trim().length === 0) {
+    throw new CfInspectorError("INVALID_ARGUMENT", "scriptId must not be empty");
+  }
+  const result = await session.client.send<{ readonly scriptSource?: unknown }>(
+    "Debugger.getScriptSource",
+    { scriptId },
+  );
+  if (typeof result.scriptSource !== "string") {
+    throw new CfInspectorError(
+      "CDP_REQUEST_FAILED",
+      "Debugger.getScriptSource did not return scriptSource",
+    );
+  }
+  return result.scriptSource;
+}
+
+export async function stepInto(
+  session: InspectorSession,
+  options: StepIntoOptions = {},
+): Promise<void> {
+  await session.client.send("Debugger.stepInto", {
+    ...(options.breakOnAsyncCall === undefined
+      ? {}
+      : { breakOnAsyncCall: options.breakOnAsyncCall }),
+  });
+}
+
+export async function stepOver(session: InspectorSession): Promise<void> {
+  await session.client.send("Debugger.stepOver");
+}
+
+export async function stepOut(session: InspectorSession): Promise<void> {
+  await session.client.send("Debugger.stepOut");
+}
+
+export async function releaseObject(
+  session: InspectorSession,
+  objectId: string,
+): Promise<void> {
+  await session.client.send("Runtime.releaseObject", { objectId });
+}
+
+export async function releaseObjectGroup(
+  session: InspectorSession,
+  objectGroup: string,
+): Promise<void> {
+  await session.client.send("Runtime.releaseObjectGroup", { objectGroup });
 }
 
 export type { CdpEvalResult, CdpProperty } from "./types.js";

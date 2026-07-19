@@ -241,7 +241,7 @@ importers:
   packages/cf-inspector:
     dependencies:
       '@saptools/cf-debugger':
-        specifier: ^0.1.13
+        specifier: ^0.1.15
         version: link:../cf-debugger
       commander:
         specifier: ^13.0.0

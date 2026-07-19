@@ -4,15 +4,13 @@ import { CdpClient, createNodeWorkerClient } from "../cdp/client.js";
 import { CfInspectorError } from "../types.js";
 import type { InspectorConnectOptions, PauseEvent, ScriptInfo } from "../types.js";
 
-import { asString, toPauseEvent } from "./conversions.js";
+import { asString, toPauseEvent, toScriptInfo } from "./conversions.js";
 import { discoverInspectorTargets } from "./discovery.js";
 import type { InspectorTarget } from "./discovery.js";
 import type {
-  CdpPauseParams,
   DebuggerState,
   InspectorSession,
   InspectorWorkerTarget,
-  ScriptParsedParams,
 } from "./types.js";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
@@ -249,24 +247,37 @@ async function initSession(
   target: InspectorSession["target"],
 ): Promise<InspectorSession> {
   const scripts = new Map<string, ScriptInfo>();
-  client.on("Debugger.scriptParsed", (raw) => {
-    const params = raw as ScriptParsedParams;
-    const scriptId = asString(params.scriptId);
-    const url = asString(params.url);
-    if (scriptId.length === 0) {
-      return;
-    }
-    scripts.set(scriptId, { scriptId, url });
-  });
+  registerScriptTracking(client, scripts);
   const pauseBuffer: PauseEvent[] = [];
   const pauseWaitGate = { active: false };
   const debuggerState: DebuggerState = {};
+  registerPauseTracking(client, scripts, pauseBuffer, pauseWaitGate, debuggerState);
+  await client.send("Runtime.enable");
+  await client.send("Debugger.enable");
+  return createSession(client, target, scripts, pauseBuffer, pauseWaitGate, debuggerState);
+}
+
+function registerScriptTracking(client: CdpClient, scripts: Map<string, ScriptInfo>): void {
+  client.on("Debugger.scriptParsed", (raw) => {
+    const script = toScriptInfo(raw);
+    if (script !== undefined) {
+      scripts.set(script.scriptId, script);
+    }
+  });
+}
+
+function registerPauseTracking(
+  client: CdpClient,
+  scripts: ReadonlyMap<string, ScriptInfo>,
+  pauseBuffer: PauseEvent[],
+  pauseWaitGate: { active: boolean },
+  debuggerState: DebuggerState,
+): void {
   client.on("Debugger.paused", (raw) => {
     if (pauseWaitGate.active) {
       return;
     }
-    const params = raw as CdpPauseParams;
-    const event = toPauseEvent(params, performance.now(), scripts);
+    const event = toPauseEvent(raw, performance.now(), scripts);
     if (pauseBuffer.length >= PAUSE_BUFFER_LIMIT) {
       pauseBuffer.shift();
     }
@@ -275,8 +286,16 @@ async function initSession(
   client.on("Debugger.resumed", () => {
     debuggerState.lastResumedAtMs = performance.now();
   });
-  await client.send("Runtime.enable");
-  await client.send("Debugger.enable");
+}
+
+function createSession(
+  client: CdpClient,
+  target: InspectorSession["target"],
+  scripts: ReadonlyMap<string, ScriptInfo>,
+  pauseBuffer: PauseEvent[],
+  pauseWaitGate: { active: boolean },
+  debuggerState: DebuggerState,
+): InspectorSession {
   return {
     client,
     target,

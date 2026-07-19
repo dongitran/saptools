@@ -24,6 +24,12 @@ function remainingUntil(deadlineMs: number): number {
   return Math.max(0, deadlineMs - performance.now());
 }
 
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new CfInspectorError("ABORTED", "Aborted while waiting for Debugger.paused");
+  }
+}
+
 function hasResumedSincePause(session: InspectorSession, pause: PauseEvent): boolean {
   const pauseAt = pause.receivedAtMs;
   const resumedAt = session.debuggerState.lastResumedAtMs;
@@ -49,21 +55,24 @@ async function waitForUnmatchedPauseToResume(
   session: InspectorSession,
   pause: PauseEvent,
   deadlineMs: number,
-  timeoutMs: number,
+  options: WaitForPauseOptions,
 ): Promise<void> {
   if (hasResumedSincePause(session, pause)) {
     return;
   }
   const remainingMs = remainingUntil(deadlineMs);
   if (remainingMs <= 0) {
-    throwUnrelatedPauseTimeout(pause, timeoutMs);
+    throwUnrelatedPauseTimeout(pause, options.timeoutMs);
   }
   try {
-    await session.client.waitFor("Debugger.resumed", { timeoutMs: remainingMs });
+    await session.client.waitFor("Debugger.resumed", {
+      timeoutMs: remainingMs,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
     session.debuggerState.lastResumedAtMs = performance.now();
   } catch (err: unknown) {
     if (err instanceof CfInspectorError && err.code === "BREAKPOINT_NOT_HIT") {
-      throwUnrelatedPauseTimeout(pause, timeoutMs);
+      throwUnrelatedPauseTimeout(pause, options.timeoutMs);
     }
     throw err;
   }
@@ -86,17 +95,20 @@ async function handleUnmatchedPause(
     return;
   }
   options.onUnmatchedPause?.(pause);
-  await waitForUnmatchedPauseToResume(session, pause, deadlineMs, options.timeoutMs);
+  await waitForUnmatchedPauseToResume(session, pause, deadlineMs, options);
 }
 
 export async function waitForPause(
   session: InspectorSession,
   options: WaitForPauseOptions,
 ): Promise<PauseEvent> {
+  throwIfAborted(options.signal);
   const deadlineMs = performance.now() + options.timeoutMs;
   const buffer = session.pauseBuffer;
   while (buffer.length > 0 || remainingUntil(deadlineMs) > 0) {
+    throwIfAborted(options.signal);
     while (buffer.length > 0) {
+      throwIfAborted(options.signal);
       const buffered = buffer.shift();
       if (buffered === undefined) {
         continue;
@@ -130,6 +142,7 @@ async function waitForLivePause(
   try {
     params = await session.client.waitFor<CdpPauseParams>("Debugger.paused", {
       timeoutMs: remainingMs,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       predicate: (): boolean => {
         receivedAtMs = performance.now();
         return true;
