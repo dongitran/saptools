@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,21 @@ export function readLiveCreds(): LiveCreds | undefined {
 
 export async function createIsolatedHome(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "cf-debugger-e2e-home-"));
+}
+
+export async function findFreeLocalPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("Expected an ephemeral TCP port");
+  }
+  await new Promise<void>((resolvePromise) => { server.close(() => { resolvePromise(); }); });
+  return address.port;
 }
 
 export async function cleanupHome(homeDir: string): Promise<void> {

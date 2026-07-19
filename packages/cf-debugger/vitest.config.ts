@@ -8,7 +8,7 @@ export default defineConfig({
     poolOptions: { forks: { singleFork: true } },
     coverage: {
       provider: "v8",
-      reportsDirectory: "./coverage-reports",
+      reportsDirectory: "./coverage",
       include: ["src/**/*.ts"],
       exclude: [
         "src/cli.ts",

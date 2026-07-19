@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findListeningProcessId,
   isPortFree,
-  killProcessOnPort,
   probeTunnelReady,
 } from "../../src/port.js";
 
@@ -112,6 +111,23 @@ describe("probeTunnelReady", () => {
     const port = await reserveFreePort();
     await expect(probeTunnelReady(port, 1)).resolves.toBe(false);
   });
+
+  it("rejects immediately when tunnel probing is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(probeTunnelReady(21_996, 60_000, controller.signal)).rejects.toMatchObject({
+      code: "ABORTED",
+    });
+  });
+
+  it("stops tunnel probing when the caller aborts an active wait", async () => {
+    const controller = new AbortController();
+    const probing = probeTunnelReady(21_995, 60_000, controller.signal);
+    controller.abort();
+
+    await expect(probing).rejects.toMatchObject({ code: "ABORTED" });
+  });
 });
 
 describe("findListeningProcessId", () => {
@@ -146,12 +162,5 @@ describe("findListeningProcessId", () => {
   it("returns undefined when no process is listening", async () => {
     const pid = await findListeningProcessId(21_997);
     expect(pid).toBeUndefined();
-  });
-});
-
-describe("killProcessOnPort", () => {
-  it("does nothing when no process is listening on the port", async () => {
-    const port = await reserveFreePort();
-    await expect(killProcessOnPort(port)).resolves.toBeUndefined();
   });
 });

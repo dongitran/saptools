@@ -1,28 +1,39 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname as getHostname } from "node:os";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import process from "node:process";
 
+import { resolveNodeTarget } from "../cloud-foundry/node-process.js";
 import { withFileLock } from "../lock.js";
-import { stateFilePath, stateLockPath } from "../paths.js";
-import { findListeningProcessId, isPortListening } from "../port.js";
+import { isSafeSessionId, stateFilePath, stateLockPath } from "../paths.js";
+import { isPortListening } from "../port.js";
 import { CfDebuggerError } from "../types.js";
 import type { ActiveSession, SessionKey, StateFile } from "../types.js";
 
-async function readJsonFile<T>(path: string): Promise<T | undefined> {
+import { decodeStateFile } from "./decoder.js";
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const code: unknown = Reflect.get(error, "code");
+  return typeof code === "string" ? code : undefined;
+}
+
+async function readJsonFile(path: string): Promise<unknown> {
   let raw: string;
   try {
+    await chmod(path, 0o600);
     raw = await readFile(path, "utf8");
   } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
+    if (errorCode(err) === "ENOENT") {
       return undefined;
     }
     throw err;
   }
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch {
     process.stderr.write(
       `[cf-debugger] warning: state file at ${path} is not valid JSON; resetting to empty.\n`,
@@ -33,21 +44,28 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
 
 async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> {
   const tempPath = `${path}.${randomUUID()}.tmp`;
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(tempPath, path);
+  const parentDir = dirname(path);
+  await mkdir(parentDir, { recursive: true, mode: 0o700 });
+  await chmod(parentDir, 0o700);
+  let renamed = false;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    await rename(tempPath, path);
+    renamed = true;
+    await chmod(path, 0o600);
+  } finally {
+    if (!renamed) {
+      await unlink(tempPath).catch(() => false);
+    }
+  }
 }
 
 function emptyState(): StateFile {
-  return { version: "1", sessions: [] };
-}
-
-function isValidState(value: unknown): value is StateFile {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const candidate = value as Partial<StateFile>;
-  return candidate.version === "1" && Array.isArray(candidate.sessions);
+  return { version: "2", sessions: [] };
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -55,29 +73,35 @@ export function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") {
+    if (errorCode(err) === "ESRCH") {
       return false;
     }
     return true;
   }
 }
 
+export function isPidOrGroupAlive(pid: number): boolean {
+  if (isPidAlive(pid)) {
+    return true;
+  }
+  return isProcessGroupAlive(pid);
+}
+
+export function isProcessGroupAlive(pid: number): boolean {
+  return process.platform !== "win32" && isPidAlive(-pid);
+}
+
 async function isSessionHealthy(session: ActiveSession, host: string): Promise<boolean> {
   if (session.hostname !== host) {
-    return true;
-  }
-  if (!isPidAlive(session.pid)) {
     return false;
   }
-  if (session.status !== "ready") {
+  if (session.status !== "ready" && isPidAlive(session.controllerPid ?? session.pid)) {
     return true;
   }
-  if (!(await isPortListening(session.localPort))) {
-    return false;
+  if (session.tunnelPid !== undefined && isPidOrGroupAlive(session.tunnelPid)) {
+    return true;
   }
-  const listeningPid = await findListeningProcessId(session.localPort);
-  return listeningPid === undefined || listeningPid === session.pid;
+  return await isPortListening(session.localPort);
 }
 
 async function filterStaleSessions(
@@ -94,11 +118,19 @@ async function filterStaleSessions(
 }
 
 async function readStateRaw(): Promise<StateFile> {
-  const parsed = await readJsonFile<unknown>(stateFilePath());
-  if (!isValidState(parsed)) {
+  const path = stateFilePath();
+  const parsed = await readJsonFile(path);
+  if (parsed === undefined) {
     return emptyState();
   }
-  return parsed;
+  const decoded = decodeStateFile(parsed);
+  if (decoded !== undefined) {
+    return decoded;
+  }
+  process.stderr.write(
+    `[cf-debugger] warning: state file at ${path} has an invalid structure; resetting to empty.\n`,
+  );
+  return emptyState();
 }
 
 async function writeState(state: StateFile): Promise<void> {
@@ -112,13 +144,16 @@ export interface StateReaderResult {
 
 async function readAndPruneLocked(): Promise<StateReaderResult> {
   const raw = await readStateRaw();
-  const pruned = await filterStaleSessions(raw.sessions);
-  const removed = raw.sessions.filter(
+  const host = getHostname();
+  const remote = raw.sessions.filter((session) => session.hostname !== host);
+  const local = raw.sessions.filter((session) => session.hostname === host);
+  const pruned = await filterStaleSessions(local);
+  const removed = local.filter(
     (session) => !pruned.some((active) => active.sessionId === session.sessionId),
   );
 
   if (removed.length > 0) {
-    await writeState({ version: "1", sessions: pruned });
+    await writeState({ version: "2", sessions: [...remote, ...pruned] });
   }
 
   return { sessions: pruned, removed };
@@ -141,16 +176,43 @@ export async function readAndPruneActiveSessions(): Promise<StateReaderResult> {
 }
 
 export function sessionKeyString(key: SessionKey): string {
-  return `${key.region}:${key.org}:${key.space}:${key.app}`;
+  const base = `${key.region}:${key.org}:${key.space}:${key.app}`;
+  if (key.process === undefined && key.instance === undefined) {
+    return base;
+  }
+  const target = resolveNodeTarget(key);
+  return `${base}:${target.process}:${target.instance.toString()}`;
 }
 
 export function matchesKey(session: SessionKey, key: SessionKey): boolean {
+  const sessionTarget = resolveNodeTarget(session);
+  const keyTarget = resolveNodeTarget(key);
   return (
     session.region === key.region &&
     session.org === key.org &&
     session.space === key.space &&
-    session.app === key.app
+    session.app === key.app &&
+    sessionTarget.process === keyTarget.process &&
+    sessionTarget.instance === keyTarget.instance &&
+    (key.apiEndpoint === undefined || session.apiEndpoint === key.apiEndpoint) &&
+    (key.nodePid === undefined || sessionTarget.nodePid === keyTarget.nodePid)
   );
+}
+
+function matchesRegistrationTarget(
+  session: ActiveSession,
+  input: RegisterSessionInput,
+  target: ReturnType<typeof resolveNodeTarget>,
+): boolean {
+  return matchesKey(session, {
+    region: input.region,
+    org: input.org,
+    space: input.space,
+    app: input.app,
+    process: target.process,
+    instance: target.instance,
+    apiEndpoint: input.apiEndpoint,
+  });
 }
 
 export interface RegisterSessionResult {
@@ -206,9 +268,13 @@ async function pickPort(
 export async function registerNewSession(
   input: RegisterSessionInput,
 ): Promise<RegisterSessionResult> {
+  const target = resolveNodeTarget(input);
   return await withFileLock(stateLockPath(), async (): Promise<RegisterSessionResult> => {
     const pruneResult = await readAndPruneLocked();
-    const existing = pruneResult.sessions.find((session) => matchesKey(session, input));
+    const persisted = await readStateRaw();
+    const host = getHostname();
+    const remoteSessions = persisted.sessions.filter((session) => session.hostname !== host);
+    const existing = pruneResult.sessions.find((session) => matchesRegistrationTarget(session, input, target));
     if (existing) {
       return { session: existing, existing };
     }
@@ -222,30 +288,47 @@ export async function registerNewSession(
       input.maxPort ?? DEFAULT_MAX_PORT,
     );
 
-    const sessionId = (input.sessionIdFactory ?? randomUUID)();
-    const cfHomeDir = input.cfHomeForSession(sessionId);
+    const session = createRegisteredSession(input, target, localPort);
 
-    const session: ActiveSession = {
-      sessionId,
-      pid: process.pid,
-      hostname: getHostname(),
-      region: input.region,
-      org: input.org,
-      space: input.space,
-      app: input.app,
-      apiEndpoint: input.apiEndpoint,
-      localPort,
-      remotePort: 9229,
-      cfHomeDir,
-      startedAt: new Date().toISOString(),
-      status: "starting",
-    };
-
-    const nextSessions: readonly ActiveSession[] = [...pruneResult.sessions, session];
-    await writeState({ version: "1", sessions: nextSessions });
+    const nextSessions: readonly ActiveSession[] = [...remoteSessions, ...pruneResult.sessions, session];
+    await writeState({ version: "2", sessions: nextSessions });
 
     return { session };
   });
+}
+
+function createRegisteredSession(
+  input: RegisterSessionInput,
+  target: ReturnType<typeof resolveNodeTarget>,
+  localPort: number,
+): ActiveSession {
+  const sessionId = (input.sessionIdFactory ?? randomUUID)();
+  if (!isSafeSessionId(sessionId)) {
+    throw new CfDebuggerError("UNSAFE_INPUT", "Generated debugger session ID is invalid.");
+  }
+  const cfHomeDir = input.cfHomeForSession(sessionId);
+  if (!isAbsolute(cfHomeDir)) {
+    throw new CfDebuggerError("UNSAFE_INPUT", "Debugger CF home must be an absolute path.");
+  }
+  return {
+    sessionId,
+    pid: process.pid,
+    controllerPid: process.pid,
+    hostname: getHostname(),
+    region: input.region,
+    org: input.org,
+    space: input.space,
+    app: input.app,
+    process: target.process,
+    instance: target.instance,
+    ...(target.nodePid === undefined ? {} : { nodePid: target.nodePid }),
+    apiEndpoint: input.apiEndpoint,
+    localPort,
+    remotePort: 9229,
+    cfHomeDir,
+    startedAt: new Date().toISOString(),
+    status: "starting",
+  };
 }
 
 export async function updateSessionStatus(
@@ -260,28 +343,26 @@ export async function updateSessionStatus(
       if (session.sessionId !== sessionId) {
         return session;
       }
-      const base: ActiveSession = {
-        sessionId: session.sessionId,
-        pid: session.pid,
-        hostname: session.hostname,
-        region: session.region,
-        org: session.org,
-        space: session.space,
-        app: session.app,
-        apiEndpoint: session.apiEndpoint,
-        localPort: session.localPort,
-        remotePort: session.remotePort,
-        cfHomeDir: session.cfHomeDir,
-        startedAt: session.startedAt,
-        status,
-      };
-      const next: ActiveSession = message === undefined ? base : { ...base, message };
+      if (status !== "stopping" && startupMutationBlocked(session)) {
+        updated = session;
+        return session;
+      }
+      if (status === "ready" && session.tunnelPid === undefined) {
+        throw new CfDebuggerError(
+          "SESSION_STATE_CONFLICT",
+          "A debugger session cannot become ready before its tunnel PID is recorded.",
+        );
+      }
+      const base = withoutMessage(session);
+      const next: ActiveSession = message === undefined
+        ? { ...base, status }
+        : { ...base, status, message };
       updated = next;
       return next;
     });
 
     if (updated) {
-      await writeState({ version: "1", sessions: nextSessions });
+      await writeState({ version: "2", sessions: nextSessions });
     }
     return updated;
   });
@@ -291,6 +372,9 @@ export async function updateSessionPid(
   sessionId: string,
   pid: number,
 ): Promise<ActiveSession | undefined> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new CfDebuggerError("UNSAFE_INPUT", "Tunnel PID must be a positive safe integer.");
+  }
   return await withFileLock(stateLockPath(), async (): Promise<ActiveSession | undefined> => {
     const raw = await readStateRaw();
     let updated: ActiveSession | undefined;
@@ -298,28 +382,54 @@ export async function updateSessionPid(
       if (session.sessionId !== sessionId) {
         return session;
       }
-      const next: ActiveSession = {
-        sessionId: session.sessionId,
-        pid,
-        hostname: session.hostname,
-        region: session.region,
-        org: session.org,
-        space: session.space,
-        app: session.app,
-        apiEndpoint: session.apiEndpoint,
-        localPort: session.localPort,
-        remotePort: session.remotePort,
-        cfHomeDir: session.cfHomeDir,
-        startedAt: session.startedAt,
-        status: session.status,
-        ...(session.message === undefined ? {} : { message: session.message }),
-      };
+      if (startupMutationBlocked(session)) {
+        updated = session;
+        return session;
+      }
+      const next: ActiveSession = { ...session, pid, tunnelPid: pid };
       updated = next;
       return next;
     });
 
     if (updated !== undefined) {
-      await writeState({ version: "1", sessions: nextSessions });
+      await writeState({ version: "2", sessions: nextSessions });
+    }
+    return updated;
+  });
+}
+
+function withoutMessage(session: ActiveSession): ActiveSession {
+  const { message, ...clone } = session;
+  void message;
+  return clone;
+}
+
+function startupMutationBlocked(session: ActiveSession): boolean {
+  return session.status === "stopping" || session.stopRequestedAt !== undefined;
+}
+
+export async function updateSessionRemoteNodePid(
+  sessionId: string,
+  remoteNodePid: number,
+): Promise<ActiveSession | undefined> {
+  resolveNodeTarget({ nodePid: remoteNodePid });
+  return await withFileLock(stateLockPath(), async (): Promise<ActiveSession | undefined> => {
+    const raw = await readStateRaw();
+    let updated: ActiveSession | undefined;
+    const nextSessions = raw.sessions.map((session): ActiveSession => {
+      if (session.sessionId !== sessionId) {
+        return session;
+      }
+      if (startupMutationBlocked(session)) {
+        updated = session;
+        return session;
+      }
+      const next: ActiveSession = { ...session, remoteNodePid };
+      updated = next;
+      return next;
+    });
+    if (updated !== undefined) {
+      await writeState({ version: "2", sessions: nextSessions });
     }
     return updated;
   });
@@ -333,7 +443,31 @@ export async function removeSession(sessionId: string): Promise<ActiveSession | 
       return undefined;
     }
     const remaining = raw.sessions.filter((session) => session.sessionId !== sessionId);
-    await writeState({ version: "1", sessions: remaining });
+    await writeState({ version: "2", sessions: remaining });
     return target;
+  });
+}
+
+export interface SessionStopClaim {
+  readonly session: ActiveSession;
+  readonly previousStatus: ActiveSession["status"];
+}
+
+export async function requestSessionStop(sessionId: string): Promise<SessionStopClaim | undefined> {
+  return await withFileLock(stateLockPath(), async (): Promise<SessionStopClaim | undefined> => {
+    const raw = await readStateRaw();
+    const target = raw.sessions.find((session) => session.sessionId === sessionId);
+    if (target === undefined) {
+      return undefined;
+    }
+    if (target.status === "ready" || target.stopRequestedAt !== undefined) {
+      return { session: target, previousStatus: target.status };
+    }
+    const requested: ActiveSession = { ...target, stopRequestedAt: new Date().toISOString() };
+    const sessions = raw.sessions.map((session) =>
+      session.sessionId === sessionId ? requested : session
+    );
+    await writeState({ version: "2", sessions });
+    return { session: requested, previousStatus: target.status };
   });
 }

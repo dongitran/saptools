@@ -18,8 +18,9 @@ export type { CurrentCfTarget, CurrentCfTargetReadOptions } from "./cloud-foundr
 export type { CfExecContext } from "./cloud-foundry/execute.js";
 export { parseAppNames, parseNameTable } from "./cloud-foundry/parsers.js";
 export {
+  buildCfSshArgs,
   cfSshOneShot,
   isSshDisabledError,
   spawnSshTunnel,
 } from "./cloud-foundry/ssh.js";
-export type { CfSshSignalResult } from "./cloud-foundry/ssh.js";
+export type { CfSshOptions, CfSshSignalResult } from "./cloud-foundry/ssh.js";

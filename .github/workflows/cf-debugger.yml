@@ -77,6 +77,19 @@ jobs:
       - name: Run unit tests
         run: pnpm --filter @saptools/cf-debugger test:unit
 
+      - name: Run fake-CF lifecycle tests
+        run: pnpm --filter @saptools/cf-debugger exec playwright test tests/e2e/fake-lifecycle.e2e.ts
+
+      - name: Upload fake-CF lifecycle diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-debugger-fake-lifecycle-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: |
+            packages/cf-debugger/playwright-report/
+            packages/cf-debugger/test-results/
+
       # The live e2e suite is in cf-debugger-e2e.yml — it needs real SAP CF credentials.
       - name: Verify publish tarball
         run: npm pack --dry-run

@@ -22,8 +22,9 @@ Signal the remote process, enable SSH if needed, forward `9229` to a free local 
 
 - 🚀 **One-shot tunnel** — auth, target, SSH-enable, USR1 signal, port forward, readiness probe — all hidden behind `cf-debugger start`
 - 🧵 **Multi-debugger concurrency** — run N debuggers for N apps at once; each session gets its own local port, isolated `CF_HOME`, and an entry in the shared state file
-- 🛡️ **Duplicate-session protection** — the same `region/org/space/app` cannot be debugged twice simultaneously (returns `SESSION_ALREADY_RUNNING`)
-- 🧹 **Crash-proof state** — stale session entries are auto-pruned on list/status/start/stop using PID, ready-port health, and listener-owner checks
+- 🎯 **Exact process targeting** — select a CF process, instance, and optional Node PID; ambiguous Node processes fail closed
+- 🛡️ **Duplicate-session protection** — the same `region/org/space/app/process/instance` cannot be debugged twice simultaneously (returns `SESSION_ALREADY_RUNNING`)
+- 🧹 **Crash-proof state** — provably dead entries are pruned, while ownership mismatches are retained for safe recovery instead of being deleted blindly
 - 🔌 **Deterministic ports** — auto-assigned from a safe range (`20000–20999`), or pick your own with `--port`
 - 🧩 **CLI & typed API** — every command has a zero-config Node.js equivalent with full TypeScript definitions
 - 🪶 **Small + boring** — one runtime dep (`commander`), no daemons, no magic
@@ -43,7 +44,9 @@ npm install @saptools/cf-debugger
 ```
 
 > [!NOTE]
-> Requires **Node.js ≥ 20** and the official **`cf` CLI** on `PATH` (v8 recommended).
+> Requires **Node.js ≥ 20** and the official **`cf` CLI** on `PATH`. Default `web`
+> process targets work with CF CLI v6+; non-web process targeting uses `--process` and requires
+> CF CLI v7+ (v8 recommended).
 
 ---
 
@@ -66,13 +69,15 @@ cf-debugger start \
 #     Local port:  20142
 #     Remote port: 9229
 #     Session id:  01HXYZ...
-#     PID:         83421
+#     Tunnel PID:  83421
 #   Press Ctrl+C to stop.
 
 # 3. Attach your IDE (VSCode, Chrome DevTools, ...) to localhost:20142
 ```
 
-Ctrl+C cleans everything up — the SSH subprocess is killed, the local port is released, and the session is removed from the shared state file.
+Ctrl+C cleans everything up after tunnel termination is confirmed. If the PID or process group does
+not terminate, `cf-debugger` reports an error and retains its state and isolated CF home for safe
+recovery instead of hiding an unmanaged tunnel.
 
 ---
 
@@ -85,6 +90,7 @@ Open a tunnel for one app and keep running until interrupted.
 ```bash
 cf-debugger start --region eu10 --org my-org --space dev --app my-app
 cf-debugger start --region eu10 --org my-org --space dev --app my-app --port 9230
+cf-debugger start --region eu10 --org my-org --space dev --app my-app --process worker --instance 2 --node-pid 4312
 cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 180 --verbose
 ```
 
@@ -94,20 +100,33 @@ cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 
 | `--org <name>` | **Required.** CF org name |
 | `--space <name>` | **Required.** CF space name |
 | `--app <name>` | **Required.** CF app name |
+| `--process <name>` | CF process name (default: `web`) |
+| `-i, --instance <index>` | Zero-based CF process instance (default: `0`) |
+| `--node-pid <pid>` | Exact remote Node.js PID; otherwise one unambiguous PID is discovered |
 | `--port <number>` | Preferred local port (auto-assigned in `20000–20999` if omitted) |
 | `--timeout <seconds>` | Tunnel-ready timeout (default: `180`) |
 | `--verbose` | Print every status transition |
 
 Cloud Foundry startup commands (`api`, `auth`, `target`, SSH checks, app
-restart, and the one-shot SIGUSR1 SSH command) each allow up to 180 seconds.
+restart, and the one-shot SIGUSR1 SSH command) each allow up to 300 seconds.
 `--timeout` controls the subsequent local tunnel-readiness probe separately.
+
+When `--node-pid` is explicit and SSH is disabled, `cf-debugger` fails with
+`NODE_PID_RESTART_UNSAFE` before enabling SSH or restarting the app. A restart replaces the
+container process identity, so enable SSH and restart manually, then resolve and pass the new PID.
 
 ### ⏹️ `cf-debugger stop`
 
-Stop a specific session or everything at once. If a matching state entry is already stale, `stop --session-id` removes it idempotently and reports the stale cleanup instead of failing. For bare app names, matching still uses the current CF target; use `--session-id` or the full `region/org/space/app` selector when the listed session belongs to a different target.
+Stop a specific session or everything at once. A stop received during startup records an atomic
+stop intent and asks the startup owner to cancel and clean up; the command reports `Stop requested`
+instead of claiming the tunnel has already stopped. If a matching entry is provably stale,
+`stop --session-id` removes it idempotently. For bare app names, matching still uses the current CF
+target; use `--session-id` or the full `region/org/space/app` selector when the listed session belongs
+to a different target.
 
 ```bash
 cf-debugger stop --region eu10 --org my-org --space dev --app my-app
+cf-debugger stop --region eu10 --org my-org --space dev --app my-app --process worker --instance 2
 cf-debugger stop --session-id 01HXYZABCD...
 cf-debugger stop --all
 ```
@@ -115,12 +134,17 @@ cf-debugger stop --all
 | Flag | Description |
 | --- | --- |
 | `--region` / `--org` / `--space` / `--app` | Match session by key (all four required together) |
+| `--process <name>` / `--instance <index>` | Match the process-instance target (defaults: `web` / `0`) |
 | `--session-id <id>` | Match session by its ID |
 | `--all` | Stop every active session on this machine |
 
 ### 📋 `cf-debugger list`
 
-Print healthy active sessions as JSON. `list` first prunes current-host entries whose PID is gone or whose `ready` local inspector port no longer accepts TCP connections.
+Print active and conservatively retained sessions as JSON. During startup, a live controller retains
+the record; after `ready`, tunnel process-group and port ownership determine health. An entry is
+pruned only when the owners relevant to its phase are gone and the recorded port is closed. If a
+relevant PID/group is alive or the port has an unexpected owner, the entry is retained so a later
+command cannot target or delete an unrelated process.
 
 ```bash
 cf-debugger list | jq '.[] | {app, localPort, status}'
@@ -128,10 +152,12 @@ cf-debugger list | jq '.[] | {app, localPort, status}'
 
 ### 🔍 `cf-debugger status`
 
-Print one healthy session by key (or `null` if no active session matches after the same pruning used by `list`).
+Print one retained session by key (or `null` if no session matches after the same safe pruning used
+by `list`).
 
 ```bash
 cf-debugger status --region eu10 --org my-org --space dev --app my-app
+cf-debugger status --region eu10 --org my-org --space dev --app my-app --process worker --instance 2
 ```
 
 ---
@@ -141,23 +167,26 @@ cf-debugger status --region eu10 --org my-org --space dev --app my-app
 ```
 ┌────────────────────┐    1. cf api + cf auth (retry x3)
 │ cf-debugger start  │    2. cf target -o <org> -s <space>
-│  region/org/       │    3. cf ssh-enabled <app>
-│  space/app         │ ─► 4. cf enable-ssh + cf restart (only if needed)
-└────────────────────┘    5. cf ssh <app> -c 'kill -s USR1 $(pidof node)'
-          │               6. cf ssh <app> -N -L <localPort>:localhost:9229
-          ▼               7. TCP probe localhost:<localPort> until ready
-    DebuggerHandle        8. Save ActiveSession to ~/.saptools/cf-debugger-state.json
+│  region/org/       │    3. Probe one exact/unambiguous Node PID through cf ssh
+│  space/app         │ ─► 4. Signal/verify inspector ownership on remote port 9229
+└────────────────────┘    5. If SSH is disabled: enable + restart only for automatic PID selection
+          │               6. Retry the probe, then record its verified remote Node PID
+          │               7. Open cf ssh [--process <non-web>] -i <instance> with -L
+          ▼               8. Verify the local listener PID and TCP readiness
+    DebuggerHandle        9. Save ready state to ~/.saptools/cf-debugger-state-v2.json
 ```
 
 Each step emits a status update (`logging-in`, `targeting`, `ssh-enabling`, `signaling`, `tunneling`, `ready`, …). `--verbose` prints them live; the programmatic API exposes the same stream via `onStatus`.
 
 ### Concurrency model
 
-- **Atomic state** — `~/.saptools/cf-debugger-state.json` is written via temp-file + `rename`, guarded by a short-lived `.lock` file (`open(..., "wx")`).
+- **Atomic state** — `~/.saptools/cf-debugger-state-v2.json` is written via temp-file + `rename`, guarded by a short-lived v2 lock file (`open(..., "wx")`).
 - **Port allocation** — on register, ports already used by other sessions are excluded; the first free port in `20000–20999` wins.
-- **Isolated CF homes** — each session runs with its own `CF_HOME` (`~/.saptools/cf-debugger-homes/<sessionId>/`), so `cf target` in one terminal can't clobber another.
-- **Stale pruning** — list/status/start/stop check current-host PIDs with `process.kill(pid, 0)` and verify that `ready` sessions still accept TCP on `127.0.0.1:<localPort>` and, when detectable, that the listener is still the recorded tunnel PID; unhealthy entries are dropped before results or duplicate checks are returned.
-- **Duplicate guard** — trying to start a second healthy tunnel for the same `region/org/space/app` fails fast with `SESSION_ALREADY_RUNNING` instead of racing for the port; stale same-key entries are pruned so a fresh tunnel can recover.
+- **Isolated CF homes** — each session runs with its own `CF_HOME` (`~/.saptools/cf-debugger-homes-v2/<sessionId>/`), so `cf target` in one terminal can't clobber another.
+- **Ownership-aware lifecycle** — startup records separate controller and tunnel PIDs, polls an atomic stop intent, and lets the startup owner clean up. A tunnel PID is signalled only after exact listener ownership is verified.
+- **Conservative stale pruning** — state is removed automatically only when recorded owners are dead and the port is closed. Unknown or mismatched ownership is retained and reported instead of risking an unrelated process.
+- **Exact Node selection** — the fixed remote probe reads numeric `/proc` entries, never reads command lines, verifies the chosen PID owns inspector port `9229`, and fails closed when automatic selection finds zero or multiple Node processes.
+- **Duplicate guard** — trying to start a second healthy tunnel for the same `region/org/space/app/process/instance` fails fast with `SESSION_ALREADY_RUNNING` instead of racing for the port; stale same-key entries are pruned so a fresh tunnel can recover.
 
 ---
 
@@ -166,17 +195,17 @@ Each step emits a status update (`logging-in`, `targeting`, `ssh-enabling`, `sig
 All state lives under your home directory:
 
 ```text
-~/.saptools/cf-debugger-state.json       # active sessions (atomic JSON)
-~/.saptools/cf-debugger-state.lock       # short-lived lock file
-~/.saptools/cf-debugger-homes/<id>/      # per-session isolated CF_HOME
+~/.saptools/cf-debugger-state-v2.json       # active sessions (atomic JSON)
+~/.saptools/cf-debugger-state-v2.lock       # short-lived lock file
+~/.saptools/cf-debugger-homes-v2/<id>/      # per-session isolated CF_HOME
 ```
 
 <details>
-<summary><b>🔬 Shape of <code>cf-debugger-state.json</code></b></summary>
+<summary><b>🔬 Shape of <code>cf-debugger-state-v2.json</code></b></summary>
 
 ```jsonc
 {
-  "version": 1,
+  "version": "2",
   "sessions": [
     {
       "sessionId": "01HXYZABCD...",
@@ -184,9 +213,17 @@ All state lives under your home directory:
       "org": "my-org",
       "space": "dev",
       "app": "my-app",
+      "process": "web",
+      "instance": 0,
+      "hostname": "developer-host",
+      "apiEndpoint": "https://api.cf.eu10.hana.ondemand.com",
       "localPort": 20142,
       "remotePort": 9229,
       "pid": 83421,
+      "controllerPid": 83390,
+      "tunnelPid": 83421,
+      "remoteNodePid": 4312,
+      "cfHomeDir": "/home/developer/.saptools/cf-debugger-homes-v2/01HXYZABCD...",
       "status": "ready",
       "startedAt": "2026-04-18T00:00:00.000Z"
     }
@@ -199,6 +236,12 @@ All state lives under your home directory:
 > [!IMPORTANT]
 > Prefer the CLI commands (`list` / `status`) or the exported APIs over parsing these files — the on-disk format is an implementation detail.
 
+> [!WARNING]
+> State v2 intentionally does not adopt or modify legacy `cf-debugger-state.json` and
+> `cf-debugger-homes/` artifacts. Stop all sessions owned by the older CLI before upgrading or
+> downgrading. Separate namespaces prevent cross-version state overwrite and cross-stop, but an old
+> CLI can still compete for the same local ports because it does not understand v2 reservations.
+
 ---
 
 ## ❓ FAQ
@@ -206,14 +249,17 @@ All state lives under your home directory:
 <details>
 <summary><b>Can I run multiple debuggers at once?</b></summary>
 
-Yes — that's a core feature. Open two terminals, pick two different apps, and both tunnels come up on separate local ports. `cf-debugger list` shows you everything at once. The only thing you can't do is debug the same app twice in parallel.
+Yes — that's a core feature. Open two terminals, pick different apps or process instances, and the tunnels come up on separate local ports. `cf-debugger list` shows everything at once. One exact app/process/instance target can have only one healthy tunnel.
 
 </details>
 
 <details>
 <summary><b>Does this modify the remote app?</b></summary>
 
-Only if SSH is disabled. If it is, `cf-debugger` runs `cf enable-ssh` + `cf restart` to turn it on — otherwise it only sends a `SIGUSR1` to the Node.js process (which tells Node to start its inspector). No code, no env vars, no manifest is touched.
+Only if SSH is disabled and Node PID selection is automatic. In that case, `cf-debugger` runs
+`cf enable-ssh` + `cf restart`; otherwise it only sends `SIGUSR1` to the selected Node.js process.
+With an explicit `--node-pid`, automatic restart is rejected because the old PID cannot identify the
+new process after restart. No code, environment variable, or manifest is changed.
 
 </details>
 
@@ -227,7 +273,7 @@ The TCP probe will fail on reconnect and the CLI will exit with the SSH child's 
 <details>
 <summary><b>Is there a way to reserve a specific local port?</b></summary>
 
-Yes — pass `--port 9230` (CLI) or `preferredPort: 9230` (API). If it's occupied by a non-tunnel process, `cf-debugger` will try to free it once; if another tunnel already owns it, you'll get `PORT_UNAVAILABLE`.
+Yes — pass `--port 9230` (CLI) or `preferredPort: 9230` (API). If any process already owns that port, `cf-debugger` fails closed with `PORT_UNAVAILABLE`; it never terminates an unrelated listener to claim a port.
 
 </details>
 

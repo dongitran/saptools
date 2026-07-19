@@ -1,13 +1,22 @@
 import { rm } from "node:fs/promises";
+import { hostname as getHostname } from "node:os";
 import process from "node:process";
 
-import { killProcessOnPort } from "../port.js";
-import { matchesKey, readActiveSessions, removeSession } from "../state.js";
+import { isOwnedSessionCfHomeDir } from "../paths.js";
+import { findListeningProcessId, isPortListening } from "../port.js";
+import {
+  isPidAlive,
+  isPidOrGroupAlive,
+  matchesKey,
+  readActiveSessions,
+  readSessionSnapshot,
+  removeSession,
+  requestSessionStop,
+} from "../state.js";
 import type { ActiveSession, SessionKey } from "../types.js";
+import { CfDebuggerError } from "../types.js";
 
-import { PORT_CLEANUP_DELAY_MS } from "./constants.js";
-import { pruneAndCleanupOrphans } from "./orphans.js";
-import { terminatePidOrGroup } from "./processes.js";
+import { terminatePidOrGroup, type TerminationOutcome } from "./processes.js";
 
 export interface StopOptions {
   readonly sessionId?: string;
@@ -16,6 +25,7 @@ export interface StopOptions {
 
 export interface StopDebuggerResult extends ActiveSession {
   readonly stale: boolean;
+  readonly pending: boolean;
 }
 
 function findMatchingSession(
@@ -27,50 +37,130 @@ function findMatchingSession(
   }
   if (options.key !== undefined) {
     const key = options.key;
-    return sessions.find((s) => matchesKey(s, key));
+    const matches = sessions.filter((session) => matchesKey(session, key));
+    if (matches.length > 1) {
+      throw new CfDebuggerError(
+        "SESSION_AMBIGUOUS",
+        "Multiple debugger sessions match this target. Pass an exact session ID, API endpoint, or Node PID.",
+      );
+    }
+    return matches[0];
   }
   return undefined;
 }
 
-async function cleanupSession(target: ActiveSession, stale: boolean): Promise<StopDebuggerResult> {
-  if (!stale && target.pid !== process.pid) {
+async function ownsRecordedTunnel(target: ActiveSession): Promise<boolean> {
+  if (target.tunnelPid === undefined || !(await isPortListening(target.localPort))) {
+    return false;
+  }
+  return await findListeningProcessId(target.localPort) === target.tunnelPid;
+}
+
+async function terminateVerifiedTunnel(target: ActiveSession): Promise<TerminationOutcome> {
+  if (target.tunnelPid !== undefined && target.tunnelPid !== process.pid) {
     try {
-      await terminatePidOrGroup(target.pid);
+      return await terminatePidOrGroup(target.tunnelPid);
     } catch {
-      // process already gone — cleanup below
+      return "still-alive";
     }
   }
-  setTimeout(() => {
-    void killProcessOnPort(target.localPort);
-  }, PORT_CLEANUP_DELAY_MS);
-  const removed = stale ? undefined : await removeSession(target.sessionId);
-  try {
-    await rm(target.cfHomeDir, { recursive: true, force: true });
-  } catch {
-    // best-effort
+  return target.tunnelPid === process.pid ? "still-alive" : "terminated";
+}
+
+async function terminateVerifiedTunnelAndConfirm(target: ActiveSession): Promise<void> {
+  const termination = await terminateVerifiedTunnel(target);
+  if (termination === "still-alive" || await ownsRecordedTunnel(target)) {
+    throw new CfDebuggerError(
+      "TUNNEL_TERMINATION_FAILED",
+      `Tunnel process for session ${target.sessionId} did not terminate; state was retained.`,
+    );
   }
-  return { ...(removed ?? target), stale };
+}
+
+async function cleanupOwnedCfHome(target: ActiveSession, locallyOwned: boolean): Promise<void> {
+  if (locallyOwned && isOwnedSessionCfHomeDir(target.sessionId, target.cfHomeDir)) {
+    try {
+      await rm(target.cfHomeDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+async function removeOwnedSession(
+  target: ActiveSession,
+  stale: boolean,
+): Promise<StopDebuggerResult> {
+  const removed = await removeSession(target.sessionId);
+  await cleanupOwnedCfHome(target, true);
+  return { ...(removed ?? target), stale, pending: false };
+}
+
+function ownershipError(target: ActiveSession): CfDebuggerError {
+  return new CfDebuggerError(
+    "TUNNEL_OWNERSHIP_UNVERIFIED",
+    `Cannot safely stop session ${target.sessionId}: local tunnel ownership could not be verified.`,
+  );
+}
+
+async function stopReadySession(target: ActiveSession): Promise<StopDebuggerResult> {
+  if (await ownsRecordedTunnel(target)) {
+    await terminateVerifiedTunnelAndConfirm(target);
+    return await removeOwnedSession(target, false);
+  }
+  const tunnelDead = target.tunnelPid !== undefined && !isPidOrGroupAlive(target.tunnelPid);
+  if (tunnelDead && !(await isPortListening(target.localPort))) {
+    return await removeOwnedSession(target, true);
+  }
+  throw ownershipError(target);
+}
+
+async function stopStartingSession(target: ActiveSession): Promise<StopDebuggerResult> {
+  if (
+    target.status === "stopping" &&
+    target.tunnelPid !== undefined &&
+    !isPidOrGroupAlive(target.tunnelPid) &&
+    !(await isPortListening(target.localPort))
+  ) {
+    return await removeOwnedSession(target, true);
+  }
+  if (isPidAlive(target.controllerPid ?? target.pid)) {
+    return { ...target, stale: false, pending: true };
+  }
+  if (await ownsRecordedTunnel(target)) {
+    await terminateVerifiedTunnelAndConfirm(target);
+    return await removeOwnedSession(target, false);
+  }
+  const tunnelAlive = target.tunnelPid !== undefined && isPidOrGroupAlive(target.tunnelPid);
+  if (!tunnelAlive && !(await isPortListening(target.localPort))) {
+    return await removeOwnedSession(target, true);
+  }
+  throw ownershipError(target);
 }
 
 export async function stopDebugger(options: StopOptions): Promise<StopDebuggerResult | undefined> {
-  const pruneResult = await pruneAndCleanupOrphans();
-  const activeTarget = findMatchingSession(pruneResult.sessions, options);
-  if (activeTarget !== undefined) {
-    return await cleanupSession(activeTarget, false);
+  const localSessions = (await readSessionSnapshot()).filter(
+    (session) => session.hostname === getHostname(),
+  );
+  const target = findMatchingSession(localSessions, options);
+  if (target === undefined) {
+    return undefined;
   }
-
-  const staleTarget = findMatchingSession(pruneResult.removed, options);
-  if (staleTarget !== undefined) {
-    return await cleanupSession(staleTarget, true);
+  const claim = await requestSessionStop(target.sessionId);
+  if (claim === undefined) {
+    return undefined;
   }
-
-  return undefined;
+  return claim.previousStatus === "ready"
+    ? await stopReadySession(claim.session)
+    : await stopStartingSession(claim.session);
 }
 
 export async function stopAllDebuggers(): Promise<number> {
-  const pruneResult = await pruneAndCleanupOrphans();
-  let stopped = pruneResult.removed.length;
-  for (const session of pruneResult.sessions) {
+  const sessions = (await readSessionSnapshot()).filter(
+    (session) => session.hostname === getHostname(),
+  );
+  let stopped = 0;
+  for (const session of sessions) {
     const result = await stopDebugger({ sessionId: session.sessionId });
     if (result) {
       stopped += 1;
@@ -85,5 +175,5 @@ export async function listSessions(): Promise<readonly ActiveSession[]> {
 
 export async function getSession(key: SessionKey): Promise<ActiveSession | undefined> {
   const sessions = await readActiveSessions();
-  return sessions.find((s) => matchesKey(s, key));
+  return findMatchingSession(sessions, { key });
 }

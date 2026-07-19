@@ -8,7 +8,9 @@ import {
   cfApi,
   cfAppExists,
   cfAuth,
+  cfEnableSsh,
   cfLogin,
+  cfSshEnabled,
   cfTarget,
 } from "../../src/cloud-foundry/commands.js";
 import type { CfExecContext } from "../../src/cloud-foundry/execute.js";
@@ -20,6 +22,8 @@ import {
 interface LoggedCommand {
   readonly args: readonly string[];
   readonly cfHome: string;
+  readonly hasAuthPassword: boolean;
+  readonly hasAuthUsername: boolean;
 }
 
 const FAKE_CF_SOURCE = `#!/usr/bin/env node
@@ -32,7 +36,12 @@ const logPath = process.env.CF_DEBUGGER_TEST_FAKE_LOG;
 
 if (logPath !== undefined && logPath !== "") {
   mkdirSync(dirname(logPath), { recursive: true });
-  appendFileSync(logPath, JSON.stringify({ args, cfHome }) + "\\n", "utf8");
+  appendFileSync(logPath, JSON.stringify({
+    args,
+    cfHome,
+    hasAuthPassword: (process.env.CF_PASSWORD ?? "") !== "",
+    hasAuthUsername: (process.env.CF_USERNAME ?? "") !== "",
+  }) + "\\n", "utf8");
 }
 
 function fail(message) {
@@ -184,7 +193,12 @@ describe("cloud-foundry command wrappers", () => {
     await expect(runCf(["apps"], context)).resolves.toBe("name\ndemo-app\n");
 
     const commands = await readLog(logPath);
-    expect(commands).toEqual([{ args: ["apps"], cfHome: context.cfHome }]);
+    expect(commands).toEqual([{
+      args: ["apps"],
+      cfHome: context.cfHome,
+      hasAuthPassword: false,
+      hasAuthUsername: false,
+    }]);
   });
 
   it("allows five minutes for Cloud Foundry commands by default", () => {
@@ -226,6 +240,41 @@ describe("cloud-foundry command wrappers", () => {
     expect(executedCommands[0]).toBe("sleep-test");
   }, 15_000);
 
+  it("does not start a CF command when the caller already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runCf(["apps"], { ...context, signal: controller.signal })).rejects.toMatchObject({
+      code: "ABORTED",
+    });
+    await expect(readLog(logPath)).resolves.toEqual([]);
+  });
+
+  it("terminates an active CF command when the caller aborts", async () => {
+    process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
+    const controller = new AbortController();
+    const running = runCf(["sleep-test"], { ...context, signal: controller.signal }, 60_000);
+    setTimeout(() => {
+      controller.abort();
+    }, 25);
+
+    await expect(running).rejects.toMatchObject({ code: "ABORTED" });
+  });
+
+  it("interrupts a transient-failure retry delay when the caller aborts", async () => {
+    process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "2";
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const running = runCf(["network-test"], { ...context, signal: controller.signal });
+    setTimeout(() => {
+      controller.abort();
+    }, 500);
+
+    await expect(running).rejects.toMatchObject({ code: "ABORTED" });
+    expect(Date.now() - startedAt).toBeLessThan(900);
+    expect((await readLog(logPath)).length).toBeLessThanOrEqual(1);
+  });
+
   it("passes api and target arguments through the wrapper", async () => {
     await cfApi("https://api.example.com", context);
     await cfTarget("org-a", "dev", context);
@@ -246,6 +295,33 @@ describe("cloud-foundry command wrappers", () => {
     expect(commands.map((entry) => entry.args[0])).toEqual(["auth", "auth", "auth"]);
   });
 
+  it("passes auth credentials only through the child environment", async () => {
+    await cfAuth("user@example.com", "opaque-value", context);
+
+    const commands = await readLog(logPath);
+    expect(commands).toEqual([{
+      args: ["auth"],
+      cfHome: context.cfHome,
+      hasAuthPassword: true,
+      hasAuthUsername: true,
+    }]);
+  });
+
+  it("does not continue auth retries after the caller aborts", async () => {
+    process.env["CF_DEBUGGER_TEST_AUTH_FAILURES"] = "3";
+    const controller = new AbortController();
+    const running = cfAuth("user@example.com", "opaque-value", {
+      ...context,
+      signal: controller.signal,
+    });
+    setTimeout(() => {
+      controller.abort();
+    }, 25);
+
+    await expect(running).rejects.toMatchObject({ code: "ABORTED" });
+    expect((await readLog(logPath)).length).toBeLessThanOrEqual(1);
+  }, 500);
+
   it("wraps API failures as login failures", async () => {
     process.env["CF_DEBUGGER_TEST_FAIL_API"] = "1";
 
@@ -254,6 +330,19 @@ describe("cloud-foundry command wrappers", () => {
     ).rejects.toMatchObject({
       code: "CF_LOGIN_FAILED",
     });
+  });
+
+  it("preserves caller abort errors through CF command wrappers", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const abortedContext = { ...context, signal: controller.signal };
+
+    await expect(
+      cfLogin("https://api.example.com", "user@example.com", "opaque-value", abortedContext),
+    ).rejects.toMatchObject({ code: "ABORTED" });
+    await expect(cfTarget("org-a", "dev", abortedContext)).rejects.toMatchObject({ code: "ABORTED" });
+    await expect(cfEnableSsh("demo-app", abortedContext)).rejects.toMatchObject({ code: "ABORTED" });
+    await expect(cfSshEnabled("demo-app", abortedContext)).rejects.toMatchObject({ code: "ABORTED" });
   });
 
   it("redacts auth credentials from CF command failures", async () => {
@@ -266,6 +355,15 @@ describe("cloud-foundry command wrappers", () => {
       stderr: expect.not.stringContaining(password),
     });
   }, 10_000);
+
+  it("normalizes sensitive values before redacting overlapping failure text", async () => {
+    await expect(runCf(["abcdef"], context, {
+      sensitiveValues: ["", "abc", "abcdef", "abc"],
+    })).rejects.toMatchObject({
+      code: "CF_CLI_FAILED",
+      stderr: "unsupported command: <redacted>",
+    });
+  });
 
   it("maps app not-found output to false and rethrows unrelated app errors", async () => {
     await expect(cfAppExists("missing-app", context)).resolves.toBe(false);

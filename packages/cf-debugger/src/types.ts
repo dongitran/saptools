@@ -3,6 +3,15 @@ export interface SessionKey {
   readonly org: string;
   readonly space: string;
   readonly app: string;
+  readonly process?: string;
+  readonly instance?: number;
+  readonly apiEndpoint?: string;
+  readonly nodePid?: number;
+}
+
+export interface ResolvedSessionKey extends SessionKey {
+  readonly process: string;
+  readonly instance: number;
 }
 
 export type SessionStatus =
@@ -20,7 +29,10 @@ export type SessionStatus =
 
 export interface ActiveSession extends SessionKey {
   readonly sessionId: string;
+  /** Compatibility alias for the currently active controller or tunnel PID. */
   readonly pid: number;
+  readonly controllerPid?: number;
+  readonly tunnelPid?: number;
   readonly hostname: string;
   readonly localPort: number;
   readonly remotePort: number;
@@ -28,15 +40,18 @@ export interface ActiveSession extends SessionKey {
   readonly cfHomeDir: string;
   readonly startedAt: string;
   readonly status: SessionStatus;
+  readonly remoteNodePid?: number;
+  readonly stopRequestedAt?: string;
   readonly message?: string;
 }
 
 export interface StartDebuggerOptions extends SessionKey {
   readonly email?: string;
   readonly password?: string;
-  readonly apiEndpoint?: string;
   readonly preferredPort?: number;
   readonly tunnelReadyTimeoutMs?: number;
+  /** Set false when the caller must not enable SSH or restart the deployed app. Defaults to true. */
+  readonly allowSshEnableRestart?: boolean;
   readonly verbose?: boolean;
   readonly onStatus?: (status: SessionStatus, message?: string) => void;
   readonly signal?: AbortSignal;
@@ -49,7 +64,7 @@ export interface DebuggerHandle {
 }
 
 export interface StateFile {
-  readonly version: "1";
+  readonly version: "2";
   readonly sessions: readonly ActiveSession[];
 }
 

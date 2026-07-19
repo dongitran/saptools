@@ -12,6 +12,29 @@ const execFileAsync = promisify(execFile);
 const CF_AUTH_MAX_ATTEMPTS = 3;
 const CURRENT_TARGET_TIMEOUT_MS = 30_000;
 
+function rethrowCallerAbort(error: unknown): void {
+  if (error instanceof CfDebuggerError && error.code === "ABORTED") {
+    throw error;
+  }
+}
+
+function waitForAuthRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
+  }
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export interface CurrentCfTargetReadOptions {
   readonly command?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -37,14 +60,18 @@ export async function cfAuth(
   let lastError: unknown;
   for (let attempt = 0; attempt < CF_AUTH_MAX_ATTEMPTS; attempt++) {
     try {
-      await runCf(["auth", email, password], context);
+      await runCf(["auth"], context, {
+        env: { CF_PASSWORD: password, CF_USERNAME: email },
+        sensitiveValues: [email, password],
+      });
       return;
     } catch (err: unknown) {
       lastError = err;
+      if (err instanceof CfDebuggerError && err.code === "ABORTED") {
+        throw err;
+      }
       if (attempt < CF_AUTH_MAX_ATTEMPTS - 1) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 1000 * (attempt + 1));
-        });
+        await waitForAuthRetry(1000 * (attempt + 1), context.signal);
       }
     }
   }
@@ -64,6 +91,7 @@ export async function cfLogin(
     await cfApi(apiEndpoint, context);
     await cfAuth(email, password, context);
   } catch (err: unknown) {
+    rethrowCallerAbort(err);
     if (err instanceof CfDebuggerError) {
       throw new CfDebuggerError("CF_LOGIN_FAILED", err.message, err.stderr);
     }
@@ -79,6 +107,7 @@ export async function cfTarget(
   try {
     await runCf(["target", "-o", org, "-s", space], context);
   } catch (err: unknown) {
+    rethrowCallerAbort(err);
     if (err instanceof CfDebuggerError) {
       throw new CfDebuggerError("CF_TARGET_FAILED", err.message, err.stderr);
     }
@@ -103,7 +132,8 @@ export async function cfSshEnabled(appName: string, context: CfExecContext): Pro
   try {
     const stdout = await runCf(["ssh-enabled", appName], context);
     return stdout.toLowerCase().includes("ssh support is enabled");
-  } catch {
+  } catch (err: unknown) {
+    rethrowCallerAbort(err);
     return false;
   }
 }
@@ -112,6 +142,7 @@ export async function cfEnableSsh(appName: string, context: CfExecContext): Prom
   try {
     await runCf(["enable-ssh", appName], context);
   } catch (err: unknown) {
+    rethrowCallerAbort(err);
     if (err instanceof CfDebuggerError) {
       throw new CfDebuggerError("SSH_NOT_ENABLED", err.message, err.stderr);
     }

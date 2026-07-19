@@ -3,6 +3,8 @@ import { readdir, readFile, readlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 
+import { CfDebuggerError } from "../types.js";
+
 const execFileAsync = promisify(execFile);
 
 async function findListeningPidsWithNetstat(port: number): Promise<readonly number[]> {
@@ -160,64 +162,50 @@ export async function isPortListening(port: number, timeoutMs = 200): Promise<bo
   });
 }
 
-export async function probeTunnelReady(port: number, timeoutMs: number): Promise<boolean> {
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new CfDebuggerError("ABORTED", "Operation aborted by caller");
+  }
+}
+
+function waitForNextProbe(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function probeTunnelReady(
+  port: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const pollIntervalMs = 250;
   const started = Date.now();
+  throwIfAborted(signal);
 
   while (Date.now() - started < timeoutMs) {
     const connected = await isPortListening(port);
-
     if (connected) {
       return true;
     }
-
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, pollIntervalMs);
-    });
+    const remainingMs = timeoutMs - (Date.now() - started);
+    await waitForNextProbe(Math.min(pollIntervalMs, Math.max(0, remainingMs)), signal);
   }
 
+  throwIfAborted(signal);
   return false;
 }
 
 export async function findListeningProcessId(port: number): Promise<number | undefined> {
   const pids = await findListeningPids(port);
   return pids[0];
-}
-
-export async function killProcessOnPort(port: number): Promise<void> {
-  const portStr = port.toString();
-  if (process.platform === "win32") {
-    try {
-      const pids = await findListeningPidsWithNetstat(port);
-      for (const pid of pids) {
-        try {
-          // cspell:ignore taskkill
-          await execFileAsync("taskkill", ["/F", "/PID", pid.toString()]);
-        } catch {
-          // ignore
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return;
-  }
-
-  try {
-    const { stdout } = await execFileAsync("lsof", ["-t", "-i", `tcp:${portStr}`]);
-    const lines = stdout.trim().split("\n").filter((line) => line.length > 0);
-    for (const line of lines) {
-      const pid = Number.parseInt(line, 10);
-      if (Number.isNaN(pid)) {
-        continue;
-      }
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already dead
-      }
-    }
-  } catch {
-    // lsof missing or no match — ignore
-  }
 }

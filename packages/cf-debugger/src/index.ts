@@ -1,6 +1,7 @@
 export type {
   ActiveSession,
   DebuggerHandle,
+  ResolvedSessionKey,
   SessionKey,
   SessionStatus,
   StartDebuggerOptions,
@@ -21,3 +22,13 @@ export {
   requireCurrentCfRegion,
 } from "./cloud-foundry/commands.js";
 export type { CurrentCfTarget, CurrentCfTargetReadOptions } from "./cloud-foundry/commands.js";
+export {
+  buildNodeInspectorCommand,
+  parseNodeInspectorMarkers,
+  resolveNodeTarget,
+} from "./cloud-foundry/node-process.js";
+export type {
+  NodeProcessSelection,
+  NodeTargetSelectors,
+  ResolvedNodeTarget,
+} from "./cloud-foundry/node-process.js";

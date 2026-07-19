@@ -1,8 +1,7 @@
 import type { ChildProcess } from "node:child_process";
-import { mkdir, rm } from "node:fs/promises";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import process from "node:process";
 
-import type { CfExecContext } from "../cf.js";
 import {
   cfEnableSsh,
   cfLogin,
@@ -12,15 +11,28 @@ import {
   cfTarget,
   isSshDisabledError,
   spawnSshTunnel,
+  type CfExecContext,
 } from "../cf.js";
+import {
+  buildNodeInspectorCommand,
+  parseNodeInspectorMarkers,
+  resolveNodeTarget,
+  type ResolvedNodeTarget,
+} from "../cloud-foundry/node-process.js";
 import { sessionCfHomeDir } from "../paths.js";
-import { findListeningProcessId, isPortFree, killProcessOnPort, probeTunnelReady } from "../port.js";
+import {
+  findListeningProcessId,
+  isPortFree,
+  isPortListening,
+  probeTunnelReady,
+} from "../port.js";
 import { resolveApiEndpoint } from "../regions.js";
 import {
   registerNewSession,
   removeSession,
   sessionKeyString,
   updateSessionPid,
+  updateSessionRemoteNodePid,
   updateSessionStatus,
 } from "../state.js";
 import type { ActiveSession, DebuggerHandle, SessionStatus, StartDebuggerOptions } from "../types.js";
@@ -28,18 +40,29 @@ import { CfDebuggerError } from "../types.js";
 
 import {
   DEFAULT_TUNNEL_READY_TIMEOUT_MS,
-  PORT_CLEANUP_DELAY_MS,
-  PORT_RECLAIM_DELAY_MS,
   POST_USR1_DELAY_MS,
 } from "./constants.js";
 import { pruneAndCleanupOrphans } from "./orphans.js";
 import { killProcessGroupOrProc } from "./processes.js";
+import { createStartupCancellation } from "./startup-cancellation.js";
 
 type StatusEmitter = (status: SessionStatus, message?: string) => void;
 
-interface TunnelResult {
-  readonly child: ChildProcess;
-  readonly activePid: number;
+interface TunnelLifecycle {
+  readonly exitPromise: Promise<number | null>;
+  readonly finalize: () => Promise<void>;
+  readonly observeChild: (child: ChildProcess) => void;
+}
+
+interface StartupInputs {
+  readonly options: StartDebuggerOptions;
+  readonly target: ResolvedNodeTarget;
+  readonly session: ActiveSession;
+  readonly context: CfExecContext;
+  readonly credentials: { readonly email: string; readonly password: string };
+  readonly timeoutMs: number;
+  readonly lifecycle: TunnelLifecycle;
+  readonly emit: StatusEmitter;
 }
 
 type SignalResult = Awaited<ReturnType<typeof cfSshOneShot>>;
@@ -62,6 +85,36 @@ function checkAbort(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new CfDebuggerError("ABORTED", "Operation aborted by caller");
   }
+}
+
+function requireStartupState(
+  state: ActiveSession | undefined,
+  expectedStatus?: SessionStatus,
+): ActiveSession {
+  if (state === undefined) {
+    throw new CfDebuggerError(
+      "SESSION_STATE_LOST",
+      "Debugger session ownership state disappeared during startup.",
+    );
+  }
+  if (state.stopRequestedAt !== undefined || state.status === "stopping") {
+    throw new CfDebuggerError("ABORTED", "Debugger session stop was requested during startup.");
+  }
+  if (expectedStatus !== undefined && state.status !== expectedStatus) {
+    throw new CfDebuggerError(
+      "SESSION_STATE_CONFLICT",
+      `Debugger session state did not transition to ${expectedStatus}.`,
+    );
+  }
+  return state;
+}
+
+async function transitionStartupStatus(
+  sessionId: string,
+  status: SessionStatus,
+  message?: string,
+): Promise<ActiveSession> {
+  return requireStartupState(await updateSessionStatus(sessionId, status, message), status);
 }
 
 function requireCredentials(options: StartDebuggerOptions): {
@@ -87,6 +140,7 @@ function requireCredentials(options: StartDebuggerOptions): {
 
 async function registerSession(
   options: StartDebuggerOptions,
+  target: ResolvedNodeTarget,
   apiEndpoint: string,
 ): Promise<ActiveSession> {
   const registration = await registerNewSession({
@@ -94,6 +148,9 @@ async function registerSession(
     org: options.org,
     space: options.space,
     app: options.app,
+    process: target.process,
+    instance: target.instance,
+    ...(target.nodePid === undefined ? {} : { nodePid: target.nodePid }),
     apiEndpoint,
     ...(options.preferredPort === undefined ? {} : { preferredPort: options.preferredPort }),
     portProbe: isPortFree,
@@ -122,66 +179,81 @@ async function loginAndTarget(
   emit: StatusEmitter,
 ): Promise<void> {
   emit("logging-in");
-  await updateSessionStatus(sessionId, "logging-in");
+  await transitionStartupStatus(sessionId, "logging-in");
   await cfLogin(apiEndpoint, email, password, context);
-  checkAbort(options.signal);
+  checkAbort(context.signal);
 
   emit("targeting");
-  await updateSessionStatus(sessionId, "targeting");
+  await transitionStartupStatus(sessionId, "targeting");
   await cfTarget(options.org, options.space, context);
-  checkAbort(options.signal);
+  checkAbort(context.signal);
 }
 
 async function signalRemoteNode(
   options: StartDebuggerOptions,
+  target: ResolvedNodeTarget,
+  context: CfExecContext,
+  sessionId: string,
+  emit: StatusEmitter,
+): Promise<number> {
+  emit("signaling");
+  await transitionStartupStatus(sessionId, "signaling");
+  const signalResult = await executeRemoteSignal(options.app, target, context);
+
+  if (!isSshDisabledError(signalResult.stderr)) {
+    return parseSignalResult(options.app, signalResult);
+  }
+
+  if (options.allowSshEnableRestart === false) {
+    throw new CfDebuggerError(
+      "SSH_NOT_ENABLED",
+      `SSH is disabled for ${options.app}; automatic SSH enable and app restart are not allowed.`,
+      signalResult.stderr,
+    );
+  }
+  await enableSshAndRestart(options, target, context, sessionId, emit);
+  return await retryRemoteSignal(options, target, context, sessionId, emit);
+}
+
+async function enableSshAndRestart(
+  options: StartDebuggerOptions,
+  target: ResolvedNodeTarget,
   context: CfExecContext,
   sessionId: string,
   emit: StatusEmitter,
 ): Promise<void> {
-  emit("signaling");
-  await updateSessionStatus(sessionId, "signaling");
-  const signalResult = await cfSshOneShot(options.app, `kill -s USR1 $(pidof node)`, context);
-
-  if (!isSshDisabledError(signalResult.stderr)) {
-    if (signalResult.exitCode === 0) {
-      return;
-    }
+  if (target.nodePid !== undefined) {
     throw new CfDebuggerError(
-      "USR1_SIGNAL_FAILED",
-      `Failed to send SIGUSR1 to the Node.js process on ${options.app}: ${signalFailureDetail(signalResult)}`,
-      signalResult.stderr,
+      "NODE_PID_RESTART_UNSAFE",
+      `Cannot automatically restart ${options.app} while targeting remote Node PID ` +
+        `${target.nodePid.toString()}. Enable SSH and restart the app first, then retry with its new PID.`,
     );
   }
 
   const alreadyEnabled = await cfSshEnabled(options.app, context);
   if (!alreadyEnabled) {
     emit("ssh-enabling", "Enabling SSH on the app");
-    await updateSessionStatus(sessionId, "ssh-enabling");
+    await transitionStartupStatus(sessionId, "ssh-enabling");
     await cfEnableSsh(options.app, context);
   }
   emit("ssh-restarting", "Restarting app so SSH becomes active");
-  await updateSessionStatus(sessionId, "ssh-restarting");
+  await transitionStartupStatus(sessionId, "ssh-restarting");
   await cfRestartApp(options.app, context);
-  checkAbort(options.signal);
-
-  await retryRemoteSignal(options, context, sessionId, emit);
+  checkAbort(context.signal);
 }
 
 async function retryRemoteSignal(
   options: StartDebuggerOptions,
+  target: ResolvedNodeTarget,
   context: CfExecContext,
   sessionId: string,
   emit: StatusEmitter,
-): Promise<void> {
+): Promise<number> {
   emit("signaling");
-  await updateSessionStatus(sessionId, "signaling");
-  const retrySignalResult = await cfSshOneShot(
-    options.app,
-    `kill -s USR1 $(pidof node)`,
-    context,
-  );
+  await transitionStartupStatus(sessionId, "signaling");
+  const retrySignalResult = await executeRemoteSignal(options.app, target, context);
   if (retrySignalResult.exitCode === 0) {
-    return;
+    return parseSignalResult(options.app, retrySignalResult);
   }
   throw new CfDebuggerError(
     "USR1_SIGNAL_FAILED",
@@ -192,45 +264,93 @@ async function retryRemoteSignal(
   );
 }
 
-async function waitAfterSignal(signal: AbortSignal | undefined): Promise<void> {
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, POST_USR1_DELAY_MS);
+async function executeRemoteSignal(
+  appName: string,
+  target: ResolvedNodeTarget,
+  context: CfExecContext,
+): Promise<SignalResult> {
+  return await cfSshOneShot(appName, buildNodeInspectorCommand(target.nodePid), context, {
+    process: target.process,
+    instance: target.instance,
   });
-  checkAbort(signal);
+}
+
+function parseSignalResult(appName: string, result: SignalResult): number {
+  if (result.exitCode !== 0) {
+    throw new CfDebuggerError(
+      "USR1_SIGNAL_FAILED",
+      `Failed to send SIGUSR1 to the Node.js process on ${appName}: ${signalFailureDetail(result)}`,
+      result.stderr,
+    );
+  }
+  if (result.outputTruncated) {
+    throw new CfDebuggerError(
+      "INSPECTOR_OUTPUT_TOO_LARGE",
+      "Inspector startup output exceeded the configured capture limit.",
+    );
+  }
+  return parseNodeInspectorMarkers(result.stdout).remoteNodePid;
+}
+
+async function waitAfterSignal(signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) {
+    throw new CfDebuggerError("ABORTED", "Operation aborted by caller");
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, POST_USR1_DELAY_MS);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function ensurePortAvailable(localPort: number): Promise<void> {
-  if (await isPortFree(localPort)) {
-    return;
-  }
-  await killProcessOnPort(localPort);
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, PORT_RECLAIM_DELAY_MS);
-  });
   if (!(await isPortFree(localPort))) {
     throw new CfDebuggerError(
       "PORT_UNAVAILABLE",
-      `Local port ${localPort.toString()} is in use and could not be reclaimed for the tunnel.`,
+      `Local port ${localPort.toString()} was taken before the tunnel could start.`,
     );
   }
 }
 
 async function openReadyTunnel(
   options: StartDebuggerOptions,
+  target: ResolvedNodeTarget,
   session: ActiveSession,
   context: CfExecContext,
   tunnelReadyTimeoutMs: number,
   onChild: (child: ChildProcess) => void,
-): Promise<TunnelResult> {
+): Promise<void> {
   await ensurePortAvailable(session.localPort);
-  const child = spawnSshTunnel(options.app, session.localPort, session.remotePort, context);
+  checkAbort(context.signal);
+  const child = spawnSshTunnel(options.app, session.localPort, session.remotePort, context, {
+    process: target.process,
+    instance: target.instance,
+  });
   onChild(child);
-  if (child.pid !== undefined) {
-    await updateSessionPid(session.sessionId, child.pid);
+  const childPid = child.pid;
+  if (childPid === undefined) {
+    throw new CfDebuggerError("TUNNEL_PROCESS_MISSING", "The CF SSH tunnel process did not expose a PID.");
+  }
+  const pidState = requireStartupState(await updateSessionPid(session.sessionId, childPid));
+  if (pidState.tunnelPid !== childPid || pidState.pid !== childPid) {
+    throw new CfDebuggerError(
+      "SESSION_STATE_CONFLICT",
+      "Debugger session did not retain ownership of the spawned tunnel process.",
+    );
   }
 
-  const ready = await probeTunnelReady(session.localPort, tunnelReadyTimeoutMs);
-  checkAbort(options.signal);
+  const ready = await probeTunnelReady(
+    session.localPort,
+    tunnelReadyTimeoutMs,
+    context.signal,
+  );
+  checkAbort(context.signal);
   if (!ready) {
     throw new CfDebuggerError(
       "TUNNEL_NOT_READY",
@@ -240,21 +360,26 @@ async function openReadyTunnel(
   }
 
   const listeningPid = await findListeningProcessId(session.localPort);
-  const activePid = listeningPid ?? child.pid ?? session.pid;
-  if (activePid !== session.pid) {
-    await updateSessionPid(session.sessionId, activePid);
+  if (listeningPid === undefined) {
+    throw new CfDebuggerError(
+      "TUNNEL_OWNER_UNVERIFIED",
+      `Could not verify the owner of local tunnel port ${session.localPort.toString()}.`,
+    );
   }
-  return { child, activePid };
+  if (listeningPid !== childPid) {
+    throw new CfDebuggerError(
+      "TUNNEL_OWNER_MISMATCH",
+      `Local tunnel port ${session.localPort.toString()} is owned by an unexpected process.`,
+    );
+  }
 }
 
 function attachTunnelEvents(
   child: ChildProcess,
-  markClosed: () => void,
   resolveExit: (code: number | null) => void,
   emit: StatusEmitter,
 ): void {
   child.on("close", (code) => {
-    markClosed();
     resolveExit(code);
   });
 
@@ -273,12 +398,26 @@ function createHandle(
   return {
     session,
     dispose: async (): Promise<void> => {
-      disposePromise ??= (async (): Promise<void> => {
-        emit("stopping");
-        await updateSessionStatus(session.sessionId, "stopping");
-        await finalize();
+      const attempt = disposePromise ?? (async (): Promise<void> => {
+        await runCleanupActions([
+          (): void => {
+            emit("stopping");
+          },
+          async (): Promise<void> => {
+            await updateSessionStatus(session.sessionId, "stopping");
+          },
+          finalize,
+        ], "Debugger disposal failed");
       })();
-      await disposePromise;
+      disposePromise = attempt;
+      try {
+        await attempt;
+      } catch (error: unknown) {
+        if (disposePromise === attempt) {
+          disposePromise = undefined;
+        }
+        throw error;
+      }
     },
     waitForExit: async (): Promise<number | null> => {
       return await exitPromise;
@@ -286,8 +425,126 @@ function createHandle(
   };
 }
 
+async function runCleanupActions(
+  actions: readonly (() => void | Promise<void>)[],
+  aggregateMessage: string,
+): Promise<void> {
+  let errors: readonly unknown[] = [];
+  for (const action of actions) {
+    try {
+      await action();
+    } catch (error: unknown) {
+      errors = [...errors, error];
+    }
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, aggregateMessage);
+  }
+}
+
+async function prepareCfHome(cfHomeDir: string): Promise<void> {
+  await mkdir(cfHomeDir, { recursive: true, mode: 0o700 });
+  await chmod(cfHomeDir, 0o700);
+}
+
+function createTunnelLifecycle(session: ActiveSession, emit: StatusEmitter): TunnelLifecycle {
+  let child: ChildProcess | undefined;
+  let exitResolve: (code: number | null) => void = (_code) => {
+    throw new Error("Exit resolver was used before initialization");
+  };
+  const exitPromise = new Promise<number | null>((resolve) => {
+    exitResolve = resolve;
+  });
+  const observeChild = (tunnelChild: ChildProcess): void => {
+    child = tunnelChild;
+    attachTunnelEvents(tunnelChild, exitResolve, emit);
+  };
+  const finalize = async (): Promise<void> => {
+    const termination = child === undefined
+      ? "terminated"
+      : await killProcessGroupOrProc(child);
+    const portListening = child !== undefined && await isPortListening(session.localPort);
+    if (termination === "still-alive" || portListening) {
+      throw new CfDebuggerError(
+        "TUNNEL_TERMINATION_FAILED",
+        `Tunnel for session ${session.sessionId} did not terminate; state and CF home were retained.`,
+      );
+    }
+    await runCleanupActions([
+      async (): Promise<void> => {
+        await removeSession(session.sessionId);
+      },
+      async (): Promise<void> => {
+        await cleanupFilesystem(session.cfHomeDir);
+      },
+    ], "Debugger resource cleanup failed");
+    emit("stopped");
+  };
+  return { exitPromise, finalize, observeChild };
+}
+
+async function establishDebuggerSession(inputs: StartupInputs): Promise<ActiveSession> {
+  const { options, target, session, context, credentials, timeoutMs, lifecycle, emit } = inputs;
+  await prepareCfHome(session.cfHomeDir);
+  await loginAndTarget(
+    options,
+    session.apiEndpoint,
+    credentials.email,
+    credentials.password,
+    context,
+    session.sessionId,
+    emit,
+  );
+  await ensurePortAvailable(session.localPort);
+  const remoteNodePid = await signalRemoteNode(options, target, context, session.sessionId, emit);
+  const remoteState = requireStartupState(
+    await updateSessionRemoteNodePid(session.sessionId, remoteNodePid),
+  );
+  if (remoteState.remoteNodePid !== remoteNodePid) {
+    throw new CfDebuggerError(
+      "SESSION_STATE_CONFLICT",
+      "Debugger session did not retain the selected remote Node PID.",
+    );
+  }
+  await waitAfterSignal(context.signal);
+
+  emit("tunneling");
+  await transitionStartupStatus(session.sessionId, "tunneling");
+  await openReadyTunnel(
+    options, target, session, context, timeoutMs, lifecycle.observeChild,
+  );
+  emit("ready");
+  return await transitionStartupStatus(session.sessionId, "ready");
+}
+
+async function failAfterStartupCleanup(
+  error: unknown,
+  finalize: () => Promise<void>,
+  emit: StatusEmitter,
+): Promise<never> {
+  try {
+    await runCleanupActions([
+      (): void => {
+        emit("error", error instanceof Error ? error.message : String(error));
+      },
+      finalize,
+    ], "Debugger startup failure reporting and cleanup failed");
+  } catch (cleanupError: unknown) {
+    throw new AggregateError(
+      [error, cleanupError],
+      "Debugger startup failed and resource cleanup was incomplete",
+      { cause: cleanupError },
+    );
+  }
+  throw error;
+}
+
 export async function startDebugger(options: StartDebuggerOptions): Promise<DebuggerHandle> {
-  const { email, password } = requireCredentials(options);
+  const target = resolveNodeTarget(options);
+  const credentials = requireCredentials(options);
   const apiEndpoint = resolveApiEndpoint(options.region, options.apiEndpoint);
   const tunnelReadyTimeoutMs = options.tunnelReadyTimeoutMs ?? DEFAULT_TUNNEL_READY_TIMEOUT_MS;
   const emit = (status: SessionStatus, message?: string): void => {
@@ -297,74 +554,33 @@ export async function startDebugger(options: StartDebuggerOptions): Promise<Debu
   checkAbort(options.signal);
   await pruneAndCleanupOrphans();
 
-  const session = await registerSession(options, apiEndpoint);
-  const context: CfExecContext = { cfHome: session.cfHomeDir };
-  let child: ChildProcess | undefined;
-  let tunnelClosed = false;
-  let exitResolve: (code: number | null) => void = (_code) => {
-    throw new Error("Exit resolver was used before initialization");
+  const session = await registerSession(options, target, apiEndpoint);
+  const cancellation = createStartupCancellation(session.sessionId, options.signal);
+  const context: CfExecContext = {
+    cfHome: session.cfHomeDir,
+    signal: cancellation.signal,
   };
-  const exitPromise = new Promise<number | null>((resolve) => {
-    exitResolve = resolve;
-  });
-
-  const finalize = async (): Promise<void> => {
-    if (!tunnelClosed) {
-      tunnelClosed = true;
-      if (child) {
-        await killProcessGroupOrProc(child);
-      }
-      setTimeout(() => {
-        void killProcessOnPort(session.localPort);
-      }, PORT_CLEANUP_DELAY_MS);
-    }
-    await removeSession(session.sessionId);
-    await cleanupFilesystem(session.cfHomeDir);
-    emit("stopped");
-  };
+  const lifecycle = createTunnelLifecycle(session, emit);
 
   try {
-    await mkdir(session.cfHomeDir, { recursive: true });
-    await loginAndTarget(options, apiEndpoint, email, password, context, session.sessionId, emit);
-    await killProcessOnPort(session.localPort);
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 200);
-    });
-    await signalRemoteNode(options, context, session.sessionId, emit);
-    await waitAfterSignal(options.signal);
-
-    emit("tunneling");
-    await updateSessionStatus(session.sessionId, "tunneling");
-    const tunnel = await openReadyTunnel(
+    const activeSession = await establishDebuggerSession({
       options,
+      target,
       session,
       context,
-      tunnelReadyTimeoutMs,
-      (tunnelChild) => {
-        child = tunnelChild;
-        attachTunnelEvents(tunnelChild, () => {
-          tunnelClosed = true;
-        }, exitResolve, emit);
-      },
-    );
-    child = tunnel.child;
-
-    emit("ready");
-    const readySession = await updateSessionStatus(session.sessionId, "ready");
-    const activeSession = readySession ?? { ...session, pid: tunnel.activePid, status: "ready" };
-    return createHandle(activeSession, emit, finalize, exitPromise);
+      credentials,
+      timeoutMs: tunnelReadyTimeoutMs,
+      lifecycle,
+      emit,
+    });
+    cancellation.dispose();
+    return createHandle(activeSession, emit, lifecycle.finalize, lifecycle.exitPromise);
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    emit("error", message);
-    await finalize();
-    throw err;
+    cancellation.dispose();
+    return await failAfterStartupCleanup(err, lifecycle.finalize, emit);
   }
 }
 
 async function cleanupFilesystem(cfHomeDir: string): Promise<void> {
-  try {
-    await rm(cfHomeDir, { recursive: true, force: true });
-  } catch {
-    // best-effort
-  }
+  await rm(cfHomeDir, { recursive: true, force: true });
 }

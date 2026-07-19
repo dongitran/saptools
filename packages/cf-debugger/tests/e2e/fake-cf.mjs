@@ -41,6 +41,12 @@ function handleTunnel(tunnelArg) {
     exitWithError("missing tunnel argument");
   }
 
+  const markerPath = process.env["CF_DEBUGGER_FAKE_TUNNEL_MARKER"];
+  if (markerPath !== undefined && markerPath !== "") {
+    mkdirSync(dirname(markerPath), { recursive: true });
+    writeFileSync(markerPath, "tunnel-started\n", "utf8");
+  }
+
   if (process.env["CF_DEBUGGER_FAKE_TUNNEL_NEVER_READY"] === "1") {
     setInterval(() => {
       void process.uptime();
@@ -73,7 +79,29 @@ function handleTunnel(tunnelArg) {
   server.listen(localPort, "127.0.0.1");
 }
 
+function selectedNodePid() {
+  const commandIndex = args.indexOf("-c");
+  const command = commandIndex < 0 ? "" : (args[commandIndex + 1] ?? "");
+  const requested = /^requested_node_pid=(\d*)$/m.exec(command)?.[1];
+  return requested === undefined || requested === "" ? "4312" : requested;
+}
+
+function writeInspectorMarkers() {
+  const nodePid = selectedNodePid();
+  process.stdout.write(
+    [
+      `saptools-inspector-node-pid=${nodePid}`,
+      `saptools-inspector-owner-pid=${nodePid}`,
+      "saptools-inspector-ready",
+      "",
+    ].join("\n"),
+  );
+}
+
 function handleSsh() {
+  if (process.env["CF_DEBUGGER_FAKE_CF_V6"] === "1" && args.includes("--process")) {
+    exitWithError("Incorrect Usage: unknown flag --process");
+  }
   if (args.includes("-N")) {
     handleTunnel(args[args.indexOf("-L") + 1]);
     return;
@@ -97,6 +125,7 @@ function handleSsh() {
   ) {
     exitWithError("SSH support is disabled");
   }
+  writeInspectorMarkers();
 }
 
 function handleCommand() {
@@ -135,6 +164,9 @@ function handleCommand() {
       return;
     }
     case "auth": {
+      if ((process.env["CF_USERNAME"] ?? "") === "" || (process.env["CF_PASSWORD"] ?? "") === "") {
+        exitWithError("missing auth environment");
+      }
       if (process.env["CF_DEBUGGER_FAKE_AUTH_FAIL"] === "1") {
         exitWithError("authentication failed");
       }
