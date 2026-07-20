@@ -225,9 +225,10 @@ async function isForeignPause(
   if (plan.asynchronous !== true) {
     return false;
   }
-  // A "step" pause is V8 completing our own step command; it is always ours,
-  // even when it lands outside the function (that is a genuine return).
-  if (pause.reason === "step") {
+  // Our own step completions arrive as "step" on Node 22+ but "other" on Node 20;
+  // only exception-style pauses can interleave from unrelated code during an await
+  // gap, so anything that is not an exception is this activation's own step.
+  if (pause.reason !== "exception" && pause.reason !== "promiseRejection") {
     return false;
   }
   const rootIndex = rootFrameIndex(plan, pause);
