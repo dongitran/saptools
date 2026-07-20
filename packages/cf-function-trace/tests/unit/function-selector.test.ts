@@ -42,13 +42,42 @@ describe("runtime JavaScript function selector", () => {
     expect(selection.candidates.filter((candidate) => candidate.localName === "update")).toHaveLength(1);
   });
 
-  it("rejects async and await-bearing functions in the synchronous MVP", () => {
-    expect(() => resolveFunctionSelector("runtime.js", "async function run() {}", "run")).toThrowError(expect.objectContaining({ code: "UNSUPPORTED_ASYNC_FUNCTION" }));
+  it("resolves async and await-bearing functions and flags them for the controller", () => {
+    const asyncFn = resolveFunctionSelector("runtime.js", "async function run() { await work(); }", "run").candidate;
+    expect(asyncFn.asynchronous).toBe(true);
+    expect(asyncFn.containsAwait).toBe(true);
+    // A top-level await with no async keyword is still flagged as await-bearing.
+    expect(resolveFunctionSelector("runtime.js", "function run() { return work(); }", "run").candidate.asynchronous).toBe(false);
+    // await inside a nested (non-selected) function does not mark the outer function.
     expect(resolveFunctionSelector(
       "runtime.js",
       "function run() { return async () => await work(); }",
       "run",
     ).candidate.containsAwait).toBe(false);
+  });
+
+  it("resolves methods of decorator-compiled class expressions", () => {
+    const compiled = [
+      "let Handler = class Handler {",
+      "  async handle(req) { return req; }",
+      "  scope(id) { return id; }",
+      "};",
+    ].join("\n");
+    expect(resolveFunctionSelector("runtime.js", compiled, "Handler.scope").candidate.kind).toBe("class-method");
+    expect(resolveFunctionSelector("runtime.js", compiled, "Handler.handle").candidate.asynchronous).toBe(true);
+    expect(resolveFunctionSelector("runtime.js", compiled, "scope").candidate.selector).toBe("Handler.scope");
+    // Anonymous class expression bound to a variable resolves through the variable name.
+    expect(resolveFunctionSelector(
+      "runtime.js",
+      "const Svc = class { run(value) { return value; } };",
+      "Svc.run",
+    ).candidate.kind).toBe("class-method");
+    // `exports.X = class {}` resolves through the assigned property name.
+    expect(resolveFunctionSelector(
+      "runtime.js",
+      "exports.Svc = class { go() { return 1; } };",
+      "Svc.go",
+    ).candidate.selector).toBe("Svc.go");
   });
 
   it("resolves named function expressions and object function properties", () => {

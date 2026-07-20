@@ -27,6 +27,8 @@ export interface RecordCliFlags {
   readonly maxNodes?: string;
   readonly maxStateBytes?: string;
   readonly appRoot?: string;
+  readonly match?: string;
+  readonly asyncStackDepth?: string;
   readonly confirmImpact: boolean;
 }
 
@@ -40,12 +42,14 @@ export interface ResolvedTraceLimits {
   readonly maxProperties: number;
   readonly maxNodes: number;
   readonly maxStateBytes: number;
+  readonly asyncStackDepth: number;
 }
 
 export interface ResolvedRecordOptions {
   readonly target: TraceTarget;
   readonly limits: ResolvedTraceLimits;
   readonly appRoot?: string;
+  readonly matchCondition?: string;
 }
 
 function parseInteger(raw: string, label: string, minimum: number, maximum: number): number {
@@ -154,19 +158,44 @@ function cfTarget(flags: RecordCliFlags): TraceTarget {
   };
 }
 
+function boundedLimit(
+  raw: string | undefined,
+  fallback: string,
+  label: string,
+  minimum: number,
+  maximum: number,
+): number {
+  return parseInteger(raw ?? fallback, label, minimum, maximum);
+}
+
 function resolveLimits(flags: RecordCliFlags): ResolvedTraceLimits {
-  const timeoutSeconds = parseInteger(flags.timeout ?? "60", "--timeout", 1, 3600);
   return {
-    callDepth: parseInteger(flags.callDepth ?? "0", "--call-depth", 0, 2),
-    timeoutMs: timeoutSeconds * 1000,
-    maxSteps: parseInteger(flags.maxSteps ?? "200", "--max-steps", 1, 10_000),
-    maxPausedMs: parseInteger(flags.maxPausedMs ?? "5000", "--max-paused-ms", 1, 60_000),
-    checkpointEvery: parseInteger(flags.checkpointEvery ?? "25", "--checkpoint-every", 1, 1000),
-    maxObjectDepth: parseInteger(flags.maxObjectDepth ?? "4", "--max-object-depth", 0, 20),
-    maxProperties: parseInteger(flags.maxProperties ?? "100", "--max-properties", 1, 10_000),
-    maxNodes: parseInteger(flags.maxNodes ?? "1000", "--max-nodes", 1, 100_000),
-    maxStateBytes: parseInteger(flags.maxStateBytes ?? "2000000", "--max-state-bytes", 1024, 100_000_000),
+    callDepth: boundedLimit(flags.callDepth, "0", "--call-depth", 0, 2),
+    timeoutMs: boundedLimit(flags.timeout, "60", "--timeout", 1, 3600) * 1000,
+    maxSteps: boundedLimit(flags.maxSteps, "200", "--max-steps", 1, 10_000),
+    maxPausedMs: boundedLimit(flags.maxPausedMs, "5000", "--max-paused-ms", 1, 600_000),
+    checkpointEvery: boundedLimit(flags.checkpointEvery, "25", "--checkpoint-every", 1, 1000),
+    maxObjectDepth: boundedLimit(flags.maxObjectDepth, "4", "--max-object-depth", 0, 20),
+    maxProperties: boundedLimit(flags.maxProperties, "100", "--max-properties", 1, 10_000),
+    maxNodes: boundedLimit(flags.maxNodes, "1000", "--max-nodes", 1, 100_000),
+    maxStateBytes: boundedLimit(flags.maxStateBytes, "2000000", "--max-state-bytes", 1024, 100_000_000),
+    asyncStackDepth: boundedLimit(flags.asyncStackDepth, "4", "--async-stack-depth", 0, 100),
   };
+}
+
+function resolveMatchCondition(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (value === undefined || value.length === 0) {
+    return undefined;
+  }
+  const hasControlCharacter = Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+  if (value.length > 1024 || hasControlCharacter) {
+    throw new TraceDataError("INVALID_ARGUMENT", "--match must be a single-line JavaScript expression under 1024 characters.");
+  }
+  return value;
 }
 
 function resolveAppRoot(raw: string | undefined): string | undefined {
@@ -187,9 +216,11 @@ function resolveAppRoot(raw: string | undefined): string | undefined {
 export function resolveRecordOptions(flags: RecordCliFlags): ResolvedRecordOptions {
   const target = flags.port === undefined ? cfTarget(flags) : localTarget(flags);
   const appRoot = resolveAppRoot(flags.appRoot);
+  const matchCondition = resolveMatchCondition(flags.match);
   return {
     target,
     limits: resolveLimits(flags),
     ...(appRoot === undefined ? {} : { appRoot }),
+    ...(matchCondition === undefined ? {} : { matchCondition }),
   };
 }

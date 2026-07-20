@@ -305,6 +305,23 @@ export async function triggerThrowingRequest(fixture: FixtureProcess): Promise<s
   return await response.text();
 }
 
+export async function triggerAsyncRequest(
+  fixture: FixtureProcess,
+  value: number,
+  id: string,
+): Promise<string> {
+  const query = `value=${value.toString()}&id=${encodeURIComponent(id)}`;
+  const response = await fetch(`http://127.0.0.1:${fixture.httpPort.toString()}/run-async?${query}`, {
+    method: "POST",
+    signal: AbortSignal.timeout(WAIT_TIMEOUT_MS),
+  });
+  if (response.status !== 200) {
+    const body = await response.text();
+    throw new Error(`async fixture request returned ${response.status.toString()}: ${body}`);
+  }
+  return await response.text();
+}
+
 async function triggerFixtureRequest(
   fixture: FixtureProcess,
   path: string,

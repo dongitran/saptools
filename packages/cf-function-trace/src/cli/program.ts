@@ -88,13 +88,18 @@ function addTraceLimits(command: Command): Command {
     .option("--max-object-depth <depth>", "Maximum captured object depth", "4")
     .option("--max-properties <count>", "Maximum properties captured per object", "100")
     .option("--max-nodes <count>", "Maximum captured object nodes per frame", "1000")
-    .option("--max-state-bytes <bytes>", "Maximum estimated captured bytes per frame", "2000000");
+    .option("--max-state-bytes <bytes>", "Maximum estimated captured bytes per frame", "2000000")
+    .option("--async-stack-depth <count>", "Async call stack depth requested for async traces", "4");
 }
 
 function addPlanningOptions(command: Command): Command {
   return command
     .option("--call-depth <depth>", "App-owned synchronous child depth", "0")
-    .option("--app-root <path>", "Absolute runtime application root");
+    .option("--app-root <path>", "Absolute runtime application root")
+    .option(
+      "--match <expr>",
+      "Only trace an activation whose entry frame satisfies this JavaScript expression (e.g. 'req.data.id===\"42\"')",
+    );
 }
 
 function registerPlan(program: Command, handlers: CliCommandHandlers): void {

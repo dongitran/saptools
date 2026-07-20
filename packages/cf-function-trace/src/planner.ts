@@ -20,6 +20,7 @@ export interface PlanFunctionTraceInput {
   readonly functionSelector: string;
   readonly appRoots: readonly string[];
   readonly callDepth: number;
+  readonly entryCondition?: string;
 }
 
 export interface TracePlannerPort {
@@ -102,6 +103,8 @@ export async function planFunctionTrace(
     entryLocation: selectEntry(script.scriptId, locations),
     appRoots: input.appRoots,
     callDepth: input.callDepth,
+    asynchronous: selection.candidate.asynchronous || selection.candidate.containsAwait,
+    ...(input.entryCondition === undefined ? {} : { entryCondition: input.entryCondition }),
   };
 }
 

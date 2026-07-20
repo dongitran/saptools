@@ -173,6 +173,29 @@ function assignedCandidate(source: ts.SourceFile, node: ts.Node): FunctionCandid
   return initializerCandidate(source, node.right, selector, left.name.text);
 }
 
+function classExpressionOwnerName(node: ts.ClassExpression): string | undefined {
+  const parent = node.parent as ts.Node | undefined;
+  if (parent !== undefined) {
+    if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+      return parent.name.text;
+    }
+    if (ts.isPropertyAssignment(parent)) {
+      const name = propertyName(parent.name);
+      if (name !== undefined) {
+        return name;
+      }
+    }
+    if (
+      ts.isBinaryExpression(parent)
+      && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && ts.isPropertyAccessExpression(parent.left)
+    ) {
+      return parent.left.name.text;
+    }
+  }
+  return node.name?.text;
+}
+
 function classMemberCandidate(
   source: ts.SourceFile,
   node: ts.Node,
@@ -232,12 +255,30 @@ function collectStandaloneNode(
   collectObjectMethods(source, node, output);
 }
 
+function classLikeOwnerName(node: ts.Node): string | undefined {
+  // A class declaration owns its members by its own name; a class expression
+  // (tsc's decorator output, `let X = class X {...}`) owns them by its binding.
+  if (ts.isClassDeclaration(node)) {
+    return node.name?.text;
+  }
+  return ts.isClassExpression(node) ? classExpressionOwnerName(node) : undefined;
+}
+
+function isStandaloneClassMemberNode(node: ts.Node): boolean {
+  return ts.isMethodDeclaration(node)
+    || ts.isGetAccessorDeclaration(node)
+    || ts.isSetAccessorDeclaration(node);
+}
+
 function collectCandidates(source: ts.SourceFile): readonly FunctionCandidate[] {
   const output: FunctionCandidate[] = [];
   const visit = (node: ts.Node, owner?: string): void => {
-    if (ts.isClassDeclaration(node) && node.name !== undefined) {
-      for (const member of node.members) {
-        visit(member, node.name.text);
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      const classOwner = classLikeOwnerName(node);
+      if (classOwner !== undefined) {
+        for (const member of node.members) {
+          visit(member, classOwner);
+        }
       }
       return;
     }
@@ -248,10 +289,7 @@ function collectCandidates(source: ts.SourceFile): readonly FunctionCandidate[] 
         return;
       }
     }
-    if (ts.isMethodDeclaration(node)) {
-      return;
-    }
-    if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+    if (isStandaloneClassMemberNode(node)) {
       return;
     }
     collectStandaloneNode(source, node, output);
@@ -289,8 +327,9 @@ export function resolveFunctionSelector(fileName: string, sourceText: string, ra
   if (candidate === undefined) {
     throw new TraceDataError("FUNCTION_NOT_FOUND", `Function ${selector} was not found.`);
   }
-  if (candidate.asynchronous || candidate.containsAwait) {
-    throw new TraceDataError("UNSUPPORTED_ASYNC_FUNCTION", `Function ${selector} crosses an async boundary.`);
-  }
+  // Async functions and functions with a top-level `await` are supported: V8's
+  // stepOver is async-aware and stays bound to the one activation across awaits.
+  // `candidate.asynchronous`/`containsAwait` are surfaced so the planner can mark
+  // the run and the controller can tolerate foreign pauses during await gaps.
   return { candidate, candidates };
 }

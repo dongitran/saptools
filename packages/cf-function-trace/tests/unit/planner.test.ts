@@ -73,6 +73,7 @@ async function plansExactRuntimeEntry(): Promise<void> {
     entryLocation: { scriptId: "script-target", lineNumber: 3, columnNumber: 4 },
     appRoots: ["/home/vcap/app"],
     callDepth: 1,
+    asynchronous: false,
   });
   expect(JSON.stringify(plan)).not.toContain("SOURCE_SENTINEL");
 }

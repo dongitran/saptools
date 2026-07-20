@@ -42,6 +42,7 @@ function tracePlan(callDepth: number): TracePlan {
 function createPort(
   pauses: readonly ControllerPause[],
   captureState?: TraceControllerPort["captureState"],
+  evaluate?: (callFrameId: string, expression: string) => Promise<boolean>,
 ): {
   readonly port: TraceControllerPort;
   readonly calls: string[];
@@ -49,8 +50,8 @@ function createPort(
   const queue = [...pauses];
   const calls: string[] = [];
   const port: TraceControllerPort = {
-    setEntryBreakpoint: async (): Promise<string> => {
-      calls.push("breakpoint:set");
+    setEntryBreakpoint: async (_location, condition): Promise<string> => {
+      calls.push(condition === undefined ? "breakpoint:set" : `breakpoint:set:${condition}`);
       return "bp-entry";
     },
     waitForPause: async (): Promise<ControllerPause> => {
@@ -85,6 +86,13 @@ function createPort(
     },
     disableExceptionPauses: async (): Promise<void> => {
       calls.push("exceptions:disable");
+    },
+    setAsyncCallStackDepth: async (maxDepth): Promise<void> => {
+      calls.push(`async-depth:${maxDepth.toString()}`);
+    },
+    evaluateActivationCondition: async (callFrameId, expression): Promise<boolean> => {
+      calls.push(`eval:${expression}`);
+      return evaluate === undefined ? true : await evaluate(callFrameId, expression);
     },
   };
   return { port, calls };
@@ -336,6 +344,91 @@ describe("function trace controller", () => {
       maxPausedMs: 1_000,
       onState: async (): Promise<void> => undefined,
     }, port)).rejects.toMatchObject({ code: "TRACE_TIMEOUT" });
+  });
+
+  it("passes the match condition to the entry breakpoint", async () => {
+    const { calls, port } = createPort([rootPause(10), { reason: "step", frames: [] }]);
+
+    await recordFunctionTrace({ ...tracePlan(0), entryCondition: "req.id===1" }, {
+      timeoutMs: 1_000,
+      maxSteps: 10,
+      maxPausedMs: 1_000,
+      onState: async (): Promise<void> => undefined,
+    }, port);
+
+    expect(calls).toContain("breakpoint:set:req.id===1");
+  });
+
+  it("enables async call-stack depth for async plans and resets it on cleanup", async () => {
+    const { calls, port } = createPort([rootPause(10), { reason: "step", frames: [] }]);
+
+    await recordFunctionTrace({ ...tracePlan(0), asynchronous: true }, {
+      timeoutMs: 1_000,
+      maxSteps: 10,
+      maxPausedMs: 1_000,
+      asyncStackDepth: 6,
+      onState: async (): Promise<void> => undefined,
+    }, port);
+
+    expect(calls).toContain("async-depth:6");
+    expect(calls).toContain("async-depth:0");
+    expect(calls.indexOf("async-depth:6")).toBeLessThan(calls.indexOf("async-depth:0"));
+  });
+
+  it("resumes and skips a foreign pause while tracing an async activation", async () => {
+    const foreignPause: ControllerPause = {
+      reason: "exception",
+      frames: [{
+        callFrameId: "foreign",
+        functionName: "unrelated",
+        scriptId: "other-script",
+        url: "file:///home/vcap/app/dist/other.js",
+        lineNumber: 5,
+        columnNumber: 0,
+      }],
+    };
+    const { calls, port } = createPort([
+      rootPause(10),
+      foreignPause,
+      rootPause(12),
+      { reason: "step", frames: [] },
+    ]);
+
+    const result = await recordFunctionTrace({ ...tracePlan(0), asynchronous: true }, {
+      timeoutMs: 1_000,
+      maxSteps: 10,
+      maxPausedMs: 1_000,
+      onState: async (): Promise<void> => undefined,
+    }, port);
+
+    expect(result.stopReason).toBe("function-returned");
+    expect(calls.filter((call) => call === "resume").length).toBeGreaterThanOrEqual(2);
+    expect(calls.filter((call) => call.startsWith("capture:"))).toEqual(["capture:run", "capture:run"]);
+  });
+
+  it("rejects a concurrent same-function activation through the match predicate", async () => {
+    const wrongActivation: ControllerPause = { reason: "exception", frames: [rootFrame(14)] };
+    const { calls, port } = createPort(
+      [rootPause(10), wrongActivation, rootPause(12), { reason: "step", frames: [] }],
+      undefined,
+      async (callFrameId): Promise<boolean> => callFrameId !== "root-14",
+    );
+
+    const result = await recordFunctionTrace(
+      { ...tracePlan(0), asynchronous: true, entryCondition: "req.id===1" },
+      {
+        timeoutMs: 1_000,
+        maxSteps: 10,
+        maxPausedMs: 1_000,
+        onState: async (): Promise<void> => undefined,
+      },
+      port,
+    );
+
+    expect(result.stopReason).toBe("function-returned");
+    expect(calls).toContain("eval:req.id===1");
+    expect(calls.filter((call) => call === "resume").length).toBeGreaterThanOrEqual(2);
+    expect(calls.filter((call) => call.startsWith("capture:"))).toEqual(["capture:run", "capture:run"]);
   });
 
   it("rejects fractional and unbounded operation limits", async () => {

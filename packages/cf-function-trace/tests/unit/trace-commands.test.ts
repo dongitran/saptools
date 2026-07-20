@@ -94,6 +94,7 @@ describe("trace plan and record commands", () => {
       entryLine: 11,
       entryColumn: 5,
       callDepth: 1,
+      asynchronous: false,
       appRoots: ["/srv/app"],
     });
   });

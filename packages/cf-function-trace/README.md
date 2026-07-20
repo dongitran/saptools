@@ -77,8 +77,11 @@ cf-function-trace record file:///home/vcap/app/dist/orders.js OrderService.creat
 ```
 
 Remote tracing pauses the selected Node.js process while state is captured. The command therefore
-requires `--confirm-impact`. When an app instance contains more than one Node.js process, add
-`--node-pid <pid>` so selection remains deterministic. `--tunnel-port` is optional and selects a
+requires `--confirm-impact`. When an app instance runs more than one Node.js process (for example a
+`npm start` launcher alongside the app server), the tunnel auto-selects the process that owns the
+app's `$PORT` listening socket — the HTTP server — so `--node-pid` is usually unnecessary. Pass
+`--node-pid <pid>` only to override that choice, or when no single Node process listens on `$PORT`
+(in which case selection stays ambiguous and fails closed). `--tunnel-port` is optional and selects a
 preferred local CF SSH-forwarding port; omit it to keep `cf-debugger`'s normal automatic allocation.
 
 ## Query a saved run
@@ -102,14 +105,23 @@ reconstructed states. `purge` accepts only a complete validated run ID.
 - `--call-depth 1` or `2` can follow synchronous child calls whose loaded files are inside the
   runtime app root.
 - Node internals and files below `node_modules` are stepped out of and never captured.
-- Async functions and selected functions containing `await` fail before a breakpoint is armed.
+- Async functions and functions containing `await` are traced with V8's async-aware stepping: the
+  step loop stays bound to the one selected activation across each `await`. Between step boundaries
+  the isolate runs (so the awaited I/O settles) rather than staying frozen, and unrelated pauses that
+  occur during that window are released and skipped. Give a busy target `--match` to pin the exact
+  activation (see below). `--max-paused-ms` still bounds only real paused time, so raise `--timeout`
+  when the traced function awaits slow I/O.
 - The function selector must be unique. Supported selectors include declarations, arrow/function
-  expressions, class methods, constructors, accessors, object methods, and simple assigned methods.
+  expressions, class methods (including decorator-compiled class expressions such as
+  `let X = class X {...}`), constructors, accessors, object methods, and simple assigned methods.
 - Exact loaded URLs and absolute paths are preferred. A relative path is accepted only when it has
   one unique suffix match below the verified app root.
-- `record` selects the first function entry hit after `breakpoint-armed`. It cannot prove which
-  concurrent request caused that hit, so production callers must quiesce unrelated traffic or add
-  request correlation in a future phase.
+- `record` selects the first function entry hit after `breakpoint-armed`. Pass `--match <expr>` to arm
+  a conditional entry breakpoint so only an activation whose entry frame satisfies the JavaScript
+  expression is traced — for example `--match 'req.data.tempID === "abc"'`. V8 evaluates the condition
+  in-process, so concurrent activations that do not match never pause the target. Without `--match`,
+  production callers should quiesce unrelated traffic because the first hit cannot otherwise be proven
+  to be the intended request.
 
 The implementation reads source with the Chrome DevTools Protocol rather than depending on
 `cf-explorer`: inspector source is the exact code V8 is executing. `cf-explorer` remains useful for
@@ -154,7 +166,12 @@ Important bounds have conservative defaults and strict upper limits:
 --max-properties <count>
 --max-nodes <count>
 --max-state-bytes <bytes>
+--async-stack-depth <count>
 ```
+
+`--match <expr>` scopes the trace to one activation (see Trace semantics). `--async-stack-depth`
+sets the async call-stack depth requested for async traces so resumed frames carry async stack
+context; it is reset when the trace ends.
 
 Capture reads property descriptors without invoking getters. Cycles and aliases become graph
 references; accessors, special numbers, bigint, unavailable values, and truncated values use tagged
@@ -183,11 +200,16 @@ terminal readability.
 
 ## Current boundary
 
-Version `0.1.x` traces one selected synchronous activation in one Node.js isolate. It does not yet
-correlate state across `await`, trace multiple workers at once, generate traffic, or map bundled code
-back through source maps. It also cannot cancel every already-running filesystem or CDP promise
-after a watchdog fires. Choose a target/worker explicitly where needed and trigger the relevant
-request only after the armed event.
+Version `0.1.x` traces one selected activation — synchronous or asynchronous — in one Node.js
+isolate. Async support uses V8's async-aware stepping and stays bound to the selected activation
+across `await`; because settling awaited I/O requires briefly resuming the shared isolate, an async
+trace is an interleaved sequence of frozen snapshots rather than one atomic frozen window, and
+unrelated production work runs during each await gap. Following `--call-depth` into asynchronous
+child calls, `for await ... of` loops, tracing multiple workers at once, generating traffic, and
+mapping bundled code back through source maps are still out of scope. It also cannot cancel every
+already-running filesystem or CDP promise after a watchdog fires. Choose a target/worker explicitly
+where needed, prefer `--match` on busy targets, and trigger the relevant request only after the
+armed event.
 
 No live Cloud Foundry environment is used by the automated tests. The local E2E suite drives a real
 Node.js inspector and covers normal, exception, and termination paths. The fake-CF suite

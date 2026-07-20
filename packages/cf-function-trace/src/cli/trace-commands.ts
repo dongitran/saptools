@@ -100,7 +100,13 @@ function planInput(
   options: ResolvedRecordOptions,
   appRoots: readonly string[],
 ): PlanFunctionTraceInput {
-  return { file, functionSelector, appRoots, callDepth: options.limits.callDepth };
+  return {
+    file,
+    functionSelector,
+    appRoots,
+    callDepth: options.limits.callDepth,
+    ...(options.matchCondition === undefined ? {} : { entryCondition: options.matchCondition }),
+  };
 }
 
 function captureOptions(options: ResolvedRecordOptions, appRoots: readonly string[]): InspectorTraceControllerOptions {
@@ -126,6 +132,7 @@ function recordOptions(
     timeoutMs: options.limits.timeoutMs,
     maxSteps: options.limits.maxSteps,
     maxPausedMs: options.limits.maxPausedMs,
+    asyncStackDepth: options.limits.asyncStackDepth,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
     ...(progressStream === undefined ? {} : {
       onProgress: async (): Promise<void> => {
@@ -201,6 +208,8 @@ export async function runPlanCommand(
     entryLine: plan.entryLocation.lineNumber + 1,
     entryColumn: (plan.entryLocation.columnNumber ?? 0) + 1,
     callDepth: plan.callDepth,
+    asynchronous: plan.asynchronous === true,
+    ...(plan.entryCondition === undefined ? {} : { match: plan.entryCondition }),
     appRoots: plan.appRoots,
   }, 24_000);
 }

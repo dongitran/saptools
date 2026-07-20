@@ -33,6 +33,25 @@ export function throwingTarget(input) {
   throw new Error(`expected-e2e-failure-${failureContext.input}`);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+export async function asyncTarget(payload) {
+  const credentials = { password: PASSWORD_SENTINEL, authorization: `Bearer ${BEARER_SENTINEL}` };
+  const timeline = { id: payload.id, total: payload.value, phase: "start", branch: "unset" };
+  timeline.branch = payload.value % 2 === 0 ? "even" : "odd";
+  await Promise.resolve();
+  timeline.phase = "after-first-await";
+  timeline.total += credentials.password.length > 0 ? 1 : 0;
+  await delay(3);
+  timeline.phase = "after-second-await";
+  timeline.total = appChild(timeline.total);
+  await Promise.resolve();
+  timeline.phase = "complete";
+  return { id: timeline.id, total: timeline.total, phase: timeline.phase, branch: timeline.branch };
+}
+
 function sendJson(response, statusCode, value) {
   response.writeHead(statusCode, { "content-type": "application/json" });
   response.end(`${JSON.stringify(value)}\n`);
@@ -40,6 +59,15 @@ function sendJson(response, statusCode, value) {
 
 const server = createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "POST" && url.pathname === "/run-async") {
+    const value = Number.parseInt(url.searchParams.get("value") ?? "0", 10);
+    const id = url.searchParams.get("id") ?? "none";
+    asyncTarget({ value, id }).then(
+      (result) => { sendJson(response, 200, { ok: true, result }); },
+      () => { sendJson(response, 500, { error: "async-failure" }); },
+    );
+    return;
+  }
   if (request.method !== "POST" || !["/run", "/throw"].includes(url.pathname)) {
     sendJson(response, 404, { error: "not-found" });
     return;

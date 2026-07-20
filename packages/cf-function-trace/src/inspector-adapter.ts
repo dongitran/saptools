@@ -1,9 +1,11 @@
 import {
   CfInspectorError,
+  evaluateOnFrame,
   getProperties,
   releaseObject,
   removeBreakpoint,
   resume,
+  setAsyncCallStackDepth,
   setPauseOnExceptions,
   setBreakpointAtLocation,
   stepInto,
@@ -49,6 +51,11 @@ export interface RuntimeEvaluationSession {
   readonly client: RuntimeEvaluationClient;
 }
 
+export interface AdapterEvalResult {
+  readonly result?: { readonly value?: unknown; readonly type?: unknown };
+  readonly exceptionDetails?: unknown;
+}
+
 export interface InspectorAdapterDependencies<TSession = InspectorSession> {
   setBreakpointAtLocation(
     session: TSession,
@@ -63,6 +70,8 @@ export interface InspectorAdapterDependencies<TSession = InspectorSession> {
   resume(session: TSession): Promise<void>;
   removeBreakpoint(session: TSession, breakpointId: string): Promise<void>;
   setPauseOnExceptions(session: TSession, state: "all" | "none" | "uncaught"): Promise<void>;
+  setAsyncCallStackDepth(session: TSession, maxDepth: number): Promise<void>;
+  evaluateOnFrame(session: TSession, callFrameId: string, expression: string): Promise<AdapterEvalResult>;
 }
 
 const DEFAULT_DEPENDENCIES: InspectorAdapterDependencies = {
@@ -76,6 +85,8 @@ const DEFAULT_DEPENDENCIES: InspectorAdapterDependencies = {
   resume,
   removeBreakpoint,
   setPauseOnExceptions,
+  setAsyncCallStackDepth,
+  evaluateOnFrame,
 };
 
 export async function resolveRuntimeCwd(session: RuntimeEvaluationSession): Promise<string> {
@@ -247,6 +258,42 @@ async function captureAdapterState(
   }, objectClient);
 }
 
+type SteppingMethods = Pick<
+  TraceControllerPort,
+  | "stepInto"
+  | "stepOver"
+  | "stepOut"
+  | "resume"
+  | "removeBreakpoint"
+  | "enableExceptionPauses"
+  | "disableExceptionPauses"
+  | "setAsyncCallStackDepth"
+>;
+
+function steppingMethods<TSession>(
+  session: TSession,
+  dependencies: InspectorAdapterDependencies<TSession>,
+): SteppingMethods {
+  return {
+    stepInto: async (): Promise<void> => { await dependencies.stepInto(session); },
+    stepOver: async (): Promise<void> => { await dependencies.stepOver(session); },
+    stepOut: async (): Promise<void> => { await dependencies.stepOut(session); },
+    resume: async (): Promise<void> => { await dependencies.resume(session); },
+    removeBreakpoint: async (breakpointId): Promise<void> => {
+      await dependencies.removeBreakpoint(session, breakpointId);
+    },
+    enableExceptionPauses: async (): Promise<void> => {
+      await dependencies.setPauseOnExceptions(session, "uncaught");
+    },
+    disableExceptionPauses: async (): Promise<void> => {
+      await dependencies.setPauseOnExceptions(session, "none");
+    },
+    setAsyncCallStackDepth: async (maxDepth): Promise<void> => {
+      await dependencies.setAsyncCallStackDepth(session, maxDepth);
+    },
+  };
+}
+
 export function createInspectorTraceController(
   session: InspectorSession,
   options: InspectorTraceControllerOptions,
@@ -262,8 +309,11 @@ export function createInspectorTraceControllerWithDependencies<TSession>(
   const frameLookup = new WeakMap<ControllerPause, readonly PausedFrame[]>();
   const objectClient = remoteClient(session, dependencies);
   return {
-    setEntryBreakpoint: async (location: ScriptLocation): Promise<string> => (
-      await dependencies.setBreakpointAtLocation(session, { location })
+    setEntryBreakpoint: async (location: ScriptLocation, condition?: string): Promise<string> => (
+      await dependencies.setBreakpointAtLocation(session, {
+        location,
+        ...(condition === undefined ? {} : { condition }),
+      })
     ).breakpointId,
     waitForPause: async (input): Promise<ControllerPause> => {
       try {
@@ -279,26 +329,14 @@ export function createInspectorTraceControllerWithDependencies<TSession>(
     captureState: async (pause): Promise<unknown> => (
       await captureAdapterState(pause, frameLookup, options, objectClient)
     ),
-    stepInto: async (): Promise<void> => {
-      await dependencies.stepInto(session);
-    },
-    stepOver: async (): Promise<void> => {
-      await dependencies.stepOver(session);
-    },
-    stepOut: async (): Promise<void> => {
-      await dependencies.stepOut(session);
-    },
-    resume: async (): Promise<void> => {
-      await dependencies.resume(session);
-    },
-    removeBreakpoint: async (breakpointId): Promise<void> => {
-      await dependencies.removeBreakpoint(session, breakpointId);
-    },
-    enableExceptionPauses: async (): Promise<void> => {
-      await dependencies.setPauseOnExceptions(session, "uncaught");
-    },
-    disableExceptionPauses: async (): Promise<void> => {
-      await dependencies.setPauseOnExceptions(session, "none");
+    ...steppingMethods(session, dependencies),
+    evaluateActivationCondition: async (callFrameId, expression): Promise<boolean> => {
+      const outcome = await dependencies.evaluateOnFrame(session, callFrameId, expression);
+      if (outcome.exceptionDetails !== undefined) {
+        // A predicate that throws in this frame cannot confirm the activation.
+        return false;
+      }
+      return outcome.result?.value === true;
     },
   };
 }

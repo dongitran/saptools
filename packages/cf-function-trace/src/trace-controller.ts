@@ -31,6 +31,8 @@ export interface TracePlan {
   readonly entryLocation: ScriptLocation;
   readonly appRoots: readonly string[];
   readonly callDepth: number;
+  readonly entryCondition?: string;
+  readonly asynchronous?: boolean;
 }
 
 export interface PauseWaitInput {
@@ -40,7 +42,7 @@ export interface PauseWaitInput {
 }
 
 export interface TraceControllerPort {
-  setEntryBreakpoint(location: ScriptLocation): Promise<string>;
+  setEntryBreakpoint(location: ScriptLocation, condition?: string): Promise<string>;
   waitForPause(input: PauseWaitInput): Promise<ControllerPause>;
   captureState(pause: ControllerPause): Promise<unknown>;
   stepInto(): Promise<void>;
@@ -50,6 +52,8 @@ export interface TraceControllerPort {
   removeBreakpoint(breakpointId: string): Promise<void>;
   enableExceptionPauses(): Promise<void>;
   disableExceptionPauses(): Promise<void>;
+  setAsyncCallStackDepth?(maxDepth: number): Promise<void>;
+  evaluateActivationCondition?(callFrameId: string, expression: string): Promise<boolean>;
 }
 
 export interface TraceStateRecord {
@@ -70,6 +74,7 @@ export interface RecordTraceOptions {
   readonly timeoutMs: number;
   readonly maxSteps: number;
   readonly maxPausedMs: number;
+  readonly asyncStackDepth?: number;
   readonly signal?: AbortSignal;
   readonly now?: () => number;
   readonly onState: (record: TraceStateRecord) => Promise<void>;
@@ -86,6 +91,7 @@ type StepAction = "into" | "over" | "out";
 interface ControllerState {
   breakpointId?: string;
   exceptionPausesEnabled: boolean;
+  asyncStacksEnabled: boolean;
   ownsPause: boolean;
   pauseStartedAt?: number;
   pausedTotalMs: number;
@@ -100,6 +106,7 @@ interface OperationBudget {
 
 const MIN_CLEANUP_TIMEOUT_MS = 50;
 const MAX_CLEANUP_TIMEOUT_MS = 1_000;
+const MAX_FOREIGN_PAUSE_SKIPS = 100_000;
 
 function validateLimits(plan: TracePlan, options: RecordTraceOptions): void {
   const validDepth = Number.isInteger(plan.callDepth) && plan.callDepth >= 0 && plan.callDepth <= 2;
@@ -208,7 +215,36 @@ async function runBoundedOperation<TResult>(
   }
 }
 
+async function isForeignPause(
+  plan: TracePlan,
+  pause: ControllerPause,
+  port: TraceControllerPort,
+): Promise<boolean> {
+  // Foreign pauses can only appear once the isolate is resumed across an await,
+  // so synchronous traces never treat any pause as foreign.
+  if (plan.asynchronous !== true) {
+    return false;
+  }
+  // A "step" pause is V8 completing our own step command; it is always ours,
+  // even when it lands outside the function (that is a genuine return).
+  if (pause.reason === "step") {
+    return false;
+  }
+  const rootIndex = rootFrameIndex(plan, pause);
+  if (rootIndex < 0) {
+    return true;
+  }
+  const predicate = plan.entryCondition;
+  const evaluate = port.evaluateActivationCondition?.bind(port);
+  const frame = pause.frames[rootIndex];
+  if (predicate !== undefined && evaluate !== undefined && frame !== undefined) {
+    return !(await evaluate(frame.callFrameId, predicate));
+  }
+  return false;
+}
+
 async function waitForOwnedPause(
+  plan: TracePlan,
   port: TraceControllerPort,
   state: ControllerState,
   options: RecordTraceOptions,
@@ -216,14 +252,22 @@ async function waitForOwnedPause(
   breakpointId?: string,
 ): Promise<ControllerPause> {
   const now = options.now ?? performance.now.bind(performance);
-  const pause = await port.waitForPause({
-    timeoutMs: remainingMs(deadline, now),
-    ...(breakpointId === undefined ? {} : { breakpointId }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  });
-  state.ownsPause = true;
-  state.pauseStartedAt = now();
-  return pause;
+  for (let skips = 0; skips <= MAX_FOREIGN_PAUSE_SKIPS; skips += 1) {
+    const pause = await port.waitForPause({
+      timeoutMs: remainingMs(deadline, now),
+      ...(breakpointId === undefined ? {} : { breakpointId }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    if (breakpointId !== undefined || !(await isForeignPause(plan, pause, port))) {
+      state.ownsPause = true;
+      state.pauseStartedAt = now();
+      return pause;
+    }
+    // Another activation paused the shared isolate during an await gap. Release it
+    // and keep waiting for the traced activation's own continuation.
+    await port.resume();
+  }
+  throw new TraceDataError("TRACE_ABORTED", "Too many unrelated pauses while waiting for the traced activation.");
 }
 
 function updatePausedBudget(state: ControllerState, options: RecordTraceOptions): void {
@@ -302,7 +346,7 @@ async function runTraceLoop(
   state: ControllerState,
   deadline: number,
 ): Promise<RecordTraceResult> {
-  let pause = await waitForOwnedPause(port, state, options, deadline, state.breakpointId);
+  let pause = await waitForOwnedPause(plan, port, state, options, deadline, state.breakpointId);
   await disarmEntryBreakpoint(port, state, options, deadline);
   await enableOwnedExceptionPauses(port, state, options, deadline);
   let rootIndex = rootFrameIndex(plan, pause);
@@ -319,7 +363,7 @@ async function runTraceLoop(
       return { stopReason: "max-steps", stepCount: state.stepCount };
     }
     await issueStep(action, port, state, options, deadline);
-    pause = await waitForOwnedPause(port, state, options, deadline);
+    pause = await waitForOwnedPause(plan, port, state, options, deadline);
     rootIndex = rootFrameIndex(plan, pause);
   }
   return { stopReason: "function-returned", stepCount: state.stepCount };
@@ -376,6 +420,18 @@ async function cleanupAction(
   }
 }
 
+async function cleanupAsyncStacks(
+  state: ControllerState,
+  port: TraceControllerPort,
+  timeoutMs: number,
+): Promise<Error | undefined> {
+  const resetAsyncDepth = port.setAsyncCallStackDepth?.bind(port);
+  if (!state.asyncStacksEnabled || resetAsyncDepth === undefined) {
+    return undefined;
+  }
+  return await cleanupAction(async (): Promise<void> => { await resetAsyncDepth(0); }, timeoutMs);
+}
+
 async function cleanupTrace(
   state: ControllerState,
   port: TraceControllerPort,
@@ -392,6 +448,10 @@ async function cleanupTrace(
     if (exceptionError !== undefined) {
       errors.push(exceptionError);
     }
+  }
+  const asyncError = await cleanupAsyncStacks(state, port, timeoutMs);
+  if (asyncError !== undefined) {
+    errors.push(asyncError);
   }
   if (state.breakpointId !== undefined) {
     const breakpointId = state.breakpointId;
@@ -424,6 +484,27 @@ function cleanupFailure(primary: Error | undefined, cleanup: {
   return new TraceDataError("CLEANUP_FAILED", message, undefined, cause);
 }
 
+async function enableOwnedAsyncStacks(
+  plan: TracePlan,
+  options: RecordTraceOptions,
+  port: TraceControllerPort,
+  state: ControllerState,
+  deadline: number,
+  now: () => number,
+): Promise<void> {
+  const setDepth = port.setAsyncCallStackDepth?.bind(port);
+  const depth = options.asyncStackDepth ?? 0;
+  if (plan.asynchronous !== true || setDepth === undefined || depth <= 0) {
+    return;
+  }
+  state.asyncStacksEnabled = true;
+  await runBoundedOperation(
+    async (): Promise<void> => { await setDepth(depth); },
+    overallBudget(deadline, now),
+    options.signal,
+  );
+}
+
 async function prepareTrace(
   plan: TracePlan,
   options: RecordTraceOptions,
@@ -433,10 +514,11 @@ async function prepareTrace(
   now: () => number,
 ): Promise<void> {
   state.breakpointId = await runBoundedOperation(
-    async (): Promise<string> => await port.setEntryBreakpoint(plan.entryLocation),
+    async (): Promise<string> => await port.setEntryBreakpoint(plan.entryLocation, plan.entryCondition),
     overallBudget(deadline, now),
     options.signal,
   );
+  await enableOwnedAsyncStacks(plan, options, port, state, deadline, now);
   if (options.onProgress !== undefined) {
     const onProgress = options.onProgress;
     await runBoundedOperation(
@@ -457,6 +539,7 @@ export async function recordFunctionTrace(
   const state: ControllerState = {
     ownsPause: false,
     exceptionPausesEnabled: false,
+    asyncStacksEnabled: false,
     pausedTotalMs: 0,
     stepCount: 0,
     recordSeq: 0,

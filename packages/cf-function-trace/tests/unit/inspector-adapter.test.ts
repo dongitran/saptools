@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createInspectorTraceControllerWithDependencies,
   resolveRuntimeCwd,
+  type AdapterEvalResult,
   type InspectorAdapterDependencies,
   type RuntimeEvaluationSession,
 } from "../../src/inspector-adapter.js";
@@ -95,6 +96,8 @@ function createDependencies(
     resume: async (): Promise<void> => undefined,
     removeBreakpoint: async (): Promise<void> => undefined,
     setPauseOnExceptions: async (): Promise<void> => undefined,
+    setAsyncCallStackDepth: async (): Promise<void> => undefined,
+    evaluateOnFrame: async (): Promise<{ result?: { value?: unknown } }> => ({ result: { value: true } }),
     ...overrides,
   };
 }
@@ -257,8 +260,37 @@ async function preservesOwnedCleanupOrder(): Promise<void> {
   expect(calls.at(-1)).toBe("resume");
 }
 
+async function forwardsEntryConditionAndActivationChecks(): Promise<void> {
+  const calls: string[] = [];
+  const controller = createController(createDependencies({
+    setBreakpointAtLocation: async (_session, input): Promise<ExactBreakpointHandle> => {
+      calls.push(`set:${input.condition ?? "none"}`);
+      return exactBreakpoint(input.location);
+    },
+    setAsyncCallStackDepth: async (_session, depth): Promise<void> => { calls.push(`depth:${depth.toString()}`); },
+    evaluateOnFrame: async (_session, callFrameId, expression): Promise<AdapterEvalResult> => {
+      calls.push(`eval:${callFrameId}`);
+      return expression.includes("true")
+        ? { result: { value: true } }
+        : { exceptionDetails: { text: "ReferenceError" } };
+    },
+  }));
+
+  await controller.setEntryBreakpoint(TRACE_PLAN.entryLocation, "req.id===1");
+  await controller.setAsyncCallStackDepth?.(4);
+  const matched = await controller.evaluateActivationCondition?.("frame-1", "isReady===true");
+  const rejected = await controller.evaluateActivationCondition?.("frame-2", "boom");
+
+  expect(calls).toContain("set:req.id===1");
+  expect(calls).toContain("depth:4");
+  expect(calls).toContain("eval:frame-1");
+  expect(matched).toBe(true);
+  expect(rejected).toBe(false);
+}
+
 describe("cf-inspector trace controller adapter", () => {
   it("resolves cwd with only the fixed return-by-value expression", resolvesRuntimeCwd);
+  it("forwards entry conditions, async depth, and activation checks", forwardsEntryConditionAndActivationChecks);
   it("fails closed on an exception or non-string cwd", rejectsInvalidRuntimeCwd);
   it("maps exact breakpoints, rich state, stepping, and releases", mapsRichInspectorState);
   it("forwards AbortSignal and maps inspector cancellation", mapsAbortedWait);
