@@ -44,6 +44,20 @@ describe("Cloud Foundry Node process targeting", () => {
     expect(command).not.toContain("cmdline");
   });
 
+  it("auto-selects the app-port listener when several Node processes exist", () => {
+    const command = buildNodeInspectorCommand();
+
+    expect(command).toContain("requested_node_pid=");
+    expect(command).toContain("find_app_port_listener");
+    expect(command).toContain("printf '%04X' \"$PORT\"");
+    expect(command).toContain('is_node_pid "$app_port_pid"');
+    // Falls back to a safe refusal when the app port cannot disambiguate.
+    expect(command).toContain("saptools-inspector-node-ambiguous=$candidate_pids");
+    // Selection stays proc/socket based — no process-name heuristics.
+    expect(command).not.toContain("pidof");
+    expect(command).not.toContain("cmdline");
+  });
+
   it("parses a ready marker only when the selected PID owns the inspector", () => {
     expect(parseNodeInspectorMarkers([
       "saptools-inspector-node-pid=4312",

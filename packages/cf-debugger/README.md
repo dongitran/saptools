@@ -22,7 +22,7 @@ Signal the remote process, enable SSH if needed, forward `9229` to a free local 
 
 - 🚀 **One-shot tunnel** — auth, target, SSH-enable, USR1 signal, port forward, readiness probe — all hidden behind `cf-debugger start`
 - 🧵 **Multi-debugger concurrency** — run N debuggers for N apps at once; each session gets its own local port, isolated `CF_HOME`, and an entry in the shared state file
-- 🎯 **Exact process targeting** — select a CF process, instance, and optional Node PID; ambiguous Node processes fail closed
+- 🎯 **Exact process targeting** — select a CF process, instance, and optional Node PID; when several Node processes exist the one owning the app's `$PORT` listening socket is auto-selected, otherwise selection fails closed
 - 🛡️ **Duplicate-session protection** — the same `region/org/space/app/process/instance` cannot be debugged twice simultaneously (returns `SESSION_ALREADY_RUNNING`)
 - 🧹 **Crash-proof state** — provably dead entries are pruned, while ownership mismatches are retained for safe recovery instead of being deleted blindly
 - 🔌 **Deterministic ports** — auto-assigned from a safe range (`20000–20999`), or pick your own with `--port`
@@ -102,7 +102,7 @@ cf-debugger start --region eu10 --org my-org --space dev --app my-app --timeout 
 | `--app <name>` | **Required.** CF app name |
 | `--process <name>` | CF process name (default: `web`) |
 | `-i, --instance <index>` | Zero-based CF process instance (default: `0`) |
-| `--node-pid <pid>` | Exact remote Node.js PID; otherwise one unambiguous PID is discovered |
+| `--node-pid <pid>` | Exact remote Node.js PID; otherwise the app-`$PORT` listener is auto-selected, else one unambiguous PID is discovered |
 | `--port <number>` | Preferred local port (auto-assigned in `20000–20999` if omitted) |
 | `--timeout <seconds>` | Tunnel-ready timeout (default: `180`) |
 | `--verbose` | Print every status transition |
