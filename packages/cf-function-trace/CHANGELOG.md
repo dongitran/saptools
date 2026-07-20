@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - 2026-07-20
+
+- Require `@saptools/cf-inspector@^0.6.2` (which pulls `@saptools/cf-debugger@^0.1.16`) so the
+  async-stack-depth API and app-port Node auto-selection resolve from the published dependency chain.
+
 ## 0.2.0 - 2026-07-20
 
 ### Async function tracing
