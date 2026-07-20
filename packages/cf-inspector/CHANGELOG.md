@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2 - 2026-07-20
+
+- Require `@saptools/cf-debugger@^0.1.16` so consumers pick up the app-port Node process
+  auto-selection when an instance runs several Node processes.
+
 ## 0.6.1 - 2026-07-20
 
 ### Async call stack depth
