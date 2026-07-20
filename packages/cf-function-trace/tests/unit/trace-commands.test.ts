@@ -62,6 +62,12 @@ function localFlags(): {
   return { port: "9229", callDepth: "1", confirmImpact: false };
 }
 
+function stringProperty(value: unknown, field: string): string | undefined {
+  return typeof value === "object" && value !== null && typeof Reflect.get(value, field) === "string"
+    ? String(Reflect.get(value, field))
+    : undefined;
+}
+
 describe("trace plan and record commands", () => {
   it("plans against the runtime cwd without exposing source text", async () => {
     const output = collectingOutput();
@@ -193,6 +199,47 @@ describe("trace plan and record commands", () => {
       })).rejects.toMatchObject({ code: "TRACE_ABORTED" });
       const manifests = await listTraceRuns({ saptoolsRoot: root });
       expect(manifests.map(({ status }) => status).sort()).toEqual(["cancelled", "partial"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("threads the partial run's id and directory onto a MAX_PAUSED_TIME error so it can be recovered (P1-1)", async () => {
+    // Before the fix: executeRecord's catch block re-threw the original
+    // error unchanged, even though createTraceRun had already succeeded and
+    // recorder.fail() had already persisted real partial data under that
+    // runId -- an agent seeing only the generic error had no handle to find
+    // and recover it with `show`/`state`.
+    const root = join(tmpdir(), `cf-function-trace-timeout-${randomUUID()}`);
+    const timeoutRuntime: TraceRuntime = {
+      resolveAppRoot: async (): Promise<string> => "/srv/app",
+      plan: async (): Promise<TracePlan> => PLAN,
+      record: async (): Promise<never> => {
+        throw new TraceDataError("MAX_PAUSED_TIME", "Cumulative pause budget exceeded.");
+      },
+    };
+
+    try {
+      let caught: unknown;
+      try {
+        await runRecordCommand("dist/order.js", "OrderService.create", localFlags(), {
+          stdout: collectingOutput().stream,
+          saptoolsRoot: root,
+          runtimeRunner: runtimeRunner(timeoutRuntime),
+        });
+      } catch (error: unknown) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ code: "MAX_PAUSED_TIME" });
+      const runId = stringProperty(caught, "runId");
+      const directory = stringProperty(caught, "directory");
+      expect(runId).toBeDefined();
+      expect(directory).toBeDefined();
+
+      const manifests = await listTraceRuns({ saptoolsRoot: root });
+      expect(manifests).toHaveLength(1);
+      expect(manifests[0]).toMatchObject({ runId, status: "partial" });
+      expect(directory).toContain(runId);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

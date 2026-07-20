@@ -32,6 +32,7 @@ describe("paused state capture", () => {
       appRoots: ["/home/vcap/app"],
       maxFrames: 3,
       graphLimits: { maxDepth: 2, maxProperties: 10, maxNodes: 20, maxBytes: 10_000 },
+      maxRootVars: 10,
     }, {
       getProperties: async (objectId: string) => objectId === "local"
         ? [{ name: "orderId", value: { type: "string", value: "42" } }]
@@ -64,6 +65,7 @@ describe("paused state capture", () => {
       appRoots: ["/home/vcap/app"],
       maxFrames: 1,
       graphLimits: { maxDepth: 2, maxProperties: 10, maxNodes: 10, maxBytes: 1000 },
+      maxRootVars: 10,
     }, {
       getProperties: async (): Promise<readonly RemotePropertyDescriptor[]> => [
         { name: "status", value: { type: "string", value: "ready" } },
@@ -94,6 +96,7 @@ describe("paused state capture", () => {
       appRoots: ["/home/vcap/app"],
       maxFrames: 1,
       graphLimits: { maxDepth: 0, maxProperties: 1, maxNodes: 1, maxBytes: 1_000 },
+      maxRootVars: 1,
     }, {
       getProperties: async (): Promise<readonly []> => [],
       releaseObject: async (): Promise<void> => undefined,
@@ -118,6 +121,7 @@ describe("paused state capture", () => {
       appRoots: ["/home/vcap/app"],
       maxFrames: 1,
       graphLimits: { maxDepth: 1, maxProperties: 1, maxNodes: 1, maxBytes: 128 },
+      maxRootVars: 1,
     }, {
       getProperties: async (): Promise<readonly []> => {
         throw new Error("scope failure");
@@ -143,6 +147,7 @@ describe("paused state capture", () => {
       appRoots: ["/home/vcap/app"],
       maxFrames: 1,
       graphLimits: { maxDepth: 1, maxProperties: 10, maxNodes: 2, maxBytes: 2_000 },
+      maxRootVars: 10,
     }, {
       getProperties: async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => [{
         name: "status",
@@ -155,6 +160,46 @@ describe("paused state capture", () => {
       "scope.0.block.status": "outer",
       "scope.1.block.status": "inner",
     });
+  });
+
+  it("admits a function's own parameter ahead of a nested-block local under a tight root cap", async () => {
+    // Reproduces the exact regression: a nested if-block the code already
+    // entered enrolls at scope index 0 -- BELOW the function's own local
+    // (parameter) scope at index 1. Under the old scope-chain-index-first
+    // collection order (this/return, then scope index 0, 1, 2, ...), the
+    // block's local would claim a root slot before the function's own
+    // parameter ever got a turn. With only one root slot available
+    // (maxRootVars: 1), the parameter must win it, not the block local.
+    const state = await capturePausedState({
+      frames: [{
+        functionName: "validateTemplatePayload",
+        scriptId: "1",
+        url: "file:///home/vcap/app/dist/order.js",
+        lineNumber: 10,
+        columnNumber: 0,
+        scopeChain: [
+          { type: "block", objectId: "block" },
+          { type: "local", objectId: "local" },
+        ],
+      }],
+      appRoots: ["/home/vcap/app"],
+      maxFrames: 1,
+      graphLimits: { maxDepth: 2, maxProperties: 20, maxNodes: 20, maxBytes: 10_000 },
+      maxRootVars: 1,
+    }, {
+      getProperties: async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => {
+        if (objectId === "block") {
+          return [{ name: "cdsLog", value: { type: "string", value: "framework-logger" } }];
+        }
+        if (objectId === "local") {
+          return [{ name: "data", value: { type: "string", value: "the-request-payload" } }];
+        }
+        return [];
+      },
+      releaseObject: async (): Promise<void> => undefined,
+    });
+
+    expect(state.frames[0]?.roots).toEqual({ "scope.1.local.data": "the-request-payload" });
   });
 
   it("caps scope roots and the final serialized state within one pause budget", async () => {
@@ -170,6 +215,7 @@ describe("paused state capture", () => {
       appRoots: ["/home/vcap/app"],
       maxFrames: 3,
       graphLimits: { maxDepth: 1, maxProperties: 2, maxNodes: 2, maxBytes: 1_024 },
+      maxRootVars: 2,
     }, {
       getProperties: async (): Promise<readonly RemotePropertyDescriptor[]> => [
         { name: "a", value: { type: "string", value: "x".repeat(300) } },

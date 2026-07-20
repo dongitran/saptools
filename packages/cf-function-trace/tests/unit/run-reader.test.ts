@@ -112,6 +112,29 @@ describe("trace run reader", () => {
     }
   });
 
+  it("maps a nonexistent but well-formed run ID to RUN_NOT_FOUND without leaking a filesystem path", async () => {
+    // P0-9: readTraceManifest previously wrapped ANY manifest read failure,
+    // including plain ENOENT for a run that simply doesn't exist, as
+    // INVALID_ARTIFACT with the raw underlying fs error text (an absolute
+    // local path). A well-formed but nonexistent run ID must get the same
+    // clean RUN_NOT_FOUND code the "latest, but store is empty" path already
+    // uses, with no filesystem path in the message.
+    const root = join(tmpdir(), `cf-function-trace-${randomUUID()}`);
+    try {
+      let caught: unknown;
+      try {
+        await readTraceManifest("t0000000000000000", { saptoolsRoot: root });
+      } catch (error: unknown) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).toMatchObject({ code: "RUN_NOT_FOUND" });
+      expect(caught instanceof Error ? caught.message : "").not.toContain(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires an exact event sequence and verifies its replayed state hash", async () => {
     const root = join(tmpdir(), `cf-function-trace-${randomUUID()}`);
     const run = await createTraceRun({ sourceUrl: "file:///app.js", functionSelector: "run" }, {

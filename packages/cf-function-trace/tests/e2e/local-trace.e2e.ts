@@ -153,8 +153,14 @@ async function assertChangesAndState(
   expect(stateText).toContain("appChild");
   expect(stateText).not.toContain("e2e-external");
 
+  // A 0..childSeq span now honestly reports every changed path instead of
+  // collapsing to one replace (see state-diff.ts's localized incomplete+
+  // remove safety net), and root prioritization means fewer variables are
+  // starved to a tiny "node-limit" placeholder -- both correctly make this
+  // real diff larger than the default budget, so raise it rather than
+  // asserting on a truncation stub.
   const diffResult = await runCli(workspace, [
-    "diff", "latest", "--from", "0", "--to", childSeq.toString(),
+    "diff", "latest", "--from", "0", "--to", childSeq.toString(), "--max-output-bytes", "200000",
   ]);
   outputs.push(diffResult.stdout, diffResult.stderr);
   const operations = objectArray(expectSuccessful(diffResult)["operations"], "diff operations");

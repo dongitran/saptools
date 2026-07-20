@@ -12,7 +12,7 @@ import {
 } from "../inspector-adapter.js";
 import { planInspectorFunctionTrace, type PlanFunctionTraceInput } from "../planner.js";
 import { getSharedProcessGuard } from "../process-guard.js";
-import { createTraceRun, type TraceStoreOptions } from "../run-store.js";
+import { createTraceRun, type TraceRun, type TraceStoreOptions } from "../run-store.js";
 import type { TraceTarget } from "../session.js";
 import {
   recordFunctionTrace,
@@ -114,6 +114,7 @@ function captureOptions(options: ResolvedRecordOptions, appRoots: readonly strin
   return {
     appRoots,
     maxFrames: options.limits.callDepth + 1,
+    maxRootVars: options.limits.maxRootVars,
     graphLimits: {
       maxDepth: options.limits.maxObjectDepth,
       maxProperties: options.limits.maxProperties,
@@ -164,6 +165,20 @@ function failedStatus(error: unknown, signal: AbortSignal | undefined): "failed"
     : "failed";
 }
 
+// MAX_PAUSED_TIME/TRACE_TIMEOUT leave real, recoverable partial data on disk
+// under this exact runId (recorder.fail() just persisted it in the caller).
+// Without this, an agent seeing only the generic re-thrown error has no
+// handle to find and recover that partial run with `show`/`state`, and must
+// separately run `runs` and pattern-match on timestamp.
+function attachRunHandle(error: unknown, run: TraceRun): unknown {
+  if (typeof error !== "object" || error === null) {
+    return error;
+  }
+  Reflect.set(error, "runId", run.runId);
+  Reflect.set(error, "directory", run.directory);
+  return error;
+}
+
 async function executeRecord(
   runtime: TraceRuntime,
   file: string,
@@ -189,7 +204,7 @@ async function executeRecord(
     return { ...result, runId: run.runId, directory: run.directory, status };
   } catch (error: unknown) {
     await recorder.fail(failedStatus(error, context.signal));
-    throw error;
+    throw attachRunHandle(error, run);
   }
 }
 

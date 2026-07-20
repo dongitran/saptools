@@ -9,6 +9,19 @@ import { defineOwnValue } from "./safe-record.js";
 const MIN_CAPTURED_GRAPH_BYTES = Buffer.byteLength('{"roots":{},"nodes":{},"completeness":"truncated"}');
 const MIN_REMOTE_GRAPH_BYTES = Buffer.byteLength('{"root":{"kind":"unavailable"},"nodes":{},"completeness":"truncated"}');
 const HIDDEN_SLOT_SUBTYPES = new Set(["date", "map", "promise", "set", "weakmap", "weakset"]);
+// A function's `description` is V8's full `Function.prototype.toString()`
+// output. Left uncapped, one recurring framework closure (e.g. a logger
+// method) can be ~3.4 KB of byte-identical source repeated in every step's
+// capture. This cap applies regardless of the remaining byte budget, so it
+// never depends on capture order to keep descriptions small.
+const MAX_DESCRIPTION_LENGTH = 256;
+// Every root gets at most this fraction of whatever budget remains when it is
+// about to be captured, shared evenly across however many roots are still
+// left to process. This stops one oversized root (framework `this`, a bulky
+// request object) from consuming the whole per-frame budget and starving
+// roots that sort or are prioritized after it.
+const MIN_ROOT_BUDGET_BYTES = 256;
+const MIN_ROOT_NODE_BUDGET = 4;
 
 export interface RemoteObject {
   readonly type: string;
@@ -46,6 +59,7 @@ interface MutableGraphNode {
   subtype?: string;
   className?: string;
   description?: string;
+  descriptionLength?: number;
   completeness: Completeness;
   omittedCount?: number;
   properties: Record<string, TaggedGraphValue>;
@@ -59,6 +73,13 @@ interface CaptureContext {
   readonly releaseIds: Set<string>;
   estimatedBytes: number;
   truncated: boolean;
+  // Tightened before capturing each root to this root's fair share of the
+  // remaining budget (see nextByteCeiling/nextNodeCeiling). Value/node
+  // capture helpers check these ceilings instead of `limits.maxBytes`/
+  // `limits.maxNodes` directly, so they can never exceed the global limits
+  // either (a root's ceiling is always <= the global limit).
+  rootByteCeiling: number;
+  rootNodeCeiling: number;
 }
 
 interface RemoteGraphResult {
@@ -109,7 +130,7 @@ function unavailableValue(description: string | undefined): TaggedGraphValue {
 function boundedValue(context: CaptureContext, value: TaggedGraphValue): TaggedGraphValue {
   const serialized = JSON.stringify(value);
   const size = Buffer.byteLength(serialized);
-  if (context.estimatedBytes + size <= context.limits.maxBytes) {
+  if (context.estimatedBytes + size <= context.rootByteCeiling) {
     context.estimatedBytes += size;
     return value;
   }
@@ -124,29 +145,72 @@ function isByteLimitValue(value: TaggedGraphValue): boolean {
   return value.kind === "unavailable" && value.description === "byte-limit";
 }
 
+interface BoundedDescription {
+  readonly text?: string;
+  readonly originalLength?: number;
+}
+
+// Hard-caps `description` regardless of the remaining byte budget. Without
+// this, a single function value's full V8 source text (`description`) can be
+// thousands of bytes, repeated byte-for-byte across every step that captures
+// the same recurring closure (e.g. a logger method).
+function boundedDescription(description: string | undefined): BoundedDescription {
+  if (description === undefined) {
+    return {};
+  }
+  if (description.length <= MAX_DESCRIPTION_LENGTH) {
+    return { text: description };
+  }
+  return { text: description.slice(0, MAX_DESCRIPTION_LENGTH), originalLength: description.length };
+}
+
+function metadataByteLength(remote: RemoteObject, description: BoundedDescription): number {
+  const metadata = [remote.subtype, remote.className, description.text].filter(
+    (value): value is string => value !== undefined,
+  );
+  return metadata.reduce((total, value) => total + Buffer.byteLength(value), 0);
+}
+
+interface NodeMetadata {
+  readonly subtype?: string;
+  readonly className?: string;
+  readonly description?: string;
+  readonly descriptionLength?: number;
+}
+
+function nodeMetadata(remote: RemoteObject, description: BoundedDescription, includeMetadata: boolean): NodeMetadata {
+  if (!includeMetadata) {
+    return {};
+  }
+  return {
+    ...(remote.subtype === undefined ? {} : { subtype: remote.subtype }),
+    ...(remote.className === undefined ? {} : { className: remote.className }),
+    ...(description.text === undefined ? {} : { description: description.text }),
+    ...(description.originalLength === undefined ? {} : { descriptionLength: description.originalLength }),
+  };
+}
+
 function createNode(context: CaptureContext, remote: RemoteObject): MutableGraphNode | undefined {
-  if (Object.keys(context.nodes).length >= context.limits.maxNodes) {
+  if (Object.keys(context.nodes).length >= context.rootNodeCeiling) {
     context.truncated = true;
     return undefined;
   }
   const nodeId = `n${String(Object.keys(context.nodes).length)}`;
-  const metadata = [remote.subtype, remote.className, remote.description].filter(
-    (value): value is string => value !== undefined,
-  );
-  const metadataBytes = metadata.reduce((total, value) => total + Buffer.byteLength(value), 0);
-  const includeMetadata = context.estimatedBytes + metadataBytes <= context.limits.maxBytes;
+  const description = boundedDescription(remote.description);
+  const metadataBytes = metadataByteLength(remote, description);
+  const includeMetadata = context.estimatedBytes + metadataBytes <= context.rootByteCeiling;
   if (includeMetadata) {
     context.estimatedBytes += metadataBytes;
-  } else {
+  }
+  const complete = includeMetadata && description.originalLength === undefined;
+  if (!complete) {
     context.truncated = true;
   }
   const node: MutableGraphNode = {
     nodeId,
     type: remote.type,
-    ...(includeMetadata && remote.subtype !== undefined ? { subtype: remote.subtype } : {}),
-    ...(includeMetadata && remote.className !== undefined ? { className: remote.className } : {}),
-    ...(includeMetadata && remote.description !== undefined ? { description: remote.description } : {}),
-    completeness: includeMetadata ? "complete" : "truncated",
+    ...nodeMetadata(remote, description, includeMetadata),
+    completeness: complete ? "complete" : "truncated",
     properties: {},
   };
   context.nodes[nodeId] = node;
@@ -167,7 +231,7 @@ async function populateNode(
   objectId: string,
   depth: number,
 ): Promise<void> {
-  if (depth >= context.limits.maxDepth || context.estimatedBytes >= context.limits.maxBytes) {
+  if (depth >= context.limits.maxDepth || context.estimatedBytes >= context.rootByteCeiling) {
     node.completeness = "truncated";
     context.truncated = true;
     return;
@@ -182,7 +246,7 @@ async function populateNode(
   }
   for (const descriptor of visible) {
     context.estimatedBytes += Buffer.byteLength(descriptor.name);
-    if (context.estimatedBytes >= context.limits.maxBytes) {
+    if (context.estimatedBytes >= context.rootByteCeiling) {
       node.completeness = "truncated";
       context.truncated = true;
       break;
@@ -291,6 +355,25 @@ function validateGraphLimits(limits: GraphCaptureLimits, minimumBytes: number): 
   }
 }
 
+// Splits whatever budget remains evenly across however many roots are still
+// left to process (including the one about to start), recomputed fresh
+// before each root. A root that uses less than its share leaves the rest for
+// later roots; a lone or final root always gets 100% of what remains, so a
+// single-root caller (captureRemoteGraph) is never artificially restricted.
+function fairShare(used: number, limit: number, minimumFloor: number, rootsLeft: number): number {
+  const remaining = Math.max(0, limit - used);
+  const share = Math.floor(remaining / Math.max(1, rootsLeft));
+  return used + Math.max(Math.min(minimumFloor, remaining), share);
+}
+
+function nextByteCeiling(context: CaptureContext, rootsLeft: number): number {
+  return fairShare(context.estimatedBytes, context.limits.maxBytes, MIN_ROOT_BUDGET_BYTES, rootsLeft);
+}
+
+function nextNodeCeiling(context: CaptureContext, rootsLeft: number): number {
+  return fairShare(Object.keys(context.nodes).length, context.limits.maxNodes, MIN_ROOT_NODE_BUDGET, rootsLeft);
+}
+
 export async function captureRemoteValues(
   client: RemoteObjectClient,
   roots: Readonly<Record<string, RemoteObject>>,
@@ -305,10 +388,20 @@ export async function captureRemoteValues(
     releaseIds: new Set(),
     estimatedBytes: 0,
     truncated: false,
+    rootByteCeiling: limits.maxBytes,
+    rootNodeCeiling: limits.maxNodes,
   };
   const capturedRoots: Record<string, TaggedGraphValue> = {};
+  // Root iteration order is the caller's own insertion order (declaration/
+  // priority tiering happens in state-capture.ts's collectFrameRoots), not an
+  // alphabetical re-sort: sorting by name/scope-index string previously put
+  // volatile framework locals ahead of a function's own parameters.
+  const rootNames = Object.keys(roots);
   try {
-    for (const name of Object.keys(roots).sort()) {
+    for (const [index, name] of rootNames.entries()) {
+      const rootsLeft = rootNames.length - index;
+      context.rootByteCeiling = nextByteCeiling(context, rootsLeft);
+      context.rootNodeCeiling = nextNodeCeiling(context, rootsLeft);
       defineOwnValue(capturedRoots, name, await captureValue(context, roots[name], 0));
     }
   } finally {

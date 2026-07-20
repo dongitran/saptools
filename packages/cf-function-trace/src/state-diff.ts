@@ -12,8 +12,18 @@ function valuesEqual(left: JsonValue, right: JsonValue): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+// True for any record that carries its own `completeness` field: a
+// CapturedGraphNode, a CapturedFrameState/CapturedGraph, or the top-level
+// CapturedState. This is the ONLY place a truncation signal actually lives —
+// a `properties`/`roots`/`nodes` bag never carries one of its own;
+// `completeness` always describes the record one level ABOVE the
+// dynamically-keyed bag it bounds, never the bag itself.
+function isCompletenessBoundary(value: JsonValue): value is JsonRecord {
+  return isRecord(value) && typeof value["completeness"] === "string";
+}
+
 function isIncomplete(value: JsonValue): boolean {
-  return isRecord(value) && typeof value["completeness"] === "string" && value["completeness"] !== "complete";
+  return isCompletenessBoundary(value) && value["completeness"] !== "complete";
 }
 
 function pointerSegment(value: string): string {
@@ -29,58 +39,72 @@ function diffRecords(
   after: JsonRecord,
   path: string,
   operations: StatePatchOperation[],
-): void {
+): boolean {
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  let hasUnresolvedRemoval = false;
   for (const key of [...keys].sort()) {
-    diffRecordKey(before, after, path, key, operations);
+    if (diffRecordKey(before, after, path, key, operations)) {
+      hasUnresolvedRemoval = true;
+    }
   }
+  return hasUnresolvedRemoval;
 }
 
+// Returns true when `key`'s removal is still an unresolved "was this really
+// deleted, or just not captured this time" question for some ancestor to
+// answer. A key removed directly from `before`/`after` always is. A key whose
+// value recursed further inherits whatever collectOperations decided:
+// resolved (false) once the recursion passes through a completeness boundary
+// that already ruled on it, still open (true) if it only bubbled through a
+// bag with no completeness of its own (e.g. `properties`, `roots`, `nodes`).
 function diffRecordKey(
   before: JsonRecord,
   after: JsonRecord,
   path: string,
   key: string,
   operations: StatePatchOperation[],
-): void {
+): boolean {
   const nextPath = childPath(path, key);
   const hasBefore = Object.hasOwn(before, key);
   const hasAfter = Object.hasOwn(after, key);
   if (!hasBefore && hasAfter) {
     operations.push({ op: "add", path: nextPath, value: after[key] ?? null });
-    return;
+    return false;
   }
   if (hasBefore && !hasAfter) {
     operations.push({ op: "remove", path: nextPath });
-    return;
+    return true;
   }
-  if (hasBefore && hasAfter) {
-    collectOperations(before[key] ?? null, after[key] ?? null, nextPath, operations);
-  }
+  return collectOperations(before[key] ?? null, after[key] ?? null, nextPath, operations);
 }
 
+// Returns whether an unresolved removal is still bubbling up looking for a
+// completeness boundary to answer for it (see collectRecordOperations). A
+// fully-resolved value (equal, dangerous-segment replace, array diff, or a
+// scalar/type-mismatch replace) never leaves anything open, so those branches
+// always return false.
 function collectOperations(
   before: JsonValue,
   after: JsonValue,
   path: string,
   operations: StatePatchOperation[],
-): void {
+): boolean {
   if (valuesEqual(before, after)) {
-    return;
+    return false;
   }
   if (isRecord(before) && isRecord(after)) {
     if ([...Object.keys(before), ...Object.keys(after)].some(isDangerousSegment)) {
       operations.push({ op: "replace", path, value: after });
-      return;
+      return false;
     }
-    collectRecordOperations(before, after, path, operations);
-    return;
+    return collectRecordOperations(before, after, path, operations);
   }
   if (Array.isArray(before) && Array.isArray(after)) {
     diffArrays(before, after, path, operations);
-    return;
+    return false;
   }
   operations.push({ op: "replace", path, value: after });
+  return false;
 }
 
 function collectRecordOperations(
@@ -88,16 +112,27 @@ function collectRecordOperations(
   after: JsonRecord,
   path: string,
   operations: StatePatchOperation[],
-): void {
+): boolean {
   const nested: StatePatchOperation[] = [];
-  diffRecords(before, after, path, nested);
-  const uncertainRemoval = (isIncomplete(before) || isIncomplete(after))
-    && nested.some((operation) => operation.op === "remove");
+  const hasUnresolvedRemoval = diffRecords(before, after, path, nested);
+  // "Uncertain" means: THIS record cannot prove a direct-or-bubbled-up
+  // removal was a real deletion rather than merely uncaptured, AND this
+  // record is where that question has to be answered (see the boundary
+  // check below) because it is the one that carries `completeness`.
+  const uncertainRemoval = (isIncomplete(before) || isIncomplete(after)) && hasUnresolvedRemoval;
   if (uncertainRemoval) {
     operations.push({ op: "replace", path, value: after });
-    return;
+    return false;
   }
   operations.push(...nested);
+  // A record that carries its own `completeness` (checked above, whether or
+  // not it fired) is a boundary: it just had its say, so its verdict is final
+  // and nothing bubbles past it to a more distant, unrelated ancestor — this
+  // is what stops a truncated top-level state from collapsing wholesale. A
+  // record with no `completeness` of its own (`properties`, `roots`, `nodes`)
+  // cannot rule on its own removals at all, so they keep bubbling up to
+  // whichever ancestor actually can.
+  return isCompletenessBoundary(before) || isCompletenessBoundary(after) ? false : hasUnresolvedRemoval;
 }
 
 function matchingPrefix(before: readonly JsonValue[], after: readonly JsonValue[]): number {

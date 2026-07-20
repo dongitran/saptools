@@ -86,7 +86,8 @@ function addTraceLimits(command: Command): Command {
     .option("--max-paused-ms <ms>", "Maximum cumulative pause time", "5000")
     .option("--checkpoint-every <count>", "Full-state checkpoint interval", "25")
     .option("--max-object-depth <depth>", "Maximum captured object depth", "4")
-    .option("--max-properties <count>", "Maximum properties captured per object", "100")
+    .option("--max-root-vars <count>", "Maximum top-level locals/this/return captured per frame", "100")
+    .option("--max-properties <count>", "Maximum properties captured per individual object (fan-out, not root count)", "100")
     .option("--max-nodes <count>", "Maximum captured object nodes per frame", "1000")
     .option("--max-state-bytes <bytes>", "Maximum estimated captured bytes per frame", "2000000")
     .option("--async-stack-depth <count>", "Async call stack depth requested for async traces", "4");
@@ -166,6 +167,14 @@ export function createProgram(handlers: CliCommandHandlers): Command {
     .name("cf-function-trace")
     .description("Trace bounded runtime state changes for one loaded Node.js function")
     .version(readPackageVersion());
+  // Commander's `.command()` snapshots the parent's `_exitCallback` onto each
+  // child at registration time (copyInheritedSettings). exitOverride() must
+  // therefore run BEFORE any subcommand is registered below, or every
+  // subcommand keeps the pre-override default (a bare `process.exit()`) and a
+  // subcommand-level parse error (a missing --at, an unknown flag) bypasses
+  // this CLI's own catch/publicError() JSON-error contract entirely, exiting
+  // silently with zero bytes on stdout and stderr.
+  program.exitOverride();
   registerPlan(program, handlers);
   registerRecord(program, handlers);
   registerQueries(program, handlers);

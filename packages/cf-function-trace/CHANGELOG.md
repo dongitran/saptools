@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.3 - 2026-07-21
+
+### Capture and diff correctness
+
+- Diffs no longer collapse to a whole-frame replace. The incomplete-node removal safety net in the
+  differ is now scoped to direct-child removals, so a truncated node no longer forces its entire
+  subtree to re-emit. Real captures now produce granular per-step operations instead of one large
+  replace blob.
+- The capture budget is spent on the data that matters. Roots are captured in priority order (return
+  value, own parameters and locals, block locals, `this`) with a per-root ceiling, so the request
+  payload and user locals are no longer starved to `node-limit` by framework objects such as loggers
+  and the CAP service graph.
+- Function `description` values are hard-capped instead of dumping full function source into every
+  step, cutting capture size and the repeated per-step serialization behind mid-trace timeouts.
+- Split the overloaded `--max-properties` into `--max-root-vars` (root and local count) and
+  `--max-properties` (per-object fan-out).
+
+### CLI error contract
+
+- A mistyped or missing flag now emits a structured JSON error on stderr with a non-zero exit,
+  instead of exiting silently with no output.
+- `state` and `diff` responses that exceed `--max-output-bytes` now preserve the request envelope and
+  include a hint (narrow with `--path`, or raise `--max-output-bytes`) instead of returning a
+  content-free stub.
+- Errors are actionable: parse errors, `AMBIGUOUS_FUNCTION` candidate lists, the operational
+  `SESSION_ALREADY_RUNNING` guidance, and `RUN_NOT_FOUND` (with no leaked filesystem paths) are
+  surfaced.
+- A `record` that times out now attaches the partial run id to the error so the captured partial
+  timeline can still be read.
+
+### Privacy
+
+- Redaction now covers email and PII patterns and an optional `CF_FUNCTION_TRACE_SENSITIVE_KEYS` key
+  list, in addition to credential-shaped secrets. Note: because redaction also runs during
+  replay-hash verification, trace runs captured before 0.2.3 can report a state hash mismatch when
+  read; re-record to get a clean run.
+
+### Documentation
+
+- Added a cf-function-trace skill and expanded the README with the non-interactive record recipe, the
+  output and error reference, and the flag reference. A backgrounded `record` must be stopped with
+  SIGTERM, never SIGKILL, until the debugger self-heals an orphaned tunnel.
+
 ## 0.2.2 - 2026-07-21
 
 ### Reliability

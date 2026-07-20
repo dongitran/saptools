@@ -41,6 +41,7 @@ export interface InspectorTraceControllerOptions {
   readonly appRoots: readonly string[];
   readonly maxFrames: number;
   readonly graphLimits: GraphCaptureLimits;
+  readonly maxRootVars: number;
 }
 
 export interface RuntimeEvaluationClient {
@@ -255,6 +256,7 @@ async function captureAdapterState(
     appRoots: options.appRoots,
     maxFrames: options.maxFrames,
     graphLimits: options.graphLimits,
+    maxRootVars: options.maxRootVars,
   }, objectClient);
 }
 

@@ -25,12 +25,71 @@ describe("trace state diff", () => {
     ]);
   });
 
-  it("replaces an incomplete subtree when a missing value cannot be proven removed", () => {
+  it("replaces the smallest incomplete record when ITS OWN key is removed", () => {
+    const before = { node: { completeness: "truncated", extra: "gone" } };
+    const after = { node: { completeness: "truncated" } };
+
+    expect(diffStates(before, after).operations).toEqual([
+      { op: "replace", path: "/node", value: after.node },
+    ]);
+  });
+
+  it("replaces the enclosing node when a properties-bag key vanishes under it", () => {
+    // `properties` never carries its own `completeness` field (only its
+    // parent node does), so a removal inside it cannot be ruled on by
+    // `properties` itself — the ambiguity must bubble up to the nearest
+    // record that actually carries `completeness` (here, `value`) instead of
+    // being reported as a confident, specific `remove` that may well still
+    // exist on the live object and simply missed this capture's window.
     const before = { value: { completeness: "truncated", properties: { visible: 1, maybeOmitted: 2 } } };
     const after = { value: { completeness: "truncated", properties: { visible: 1 } } };
 
     expect(diffStates(before, after).operations).toEqual([
       { op: "replace", path: "/value", value: after.value },
+    ]);
+  });
+
+  it("replaces the enclosing frame, not the whole CapturedState, when a root vanishes", () => {
+    // Mirrors the real regression at the top level: top-level completeness is
+    // "truncated" (the normal case for a real capture), but the frame is the
+    // nearest record that actually carries completeness for its own `roots`
+    // map. The ambiguity must stop there instead of propagating all the way
+    // up and collapsing the entire captured state to one giant replace.
+    const before = {
+      version: 1,
+      completeness: "truncated",
+      frames: [{ completeness: "truncated", roots: { "scope.0.local.a": 1, "scope.0.local.b": 2 } }],
+    };
+    const after = {
+      version: 1,
+      completeness: "truncated",
+      frames: [{ completeness: "truncated", roots: { "scope.0.local.a": 1 } }],
+    };
+
+    expect(diffStates(before, after).operations).toEqual([
+      { op: "replace", path: "/frames/0", value: after.frames[0] },
+    ]);
+  });
+
+  it("stays granular through a distant truncated ancestor when the direct parent is complete", () => {
+    // The top-level state is truncated (typical for a real capture, e.g.
+    // because of a DIFFERENT frame or an overall size cap), but the frame and
+    // node directly enclosing the removed property are both fully captured.
+    // Their own "complete" verdict is authoritative and must not be
+    // second-guessed by an unrelated ancestor further up the tree — this is
+    // what keeps everyday diffs granular instead of collapsing to the whole
+    // captured state.
+    const before = {
+      completeness: "truncated",
+      frames: [{ completeness: "complete", nodes: { n0: { completeness: "complete", properties: { a: 1, b: 2 } } } }],
+    };
+    const after = {
+      completeness: "truncated",
+      frames: [{ completeness: "complete", nodes: { n0: { completeness: "complete", properties: { a: 1 } } } }],
+    };
+
+    expect(diffStates(before, after).operations).toEqual([
+      { op: "remove", path: "/frames/0/nodes/n0/properties/b" },
     ]);
   });
 

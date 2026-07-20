@@ -27,6 +27,7 @@ describe("trace CLI options", () => {
       maxPausedMs: 5_000,
       checkpointEvery: 25,
       maxObjectDepth: 4,
+      maxRootVars: 100,
       maxProperties: 100,
       maxNodes: 1_000,
       maxStateBytes: 2_000_000,
@@ -34,6 +35,20 @@ describe("trace CLI options", () => {
     });
     expect(options.appRoot).toBe("/srv/app");
     expect(options.matchCondition).toBeUndefined();
+  });
+
+  it("resolves --max-root-vars independently of --max-properties", () => {
+    const options = resolveRecordOptions({
+      port: "9229",
+      maxRootVars: "12",
+      maxProperties: "250",
+      confirmImpact: false,
+    });
+    expect(options.limits.maxRootVars).toBe(12);
+    expect(options.limits.maxProperties).toBe(250);
+
+    expect(() => resolveRecordOptions({ port: "9229", maxRootVars: "0", confirmImpact: false }))
+      .toThrowError(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
   });
 
   it("resolves the match predicate and async stack depth, and rejects malformed values", () => {

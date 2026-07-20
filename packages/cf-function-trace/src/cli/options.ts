@@ -23,6 +23,7 @@ export interface RecordCliFlags {
   readonly maxPausedMs?: string;
   readonly checkpointEvery?: string;
   readonly maxObjectDepth?: string;
+  readonly maxRootVars?: string;
   readonly maxProperties?: string;
   readonly maxNodes?: string;
   readonly maxStateBytes?: string;
@@ -39,6 +40,7 @@ export interface ResolvedTraceLimits {
   readonly maxPausedMs: number;
   readonly checkpointEvery: number;
   readonly maxObjectDepth: number;
+  readonly maxRootVars: number;
   readonly maxProperties: number;
   readonly maxNodes: number;
   readonly maxStateBytes: number;
@@ -176,6 +178,7 @@ function resolveLimits(flags: RecordCliFlags): ResolvedTraceLimits {
     maxPausedMs: boundedLimit(flags.maxPausedMs, "5000", "--max-paused-ms", 1, 600_000),
     checkpointEvery: boundedLimit(flags.checkpointEvery, "25", "--checkpoint-every", 1, 1000),
     maxObjectDepth: boundedLimit(flags.maxObjectDepth, "4", "--max-object-depth", 0, 20),
+    maxRootVars: boundedLimit(flags.maxRootVars, "100", "--max-root-vars", 1, 10_000),
     maxProperties: boundedLimit(flags.maxProperties, "100", "--max-properties", 1, 10_000),
     maxNodes: boundedLimit(flags.maxNodes, "1000", "--max-nodes", 1, 100_000),
     maxStateBytes: boundedLimit(flags.maxStateBytes, "2000000", "--max-state-bytes", 1024, 100_000_000),

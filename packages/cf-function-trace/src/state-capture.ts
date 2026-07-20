@@ -33,6 +33,10 @@ export interface CapturePausedStateInput {
   readonly appRoots: readonly string[];
   readonly maxFrames: number;
   readonly graphLimits: GraphCaptureLimits;
+  // How many top-level roots (locals/block variables/this/return) a frame may
+  // show at all. Kept separate from graphLimits.maxProperties, which bounds
+  // only the property fan-out of an individual captured object.
+  readonly maxRootVars: number;
 }
 
 interface CollectedFrameRoots {
@@ -42,6 +46,46 @@ interface CollectedFrameRoots {
 
 function isCapturedScope(type: string): boolean {
   return type === "local" || type === "block" || type === "catch";
+}
+
+// V8 reports exactly one "local"-type scope per frame: the function's own
+// parameter/top-level-local activation record. Any "block"/"catch" scopes are
+// nested if/for/try locals the function declared inside its own body.
+function isLocalScope(type: string): boolean {
+  return type === "local";
+}
+
+interface EligibleScope {
+  readonly scopeIndex: number;
+  readonly type: string;
+  readonly objectId: string;
+}
+
+function toEligibleScope(entry: readonly [number, PausedScope]): EligibleScope | undefined {
+  const [scopeIndex, scope] = entry;
+  if (!isCapturedScope(scope.type) || scope.objectId === undefined) {
+    return undefined;
+  }
+  return { scopeIndex, type: scope.type, objectId: scope.objectId };
+}
+
+// Tiers the frame's scope chain by declaration kind instead of trusting V8's
+// live scope-chain index: nested block/try/catch scopes the code happens to
+// have entered enroll at LOWER indices than the function's own parameter
+// scope, so a plain index- or name-based order would let inner-block locals
+// (loggers, framework singletons declared with a nested `const`) outrank the
+// function's own parameters. Relative order within each tier is preserved.
+function partitionScopes(frame: PausedFrame): {
+  readonly localScopes: readonly EligibleScope[];
+  readonly blockScopes: readonly EligibleScope[];
+} {
+  const scopes = [...frame.scopeChain.entries()]
+    .map(toEligibleScope)
+    .filter((scope): scope is EligibleScope => scope !== undefined);
+  return {
+    localScopes: scopes.filter((scope) => isLocalScope(scope.type)),
+    blockScopes: scopes.filter((scope) => !isLocalScope(scope.type)),
+  };
 }
 
 function addScopeProperties(
@@ -65,6 +109,24 @@ function addScopeProperties(
   return truncated;
 }
 
+async function addScopeChainRoots(
+  roots: Record<string, RemoteObject>,
+  scopes: readonly EligibleScope[],
+  client: RemoteObjectClient,
+  maxRoots: number,
+): Promise<boolean> {
+  let truncated = false;
+  for (const scope of scopes) {
+    try {
+      const descriptors = await client.getProperties(scope.objectId);
+      truncated = addScopeProperties(roots, scope.type, scope.scopeIndex, descriptors, maxRoots) || truncated;
+    } finally {
+      await client.releaseObject(scope.objectId);
+    }
+  }
+  return truncated;
+}
+
 function addSpecialRoot(roots: Record<string, RemoteObject>, name: string, value: RemoteObject | undefined, maxRoots: number): boolean {
   if (value === undefined) {
     return false;
@@ -76,25 +138,23 @@ function addSpecialRoot(roots: Record<string, RemoteObject>, name: string, value
   return false;
 }
 
+// Root insertion order IS capture priority order (remote-object.ts now walks
+// roots in the order it receives them, not alphabetically): the function's
+// own computed return value and its own parameters/locals are captured
+// first, then its own nested-block locals, and only then `this` — the
+// framework/service-graph object most likely to be large and least likely to
+// be what a debugging agent needs first.
 async function collectFrameRoots(
   frame: PausedFrame,
   client: RemoteObjectClient,
   maxRoots: number,
 ): Promise<CollectedFrameRoots> {
   const roots: Record<string, RemoteObject> = {};
-  let truncated = addSpecialRoot(roots, "this", frame.thisValue, maxRoots);
-  truncated = addSpecialRoot(roots, "return", frame.returnValue, maxRoots) || truncated;
-  for (const [scopeIndex, scope] of frame.scopeChain.entries()) {
-    if (!isCapturedScope(scope.type) || scope.objectId === undefined) {
-      continue;
-    }
-    try {
-      const descriptors = await client.getProperties(scope.objectId);
-      truncated = addScopeProperties(roots, scope.type, scopeIndex, descriptors, maxRoots) || truncated;
-    } finally {
-      await client.releaseObject(scope.objectId);
-    }
-  }
+  const { localScopes, blockScopes } = partitionScopes(frame);
+  let truncated = addSpecialRoot(roots, "return", frame.returnValue, maxRoots);
+  truncated = (await addScopeChainRoots(roots, localScopes, client, maxRoots)) || truncated;
+  truncated = (await addScopeChainRoots(roots, blockScopes, client, maxRoots)) || truncated;
+  truncated = addSpecialRoot(roots, "this", frame.thisValue, maxRoots) || truncated;
   return { roots, truncated };
 }
 
@@ -102,8 +162,9 @@ async function captureFrame(
   frame: PausedFrame,
   client: RemoteObjectClient,
   limits: GraphCaptureLimits,
+  maxRootVars: number,
 ): Promise<CapturedFrameState> {
-  const collected = await collectFrameRoots(frame, client, limits.maxProperties);
+  const collected = await collectFrameRoots(frame, client, maxRootVars);
   const graph = await captureRemoteValues(client, collected.roots, limits);
   return {
     functionName: frame.functionName,
@@ -146,7 +207,7 @@ export async function capturePausedState(
   const frames: CapturedFrameState[] = [];
   const perFrameBytes = Math.max(128, Math.floor(input.graphLimits.maxBytes / Math.max(selected.length, 1)));
   for (const frame of selected) {
-    frames.push(await captureFrame(frame, client, { ...input.graphLimits, maxBytes: perFrameBytes }));
+    frames.push(await captureFrame(frame, client, { ...input.graphLimits, maxBytes: perFrameBytes }, input.maxRootVars));
   }
   const appFrameCount = input.frames.filter((frame) => isAppOwnedScript(frame.url, input.appRoots)).length;
   return fitCapturedState(frames, appFrameCount > selected.length, input.graphLimits.maxBytes);

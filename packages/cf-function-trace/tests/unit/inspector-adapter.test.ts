@@ -109,6 +109,7 @@ function createController(
     appRoots: TRACE_PLAN.appRoots,
     maxFrames: 2,
     graphLimits: GRAPH_LIMITS,
+    maxRootVars: 20,
   }, dependencies);
 }
 

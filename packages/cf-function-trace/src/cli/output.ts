@@ -9,6 +9,14 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+// Shared with query-commands.ts's own shrink-to-fit degrade for state/diff
+// responses, so both use exactly the same redact-then-measure byte count
+// that this module's own bounded write uses -- a candidate that "fits" here
+// is guaranteed to fit through writeJsonOutput below too.
+export function measureJsonBytes(value: unknown): number {
+  return Buffer.byteLength(`${JSON.stringify(redactValue(value))}\n`);
+}
+
 function boundedPayload(value: unknown, maxBytes: number): string {
   if (!Number.isInteger(maxBytes) || maxBytes < 128) {
     throw new TraceDataError("INVALID_ARGUMENT", "Output budget must be at least 128 bytes.");

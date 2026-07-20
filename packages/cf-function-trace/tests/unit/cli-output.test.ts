@@ -2,7 +2,7 @@ import { Writable } from "node:stream";
 
 import { describe, expect, it } from "vitest";
 
-import { writeJsonOutput } from "../../src/cli/output.js";
+import { measureJsonBytes, writeJsonOutput } from "../../src/cli/output.js";
 
 function collectingStream(chunks: string[]): Writable {
   return new Writable({
@@ -32,6 +32,23 @@ describe("bounded CLI output", () => {
     expect(Buffer.byteLength(output)).toBeLessThanOrEqual(256);
     const parsed: unknown = JSON.parse(output);
     expect(parsed).toMatchObject({ truncated: true });
+  });
+
+  it("measures the same redacted byte length writeJsonOutput itself uses to decide truncation", async () => {
+    // query-commands.ts's state/diff shrink-to-fit degrade (P0-5) calls this
+    // exported helper directly to decide whether a candidate response fits --
+    // it must agree with what writeJsonOutput actually writes for the exact
+    // same value, or a candidate judged "fits" here could still get silently
+    // truncated by writeJsonOutput's own bounded write.
+    const value = { authorization: "Bearer raw-secret-sentinel", safe: "visible" };
+    const measured = measureJsonBytes(value);
+
+    const chunks: string[] = [];
+    await writeJsonOutput(collectingStream(chunks), value, 4096);
+    const written = chunks.join("");
+
+    expect(measured).toBe(Buffer.byteLength(written));
+    expect(written).not.toContain("raw-secret-sentinel");
   });
 
   it("treats EPIPE as downstream completion", async () => {

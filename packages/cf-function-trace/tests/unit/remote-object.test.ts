@@ -137,6 +137,40 @@ describe("remote object graph capture", () => {
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(128);
   });
 
+  it("hard-caps a long description and records its original length", async () => {
+    const longDescription = "function format(module, level, ...args) {".padEnd(400, "z");
+    const result = await captureRemoteGraph({
+      getProperties: async (): Promise<readonly []> => [],
+      releaseObject: async (): Promise<void> => undefined,
+    }, { type: "function", objectId: "root", description: longDescription }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 10_000,
+    });
+
+    const node = result.nodes["n0"];
+    expect(node?.description?.length).toBe(256);
+    expect(node?.description).toBe(longDescription.slice(0, 256));
+    expect(node?.descriptionLength).toBe(400);
+    expect(node?.completeness).toBe("truncated");
+  });
+
+  it("leaves a short description untouched and does not report it as truncated", async () => {
+    const result = await captureRemoteGraph({
+      getProperties: async (): Promise<readonly []> => [],
+      releaseObject: async (): Promise<void> => undefined,
+    }, { type: "object", objectId: "root", description: "short" }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 10_000,
+    });
+
+    expect(result.nodes["n0"]).toMatchObject({ description: "short", completeness: "complete" });
+    expect(result.nodes["n0"]?.descriptionLength).toBeUndefined();
+  });
+
   it("omits oversized object metadata from the bounded graph", async () => {
     const description = "metadata-sentinel".repeat(1000);
     const result = await captureRemoteGraph({
@@ -273,6 +307,63 @@ describe("remote object graph capture", () => {
     });
     expect(getProperties).not.toHaveBeenCalled();
     expect(releaseObject).not.toHaveBeenCalled();
+  });
+
+  it("captures roots in the caller's insertion order, not re-sorted alphabetically", async () => {
+    const getProperties = vi.fn(async (): Promise<readonly []> => []);
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+
+    const result = await captureRemoteValues({ getProperties, releaseObject }, {
+      zebra: { type: "object", objectId: "zebra-obj" },
+      alpha: { type: "object", objectId: "alpha-obj" },
+    }, {
+      maxDepth: 2,
+      maxProperties: 10,
+      maxNodes: 10,
+      maxBytes: 10_000,
+    });
+
+    // "zebra" was inserted first, so it must claim n0 even though "alpha"
+    // sorts first alphabetically -- proves the alphabetical re-sort is gone.
+    expect(result.roots["zebra"]).toEqual({ kind: "ref", nodeId: "n0" });
+    expect(result.roots["alpha"]).toEqual({ kind: "ref", nodeId: "n1" });
+  });
+
+  it("caps one root's share of the node budget so a later root is not starved", async () => {
+    const getProperties = vi.fn(async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => {
+      if (objectId === "big") {
+        return Array.from({ length: 10 }, (_unused, index) => ({
+          name: `child${index.toString()}`,
+          value: { type: "object", objectId: `big-child-${index.toString()}` },
+        }));
+      }
+      if (objectId === "small") {
+        return [{ name: "value", value: { type: "string", value: "42" } }];
+      }
+      return [];
+    });
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+
+    // "big" is inserted first and would alone exhaust every one of the 6
+    // allowed nodes (1 for itself + up to 10 children) if it were not capped.
+    const result = await captureRemoteValues({ getProperties, releaseObject }, {
+      big: { type: "object", objectId: "big" },
+      small: { type: "object", objectId: "small" },
+    }, {
+      maxDepth: 3,
+      maxProperties: 20,
+      maxNodes: 6,
+      maxBytes: 100_000,
+    });
+
+    expect(result.completeness).toBe("truncated");
+    expect(result.roots["big"]).toEqual({ kind: "ref", nodeId: "n0" });
+    // "big" only got its fair share (4 of the 6 nodes: itself + 3 children).
+    expect(result.nodes["n0"]?.properties["child3"]).toEqual({ kind: "unavailable", description: "node-limit" });
+    // "small", processed second, still got a real node and its real value --
+    // it was not starved down to node-limit by "big" going first.
+    expect(result.roots["small"]).toEqual({ kind: "ref", nodeId: "n4" });
+    expect(result.nodes["n4"]?.properties).toEqual({ value: "42" });
   });
 
   it("releases a materialized object when descriptor capture fails", async () => {

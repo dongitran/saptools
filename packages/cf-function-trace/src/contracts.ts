@@ -18,6 +18,11 @@ export interface CapturedGraphNode {
   readonly subtype?: string;
   readonly className?: string;
   readonly description?: string;
+  // Only present when `description` was cut down from a longer original
+  // (e.g. a function's full source text) by the hard length cap in
+  // remote-object.ts, mirroring how `omittedCount` records what a property
+  // fan-out cap left out.
+  readonly descriptionLength?: number;
   readonly completeness: Completeness;
   readonly omittedCount?: number;
   readonly properties: Readonly<Record<string, TaggedGraphValue>>;

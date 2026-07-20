@@ -176,7 +176,9 @@
     "relinks",
     "regs",
     "terminalizes",
-    "unindexed"
+    "unindexed",
+    "backgrounded",
+    "pkill"
   ],
   "ignorePaths": [
     "**/node_modules/**",

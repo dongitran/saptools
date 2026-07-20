@@ -7,7 +7,7 @@ import type {
   StatePatchOperation,
   TraceRunManifest,
 } from "./contracts.js";
-import { TraceDataError } from "./errors.js";
+import { TraceDataError, type TraceDataErrorCode } from "./errors.js";
 import { traceDataRoot, type TraceStoreOptions } from "./run-store.js";
 import { applyStatePatch } from "./state-diff.js";
 import { validateRunId } from "./validation.js";
@@ -67,11 +67,23 @@ function isJsonValue(value: unknown): value is JsonValue {
   return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
-async function readJson(path: string): Promise<unknown> {
+function isEnoent(error: unknown): boolean {
+  return error instanceof Error && Reflect.get(error, "code") === "ENOENT";
+}
+
+// `notFoundCode` lets ONLY the manifest lookup (a run that simply does not
+// exist) map a missing file to a clean, expected code; event/state-artifact
+// reads for an existing, valid run must keep reporting a missing file as the
+// data-corruption signal (INVALID_ARTIFACT) it actually is, so the mapping
+// is opt-in per call site rather than blanket-applied to every read.
+async function readJson(path: string, notFoundCode?: TraceDataErrorCode): Promise<unknown> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
     return parsed;
   } catch (error) {
+    if (notFoundCode !== undefined && isEnoent(error)) {
+      throw new TraceDataError(notFoundCode, "No trace run exists with that ID.");
+    }
     throw new TraceDataError("INVALID_ARTIFACT", `Trace artifact could not be read: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 }
@@ -131,7 +143,8 @@ function parseManifest(value: unknown): TraceRunManifest {
 
 export async function readTraceManifest(runId: string, options: TraceStoreOptions = {}): Promise<TraceRunManifest> {
   const validated = validateRunId(runId);
-  const manifest = parseManifest(await readJson(join(traceDataRoot(options.saptoolsRoot), validated, "manifest.json")));
+  const manifestPath = join(traceDataRoot(options.saptoolsRoot), validated, "manifest.json");
+  const manifest = parseManifest(await readJson(manifestPath, "RUN_NOT_FOUND"));
   if (manifest.runId !== validated) {
     throw new TraceDataError("INVALID_ARTIFACT", "Trace manifest run ID does not match its directory.");
   }
