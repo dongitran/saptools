@@ -1,0 +1,5 @@
+export function externalStep(value) {
+  const externalState = { value };
+  externalState.value *= 2;
+  return externalState.value;
+}

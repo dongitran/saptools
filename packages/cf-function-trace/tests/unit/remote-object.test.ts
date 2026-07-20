@@ -1,0 +1,295 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { captureRemoteGraph, captureRemoteValues } from "../../src/remote-object.js";
+import type { RemoteObjectClient, RemotePropertyDescriptor } from "../../src/remote-object.js";
+
+describe("remote object graph capture", () => {
+  it("preserves aliases, cycles, special values, and accessor descriptors without invoking getters", async () => {
+    const getProperties = vi.fn(async (objectId: string) => objectId === "root" ? [
+      { name: "self", value: { type: "object", objectId: "root", description: "Object" } },
+      { name: "missing", value: { type: "undefined" } },
+      { name: "large", value: { type: "bigint", unserializableValue: "42n" } },
+      { name: "secretGetter", get: { type: "function", objectId: "getter" } },
+    ] : []);
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+    const client: RemoteObjectClient = { getProperties, releaseObject };
+
+    const result = await captureRemoteGraph(client, { type: "object", objectId: "root", description: "Object" }, {
+      maxDepth: 4,
+      maxProperties: 10,
+      maxNodes: 10,
+      maxBytes: 10_000,
+    });
+
+    expect(result.root).toEqual({ kind: "ref", nodeId: "n0" });
+    expect(result.nodes["n0"]?.properties).toMatchObject({
+      self: { kind: "ref", nodeId: "n0" },
+      missing: { kind: "undefined" },
+      large: { kind: "bigint", value: "42" },
+      secretGetter: { kind: "accessor", hasGetter: true, hasSetter: false },
+    });
+    expect(getProperties).toHaveBeenCalledTimes(1);
+    expect(releaseObject).toHaveBeenCalledWith("root");
+    expect(releaseObject).not.toHaveBeenCalledWith("getter");
+  });
+
+  it("marks bounded objects as truncated", async () => {
+    const client: RemoteObjectClient = {
+      getProperties: async (): Promise<readonly [{ readonly name: "child"; readonly value: { readonly type: "object"; readonly objectId: "child" } }]> => [{ name: "child", value: { type: "object", objectId: "child" } }],
+      releaseObject: async (): Promise<void> => undefined,
+    };
+    const result = await captureRemoteGraph(client, { type: "object", objectId: "root" }, {
+      maxDepth: 0,
+      maxProperties: 1,
+      maxNodes: 1,
+      maxBytes: 1000,
+    });
+    expect(result.nodes["n0"]?.completeness).toBe("truncated");
+  });
+
+  it("captures nested objects and JavaScript special primitive values", async () => {
+    const releaseObject = vi.fn(async (objectId: string): Promise<void> => {
+      if (objectId === "root") {
+        throw new Error("release failure must not mask capture");
+      }
+    });
+    const client: RemoteObjectClient = {
+      getProperties: async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => objectId === "root"
+        ? [
+          { name: "child", value: { type: "object", objectId: "child", description: "Object" } },
+          { name: "invalidString", value: { type: "string", description: "unavailable string" } },
+          { name: "nan", value: { type: "number", unserializableValue: "NaN" } },
+          { name: "nil", value: { type: "object", subtype: "null", value: null } },
+          { name: "opaque", value: { type: "object", description: "Proxy" } },
+          { name: "symbol", value: { type: "symbol", description: "Symbol(marker)" } },
+        ]
+        : [{ name: "value", value: { type: "boolean", value: true } }],
+      releaseObject,
+    };
+
+    const result = await captureRemoteGraph(client, { type: "object", objectId: "root" }, {
+      maxDepth: 3,
+      maxProperties: 10,
+      maxNodes: 4,
+      maxBytes: 10_000,
+    });
+
+    expect(result.nodes["n0"]?.properties).toMatchObject({
+      child: { kind: "ref", nodeId: "n1" },
+      invalidString: { kind: "unavailable", description: "unavailable string" },
+      nan: { kind: "special-number", value: "NaN" },
+      nil: null,
+      opaque: { kind: "unavailable", description: "Proxy" },
+      symbol: { kind: "symbol", value: "Symbol(marker)" },
+    });
+    expect(result.nodes["n1"]?.properties).toEqual({ value: true });
+    expect(releaseObject).toHaveBeenCalledWith("root");
+    expect(releaseObject).toHaveBeenCalledWith("child");
+  });
+
+  it("enforces property, node, and byte limits", async () => {
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+    const client: RemoteObjectClient = {
+      getProperties: async (): Promise<readonly RemotePropertyDescriptor[]> => [
+        { name: "a", value: { type: "object", objectId: "child" } },
+        { name: "b", value: { type: "number", value: 2 } },
+      ],
+      releaseObject,
+    };
+    const propertyLimited = await captureRemoteGraph(client, { type: "object", objectId: "root" }, {
+      maxDepth: 3,
+      maxProperties: 1,
+      maxNodes: 1,
+      maxBytes: 1_000,
+    });
+    const byteLimited = captureRemoteGraph(client, { type: "object", objectId: "root" }, {
+      maxDepth: 3,
+      maxProperties: 2,
+      maxNodes: 3,
+      maxBytes: 1,
+    });
+
+    expect(propertyLimited.nodes["n0"]).toMatchObject({
+      completeness: "truncated",
+      omittedCount: 1,
+      properties: { a: { kind: "unavailable", description: "node-limit" } },
+    });
+    await expect(byteLimited).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(releaseObject).toHaveBeenCalledWith("child");
+  });
+
+  it("does not retain a primitive value larger than the byte budget", async () => {
+    const result = await captureRemoteGraph({
+      getProperties: async (): Promise<readonly RemotePropertyDescriptor[]> => [{
+        name: "value",
+        value: { type: "string", value: "x".repeat(10_000) },
+      }],
+      releaseObject: async (): Promise<void> => undefined,
+    }, { type: "object", objectId: "root" }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 128,
+    });
+
+    expect(result.completeness).toBe("truncated");
+    expect(JSON.stringify(result)).not.toContain("x".repeat(100));
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(128);
+  });
+
+  it("omits oversized object metadata from the bounded graph", async () => {
+    const description = "metadata-sentinel".repeat(1000);
+    const result = await captureRemoteGraph({
+      getProperties: async (): Promise<readonly []> => [],
+      releaseObject: async (): Promise<void> => undefined,
+    }, { type: "object", objectId: "root", description }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 128,
+    });
+
+    expect(JSON.stringify(result)).not.toContain("metadata-sentinel");
+    expect(result.completeness).toBe("truncated");
+  });
+
+  it("treats proxies as opaque without requesting their descriptors", async () => {
+    const getProperties = vi.fn(async (): Promise<readonly []> => []);
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+    const result = await captureRemoteGraph({ getProperties, releaseObject }, {
+      type: "object",
+      subtype: "proxy",
+      objectId: "proxy",
+      description: "Proxy(Object)",
+    }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 1_000,
+    });
+
+    expect(getProperties).not.toHaveBeenCalled();
+    expect(releaseObject).toHaveBeenCalledWith("proxy");
+    expect(result.nodes["n0"]?.completeness).toBe("unavailable");
+    expect(result.completeness).toBe("truncated");
+  });
+
+  it("honors inspector completeness metadata for opaque ordinary objects", async () => {
+    const getProperties = vi.fn(async (): Promise<readonly []> => []);
+    const result = await captureRemoteGraph({
+      getProperties,
+      releaseObject: async (): Promise<void> => undefined,
+    }, {
+      type: "object",
+      objectId: "opaque-runtime-value",
+      completeness: "unavailable",
+    }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 1_000,
+    });
+
+    expect(getProperties).not.toHaveBeenCalled();
+    expect(result.nodes["n0"]?.completeness).toBe("unavailable");
+    expect(result.completeness).toBe("truncated");
+  });
+
+  it.each(["map", "set", "weakmap", "weakset", "promise", "date"])(
+    "does not claim that hidden %s slots were captured completely",
+    async (subtype) => {
+      const result = await captureRemoteGraph({
+        getProperties: async (): Promise<readonly []> => [],
+        releaseObject: async (): Promise<void> => undefined,
+      }, {
+        type: "object",
+        subtype,
+        objectId: `opaque-${subtype}`,
+        description: subtype,
+      }, {
+        maxDepth: 2,
+        maxProperties: 2,
+        maxNodes: 2,
+        maxBytes: 1_000,
+      });
+
+      expect(result.nodes["n0"]?.completeness).toBe("truncated");
+      expect(result.completeness).toBe("truncated");
+    },
+  );
+
+  it("rejects unsafe public graph limits before reading remote data", async () => {
+    const getProperties = vi.fn(async (): Promise<readonly []> => []);
+    const limits = {
+      maxDepth: Number.POSITIVE_INFINITY,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 1_000,
+    };
+
+    await expect(captureRemoteGraph({
+      getProperties,
+      releaseObject: async (): Promise<void> => undefined,
+    }, { type: "object", objectId: "root" }, limits)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(getProperties).not.toHaveBeenCalled();
+  });
+
+  it("preserves own __proto__ descriptors without changing the graph prototype", async () => {
+    const result = await captureRemoteGraph({
+      getProperties: async (): Promise<readonly RemotePropertyDescriptor[]> => [{
+        name: "__proto__",
+        value: { type: "number", value: 7 },
+      }],
+      releaseObject: async (): Promise<void> => undefined,
+    }, { type: "object", objectId: "root" }, {
+      maxDepth: 2,
+      maxProperties: 2,
+      maxNodes: 2,
+      maxBytes: 1_000,
+    });
+    const properties = result.nodes["n0"]?.properties;
+
+    expect(properties === undefined ? false : Object.hasOwn(properties, "__proto__")).toBe(true);
+    expect(properties?.["__proto__"]).toBe(7);
+  });
+
+  it("captures primitive roots without materializing remote objects", async () => {
+    const getProperties = vi.fn(async (): Promise<readonly []> => []);
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+    const result = await captureRemoteValues({ getProperties, releaseObject }, {
+      count: { type: "number", value: 3 },
+      missing: { type: "undefined" },
+    }, {
+      maxDepth: 1,
+      maxProperties: 1,
+      maxNodes: 1,
+      maxBytes: 100,
+    });
+
+    expect(result).toEqual({
+      completeness: "complete",
+      nodes: {},
+      roots: { count: 3, missing: { kind: "undefined" } },
+    });
+    expect(getProperties).not.toHaveBeenCalled();
+    expect(releaseObject).not.toHaveBeenCalled();
+  });
+
+  it("releases a materialized object when descriptor capture fails", async () => {
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+    const client: RemoteObjectClient = {
+      getProperties: async (): Promise<readonly []> => {
+        throw new Error("descriptor failure");
+      },
+      releaseObject,
+    };
+
+    await expect(captureRemoteGraph(client, { type: "object", objectId: "root" }, {
+      maxDepth: 1,
+      maxProperties: 1,
+      maxNodes: 1,
+      maxBytes: 100,
+    })).rejects.toThrow("descriptor failure");
+    expect(releaseObject).toHaveBeenCalledWith("root");
+  });
+});

@@ -26,6 +26,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/cf-debugger`](./packages/cf-debugger) | Open an SSH debug tunnel to any CF Node.js app from your terminal | [![npm](https://img.shields.io/npm/v/@saptools/cf-debugger.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-debugger) |
 | [`@saptools/cf-explorer`](./packages/cf-explorer) | Explore deployed CF app files with safe, read-only SSH workflows | [![npm](https://img.shields.io/npm/v/@saptools/cf-explorer.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-explorer) |
 | [`@saptools/cf-inspector`](./packages/cf-inspector) | Capture breakpoints, logpoints, and expression results from CF Node.js apps via CDP | [![npm](https://img.shields.io/npm/v/@saptools/cf-inspector.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-inspector) |
+| [`@saptools/cf-function-trace`](./packages/cf-function-trace) | Record a bounded, redacted, replayable function-state timeline for AI-assisted debugging | [![npm](https://img.shields.io/npm/v/@saptools/cf-function-trace.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-function-trace) |
 | [`@saptools/cf-live-trace`](./packages/cf-live-trace) | Inject a runtime HTTP trace hook into CF Node.js apps and stream request/response events from the CLI | [![npm](https://img.shields.io/npm/v/@saptools/cf-live-trace.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-live-trace) |
 | [`@saptools/cf-logs`](./packages/cf-logs) | Fetch, stream, parse, and redact SAP BTP CF app logs from one CLI and typed Node.js API | [![npm](https://img.shields.io/npm/v/@saptools/cf-logs.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-logs) |
 | [`@saptools/cf-tail`](./packages/cf-tail) | Tail every CF app in a space at once: parallel snapshots, multiplexed live stream, chronological merge, and cross-app filters | [![npm](https://img.shields.io/npm/v/@saptools/cf-tail.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-tail) |
@@ -91,6 +92,19 @@ Drive Node.js inspector sessions over the Chrome DevTools Protocol from CLI or T
 - 🔁 automatic CF tunnel composition via `@saptools/cf-debugger`
 
 Docs → [`packages/cf-inspector/README.md`](./packages/cf-inspector/README.md)
+
+### 🧭 `@saptools/cf-function-trace`
+
+Turns one exact loaded file and function selector into an offline, replayable execution-state run.
+
+- 🎯 exact V8 source and breakpoint planning with source provenance
+- 🧬 full baseline plus granular, hash-verified state patches
+- 🛡️ bounded pauses, credential redaction, private retention, and no implicit app restart
+- 🤖 paginated JSON queries designed for low-token AI debugging workflows
+
+Install globally with `npm install --global @saptools/cf-function-trace`.
+
+Docs → [`packages/cf-function-trace/README.md`](./packages/cf-function-trace/README.md)
 
 ### 🧪 `@saptools/cf-live-trace`
 
@@ -228,6 +242,7 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-debugger/
 │   ├── cf-explorer/
 │   ├── cf-inspector/
+│   ├── cf-function-trace/
 │   ├── cf-live-trace/
 │   ├── cf-logs/
 │   ├── cf-tail/

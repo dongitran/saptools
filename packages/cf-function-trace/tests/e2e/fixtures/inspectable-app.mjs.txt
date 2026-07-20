@@ -1,0 +1,81 @@
+// The E2E helper materializes this template as executable ESM in an isolated app root.
+import { createServer } from "node:http";
+
+import { externalStep } from "e2e-external";
+
+import { appChild } from "./app-child.mjs";
+
+const PASSWORD_SENTINEL = "E2E_PASSWORD_SENTINEL_7a93";
+const BEARER_SENTINEL = "E2E_BEARER_SENTINEL_b481";
+
+export function traceTarget(input) {
+  const credentials = {
+    password: PASSWORD_SENTINEL,
+    authorization: `Bearer ${BEARER_SENTINEL}`,
+  };
+  const timeline = { total: input, phase: "input", branch: "unset" };
+  timeline.branch = input % 2 === 0 ? "even" : "odd";
+  timeline.total += credentials.password.length > 0 ? 1 : 0;
+  timeline.phase = "app-child";
+  timeline.total = appChild(timeline.total);
+  timeline.phase = "external-package";
+  timeline.total = externalStep(timeline.total);
+  for (let index = 1; index <= 2; index += 1) {
+    timeline.total += index;
+  }
+  timeline.phase = "complete";
+  return { total: timeline.total, phase: timeline.phase, branch: timeline.branch };
+}
+
+export function throwingTarget(input) {
+  const failureContext = { input, phase: "before-throw" };
+  failureContext.phase = "throwing";
+  throw new Error(`expected-e2e-failure-${failureContext.input}`);
+}
+
+function sendJson(response, statusCode, value) {
+  response.writeHead(statusCode, { "content-type": "application/json" });
+  response.end(`${JSON.stringify(value)}\n`);
+}
+
+const server = createServer((request, response) => {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method !== "POST" || !["/run", "/throw"].includes(url.pathname)) {
+    sendJson(response, 404, { error: "not-found" });
+    return;
+  }
+  const rawValue = url.searchParams.get("value") ?? "0";
+  const input = Number.parseInt(rawValue, 10);
+  if (!Number.isSafeInteger(input)) {
+    sendJson(response, 400, { error: "invalid-value" });
+    return;
+  }
+  try {
+    const result = url.pathname === "/throw" ? throwingTarget(input) : traceTarget(input);
+    sendJson(response, 200, { ok: true, result });
+  } catch {
+    sendJson(response, 500, { error: "expected-fixture-failure" });
+  }
+});
+
+function stop() {
+  server.close(() => {
+    process.exitCode = 0;
+  });
+}
+
+process.once("SIGINT", stop);
+process.once("SIGTERM", stop);
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    process.stderr.write("fixture-address-unavailable\n");
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(`${JSON.stringify({
+    event: "fixture-ready",
+    httpPort: address.port,
+    fileUrl: import.meta.url,
+  })}\n`);
+});

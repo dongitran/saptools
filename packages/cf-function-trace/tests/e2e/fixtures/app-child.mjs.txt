@@ -1,0 +1,9 @@
+import { appGrandchild } from "./app-grandchild.mjs";
+
+export function appChild(value) {
+  const childState = { value, phase: "child-input" };
+  childState.value += 3;
+  childState.value = appGrandchild(childState.value);
+  childState.phase = "child-output";
+  return childState.value;
+}

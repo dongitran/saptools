@@ -1,0 +1,6 @@
+export function appGrandchild(value) {
+  const grandchildState = { value, phase: "grandchild-input" };
+  grandchildState.value += 5;
+  grandchildState.phase = "grandchild-output";
+  return grandchildState.value;
+}

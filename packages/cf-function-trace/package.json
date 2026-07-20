@@ -1,0 +1,66 @@
+{
+  "name": "@saptools/cf-function-trace",
+  "version": "0.1.1",
+  "description": "Capture bounded, redacted function state timelines from Node.js inspector sessions.",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "cf-function-trace": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests --max-warnings 0",
+    "cspell": "cspell --config ../../.cspell.json \"src/**/*.ts\" \"tests/**/*.ts\" README.md CHANGELOG.md package.json",
+    "test:unit": "vitest run --coverage",
+    "test:e2e": "pnpm build && playwright test",
+    "check": "pnpm cspell && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test:e2e"
+  },
+  "keywords": [
+    "sap",
+    "cloud-foundry",
+    "node-inspector",
+    "debug",
+    "trace",
+    "saptools"
+  ],
+  "author": "Dong Tran",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongitran/saptools.git",
+    "directory": "packages/cf-function-trace"
+  },
+  "homepage": "https://github.com/dongitran/saptools/tree/main/packages/cf-function-trace#readme",
+  "bugs": {
+    "url": "https://github.com/dongitran/saptools/issues"
+  },
+  "dependencies": {
+    "@saptools/cf-inspector": "^0.6.0",
+    "commander": "^13.0.0",
+    "typescript": "5.9.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^3.0.0"
+  }
+}

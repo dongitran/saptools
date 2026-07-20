@@ -1,0 +1,106 @@
+#!/usr/bin/env node
+import { appendFileSync, mkdirSync } from "node:fs";
+import { connect, createServer } from "node:net";
+import { dirname } from "node:path";
+import process from "node:process";
+
+const args = process.argv.slice(2);
+const logPath = process.env["CF_FUNCTION_TRACE_FAKE_LOG"];
+
+function log(entry) {
+  if (logPath === undefined || logPath.length === 0) {
+    return;
+  }
+  mkdirSync(dirname(logPath), { recursive: true });
+  appendFileSync(logPath, `${JSON.stringify({ ...entry, pid: process.pid })}\n`, "utf8");
+}
+
+function fail(message) {
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+}
+
+function requestedNodePid(command) {
+  return /^requested_node_pid=(\d*)$/m.exec(command)?.[1] || "4312";
+}
+
+function handleSignal() {
+  const commandIndex = args.indexOf("-c");
+  const command = commandIndex < 0 ? "" : (args[commandIndex + 1] ?? "");
+  const nodePid = requestedNodePid(command);
+  process.stdout.write([
+    `saptools-inspector-node-pid=${nodePid}`,
+    `saptools-inspector-owner-pid=${nodePid}`,
+    "saptools-inspector-ready",
+    "",
+  ].join("\n"));
+}
+
+function tunnelPorts() {
+  const tunnel = args[args.indexOf("-L") + 1] ?? "";
+  const localPort = Number.parseInt(tunnel.split(":")[0] ?? "", 10);
+  const inspectorPort = Number.parseInt(
+    process.env["CF_FUNCTION_TRACE_FAKE_INSPECTOR_PORT"] ?? "",
+    10,
+  );
+  if (!Number.isSafeInteger(localPort) || !Number.isSafeInteger(inspectorPort)) {
+    return undefined;
+  }
+  return { localPort, inspectorPort };
+}
+
+function handleTunnel() {
+  const ports = tunnelPorts();
+  if (ports === undefined) {
+    fail("fake tunnel ports are unavailable");
+    return;
+  }
+  const server = createServer((client) => {
+    const upstream = connect(ports.inspectorPort, "127.0.0.1");
+    client.pipe(upstream);
+    upstream.pipe(client);
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+  });
+  let closing = false;
+  const close = () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    log({ event: "tunnel-stop", localPort: ports.localPort });
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1000).unref();
+  };
+  process.once("SIGINT", close);
+  process.once("SIGTERM", close);
+  server.on("error", (error) => fail(error.message));
+  server.listen(ports.localPort, "127.0.0.1", () => {
+    log({ event: "tunnel-start", localPort: ports.localPort });
+  });
+}
+
+function handleCommand() {
+  log({ event: "command", args });
+  switch (args[0]) {
+    case "api":
+    case "target":
+      return;
+    case "auth":
+      if (!process.env["CF_USERNAME"] || !process.env["CF_PASSWORD"]) {
+        fail("fake auth credentials are unavailable");
+      }
+      return;
+    case "ssh":
+      if (args.includes("-N")) {
+        handleTunnel();
+      } else {
+        handleSignal();
+      }
+      return;
+    default:
+      fail(`unsupported fake cf command: ${args[0] ?? ""}`);
+  }
+}
+
+handleCommand();

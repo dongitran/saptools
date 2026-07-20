@@ -216,6 +216,31 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@26.0.1)(yaml@2.9.0)
 
+  packages/cf-function-trace:
+    dependencies:
+      '@saptools/cf-inspector':
+        specifier: ^0.6.0
+        version: link:../cf-inspector
+      commander:
+        specifier: ^13.0.0
+        version: 13.1.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+    devDependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.59.1
+      '@vitest/coverage-v8':
+        specifier: ^3.0.0
+        version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
+      tsup:
+        specifier: ^8.3.0
+        version: 8.5.1(postcss@8.5.16)(typescript@5.9.3)(yaml@2.9.0)
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@26.0.1)(yaml@2.9.0)
+
   packages/cf-hana:
     dependencies:
       commander:
