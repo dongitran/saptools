@@ -1,4 +1,5 @@
 import { TraceDataError } from "./errors.js";
+import type { ProcessGuard } from "./process-guard.js";
 
 export interface DisposableInspectorSession {
   dispose(): Promise<void>;
@@ -215,9 +216,20 @@ export async function withTraceSession<
   callback: (session: TSession) => Promise<TResult>,
   dependencies: TraceSessionDependencies<TSession>,
   signal?: AbortSignal,
+  guard?: ProcessGuard,
 ): Promise<TResult> {
   const endpoint = await resolveEndpoint(target, dependencies, signal);
+  // Registered as soon as the tunnel exists so an emergency shutdown can
+  // kill the owned `cf ssh` child even if the process dies before this
+  // function's own cleanup below gets a chance to run.
+  const unregisterTunnel = guard?.register({
+    label: "cf-ssh-tunnel",
+    release: async (): Promise<void> => {
+      await endpoint.dispose();
+    },
+  });
   let session: TSession | undefined;
+  let unregisterSession: (() => void) | undefined;
   let outcome: SessionOutcome<TResult>;
   try {
     if (signal?.aborted === true) {
@@ -228,10 +240,18 @@ export async function withTraceSession<
       port: endpoint.port,
       ...selectionInput(target),
     });
+    unregisterSession = guard?.register({
+      label: "inspector-session",
+      release: async (): Promise<void> => {
+        await session?.dispose();
+      },
+    });
     outcome = { ok: true, value: await callback(session) };
   } catch (error: unknown) {
     outcome = { ok: false, error };
   }
   const cleanupErrors = await cleanupSession(session, endpoint);
+  unregisterSession?.();
+  unregisterTunnel?.();
   return completeOutcome(outcome, cleanupErrors);
 }

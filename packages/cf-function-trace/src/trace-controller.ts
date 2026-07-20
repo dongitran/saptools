@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import type { ScriptLocation } from "@saptools/cf-inspector";
 
 import { TraceDataError } from "./errors.js";
+import type { ProcessGuard } from "./process-guard.js";
 import { isAppOwnedScript } from "./script-resolver.js";
 
 export interface ControllerFrame {
@@ -77,6 +78,7 @@ export interface RecordTraceOptions {
   readonly asyncStackDepth?: number;
   readonly signal?: AbortSignal;
   readonly now?: () => number;
+  readonly guard?: ProcessGuard;
   readonly onState: (record: TraceStateRecord) => Promise<void>;
   readonly onProgress?: (event: TraceProgressEvent) => Promise<void>;
 }
@@ -530,6 +532,19 @@ async function prepareTrace(
   }
 }
 
+async function emergencyCleanup(
+  state: ControllerState,
+  port: TraceControllerPort,
+  options: RecordTraceOptions,
+): Promise<void> {
+  const cleanup = await cleanupTrace(state, port, options);
+  if (cleanup.errors.length > 0) {
+    // The guard swallows this into a ProcessGuardFailure; it never reaches
+    // a signal handler as a thrown exception.
+    throw cleanupFailure(undefined, cleanup);
+  }
+}
+
 export async function recordFunctionTrace(
   plan: TracePlan,
   options: RecordTraceOptions,
@@ -545,6 +560,16 @@ export async function recordFunctionTrace(
     stepCount: 0,
     recordSeq: 0,
   };
+  // Registered before the entry breakpoint is even armed so a SIGTERM,
+  // uncaughtException, or unhandledRejection that lands anywhere during the
+  // trace — including while genuinely paused at a breakpoint — can still
+  // resume the target and disarm what this activation has armed.
+  const unregister = options.guard?.register({
+    label: "trace-controller",
+    release: async (): Promise<void> => {
+      await emergencyCleanup(state, port, options);
+    },
+  });
   let result: RecordTraceResult | undefined;
   let failure: Error | undefined;
   const deadline = now() + options.timeoutMs;
@@ -555,6 +580,7 @@ export async function recordFunctionTrace(
     failure = asError(error);
   }
   const cleanup = await cleanupTrace(state, port, options);
+  unregister?.();
   if (cleanup.errors.length > 0) {
     throw cleanupFailure(failure, cleanup);
   }

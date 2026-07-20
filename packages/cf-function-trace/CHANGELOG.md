@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.2 - 2026-07-21
+
+### Reliability
+
+- Guarantee the target app resumes and the SSH tunnel is torn down on every termination path. An
+  uncaught exception or rejection (for example during a large state capture) previously bypassed
+  cleanup, and a signal-driven stop had only implicit protection — either could leave V8 paused and
+  the `cf ssh` tunnel orphaned, freezing the app until the tunnel was killed by hand. A process-wide
+  resource guard now releases the tunnel, inspector session, and debugger state on SIGINT, SIGTERM,
+  `uncaughtException`, and `unhandledRejection`, with a bounded forced-exit fallback and immediate
+  escalation on a repeated signal.
+
 ## 0.2.1 - 2026-07-20
 
 - Require `@saptools/cf-inspector@^0.6.2` (which pulls `@saptools/cf-debugger@^0.1.16`) so the

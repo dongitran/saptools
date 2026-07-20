@@ -11,6 +11,7 @@ import {
   type InspectorTraceControllerOptions,
 } from "../inspector-adapter.js";
 import { planInspectorFunctionTrace, type PlanFunctionTraceInput } from "../planner.js";
+import { getSharedProcessGuard } from "../process-guard.js";
 import { createTraceRun, type TraceStoreOptions } from "../run-store.js";
 import type { TraceTarget } from "../session.js";
 import {
@@ -133,6 +134,11 @@ function recordOptions(
     maxSteps: options.limits.maxSteps,
     maxPausedMs: options.limits.maxPausedMs,
     asyncStackDepth: options.limits.asyncStackDepth,
+    // Lets a SIGTERM/uncaughtException/unhandledRejection anywhere in the
+    // process still resume this activation's debugger and disarm its
+    // breakpoint, independent of whether this call stack ever gets to run
+    // its own cleanup.
+    guard: getSharedProcessGuard(),
     ...(context.signal === undefined ? {} : { signal: context.signal }),
     ...(progressStream === undefined ? {} : {
       onProgress: async (): Promise<void> => {

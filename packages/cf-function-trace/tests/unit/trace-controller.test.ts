@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createProcessGuard, type ProcessGuard, type ProcessGuardFailure } from "../../src/process-guard.js";
 import {
   recordFunctionTrace,
   type ControllerFrame,
@@ -444,5 +445,60 @@ describe("function trace controller", () => {
       .rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     await expect(recordFunctionTrace(tracePlan(0), { ...common, timeoutMs: Number.POSITIVE_INFINITY }, port))
       .rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
+  it("registers an emergency cleanup hook with the guard and unregisters it once the trace completes normally", async () => {
+    const { calls, port } = createPort([rootPause(10), { reason: "step", frames: [] }]);
+    const guard = createProcessGuard();
+
+    await recordFunctionTrace(tracePlan(0), {
+      timeoutMs: 1_000,
+      maxSteps: 10,
+      maxPausedMs: 1_000,
+      guard,
+      onState: async (): Promise<void> => undefined,
+    }, port);
+
+    calls.length = 0;
+    const failures = await guard.runCleanup();
+    expect(failures).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("lets an emergency release resume the target immediately while its own state capture is still hanging", async () => {
+    let resolveCaptureStarted: () => void = () => undefined;
+    const captureStarted = new Promise<void>((resolve) => {
+      resolveCaptureStarted = resolve;
+    });
+    const hang = new Promise<never>(() => undefined);
+    const { calls, port } = createPort([rootPause(10)], async (): Promise<never> => {
+      resolveCaptureStarted();
+      return await hang;
+    });
+    let release: (() => Promise<void>) | undefined;
+    const guard: ProcessGuard = {
+      register: (resource): (() => void) => {
+        release = resource.release;
+        return (): void => undefined;
+      },
+      runCleanup: async (): Promise<readonly ProcessGuardFailure[]> => [],
+    };
+
+    void recordFunctionTrace(tracePlan(0), {
+      timeoutMs: 1_000,
+      maxSteps: 10,
+      maxPausedMs: 1_000_000,
+      guard,
+      onState: async (): Promise<void> => undefined,
+    }, port);
+    await captureStarted;
+
+    expect(release).toBeDefined();
+    await release?.();
+
+    // The activation is still stuck inside its own (hung) capture call, yet
+    // the emergency release must still have resumed the debugger and
+    // disarmed what this activation had armed, independent of that call.
+    expect(calls.slice(-2)).toEqual(["exceptions:disable", "resume"]);
   });
 });

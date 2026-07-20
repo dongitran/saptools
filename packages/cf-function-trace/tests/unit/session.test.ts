@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { TraceDataError } from "../../src/errors.js";
+import { createProcessGuard, type ProcessGuard, type ProcessGuardFailure } from "../../src/process-guard.js";
 import {
   withTraceSession,
   type DisposableInspectorSession,
@@ -221,5 +222,75 @@ describe("trace inspector session lifecycle", () => {
       aborted.signal,
     )).rejects.toMatchObject({ code: "TRACE_ABORTED" });
     expect(calls).toEqual([]);
+  });
+
+  it("registers the session and tunnel with the guard and unregisters them after normal cleanup", async () => {
+    const calls: string[] = [];
+    const guard = createProcessGuard();
+
+    await withTraceSession({
+      kind: "cf",
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "orders",
+      process: "web",
+      instance: 0,
+      confirmImpact: true,
+    }, async (): Promise<void> => undefined, fakeDependencies(calls), undefined, guard);
+
+    calls.length = 0;
+    const failures = await guard.runCleanup();
+    expect(failures).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("lets an emergency release dispose the session and tunnel while the callback is still running", async () => {
+    const calls: string[] = [];
+    let releaseSession: (() => Promise<void>) | undefined;
+    let releaseTunnel: (() => Promise<void>) | undefined;
+    const guard: ProcessGuard = {
+      register: (resource): (() => void) => {
+        if (resource.label === "inspector-session") {
+          releaseSession = resource.release;
+        }
+        if (resource.label === "cf-ssh-tunnel") {
+          releaseTunnel = resource.release;
+        }
+        return (): void => undefined;
+      },
+      runCleanup: async (): Promise<readonly ProcessGuardFailure[]> => [],
+    };
+    let resolveEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    const hang = new Promise<void>(() => undefined);
+
+    void withTraceSession({
+      kind: "cf",
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "orders",
+      process: "web",
+      instance: 0,
+      confirmImpact: true,
+    }, async (): Promise<void> => {
+      resolveEntered();
+      await hang;
+    }, fakeDependencies(calls), undefined, guard);
+
+    await entered;
+    expect(releaseSession).toBeDefined();
+    expect(releaseTunnel).toBeDefined();
+    await releaseSession?.();
+    await releaseTunnel?.();
+
+    // Both the CDP session and the owned `cf ssh` tunnel must be reachable
+    // and disposable while the traced callback is still in flight — this is
+    // exactly the state a SIGTERM or uncaughtException would observe.
+    expect(calls).toContain("session:dispose");
+    expect(calls).toContain("tunnel:dispose");
   });
 });

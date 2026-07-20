@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -349,6 +349,51 @@ export async function stopProcess(child: ChildProcess): Promise<void> {
     child.kill("SIGKILL");
     await withTimeout(waitForExit(child), "forced process shutdown");
   }
+}
+
+const TRACE_EVENT_POLL_MS = 20;
+const RUN_ID_PATTERN = /^t[0-9a-f]{16}$/u;
+
+function pathExists(path: string): Promise<boolean> {
+  return access(path).then(() => true, () => false);
+}
+
+async function firstRunDirectory(dataRoot: string): Promise<string | undefined> {
+  const entries = await readdir(dataRoot, { withFileTypes: true }).catch((): [] => []);
+  const match = entries.find((entry) => entry.isDirectory() && RUN_ID_PATTERN.test(entry.name));
+  return match === undefined ? undefined : join(dataRoot, match.name);
+}
+
+async function hasEventCount(runDirectory: string, minCount: number): Promise<boolean> {
+  const checks = await Promise.all(
+    Array.from({ length: minCount }, async (_value, seq): Promise<boolean> => (
+      await pathExists(join(runDirectory, "events", `${seq.toString().padStart(6, "0")}.json`))
+    )),
+  );
+  return checks.every(Boolean);
+}
+
+async function pollForTraceEvents(dataRoot: string, minCount: number): Promise<string> {
+  const runDirectory = await firstRunDirectory(dataRoot);
+  if (runDirectory !== undefined && await hasEventCount(runDirectory, minCount)) {
+    return runDirectory;
+  }
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, TRACE_EVENT_POLL_MS);
+  });
+  return await pollForTraceEvents(dataRoot, minCount);
+}
+
+/**
+ * Polls (never sleeps blindly) until the run directory created by an
+ * in-flight `record` command has captured at least `minCount` trace events,
+ * then returns that run's directory. Used to prove the target is genuinely
+ * paused at a real breakpoint — not merely "armed" — before delivering a
+ * termination signal, since each event file lands on disk only while the
+ * debugger still owns that pause (see recordState/writeTraceEvent).
+ */
+export async function waitForTraceEvents(workspace: E2eWorkspace, minCount: number): Promise<string> {
+  return await withTimeout(pollForTraceEvents(workspace.dataRoot, minCount), `${minCount.toString()} trace event(s)`);
 }
 
 async function collectFiles(directory: string, relativeDirectory: string): Promise<readonly StoredFile[]> {

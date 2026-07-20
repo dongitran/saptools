@@ -67,6 +67,13 @@ export type {
   TraceStoreOptions,
   WrittenStateArtifact,
 } from "./run-store.js";
+export { createProcessGuard, getSharedProcessGuard } from "./process-guard.js";
+export type {
+  GuardedResource,
+  ProcessGuard,
+  ProcessGuardFailure,
+  ProcessGuardOptions,
+} from "./process-guard.js";
 export { isAppOwnedScript, resolveRuntimeScript } from "./script-resolver.js";
 export type { RuntimeScript } from "./script-resolver.js";
 export { capturePausedState } from "./state-capture.js";

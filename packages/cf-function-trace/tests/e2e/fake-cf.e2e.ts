@@ -13,6 +13,7 @@ import {
   startFixture,
   stopProcess,
   triggerRequest,
+  waitForTraceEvents,
   type FixtureProcess,
   type RunningCli,
 } from "./helpers.js";
@@ -108,6 +109,66 @@ test("User can trace through a selector-aware fake CF tunnel and clean it up", a
     expect(tunnelPort).toBeDefined();
     expect(entries.some((entry) => entry.event === "tunnel-stop" && entry.localPort === tunnelPort)).toBe(true);
     if (tunnelPort !== undefined) {
+      await expect(canConnect(tunnelPort)).resolves.toBe(false);
+    }
+    await expectDebuggerStateEmpty(workspace.home);
+  } finally {
+    if (recording !== undefined) {
+      await stopProcess(recording.child);
+    }
+    if (fixture !== undefined) {
+      await stopProcess(fixture.child);
+    }
+    await cleanupWorkspace(workspace);
+  }
+});
+
+test("User can SIGTERM a tunneled trace while paused and leave no orphaned tunnel process", async () => {
+  const workspace = await createE2eWorkspace();
+  const fakeCf = await materializeFakeCf(workspace);
+  let fixture: FixtureProcess | undefined;
+  let recording: RunningCli | undefined;
+  try {
+    fixture = await startFixture(workspace);
+    const env = {
+      SAP_EMAIL: "e2e@example.invalid",
+      SAP_PASSWORD: "opaque-e2e-value",
+      CF_DEBUGGER_CF_BIN: fakeCf.binPath,
+      CF_FUNCTION_TRACE_FAKE_LOG: fakeCf.logPath,
+      CF_FUNCTION_TRACE_FAKE_INSPECTOR_PORT: fixture.inspectorPort.toString(),
+    };
+    recording = startCli(workspace, [
+      "record", fixture.fileUrl, "traceTarget",
+      "--region", "eu10", "--org", "org-a", "--space", "dev", "--app", "demo-app",
+      "--process", "worker", "--instance", "2", "--node-pid", "9876",
+      "--tunnel-port", "24322",
+      "--app-root", workspace.appRoot, "--call-depth", "2", "--confirm-impact",
+    ], env);
+    await recording.armed;
+    const pendingRequest = triggerRequest(fixture);
+    // Two captured events prove the target is genuinely paused at a real
+    // breakpoint through the (fake) SSH tunnel, not merely armed, before
+    // the process below is killed.
+    await waitForTraceEvents(workspace, 2);
+
+    expect(recording.child.kill("SIGTERM")).toBe(true);
+    const result = await recording.completed;
+    expect(result.signal).toBeNull();
+    expect(result.code).toBe(130);
+
+    // P0 regression: the paused activation must resume and the app must
+    // stay responsive — it must never be left frozen behind a dead client.
+    await expect(pendingRequest).resolves.toContain('"ok":true');
+    await expect(triggerRequest(fixture)).resolves.toContain('"ok":true');
+
+    const entries = parseLogEntries(await readFile(fakeCf.logPath, "utf8"));
+    const tunnelPort = entries.find((entry) => entry.event === "tunnel-start")?.localPort;
+    expect(tunnelPort).toBeDefined();
+    expect(entries.some((entry) => entry.event === "tunnel-stop" && entry.localPort === tunnelPort)).toBe(true);
+    if (tunnelPort !== undefined) {
+      // The owned `cf ssh` child must actually die — not just log a stop
+      // event — so no orphaned tunnel process is left keeping the debugger
+      // reachable (and the target paused) after the client is gone.
       await expect(canConnect(tunnelPort)).resolves.toBe(false);
     }
     await expectDebuggerStateEmpty(workspace.home);
