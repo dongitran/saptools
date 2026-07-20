@@ -51,6 +51,7 @@ export {
   releaseObjectGroup,
   resume,
   runSetupEvals,
+  setAsyncCallStackDepth,
   setBreakpoint,
   setBreakpointAtLocation,
   setPauseOnExceptions,

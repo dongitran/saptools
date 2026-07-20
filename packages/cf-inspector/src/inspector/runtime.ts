@@ -25,6 +25,13 @@ export async function setPauseOnExceptions(
   await session.client.send("Debugger.setPauseOnExceptions", { state });
 }
 
+export async function setAsyncCallStackDepth(
+  session: InspectorSession,
+  maxDepth: number,
+): Promise<void> {
+  await session.client.send("Debugger.setAsyncCallStackDepth", { maxDepth });
+}
+
 export async function evaluateOnFrame(
   session: InspectorSession,
   callFrameId: string,

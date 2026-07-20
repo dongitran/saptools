@@ -17,6 +17,7 @@ export {
   releaseObjectGroup,
   resume,
   runSetupEvals,
+  setAsyncCallStackDepth,
   setPauseOnExceptions,
   stepInto,
   stepOut,

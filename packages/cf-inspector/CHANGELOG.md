@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 - 2026-07-20
+
+### Async call stack depth
+
+- Added `setAsyncCallStackDepth(session, maxDepth)` wrapping `Debugger.setAsyncCallStackDepth`, so
+  consumers can request async stack frames on paused events and reset the depth during cleanup.
+
 ## 0.6.0 - 2026-07-19
 
 ### Exact function tracing primitives
