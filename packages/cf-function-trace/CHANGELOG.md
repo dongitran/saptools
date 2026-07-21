@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.7 - 2026-07-21
+
+### Fix
+
+- Revert the per-capture `getProperties` prefetch that shipped in 0.2.6. It could leave a warmed
+  request in flight when its object was released, so the WebSocket handle kept the CLI process alive
+  and a trace could fail to exit (surfaced as a flaky runtime-e2e timeout on the CI runners). The
+  machinery-shallow capture default from 0.2.6 is unchanged and remains the performance fix.
+
 ## 0.2.6 - 2026-07-21
 
 ### Performance
