@@ -77,11 +77,6 @@ interface CaptureContext {
   readonly aliases: Map<string, string>;
   readonly nodes: Record<string, MutableGraphNode>;
   readonly releaseIds: Set<string>;
-  // Per-capture cache of in-flight getProperties requests, keyed by objectId.
-  // Lets populateNode warm the next depth's (SSH-latency-bound) round trips
-  // concurrently while the walk still assembles ids/aliases/budget serially, so
-  // the captured graph stays byte-identical -- only the network waits overlap.
-  readonly fetchCache: Map<string, Promise<readonly RemotePropertyDescriptor[]>>;
   estimatedBytes: number;
   truncated: boolean;
   // Tightened before capturing each root to this root's fair share of the
@@ -289,46 +284,6 @@ function childCaptureDepth(
   return Math.max(depth + 1, context.limits.maxDepth - machineryDepth);
 }
 
-function fetchProperties(
-  context: CaptureContext,
-  objectId: string,
-): Promise<readonly RemotePropertyDescriptor[]> {
-  const pending = context.fetchCache.get(objectId);
-  if (pending !== undefined) {
-    return pending;
-  }
-  const request = context.client.getProperties(objectId);
-  context.fetchCache.set(objectId, request);
-  return request;
-}
-
-// Warms (concurrently) the getProperties round trips for exactly the children
-// the serial walk will recurse into: object-valued, non-accessor, not already
-// aliased, and only while depth + 1 < maxDepth (beyond that the walk never
-// fetches them). This overlaps the SSH-latency-bound waits without changing the
-// captured graph, since assembly below still runs serially and deterministically.
-function warmChildProperties(
-  context: CaptureContext,
-  visible: readonly RemotePropertyDescriptor[],
-  depth: number,
-): void {
-  if (depth + 1 >= context.limits.maxDepth) {
-    return;
-  }
-  for (const descriptor of visible) {
-    const child = descriptor.value;
-    if (descriptor.get !== undefined || descriptor.set !== undefined
-      || child?.objectId === undefined || context.aliases.has(child.objectId)) {
-      continue;
-    }
-    // Mark the warmed handle for release so it is never leaked; swallow a request
-    // the byte budget later skips so it never becomes an unhandled rejection (the
-    // serial walk re-awaits the cached promise for real when it reaches it).
-    context.releaseIds.add(child.objectId);
-    void fetchProperties(context, child.objectId).catch(() => { /* never awaited */ });
-  }
-}
-
 async function populateNode(
   context: CaptureContext,
   node: MutableGraphNode,
@@ -341,7 +296,7 @@ async function populateNode(
     context.truncated = true;
     return;
   }
-  const descriptors = [...await fetchProperties(context, objectId)]
+  const descriptors = [...await context.client.getProperties(objectId)]
     .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
   const visible = descriptors.slice(0, context.limits.maxProperties);
   if (visible.length < descriptors.length) {
@@ -349,8 +304,6 @@ async function populateNode(
     node.omittedCount = descriptors.length - visible.length;
     context.truncated = true;
   }
-  // Warm the next depth's round trips concurrently before the serial walk below.
-  warmChildProperties(context, visible, depth);
   for (const descriptor of visible) {
     context.estimatedBytes += Buffer.byteLength(descriptor.name);
     if (context.estimatedBytes >= context.rootByteCeiling) {
@@ -495,7 +448,6 @@ export async function captureRemoteValues(
     aliases: new Map(),
     nodes: {},
     releaseIds: new Set(),
-    fetchCache: new Map(),
     estimatedBytes: 0,
     truncated: false,
     rootByteCeiling: limits.maxBytes,

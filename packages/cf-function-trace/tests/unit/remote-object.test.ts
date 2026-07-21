@@ -332,28 +332,6 @@ describe("remote object graph capture", () => {
     expect(result.roots["alpha"]).toEqual({ kind: "ref", nodeId: "alpha" });
   });
 
-  it("warms sibling property fetches concurrently (breadth before depth)", async () => {
-    const calls: string[] = [];
-    const graph = new Map<string, readonly RemotePropertyDescriptor[]>([
-      ["root", [
-        { name: "a", value: { type: "object", objectId: "a" } },
-        { name: "b", value: { type: "object", objectId: "b" } },
-      ]],
-      ["a", [{ name: "a1", value: { type: "object", objectId: "a1" } }]],
-    ]);
-    const getProperties = vi.fn(async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => {
-      calls.push(objectId);
-      return graph.get(objectId) ?? [];
-    });
-    const releaseObject = vi.fn(async (): Promise<void> => undefined);
-    await captureRemoteValues({ getProperties, releaseObject }, {
-      root: { type: "object", objectId: "root" },
-    }, { maxDepth: 5, maxProperties: 10, maxNodes: 50, maxBytes: 100_000 });
-    // Both of root's object children are fetched before the walk recurses into
-    // "a" and reaches descendant "a1": the next depth was warmed concurrently.
-    expect(calls.indexOf("b")).toBeLessThan(calls.indexOf("a1"));
-  });
-
   it("captures machinery roots shallowly but plain data deeply", async () => {
     const graph = new Map<string, readonly RemotePropertyDescriptor[]>([
       ["svc", [{ name: "inner", value: { type: "object", objectId: "svcInner", className: "Service" } }]],
