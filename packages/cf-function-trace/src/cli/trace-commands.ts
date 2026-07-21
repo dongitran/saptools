@@ -117,6 +117,7 @@ function captureOptions(options: ResolvedRecordOptions, appRoots: readonly strin
     maxRootVars: options.limits.maxRootVars,
     graphLimits: {
       maxDepth: options.limits.maxObjectDepth,
+      machineryDepth: options.limits.machineryDepth,
       maxProperties: options.limits.maxProperties,
       maxNodes: options.limits.maxNodes,
       maxBytes: options.limits.maxStateBytes,

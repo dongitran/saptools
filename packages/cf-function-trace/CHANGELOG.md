@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.6 - 2026-07-21
+
+### Performance
+
+- Capture "machinery" (framework/behavioral) objects shallowly by default, so a step no longer
+  descends the entire service graph. An object V8 gives a constructed className other than
+  `Object`/`Array` — the CAP service instance (`this`), a `cds.Request` (`req`), loggers, services —
+  is now walked only `--machinery-depth` levels (default 1) instead of the full `--max-object-depth`,
+  whether it is a root or nested. Plain `Object`/`Array` data (the request payload and user locals) is
+  still captured to `--max-object-depth`. Previously `this` alone expanded to ~570 nodes per step, the
+  main driver of slow, timeout-prone captures. Raise `--machinery-depth` (with `--max-object-depth`)
+  to recover full framework visibility on demand, so nothing is permanently lost. Every step is still
+  captured fresh, so values are never stale.
+
 ## 0.2.5 - 2026-07-21
 
 ### Performance

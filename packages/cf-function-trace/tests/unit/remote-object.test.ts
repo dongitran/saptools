@@ -354,6 +354,32 @@ describe("remote object graph capture", () => {
     expect(calls.indexOf("b")).toBeLessThan(calls.indexOf("a1"));
   });
 
+  it("captures machinery roots shallowly but plain data deeply", async () => {
+    const graph = new Map<string, readonly RemotePropertyDescriptor[]>([
+      ["svc", [{ name: "inner", value: { type: "object", objectId: "svcInner", className: "Service" } }]],
+      ["svcInner", [{ name: "deep", value: { type: "object", objectId: "svcDeep" } }]],
+      ["data", [{ name: "child", value: { type: "object", objectId: "dataChild" } }]],
+      ["dataChild", [{ name: "leaf", value: { type: "string", value: "v" } }]],
+    ]);
+    const fetched: string[] = [];
+    const getProperties = vi.fn(async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => {
+      fetched.push(objectId);
+      return graph.get(objectId) ?? [];
+    });
+    const releaseObject = vi.fn(async (): Promise<void> => undefined);
+    await captureRemoteValues({ getProperties, releaseObject }, {
+      svc: { type: "object", objectId: "svc", className: "MyService" },
+      data: { type: "object", objectId: "data" },
+    }, { maxDepth: 4, machineryDepth: 1, maxProperties: 10, maxNodes: 50, maxBytes: 100_000 });
+    // Machinery root "svc" (constructed className): its own props are captured but
+    // it is not recursed into -- svcInner's children are never fetched.
+    expect(fetched).toContain("svc");
+    expect(fetched).not.toContain("svcInner");
+    // Plain-data root "data" (no constructed className) is walked to full depth.
+    expect(fetched).toContain("data");
+    expect(fetched).toContain("dataChild");
+  });
+
   it("assigns the same node id to the same reachable value across two separate captures", async () => {
     // This is the cross-step regression itself: a discovery-order counter
     // (the old `n${Object.keys(context.nodes).length}` scheme) would assign

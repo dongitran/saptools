@@ -27,6 +27,7 @@ describe("trace CLI options", () => {
       maxPausedMs: 5_000,
       checkpointEvery: 25,
       maxObjectDepth: 4,
+      machineryDepth: 1,
       maxRootVars: 100,
       maxProperties: 100,
       maxNodes: 1_000,

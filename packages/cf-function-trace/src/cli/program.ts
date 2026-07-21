@@ -86,6 +86,7 @@ function addTraceLimits(command: Command): Command {
     .option("--max-paused-ms <ms>", "Maximum cumulative pause time", "5000")
     .option("--checkpoint-every <count>", "Full-state checkpoint interval", "25")
     .option("--max-object-depth <depth>", "Maximum captured object depth", "4")
+    .option("--machinery-depth <depth>", "Depth to descend framework/service objects (this, req, loggers)", "1")
     .option("--max-root-vars <count>", "Maximum top-level locals/this/return captured per frame", "100")
     .option("--max-properties <count>", "Maximum properties captured per individual object (fan-out, not root count)", "100")
     .option("--max-nodes <count>", "Maximum captured object nodes per frame", "1000")
