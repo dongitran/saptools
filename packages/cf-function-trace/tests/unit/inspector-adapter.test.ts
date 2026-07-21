@@ -198,7 +198,7 @@ async function mapsRichInspectorState(): Promise<void> {
     version: 1,
     frames: [{
       functionName: "create",
-      roots: { "scope.0.local.input": "order-42", return: 7, this: { kind: "ref", nodeId: "n0" } },
+      roots: { "scope.0.local.input": "order-42", return: 7, this: { kind: "ref", nodeId: "this" } },
     }],
   });
   expect(calls).toContain("get:scope-local");

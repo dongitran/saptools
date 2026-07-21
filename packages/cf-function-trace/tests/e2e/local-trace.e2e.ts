@@ -199,6 +199,44 @@ async function purgeRun(workspace: E2eWorkspace, runId: string, outputs: string[
   expect(expectSuccessful(emptyRunsResult)).toMatchObject({ total: 0, runs: [] });
 }
 
+async function recordWithTightProperties(
+  workspace: E2eWorkspace,
+  setup: TargetSetup,
+  outputs: string[],
+): Promise<string> {
+  const recording = startCli(workspace, [
+    "record",
+    ...setup.targetArgs,
+    "--timeout", "30",
+    "--max-steps", "500",
+    "--max-paused-ms", "30000",
+    "--checkpoint-every", "50",
+    // Deliberately tight so this otherwise-tiny fixture's frame still hits
+    // `completeness: "truncated"` (the condition the diff safety net keys
+    // off) -- max-nodes/max-root-vars are left at their generous defaults so
+    // nothing is squeezed out of the visible root/node set itself, isolating
+    // node-identity churn from the separate, legitimate budget-starvation
+    // collapse (see report: a root genuinely losing its captured node is
+    // still expected to collapse, and must keep doing so).
+    "--max-properties", "2",
+  ]);
+  await recording.armed;
+  const requestBody = await triggerRequest(setup.fixture);
+  const result = await recording.completed;
+  outputs.push(result.stdout, result.stderr, requestBody);
+  const record = expectSuccessful(result);
+  expect(record["status"]).toBe("completed");
+  return requireString(record["runId"], "runId");
+}
+
+function lastPauseSeq(events: readonly Readonly<Record<string, unknown>>[]): number {
+  const lastPause = events.findLast((event) => event["kind"] === "pause");
+  if (lastPause === undefined) {
+    throw new Error("no pause events were recorded");
+  }
+  return requireNumber(lastPause["seq"], "last pause seq");
+}
+
 async function traceFunctionNames(callDepth: number): Promise<readonly string[]> {
   const workspace = await createE2eWorkspace();
   let fixture: FixtureProcess | undefined;
@@ -275,4 +313,57 @@ test("User can trace application descendants through call depth two", async () =
   expect(names).toContain("appChild");
   expect(names).toContain("appGrandchild");
   expect(names).not.toContain("externalStep");
+});
+
+test("User can diff across new bindings without an unchanged local churning as spurious noise", async () => {
+  // Regression coverage for the node-identity fix: `credentials` is bound
+  // once, early, and never reassigned for the rest of the call -- across a
+  // span where `timeline` and `return` are newly captured alongside it, a
+  // truthful diff must say nothing at all about `credentials`. Before node
+  // ids were path-addressed, a discovery-order counter relabeled it (and
+  // sometimes let an unrelated new value's node replace its old slot wholesale)
+  // purely because other values were discovered first that step, producing a
+  // false "credentials changed" signal even though it never did.
+  const workspace = await createE2eWorkspace();
+  let fixture: FixtureProcess | undefined;
+  const outputs: string[] = [];
+  try {
+    const setup = await startAndPlan(workspace, outputs, 0);
+    fixture = setup.fixture;
+    const runId = await recordWithTightProperties(workspace, setup, outputs);
+    await stopProcess(fixture.child);
+    fixture = undefined;
+
+    const shown = await runCli(workspace, ["show", runId]);
+    outputs.push(shown.stdout, shown.stderr);
+    const events = objectArray(expectSuccessful(shown)["events"], "show events");
+    const to = lastPauseSeq(events);
+
+    // seq 1 (right after the baseline capture at function entry) is the
+    // earliest point this fixture's own locals exist: `traceTarget`'s own
+    // parameter is a primitive number, so seq 0 itself has no captured
+    // object yet to anchor a node-identity comparison against.
+    const diffResult = await runCli(workspace, [
+      "diff", runId, "--from", "1", "--to", to.toString(), "--max-output-bytes", "200000",
+    ]);
+    outputs.push(diffResult.stdout, diffResult.stderr);
+    const body = expectSuccessful(diffResult);
+    const operations = objectArray(body["operations"], "diff operations");
+
+    expect(operations.length).toBeGreaterThan(0);
+    expect(operations.some((operation) => operation["path"] === "/frames/0")).toBe(false);
+    expect(operations.some((operation) => (
+      typeof operation["path"] === "string" && operation["path"].includes("credentials")
+    ))).toBe(false);
+
+    await purgeRun(workspace, runId, outputs);
+  } finally {
+    if (fixture !== undefined) {
+      await stopProcess(fixture.child);
+    }
+    await cleanupWorkspace(workspace);
+    for (const output of outputs) {
+      expectNoSecrets(output);
+    }
+  }
 });

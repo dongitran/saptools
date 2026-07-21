@@ -21,9 +21,9 @@ describe("remote object graph capture", () => {
       maxBytes: 10_000,
     });
 
-    expect(result.root).toEqual({ kind: "ref", nodeId: "n0" });
-    expect(result.nodes["n0"]?.properties).toMatchObject({
-      self: { kind: "ref", nodeId: "n0" },
+    expect(result.root).toEqual({ kind: "ref", nodeId: "root" });
+    expect(result.nodes["root"]?.properties).toMatchObject({
+      self: { kind: "ref", nodeId: "root" },
       missing: { kind: "undefined" },
       large: { kind: "bigint", value: "42" },
       secretGetter: { kind: "accessor", hasGetter: true, hasSetter: false },
@@ -44,7 +44,7 @@ describe("remote object graph capture", () => {
       maxNodes: 1,
       maxBytes: 1000,
     });
-    expect(result.nodes["n0"]?.completeness).toBe("truncated");
+    expect(result.nodes["root"]?.completeness).toBe("truncated");
   });
 
   it("captures nested objects and JavaScript special primitive values", async () => {
@@ -74,15 +74,15 @@ describe("remote object graph capture", () => {
       maxBytes: 10_000,
     });
 
-    expect(result.nodes["n0"]?.properties).toMatchObject({
-      child: { kind: "ref", nodeId: "n1" },
+    expect(result.nodes["root"]?.properties).toMatchObject({
+      child: { kind: "ref", nodeId: "root/child" },
       invalidString: { kind: "unavailable", description: "unavailable string" },
       nan: { kind: "special-number", value: "NaN" },
       nil: null,
       opaque: { kind: "unavailable", description: "Proxy" },
       symbol: { kind: "symbol", value: "Symbol(marker)" },
     });
-    expect(result.nodes["n1"]?.properties).toEqual({ value: true });
+    expect(result.nodes["root/child"]?.properties).toEqual({ value: true });
     expect(releaseObject).toHaveBeenCalledWith("root");
     expect(releaseObject).toHaveBeenCalledWith("child");
   });
@@ -109,7 +109,7 @@ describe("remote object graph capture", () => {
       maxBytes: 1,
     });
 
-    expect(propertyLimited.nodes["n0"]).toMatchObject({
+    expect(propertyLimited.nodes["root"]).toMatchObject({
       completeness: "truncated",
       omittedCount: 1,
       properties: { a: { kind: "unavailable", description: "node-limit" } },
@@ -149,7 +149,7 @@ describe("remote object graph capture", () => {
       maxBytes: 10_000,
     });
 
-    const node = result.nodes["n0"];
+    const node = result.nodes["root"];
     expect(node?.description?.length).toBe(256);
     expect(node?.description).toBe(longDescription.slice(0, 256));
     expect(node?.descriptionLength).toBe(400);
@@ -167,8 +167,8 @@ describe("remote object graph capture", () => {
       maxBytes: 10_000,
     });
 
-    expect(result.nodes["n0"]).toMatchObject({ description: "short", completeness: "complete" });
-    expect(result.nodes["n0"]?.descriptionLength).toBeUndefined();
+    expect(result.nodes["root"]).toMatchObject({ description: "short", completeness: "complete" });
+    expect(result.nodes["root"]?.descriptionLength).toBeUndefined();
   });
 
   it("omits oversized object metadata from the bounded graph", async () => {
@@ -204,7 +204,7 @@ describe("remote object graph capture", () => {
 
     expect(getProperties).not.toHaveBeenCalled();
     expect(releaseObject).toHaveBeenCalledWith("proxy");
-    expect(result.nodes["n0"]?.completeness).toBe("unavailable");
+    expect(result.nodes["root"]?.completeness).toBe("unavailable");
     expect(result.completeness).toBe("truncated");
   });
 
@@ -225,7 +225,7 @@ describe("remote object graph capture", () => {
     });
 
     expect(getProperties).not.toHaveBeenCalled();
-    expect(result.nodes["n0"]?.completeness).toBe("unavailable");
+    expect(result.nodes["root"]?.completeness).toBe("unavailable");
     expect(result.completeness).toBe("truncated");
   });
 
@@ -247,7 +247,7 @@ describe("remote object graph capture", () => {
         maxBytes: 1_000,
       });
 
-      expect(result.nodes["n0"]?.completeness).toBe("truncated");
+      expect(result.nodes["root"]?.completeness).toBe("truncated");
       expect(result.completeness).toBe("truncated");
     },
   );
@@ -281,7 +281,7 @@ describe("remote object graph capture", () => {
       maxNodes: 2,
       maxBytes: 1_000,
     });
-    const properties = result.nodes["n0"]?.properties;
+    const properties = result.nodes["root"]?.properties;
 
     expect(properties === undefined ? false : Object.hasOwn(properties, "__proto__")).toBe(true);
     expect(properties?.["__proto__"]).toBe(7);
@@ -310,7 +310,7 @@ describe("remote object graph capture", () => {
   });
 
   it("captures roots in the caller's insertion order, not re-sorted alphabetically", async () => {
-    const getProperties = vi.fn(async (): Promise<readonly []> => []);
+    const getProperties = vi.fn(async (_objectId: string): Promise<readonly []> => []);
     const releaseObject = vi.fn(async (): Promise<void> => undefined);
 
     const result = await captureRemoteValues({ getProperties, releaseObject }, {
@@ -323,10 +323,43 @@ describe("remote object graph capture", () => {
       maxBytes: 10_000,
     });
 
-    // "zebra" was inserted first, so it must claim n0 even though "alpha"
-    // sorts first alphabetically -- proves the alphabetical re-sort is gone.
-    expect(result.roots["zebra"]).toEqual({ kind: "ref", nodeId: "n0" });
-    expect(result.roots["alpha"]).toEqual({ kind: "ref", nodeId: "n1" });
+    // Node ids are now the path used to reach a value (here, just its own
+    // root key) rather than a discovery-order counter, so the fetch order
+    // itself -- not the assigned id -- is what proves "zebra" (inserted
+    // first) is walked before "alpha" even though "alpha" sorts first.
+    expect(getProperties.mock.calls.map(([objectId]) => objectId)).toEqual(["zebra-obj", "alpha-obj"]);
+    expect(result.roots["zebra"]).toEqual({ kind: "ref", nodeId: "zebra" });
+    expect(result.roots["alpha"]).toEqual({ kind: "ref", nodeId: "alpha" });
+  });
+
+  it("assigns the same node id to the same reachable value across two separate captures", async () => {
+    // This is the cross-step regression itself: a discovery-order counter
+    // (the old `n${Object.keys(context.nodes).length}` scheme) would assign
+    // `target` a different id here purely because "extra" -- an unrelated
+    // root that happens to sort/iterate earlier -- grew new properties
+    // between the two captures and so claims more node slots first. A
+    // path-addressed id must depend only on how `target` itself is reached,
+    // not on what else was captured earlier in the same call.
+    const client: RemoteObjectClient = {
+      getProperties: async (objectId: string): Promise<readonly RemotePropertyDescriptor[]> => (
+        objectId === "extra-obj"
+          ? [{ name: "a", value: { type: "number", value: 1 } }]
+          : []
+      ),
+      releaseObject: async (): Promise<void> => undefined,
+    };
+    const limits = { maxDepth: 3, maxProperties: 10, maxNodes: 20, maxBytes: 10_000 };
+
+    const stepZero = await captureRemoteValues(client, {
+      target: { type: "object", objectId: "target-obj" },
+    }, limits);
+    const stepThree = await captureRemoteValues(client, {
+      extra: { type: "object", objectId: "extra-obj" },
+      target: { type: "object", objectId: "target-obj" },
+    }, limits);
+
+    expect(stepZero.roots["target"]).toEqual({ kind: "ref", nodeId: "target" });
+    expect(stepThree.roots["target"]).toEqual(stepZero.roots["target"]);
   });
 
   it("caps one root's share of the node budget so a later root is not starved", async () => {
@@ -357,13 +390,13 @@ describe("remote object graph capture", () => {
     });
 
     expect(result.completeness).toBe("truncated");
-    expect(result.roots["big"]).toEqual({ kind: "ref", nodeId: "n0" });
+    expect(result.roots["big"]).toEqual({ kind: "ref", nodeId: "big" });
     // "big" only got its fair share (4 of the 6 nodes: itself + 3 children).
-    expect(result.nodes["n0"]?.properties["child3"]).toEqual({ kind: "unavailable", description: "node-limit" });
+    expect(result.nodes["big"]?.properties["child3"]).toEqual({ kind: "unavailable", description: "node-limit" });
     // "small", processed second, still got a real node and its real value --
     // it was not starved down to node-limit by "big" going first.
-    expect(result.roots["small"]).toEqual({ kind: "ref", nodeId: "n4" });
-    expect(result.nodes["n4"]?.properties).toEqual({ value: "42" });
+    expect(result.roots["small"]).toEqual({ kind: "ref", nodeId: "small" });
+    expect(result.nodes["small"]?.properties).toEqual({ value: "42" });
   });
 
   it("releases a materialized object when descriptor capture fails", async () => {

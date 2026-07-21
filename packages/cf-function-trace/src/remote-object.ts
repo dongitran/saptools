@@ -127,6 +127,25 @@ function unavailableValue(description: string | undefined): TaggedGraphValue {
     : { kind: "unavailable", description };
 }
 
+// A node's id is derived from the stable PATH used to reach it (its root
+// key, then each property name walked to get here), not from when it was
+// discovered. CDP releases every object at the end of a capture (see
+// releaseCapturedObjects), so a live heap object gets a brand-new objectId
+// on every pause -- objectId can never be the stable identity. The path a
+// declared variable takes to reach a given value, however, is the same on
+// every step that the value is still reachable the same way, so deriving
+// the id from that path (instead of a per-call discovery-order counter)
+// makes the SAME logical value keep the SAME id across steps. Segments are
+// escaped JSON-Pointer style so no property name (however it is spelled)
+// can introduce a false path collision.
+function encodePathSegment(segment: string): string {
+  return segment.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function nodeIdForPath(path: readonly string[]): string {
+  return path.map(encodePathSegment).join("/");
+}
+
 function boundedValue(context: CaptureContext, value: TaggedGraphValue): TaggedGraphValue {
   const serialized = JSON.stringify(value);
   const size = Buffer.byteLength(serialized);
@@ -190,12 +209,12 @@ function nodeMetadata(remote: RemoteObject, description: BoundedDescription, inc
   };
 }
 
-function createNode(context: CaptureContext, remote: RemoteObject): MutableGraphNode | undefined {
+function createNode(context: CaptureContext, remote: RemoteObject, path: readonly string[]): MutableGraphNode | undefined {
   if (Object.keys(context.nodes).length >= context.rootNodeCeiling) {
     context.truncated = true;
     return undefined;
   }
-  const nodeId = `n${String(Object.keys(context.nodes).length)}`;
+  const nodeId = nodeIdForPath(path);
   const description = boundedDescription(remote.description);
   const metadataBytes = metadataByteLength(remote, description);
   const includeMetadata = context.estimatedBytes + metadataBytes <= context.rootByteCeiling;
@@ -213,7 +232,12 @@ function createNode(context: CaptureContext, remote: RemoteObject): MutableGraph
     completeness: complete ? "complete" : "truncated",
     properties: {},
   };
-  context.nodes[nodeId] = node;
+  // Path-derived ids are built from live property names, so -- unlike the
+  // old purely-numeric counter -- they could coincidentally collide with
+  // "__proto__" (e.g. a lone root literally named that). defineOwnValue
+  // uses Object.defineProperty, so even that never touches context.nodes'
+  // own prototype the way `context.nodes[nodeId] = node` could.
+  defineOwnValue(context.nodes, nodeId, node);
   return node;
 }
 
@@ -230,6 +254,7 @@ async function populateNode(
   node: MutableGraphNode,
   objectId: string,
   depth: number,
+  path: readonly string[],
 ): Promise<void> {
   if (depth >= context.limits.maxDepth || context.estimatedBytes >= context.rootByteCeiling) {
     node.completeness = "truncated";
@@ -253,7 +278,7 @@ async function populateNode(
     }
     const value = descriptor.get !== undefined || descriptor.set !== undefined
       ? boundedValue(context, accessorValue(descriptor))
-      : await captureValue(context, descriptor.value, depth + 1);
+      : await captureValue(context, descriptor.value, depth + 1, [...path, descriptor.name]);
     if (isByteLimitValue(value)) {
       node.completeness = "truncated";
     }
@@ -266,13 +291,14 @@ async function captureObject(
   remote: RemoteObject,
   objectId: string,
   depth: number,
+  path: readonly string[],
 ): Promise<TaggedGraphValue> {
   const alias = context.aliases.get(objectId);
   if (alias !== undefined) {
     return { kind: "ref", nodeId: alias };
   }
   context.releaseIds.add(objectId);
-  const node = createNode(context, remote);
+  const node = createNode(context, remote, path);
   if (node === undefined) {
     return { kind: "unavailable", description: "node-limit" };
   }
@@ -282,7 +308,7 @@ async function captureObject(
     context.truncated = true;
     return { kind: "ref", nodeId: node.nodeId };
   }
-  await populateNode(context, node, objectId, depth);
+  await populateNode(context, node, objectId, depth, path);
   if (remote.completeness === "truncated"
       || (remote.subtype !== undefined && HIDDEN_SLOT_SUBTYPES.has(remote.subtype))) {
     node.completeness = "truncated";
@@ -295,6 +321,7 @@ async function captureValue(
   context: CaptureContext,
   remote: RemoteObject | undefined,
   depth: number,
+  path: readonly string[],
 ): Promise<TaggedGraphValue> {
   if (remote === undefined) {
     return { kind: "unavailable" };
@@ -305,7 +332,7 @@ async function captureValue(
   }
   const value = remote.objectId === undefined
     ? unavailableValue(remote.description)
-    : await captureObject(context, remote, remote.objectId, depth);
+    : await captureObject(context, remote, remote.objectId, depth, path);
   return boundedValue(context, value);
 }
 
@@ -402,7 +429,7 @@ export async function captureRemoteValues(
       const rootsLeft = rootNames.length - index;
       context.rootByteCeiling = nextByteCeiling(context, rootsLeft);
       context.rootNodeCeiling = nextNodeCeiling(context, rootsLeft);
-      defineOwnValue(capturedRoots, name, await captureValue(context, roots[name], 0));
+      defineOwnValue(capturedRoots, name, await captureValue(context, roots[name], 0, [name]));
     }
   } finally {
     await releaseCapturedObjects(context);

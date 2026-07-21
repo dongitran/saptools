@@ -71,6 +71,64 @@ describe("trace state diff", () => {
     ]);
   });
 
+  it("baseline-anchored diff: old discovery-order node ids collapse the frame, stable path ids stay granular", () => {
+    // Reproduces the P0-2 defect end to end at the diff layer: capturing the
+    // SAME logical value (`deepData`) on two different steps assigned it a
+    // different node id purely because of what else had been discovered
+    // first that step (the old `n${counter}` scheme -- see remote-object.ts
+    // history). The resulting spurious remove ("n4") + add ("n39") in the
+    // flat `nodes` bag (which carries no `completeness` of its own) bubbles
+    // up unresolved to the frame -- the nearest completeness boundary -- and,
+    // because a real capture is normally "truncated", collapses the WHOLE
+    // frame to one replace even though only the id label churned.
+    const oldIdsBefore = {
+      version: 1,
+      completeness: "truncated",
+      frames: [{
+        completeness: "truncated",
+        roots: { "scope.0.local.deepData": { kind: "ref", nodeId: "n4" } },
+        nodes: { n4: { completeness: "complete", properties: { id: 1 } } },
+      }],
+    };
+    const oldIdsAfter = {
+      version: 1,
+      completeness: "truncated",
+      frames: [{
+        completeness: "truncated",
+        roots: { "scope.0.local.deepData": { kind: "ref", nodeId: "n39" } },
+        nodes: { n39: { completeness: "complete", properties: { id: 1 } } },
+      }],
+    };
+    expect(diffStates(oldIdsBefore, oldIdsAfter).operations).toEqual([
+      { op: "replace", path: "/frames/0", value: oldIdsAfter.frames[0] },
+    ]);
+
+    // Same transition, but the node id is now derived from `deepData`'s own
+    // stable path instead of discovery order, so it no longer churns between
+    // the two captures -- only the genuinely changed property is reported.
+    const stableIdsBefore = {
+      version: 1,
+      completeness: "truncated",
+      frames: [{
+        completeness: "truncated",
+        roots: { "scope.0.local.deepData": { kind: "ref", nodeId: "scope.0.local.deepData" } },
+        nodes: { "scope.0.local.deepData": { completeness: "complete", properties: { id: 1 } } },
+      }],
+    };
+    const stableIdsAfter = {
+      version: 1,
+      completeness: "truncated",
+      frames: [{
+        completeness: "truncated",
+        roots: { "scope.0.local.deepData": { kind: "ref", nodeId: "scope.0.local.deepData" } },
+        nodes: { "scope.0.local.deepData": { completeness: "complete", properties: { id: 2 } } },
+      }],
+    };
+    expect(diffStates(stableIdsBefore, stableIdsAfter).operations).toEqual([
+      { op: "replace", path: "/frames/0/nodes/scope.0.local.deepData/properties/id", value: 2 },
+    ]);
+  });
+
   it("stays granular through a distant truncated ancestor when the direct parent is complete", () => {
     // The top-level state is truncated (typical for a real capture, e.g.
     // because of a DIFFERENT frame or an overall size cap), but the frame and

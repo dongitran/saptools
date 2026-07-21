@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.4 - 2026-07-21
+
+### Diff granularity
+
+- Node ids are now derived from each value's path in the captured graph instead of a per-capture
+  discovery-order counter, so the same logical object keeps a stable id across steps. This removes the
+  spurious node churn that made a baseline-anchored `diff` (from the first captured step to a later
+  one) collapse into a single whole-frame replace; those diffs are now granular per changed leaf, and
+  a variable that never changed no longer appears in the diff.
+
 ## 0.2.3 - 2026-07-21
 
 ### Capture and diff correctness
