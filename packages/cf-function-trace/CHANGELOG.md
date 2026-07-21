@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.5 - 2026-07-21
+
+### Performance
+
+- Overlap the per-step object-graph capture's `getProperties` round trips. Each captured node now
+  warms the next depth's child fetches concurrently through a per-capture request cache, while the
+  walk still assembles nodes, ids, aliases, and diffs serially and deterministically — so the
+  captured timeline is byte-identical, only the SSH-latency-bound network waits overlap. This cuts
+  the paused-capture time that drove mid-trace timeouts on deep remote graphs.
+
 ## 0.2.4 - 2026-07-21
 
 ### Diff granularity

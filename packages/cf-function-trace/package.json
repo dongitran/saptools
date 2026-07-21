@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-function-trace",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Capture bounded, redacted function state timelines from Node.js inspector sessions.",
   "type": "module",
   "publishConfig": {
