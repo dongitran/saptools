@@ -6,26 +6,40 @@ interface DynamicBranchCall {
   source_line: number;
 }
 
+export interface DynamicCandidateBranch {
+  edge: TraceEdge;
+  operationId?: number;
+  repositoryId?: number;
+  servicePath?: string;
+  operationPath?: string;
+}
+
 export function dynamicCandidateBranches(
   depth: number,
   call: DynamicBranchCall,
   evidence: Record<string, unknown>,
-): TraceEdge[] {
+): DynamicCandidateBranch[] {
   const exploration = objectRecord(evidence.dynamicTargetExploration);
   return recordArray(evidence.dynamicTargetCandidateSuggestions).map((candidate) => ({
-    step: depth,
-    type: 'dynamic_candidate_branch',
-    from: `${call.repoName}:${call.source_file}:${call.source_line}`,
-    to: `${String(candidate.servicePath ?? '')}${String(candidate.operationPath ?? '')}`,
-    evidence: {
-      ...candidate,
-      exploratory: true,
-      dynamicMode: String(exploration.mode ?? 'candidates'),
-      selected: false,
-      omittedCandidateCount: numericValue(exploration.omittedCandidateCount),
+    edge: {
+      step: depth,
+      type: 'dynamic_candidate_branch',
+      from: `${call.repoName}:${call.source_file}:${call.source_line}`,
+      to: `${String(candidate.servicePath ?? '')}${String(candidate.operationPath ?? '')}`,
+      evidence: {
+        ...candidate,
+        exploratory: true,
+        dynamicMode: String(exploration.mode ?? 'candidates'),
+        selected: false,
+        omittedCandidateCount: numericValue(exploration.omittedCandidateCount),
+      },
+      confidence: numericValue(candidate.score),
+      unresolvedReason: 'Exploratory dynamic target candidate; provide runtime variables to select it',
     },
-    confidence: numericValue(candidate.score),
-    unresolvedReason: 'Exploratory dynamic target candidate; provide runtime variables to select it',
+    operationId: optionalNumber(candidate.candidateOperationId),
+    repositoryId: optionalNumber(candidate.repoId),
+    servicePath: optionalString(candidate.servicePath),
+    operationPath: optionalString(candidate.operationPath),
   }));
 }
 
@@ -42,4 +56,12 @@ function recordArray(value: unknown): Record<string, unknown>[] {
 
 function numericValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
