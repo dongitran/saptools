@@ -2,7 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
 import type { ExecutableSymbolFact, SymbolCallFact } from '../types.js';
-import { containsSupportedOutboundCall } from './outbound-call-parser.js';
+import {
+  classifyOutboundCallsInSource,
+  containsSupportedOutboundCall,
+} from './outbound-call-parser.js';
 import type { RepositorySourceContext } from './ts-project.js';
 import { normalizePath } from '../utils/path-utils.js';
 
@@ -37,6 +40,76 @@ function exportDeclarations(source: ts.SourceFile): Map<string, string> {
 }
 function isRelativeImport(value: string | undefined): boolean {
   return Boolean(value?.startsWith('.'));
+}
+type HandlerReferenceRelation =
+  | 'relative_import'
+  | 'package_import'
+  | 'indexed_local_symbol'
+  | 'relative_import_namespace_member';
+interface HandlerReferenceTarget {
+  calleeExpression: string;
+  calleeLocalName: string;
+  importSource?: string;
+  relation: HandlerReferenceRelation;
+  wrapperFunction?: string;
+}
+function directHandlerReferenceTarget(
+  expression: ts.Expression,
+  source: ts.SourceFile,
+  imports: Map<string, string>,
+  namespaceImports: Set<string>,
+): HandlerReferenceTarget | undefined {
+  if (ts.isIdentifier(expression)) {
+    const importSource = imports.get(expression.text);
+    return {
+      calleeExpression: expression.text,
+      calleeLocalName: expression.text,
+      importSource,
+      relation: importSource
+        ? isRelativeImport(importSource) ? 'relative_import' : 'package_import'
+        : 'indexed_local_symbol',
+    };
+  }
+  if (!ts.isPropertyAccessExpression(expression) || expression.questionDotToken
+    || !ts.isIdentifier(expression.expression) || !ts.isIdentifier(expression.name))
+    return undefined;
+  const objectName = expression.expression.text;
+  const memberName = expression.name.text;
+  const importSource = imports.get(objectName);
+  if (namespaceImports.has(objectName)) return {
+    calleeExpression: expression.getText(source),
+    calleeLocalName: memberName,
+    importSource,
+    relation: 'relative_import_namespace_member',
+  };
+  const qualifiedName = `${objectName}.${memberName}`;
+  return {
+    calleeExpression: qualifiedName,
+    calleeLocalName: qualifiedName,
+    importSource,
+    relation: importSource
+      ? isRelativeImport(importSource) ? 'relative_import' : 'package_import'
+      : 'indexed_local_symbol',
+  };
+}
+function handlerReferenceTarget(
+  expression: ts.Expression,
+  source: ts.SourceFile,
+  imports: Map<string, string>,
+  namespaceImports: Set<string>,
+): HandlerReferenceTarget | undefined {
+  const direct = directHandlerReferenceTarget(
+    expression, source, imports, namespaceImports,
+  );
+  if (direct) return direct;
+  if (!ts.isCallExpression(expression) || expression.questionDotToken
+    || expression.arguments.length !== 1) return undefined;
+  const inner = directHandlerReferenceTarget(
+    expression.arguments[0], source, imports, namespaceImports,
+  );
+  return inner
+    ? { ...inner, wrapperFunction: expression.expression.getText(source) }
+    : undefined;
 }
 function isObjectFunction(node: ts.Node): boolean {
   return ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node);
@@ -185,6 +258,11 @@ export async function parseExecutableSymbols(
   const calls: SymbolCallFact[] = [];
   const imports = new Map<string, string>();
   const namespaceImports = new Set<string>();
+  const eventSubscriptionOffsets = new Set(
+    classifyOutboundCallsInSource(source, sourceFile)
+      .filter((call) => call.fact.callType === 'async_subscribe')
+      .map((call) => call.node.getStart(source)),
+  );
   const exportNames = exportDeclarations(source);
   const objectExports = new Set<string>();
   const exportedClasses = new Set<string>();
@@ -304,6 +382,33 @@ export async function parseExecutableSymbols(
         const eventName = eventArg.text.replace(/[^A-Za-z0-9_$-]/g, '_');
         const name = `event:${eventName}:${startLine}`;
         symbols.push({ kind: 'event_registration', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_event_registration', eventName: eventArg.text, registrationLine: startLine, receiver } });
+      }
+      if (eventSubscriptionOffsets.has(node.getStart(source))) {
+        const startLine = lineOf(source, node.getStart(source));
+        const handlerArgument = node.arguments[1];
+        const target = handlerArgument
+          ? handlerReferenceTarget(
+            handlerArgument, source, imports, namespaceImports,
+          )
+          : undefined;
+        const anchor = nearest(symbols, startLine);
+        if (target && anchor) calls.push({
+          callerQualifiedName: anchor.qualifiedName,
+          calleeExpression: target.calleeExpression,
+          calleeLocalName: target.calleeLocalName,
+          importSource: target.importSource,
+          sourceFile,
+          sourceLine: startLine,
+          evidence: {
+            relation: target.relation,
+            caller: anchor.qualifiedName,
+            targetName: target.calleeLocalName,
+            ...(target.wrapperFunction
+              ? { wrapperFunction: target.wrapperFunction }
+              : {}),
+            candidateStrategy: 'event_subscribe_handler_reference',
+          },
+        });
       }
     }
     ts.forEachChild(node, visitEventRegistrationSymbols);
