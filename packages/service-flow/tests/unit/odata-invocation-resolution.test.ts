@@ -5,13 +5,14 @@ import { mkdtemp } from 'node:fs/promises';
 import { openDatabase } from '../../src/db/connection.js';
 import { upsertRepository, upsertWorkspace } from '../../src/db/repositories.js';
 import { linkWorkspace } from '../../src/index.js';
+import { ANALYZER_VERSION } from '../../src/version.js';
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function addRepo(db: ReturnType<typeof openDatabase>, workspaceId: number, root: string, name: string): number {
-  return upsertRepository(db, workspaceId, {
+  const repoId = upsertRepository(db, workspaceId, {
     name,
     absolutePath: path.join(root, name),
     relativePath: name,
@@ -19,6 +20,9 @@ function addRepo(db: ReturnType<typeof openDatabase>, workspaceId: number, root:
     packageName: `@neutral/${name}`,
     kind: 'cap-service',
   });
+  db.prepare("UPDATE repositories SET index_status='indexed',fact_analyzer_version=? WHERE id=?")
+    .run(ANALYZER_VERSION, repoId);
+  return repoId;
 }
 
 function addServiceOperation(db: ReturnType<typeof openDatabase>, repoId: number, servicePath: string, operationName: string): void {
@@ -31,8 +35,12 @@ function addBinding(db: ReturnType<typeof openDatabase>, repoId: number, variabl
 }
 
 function addCall(db: ReturnType<typeof openDatabase>, repoId: number, bindingId: number | null, callType: string, method: string, pathExpr: string, queryEntity?: string): void {
-  db.prepare('INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?)')
-    .run(repoId, callType, bindingId, method, pathExpr, queryEntity, 'srv/caller.ts', 10, 0.8, JSON.stringify({ parser: 'neutral_seed' }));
+  const callCount = Number(db.prepare(
+    'SELECT COUNT(*) count FROM outbound_calls WHERE repo_id=?',
+  ).get(repoId)?.count ?? 0);
+  const startOffset = 100 + callCount * 20;
+  db.prepare('INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,call_site_start_offset,call_site_end_offset,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(repoId, callType, bindingId, method, pathExpr, queryEntity, 'srv/caller.ts', 10, startOffset, startOffset + 10, 0.8, JSON.stringify({ parser: 'neutral_seed' }));
 }
 
 describe('OData operation invocation resolution', () => {

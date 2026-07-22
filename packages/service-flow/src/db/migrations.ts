@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaIndexesSql, schemaTablesSql } from './schema.js';
-const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   handler_methods: [
     { name: 'decorator_resolution_json', ddl: "ALTER TABLE handler_methods ADD COLUMN decorator_resolution_json TEXT NOT NULL DEFAULT '{}'" },
@@ -54,6 +54,13 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'external_target_id', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_id TEXT' },
     { name: 'external_target_label', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_label TEXT' },
     { name: 'external_target_dynamic', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_dynamic INTEGER NOT NULL DEFAULT 0' },
+    { name: 'call_site_start_offset', ddl: 'ALTER TABLE outbound_calls ADD COLUMN call_site_start_offset INTEGER' },
+    { name: 'call_site_end_offset', ddl: 'ALTER TABLE outbound_calls ADD COLUMN call_site_end_offset INTEGER' },
+  ],
+  symbol_calls: [
+    { name: 'call_site_start_offset', ddl: 'ALTER TABLE symbol_calls ADD COLUMN call_site_start_offset INTEGER' },
+    { name: 'call_site_end_offset', ddl: 'ALTER TABLE symbol_calls ADD COLUMN call_site_end_offset INTEGER' },
+    { name: 'call_role', ddl: "ALTER TABLE symbol_calls ADD COLUMN call_role TEXT NOT NULL DEFAULT 'legacy_unknown'" },
   ],
   index_runs: [
     { name: 'error_message', ddl: 'ALTER TABLE index_runs ADD COLUMN error_message TEXT' },
@@ -78,6 +85,13 @@ function normalizeLegacyStatus(db: Db): void {
   db.prepare("UPDATE graph_edges SET status=CASE WHEN edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' THEN 'resolved' WHEN edge_type IN ('HANDLER_RUNS_DB_QUERY','HANDLER_CALLS_EXTERNAL_HTTP','HANDLER_EMITS_EVENT','EVENT_CONSUMED_BY_HANDLER') THEN 'terminal' WHEN edge_type='DYNAMIC_EDGE_CANDIDATE' THEN 'dynamic' WHEN status='ambiguous' THEN 'ambiguous' ELSE status END").run();
   db.prepare("UPDATE repositories SET graph_stale_reason='schema_migration_requires_relink', graph_stale_at=COALESCE(graph_stale_at, datetime('now')) WHERE EXISTS (SELECT 1 FROM graph_edges WHERE graph_edges.workspace_id=repositories.workspace_id) AND graph_generation=0").run();
 }
+function markCallSiteMigrationStale(db: Db, priorVersion: number): void {
+  if (priorVersion >= 12) return;
+  db.prepare(`UPDATE repositories
+    SET graph_stale_reason='schema_v12_call_sites_require_reindex',
+      graph_stale_at=COALESCE(graph_stale_at,datetime('now'))
+    WHERE index_status='indexed' OR last_indexed_at IS NOT NULL`).run();
+}
 export function migrate(db: Db): void {
   db.transaction(() => {
     const version = userVersion(db);
@@ -86,6 +100,7 @@ export function migrate(db: Db): void {
     addMissingColumns(db);
     db.exec(schemaIndexesSql);
     normalizeLegacyStatus(db);
+    markCallSiteMigrationStale(db, version);
     const violations = db.pragma('foreign_key_check');
     if (violations.length > 0) throw new Error('SQLite foreign_key_check failed during migration');
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);

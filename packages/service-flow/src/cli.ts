@@ -169,7 +169,7 @@ export function createProgram(): Command {
       (opts: { workspace?: string }) =>
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
-          const upgradeWarnings = linkUpgradeWarnings(db);
+          const upgradeWarnings = linkUpgradeWarnings(db, workspaceId);
           writeStdout(
             `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved\n`,
           );
@@ -434,8 +434,10 @@ export function createProgram(): Command {
     .option('--format <format>', 'json|table')
     .action(
       (opts: { workspace?: string; strict?: boolean; detail?: boolean; format?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db) => {
-          const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), { detail: Boolean(opts.detail) });
+        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+          const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), {
+            detail: Boolean(opts.detail), workspaceId,
+          });
           writeStdout(renderDoctorDiagnostics(allDiagnostics, opts.format));
         }).catch(fail),
     );

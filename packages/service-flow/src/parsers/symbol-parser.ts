@@ -261,7 +261,7 @@ export async function parseExecutableSymbols(
   const eventSubscriptionOffsets = new Set(
     classifyOutboundCallsInSource(source, sourceFile)
       .filter((call) => call.fact.callType === 'async_subscribe')
-      .map((call) => call.node.getStart(source)),
+      .map((call) => `${call.node.getStart(source)}:${call.node.getEnd()}`),
   );
   const exportNames = exportDeclarations(source);
   const objectExports = new Set<string>();
@@ -383,7 +383,7 @@ export async function parseExecutableSymbols(
         const name = `event:${eventName}:${startLine}`;
         symbols.push({ kind: 'event_registration', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_event_registration', eventName: eventArg.text, registrationLine: startLine, receiver } });
       }
-      if (eventSubscriptionOffsets.has(node.getStart(source))) {
+      if (eventSubscriptionOffsets.has(`${node.getStart(source)}:${node.getEnd()}`)) {
         const startLine = lineOf(source, node.getStart(source));
         const handlerArgument = node.arguments[1];
         const target = handlerArgument
@@ -399,6 +399,9 @@ export async function parseExecutableSymbols(
           importSource: target.importSource,
           sourceFile,
           sourceLine: startLine,
+          callSiteStartOffset: node.getStart(source),
+          callSiteEndOffset: node.getEnd(),
+          callRole: 'event_subscribe_handler',
           evidence: {
             relation: target.relation,
             caller: anchor.qualifiedName,
@@ -406,7 +409,7 @@ export async function parseExecutableSymbols(
             ...(target.wrapperFunction
               ? { wrapperFunction: target.wrapperFunction }
               : {}),
-            candidateStrategy: 'event_subscribe_handler_reference',
+            factOrigin: 'event_subscribe_handler_reference',
           },
         });
       }
@@ -464,7 +467,7 @@ export async function parseExecutableSymbols(
         const ignored = loggerLike || terminalMember || ignoredFrameworkCall(callee);
         const resolvedTarget = provenThisMethod ? thisTarget : targetName;
         const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport || provenClassInstance || provenPackageImport);
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? (callee.local ?? callee.receiver) : undefined, importSource, sourceFile, sourceLine: line, evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : packageImport ? 'package_import' : namespaceMember ? 'relative_import_namespace_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? (instance.propertyName ?? callee.local) : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
+        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? (callee.local ?? callee.receiver) : undefined, importSource, sourceFile, sourceLine: line, callSiteStartOffset: node.getStart(source), callSiteEndOffset: node.getEnd(), callRole: 'ordinary_call', evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : packageImport ? 'package_import' : namespaceMember ? 'relative_import_namespace_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? (instance.propertyName ?? callee.local) : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
       }
     }
     ts.forEachChild(node, visitCalls);

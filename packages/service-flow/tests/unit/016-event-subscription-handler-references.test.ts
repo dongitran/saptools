@@ -1,6 +1,7 @@
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import type { Db } from '../../src/db/connection.js';
 import { indexWorkspace } from '../../src/indexer/workspace-indexer.js';
@@ -11,6 +12,7 @@ import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 const sourceFile = 'src/register.ts';
 
 const ordinarySource = `
+// Non-ASCII prefix 前置🙂 proves offsets use TypeScript UTF-16 positions.
 import { handlerFn, wrappedHandler, fallbackHandler } from './handlers';
 import { HandlerClass } from './handler-class';
 import * as ns from './namespace';
@@ -113,7 +115,7 @@ const expectedHandlerCalls: ExpectedHandlerCall[] = [
 
 function handlerReferenceCalls(parsed: Parsed): ParsedCall[] {
   return parsed.calls.filter((call) =>
-    call.evidence.candidateStrategy === 'event_subscribe_handler_reference');
+    call.callRole === 'event_subscribe_handler');
 }
 
 function stableCall(call: ParsedCall): Record<string, unknown> {
@@ -125,6 +127,9 @@ function stableCall(call: ParsedCall): Record<string, unknown> {
     importSource: call.importSource,
     sourceFile: call.sourceFile,
     sourceLine: call.sourceLine,
+    callSiteStartOffset: call.callSiteStartOffset,
+    callSiteEndOffset: call.callSiteEndOffset,
+    callRole: call.callRole,
     evidence: call.evidence,
   };
 }
@@ -190,6 +195,12 @@ interface SubscriptionRow {
   wrapperFunction: string | null;
   candidateStrategy: string | null;
   candidateCount: number | null;
+  factOrigin: string | null;
+  callRole: string | null;
+  subscribeStartOffset: number | null;
+  subscribeEndOffset: number | null;
+  handlerStartOffset: number | null;
+  handlerEndOffset: number | null;
 }
 
 function nullableString(value: unknown): string | null {
@@ -211,10 +222,19 @@ function subscriptionRows(db: Db): SubscriptionRow[] {
       json_extract(sc.evidence_json,'$.targetName') calleeLocalName,
       json_extract(sc.evidence_json,'$.wrapperFunction') wrapperFunction,
       json_extract(sc.evidence_json,'$.candidateStrategy') candidateStrategy,
-      json_extract(sc.evidence_json,'$.candidateCount') candidateCount
+      json_extract(sc.evidence_json,'$.candidateCount') candidateCount,
+      json_extract(sc.evidence_json,'$.factOrigin') factOrigin,
+      sc.call_role callRole,
+      oc.call_site_start_offset subscribeStartOffset,
+      oc.call_site_end_offset subscribeEndOffset,
+      sc.call_site_start_offset handlerStartOffset,
+      sc.call_site_end_offset handlerEndOffset
     FROM outbound_calls oc
     LEFT JOIN symbol_calls sc ON sc.repo_id=oc.repo_id
-      AND sc.source_file=oc.source_file AND sc.source_line=oc.source_line
+      AND sc.source_file=oc.source_file
+      AND sc.call_site_start_offset=oc.call_site_start_offset
+      AND sc.call_site_end_offset=oc.call_site_end_offset
+      AND sc.call_role='event_subscribe_handler'
     LEFT JOIN symbols caller ON caller.id=sc.caller_symbol_id
     LEFT JOIN symbols target ON target.id=sc.callee_symbol_id
     LEFT JOIN repositories targetRepo ON targetRepo.id=target.repo_id
@@ -235,6 +255,12 @@ function subscriptionRows(db: Db): SubscriptionRow[] {
       wrapperFunction: nullableString(row.wrapperFunction),
       candidateStrategy: nullableString(row.candidateStrategy),
       candidateCount: nullableNumber(row.candidateCount),
+      factOrigin: nullableString(row.factOrigin),
+      callRole: nullableString(row.callRole),
+      subscribeStartOffset: nullableNumber(row.subscribeStartOffset),
+      subscribeEndOffset: nullableNumber(row.subscribeEndOffset),
+      handlerStartOffset: nullableNumber(row.handlerStartOffset),
+      handlerEndOffset: nullableNumber(row.handlerEndOffset),
     }));
 }
 
@@ -281,7 +307,12 @@ function expectResolvedHandlerRows(rows: SubscriptionRow[]): void {
   expect(rows).toHaveLength(13);
   expect(rows.filter((row) => row.expression !== null)).toHaveLength(8);
   expect(rows.filter((row) => row.expression !== null)
-    .every((row) => row.status === 'resolved' && row.callerMatches === 1)).toBe(true);
+    .every((row) => row.status === 'resolved'
+      && row.callerMatches === 1
+      && row.callRole === 'event_subscribe_handler'
+      && row.factOrigin === 'event_subscribe_handler_reference'
+      && row.subscribeStartOffset === row.handlerStartOffset
+      && row.subscribeEndOffset === row.handlerEndOffset)).toBe(true);
   for (const eventName of negativeEvents)
     expect(rowFor(rows, eventName)).toMatchObject({ expression: null, status: null });
 
@@ -347,8 +378,7 @@ describe('event-subscription handler references', () => {
     const parsed = await parseExecutableSymbols(root, sourceFile);
     const handlers = handlerReferenceCalls(parsed);
 
-    expect(parsed.calls.filter((call) =>
-      call.evidence.candidateStrategy !== 'event_subscribe_handler_reference')
+    expect(parsed.calls.filter((call) => call.callRole === 'ordinary_call')
       .map(stableCall)).toEqual(baseline.calls.map(stableCall));
     expect(parsed.calls).toHaveLength(baseline.calls.length + expectedHandlerCalls.length);
     expect(handlers.map((call) => ({
@@ -363,7 +393,11 @@ describe('event-subscription handler references', () => {
       .toEqual([...expectedHandlerCalls]
         .sort((left, right) => left.expression.localeCompare(right.expression)));
     expect(handlers.every((call) =>
-      call.evidence.candidateStrategy === 'event_subscribe_handler_reference')).toBe(true);
+      call.evidence.factOrigin === 'event_subscribe_handler_reference'
+      && call.evidence.candidateStrategy === undefined
+      && typeof call.callSiteStartOffset === 'number'
+      && typeof call.callSiteEndOffset === 'number'
+      && call.callSiteEndOffset > call.callSiteStartOffset)).toBe(true);
     expect(handlers.find((call) => call.calleeExpression === 'handlerFn')
       ?.callerQualifiedName).toMatch(/^module:src\/register\.ts#event:EventFoo:/);
     expect(handlers.find((call) => call.calleeExpression === 'fallbackHandler'))
@@ -373,6 +407,17 @@ describe('event-subscription handler references', () => {
       "'EventInline'", "'EventFunction'", "'EventMulti'", "'EventNested'",
       "'EventWrappedInline'", "'error'", "'served'", "'EventOnce'",
     ]) expect(handlers.some((call) => call.sourceLine === sourceLine(needle))).toBe(false);
+
+    const source = ts.createSourceFile(
+      sourceFile, fullSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+    );
+    const expectedStart = fullSource.indexOf("messaging.on('EventFoo'");
+    const eventFoo = handlers.find((call) => call.calleeExpression === 'handlerFn');
+    expect(source.getLineAndCharacterOfPosition(expectedStart).line + 1)
+      .toBe(eventFoo?.sourceLine);
+    expect(eventFoo?.callSiteStartOffset).toBe(expectedStart);
+    expect(Buffer.byteLength(fullSource.slice(0, expectedStart), 'utf8'))
+      .not.toBe(expectedStart);
   });
 
   it('resolves, anchors, and reproduces handler rows through link and force index', async () => {
@@ -397,7 +442,7 @@ describe('event-subscription handler references', () => {
         symbolCalls: 9,
         subscriptions: 13,
         emissions: 0,
-        graphEdges: 14,
+        graphEdges: 27,
         subscriptionEdges: 13,
       });
       expect(db.prepare(`SELECT COUNT(*) count FROM symbols
@@ -417,9 +462,11 @@ describe('event-subscription handler references', () => {
         targetQualifiedName: 'ordinaryTarget', candidateStrategy: 'same_file_exact',
         candidateCount: 1,
       });
-      expect(db.prepare(`SELECT edge_type edgeType,status FROM graph_edges
-        WHERE edge_type<>'EVENT_CONSUMED_BY_HANDLER'`).all()).toEqual([
-        { edgeType: 'REPO_IMPORTS_HELPER_PACKAGE', status: 'resolved' },
+      expect(db.prepare(`SELECT status,COUNT(*) count FROM graph_edges
+        WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+        GROUP BY status ORDER BY status`).all()).toEqual([
+        { status: 'resolved', count: 8 },
+        { status: 'unresolved', count: 5 },
       ]);
 
       const first = stableState(db);

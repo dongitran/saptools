@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { openDatabase, openReadOnlyDatabase } from '../../src/db/connection.js';
-import { schemaVersion } from '../../src/db/migrations.js';
+import { factLifecycleDiagnostic } from '../../src/db/001-fact-lifecycle.js';
+import { migrate, schemaVersion } from '../../src/db/migrations.js';
 import { indexWorkspace } from '../../src/indexer/workspace-indexer.js';
 import { linkWorkspace } from '../../src/linker/cross-repo-linker.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
@@ -37,6 +38,21 @@ function indexRunCount(db: Awaited<ReturnType<typeof prepareWorkspace>>['db'], s
 }
 
 describe('incremental indexing publication atomicity', () => {
+  it('rejects a future schema read-only before querying v12 tables', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-future-schema-'));
+    const dbPath = path.join(root, 'graph.db');
+    const future = openDatabase(dbPath, { migrate: false });
+    future.exec('PRAGMA user_version = 13');
+    future.close();
+
+    const reader = openReadOnlyDatabase(dbPath);
+    expect(factLifecycleDiagnostic(reader)).toMatchObject({
+      code: 'unsupported_future_schema', currentSchemaVersion: 13,
+      supportedSchemaVersion: 12,
+    });
+    reader.close();
+  });
+
   it('migrates legacy index runs without losing run history', () => {
     const root = path.join(os.tmpdir(), `service-flow-index-migration-${process.pid}-${Date.now()}`);
     const dbPath = path.join(root, 'graph.db');
@@ -50,9 +66,178 @@ describe('incremental indexing publication atomicity', () => {
     const ownerColumn = migrated.prepare('PRAGMA table_info(index_runs)').all().find((column) => column.name === 'owner_pid');
     const preserved = migrated.prepare('SELECT status,repo_count repoCount,owner_pid ownerPid FROM index_runs').get();
 
-    expect(schemaVersion(migrated)).toBe(11);
+    expect(schemaVersion(migrated)).toBe(12);
     expect(ownerColumn).toMatchObject({ name: 'owner_pid', type: 'INTEGER' });
     expect(preserved).toEqual({ status: 'success', repoCount: 2, ownerPid: null });
+    migrated.close();
+  });
+
+  it('migrates v11 call facts without inventing spans or roles and blocks link before deletion', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-v11-call-sites-'));
+    const dbPath = path.join(root, 'graph.db');
+    const legacy = openDatabase(dbPath, { migrate: false });
+    legacy.exec(`
+      CREATE TABLE workspaces (
+        id INTEGER PRIMARY KEY, root_path TEXT UNIQUE NOT NULL, db_path TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE repositories (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, name TEXT NOT NULL,
+        absolute_path TEXT NOT NULL, relative_path TEXT NOT NULL, package_name TEXT,
+        package_version TEXT, dependencies_json TEXT DEFAULT '{}', kind TEXT NOT NULL,
+        is_git_repo INTEGER NOT NULL, last_indexed_at TEXT, index_status TEXT DEFAULT 'pending',
+        error_count INTEGER DEFAULT 0, fingerprint TEXT, fact_generation INTEGER NOT NULL DEFAULT 0,
+        graph_generation INTEGER NOT NULL DEFAULT 0, graph_stale_reason TEXT,
+        graph_stale_at TEXT, fact_analyzer_version TEXT,
+        UNIQUE(workspace_id,absolute_path),
+        FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+      CREATE TABLE symbols (
+        id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, file_id INTEGER,
+        kind TEXT NOT NULL, name TEXT NOT NULL, qualified_name TEXT NOT NULL,
+        exported INTEGER NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL,
+        start_offset INTEGER, end_offset INTEGER, source_file TEXT, exported_name TEXT,
+        evidence_json TEXT,
+        FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE
+      );
+      CREATE TABLE outbound_calls (
+        id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, source_symbol_id INTEGER,
+        call_type TEXT NOT NULL, service_binding_id INTEGER, method TEXT,
+        operation_path_expr TEXT, query_entity TEXT, event_name_expr TEXT,
+        payload_summary TEXT, source_file TEXT NOT NULL, source_line INTEGER NOT NULL,
+        confidence REAL NOT NULL, unresolved_reason TEXT, local_service_name TEXT,
+        local_service_lookup TEXT, alias_chain_json TEXT, evidence_json TEXT,
+        external_target_kind TEXT, external_target_id TEXT, external_target_label TEXT,
+        external_target_dynamic INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE,
+        FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
+      );
+      CREATE TABLE symbol_calls (
+        id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, caller_symbol_id INTEGER NOT NULL,
+        callee_symbol_id INTEGER, callee_expression TEXT NOT NULL, import_source TEXT,
+        source_file TEXT NOT NULL, source_line INTEGER NOT NULL, status TEXT NOT NULL,
+        confidence REAL NOT NULL, evidence_json TEXT NOT NULL, unresolved_reason TEXT,
+        FOREIGN KEY(repo_id) REFERENCES repositories(id) ON DELETE CASCADE,
+        FOREIGN KEY(caller_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+        FOREIGN KEY(callee_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
+      );
+      CREATE TABLE graph_edges (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, edge_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'unresolved', from_kind TEXT NOT NULL,
+        from_id TEXT NOT NULL, to_kind TEXT NOT NULL, to_id TEXT NOT NULL,
+        confidence REAL NOT NULL, evidence_json TEXT NOT NULL, is_dynamic INTEGER NOT NULL,
+        unresolved_reason TEXT, generation INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      );
+      PRAGMA user_version = 11;
+    `);
+    const now = new Date(0).toISOString();
+    legacy.prepare('INSERT INTO workspaces(id,root_path,db_path,created_at,updated_at) VALUES(?,?,?,?,?)')
+      .run(1, root, dbPath, now, now);
+    legacy.prepare(`INSERT INTO repositories(
+      id,workspace_id,name,absolute_path,relative_path,kind,is_git_repo,last_indexed_at,
+      index_status,fingerprint,fact_generation,graph_generation,fact_analyzer_version
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      1, 1, 'legacy-events', path.join(root, 'legacy-events'), 'legacy-events',
+      'cap-service', 1, now, 'indexed', 'legacy-fingerprint', 4, 5, '0.1.65',
+    );
+    legacy.prepare(`INSERT INTO symbols(
+      id,repo_id,kind,name,qualified_name,exported,start_line,end_line,
+      start_offset,end_offset,source_file,evidence_json
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      1, 1, 'function', 'register', 'register', 0, 1, 20, 0, 500,
+      'src/events.ts', '{}',
+    );
+    legacy.prepare(`INSERT INTO outbound_calls(
+      id,repo_id,source_symbol_id,call_type,event_name_expr,source_file,source_line,
+      confidence,evidence_json
+    ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+      1, 1, 1, 'async_subscribe', 'LegacyEvent', 'src/events.ts', 8, 0.8,
+      JSON.stringify({ parser: 'typescript_ast', startOffset: 100, endOffset: 140 }),
+    );
+    legacy.prepare(`INSERT INTO symbol_calls(
+      id,repo_id,caller_symbol_id,callee_expression,source_file,source_line,
+      status,confidence,evidence_json
+    ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+      1, 1, 1, 'legacyHandler', 'src/events.ts', 8, 'unresolved', 0.8,
+      JSON.stringify({
+        relation: 'relative_import', startOffset: 100, endOffset: 140,
+        candidateStrategy: 'event_subscribe_handler_reference',
+      }),
+    );
+    legacy.prepare(`INSERT INTO graph_edges(
+      id,workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
+      confidence,evidence_json,is_dynamic,generation
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      1, 1, 'REPO_IMPORTS_HELPER_PACKAGE', 'resolved', 'repo', '1', 'repo', '1',
+      1, '{"legacyGraph":true}', 0, 5,
+    );
+    expect(factLifecycleDiagnostic(legacy, 1)).toMatchObject({
+      code: 'schema_upgrade_required', currentSchemaVersion: 11,
+      requiredSchemaVersion: 12,
+    });
+    legacy.close();
+
+    const migrated = openDatabase(dbPath);
+    const outboundColumns = migrated.prepare('PRAGMA table_info(outbound_calls)').all();
+    const symbolColumns = migrated.prepare('PRAGMA table_info(symbol_calls)').all();
+    const roleColumn = symbolColumns.find((column) => column.name === 'call_role');
+    const outboundIndexes = migrated.prepare('PRAGMA index_list(outbound_calls)').all();
+    const symbolIndexes = migrated.prepare('PRAGMA index_list(symbol_calls)').all();
+    expect(schemaVersion(migrated)).toBe(12);
+    expect(outboundColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'call_site_start_offset', 'call_site_end_offset',
+    ]));
+    expect(symbolColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'call_site_start_offset', 'call_site_end_offset', 'call_role',
+    ]));
+    expect(roleColumn).toMatchObject({
+      type: 'TEXT', notnull: 1, dflt_value: "'legacy_unknown'",
+    });
+    expect(outboundIndexes.map((index) => index.name))
+      .toContain('idx_outbound_call_site');
+    expect(symbolIndexes.map((index) => index.name))
+      .toContain('idx_symbol_call_site_role');
+    expect(migrated.prepare(`SELECT call_site_start_offset startOffset,
+      call_site_end_offset endOffset FROM outbound_calls WHERE id=1`).get())
+      .toEqual({ startOffset: null, endOffset: null });
+    expect(migrated.prepare(`SELECT call_site_start_offset startOffset,
+      call_site_end_offset endOffset,call_role callRole,evidence_json evidenceJson
+      FROM symbol_calls WHERE id=1`).get()).toEqual({
+      startOffset: null,
+      endOffset: null,
+      callRole: 'legacy_unknown',
+      evidenceJson: JSON.stringify({
+        relation: 'relative_import', startOffset: 100, endOffset: 140,
+        candidateStrategy: 'event_subscribe_handler_reference',
+      }),
+    });
+    expect(migrated.prepare(`SELECT graph_stale_reason reason,
+      fact_analyzer_version analyzer FROM repositories WHERE id=1`).get()).toEqual({
+      reason: 'schema_v12_call_sites_require_reindex', analyzer: '0.1.65',
+    });
+    expect(factLifecycleDiagnostic(migrated, 1)).toMatchObject({
+      code: 'reindex_required', staleRepositoryCount: 1,
+    });
+    const graphBefore = migrated.prepare('SELECT * FROM graph_edges WHERE workspace_id=1').all();
+    expect(() => linkWorkspace(migrated, 1)).toThrow(/reindex_required[\s\S]*index --workspace \/workspace --force[\s\S]*link --workspace \/workspace --force/);
+    expect(migrated.prepare('SELECT * FROM graph_edges WHERE workspace_id=1').all())
+      .toEqual(graphBefore);
+    expect(migrated.prepare('SELECT graph_stale_reason reason FROM repositories WHERE id=1')
+      .get()?.reason).toBe('schema_v12_call_sites_require_reindex');
+    expect(migrated.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+    expect(migrated.pragma('foreign_key_check')).toEqual([]);
+
+    migrate(migrated);
+    expect(migrated.prepare(`SELECT call_role callRole,
+      call_site_start_offset startOffset,call_site_end_offset endOffset
+      FROM symbol_calls WHERE id=1`).get()).toEqual({
+      callRole: 'legacy_unknown', startOffset: null, endOffset: null,
+    });
+    expect(migrated.prepare('PRAGMA index_list(outbound_calls)').all()
+      .filter((index) => index.name === 'idx_outbound_call_site')).toHaveLength(1);
+    expect(migrated.prepare('PRAGMA index_list(symbol_calls)').all()
+      .filter((index) => index.name === 'idx_symbol_call_site_role')).toHaveLength(1);
     migrated.close();
   });
 

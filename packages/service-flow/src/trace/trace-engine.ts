@@ -24,6 +24,20 @@ import {
   type SelectedHandlerEvidence,
 } from './009-selected-handler-provenance.js';
 import { boundCandidateLikeEvidence } from '../utils/000-bounded-projection.js';
+import { schemaLifecycleDiagnostic } from '../db/001-fact-lifecycle.js';
+import { TraversalScopeScheduler } from './010-traversal-scope.js';
+import { planEventSubscriberTransitions } from './011-event-subscriber-traversal.js';
+import {
+  graphForCalls,
+  operationNode,
+  symbolNode,
+  type TraceGraphEdgeRow as GraphRow,
+} from './012-trace-graph-lookups.js';
+import {
+  createTraceRootPlan,
+  enqueueCausalScope,
+  nextPendingRoot,
+} from './013-trace-root-scopes.js';
 import {
   ambiguousStartDiagnostic,
   selectorNotFoundDiagnostic,
@@ -54,17 +68,8 @@ interface CallRow extends Record<string, unknown> {
   call_type: string;
   confidence: number;
   source_symbol_id?: number;
-}
-interface GraphRow extends Record<string, unknown> {
-  id: number;
-  edge_type: string;
-  from_id: string;
-  to_kind: string;
-  to_id: string;
-  confidence: number;
-  evidence_json: string;
-  unresolved_reason?: string;
-  status?: string;
+  workspaceId: number;
+  graphGeneration: number;
 }
 interface ImplementationHintOptions {
   implementationRepo?: string;
@@ -212,14 +217,11 @@ function handlerScope(db: Db, methodId: string): { repoId?: number; files: Set<s
   if (!row || typeof row.symbolId !== 'number') return undefined;
   return { repoId: row.repoId, files: new Set(row.sourceFile ? [row.sourceFile] : []), symbolId: row.symbolId };
 }
-
-
 function traceEdgeType(call: CallRow, row: GraphRow): string {
   if (row.to_kind === 'operation' && row.edge_type === 'REMOTE_CALL_RESOLVES_TO_OPERATION') return 'remote_action';
   if (row.to_kind === 'operation' && row.edge_type === 'LOCAL_CALL_RESOLVES_TO_OPERATION') return 'local_service_call';
   return String(call.call_type);
 }
-
 function includeCall(
   type: string,
   options: {
@@ -233,36 +235,6 @@ function includeCall(
   if (!options.includeAsync && type.startsWith('async_')) return false;
   return true;
 }
-function graphForCalls(db: Db, callIds: number[]): Map<number, GraphRow[]> {
-  const map = new Map<number, GraphRow[]>();
-  if (callIds.length === 0) return map;
-  const rows = db
-    .prepare(
-      `SELECT * FROM graph_edges WHERE from_kind='call' AND from_id IN (${callIds.map(() => '?').join(',')}) ORDER BY id`,
-    )
-    .all(...callIds.map((id) => String(id))) as GraphRow[];
-  for (const row of rows) {
-    const id = Number(row.from_id);
-    map.set(id, [...(map.get(id) ?? []), row]);
-  }
-  return map;
-}
-function symbolNode(db: Db, symbolId: number): Record<string, unknown> | undefined {
-  const row = db.prepare(`SELECT s.id symbolId,s.name symbolName,s.qualified_name qualifiedName,s.source_file sourceFile,s.start_line startLine,s.end_line endLine,r.name repoName,r.id repoId FROM symbols s JOIN repositories r ON r.id=s.repo_id WHERE s.id=?`).get(symbolId) as Record<string, unknown> | undefined;
-  if (!row) return undefined;
-  const fileName = String(row.sourceFile ?? '').split('/').at(-1) ?? String(row.sourceFile ?? '');
-  return { id: `symbol:${symbolId}`, kind: 'symbol', label: `${fileName}:${String(row.qualifiedName ?? row.symbolName)}`, ...row };
-}
-
-function operationNode(db: Db, operationId: string): Record<string, unknown> | undefined {
-  const row = db.prepare(`SELECT o.id operationId,o.operation_name operationName,o.operation_type operationType,o.operation_path operationPath,o.source_file sourceFile,o.source_line sourceLine,s.id serviceId,s.service_name serviceName,s.qualified_name qualifiedName,s.service_path servicePath,r.id repoId,r.name repoName FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operationId) as Record<string, unknown> | undefined;
-  if (!row) return undefined;
-  return { id: `operation:${operationId}`, kind: 'operation', label: `${String(row.repoName)}:${String(row.servicePath)}${String(row.operationPath)}`, ...row };
-}
-
-function workspaceIdForCall(db: Db, callId: string): number | undefined {
-  return (db.prepare('SELECT r.workspace_id workspaceId FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE c.id=?').get(callId) as { workspaceId?: number } | undefined)?.workspaceId;
-}
 function parseEvidence(value: unknown): Record<string, unknown> {
   try {
     const parsed = JSON.parse(String(value || '{}')) as unknown;
@@ -271,7 +243,6 @@ function parseEvidence(value: unknown): Record<string, unknown> {
     return {};
   }
 }
-
 function isEvidenceRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -306,7 +277,7 @@ function knownBindingsForScope(db: Db, repoId: number | undefined, symbolIds: Se
   type BindingRow = Omit<ContextBinding, 'bindingId' | 'source' | 'calleeReceiver'> & { id?: number; symbolId?: number | null; variableName?: string };
   const rows = db.prepare(`SELECT b.id,b.symbol_id symbolId,b.variable_name variableName,b.alias,b.alias_expr aliasExpr,b.destination_expr destinationExpr,b.service_path_expr servicePathExpr,b.source_file sourceFile,b.source_line sourceLine,req.service_path requireServicePath,req.destination requireDestination
     FROM service_bindings b LEFT JOIN cds_requires req ON req.repo_id=b.repo_id AND req.alias=b.alias
-    WHERE b.repo_id=?`).all(repoId) as BindingRow[];
+    WHERE b.repo_id=? ORDER BY b.source_file COLLATE BINARY,b.source_line,b.id`).all(repoId) as BindingRow[];
   for (const row of rows) {
     if (!row.variableName) continue;
     if (files && !files.has(String(row.sourceFile))) continue;
@@ -338,7 +309,6 @@ function knownBindingsForScope(db: Db, repoId: number | undefined, symbolIds: Se
   }
   return map;
 }
-
 function bindingCandidateEvidence(binding: ContextBinding): Record<string, unknown> {
   return {
     bindingId: binding.bindingId,
@@ -416,19 +386,30 @@ export function trace(
   start: TraceStart,
   options: TraceOptions,
 ): TraceResult {
+  const schemaLifecycle = schemaLifecycleDiagnostic(db);
+  if (schemaLifecycle)
+    return { start, nodes: [], edges: [], diagnostics: [schemaLifecycle] };
   const hintOptions = { implementationRepo: options.implementationRepo, implementationHints: options.implementationHints };
   const scope = startScope(db, start, hintOptions, options.workspaceId);
   const hasSelector = Boolean(start.repo || start.handler || start.operation
     || start.operationPath || start.servicePath);
   const diagnosticRepoId = scope.executionRepoId ?? scope.repo?.id;
+  const scheduler = new TraversalScopeScheduler();
+  const roots = createTraceRootPlan(db, scheduler, {
+    repoId: diagnosticRepoId, files: scope.sourceFiles,
+    symbolIds: scope.symbolIds, selectorMatched: scope.selectorMatched,
+  }, options.workspaceId, Boolean(options.includeAsync));
+  if (roots.diagnostic)
+    return { start, nodes: [], edges: [], diagnostics: [roots.diagnostic] };
+  const { workspaceId, queue, pendingRoots } = roots;
   const diagnostics = loadTraceDiagnostics(
     db,
     diagnosticRepoId,
     !hasSelector,
-    options.workspaceId,
+    workspaceId,
   );
   const stale = diagnosticRepoId !== undefined || !hasSelector
-    ? db.prepare('SELECT name,graph_stale_reason reason FROM repositories WHERE graph_stale_reason IS NOT NULL AND (? IS NULL OR id=?) AND (? IS NULL OR workspace_id=?) ORDER BY name,id').all(diagnosticRepoId, diagnosticRepoId, options.workspaceId, options.workspaceId) as Array<{ name?: string; reason?: string }>
+    ? db.prepare('SELECT name,graph_stale_reason reason FROM repositories WHERE graph_stale_reason IS NOT NULL AND (? IS NULL OR id=?) AND (? IS NULL OR workspace_id=?) ORDER BY name,id').all(diagnosticRepoId, diagnosticRepoId, workspaceId, workspaceId) as Array<{ name?: string; reason?: string }>
     : [];
   for (const row of stale)
     prependTraceDiagnostic(diagnostics, { severity: 'warning', code: 'graph_stale', message: `Graph is stale for ${row.name ?? 'repository'}: ${row.reason ?? 'facts_changed'}. Run service-flow link.` });
@@ -439,11 +420,6 @@ export function trace(
   const maxDepth = positiveDepth(options.depth);
   const edges: TraceEdge[] = [];
   const nodes = new Map<string, Record<string, unknown>>();
-  const seenEdges = new Set<number>();
-  const queue: Array<{ repoId?: number; files?: Set<string>; symbolIds?: Set<number>; depth: number; context?: Map<string, ContextBinding> }> =
-    scope.selectorMatched
-      ? [{ repoId: scope.executionRepoId, files: scope.sourceFiles, symbolIds: scope.symbolIds, depth: 1, context: new Map() }]
-      : [];
   if (scope.startOperationId && scope.selectorMatched) {
     const op = operationNode(db, scope.startOperationId);
     const impl = implementationScope(db, scope.startOperationId);
@@ -472,44 +448,70 @@ export function trace(
         : { evidence: implEvidence };
       if (selected.diagnostic) prependTraceDiagnostic(diagnostics, selected.diagnostic);
       if (selected.handler) nodes.set(String(selected.handler.id), selected.handler);
-      seenEdges.add(Number(impl.edge.id));
       edges.push({ step: 1, type: 'operation_implemented_by_handler', from: op?.label ? String(op.label) : `operation:${scope.startOperationId}`, to: selected.handler?.label ? String(selected.handler.label) : `${impl.edge.to_kind}:${impl.edge.to_id}`, evidence: selected.evidence, confidence: Number(impl.edge.confidence ?? 0), unresolvedReason: selected.unresolvedReason ?? (impl.edge.status === 'resolved' || startSelection.methodId ? undefined : String(impl.edge.unresolved_reason ?? impl.edge.status)) });
     }
   }
-  const seenScopes = new Set<string>();
-  while (queue.length > 0) {
+  while (queue.length > 0 || pendingRoots.length > 0) {
+    if ((queue[0]?.depth ?? Number.POSITIVE_INFINITY) > 1
+      && workspaceId !== undefined) {
+      const root = nextPendingRoot(pendingRoots, scheduler, workspaceId);
+      if (root) queue.unshift(root);
+    }
     const current = queue.shift();
     if (!current || current.depth > maxDepth) continue;
-    const contextKey = [...(current.context ?? new Map<string, ContextBinding>()).keys()].sort().join(',');
-    const key = `${current.repoId ?? '*'}:${[...(current.symbolIds ?? new Set(['*']))].sort().join(',')}:${[...(current.files ?? new Set(['*']))].sort().join(',')}:${contextKey}`;
-    if (seenScopes.has(key)) continue;
-    seenScopes.add(key);
+    if (!scheduler.markExpanded(current.state)) continue;
     const calls = db
       .prepare(
-        `SELECT c.*,r.name repoName FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR r.workspace_id=?) ORDER BY c.source_file,c.source_line`,
+        `SELECT c.*,r.name repoName,r.workspace_id workspaceId,
+          r.graph_generation graphGeneration
+        FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
+        WHERE (? IS NULL OR c.repo_id=?) AND (? IS NULL OR r.workspace_id=?)
+        ORDER BY c.source_file COLLATE BINARY,c.call_site_start_offset,
+          c.call_site_end_offset,c.source_line,c.id`,
       )
-      .all(current.repoId, current.repoId, options.workspaceId, options.workspaceId) as CallRow[];
+      .all(current.repoId, current.repoId, workspaceId, workspaceId) as CallRow[];
     const filtered = calls.filter(
       (c) =>
-        (!current.symbolIds || current.symbolIds.has(Number(c.source_symbol_id))) && (!current.files || current.files.has(String(c.source_file))) &&
+        (current.unownedOnly ? c.source_symbol_id == null
+          : !current.symbolIds || current.symbolIds.has(Number(c.source_symbol_id)))
+        && (!current.files || current.files.has(String(c.source_file))) &&
         includeCall(String(c.call_type), options),
     );
-    const callerBindings = new Map<string, ContextBinding>([...(current.context ?? new Map<string, ContextBinding>()), ...knownBindingsForScope(db, current.repoId, current.symbolIds, current.files), ...knownBindingsForCalls(db, filtered)]);
+    const callerBindings = new Map<string, ContextBinding>([...current.context, ...knownBindingsForScope(db, current.repoId, current.symbolIds, current.files), ...knownBindingsForCalls(db, filtered)]);
 
-    if (current.symbolIds && current.symbolIds.size > 0 && current.depth < maxDepth) {
-      const symbolRows = db.prepare(`SELECT sc.*,s.repo_id calleeRepoId,s.source_file calleeFile FROM symbol_calls sc LEFT JOIN symbols s ON s.id=sc.callee_symbol_id WHERE sc.caller_symbol_id IN (${[...current.symbolIds].map(() => '?').join(',')}) ORDER BY sc.source_file,sc.source_line`).all(...current.symbolIds) as Array<Record<string, unknown>>;
+    if (!current.rootObservationOnly && current.symbolIds
+      && current.symbolIds.size > 0 && current.depth < maxDepth) {
+      const symbolRows = db.prepare(`SELECT sc.*,s.repo_id calleeRepoId,
+        s.source_file calleeFile FROM symbol_calls sc
+        LEFT JOIN symbols s ON s.id=sc.callee_symbol_id
+        WHERE sc.call_role='ordinary_call'
+          AND sc.caller_symbol_id IN (${[...current.symbolIds].map(() => '?').join(',')})
+        ORDER BY sc.source_file COLLATE BINARY,sc.call_site_start_offset,
+          sc.call_site_end_offset,sc.source_line,sc.id`).all(
+        ...current.symbolIds,
+      ) as Array<Record<string, unknown>>;
       for (const symbolCall of symbolRows) {
         if (!symbolCall.callee_symbol_id) continue;
         const nextSymbols = new Set([Number(symbolCall.callee_symbol_id)]);
         const nextFiles = new Set([String(symbolCall.calleeFile)]);
         const nextRepoId = Number(symbolCall.calleeRepoId);
-        const nextKey = `${nextRepoId}:${[...nextSymbols].join(',')}:${[...nextFiles].join(',')}`;
+        const nextContext = contextForSymbolCall(db, symbolCall, callerBindings);
+        const scheduling = scheduler.schedule({
+          workspaceId,
+          repoId: nextRepoId,
+          files: nextFiles,
+          symbolIds: nextSymbols,
+          context: nextContext,
+        }, current.state);
         const calleeNode = symbolNode(db, Number(symbolCall.callee_symbol_id));
         if (calleeNode) nodes.set(String(calleeNode.id), calleeNode);
         const evidence = { ...parseEvidence(symbolCall.evidence_json), sourceFile: symbolCall.source_file, sourceLine: symbolCall.source_line, calleeSymbolId: symbolCall.callee_symbol_id, calleeSymbolName: calleeNode?.symbolName, calleeSymbolFile: calleeNode?.sourceFile, resolutionStatus: symbolCall.status };
         edges.push({ step: current.depth, type: 'local_symbol_call', from: String(symbolCall.callee_expression), to: calleeNode?.label ? String(calleeNode.label) : `symbol:${String(symbolCall.callee_symbol_id)}`, evidence, confidence: Number(symbolCall.confidence ?? 0.8), unresolvedReason: String(symbolCall.status) === 'resolved' ? undefined : symbolCall.unresolved_reason ? String(symbolCall.unresolved_reason) : undefined });
-        if (seenScopes.has(nextKey)) edges.push({ step: current.depth, type: 'cycle', from: String(symbolCall.callee_expression), to: nextKey, evidence: { cycle: true, symbolCallId: symbolCall.id }, confidence: 1, unresolvedReason: 'Cycle detected; downstream symbol already visited' });
-        else queue.push({ repoId: nextRepoId, files: nextFiles, symbolIds: nextSymbols, depth: current.depth + 1, context: contextForSymbolCall(db, symbolCall, callerBindings) });
+        if (scheduling.kind === 'cycle') edges.push({ step: current.depth, type: 'cycle', from: String(symbolCall.callee_expression), to: scheduling.state.structuralKey, evidence: { cycle: true, cycleReason: 'structural_ancestry_cycle', symbolCallId: symbolCall.id }, confidence: 1, unresolvedReason: 'Cycle detected in structural ancestry; downstream symbol was not expanded' });
+        if (scheduling.kind === 'scheduled') enqueueCausalScope(
+          queue, pendingRoots, { repoId: nextRepoId, files: nextFiles,
+            symbolIds: nextSymbols, depth: current.depth + 1,
+            context: nextContext, state: scheduling.state });
       }
     }
     const graph = graphForCalls(
@@ -527,18 +529,16 @@ export function trace(
         callType: call.call_type,
       });
       const persistedRowsForCall = graph.get(Number(call.id)) ?? [];
-      const contextual = contextualRuntimeResolution(db, call, callerBindings.get(receiverFromEvidence(call.evidence_json) ?? ''), workspaceIdForCall(db, String(call.id)), persistedRowsForCall);
+      const contextual = contextualRuntimeResolution(db, call, callerBindings.get(receiverFromEvidence(call.evidence_json) ?? ''), call.workspaceId, persistedRowsForCall);
       const graphRows = contextual.row ? [contextual.row] : persistedRowsForCall;
       for (const row of graphRows) {
-        if (seenEdges.has(Number(row.id))) continue;
-        seenEdges.add(Number(row.id));
         const persistedEvidence = parseEvidence(row.evidence_json);
         const rawEvidence = baseTraceEvidence(row as TraceGraphRow, call, persistedEvidence, contextual.evidence);
         const effective = runtimeResolution(db, row as TraceGraphRow, rawEvidence, {
           vars: options.vars,
           dynamicMode: options.dynamicMode ?? 'strict',
           maxDynamicCandidates: options.maxDynamicCandidates,
-        }, workspaceIdForCall(db, String(call.id)), contextual.state);
+        }, call.workspaceId, contextual.state);
         const evidence = effective.evidence;
         const effectiveRow = effective.row;
         const targetNode = `${effectiveRow.to_kind}:${effectiveRow.to_id}`;
@@ -558,6 +558,40 @@ export function trace(
           confidence: Number(effectiveRow.confidence ?? call.confidence),
           unresolvedReason: effective.unresolvedReason,
         });
+        if (options.includeAsync && call.call_type === 'async_emit'
+          && effectiveRow.edge_type === 'HANDLER_EMITS_EVENT'
+          && typeof call.event_name_expr === 'string') {
+          const plans = planEventSubscriberTransitions(db, {
+            workspaceId: workspaceId ?? call.workspaceId,
+            graphGeneration: call.graphGeneration,
+            eventName: call.event_name_expr,
+          }, scheduler, current.state, current.depth, maxDepth);
+          for (const plan of plans) {
+            const nodeId = String(plan.node.id);
+            const targetLabel = String(plan.node.label ?? nodeId);
+            nodes.set(nodeId, plan.node);
+            edges.push({
+              step: current.depth,
+              type: 'event_name_matches_subscription_handler',
+              from: plan.transition.eventName,
+              to: targetLabel,
+              evidence: plan.evidence,
+              confidence: plan.transition.confidence,
+              unresolvedReason: plan.transition.unresolvedReason,
+            });
+            if (plan.bodyExpansion === 'cycle_blocked' && plan.state)
+              edges.push({ step: current.depth, type: 'cycle', from: targetLabel, to: plan.state.structuralKey, evidence: { cycle: true, cycleReason: 'structural_ancestry_cycle', graphEdgeId: plan.transition.graphEdgeId }, confidence: 1, unresolvedReason: 'Cycle detected across an event subscriber boundary; downstream symbol was not expanded' });
+            const handler = plan.transition.handler;
+            if (plan.bodyExpansion === 'scheduled' && plan.state && handler) {
+              const files = new Set([handler.sourceFile]);
+              const symbolIds = new Set([handler.symbolId]);
+              enqueueCausalScope(queue, pendingRoots, {
+                repoId: handler.repoId, files, symbolIds,
+                depth: current.depth + 1, context: new Map(), state: plan.state,
+              });
+            }
+          }
+        }
         if ((options.dynamicMode ?? 'strict') === 'candidates'
           && effectiveRow.status !== 'resolved')
           edges.push(...dynamicCandidateBranches(current.depth, call, evidence));
@@ -626,25 +660,30 @@ export function trace(
                 'SELECT s.repo_id repoId FROM cds_operations o JOIN cds_services s ON s.id=o.service_id WHERE o.id=?',
               )
               .get(effectiveRow.to_id)?.repoId as number | undefined);
-            const nextKey = `${targetRepoId ?? '*'}:${[...(symbolIds ?? new Set(['*']))].sort().join(',')}:${[...files].sort().join(',')}`;
-            if (seenScopes.has(nextKey))
+            const nextContext = new Map<string, ContextBinding>();
+            const scheduling = scheduler.schedule({
+              workspaceId: workspaceId ?? call.workspaceId,
+              repoId: targetRepoId,
+              files,
+              symbolIds,
+              context: nextContext,
+            }, current.state);
+            if (scheduling.kind === 'cycle')
               edges.push({
                 step: current.depth,
                 type: 'cycle',
                 from: to,
-                to: nextKey,
-                evidence: { ...evidence, cycle: true },
+                to: scheduling.state.structuralKey,
+                evidence: { ...evidence, cycle: true,
+                  cycleReason: 'structural_ancestry_cycle' },
                 confidence: 1,
                 unresolvedReason:
-                  'Cycle detected; downstream scope already visited',
+                  'Cycle detected in structural ancestry; downstream scope was not expanded',
               });
-            else
-              queue.push({
-                repoId: targetRepoId,
-                files,
-                symbolIds,
-                depth: current.depth + 1,
-              });
+            if (scheduling.kind === 'scheduled') enqueueCausalScope(
+              queue, pendingRoots, { repoId: targetRepoId, files, symbolIds,
+                depth: current.depth + 1, context: nextContext,
+                state: scheduling.state });
           }
         }
       }

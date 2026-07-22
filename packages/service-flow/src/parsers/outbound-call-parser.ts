@@ -348,7 +348,15 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
   const wrapperSpecs = collectWrapperSpecs(source);
   const wrapperInternalRanges = [...wrapperSpecs.values()].map((spec) => ({ start: spec.internalStart, end: spec.internalEnd }));
   const add = (node: ts.CallExpression, fact: Omit<OutboundCallFact, 'sourceFile' | 'sourceLine' | 'confidence'> & { confidence?: number }, extra?: Record<string, unknown>): void => {
-    calls.push({ node, fact: { ...fact, sourceFile, sourceLine: lineOf(source.text, node.getStart(source)), confidence: fact.confidence ?? 0.8, evidence: parserEvidence(source, node, extra) } });
+    calls.push({ node, fact: {
+      ...fact,
+      sourceFile,
+      sourceLine: lineOf(source.text, node.getStart(source)),
+      callSiteStartOffset: node.getStart(source),
+      callSiteEndOffset: node.getEnd(),
+      confidence: fact.confidence ?? 0.8,
+      evidence: parserEvidence(source, node, extra),
+    } });
   };
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -505,6 +513,8 @@ function parseLocalServiceCalls(
         aliasChain: parsed.chain,
         sourceFile: normalizePath(filePath),
         sourceLine: lineOf(text, node.getStart(source)),
+        callSiteStartOffset: node.getStart(source),
+        callSiteEndOffset: node.getEnd(),
         confidence: 0.9,
         unresolvedReason: ['send', 'emit', 'publish', 'on'].includes(parsed.operation) ? 'transport_client_method' : undefined,
         evidence: parserEvidence(source, node, {

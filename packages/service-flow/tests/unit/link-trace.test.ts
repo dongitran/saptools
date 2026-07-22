@@ -14,6 +14,7 @@ import { indexWorkspace } from '../../src/indexer/workspace-indexer.js';
 import { linkWorkspace, trace } from '../../src/index.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
 import { renderMermaid } from '../../src/output/mermaid-output.js';
+import { ANALYZER_VERSION } from '../../src/version.js';
 const fixture = path.resolve('tests/fixtures/cap-workspace');
 
 async function writeFixtureFile(root: string, relative: string, content = ''): Promise<void> {
@@ -227,7 +228,10 @@ describe('linker and trace engine', () => {
         linked.dependencyAmbiguousCount +
         linked.implementationResolvedCount +
         linked.implementationAmbiguousCount +
-        linked.implementationUnresolvedCount,
+        linked.implementationUnresolvedCount +
+        linked.subscriptionHandlerResolvedCount +
+        linked.subscriptionHandlerAmbiguousCount +
+        linked.subscriptionHandlerUnresolvedCount,
     );
     expect(linked.dependencyResolvedCount).toBeGreaterThan(0);
     const edgeTypes = db
@@ -763,10 +767,12 @@ export class FlowHandler {
     const workspaceId = upsertWorkspace(db, root, dbPath);
     const adminRepo = upsertRepository(db, workspaceId, { name: 'admin-api', absolutePath: path.join(root, 'admin-api'), relativePath: 'admin-api', isGitRepo: false, packageName: 'admin-api', kind: 'cap-service' });
     const facadeRepo = upsertRepository(db, workspaceId, { name: 'facade-api', absolutePath: path.join(root, 'facade-api'), relativePath: 'facade-api', isGitRepo: false, packageName: 'facade-api', kind: 'cap-service' });
+    db.prepare("UPDATE repositories SET index_status='indexed',fact_analyzer_version=? WHERE workspace_id=?")
+      .run(ANALYZER_VERSION, workspaceId);
     const serviceId = Number(db.prepare("INSERT INTO cds_services(repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?) RETURNING id").get(adminRepo, 'AdminService', 'AdminService', '/AdminService', 0, 'srv/admin.cds', 1)?.id);
     db.prepare("INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)").run(serviceId, 'action', 'refreshCache', '/refreshCache', '[]', 'String', 'srv/admin.cds', 2);
     const bindingId = Number(db.prepare("INSERT INTO service_bindings(repo_id,variable_name,alias,service_path_expr,is_dynamic,placeholders_json,source_file,source_line) VALUES(?,?,?,?,?,?,?,?) RETURNING id").get(facadeRepo, 'adminService', 'admin-api', '/AdminService', 0, '[]', 'srv/facade.ts', 3)?.id);
-    db.prepare("INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?)").run(facadeRepo, 'remote_entity_mutation', bindingId, 'POST', '/refreshCache()', 'refreshCache', 'srv/facade.ts', 4, 0.8, JSON.stringify({ parser: 'legacy_remote_entity_fixture' }));
+    db.prepare("INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,call_site_start_offset,call_site_end_offset,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(facadeRepo, 'remote_entity_mutation', bindingId, 'POST', '/refreshCache()', 'refreshCache', 'srv/facade.ts', 4, 100, 120, 0.8, JSON.stringify({ parser: 'legacy_remote_entity_fixture' }));
     linkWorkspace(db, workspaceId);
     const edge = db.prepare("SELECT edge_type edgeType,status,to_kind toKind,evidence_json evidenceJson FROM graph_edges WHERE from_kind='call'").get() as { edgeType: string; status: string; toKind: string; evidenceJson: string };
     expect(edge).toMatchObject({ edgeType: 'REMOTE_CALL_RESOLVES_TO_OPERATION', status: 'resolved', toKind: 'operation' });
@@ -787,14 +793,16 @@ describe('service-flow OData entity and operation precedence hardening', () => {
     const workspaceId = upsertWorkspace(db, root, dbPath);
     const documentsRepo = upsertRepository(db, workspaceId, { name: 'documents-api', absolutePath: path.join(root, 'documents-api'), relativePath: 'documents-api', isGitRepo: false, packageName: 'documents-api', kind: 'cap-service' });
     const callerRepo = upsertRepository(db, workspaceId, { name: 'workflow-api', absolutePath: path.join(root, 'workflow-api'), relativePath: 'workflow-api', isGitRepo: false, packageName: 'workflow-api', kind: 'cap-service' });
+    db.prepare("UPDATE repositories SET index_status='indexed',fact_analyzer_version=? WHERE workspace_id=?")
+      .run(ANALYZER_VERSION, workspaceId);
     const serviceId = Number(db.prepare("INSERT INTO cds_services(repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?) RETURNING id").get(documentsRepo, 'DocumentService', 'DocumentService', '/DocumentService', 0, 'srv/service.cds', 1)?.id);
     db.prepare("INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,return_type,source_file,source_line) VALUES(?,?,?,?,?,?,?,?)").run(serviceId, 'action', 'refreshCache', '/refreshCache', '[]', 'String', 'srv/service.cds', 8);
     const bindingId = Number(db.prepare("INSERT INTO service_bindings(repo_id,variable_name,alias,service_path_expr,is_dynamic,placeholders_json,source_file,source_line) VALUES(?,?,?,?,?,?,?,?) RETURNING id").get(callerRepo, 'documentService', 'documents-api', '/DocumentService', 0, '[]', 'srv/handler.ts', 3)?.id);
-    const insertCall = db.prepare("INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?)");
-    insertCall.run(callerRepo, 'remote_entity_mutation', bindingId, 'POST', '/DocumentAttachment', 'DocumentAttachment', 'srv/handler.ts', 4, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
-    insertCall.run(callerRepo, 'remote_entity_media', bindingId, 'PUT', '/DocumentAttachment(${attachment.ID})/file', 'DocumentAttachment', 'srv/handler.ts', 5, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
-    insertCall.run(callerRepo, 'remote_query', bindingId, 'GET', '/DocumentAttachment(${attachmentID})', 'DocumentAttachment', 'srv/handler.ts', 6, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
-    insertCall.run(callerRepo, 'remote_entity_mutation', bindingId, 'POST', '/refreshCache()', 'refreshCache', 'srv/handler.ts', 7, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    const insertCall = db.prepare("INSERT INTO outbound_calls(repo_id,call_type,service_binding_id,method,operation_path_expr,query_entity,source_file,source_line,call_site_start_offset,call_site_end_offset,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)");
+    insertCall.run(callerRepo, 'remote_entity_mutation', bindingId, 'POST', '/DocumentAttachment', 'DocumentAttachment', 'srv/handler.ts', 4, 100, 120, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    insertCall.run(callerRepo, 'remote_entity_media', bindingId, 'PUT', '/DocumentAttachment(${attachment.ID})/file', 'DocumentAttachment', 'srv/handler.ts', 5, 130, 150, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    insertCall.run(callerRepo, 'remote_query', bindingId, 'GET', '/DocumentAttachment(${attachmentID})', 'DocumentAttachment', 'srv/handler.ts', 6, 160, 180, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
+    insertCall.run(callerRepo, 'remote_entity_mutation', bindingId, 'POST', '/refreshCache()', 'refreshCache', 'srv/handler.ts', 7, 190, 210, 0.8, JSON.stringify({ parser: 'neutral_fixture' }));
     linkWorkspace(db, workspaceId);
     const rows = db.prepare("SELECT c.operation_path_expr path,e.edge_type edgeType,e.status status,e.to_kind toKind,e.unresolved_reason unresolvedReason,e.evidence_json evidenceJson FROM outbound_calls c JOIN graph_edges e ON e.from_kind='call' AND e.from_id=CAST(c.id AS TEXT) ORDER BY c.source_line").all() as Array<{ path: string; edgeType: string; status: string; toKind: string; unresolvedReason: string | null; evidenceJson: string }>;
     expect(rows.find((row) => row.path.includes('/file'))).toMatchObject({ edgeType: 'HANDLER_ACCESSES_REMOTE_ENTITY', status: 'terminal', toKind: 'remote_entity', unresolvedReason: null });

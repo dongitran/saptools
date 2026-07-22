@@ -13,6 +13,8 @@ import {
   objectValue,
 } from './002-call-evidence.js';
 import { linkPackageImportSymbolCalls } from './003-package-import-symbol-resolver.js';
+import { linkEventSubscriptionHandlers } from './004-event-subscription-handler-linker.js';
+import { assertWorkspaceLinkable } from '../db/001-fact-lifecycle.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;
@@ -27,24 +29,43 @@ export interface LinkWorkspaceResult {
   implementationResolvedCount: number;
   implementationAmbiguousCount: number;
   implementationUnresolvedCount: number;
+  subscriptionHandlerResolvedCount: number;
+  subscriptionHandlerAmbiguousCount: number;
+  subscriptionHandlerUnresolvedCount: number;
+  subscriptionHandlerMissingAssociationCount: number;
 }
 export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, string> = {}): LinkWorkspaceResult {
   return db.transaction(() => {
+    assertWorkspaceLinkable(db, workspaceId);
     const generation = nextGraphGeneration(db, workspaceId);
     db.prepare('DELETE FROM graph_edges WHERE workspace_id=?').run(workspaceId);
     const deps = linkHelperPackages(db, workspaceId, generation);
     linkPackageImportSymbolCalls(db, workspaceId);
+    const subscriptions = linkEventSubscriptionHandlers(
+      db, workspaceId, generation,
+    );
     const impl = linkCanonicalImplementations(db, workspaceId, generation);
     const callSummary = linkCalls(db, workspaceId, vars, generation);
     db.prepare("UPDATE repositories SET graph_generation=?, graph_stale_reason=NULL, graph_stale_at=NULL WHERE workspace_id=?").run(generation, workspaceId);
-    return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount, implementationUnresolvedCount: impl.unresolvedCount };
+    return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount + subscriptions.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount, implementationUnresolvedCount: impl.unresolvedCount, subscriptionHandlerResolvedCount: subscriptions.resolvedCount, subscriptionHandlerAmbiguousCount: subscriptions.ambiguousCount, subscriptionHandlerUnresolvedCount: subscriptions.unresolvedCount, subscriptionHandlerMissingAssociationCount: subscriptions.missingAssociationCount };
   });
 }
 function nextGraphGeneration(db: Db, workspaceId: number): number {
   const row = db.prepare('SELECT COALESCE(MAX(graph_generation),0) generation FROM repositories WHERE workspace_id=?').get(workspaceId) as { generation?: number } | undefined;
   return Number(row?.generation ?? 0) + 1;
 }
-function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, generation: number): Omit<LinkWorkspaceResult, 'dependencyResolvedCount' | 'dependencyAmbiguousCount' | 'implementationResolvedCount' | 'implementationAmbiguousCount' | 'implementationUnresolvedCount'> {
+type CallLinkSummary = Omit<LinkWorkspaceResult,
+  | 'dependencyResolvedCount'
+  | 'dependencyAmbiguousCount'
+  | 'implementationResolvedCount'
+  | 'implementationAmbiguousCount'
+  | 'implementationUnresolvedCount'
+  | 'subscriptionHandlerResolvedCount'
+  | 'subscriptionHandlerAmbiguousCount'
+  | 'subscriptionHandlerUnresolvedCount'
+  | 'subscriptionHandlerMissingAssociationCount'>;
+
+function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, generation: number): CallLinkSummary {
   let edgeCount = 0;
   let unresolvedCount = 0;
   let resolvedCount = 0;

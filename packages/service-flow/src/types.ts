@@ -35,6 +35,7 @@ export type EdgeType =
   | 'HANDLER_CALLS_TRANSPORT_METHOD'
   | 'HANDLER_EMITS_EVENT'
   | 'EVENT_CONSUMED_BY_HANDLER'
+  | 'EVENT_SUBSCRIPTION_HANDLED_BY'
   | 'REPO_IMPORTS_HELPER_PACKAGE'
   | 'HELPER_PACKAGE_PROVIDES_HANDLER'
   | 'DYNAMIC_EDGE_CANDIDATE'
@@ -175,6 +176,8 @@ export interface OutboundCallFact {
   payloadSummary?: string;
   sourceFile: string;
   sourceLine: number;
+  callSiteStartOffset?: number;
+  callSiteEndOffset?: number;
   confidence: number;
   unresolvedReason?: string;
   evidence?: Record<string, unknown>;
@@ -193,6 +196,10 @@ export interface ExecutableSymbolFact {
   exported: boolean;
   importExportEvidence?: Record<string, unknown>;
 }
+export type SymbolCallRole =
+  | 'ordinary_call'
+  | 'event_subscribe_handler'
+  | 'legacy_unknown';
 export interface SymbolCallFact {
   callerQualifiedName: string;
   calleeExpression: string;
@@ -201,6 +208,9 @@ export interface SymbolCallFact {
   importSource?: string;
   sourceFile: string;
   sourceLine: number;
+  callSiteStartOffset?: number;
+  callSiteEndOffset?: number;
+  callRole: Exclude<SymbolCallRole, 'legacy_unknown'>;
   evidence: Record<string, unknown>;
 }
 export interface GeneratedConstantFact {
