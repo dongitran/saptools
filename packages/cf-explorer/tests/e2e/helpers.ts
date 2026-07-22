@@ -77,9 +77,11 @@ export function createEnv(paths: CasePaths): NodeJS.ProcessEnv {
 }
 
 export async function runCli(env: NodeJS.ProcessEnv, args: readonly string[]): Promise<RunResult> {
+  const childEnv = { ...env };
+  delete childEnv["FORCE_COLOR"];
   try {
     const { stdout, stderr } = await execFileAsync("node", [CLI_PATH, ...args], {
-      env,
+      env: childEnv,
       maxBuffer: 16 * 1024 * 1024,
       timeout: 60_000,
     });

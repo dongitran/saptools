@@ -36,6 +36,7 @@ import {
   parseRootsOutput,
   parseViewOutput,
 } from "../discovery/parsers.js";
+import { limitInspectResults, limitResults } from "../discovery/result-limits.js";
 import { prepareSshAccess } from "../discovery/runner.js";
 import { createIpcServer, errorResponse, type IpcHandlerResult, type IpcRequest, type IpcResponse } from "../session/ipc.js";
 import { cleanupSessionFiles, readExplorerSession, removeExplorerSession, updateExplorerSession } from "../session/storage.js";
@@ -177,38 +178,53 @@ class ExplorerBroker {
     const args = request.args;
     const limits = requestLimits(request);
     if (request.command === "roots") {
+      const command = buildRootsScript(readNumber(args, "maxFiles"));
       return this.buildRoots(await shell.execute(
-        buildRootsScript(readNumber(args, "maxFiles")).script,
+        command.script,
         limits.timeoutMs,
         limits.maxBytes,
-      ));
+      ), command.maxFiles);
     }
     if (request.command === "find") {
-      return this.buildFind(await shell.execute(buildFindScript({
+      const command = buildFindScript({
         root: readString(args, "root"),
         name: readString(args, "name"),
         followSymlinks: readBoolean(args, "followSymlinks"),
         ...numberField(args, "maxFiles"),
-      }).script, limits.timeoutMs, limits.maxBytes));
+      });
+      return this.buildFind(
+        await shell.execute(command.script, limits.timeoutMs, limits.maxBytes),
+        command.maxFiles,
+      );
     }
     if (request.command === "ls") {
       const path = readString(args, "path");
-      return this.buildLs(await shell.execute(buildLsScript({
+      const command = buildLsScript({
         path,
         ...stringField(args, "pattern"),
         followSymlinks: readBoolean(args, "followSymlinks"),
         ...numberField(args, "maxFiles"),
-      }).script, limits.timeoutMs, limits.maxBytes), path);
+      });
+      return this.buildLs(
+        await shell.execute(command.script, limits.timeoutMs, limits.maxBytes),
+        path,
+        command.maxFiles,
+      );
     }
     if (request.command === "grep") {
-      return this.buildGrep(await shell.execute(buildGrepScript({
+      const command = buildGrepScript({
         root: readString(args, "root"),
         text: readString(args, "text"),
         preview: readBoolean(args, "preview"),
         followSymlinks: readBoolean(args, "followSymlinks"),
         ...numberField(args, "maxMatches"),
         ...numberField(args, "maxFiles"),
-      }).script, limits.timeoutMs, limits.maxBytes), readBoolean(args, "preview"));
+      });
+      return this.buildGrep(
+        await shell.execute(command.script, limits.timeoutMs, limits.maxBytes),
+        readBoolean(args, "preview"),
+        command.maxMatches,
+      );
     }
     if (request.command === "view") {
       return this.buildView(await shell.execute(buildViewScript({
@@ -218,7 +234,7 @@ class ExplorerBroker {
       }).script, limits.timeoutMs, limits.maxBytes), readString(args, "file"));
     }
     const includeFiles = readBoolean(args, "includeFiles");
-    return this.buildInspect(await shell.execute(buildInspectCandidatesScript({
+    const command = buildInspectCandidatesScript({
       text: readString(args, "text"),
       ...stringField(args, "root"),
       ...stringField(args, "name"),
@@ -226,35 +242,52 @@ class ExplorerBroker {
       ...numberField(args, "maxMatches"),
       ...(includeFiles ? { includeFiles: true } : {}),
       followSymlinks: readBoolean(args, "followSymlinks"),
-    }).script, limits.timeoutMs, limits.maxBytes), includeFiles);
+    });
+    return this.buildInspect(
+      await shell.execute(command.script, limits.timeoutMs, limits.maxBytes),
+      includeFiles,
+      command.maxFiles,
+      command.maxMatches,
+    );
   }
 
-  private buildRoots(result: PersistentResult): RootsResult {
+  private buildRoots(result: PersistentResult, maxFiles: number | undefined): RootsResult {
+    const roots = limitResults(parseRootsOutput(result.stdout), maxFiles);
     return {
-      meta: this.meta(result),
-      roots: parseRootsOutput(result.stdout),
+      meta: this.meta(result, roots.capped),
+      roots: roots.values,
     };
   }
 
-  private buildFind(result: PersistentResult): FindResult {
+  private buildFind(result: PersistentResult, maxFiles: number | undefined): FindResult {
+    const matches = limitResults(parseFindOutput(result.stdout, this.bootstrap.instance), maxFiles);
     return {
-      meta: this.meta(result),
-      matches: parseFindOutput(result.stdout, this.bootstrap.instance),
+      meta: this.meta(result, matches.capped),
+      matches: matches.values,
     };
   }
 
-  private buildLs(result: PersistentResult, path: string): LsResult {
+  private buildLs(result: PersistentResult, path: string, maxFiles: number | undefined): LsResult {
+    const entries = limitResults(parseLsOutput(result.stdout, this.bootstrap.instance), maxFiles);
     return {
-      meta: this.meta(result),
+      meta: this.meta(result, entries.capped),
       path,
-      entries: parseLsOutput(result.stdout, this.bootstrap.instance),
+      entries: entries.values,
     };
   }
 
-  private buildGrep(result: PersistentResult, includePreview: boolean): GrepResult {
+  private buildGrep(
+    result: PersistentResult,
+    includePreview: boolean,
+    maxMatches: number | undefined,
+  ): GrepResult {
+    const matches = limitResults(
+      parseGrepOutput(result.stdout, this.bootstrap.instance, includePreview),
+      maxMatches,
+    );
     return {
-      meta: this.meta(result),
-      matches: parseGrepOutput(result.stdout, this.bootstrap.instance, includePreview),
+      meta: this.meta(result, matches.capped),
+      matches: matches.values,
     };
   }
 
@@ -269,20 +302,27 @@ class ExplorerBroker {
     };
   }
 
-  private buildInspect(result: PersistentResult, includeFiles: boolean): InspectCandidatesResult {
+  private buildInspect(
+    result: PersistentResult,
+    includeFiles: boolean,
+    maxFiles: number | undefined,
+    maxMatches: number | undefined,
+  ): InspectCandidatesResult {
+    const parsed = parseInspectOutput(result.stdout, this.bootstrap.instance, false, includeFiles);
+    const limited = limitInspectResults(parsed, maxFiles, maxMatches);
     return {
-      meta: this.meta(result),
-      ...parseInspectOutput(result.stdout, this.bootstrap.instance, false, includeFiles),
+      meta: this.meta(result, limited.capped),
+      ...limited.value,
     };
   }
 
-  private meta(result: PersistentResult): ExplorerMeta {
+  private meta(result: PersistentResult, capped = false): ExplorerMeta {
     return {
       target: normalizeTarget(this.bootstrap.target),
       process: this.bootstrap.process,
       instance: this.bootstrap.instance,
       durationMs: result.durationMs,
-      truncated: result.truncated,
+      truncated: result.truncated || capped,
     };
   }
 

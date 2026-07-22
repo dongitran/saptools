@@ -1,14 +1,26 @@
 import process from "node:process";
 
-export function writeOutput(value: unknown, json = true): void {
-  process.stdout.write(formatOutput(value, json));
+const TRUNCATION_WARNING = "Warning: Results may be incomplete; increase --max-files, --max-matches, or --max-bytes and retry.\n";
+
+export function writeOutput(value: unknown): void {
+  process.stdout.write(formatOutput(value));
+  if (hasTruncatedMeta(value)) {
+    process.stderr.write(TRUNCATION_WARNING);
+  }
 }
 
-export function formatOutput(value: unknown, json = true): string {
-  if (json) {
-    return `${JSON.stringify(value, null, 2)}\n`;
-  }
+export function formatOutput(value: unknown): string {
   return formatHumanOutput(value);
+}
+
+function hasTruncatedMeta(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const meta = (value as Record<string, unknown>)["meta"];
+  return typeof meta === "object"
+    && meta !== null
+    && (meta as Record<string, unknown>)["truncated"] === true;
 }
 
 function formatHumanOutput(value: unknown): string {

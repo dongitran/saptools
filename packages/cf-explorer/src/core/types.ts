@@ -56,6 +56,7 @@ export interface ExplorerMeta {
   readonly process: string;
   readonly instance?: number;
   readonly durationMs: number;
+  /** True when a byte limit or result-count limit made the result incomplete. */
   readonly truncated: boolean;
 }
 

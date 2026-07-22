@@ -10,38 +10,51 @@ describe("CLI output rendering", () => {
     vi.restoreAllMocks();
   });
 
-  it("writes formatted output to stdout", () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  it("writes human-readable output to stdout without warning for complete results", () => {
+    const writeStdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writeStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    writeOutput({ ok: true });
+    writeOutput({ meta, roots: ["/workspace/app"] });
 
-    expect(write).toHaveBeenCalledWith("{\n  \"ok\": true\n}\n");
+    expect(writeStdout).toHaveBeenCalledWith("/workspace/app\n");
+    expect(writeStderr).not.toHaveBeenCalled();
   });
 
-  it("formats JSON output with a trailing newline", () => {
-    expect(formatOutput({ ok: true })).toBe("{\n  \"ok\": true\n}\n");
+  it("warns on stderr while preserving human-readable stdout for incomplete results", () => {
+    const writeStdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const writeStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    writeOutput({
+      meta: { ...meta, truncated: true },
+      matches: [{ instance: 0, line: 2, path: "/workspace/app/src/connect.js" }],
+    });
+
+    expect(writeStdout).toHaveBeenCalledWith("#0\t/workspace/app/src/connect.js:2\n");
+    expect(writeStderr).toHaveBeenCalledWith(
+      "Warning: Results may be incomplete; increase --max-files, --max-matches, or --max-bytes and retry.\n",
+    );
   });
 
   it("formats primitive and fallback human output", () => {
-    expect(formatOutput("plain", false)).toBe("plain\n");
-    expect(formatOutput({ unknown: true }, false)).toBe("{\n  \"unknown\": true\n}\n");
+    expect(formatOutput("plain")).toBe("plain\n");
+    expect(formatOutput({ unknown: true })).toBe("{\n  \"unknown\": true\n}\n");
   });
 
   it("renders discovery result shapes for human output", () => {
-    expect(formatOutput({ meta, roots: ["/workspace/app"] }, false)).toBe("/workspace/app\n");
-    expect(formatOutput({ meta, roots: [] }, false)).toBe("No roots discovered.\n");
+    expect(formatOutput({ meta, roots: ["/workspace/app"] })).toBe("/workspace/app\n");
+    expect(formatOutput({ meta, roots: [] })).toBe("No roots discovered.\n");
     expect(formatOutput({
       meta,
       instances: [{ index: 0, state: "running", since: "today" }],
-    }, false)).toBe("#0\trunning\ttoday\n");
-    expect(formatOutput({ meta, instances: [] }, false)).toBe("No instances reported.\n");
-    expect(formatOutput({ meta, instances: [null] }, false))
+    })).toBe("#0\trunning\ttoday\n");
+    expect(formatOutput({ meta, instances: [] })).toBe("No instances reported.\n");
+    expect(formatOutput({ meta, instances: [null] }))
       .toBe(`${JSON.stringify({ meta, instances: [null] }, null, 2)}\n`);
     expect(formatOutput({
       meta,
       path: "/workspace/app",
       entries: [{ instance: 0, kind: "directory", name: "src", path: "/workspace/app/src" }],
-    }, false)).toBe("#0\t[directory]\tsrc\t/workspace/app/src\n");
+    })).toBe("#0\t[directory]\tsrc\t/workspace/app/src\n");
     expect(formatOutput({
       meta,
       path: "/workspace/app/node_modules/@scope",
@@ -52,27 +65,27 @@ describe("CLI output rendering", () => {
         path: "/workspace/app/node_modules/@scope/pkg",
         target: "../.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg",
       }],
-    }, false)).toBe(
+    })).toBe(
       "#0\t[symlink]\tpkg\t/workspace/app/node_modules/@scope/pkg\t-> ../.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg\n",
     );
-    expect(formatOutput({ meta, path: "/workspace/app", entries: [] }, false)).toBe("No entries.\n");
+    expect(formatOutput({ meta, path: "/workspace/app", entries: [] })).toBe("No entries.\n");
   });
 
   it("renders matches and view output for human output", () => {
     expect(formatOutput({
       meta,
       matches: [{ instance: 0, kind: "file", path: "/workspace/app/src/connect.js" }],
-    }, false)).toBe("#0\t/workspace/app/src/connect.js[file]\n");
+    })).toBe("#0\t/workspace/app/src/connect.js[file]\n");
     expect(formatOutput({
       meta,
       matches: [{ instance: 0, line: 2, path: "/workspace/app/src/connect.js", preview: "needle" }],
-    }, false)).toBe("#0\t/workspace/app/src/connect.js:2\tneedle\n");
-    expect(formatOutput({ meta, matches: [] }, false)).toBe("No matches.\n");
+    })).toBe("#0\t/workspace/app/src/connect.js:2\tneedle\n");
+    expect(formatOutput({ meta, matches: [] })).toBe("No matches.\n");
     expect(formatOutput({
       meta,
       file: "/workspace/app/src/connect.js",
       lines: [{ line: 2, text: "needle" }],
-    }, false)).toBe("# /workspace/app/src/connect.js\n    2  needle\n");
+    })).toBe("# /workspace/app/src/connect.js\n    2  needle\n");
   });
 
   it("renders inspect, lifecycle, and session outputs for human output", () => {
@@ -82,37 +95,37 @@ describe("CLI output rendering", () => {
       files: [],
       contentMatches: [{ path: "/workspace/app/src/connect.js", line: 2 }],
       suggestedBreakpoints: [{ bp: "/workspace/app/src/connect.js", line: 2, confidence: "high" }],
-    }, false)).toContain("Suggested breakpoints:\n  [high] /workspace/app/src/connect.js:2");
+    })).toContain("Suggested breakpoints:\n  [high] /workspace/app/src/connect.js:2");
     expect(formatOutput({
       meta,
       roots: [],
       files: [],
       contentMatches: [],
       suggestedBreakpoints: [],
-    }, false)).toBe("No candidates discovered.\n");
-    expect(formatOutput({ changed: false, status: "enabled", message: "SSH is enabled." }, false))
+    })).toBe("No candidates discovered.\n");
+    expect(formatOutput({ changed: false, status: "enabled", message: "SSH is enabled." }))
       .toBe("enabled: SSH is enabled.\n");
-    expect(formatOutput({ sessions: [] }, false)).toBe("No persistent sessions.\n");
+    expect(formatOutput({ sessions: [] })).toBe("No persistent sessions.\n");
     expect(formatOutput({
       sessions: [{ sessionId: "session-a", status: "ready", target }],
-    }, false)).toBe("session-a\tready\tdemo-app\n");
+    })).toBe("session-a\tready\tdemo-app\n");
     expect(formatOutput({
       sessions: [{ sessionId: "session-b", status: "ready" }],
-    }, false)).toBe("session-b\tready\t?\n");
-    expect(formatOutput({ stopped: 2 }, false)).toBe("stopped: 2\n");
+    })).toBe("session-b\tready\t?\n");
+    expect(formatOutput({ stopped: 2 })).toBe("stopped: 2\n");
     expect(formatOutput({
       sessionId: "session-a",
       status: "ready",
       brokerAlive: true,
       sshAlive: true,
       socketAlive: true,
-    }, false)).toContain("socketAlive: true");
+    })).toContain("socketAlive: true");
     expect(formatOutput({
       sessionId: "session-a",
       status: "ready",
       brokerPid: 123,
       socketPath: "/tmp/session.sock",
-    }, false)).toContain("brokerPid: 123");
+    })).toContain("brokerPid: 123");
   });
 
   it("formats unusual session status cells without object stringification", () => {
@@ -122,7 +135,7 @@ describe("CLI output rendering", () => {
       brokerAlive: Symbol("unknown"),
       sshAlive: () => undefined,
       socketAlive: { ok: true },
-    }, false);
+    });
 
     expect(output).toContain("brokerAlive: unknown");
     expect(output).toContain("sshAlive: ");
@@ -134,7 +147,7 @@ describe("CLI output rendering", () => {
       brokerAlive: undefined,
       sshAlive: null,
       socketAlive: true,
-    }, false);
+    });
     expect(emptyCells).toContain("brokerAlive: ");
     expect(emptyCells).toContain("sshAlive: ");
   });

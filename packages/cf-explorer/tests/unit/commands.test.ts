@@ -27,19 +27,26 @@ describe("remote command builders", () => {
   it("builds a bounded roots script", () => {
     const script = buildRootsScript(3);
     expect(script.script).toContain("CFX_OP='roots'");
-    expect(script.script).toContain("emit_root '/workspace/app'");
-    expect(script.script).not.toContain("emit_root '/srv'");
+    expect(script.script).toContain("CFX_MAX_FILES=3");
+    expect(script.script).toContain("CFX_FETCH_FILES=4");
+    expect(script.script).toContain("if [ -d '/workspace/app' ]; then printf '%s\\n' '/workspace/app'; fi");
+    expect(script.script).not.toContain("if [ -d '/srv' ]; then printf");
     expect(script.script).toContain("find / -maxdepth 4");
     expect(script.script).toContain("-path '*/node_modules'");
-    expect(script.script).toContain("head -n 3");
+    expect(script.script).toContain('head -n "$CFX_FETCH_FILES"');
+    expect(script.maxFiles).toBe(3);
   });
 
   it("builds find with root validation and default glob wrapping", () => {
     const script = buildFindScript({ root: "/workspace/app", name: "service" });
     expect(script.script).toContain("CFX_ROOT='/workspace/app'");
     expect(script.script).toContain("CFX_NAME='*service*'");
+    expect(script.script).toContain("CFX_MAX_FILES=200");
+    expect(script.script).toContain("CFX_FETCH_FILES=201");
     expect(script.script).toContain("-path '*/node_modules'");
     expect(script.script).toContain("-path '*/node_modules/*'");
+    expect(script.script).toContain('head -n "$CFX_FETCH_FILES"');
+    expect(script.maxFiles).toBe(200);
   });
 
   it("builds one-level directory listing with bounded output", () => {
@@ -49,7 +56,10 @@ describe("remote command builders", () => {
     expect(script.script).toContain("-mindepth 1 -maxdepth 1");
     expect(script.script).toContain("CFX\\tLS\\t%s\\t%s\\t%s\\t%s\\n");
     expect(script.script).toContain("readlink");
-    expect(script.script).toContain("head -n 5");
+    expect(script.script).toContain("CFX_MAX_FILES=5");
+    expect(script.script).toContain("CFX_FETCH_FILES=6");
+    expect(script.script).toContain('head -n "$CFX_FETCH_FILES"');
+    expect(script.maxFiles).toBe(5);
   });
 
   it("builds filtered directory listings and can follow symlinks", () => {
@@ -59,7 +69,12 @@ describe("remote command builders", () => {
       followSymlinks: true,
     });
     expect(script.script).toContain("CFX_PATTERN='*helper*'");
-    expect(script.script).toContain("find -L \"$CFX_PATH\" -mindepth 1 -maxdepth 1 -name \"$CFX_PATTERN\"");
+    expect(script.script).toContain(
+      'find -L "$CFX_PATH" -mindepth 1 -maxdepth 1 -name "$CFX_PATTERN" -print 2>/dev/null | sort | head -n "$CFX_FETCH_FILES"',
+    );
+    expect(script.script.indexOf('-name "$CFX_PATTERN"')).toBeLessThan(
+      script.script.indexOf('head -n "$CFX_FETCH_FILES"'),
+    );
   });
 
   it("builds grep with fixed-string search without preview by default", () => {
@@ -68,7 +83,10 @@ describe("remote command builders", () => {
     expect(script.script).toContain("CFX\\tGREP\\t%s\\t%s\\t\\n");
     expect(script.script).not.toContain("cfx_preview");
     expect(script.script).toContain("CFX_TEXT='needle-api'");
-    expect(script.script).toContain("head -n 5");
+    expect(script.script).toContain("CFX_MAX_MATCHES=5");
+    expect(script.script).toContain("CFX_FETCH_MATCHES=6");
+    expect(script.script).toContain('head -n "$CFX_FETCH_MATCHES"');
+    expect(script.maxMatches).toBe(5);
   });
 
   it("builds grep and find with symlink-following find commands", () => {
@@ -83,7 +101,9 @@ describe("remote command builders", () => {
     expect(grep.script).not.toContain("-path '*/node_modules'");
     expect(grep.script).not.toContain("-path '*/node_modules/*'");
     expect(grep.script).toContain("-path '*/.git'");
-    expect(grep.script).toContain("head -n 4");
+    expect(grep.script).toContain("CFX_MAX_MATCHES=4");
+    expect(grep.script).toContain("CFX_FETCH_MATCHES=5");
+    expect(grep.script).toContain('head -n "$CFX_FETCH_MATCHES"');
 
     const find = buildFindScript({ root: "/workspace/app", name: "helper", followSymlinks: true });
     expect(find.script).toContain("find -L \"$CFX_ROOT\"");
@@ -134,8 +154,14 @@ describe("remote command builders", () => {
       maxMatches: 3,
     });
     expect(script.script).toContain("CFX\\tFIND");
-    expect(script.script).toContain("head -n 7");
-    expect(script.script).toContain("head -n 3");
+    expect(script.script).toContain("CFX_MAX_FILES=7");
+    expect(script.script).toContain("CFX_FETCH_FILES=8");
+    expect(script.script).toContain("CFX_MAX_MATCHES=3");
+    expect(script.script).toContain("CFX_FETCH_MATCHES=4");
+    expect(script.script).toContain('head -n "$CFX_FETCH_FILES"');
+    expect(script.script).toContain('head -n "$CFX_FETCH_MATCHES"');
+    expect(script.maxFiles).toBe(7);
+    expect(script.maxMatches).toBe(3);
   });
 
   it("builds dynamic inspect candidates across discovered roots when no root is supplied", () => {
@@ -151,9 +177,36 @@ describe("remote command builders", () => {
     expect(() => buildLsScript({ path: "relative" })).toThrow(/absolute/);
     expect(() => buildFindScript({ root: "/workspace/../app", name: "x" })).toThrow(/parent/);
     expect(() => buildRootsScript(0)).toThrow(/maxFiles/);
+    expect(() => buildRootsScript(10_001)).toThrow(/maxFiles/);
     expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 0 })).toThrow(/line/);
     expect(() => buildViewScript({ file: "/workspace/app/a.js", line: 1, context: 1001 }))
       .toThrow(/context/);
+  });
+
+  it("keeps the user limit at the hard ceiling while probing one extra result", () => {
+    const rootsScript = buildRootsScript(10_000);
+    expect(rootsScript.script).toContain("CFX_MAX_FILES=10000");
+    expect(rootsScript.script).toContain("CFX_FETCH_FILES=10001");
+    expect(rootsScript.maxFiles).toBe(10_000);
+
+    const grepScript = buildGrepScript({
+      root: "/workspace/app",
+      text: "needle-api",
+      maxMatches: 10_000,
+    });
+    expect(grepScript.script).toContain("CFX_MAX_MATCHES=10000");
+    expect(grepScript.script).toContain("CFX_FETCH_MATCHES=10001");
+    expect(grepScript.maxMatches).toBe(10_000);
+
+    const inspectScript = buildInspectCandidatesScript({
+      text: "needle-api",
+      maxFiles: 10_000,
+      maxMatches: 10_000,
+    });
+    expect(inspectScript.script).toContain("CFX_MAX_FILES=10000");
+    expect(inspectScript.script).toContain("CFX_FETCH_FILES=10001");
+    expect(inspectScript.script).toContain("CFX_MAX_MATCHES=10000");
+    expect(inspectScript.script).toContain("CFX_FETCH_MATCHES=10001");
   });
 
   it("preserves explicit glob patterns", () => {

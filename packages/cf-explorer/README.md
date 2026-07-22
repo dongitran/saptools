@@ -165,11 +165,17 @@ All read/discovery commands accept:
 | `--process <name>` | CF process name, default `web` |
 | `--instance <index>` | One app process instance; defaults to the first/default instance (`0`) |
 | `--timeout <seconds>` | Command timeout |
-| `--max-files <count>` | Result limit for path-like outputs and inspect file candidates when `--include-files` is used |
+| `--max-files <count>` | Result limit for path-like discovery and inspect file-candidate scans |
 | `--max-matches <count>` | Result limit for `grep`, `session grep`, and `inspect-candidates` content matches |
 | `--max-bytes <bytes>` | Output byte limit |
 | `--follow-symlinks` | Follow symlinked directories during `find`/`grep` traversal for pnpm-style layouts |
-| `--json` / `--no-json` | Structured JSON (default) or compact human-readable output; available on single-shot and session discovery reads |
+
+Single-shot and session commands write compact human-readable results directly
+to stdout. If a discovery result exceeds a count limit, the CLI keeps stdout
+unchanged and writes a truncation warning to stderr. A single-shot response that
+reaches its byte limit produces the same warning; a persistent-session request
+instead fails with `OUTPUT_LIMIT_EXCEEDED`. Increase `--max-matches`,
+`--max-files`, or `--max-bytes`, as appropriate, and retry.
 
 ### 🪄 Discovery
 
@@ -193,9 +199,12 @@ cf-explorer inspect-candidates \
   --text "needle"
 ```
 
-`inspect-candidates` returns compact JSON by default: roots, content matches, and suggested breakpoints. It does not include the potentially large file candidate list unless you pass `--include-files`; combine that with `--max-files` when you need the full list. Use `--max-matches` to bound breakpoint-oriented search output. `grep` accepts the same `--max-matches` and `--include-files` flags for command-line parity, although grep output remains the content match list.
+`inspect-candidates` prints sectioned roots, content matches, and suggested
+breakpoints. Use `--max-matches` to bound breakpoint-oriented search output.
+The typed API can additionally populate its `files` array when called with
+`includeFiles: true`; compact CLI output does not render that array.
 
-Suggested candidate shape:
+Suggested breakpoint shape from the typed API:
 
 ```json
 {
@@ -379,9 +388,9 @@ Rules:
 
 ---
 
-## 📤 JSON Output
+## 📤 Result Metadata
 
-Every JSON response includes metadata:
+Typed API discovery results include metadata:
 
 ```ts
 interface ExplorerMeta {
@@ -391,36 +400,20 @@ interface ExplorerMeta {
     space: string;
     app: string;
   };
+  process: string;
   instance?: number;
   durationMs: number;
   truncated: boolean;
 }
 ```
 
-Examples:
-
-```json
-{
-  "meta": {
-    "target": {
-      "region": "region-key",
-      "org": "org-name",
-      "space": "space-name",
-      "app": "app-name"
-    },
-    "instance": 0,
-    "durationMs": 214,
-    "truncated": false
-  },
-  "matches": [
-    {
-      "instance": 0,
-      "path": "/app-root/src/handler.js",
-      "line": 42
-    }
-  ]
-}
-```
+`meta.truncated` is `true` when a returned one-shot response reached `maxBytes`
+or when a returned one-shot or session result exceeded the requested `maxFiles`
+or `maxMatches` window. The returned data is incomplete; increase the
+corresponding limit and retry. The CLI exposes the same condition through its
+stderr warning while keeping result stdout compact. Persistent-session requests
+that exceed `maxBytes` fail with `OUTPUT_LIMIT_EXCEEDED` instead of returning
+partial result metadata.
 
 ---
 

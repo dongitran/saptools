@@ -114,17 +114,44 @@ function parseVar(command, name) {
   return match[1].replaceAll("'\\''", "'");
 }
 
-function renderRoots(app) {
-  return listRoots(app.files).map((root) => `CFX\tROOT\t${root}`).join("\n") + "\n";
+function parseNumericVar(command, name) {
+  const match = new RegExp(`(?:^|\\n)\\s*${name}=(\\d+)(?=\\n|$)`).exec(command);
+  if (!match) return undefined;
+  const value = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(value) ? value : undefined;
 }
 
-function renderFind(app, command) {
-  const root = parseVar(command, "CFX_ROOT") ?? "/";
+function applyFetchLimit(values, command, variable) {
+  const limit = parseNumericVar(command, variable);
+  return limit === undefined ? values : values.slice(0, limit);
+}
+
+function renderRows(rows) {
+  return `${rows.join("\n")}\n`;
+}
+
+function isUnderRoot(path, root) {
+  return root === "/" ? path.startsWith("/") : path.startsWith(`${root}/`);
+}
+
+function renderRootRows(roots, command) {
+  return renderRows(
+    applyFetchLimit(roots, command, "CFX_FETCH_FILES")
+      .map((root) => `CFX\tROOT\t${root}`),
+  );
+}
+
+function renderRoots(app, command) {
+  return renderRootRows(listRoots(app.files), command);
+}
+
+function renderFind(app, command, rootOverride) {
+  const root = rootOverride ?? parseVar(command, "CFX_ROOT") ?? "/";
   const name = parseVar(command, "CFX_NAME") ?? "*";
-  return Object.keys(app.files)
-    .filter((path) => path.startsWith(`${root}/`) && wildcardMatch(path.split("/").at(-1) ?? "", name))
-    .map((path) => `CFX\tFIND\tfile\t${path}`)
-    .join("\n") + "\n";
+  const rows = Object.keys(app.files)
+    .filter((path) => isUnderRoot(path, root) && wildcardMatch(path.split("/").at(-1) ?? "", name))
+    .map((path) => `CFX\tFIND\tfile\t${path}`);
+  return renderRows(applyFetchLimit(rows, command, "CFX_FETCH_FILES"));
 }
 
 function listDirectEntries(files, path) {
@@ -148,26 +175,26 @@ function listDirectEntries(files, path) {
 function renderLs(app, command) {
   const path = parseVar(command, "CFX_PATH") ?? "/";
   const pattern = parseVar(command, "CFX_PATTERN");
-  return listDirectEntries(app.files, path)
+  const rows = listDirectEntries(app.files, path)
     .filter((entry) => pattern === undefined || wildcardMatch(entry.name, pattern))
-    .map((entry) => `CFX\tLS\t${entry.kind}\t${entry.name}\t${entry.path}`)
-    .join("\n") + "\n";
+    .map((entry) => `CFX\tLS\t${entry.kind}\t${entry.name}\t${entry.path}`);
+  return renderRows(applyFetchLimit(rows, command, "CFX_FETCH_FILES"));
 }
 
-function renderGrep(app, command) {
-  const root = parseVar(command, "CFX_ROOT") ?? "/";
+function renderGrep(app, command, rootOverride) {
+  const root = rootOverride ?? parseVar(command, "CFX_ROOT") ?? "/";
   const text = parseVar(command, "CFX_TEXT") ?? "";
   const includePreview = command.includes("cfx_preview=");
   const lines = [];
   for (const [path, content] of Object.entries(app.files)) {
-    if (!path.startsWith(`${root}/`)) continue;
+    if (!isUnderRoot(path, root)) continue;
     content.split("\n").forEach((line, index) => {
       if (line.includes(text)) {
         lines.push(`CFX\tGREP\t${path}\t${index + 1}\t${includePreview ? line : ""}`);
       }
     });
   }
-  return `${lines.join("\n")}\n`;
+  return renderRows(applyFetchLimit(lines, command, "CFX_FETCH_MATCHES"));
 }
 
 function renderView(app, command) {
@@ -184,17 +211,39 @@ function renderView(app, command) {
     .join("\n") + "\n";
 }
 
+function renderInspect(app, command) {
+  const explicitRoot = parseVar(command, "CFX_ROOT");
+  const availableRoots = listRoots(app.files);
+  const includeFiles = command.includes('do emit_find "$cfx_path"; done');
+  if (explicitRoot !== undefined) {
+    if (!availableRoots.includes(explicitRoot)) return "\n";
+    return renderRootRows([explicitRoot], command)
+      + (includeFiles ? renderFind(app, command, explicitRoot) : "")
+      + renderGrep(app, command, explicitRoot);
+  }
+
+  const roots = applyFetchLimit(availableRoots, command, "CFX_FETCH_FILES");
+  const maxRoots = parseNumericVar(command, "CFX_MAX_FILES") ?? roots.length;
+  return roots.map((root, index) => {
+    const rootOutput = `CFX\tROOT\t${root}\n`;
+    if (index >= maxRoots) return rootOutput;
+    return rootOutput
+      + (includeFiles ? renderFind(app, command, root) : "")
+      + renderGrep(app, command, root);
+  }).join("");
+}
+
 function renderExplorerCommand(app, command) {
   if (command.includes("CFX\tHANDSHAKE") || command.includes("CFX\\tHANDSHAKE")) {
     return "CFX\tHANDSHAKE\tok\n";
   }
   const firstOp = /CFX_OP='([^']+)'/.exec(command)?.[1];
-  if (firstOp === "roots") return renderRoots(app);
+  if (firstOp === "roots") return renderRoots(app, command);
   if (firstOp === "ls") return renderLs(app, command);
   if (firstOp === "find") return renderFind(app, command);
   if (firstOp === "grep") return renderGrep(app, command);
   if (firstOp === "view") return renderView(app, command);
-  if (firstOp === "inspect") return renderRoots(app) + renderFind(app, command) + renderGrep(app, command);
+  if (firstOp === "inspect") return renderInspect(app, command);
   fail(`Unsupported ssh command: ${command}`);
 }
 

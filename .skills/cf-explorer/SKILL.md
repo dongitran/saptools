@@ -17,7 +17,7 @@ If `cf-explorer` is missing, install it: `npm install -g @saptools/cf-explorer`.
 2. `--app` is always required. `--region`, `--org`, and `--space` are optional and will automatically resolve if a current `cf target` is active. If the resolution fails (no target set), you must explicitly pass the full target. Note: there are no short flags (like `-a`); always use `--app`.
 3. Keep discovery read-only for remote files; `cf-explorer` automatically enables SSH and restarts the app when SSH is disabled.
 4. Use single-shot commands for quick lookups. If you need to run multiple `ls`, `grep`, or `view` commands back-to-back, consider starting a persistent `session` to avoid the overhead of opening multiple SSH connections.
-5. Single-shot and session discovery commands emit JSON by default; `--json` is accepted as an explicit no-op and `--no-json` switches to human-readable output.
+5. Single-shot and session commands print compact human-readable results directly.
 6. `cf-explorer` reads the first/default app instance unless `--instance <index>` is provided.
 
 ## Command Choice
@@ -57,7 +57,7 @@ cf-explorer inspect-candidates --app app-demo --text "needle"
 Optional discovery parameters:
 
 - `ls` and `session ls`: add `--pattern <pattern>` to filter direct children by shell-style name pattern, for example `--pattern "*helper*"`.
-- `grep` and `session grep`: add `--max-matches <count>` to bound content matches. `--include-files` is accepted for parity with `inspect-candidates`, but grep output remains the content match list.
+- `grep` and `session grep`: add `--max-matches <count>` to bound content matches.
 - `find`, `grep`, `inspect-candidates`, and their session variants: add `--follow-symlinks` when pnpm-style symlinked dependencies must be traversed.
 - `view` and `session view`: use `--context <lines>` for surrounding lines; large contexts are allowed, but keep `--max-bytes` in mind for output size.
 
@@ -79,5 +79,6 @@ cf-explorer session stop --session-id <id>
 ## Troubleshooting
 
 - **Error: "No current CF target found"**: The user hasn't run `cf target` and didn't provide `--region`, `--org`, `--space`. Pass them explicitly via flags.
-- **Timeouts / Output Limit Exceeded**: Use `--max-matches`, `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches. Pass `--include-files` only when the file candidate list is needed. Use `--follow-symlinks` for pnpm-linked dependencies and `ls --pattern` to narrow directory listings.
+- **Truncated Results**: The CLI writes a warning to stderr when a discovery result exceeds a count limit or a single-shot response reaches a byte limit. Increase `--max-matches`, `--max-files`, or `--max-bytes`, as appropriate, and retry. Typed API callers receive the same signal as `meta.truncated: true`. A persistent-session request that exceeds its byte limit fails with `OUTPUT_LIMIT_EXCEEDED` instead of returning a partial result.
+- **Timeouts / Output Limit Exceeded**: Use `--max-matches`, `--max-files`, `--max-bytes`, or `--timeout` to adjust limits on broad searches. Use `--follow-symlinks` for pnpm-linked dependencies and `ls --pattern` to narrow directory listings.
 - **Empty Grep Results**: Ensure the `--root` path is correct (use `roots` command to discover it) and the `--text` is exact.

@@ -8,6 +8,8 @@ const ROOT_CANDIDATES = ["/home/vcap/app", "/workspace/app", "/workspace", "/app
 
 export interface RemoteScript {
   readonly script: string;
+  readonly maxFiles?: number;
+  readonly maxMatches?: number;
 }
 
 export interface BuildFindScriptInput {
@@ -99,14 +101,15 @@ export function resolveContextLines(value: number | undefined): number {
 
 export function buildRootsScript(maxFiles?: number): RemoteScript {
   const max = resolveMaxFiles(maxFiles);
-  const rootLines = ROOT_CANDIDATES.map((root) => `emit_root ${quoteRemoteShellArg(root)}`).join("\n");
   return {
     script: [
       "CFX_OP='roots'",
+      `CFX_MAX_FILES=${max.toString()}`,
+      `CFX_FETCH_FILES=${probeLimit(max).toString()}`,
       emitFunctions(),
-      rootLines,
-      `${rootDiscoveryFind(max)} | sed 's#/[^/]*$##' | head -n ${max.toString()} | while IFS= read -r cfx_root; do emit_root "$cfx_root"; done`,
+      `${rootCandidateStream()} | sort -u | head -n "$CFX_FETCH_FILES" | while IFS= read -r cfx_root; do emit_root "$cfx_root"; done`,
     ].join("\n"),
+    maxFiles: max,
   };
 }
 
@@ -120,9 +123,12 @@ export function buildFindScript(input: BuildFindScriptInput): RemoteScript {
       "CFX_OP='find'",
       `CFX_ROOT=${quoteRemoteShellArg(input.root)}`,
       `CFX_NAME=${quoteRemoteShellArg(pattern)}`,
+      `CFX_MAX_FILES=${max.toString()}`,
+      `CFX_FETCH_FILES=${probeLimit(max).toString()}`,
       emitFunctions(),
-      findCommand('"$CFX_ROOT"', "$CFX_NAME", max, input.followSymlinks === true),
+      findCommand('"$CFX_ROOT"', "$CFX_NAME", '"$CFX_FETCH_FILES"', input.followSymlinks === true),
     ].join("\n"),
+    maxFiles: max,
   };
 }
 
@@ -138,10 +144,13 @@ export function buildLsScript(input: BuildLsScriptInput): RemoteScript {
       "CFX_OP='ls'",
       `CFX_PATH=${quoteRemoteShellArg(input.path)}`,
       ...(input.pattern === undefined ? [] : [`CFX_PATTERN=${quoteRemoteShellArg(input.pattern)}`]),
+      `CFX_MAX_FILES=${max.toString()}`,
+      `CFX_FETCH_FILES=${probeLimit(max).toString()}`,
       emitLsFunction(),
       "[ -d \"$CFX_PATH\" ] || exit 0",
-      `find${input.followSymlinks === true ? " -L" : ""} "$CFX_PATH" -mindepth 1 -maxdepth 1${findName} -print 2>/dev/null | sort | head -n ${max.toString()} | while IFS= read -r cfx_path; do emit_ls "$cfx_path"; done`,
+      `find${input.followSymlinks === true ? " -L" : ""} "$CFX_PATH" -mindepth 1 -maxdepth 1${findName} -print 2>/dev/null | sort | head -n "$CFX_FETCH_FILES" | while IFS= read -r cfx_path; do emit_ls "$cfx_path"; done`,
     ].join("\n"),
+    maxFiles: max,
   };
 }
 
@@ -164,9 +173,12 @@ export function buildGrepScript(input: BuildGrepScriptInput): RemoteScript {
       "CFX_OP='grep'",
       `CFX_ROOT=${quoteRemoteShellArg(input.root)}`,
       `CFX_TEXT=${quoteRemoteShellArg(input.text)}`,
+      `CFX_MAX_MATCHES=${max.toString()}`,
+      `CFX_FETCH_MATCHES=${probeLimit(max).toString()}`,
       emitFunctions(),
-      grepCommand('"$CFX_ROOT"', "$CFX_TEXT", emitHit, max, input.followSymlinks === true),
+      grepCommand('"$CFX_ROOT"', "$CFX_TEXT", emitHit, '"$CFX_FETCH_MATCHES"', input.followSymlinks === true),
     ].join("\n"),
+    maxMatches: max,
   };
 }
 
@@ -205,6 +217,8 @@ export function buildInspectCandidatesScript(input: BuildInspectScriptInput): Re
     script: input.root === undefined
       ? buildDynamicInspectScript(input.text, name, maxFiles, maxMatches, includeFiles, input.followSymlinks === true)
       : buildSingleRootInspectScript(input.root, input.text, name, maxFiles, maxMatches, includeFiles, input.followSymlinks === true),
+    maxFiles,
+    maxMatches,
   };
 }
 
@@ -250,13 +264,17 @@ function buildSingleRootInspectScript(
     `CFX_ROOT=${quoteRemoteShellArg(root)}`,
     `CFX_TEXT=${quoteRemoteShellArg(text)}`,
     `CFX_NAME=${quoteRemoteShellArg(name)}`,
+    `CFX_MAX_FILES=${maxFiles.toString()}`,
+    `CFX_FETCH_FILES=${probeLimit(maxFiles).toString()}`,
+    `CFX_MAX_MATCHES=${maxMatches.toString()}`,
+    `CFX_FETCH_MATCHES=${probeLimit(maxMatches).toString()}`,
     emitFunctions(),
     "inspect_root() {",
     "  cfx_root=\"$1\"",
     "  [ -d \"$cfx_root\" ] || return 0",
     "  emit_root \"$cfx_root\"",
-    ...(includeFiles ? [`  ${findCommand('"$cfx_root"', "$CFX_NAME", maxFiles, followSymlinks)}`] : []),
-    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), maxMatches, followSymlinks)}`,
+    ...(includeFiles ? [`  ${findCommand('"$cfx_root"', "$CFX_NAME", '"$CFX_FETCH_FILES"', followSymlinks)}`] : []),
+    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), '"$CFX_FETCH_MATCHES"', followSymlinks)}`,
     "}",
     "inspect_root \"$CFX_ROOT\"",
   ].join("\n");
@@ -270,44 +288,62 @@ function buildDynamicInspectScript(
   includeFiles: boolean,
   followSymlinks: boolean,
 ): string {
-  const candidateLines = ROOT_CANDIDATES
-    .map((root) => `printf '%s\\n' ${quoteRemoteShellArg(root)}`)
-    .join("\n");
   return [
     "CFX_OP='inspect'",
     `CFX_TEXT=${quoteRemoteShellArg(text)}`,
     `CFX_NAME=${quoteRemoteShellArg(name)}`,
+    `CFX_MAX_FILES=${maxFiles.toString()}`,
+    `CFX_FETCH_FILES=${probeLimit(maxFiles).toString()}`,
+    `CFX_MAX_MATCHES=${maxMatches.toString()}`,
+    `CFX_FETCH_MATCHES=${probeLimit(maxMatches).toString()}`,
     emitFunctions(),
     "inspect_root() {",
     "  cfx_root=\"$1\"",
     "  [ -d \"$cfx_root\" ] || return 0",
     "  emit_root \"$cfx_root\"",
-    ...(includeFiles ? [`  ${findCommand('"$cfx_root"', "$CFX_NAME", maxFiles, followSymlinks)}`] : []),
-    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), maxMatches, followSymlinks)}`,
+    ...(includeFiles ? [`  ${findCommand('"$cfx_root"', "$CFX_NAME", '"$CFX_FETCH_FILES"', followSymlinks)}`] : []),
+    `  ${grepCommand('"$cfx_root"', "$CFX_TEXT", grepEmitHit(false), '"$CFX_FETCH_MATCHES"', followSymlinks)}`,
     "}",
-    "{",
-    candidateLines,
-    `${rootDiscoveryFind(maxFiles)} | sed 's#/[^/]*$##'`,
-    `} | sort -u | head -n ${maxFiles.toString()} | while IFS= read -r cfx_root; do inspect_root "$cfx_root"; done`,
+    "cfx_root_count=0",
+    `${rootCandidateStream()} | sort -u | head -n "$CFX_FETCH_FILES" | while IFS= read -r cfx_root; do`,
+    "  cfx_root_count=$((cfx_root_count + 1))",
+    "  if [ \"$cfx_root_count\" -le \"$CFX_MAX_FILES\" ]; then inspect_root \"$cfx_root\"; else emit_root \"$cfx_root\"; fi",
+    "done",
   ].join("\n");
 }
 
-function rootDiscoveryFind(max: number): string {
-  return `find / -maxdepth 4 ${pruneExpression()} -prune -o -type f \\( -name 'package.json' -o -name '*.js' -o -name '*.ts' \\) -print 2>/dev/null | head -n ${(max * 4).toString()}`;
+function rootCandidateStream(): string {
+  const candidateLines = ROOT_CANDIDATES
+    .map((root) => `if [ -d ${quoteRemoteShellArg(root)} ]; then printf '%s\\n' ${quoteRemoteShellArg(root)}; fi`)
+    .join("\n");
+  return [
+    "{",
+    candidateLines,
+    `${rootDiscoveryFind()} | sed 's#/[^/]*$##' | while IFS= read -r cfx_root; do if [ "$cfx_root" != '/srv' ] && [ -d "$cfx_root" ]; then printf '%s\\n' "$cfx_root"; fi; done`,
+    "}",
+  ].join("\n");
 }
 
-function findCommand(rootExpression: string, nameExpression: string, max: number, followSymlinks = false): string {
-  return `find${followSymlinks ? " -L" : ""} ${rootExpression} ${pruneExpression({ includeNodeModules: followSymlinks })} -prune -o \\( -type f -o -type d \\) -iname "${nameExpression}" -print 2>/dev/null | head -n ${max.toString()} | while IFS= read -r cfx_path; do emit_find "$cfx_path"; done`;
+function rootDiscoveryFind(): string {
+  return `find / -maxdepth 4 ${pruneExpression()} -prune -o -type f \\( -name 'package.json' -o -name '*.js' -o -name '*.ts' \\) -print 2>/dev/null`;
+}
+
+function findCommand(rootExpression: string, nameExpression: string, limitExpression: string, followSymlinks = false): string {
+  return `find${followSymlinks ? " -L" : ""} ${rootExpression} ${pruneExpression({ includeNodeModules: followSymlinks })} -prune -o \\( -type f -o -type d \\) -iname "${nameExpression}" -print 2>/dev/null | head -n ${limitExpression} | while IFS= read -r cfx_path; do emit_find "$cfx_path"; done`;
 }
 
 function grepCommand(
   rootExpression: string,
   textExpression: string,
   emitHit: string,
-  max: number,
+  limitExpression: string,
   followSymlinks = false,
 ): string {
-  return `find${followSymlinks ? " -L" : ""} ${rootExpression} ${pruneExpression({ includeNodeModules: followSymlinks })} -prune -o -type f -print 2>/dev/null | while IFS= read -r cfx_file; do grep -n -I -F -- "${textExpression}" "$cfx_file" 2>/dev/null | while IFS= read -r cfx_hit; do ${emitHit}; done; done | head -n ${max.toString()}`;
+  return `find${followSymlinks ? " -L" : ""} ${rootExpression} ${pruneExpression({ includeNodeModules: followSymlinks })} -prune -o -type f -print 2>/dev/null | while IFS= read -r cfx_file; do grep -n -I -F -- "${textExpression}" "$cfx_file" 2>/dev/null | while IFS= read -r cfx_hit; do ${emitHit}; done; done | head -n ${limitExpression}`;
+}
+
+function probeLimit(max: number): number {
+  return max + 1;
 }
 
 function grepEmitHit(preview: boolean): string {

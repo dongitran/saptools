@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.4.0
+
+### Breaking changes
+
+- Standardized all one-shot discovery and persistent-session result commands
+  on compact human-readable stdout.
+
+### Bug fixes
+
+- Made count-limited `roots`, `ls`, `find`, `grep`, and
+  `inspect-candidates` results probe one extra row so both one-shot and session
+  APIs set `ExplorerMeta.truncated` exactly when more results exist. The same
+  field remains true for byte-limited responses, and the CLI now warns on
+  stderr when either limit makes a result incomplete.
+
 ## 0.2.14
 
 ### Bug fixes

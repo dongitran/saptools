@@ -39,6 +39,7 @@ import {
   parseRootsOutput,
   parseViewOutput,
 } from "./parsers.js";
+import { limitInspectResults, limitResults } from "./result-limits.js";
 import {
   executeRemoteScript,
   withPreparedCfSession,
@@ -75,9 +76,16 @@ export async function roots(options: DiscoveryOptions): Promise<RootsResult> {
   const instance = resolveInstance(selector.instance);
   const script = buildRootsScript(options.maxFiles);
   const result = await execute(inputFor(options, processName, instance, script.script));
+  const rootsWindow = limitResults(parseRootsOutput(protocolStdout(result)), script.maxFiles);
   return {
-    meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    roots: parseRootsOutput(protocolStdout(result)),
+    meta: buildMeta(
+      normalizeTarget(options.target),
+      processName,
+      instance,
+      result.durationMs,
+      result.truncated || rootsWindow.capped,
+    ),
+    roots: rootsWindow.values,
   };
 }
 
@@ -87,9 +95,16 @@ export async function findRemote(options: FindOptions): Promise<FindResult> {
   const instance = resolveInstance(selector.instance);
   const script = buildFindScript(options);
   const result = await execute(inputFor(options, processName, instance, script.script));
+  const matches = limitResults(parseFindOutput(protocolStdout(result), instance), script.maxFiles);
   return {
-    meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    matches: parseFindOutput(protocolStdout(result), instance),
+    meta: buildMeta(
+      normalizeTarget(options.target),
+      processName,
+      instance,
+      result.durationMs,
+      result.truncated || matches.capped,
+    ),
+    matches: matches.values,
   };
 }
 
@@ -99,10 +114,17 @@ export async function lsRemote(options: LsOptions): Promise<LsResult> {
   const instance = resolveInstance(selector.instance);
   const script = buildLsScript(options);
   const result = await execute(inputFor(options, processName, instance, script.script));
+  const entries = limitResults(parseLsOutput(protocolStdout(result), instance), script.maxFiles);
   return {
-    meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
+    meta: buildMeta(
+      normalizeTarget(options.target),
+      processName,
+      instance,
+      result.durationMs,
+      result.truncated || entries.capped,
+    ),
     path: options.path,
-    entries: parseLsOutput(protocolStdout(result), instance),
+    entries: entries.values,
   };
 }
 
@@ -112,9 +134,19 @@ export async function grepRemote(options: GrepOptions): Promise<GrepResult> {
   const instance = resolveInstance(selector.instance);
   const script = buildGrepScript(options);
   const result = await execute(inputFor(options, processName, instance, script.script));
+  const matches = limitResults(
+    parseGrepOutput(protocolStdout(result), instance, options.preview === true),
+    script.maxMatches,
+  );
   return {
-    meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    matches: parseGrepOutput(protocolStdout(result), instance, options.preview === true),
+    meta: buildMeta(
+      normalizeTarget(options.target),
+      processName,
+      instance,
+      result.durationMs,
+      result.truncated || matches.capped,
+    ),
+    matches: matches.values,
   };
 }
 
@@ -143,9 +175,16 @@ export async function inspectCandidates(
   const script = buildInspectCandidatesScript(options);
   const result = await execute(inputFor(options, processName, instance, script.script));
   const parsed = parseInspectOutput(protocolStdout(result), instance, false, options.includeFiles === true);
+  const limited = limitInspectResults(parsed, script.maxFiles, script.maxMatches);
   return {
-    meta: buildMeta(normalizeTarget(options.target), processName, instance, result.durationMs, result.truncated),
-    ...parsed,
+    meta: buildMeta(
+      normalizeTarget(options.target),
+      processName,
+      instance,
+      result.durationMs,
+      result.truncated || limited.capped,
+    ),
+    ...limited.value,
   };
 }
 

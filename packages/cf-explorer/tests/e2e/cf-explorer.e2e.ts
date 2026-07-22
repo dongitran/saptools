@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   PACKAGE_DIR,
+  type RunResult,
   type Scenario,
   createEnv,
   prepareCase,
@@ -13,7 +14,142 @@ import {
   targetFakeCf,
 } from "./helpers.js";
 
-function scenario(): Scenario {
+const DEFAULT_FILES: Record<string, string> = {
+  "/workspace/app/package.json": "{\"name\":\"demo-app\"}\n",
+  "/workspace/app/src/connect.js": [
+    "function ping() {",
+    "  return 'needle-api';",
+    "}",
+    "",
+  ].join("\n"),
+  "/workspace/app/src/other.ts": "export const value = 'needle-api';\n",
+  "/workspace/app/README.md": "readme-only\n",
+};
+
+const TRUNCATION_WARNING =
+  "Warning: Results may be incomplete; increase --max-files, --max-matches, or --max-bytes and retry.\n";
+
+const targetArgs = [
+  "--region",
+  "ap10",
+  "--org",
+  "demo-org",
+  "--space",
+  "dev",
+  "--app",
+  "demo-app",
+] as const;
+
+interface OutputFlagCase {
+  readonly label: string;
+  readonly helpArgs: readonly string[];
+  readonly runArgs: readonly string[];
+}
+
+const outputFlagCases: readonly OutputFlagCase[] = [
+  { label: "roots", helpArgs: ["roots"], runArgs: ["roots", ...targetArgs] },
+  { label: "instances", helpArgs: ["instances"], runArgs: ["instances", ...targetArgs] },
+  {
+    label: "ls",
+    helpArgs: ["ls"],
+    runArgs: ["ls", ...targetArgs, "--path", "/workspace/app"],
+  },
+  {
+    label: "find",
+    helpArgs: ["find"],
+    runArgs: ["find", ...targetArgs, "--root", "/workspace/app", "--name", "connect"],
+  },
+  {
+    label: "grep",
+    helpArgs: ["grep"],
+    runArgs: ["grep", ...targetArgs, "--root", "/workspace/app", "--text", "needle-api"],
+  },
+  {
+    label: "view",
+    helpArgs: ["view"],
+    runArgs: ["view", ...targetArgs, "--file", "/workspace/app/src/connect.js", "--line", "2"],
+  },
+  {
+    label: "inspect-candidates",
+    helpArgs: ["inspect-candidates"],
+    runArgs: ["inspect-candidates", ...targetArgs, "--text", "needle-api"],
+  },
+  {
+    label: "session start",
+    helpArgs: ["session", "start"],
+    runArgs: ["session", "start", ...targetArgs],
+  },
+  { label: "session list", helpArgs: ["session", "list"], runArgs: ["session", "list"] },
+  {
+    label: "session status",
+    helpArgs: ["session", "status"],
+    runArgs: ["session", "status", "--session-id", "missing"],
+  },
+  {
+    label: "session stop",
+    helpArgs: ["session", "stop"],
+    runArgs: ["session", "stop", "--all"],
+  },
+  {
+    label: "session roots",
+    helpArgs: ["session", "roots"],
+    runArgs: ["session", "roots", "--session-id", "missing"],
+  },
+  {
+    label: "session ls",
+    helpArgs: ["session", "ls"],
+    runArgs: ["session", "ls", "--session-id", "missing", "--path", "/workspace/app"],
+  },
+  {
+    label: "session find",
+    helpArgs: ["session", "find"],
+    runArgs: [
+      "session",
+      "find",
+      "--session-id",
+      "missing",
+      "--root",
+      "/workspace/app",
+      "--name",
+      "connect",
+    ],
+  },
+  {
+    label: "session grep",
+    helpArgs: ["session", "grep"],
+    runArgs: [
+      "session",
+      "grep",
+      "--session-id",
+      "missing",
+      "--root",
+      "/workspace/app",
+      "--text",
+      "needle-api",
+    ],
+  },
+  {
+    label: "session view",
+    helpArgs: ["session", "view"],
+    runArgs: [
+      "session",
+      "view",
+      "--session-id",
+      "missing",
+      "--file",
+      "/workspace/app/src/connect.js",
+      "--line",
+      "2",
+    ],
+  },
+  {
+    label: "session inspect-candidates",
+    helpArgs: ["session", "inspect-candidates"],
+    runArgs: ["session", "inspect-candidates", "--session-id", "missing", "--text", "needle-api"],
+  },
+];
+
+function scenario(files: Record<string, string> = DEFAULT_FILES): Scenario {
   return {
     regions: [
       {
@@ -33,17 +169,7 @@ function scenario(): Scenario {
                       { index: 0, state: "running" },
                       { index: 1, state: "running" },
                     ],
-                    files: {
-                      "/workspace/app/package.json": "{\"name\":\"demo-app\"}\n",
-                      "/workspace/app/src/connect.js": [
-                        "function ping() {",
-                        "  return 'needle-api';",
-                        "}",
-                        "",
-                      ].join("\n"),
-                      "/workspace/app/src/other.ts": "export const value = 'needle-api';\n",
-                      "/workspace/app/README.md": "demo\n",
-                    },
+                    files,
                   },
                 ],
               },
@@ -55,16 +181,13 @@ function scenario(): Scenario {
   };
 }
 
-const targetArgs = [
-  "--region",
-  "ap10",
-  "--org",
-  "demo-org",
-  "--space",
-  "dev",
-  "--app",
-  "demo-app",
-] as const;
+function limitScenario(): Scenario {
+  return scenario({
+    ...DEFAULT_FILES,
+    "/workspace/app/src/third.js": "export const third = 'needle-api';\n",
+    "/opt/app/package.json": "{\"name\":\"secondary-app\"}\n",
+  });
+}
 
 async function readPackageVersion(): Promise<string> {
   const raw = await readFile(join(PACKAGE_DIR, "package.json"), "utf8");
@@ -77,6 +200,25 @@ async function readPackageVersion(): Promise<string> {
   return version;
 }
 
+function sessionIdFrom(result: RunResult): string {
+  const sessionId = /^sessionId:\s*(\S+)/m.exec(result.stdout)?.[1];
+  expect(sessionId).toBeTruthy();
+  if (sessionId === undefined) {
+    throw new Error("Session start output did not contain a session id.");
+  }
+  return sessionId;
+}
+
+function expectCapped(result: RunResult): void {
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe(TRUNCATION_WARNING);
+}
+
+function expectUncapped(result: RunResult): void {
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+}
+
 test("User can inspect the installed CLI version", async () => {
   const version = await readPackageVersion();
 
@@ -86,27 +228,54 @@ test("User can inspect the installed CLI version", async () => {
   expect(result.stdout.trim()).toBe(version);
 });
 
+for (const outputFlagCase of outputFlagCases) {
+  test(`${outputFlagCase.label} exposes only human output`, async () => {
+    const help = await runCli(process.env, [...outputFlagCase.helpArgs, "--help"]);
+    expect(help.code).toBe(0);
+    expect(help.stderr).toBe("");
+    expect(help.stdout).not.toContain("--json");
+    expect(help.stdout).not.toContain("--no-json");
+
+    for (const removedFlag of ["--json", "--no-json"] as const) {
+      const rejected = await runCli(process.env, [...outputFlagCase.runArgs, removedFlag]);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.stdout).toBe("");
+      expect(rejected.stderr).toContain(`error: unknown option '${removedFlag}'`);
+    }
+  });
+}
+
 test("User can discover roots, instances, files, content, and line context", async () => {
   const paths = await prepareCase("discovery", scenario());
   const env = createEnv(paths);
 
   const roots = await runCli(env, ["roots", ...targetArgs]);
-  expect(roots.code).toBe(0);
-  expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
+  expectUncapped(roots);
+  expect(roots.stdout).toBe("/workspace/app\n");
 
   const list = await runCli(env, ["ls", ...targetArgs, "--path", "/workspace/app"]);
-  expect(list.code).toBe(0);
-  expect(JSON.parse(list.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(
-    expect.arrayContaining(["README.md", "package.json", "src"]),
-  );
+  expectUncapped(list);
+  expect(list.stdout).toBe([
+    "#0\t[file]\tpackage.json\t/workspace/app/package.json",
+    "#0\t[file]\tREADME.md\t/workspace/app/README.md",
+    "#0\t[directory]\tsrc\t/workspace/app/src",
+    "",
+  ].join("\n"));
 
-  const filteredList = await runCli(env, ["ls", ...targetArgs, "--path", "/workspace/app", "--pattern", "*json"]);
-  expect(filteredList.code).toBe(0);
-  expect(JSON.parse(filteredList.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(["package.json"]);
+  const filteredList = await runCli(env, [
+    "ls",
+    ...targetArgs,
+    "--path",
+    "/workspace/app",
+    "--pattern",
+    "*json",
+  ]);
+  expectUncapped(filteredList);
+  expect(filteredList.stdout).toBe("#0\t[file]\tpackage.json\t/workspace/app/package.json\n");
 
   const instances = await runCli(env, ["instances", ...targetArgs]);
-  expect(instances.code).toBe(0);
-  expect(JSON.parse(instances.stdout).instances).toHaveLength(2);
+  expectUncapped(instances);
+  expect(instances.stdout).toBe("#0\trunning\ttoday\n#1\trunning\ttoday\n");
 
   const find = await runCli(env, [
     "find",
@@ -116,8 +285,8 @@ test("User can discover roots, instances, files, content, and line context", asy
     "--name",
     "connect",
   ]);
-  expect(find.code).toBe(0);
-  expect(JSON.parse(find.stdout).matches[0].path).toBe("/workspace/app/src/connect.js");
+  expectUncapped(find);
+  expect(find.stdout).toBe("#0\t/workspace/app/src/connect.js[file]\n");
 
   const grep = await runCli(env, [
     "grep",
@@ -127,12 +296,16 @@ test("User can discover roots, instances, files, content, and line context", asy
     "--text",
     "needle-api",
     "--max-matches",
-    "1",
+    "10",
     "--include-files",
     "--follow-symlinks",
   ]);
-  expect(grep.code).toBe(0);
-  expect(JSON.parse(grep.stdout).matches[0].line).toBe(2);
+  expectUncapped(grep);
+  expect(grep.stdout).toBe([
+    "#0\t/workspace/app/src/connect.js:2",
+    "#0\t/workspace/app/src/other.ts:1",
+    "",
+  ].join("\n"));
 
   const view = await runCli(env, [
     "view",
@@ -144,10 +317,15 @@ test("User can discover roots, instances, files, content, and line context", asy
     "--context",
     "140",
   ]);
-  expect(view.code).toBe(0);
-  expect(JSON.parse(view.stdout).lines.map((line: { text: string }) => line.text)).toContain(
-    "  return 'needle-api';",
-  );
+  expectUncapped(view);
+  expect(view.stdout).toBe([
+    "# /workspace/app/src/connect.js",
+    "    1  function ping() {",
+    "    2    return 'needle-api';",
+    "    3  }",
+    "    4  ",
+    "",
+  ].join("\n"));
 });
 
 test("User can discover roots from the current CF target", async () => {
@@ -157,8 +335,8 @@ test("User can discover roots from the current CF target", async () => {
 
   const roots = await runCli(env, ["roots", "--app", "demo-app"]);
 
-  expect(roots.code).toBe(0);
-  expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
+  expectUncapped(roots);
+  expect(roots.stdout).toBe("/workspace/app\n");
 });
 
 test("User can inspect compact candidates and explicit instances", async () => {
@@ -173,10 +351,20 @@ test("User can inspect compact candidates and explicit instances", async () => {
     "--text",
     "needle-api",
   ]);
-  expect(inspect.code).toBe(0);
-  const compact = JSON.parse(inspect.stdout);
-  expect(compact.suggestedBreakpoints[0].bp).toContain("connect.js");
-  expect(compact.files).toBeUndefined();
+  expectUncapped(inspect);
+  expect(inspect.stdout).toBe([
+    "Roots:",
+    "  /workspace/app",
+    "",
+    "Matches:",
+    "  /workspace/app/src/connect.js:2",
+    "  /workspace/app/src/other.ts:1",
+    "",
+    "Suggested breakpoints:",
+    "  [high] /workspace/app/src/connect.js:2",
+    "  [medium] /workspace/app/src/other.ts:1",
+    "",
+  ].join("\n"));
 
   const explicit = await runCli(env, [
     "grep",
@@ -188,8 +376,12 @@ test("User can inspect compact candidates and explicit instances", async () => {
     "--instance",
     "1",
   ]);
-  expect(explicit.code).toBe(0);
-  expect(JSON.parse(explicit.stdout).meta.instance).toBe(1);
+  expectUncapped(explicit);
+  expect(explicit.stdout).toBe([
+    "#1\t/workspace/app/src/connect.js:2",
+    "#1\t/workspace/app/src/other.ts:1",
+    "",
+  ].join("\n"));
 });
 
 test("SSH-backed commands automatically enable SSH when needed", async () => {
@@ -197,8 +389,8 @@ test("SSH-backed commands automatically enable SSH when needed", async () => {
   const env = createEnv(paths);
 
   const roots = await runCli(env, ["roots", ...targetArgs]);
-  expect(roots.code).toBe(0);
-  expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
+  expectUncapped(roots);
+  expect(roots.stdout).toBe("/workspace/app\n");
 
   const logs = await readLog(paths.logPath);
   expect(logs.map((entry) => entry.command)).toEqual(
@@ -212,67 +404,39 @@ test("Lifecycle commands are not exposed by the CLI", async () => {
 
   const blocked = await runCli(env, ["enable-ssh", ...targetArgs, "--yes"]);
   expect(blocked.code).not.toBe(0);
+  expect(blocked.stdout).toBe("");
   expect(blocked.stderr).toContain("unknown command");
 });
 
-test("User can start a persistent session with human-readable output", async () => {
-  const paths = await prepareCase("session-start-human", scenario());
-  const env = createEnv(paths);
-
-  const started = await runCli(env, ["session", "start", ...targetArgs, "--no-json"]);
-  expect(started.code).toBe(0);
-  expect(started.stdout).toContain("sessionId:");
-  expect(started.stdout).toContain("status: ready");
-  expect((): void => {
-    JSON.parse(started.stdout) as unknown;
-  }).toThrow();
-
-  const sessionId = /^sessionId:\s*(\S+)/m.exec(started.stdout)?.[1];
-  expect(sessionId).toBeTruthy();
-  if (sessionId !== undefined) {
-    const listed = await runCli(env, ["session", "list", "--no-json"]);
-    expect(listed.code).toBe(0);
-    expect(listed.stdout).toContain(sessionId);
-    expect((): void => {
-      JSON.parse(listed.stdout) as unknown;
-    }).toThrow();
-
-    const status = await runCli(env, ["session", "status", "--session-id", sessionId, "--no-json"]);
-    expect(status.code).toBe(0);
-    expect(status.stdout).toContain(`sessionId: ${sessionId}`);
-    expect(status.stdout).toContain("status: ready");
-    expect((): void => {
-      JSON.parse(status.stdout) as unknown;
-    }).toThrow();
-
-    const stopped = await runCli(env, ["session", "stop", "--session-id", sessionId, "--no-json"]);
-    expect(stopped.code).toBe(0);
-    expect(stopped.stdout).toContain("stopped: 1");
-  }
-});
-
-test("User can reuse a persistent session through the broker", async () => {
+test("User can reuse every persistent session command through the broker", async () => {
   const paths = await prepareCase("session", scenario());
   const env = createEnv(paths);
 
   const started = await runCli(env, ["session", "start", ...targetArgs]);
-  expect(started.code).toBe(0);
-  const sessionId = JSON.parse(started.stdout).sessionId as string;
+  expectUncapped(started);
+  expect(started.stdout).toMatch(
+    /^sessionId: \S+\nstatus: ready\nbrokerPid: \d+\nsocketPath: \S+\n$/,
+  );
+  const sessionId = sessionIdFrom(started);
 
   const listed = await runCli(env, ["session", "list"]);
-  expect(listed.code).toBe(0);
-  expect(JSON.parse(listed.stdout).sessions[0].sessionId).toBe(sessionId);
+  expectUncapped(listed);
+  expect(listed.stdout).toBe(`${sessionId}\tready\tdemo-app\n`);
+
+  const status = await runCli(env, ["session", "status", "--session-id", sessionId]);
+  expectUncapped(status);
+  expect(status.stdout).toBe([
+    `sessionId: ${sessionId}`,
+    "status: ready",
+    "brokerAlive: true",
+    "sshAlive: true",
+    "socketAlive: true",
+    "",
+  ].join("\n"));
 
   const roots = await runCli(env, ["session", "roots", "--session-id", sessionId]);
-  expect(roots.code).toBe(0);
-  expect(JSON.parse(roots.stdout).roots).toContain("/workspace/app");
-
-  const humanRoots = await runCli(env, ["session", "roots", "--session-id", sessionId, "--no-json"]);
-  expect(humanRoots.code).toBe(0);
-  expect(humanRoots.stdout).toContain("/workspace/app");
-  expect((): void => {
-    JSON.parse(humanRoots.stdout) as unknown;
-  }).toThrow();
+  expectUncapped(roots);
+  expect(roots.stdout).toBe("/workspace/app\n");
 
   const list = await runCli(env, [
     "session",
@@ -288,8 +452,21 @@ test("User can reuse a persistent session through the broker", async () => {
     "--pattern",
     "*json",
   ]);
-  expect(list.code).toBe(0);
-  expect(JSON.parse(list.stdout).entries.map((entry: { name: string }) => entry.name)).toEqual(["package.json"]);
+  expectUncapped(list);
+  expect(list.stdout).toBe("#0\t[file]\tpackage.json\t/workspace/app/package.json\n");
+
+  const find = await runCli(env, [
+    "session",
+    "find",
+    "--session-id",
+    sessionId,
+    "--root",
+    "/workspace/app",
+    "--name",
+    "connect",
+  ]);
+  expectUncapped(find);
+  expect(find.stdout).toBe("#0\t/workspace/app/src/connect.js[file]\n");
 
   const grep = await runCli(env, [
     "session",
@@ -305,12 +482,51 @@ test("User can reuse a persistent session through the broker", async () => {
     "--max-bytes",
     "1048576",
     "--max-matches",
-    "1",
+    "10",
     "--include-files",
     "--follow-symlinks",
   ]);
-  expect(grep.code).toBe(0);
-  expect(JSON.parse(grep.stdout).matches[0].path).toContain("connect.js");
+  expectUncapped(grep);
+  expect(grep.stdout).toBe([
+    "#0\t/workspace/app/src/connect.js:2",
+    "#0\t/workspace/app/src/other.ts:1",
+    "",
+  ].join("\n"));
+
+  const view = await runCli(env, [
+    "session",
+    "view",
+    "--session-id",
+    sessionId,
+    "--file",
+    "/workspace/app/src/connect.js",
+    "--line",
+    "2",
+    "--context",
+    "1",
+  ]);
+  expectUncapped(view);
+  expect(view.stdout).toBe([
+    "# /workspace/app/src/connect.js",
+    "    1  function ping() {",
+    "    2    return 'needle-api';",
+    "    3  }",
+    "",
+  ].join("\n"));
+
+  const inspect = await runCli(env, [
+    "session",
+    "inspect-candidates",
+    "--session-id",
+    sessionId,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+  ]);
+  expectUncapped(inspect);
+  expect(inspect.stdout).toContain("Roots:\n  /workspace/app\n\nMatches:");
+  expect(inspect.stdout).toContain("Suggested breakpoints:\n  [high] /workspace/app/src/connect.js:2");
 
   const rejected = await runCli(env, [
     "session",
@@ -323,34 +539,300 @@ test("User can reuse a persistent session through the broker", async () => {
     "force-session-error",
   ]);
   expect(rejected.code).not.toBe(0);
+  expect(rejected.stdout).toBe("");
   expect(rejected.stderr).toContain("SESSION_PROTOCOL_ERROR");
 
   const recovered = await runCli(env, ["session", "roots", "--session-id", sessionId]);
-  expect(recovered.code).toBe(0);
-  expect(JSON.parse(recovered.stdout).roots).toContain("/workspace/app");
-
-  const view = await runCli(env, [
-    "session",
-    "view",
-    "--session-id",
-    sessionId,
-    "--file",
-    "/workspace/app/src/connect.js",
-    "--line",
-    "2",
-    "--timeout",
-    "30",
-    "--max-bytes",
-    "1048576",
-  ]);
-  expect(view.code).toBe(0);
-  expect(JSON.parse(view.stdout).lines.map((line: { text: string }) => line.text)).toContain(
-    "  return 'needle-api';",
-  );
+  expectUncapped(recovered);
+  expect(recovered.stdout).toBe("/workspace/app\n");
 
   const stopped = await runCli(env, ["session", "stop", "--session-id", sessionId]);
-  expect(stopped.code).toBe(0);
-  expect(JSON.parse(stopped.stdout)).toEqual({ stopped: 1 });
+  expectUncapped(stopped);
+  expect(stopped.stdout).toBe("stopped: 1\n");
+});
+
+test("One-shot discovery distinguishes capped and uncapped result windows", async () => {
+  const paths = await prepareCase("one-shot-limits", limitScenario());
+  const env = createEnv(paths);
+
+  const cappedRoots = await runCli(env, ["roots", ...targetArgs, "--max-files", "1"]);
+  expectCapped(cappedRoots);
+  expect(cappedRoots.stdout).toBe("/opt/app\n");
+
+  const uncappedRoots = await runCli(env, ["roots", ...targetArgs, "--max-files", "10000"]);
+  expectUncapped(uncappedRoots);
+  expect(uncappedRoots.stdout).toBe("/opt/app\n/workspace/app\n");
+
+  const cappedLs = await runCli(env, [
+    "ls",
+    ...targetArgs,
+    "--path",
+    "/workspace/app",
+    "--max-files",
+    "1",
+  ]);
+  expectCapped(cappedLs);
+  expect(cappedLs.stdout).toBe("#0\t[file]\tpackage.json\t/workspace/app/package.json\n");
+
+  const uncappedFilteredLs = await runCli(env, [
+    "ls",
+    ...targetArgs,
+    "--path",
+    "/workspace/app",
+    "--pattern",
+    "*json",
+    "--max-files",
+    "1",
+  ]);
+  expectUncapped(uncappedFilteredLs);
+  expect(uncappedFilteredLs.stdout).toBe("#0\t[file]\tpackage.json\t/workspace/app/package.json\n");
+
+  const cappedFind = await runCli(env, [
+    "find",
+    ...targetArgs,
+    "--root",
+    "/workspace/app",
+    "--name",
+    "*",
+    "--max-files",
+    "1",
+  ]);
+  expectCapped(cappedFind);
+  expect(cappedFind.stdout).toBe("#0\t/workspace/app/package.json[file]\n");
+
+  const uncappedFind = await runCli(env, [
+    "find",
+    ...targetArgs,
+    "--root",
+    "/workspace/app",
+    "--name",
+    "connect",
+    "--max-files",
+    "10",
+  ]);
+  expectUncapped(uncappedFind);
+  expect(uncappedFind.stdout).toBe("#0\t/workspace/app/src/connect.js[file]\n");
+
+  const cappedGrep = await runCli(env, [
+    "grep",
+    ...targetArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+    "--max-matches",
+    "1",
+  ]);
+  expectCapped(cappedGrep);
+  expect(cappedGrep.stdout).toBe("#0\t/workspace/app/src/connect.js:2\n");
+
+  const uncappedGrep = await runCli(env, [
+    "grep",
+    ...targetArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "readme-only",
+    "--max-matches",
+    "10",
+  ]);
+  expectUncapped(uncappedGrep);
+  expect(uncappedGrep.stdout).toBe("#0\t/workspace/app/README.md:1\n");
+
+  const cappedDynamicInspect = await runCli(env, [
+    "inspect-candidates",
+    ...targetArgs,
+    "--text",
+    "needle-api",
+    "--max-files",
+    "1",
+    "--max-matches",
+    "10",
+  ]);
+  expectCapped(cappedDynamicInspect);
+  expect(cappedDynamicInspect.stdout).toContain("Roots:\n  /opt/app");
+
+  const cappedExplicitInspect = await runCli(env, [
+    "inspect-candidates",
+    ...targetArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+    "--max-files",
+    "10",
+    "--max-matches",
+    "1",
+  ]);
+  expectCapped(cappedExplicitInspect);
+  expect(cappedExplicitInspect.stdout).toContain("Matches:\n  /workspace/app/src/connect.js:2");
+  expect(cappedExplicitInspect.stdout).not.toContain("other.ts");
+
+  const uncappedInspect = await runCli(env, [
+    "inspect-candidates",
+    ...targetArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+    "--max-files",
+    "10",
+    "--max-matches",
+    "10",
+  ]);
+  expectUncapped(uncappedInspect);
+  expect(uncappedInspect.stdout).toContain("  /workspace/app/src/third.js:1");
+});
+
+test("Persistent discovery distinguishes capped and uncapped result windows", async () => {
+  const paths = await prepareCase("session-limits", limitScenario());
+  const env = createEnv(paths);
+
+  const started = await runCli(env, ["session", "start", ...targetArgs]);
+  expectUncapped(started);
+  const sessionId = sessionIdFrom(started);
+  const sessionArgs = ["--session-id", sessionId] as const;
+
+  const cappedRoots = await runCli(env, ["session", "roots", ...sessionArgs, "--max-files", "1"]);
+  expectCapped(cappedRoots);
+  expect(cappedRoots.stdout).toBe("/opt/app\n");
+
+  const uncappedRoots = await runCli(env, ["session", "roots", ...sessionArgs, "--max-files", "10000"]);
+  expectUncapped(uncappedRoots);
+  expect(uncappedRoots.stdout).toBe("/opt/app\n/workspace/app\n");
+
+  const cappedLs = await runCli(env, [
+    "session",
+    "ls",
+    ...sessionArgs,
+    "--path",
+    "/workspace/app",
+    "--max-files",
+    "1",
+  ]);
+  expectCapped(cappedLs);
+  expect(cappedLs.stdout).toBe("#0\t[file]\tpackage.json\t/workspace/app/package.json\n");
+
+  const uncappedFilteredLs = await runCli(env, [
+    "session",
+    "ls",
+    ...sessionArgs,
+    "--path",
+    "/workspace/app",
+    "--pattern",
+    "*json",
+    "--max-files",
+    "1",
+  ]);
+  expectUncapped(uncappedFilteredLs);
+  expect(uncappedFilteredLs.stdout).toBe("#0\t[file]\tpackage.json\t/workspace/app/package.json\n");
+
+  const cappedFind = await runCli(env, [
+    "session",
+    "find",
+    ...sessionArgs,
+    "--root",
+    "/workspace/app",
+    "--name",
+    "*",
+    "--max-files",
+    "1",
+  ]);
+  expectCapped(cappedFind);
+  expect(cappedFind.stdout).toBe("#0\t/workspace/app/package.json[file]\n");
+
+  const uncappedFind = await runCli(env, [
+    "session",
+    "find",
+    ...sessionArgs,
+    "--root",
+    "/workspace/app",
+    "--name",
+    "connect",
+    "--max-files",
+    "10",
+  ]);
+  expectUncapped(uncappedFind);
+  expect(uncappedFind.stdout).toBe("#0\t/workspace/app/src/connect.js[file]\n");
+
+  const cappedGrep = await runCli(env, [
+    "session",
+    "grep",
+    ...sessionArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+    "--max-matches",
+    "1",
+  ]);
+  expectCapped(cappedGrep);
+  expect(cappedGrep.stdout).toBe("#0\t/workspace/app/src/connect.js:2\n");
+
+  const uncappedGrep = await runCli(env, [
+    "session",
+    "grep",
+    ...sessionArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "readme-only",
+    "--max-matches",
+    "10",
+  ]);
+  expectUncapped(uncappedGrep);
+  expect(uncappedGrep.stdout).toBe("#0\t/workspace/app/README.md:1\n");
+
+  const cappedDynamicInspect = await runCli(env, [
+    "session",
+    "inspect-candidates",
+    ...sessionArgs,
+    "--text",
+    "needle-api",
+    "--max-files",
+    "1",
+    "--max-matches",
+    "10",
+  ]);
+  expectCapped(cappedDynamicInspect);
+  expect(cappedDynamicInspect.stdout).toContain("Roots:\n  /opt/app");
+
+  const cappedExplicitInspect = await runCli(env, [
+    "session",
+    "inspect-candidates",
+    ...sessionArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+    "--max-files",
+    "10",
+    "--max-matches",
+    "1",
+  ]);
+  expectCapped(cappedExplicitInspect);
+  expect(cappedExplicitInspect.stdout).toContain("Matches:\n  /workspace/app/src/connect.js:2");
+  expect(cappedExplicitInspect.stdout).not.toContain("other.ts");
+
+  const uncappedInspect = await runCli(env, [
+    "session",
+    "inspect-candidates",
+    ...sessionArgs,
+    "--root",
+    "/workspace/app",
+    "--text",
+    "needle-api",
+    "--max-files",
+    "10",
+    "--max-matches",
+    "10",
+  ]);
+  expectUncapped(uncappedInspect);
+  expect(uncappedInspect.stdout).toContain("  /workspace/app/src/third.js:1");
+
+  const stopped = await runCli(env, ["session", "stop", "--session-id", sessionId]);
+  expectUncapped(stopped);
+  expect(stopped.stdout).toBe("stopped: 1\n");
 });
 
 test("User can tune persistent session timers", async () => {
@@ -366,19 +848,20 @@ test("User can tune persistent session timers", async () => {
     "--max-lifetime",
     "10",
   ]);
-  expect(started.code).toBe(0);
-  const sessionId = JSON.parse(started.stdout).sessionId as string;
+  expectUncapped(started);
+  const sessionId = sessionIdFrom(started);
 
   await expect.poll(async () => {
     const listed = await runCli(env, ["session", "list"]);
-    expect(listed.code).toBe(0);
-    return (JSON.parse(listed.stdout) as { readonly sessions: readonly unknown[] }).sessions.length;
+    expectUncapped(listed);
+    return listed.stdout;
   }, {
     intervals: [250, 500, 1_000],
     timeout: 5_000,
-  }).toBe(0);
+  }).toBe("No persistent sessions.\n");
 
   const status = await runCli(env, ["session", "status", "--session-id", sessionId]);
   expect(status.code).not.toBe(0);
+  expect(status.stdout).toBe("");
   expect(status.stderr).toContain("SESSION_NOT_FOUND");
 });
