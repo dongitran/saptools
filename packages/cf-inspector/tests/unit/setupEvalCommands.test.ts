@@ -193,7 +193,7 @@ describe("watch setup-eval execution ordering", () => {
       expect(result).toEqual({ emitted: 0, stoppedReason: "signal" });
       const output = writeErrorSpy.mock.calls.flatMap((call) => call).join("");
       expect(output).toContain("no hit was observed");
-      expect(output).toContain("worker isolate");
+      expect(output).toContain("No selected isolate");
     } finally {
       writeErrorSpy.mockRestore();
     }

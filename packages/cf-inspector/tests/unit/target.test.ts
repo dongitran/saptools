@@ -184,6 +184,36 @@ describe("Cloud Foundry target timeout", () => {
     });
   });
 
+  it("preserves a stable NodeWorker ID selector", () => {
+    expect(resolveTarget({ port: "9229", workerId: "17" })).toEqual({
+      kind: "port",
+      port: 9229,
+      host: "127.0.0.1",
+      workerId: "17",
+    });
+  });
+
+  it("rejects an explicitly blank workerId instead of falling back", () => {
+    expect(() => resolveTarget({ port: "9229", workerId: "   " }))
+      .toThrow(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
+  });
+
+  it("preserves an explicit main-only selector", () => {
+    expect(resolveTarget({ port: "9229", mainOnly: true })).toEqual({
+      kind: "port",
+      port: 9229,
+      host: "127.0.0.1",
+      mainOnly: true,
+    });
+  });
+
+  it("rejects conflicting isolate selectors", () => {
+    expect(() => resolveTarget({ port: "9229", worker: "0", workerId: "17" }))
+      .toThrow(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
+    expect(() => resolveTarget({ port: "9229", workerId: "17", mainOnly: true }))
+      .toThrow(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
+  });
+
   it.each(["-1", "1.5", "worker"])("rejects invalid --worker index %s", (worker) => {
     expect(() => resolveTarget({ port: "9229", worker })).toThrow(
       expect.objectContaining({ code: "INVALID_ARGUMENT" }),

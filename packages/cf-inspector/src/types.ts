@@ -220,6 +220,7 @@ export interface SnapshotCaptureResult {
   readonly captures: readonly CapturedExpression[];
   readonly stack?: readonly FrameSnapshot[];
   readonly exception?: ExceptionSnapshot;
+  readonly isolate?: InspectorIsolate;
 }
 
 export interface SnapshotResult extends SnapshotCaptureResult {
@@ -236,7 +237,12 @@ export interface WatchEvent {
   readonly captures: readonly CapturedExpression[];
   readonly stack?: readonly FrameSnapshot[];
   readonly exception?: ExceptionSnapshot;
+  readonly isolate?: InspectorIsolate;
 }
+
+export type InspectorIsolate =
+  | { readonly kind: "main" }
+  | { readonly kind: "worker"; readonly workerId: string };
 
 export interface ScriptInfo {
   readonly scriptId: string;
@@ -262,6 +268,7 @@ export interface InspectorConnectOptions {
   readonly connectTimeoutMs?: number;
   readonly targetIndex?: number;
   readonly workerIndex?: number;
+  readonly workerId?: string;
 }
 
 export type CdpMessage =

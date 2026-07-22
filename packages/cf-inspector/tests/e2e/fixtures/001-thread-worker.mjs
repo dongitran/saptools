@@ -7,6 +7,13 @@ let workerCounter = 0;
 function runWorkerTask() {
   const workerLocal = { threadLabel: 'worker-session', tick: workerCounter };
   workerCounter += 1; // cf-inspector-worker-breakpoint
+  if (workerCounter % 5 === 0) {
+    try {
+      throw new Error('worker-caught-exception');
+    } catch {
+      // The exception command can opt into caught exceptions without terminating the worker.
+    }
+  }
   return workerLocal;
 }
 

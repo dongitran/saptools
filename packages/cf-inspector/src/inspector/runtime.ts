@@ -16,6 +16,8 @@ export interface StepIntoOptions {
 
 export async function resume(session: InspectorSession): Promise<void> {
   await session.client.send("Debugger.resume");
+  session.debuggerState.paused = false;
+  delete session.debuggerState.currentPause;
 }
 
 export async function setPauseOnExceptions(

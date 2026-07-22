@@ -5,8 +5,10 @@ export {
   setBreakpoint,
   setBreakpointAtLocation,
 } from "./breakpoints.js";
-export { discoverInspectorTargets, fetchInspectorVersion } from "./discovery.js";
+export { discoverInspectorTargets, fetchInspectorVersion, startInspectorKeepalive } from "./discovery.js";
 export { waitForPause } from "./pause.js";
+export { BreakpointFanout } from "./fanout.js";
+export type { FanoutCleanupSummary, IsolatePause, SessionBreakpointSetup } from "./fanout.js";
 export {
   evaluateGlobal,
   evaluateOnFrame,
@@ -25,12 +27,13 @@ export {
   validateExpression,
 } from "./runtime.js";
 export type { EvaluateOnFrameOptions, PauseOnExceptionsState, StepIntoOptions } from "./runtime.js";
-export { connectInspector } from "./session.js";
+export { connectInspector, connectInspectorGroup } from "./session.js";
 export type {
   CdpEvalResult,
   CdpProperty,
   DebuggerState,
   InspectorSession,
+  InspectorSessionGroup,
   InspectorTarget,
   InspectorWorkerTarget,
   PauseWaitGate,

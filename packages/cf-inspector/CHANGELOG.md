@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 - 2026-07-22
+
+### Automatic isolate fan-out
+
+- **BREAKING:** snapshot, watch, exception, and log now attach to the main
+  isolate plus every current and newly-attached NodeWorker when no explicit
+  isolate selector is passed. Results identify the winning/emitting isolate.
+- Added stable `--worker-id <id>` selection and explicit `--main-only`; retained
+  the existing meanings of `--worker <index>` and `--target <index>`.
+- Added per-session breakpoint outcomes, first-pause racing, paused-loser resume,
+  bounded explicit breakpoint cleanup, and dynamic late-worker arming.
+
+### Tunnel and breakpoint reliability
+
+- Reused Cloud Foundry tunnel ports must pass `/json/version` liveness polling
+  before they are reported ready; stale/not-yet-ready ports now fail with an
+  actionable error at tunnel acquisition.
+- Long-running watch sessions probe tunnel liveness and fail after three
+  consecutive unsuccessful probes instead of hanging indefinitely.
+- Added `check-breakpoint`, which distinguishes unloaded/path-mismatched scripts
+  from loaded scripts whose requested line is not breakable.
+
 ## 0.6.2 - 2026-07-20
 
 - Require `@saptools/cf-debugger@^0.1.16` so consumers pick up the app-port Node process

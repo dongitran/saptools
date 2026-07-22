@@ -87,7 +87,7 @@ export function warnOnImplicitInspectorSelection(
     process.stderr.write(
       `[cf-inspector] notice: attached to the main isolate; ${workerCount.toString()} Node ` +
         `${workerCount === 1 ? "worker is" : "workers are"} available. ` +
-        "Run list-targets and pass --worker <index> to inspect one.\n",
+        "This command is single-isolate by nature; use --worker-id <id> to inspect one worker explicitly.\n",
     );
   }
 }
@@ -102,8 +102,7 @@ export function warnOnBoundBreakpointWithoutHit(handles: readonly BreakpointHand
   process.stderr.write(
     `[cf-inspector] warning: ${boundCount.toString()} breakpoint ` +
       `${boundCount === 1 ? "location bound" : "locations bound"}, but no hit was observed. ` +
-      "The code may be running in another worker isolate. Run list-targets and retry with " +
-      "--worker <index> for a NodeWorker sub-session or --target <index> for a raw target.\n",
+      "No selected isolate executed the location before the command stopped. Check conditions, hit counts, request traffic, and use check-breakpoint to verify the exact line.\n",
   );
 }
 

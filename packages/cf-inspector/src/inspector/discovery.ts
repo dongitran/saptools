@@ -19,6 +19,18 @@ export interface InspectorVersion {
   readonly protocolVersion: string;
 }
 
+export interface InspectorKeepaliveOptions {
+  readonly intervalMs?: number;
+  readonly probeTimeoutMs?: number;
+  readonly failureThreshold?: number;
+  readonly probe?: () => Promise<unknown>;
+}
+
+export interface InspectorKeepalive {
+  readonly failure: Promise<never>;
+  cancel(): void;
+}
+
 interface NodeSystemError extends Error {
   readonly code?: string;
   readonly syscall?: string;
@@ -219,4 +231,60 @@ export async function fetchInspectorVersion(
     );
   }
   return { browser, protocolVersion };
+}
+
+export function startInspectorKeepalive(
+  host: string,
+  port: number,
+  options: InspectorKeepaliveOptions = {},
+): InspectorKeepalive {
+  const intervalMs = options.intervalMs ?? 10_000;
+  const probeTimeoutMs = options.probeTimeoutMs ?? 2_000;
+  const failureThreshold = options.failureThreshold ?? 3;
+  const probe = options.probe ?? (async (): Promise<unknown> =>
+    await fetchInspectorVersion(host, port, probeTimeoutMs));
+  let cancelled = false;
+  let consecutiveFailures = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectFailure: ((error: Error) => void) | undefined;
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  const schedule = (): void => {
+    if (cancelled) {
+      return;
+    }
+    timer = setTimeout(() => {
+      void runProbe();
+    }, intervalMs);
+  };
+  const runProbe = async (): Promise<void> => {
+    try {
+      await probe();
+      consecutiveFailures = 0;
+    } catch (error: unknown) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= failureThreshold) {
+        cancelled = true;
+        const detail = error instanceof Error ? error.message : String(error);
+        rejectFailure?.(new CfInspectorError(
+          "INSPECTOR_CONNECTION_FAILED",
+          `Inspector tunnel ${host}:${port.toString()} failed ${failureThreshold.toString()} consecutive keepalive probes and is no longer round-tripping. Retry the command after restarting or investigating the owning tunnel session.`,
+          detail,
+        ));
+        return;
+      }
+    }
+    schedule();
+  };
+  schedule();
+  return {
+    failure,
+    cancel: (): void => {
+      cancelled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    },
+  };
 }

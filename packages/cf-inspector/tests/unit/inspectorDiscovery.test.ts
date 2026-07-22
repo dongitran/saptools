@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   discoverInspectorTargets,
   fetchInspectorVersion,
+  startInspectorKeepalive,
 } from "../../src/inspector/discovery.js";
 
 interface RouteResponse {
@@ -188,6 +189,43 @@ describe("discoverInspectorTargets", () => {
       message: expect.stringMatching(/Cannot reach Node inspector discovery.*\/json\/list/),
       detail: expect.stringContaining("ECONNREFUSED"),
     });
+  });
+});
+
+describe("startInspectorKeepalive", () => {
+  it("fails after the configured number of consecutive probe failures", async () => {
+    const probe = vi.fn(async (): Promise<void> => {
+      throw new Error("half-open");
+    });
+    const keepalive = startInspectorKeepalive("127.0.0.1", 9229, {
+      intervalMs: 1,
+      failureThreshold: 3,
+      probe,
+    });
+    await expect(keepalive.failure).rejects.toMatchObject({
+      code: "INSPECTOR_CONNECTION_FAILED",
+      message: expect.stringMatching(/3 consecutive keepalive probes.*no longer round-tripping/i) as unknown as string,
+    });
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
+
+  it("resets the consecutive failure count after a successful probe", async () => {
+    let call = 0;
+    const probe = vi.fn(async (): Promise<void> => {
+      call += 1;
+      if (call % 3 !== 0) {
+        throw new Error("transient");
+      }
+    });
+    const keepalive = startInspectorKeepalive("127.0.0.1", 9229, {
+      intervalMs: 1,
+      failureThreshold: 3,
+      probe,
+    });
+    await vi.waitFor(() => {
+      expect(probe.mock.calls.length).toBeGreaterThanOrEqual(6);
+    });
+    keepalive.cancel();
   });
 });
 

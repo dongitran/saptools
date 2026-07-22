@@ -1,6 +1,7 @@
 import type { CdpClient } from "../cdp/client.js";
 import type {
   BreakpointLocation,
+  InspectorIsolate,
   PauseEvent,
   RemoteRootSetting,
   ScriptInfo,
@@ -19,7 +20,9 @@ export interface PauseWaitGate {
 }
 
 export interface DebuggerState {
+  currentPause?: PauseEvent;
   lastResumedAtMs?: number;
+  paused?: boolean;
 }
 
 export interface InspectorSession {
@@ -29,11 +32,23 @@ export interface InspectorSession {
   readonly pauseBuffer: PauseEvent[];
   readonly pauseWaitGate: PauseWaitGate;
   readonly debuggerState: DebuggerState;
+  readonly isolate?: InspectorIsolate;
   readonly targetIndex?: number;
   readonly targetCount?: number;
   readonly workerIndex?: number;
   readonly workerTargets?: readonly InspectorWorkerTarget[];
   readonly workerDiscoverySupported?: boolean;
+  dispose(): Promise<void>;
+}
+
+export interface InspectorSessionGroup {
+  readonly targetIndex: number;
+  readonly targetCount: number;
+  readonly workerDiscoverySupported: boolean;
+  list(): readonly InspectorSession[];
+  onSession(listener: (session: InspectorSession) => void): () => void;
+  onSessionRemoved(listener: (session: InspectorSession) => void): () => void;
+  onError(listener: (error: Error) => void): () => void;
   dispose(): Promise<void>;
 }
 

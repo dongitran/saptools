@@ -16,10 +16,9 @@ Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, except
 ## First Steps
 
 1. Identify whether the user wants a one-shot snapshot, continuous breakpoint watch, logpoint stream, exception capture, runtime evaluation, script listing, or connectivity check.
-2. Choose exactly one target option:
-   - Option A: use `--app <name>` when the app is in the current `cf target`. `cf-inspector` opens and closes the tunnel internally through `@saptools/cf-debugger`; do not run `cf-debugger` first for this option.
-   - Option B: use `--region --org --space --app` when the app is not in the current `cf target`.
-   - Option C: use `--port <number>` and optional `--host <host>` only when a local inspector or Cloud Foundry tunnel is already running. For a Cloud Foundry tunnel, open it with `cf-debugger` first by reading and following the `cf-debugger` skill.
+2. Choose exactly one target mode:
+   - Option A: use all of `--region --org --space --app`. `cf-inspector` never inherits ambient `cf target` values and opens/closes the tunnel internally.
+   - Option B: use `--port <number>` and optional `--host <host>` when a local inspector or Cloud Foundry tunnel is already running. For a Cloud Foundry tunnel, open it with `cf-debugger` first by reading and following the `cf-debugger` skill.
 3. Use live inspector access when the task needs current runtime evidence and the target plus credentials are available. Ask only when the target, credentials, or side effects of pausing the app are unclear.
 4. Choose the narrowest command that answers the question.
 5. Prefer JSON output for agent workflows. Use `--no-json` only when the user asks for human-readable output.
@@ -27,6 +26,13 @@ Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, except
 ## Command Choice
 
 Use `snapshot` for one-shot evidence at a line. It sets one or more breakpoints, waits for the first matching pause, captures expressions/scopes/stack, resumes unless `--keep-paused` is set, prints JSON, then exits.
+
+With no isolate selector, snapshot/watch/exception/log automatically attach to
+the main isolate and all current or newly-spawned NodeWorkers. Do not iterate
+worker indexes. Read the `isolate` field in results to learn which worker ran
+the code. Use `--worker-id <id>` to pin one live worker, `--main-only` to ignore
+workers, or the legacy `--worker <index>` only when positional selection is
+specifically required.
 
 ```bash
 cf-inspector snapshot --port 9229 \
@@ -78,11 +84,12 @@ Use `list-scripts` when breakpoints do not bind or path mapping is uncertain. `-
 cf-inspector list-scripts --port 9229 --filter '/home/vcap/app|ValidatePayloadWorker'
 ```
 
-Use `list-targets` and then pass `--target <index>` when worker threads appear as separate inspector targets.
+Use `list-targets` to inspect raw targets and stable worker IDs. Ordinary breakpoint workflows do not need a worker selector.
 
 ```bash
 cf-inspector list-targets --port 9229
-cf-inspector snapshot --port 9229 --target 1 --bp dist/worker.js:42
+cf-inspector snapshot --port 9229 --bp dist/worker.js:42
+cf-inspector snapshot --port 9229 --worker-id 3 --bp dist/worker.js:42
 ```
 
 Use `attach` as a connectivity smoke test for an inspector port or CF tunnel.
@@ -97,16 +104,7 @@ cf-inspector attach --port 9229
 
 ### Mode 1: Cloud Foundry app auto-tunnel
 
-Use this mode when the user gives an app name. `cf-inspector` reads the current `cf target` for region/org/space, starts the tunnel through `@saptools/cf-debugger`, runs the inspector command, and disposes the tunnel on exit. Do not run `cf-debugger start` first.
-
-```bash
-cf-inspector snapshot \
-  --app app-demo \
-  --bp dist/handler.js:42 \
-  --capture 'req.url, this.user'
-```
-
-Pass the full selector when the app is outside the current `cf target`:
+Use this mode when the user gives a complete region/org/space/app selector. `cf-inspector` starts the tunnel through `@saptools/cf-debugger`, runs the inspector command, and disposes the tunnel on exit. Do not run `cf-debugger start` first.
 
 ```bash
 cf-inspector snapshot \
@@ -147,6 +145,15 @@ When a breakpoint does not bind:
 2. Compare script URLs to the local `--bp` path.
 3. Add or adjust `--remote-root`.
 4. Retry with a short `--timeout`.
+
+Before retrying, use `check-breakpoint` with the same file and
+`--remote-root`. `script-not-loaded` means the file/path mapping does not match
+any loaded script; `unbreakable` means the file is loaded but the exact line is
+not executable; `breakable` reports concrete locations across attached isolates.
+
+```bash
+cf-inspector check-breakpoint --port 9229 --bp dist/handler.js:42
+```
 
 ## Captures
 
@@ -191,7 +198,7 @@ For agent parsing, read stdout events line by line and parse the final stderr JS
 
 Common `CfInspectorError.code` values:
 
-- `MISSING_TARGET`: neither `--port`, `--app` with a current CF target, nor a complete CF target was provided.
+- `MISSING_TARGET`: neither `--port` nor a complete `--region/--org/--space/--app` target was provided.
 - `INVALID_ARGUMENT`: numeric flags are not positive integers.
 - `INVALID_BREAKPOINT`: location is not `file:line`.
 - `INVALID_REMOTE_ROOT`: remote-root regex failed to compile.

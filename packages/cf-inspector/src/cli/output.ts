@@ -25,6 +25,7 @@ export function writeHumanSnapshot(snapshot: SnapshotResult): void {
   lines.push(
     `Snapshot @ ${snapshot.capturedAt}`,
     `  reason:  ${snapshot.reason}`,
+    `  isolate: ${formatIsolate(snapshot.isolate)}`,
     `  paused:  ${pausedDuration}`,
   );
   if (snapshot.exception !== undefined) {
@@ -95,11 +96,12 @@ export function writeLogEvent(event: LogpointEvent, json: boolean): void {
     process.stdout.write(`${JSON.stringify(event)}\n`);
     return;
   }
+  const isolateSuffix = event.isolate === undefined ? "" : ` (${formatIsolate(event.isolate)})`;
   if (event.error !== undefined) {
-    process.stdout.write(`[${event.ts}] ${event.at} !err ${renderTruncated(event.error, event)}\n`);
+    process.stdout.write(`[${event.ts}] ${event.at}${isolateSuffix} !err ${renderTruncated(event.error, event)}\n`);
     return;
   }
-  process.stdout.write(`[${event.ts}] ${event.at} ${renderTruncated(event.value ?? "", event)}\n`);
+  process.stdout.write(`[${event.ts}] ${event.at}${isolateSuffix} ${renderTruncated(event.value ?? "", event)}\n`);
 }
 
 export function writeWatchEvent(event: WatchEvent, json: boolean): void {
@@ -107,7 +109,9 @@ export function writeWatchEvent(event: WatchEvent, json: boolean): void {
     process.stdout.write(`${JSON.stringify(event)}\n`);
     return;
   }
-  process.stdout.write(`[${event.ts}] hit#${event.hit.toString()} ${event.at}\n`);
+  process.stdout.write(
+    `[${event.ts}] hit#${event.hit.toString()} ${event.at} (${formatIsolate(event.isolate)})\n`,
+  );
   if (event.exception !== undefined) {
     process.stdout.write(`  exception: ${renderExceptionDetail(event.exception)}\n`);
   }
@@ -115,6 +119,13 @@ export function writeWatchEvent(event: WatchEvent, json: boolean): void {
     const detail = capture.error ?? capture.value ?? "undefined";
     process.stdout.write(`  ${capture.expression} = ${renderTruncated(detail, capture)}\n`);
   }
+}
+
+function formatIsolate(isolate: SnapshotResult["isolate"]): string {
+  if (isolate?.kind === "worker") {
+    return `worker ${isolate.workerId}`;
+  }
+  return "main";
 }
 
 function renderExceptionDetail(exception: ExceptionSnapshot): string {

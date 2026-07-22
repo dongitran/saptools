@@ -27,7 +27,7 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 - 💥 **Exception breakpoints** — `cf-inspector exception --type uncaught --capture err.message` pauses on the next thrown error and materializes the exception value
 - 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes without pausing the inspectee, with optional `--condition`, `--hit-count`, and `--max-events`
 - 🛡️ **Read-only capture guard** — snapshot, watch, and exception captures use V8's side-effect analysis by default; `--allow-mutation` is an explicit escape hatch
-- 🧵 **Worker-aware sessions** — `list-targets` discovers raw inspector targets and nested NodeWorker sessions; use `--target` or `--worker` to select an isolate
+- 🧵 **Automatic worker fan-out** — snapshot, watch, exception, and log attach to the main isolate plus every current or newly-spawned NodeWorker; explicit selectors remain available for pinning
 - 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shapes, and explicit `truncated`/`originalLength`/`omittedCount` metadata for bounded values
 - 🧭 **Path mapping** — local `src/handler.ts:42` is matched against the remote URL via a `urlRegex`, with optional `--remote-root` literal or regex (same DSL as `cds-debug`)
 - 🔁 **Composes with `cf-debugger`** — pass `--app/--region/--org/--space` and the tunnel is opened automatically; pass `--port` to attach to anything CDP-speaking
@@ -73,6 +73,21 @@ Cloud Foundry targeting is deliberately deterministic: `--app` requires
 from ambient `cf target` state. Use `--api-endpoint` only when the selected
 region needs an explicit endpoint override.
 
+### Worker behavior
+
+When no isolate selector is passed, `snapshot`, `watch`, `exception`, `log`, and
+`check-breakpoint` attach to the main isolate and every NodeWorker under the
+selected raw target. Breakpoints are mirrored to workers that attach later, the
+first matching pause wins, and JSON/human output identifies the winning
+`isolate` as either `{"kind":"main"}` or
+`{"kind":"worker","workerId":"…"}`. Losing isolates that also paused are
+resumed before the command continues or exits.
+
+Use `--worker-id <id>` to pin a stable live worker ID from `list-targets`,
+`--worker <index>` for the legacy positional selector, `--target <index>` to
+pin a raw inspector target, or `--main-only` to deliberately ignore workers.
+Explicit selectors preserve single-isolate behavior.
+
 ---
 
 ## 🧰 CLI
@@ -103,6 +118,8 @@ cf-inspector snapshot --port 9229 \
 | `--api-endpoint <url>` | Override the API endpoint resolved from `--region` |
 | `--target <index>` | Raw `/json/list` target index (default: `0`) |
 | `--worker <index>` | Nested NodeWorker index reported under the selected raw target by `list-targets` |
+| `--worker-id <id>` | Stable live NodeWorker ID reported by `list-targets` |
+| `--main-only` | Attach only to the main isolate and ignore NodeWorkers |
 | `--bp <file:line>` | **Required.** Source location to break at. Pass multiple times to race several locations — the first one to hit wins |
 | `--condition <expr>` | Native breakpoint condition. It is compile-checked before arming; mutation-shaped conditions require `--allow-mutation` because CDP provides no side-effect guard for native conditions |
 | `--hit-count <n>` | Skip the first N − 1 hits and only pause on the Nth (combines with `--condition` via logical AND) |
@@ -232,7 +249,8 @@ When the user expression throws, the event is emitted with `error` instead of `v
 | Flag | Description |
 | --- | --- |
 | `--port <number>` | Local port the inspector or tunnel listens on. **Required** unless `--app/--region/--org/--space` are all set |
-| `--target <index>` / `--worker <index>` | Select a raw inspector target or nested NodeWorker session from `list-targets` |
+| `--target <index>` / `--worker <index>` / `--worker-id <id>` | Pin one raw target or worker instead of automatic fan-out |
+| `--main-only` | Ignore workers and attach only to the main isolate |
 | `--at <file:line>` | **Required.** Source location to log at |
 | `--expr <expression>` | **Required.** JavaScript expression evaluated at each hit, wrapped in try/catch on the inspectee side. It is mutation-capable; recognizable risks produce a warning |
 | `--duration <seconds>` | Stop streaming after N seconds (default: run until SIGINT) |
@@ -275,7 +293,8 @@ Each event is a `WatchEvent`:
 | Flag | Description |
 | --- | --- |
 | `--port <number>` | Local port the inspector or tunnel listens on. Otherwise pass all explicit Cloud Foundry selectors |
-| `--target <index>` / `--worker <index>` | Select a raw inspector target or nested NodeWorker session from `list-targets` |
+| `--target <index>` / `--worker <index>` / `--worker-id <id>` | Pin one raw target or worker instead of automatic fan-out |
+| `--main-only` | Ignore workers and attach only to the main isolate |
 | `--bp <file:line>` | **Required.** Source location to capture on (repeatable) |
 | `--capture <expr,…>` | Top-level comma-separated expressions evaluated per hit under V8's side-effect guard |
 | `--setup-eval <expr>` | Repeatable mutation-capable global expression evaluated before breakpoint setup; recognizable risks produce a warning |
@@ -324,7 +343,8 @@ Result is a `SnapshotResult` with an extra `exception` field:
 | Flag | Description |
 | --- | --- |
 | `--port` or explicit `--region/--org/--space/--app` | Select the local inspector or deterministic Cloud Foundry target |
-| `--target <index>` / `--worker <index>` | Select a raw inspector target or nested NodeWorker session from `list-targets` |
+| `--target <index>` / `--worker <index>` / `--worker-id <id>` | Pin one raw target or worker instead of automatic fan-out |
+| `--main-only` | Ignore workers and attach only to the main isolate |
 | `--type <state>` | Pause on which exceptions: `uncaught` (default), `caught`, or `all` |
 | `--capture <expr,…>` | Top-level expressions evaluated in the paused frame under V8's side-effect guard |
 | `--stack-depth <n>` | Walk this many call frames (default: `1`) |
@@ -368,7 +388,8 @@ nested workers with their own indexes.
 
 ```bash
 cf-inspector list-targets --port 9229
-cf-inspector snapshot --port 9229 --worker 0 --bp dist/worker.js:42
+cf-inspector snapshot --port 9229 --bp dist/worker.js:42
+cf-inspector snapshot --port 9229 --worker-id 1 --bp dist/worker.js:42
 # If a runtime publishes a worker as another raw /json/list target instead:
 cf-inspector snapshot --port 9229 --target 1 --bp dist/worker.js:42
 ```
@@ -394,22 +415,37 @@ JSON output nests workers beneath their raw target:
 ]
 ```
 
-`--target` selects a complete raw inspector endpoint. `--worker` selects a
-nested NodeWorker session under the chosen raw target (raw target `0` unless
-`--target` is also passed). Modern Node.js 20–25 verification found workers on
+`--target` selects a complete raw inspector endpoint. `--worker-id` selects a
+live nested worker by its stable ID, while `--worker` retains positional-index
+selection for compatibility. Modern Node.js 20–25 verification found workers on
 the `NodeWorker` path, including workers already alive before post-hoc
 `SIGUSR1` inspector activation; the raw-target selector remains supported for
 runtimes that publish that shape.
 
-When multiple raw targets or nested workers exist and no selector is passed,
-commands attach to raw target `0` and print a selection notice. A bound
-breakpoint that sees no hit prints a worker-isolate hint. If only one raw target
+When no selector is passed, breakpoint-oriented commands attach to raw target
+`0` and automatically fan out across its main isolate and nested workers. If only one raw target
 and no workers are visible, `list-targets` explains that the worker may have
 exited, the runtime may not expose NodeWorker discovery, or a separate worker
 port may be unreachable through the single Cloud Foundry tunnel. Rerun the
-command while the worker is alive before selecting an index.
+command while the worker is alive before pinning its `workerId`.
 
 If `list-targets`, `attach`, or another command reports `ECONNREFUSED`, the local inspector or tunnel on that port is usually stale/closed. Restart the local Node inspector or tunnel and retry; for Cloud Foundry targets, pass the complete `--region/--org/--space/--app` selector so `cf-inspector` can open a fresh tunnel.
+
+### ✅ `cf-inspector check-breakpoint`
+
+Check whether a `file:line` can accept a breakpoint before arming one. The
+command uses the same path mapping as `--bp` and checks every currently attached
+isolate by default.
+
+```bash
+cf-inspector check-breakpoint --port 9229 --bp dist/handler.js:42
+```
+
+`status: "script-not-loaded"` means no loaded script matched the file/path
+mapping; use `list-scripts`, adjust `--remote-root`, or trigger lazy loading.
+`status: "unbreakable"` means the script is loaded but that exact line has no
+V8 break location; choose a neighboring executable line. `status: "breakable"`
+includes the concrete script IDs, isolate identities, lines, and columns.
 
 ### 🔗 `cf-inspector attach`
 
@@ -480,7 +516,7 @@ pre-existing session.
 ```
 ┌──────────────────────┐   1. GET http://127.0.0.1:<port>/json/list
 │ cf-inspector         │   2. Open the selected raw WebSocket target
-│  snapshot --bp X:Y   │ ─►3. Optionally attach to a selected NodeWorker sub-session
+│  snapshot --bp X:Y   │ ─►3. Auto-attach to current and future NodeWorker sub-sessions
 └──────────────────────┘   4. Debugger.enable + Runtime.enable
             │              5. Debugger.setBreakpointByUrl({ urlRegex, lineNumber: Y - 1 })
             ▼              6. Wait for `Debugger.paused`
@@ -510,7 +546,8 @@ CLI does not read ambient `cf target` state. It calls `startDebugger(...)` from
 on exit. You get the same one-shot UX whether the target is local or in CF.
 
 The tunnel forwards one inspector port. Nested NodeWorker sessions carried by
-that inspector connection are selectable with `--worker`; a worker exposing
+that inspector connection are auto-attached by breakpoint-oriented commands and
+can be pinned with `--worker-id`; a worker exposing
 only an unrelated separate port is outside that tunnel's reach.
 
 ```bash

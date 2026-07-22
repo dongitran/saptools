@@ -6,6 +6,7 @@ import { Command } from "commander";
 
 import type {
   AttachCommandOptions,
+  CheckBreakpointCommandOptions,
   EvalCommandOptions,
   ExceptionCommandOptions,
   ListScriptsCommandOptions,
@@ -15,6 +16,7 @@ import type {
   WatchCommandOptions,
 } from "./commandTypes.js";
 import { handleAttach } from "./commands/attach.js";
+import { handleCheckBreakpoint } from "./commands/checkBreakpoint.js";
 import { handleEval } from "./commands/eval.js";
 import { handleException } from "./commands/exception.js";
 import { handleListScripts, handleListTargets } from "./commands/listScripts.js";
@@ -49,7 +51,10 @@ function applyTargetOptions(
       );
   const withWorkerOption = options.includeWorker === false
     ? withTargetOption
-    : withTargetOption.option("--worker <index>", "NodeWorker sub-session index listed by list-targets");
+    : withTargetOption
+        .option("--worker <index>", "NodeWorker sub-session index listed by list-targets")
+        .option("--worker-id <id>", "Stable NodeWorker workerId listed by list-targets")
+        .option("--main-only", "Attach only to the main isolate and ignore workers");
   return options.includeTimeout === false
     ? withWorkerOption
     : withWorkerOption.option("--timeout <seconds>", "Timeout for CF tunnel readiness in seconds (default: 180)");
@@ -92,12 +97,27 @@ export async function main(argv: readonly string[]): Promise<void> {
   registerLog(program);
   registerWatch(program);
   registerException(program);
+  registerCheckBreakpoint(program);
   registerEval(program);
   registerListScripts(program);
   registerListTargets(program);
   registerAttach(program);
 
   await program.parseAsync([...argv]);
+}
+
+function registerCheckBreakpoint(program: Command): void {
+  applyTargetOptions(
+    program.command("check-breakpoint").description(
+      "Report whether a loaded script can break at a file:line location",
+    ),
+  )
+    .requiredOption("--bp <file:line>", "Source location to check")
+    .option("--remote-root <value>", "Path-mapping anchor: literal path or regex:<pattern> / /pattern/flags")
+    .option("--no-json", "Print a human-readable result instead of JSON")
+    .action(async (opts: CheckBreakpointCommandOptions): Promise<void> => {
+      await handleCheckBreakpoint(opts);
+    });
 }
 
 function registerSnapshot(program: Command): void {

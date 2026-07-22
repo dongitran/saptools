@@ -3,8 +3,8 @@ import {
 } from "@saptools/cf-debugger";
 
 import { openCfTunnel } from "../cf/tunnel.js";
-import { connectInspector } from "../inspector/session.js";
-import type { InspectorSession } from "../inspector/types.js";
+import { connectInspector, connectInspectorGroup } from "../inspector/session.js";
+import type { InspectorSession, InspectorSessionGroup } from "../inspector/types.js";
 import { CfInspectorError } from "../types.js";
 
 import { DEFAULT_CF_TIMEOUT_SEC } from "./commandTypes.js";
@@ -50,12 +50,15 @@ export function resolveTarget(opts: SharedTargetOptions, options: TargetResolveO
   const port = parsePositiveInt(opts.port, "--port");
   const targetIndex = parseTargetIndex(opts.target);
   const workerIndex = parseSelectionIndex(opts.worker, "--worker");
+  const workerId = parseWorkerId(opts.workerId);
+  const mainOnly = opts.mainOnly === true;
+  validateIsolateSelectors(targetIndex, workerIndex, workerId, mainOnly);
   if (port !== undefined) {
     return {
       kind: "port",
       port,
       host: opts.host ?? "127.0.0.1",
-      ...selectionOptions(targetIndex, workerIndex),
+      ...selectionOptions(targetIndex, workerIndex, workerId, mainOnly),
     };
   }
 
@@ -86,6 +89,8 @@ export function resolveTarget(opts: SharedTargetOptions, options: TargetResolveO
     parseTunnelTimeout(opts, options),
     targetIndex,
     workerIndex,
+    workerId,
+    mainOnly,
   );
 }
 
@@ -128,10 +133,14 @@ function targetIndexOption(targetIndex: number | undefined): { readonly targetIn
 function selectionOptions(
   targetIndex: number | undefined,
   workerIndex: number | undefined,
-): { readonly targetIndex?: number; readonly workerIndex?: number } {
+  workerId?: string,
+  mainOnly?: boolean,
+): { readonly targetIndex?: number; readonly workerIndex?: number; readonly workerId?: string; readonly mainOnly?: boolean } {
   return {
     ...targetIndexOption(targetIndex),
     ...(workerIndex === undefined ? {} : { workerIndex }),
+    ...(workerId === undefined ? {} : { workerId }),
+    ...(mainOnly === true ? { mainOnly: true } : {}),
   };
 }
 
@@ -144,6 +153,8 @@ function buildCfTarget(
   tunnelTimeoutSec: number,
   targetIndex: number | undefined,
   workerIndex: number | undefined,
+  workerId: string | undefined,
+  mainOnly: boolean,
 ): Target {
   return {
     kind: "cf",
@@ -153,13 +164,45 @@ function buildCfTarget(
     space,
     app,
     tunnelTimeoutMs: tunnelTimeoutSec * 1000,
-    ...selectionOptions(targetIndex, workerIndex),
+    ...selectionOptions(targetIndex, workerIndex, workerId, mainOnly),
   };
+}
+
+function validateIsolateSelectors(
+  targetIndex: number | undefined,
+  workerIndex: number | undefined,
+  workerId: string | undefined,
+  mainOnly: boolean,
+): void {
+  const workerSelectors = Number(workerIndex !== undefined) + Number(workerId !== undefined);
+  if (workerSelectors > 1 || (mainOnly && workerSelectors > 0)) {
+    throw new CfInspectorError(
+      "INVALID_ARGUMENT",
+      "Use only one of --worker, --worker-id, or --main-only.",
+    );
+  }
+  if (targetIndex !== undefined && workerSelectors === 0 && !mainOnly) {
+    return;
+  }
 }
 
 function optionalText(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function parseWorkerId(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new CfInspectorError(
+      "INVALID_ARGUMENT",
+      "Invalid --worker-id: expected a non-empty workerId from list-targets",
+    );
+  }
+  return trimmed;
 }
 
 interface ResolvedTunnel {
@@ -184,11 +227,12 @@ export async function withSession<T>(
       port: tunnel.port,
       host: tunnel.host,
       ...selectionOptions(target.targetIndex, target.workerIndex),
+      ...(target.workerId === undefined ? {} : { workerId: target.workerId }),
     });
     warnOnImplicitInspectorSelection(
       session,
       target.targetIndex !== undefined,
-      target.workerIndex !== undefined,
+      target.workerIndex !== undefined || target.workerId !== undefined,
     );
     reportProgress?.("Inspector session is ready.");
     return await fn(session, tunnel.port);
@@ -200,6 +244,68 @@ export async function withSession<T>(
     }
     await tunnel.dispose();
   }
+}
+
+export async function withSessions<T>(
+  target: Target,
+  fn: (group: InspectorSessionGroup, port: number) => Promise<T>,
+  reportProgress?: ProgressReporter,
+  signal?: AbortSignal,
+): Promise<T> {
+  const tunnel = await openTarget(target, reportProgress, signal);
+  let group: InspectorSessionGroup | undefined;
+  try {
+    reportProgress?.(
+      `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
+    );
+    const autoAttach = target.targetIndex === undefined && target.workerIndex === undefined &&
+      target.workerId === undefined && target.mainOnly !== true;
+    if (autoAttach) {
+      group = await connectInspectorGroup({ port: tunnel.port, host: tunnel.host });
+    } else {
+      const session = await connectInspector({
+        port: tunnel.port,
+        host: tunnel.host,
+        ...selectionOptions(target.targetIndex, target.workerIndex, target.workerId),
+      });
+      group = singleSessionGroup(session);
+    }
+    reportProgress?.("Inspector session is ready.");
+    return await fn(group, tunnel.port);
+  } finally {
+    try {
+      if (group !== undefined) {
+        const sessionCount = group.list().length;
+        reportProgress?.(sessionCount === 1
+          ? "Closing the inspector session..."
+          : `Closing ${sessionCount.toString()} inspector sessions...`);
+        await group.dispose();
+        reportProgress?.(sessionCount === 1
+          ? "Inspector session closed."
+          : "Inspector sessions closed.");
+      }
+    } finally {
+      await tunnel.dispose();
+    }
+  }
+}
+
+function singleSessionGroup(session: InspectorSession): InspectorSessionGroup {
+  return {
+    targetIndex: session.targetIndex ?? 0,
+    targetCount: session.targetCount ?? 1,
+    workerDiscoverySupported: session.workerDiscoverySupported ?? false,
+    list: (): readonly InspectorSession[] => [session],
+    onSession: (listener): (() => void) => {
+      listener(session);
+      return (): void => undefined;
+    },
+    onSessionRemoved: (): (() => void) => (): void => undefined,
+    onError: (): (() => void) => (): void => undefined,
+    dispose: async (): Promise<void> => {
+      await session.dispose();
+    },
+  };
 }
 
 export async function openTarget(

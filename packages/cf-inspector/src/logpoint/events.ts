@@ -3,7 +3,7 @@ import {
   limitValueLength,
   textTruncationFields,
 } from "../snapshot/values.js";
-import type { BreakpointLocation } from "../types.js";
+import type { BreakpointLocation, InspectorIsolate } from "../types.js";
 
 export interface LogpointEvent {
   readonly ts: string;
@@ -13,6 +13,7 @@ export interface LogpointEvent {
   readonly raw?: string;
   readonly truncated?: true;
   readonly originalLength?: number;
+  readonly isolate?: InspectorIsolate;
 }
 
 interface CdpRemoteObject {

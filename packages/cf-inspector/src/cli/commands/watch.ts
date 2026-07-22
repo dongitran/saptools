@@ -1,14 +1,16 @@
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 
+import { startInspectorKeepalive } from "../../inspector/discovery.js";
 import {
+  BreakpointFanout,
   resume,
   runSetupEvals,
   setBreakpoint,
   validateExpression,
   waitForPause,
 } from "../../inspector/index.js";
-import type { InspectorSession } from "../../inspector/types.js";
+import type { InspectorSession, InspectorSessionGroup } from "../../inspector/types.js";
 import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { captureSnapshot } from "../../snapshot/capture.js";
 import { DEFAULT_STREAM_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
@@ -19,7 +21,7 @@ import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { Target, WatchCommandOptions } from "../commandTypes.js";
 import { writeJson, writeWatchEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
-import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
+import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
 import {
   enforceNativeConditionMutationPolicy,
   warnOnBoundBreakpointWithoutHit,
@@ -60,13 +62,124 @@ export async function handleWatch(opts: WatchCommandOptions): Promise<void> {
   let stoppedReason: WatchStopReason = "signal";
   let emitted = 0;
   await withTerminationSignal(async (signal) => {
-    await withSession(prepared.target, async (session) => {
-      const result = await runWatchLoop(session, prepared, opts, signal);
-      stoppedReason = result.stoppedReason;
-      emitted = result.emitted;
+    await withSessions(prepared.target, async (group, port) => {
+      const host = prepared.target.kind === "port" ? prepared.target.host : "127.0.0.1";
+      const keepalive = startInspectorKeepalive(host, port);
+      const commandAbort = new AbortController();
+      const onSignal = (): void => {
+        commandAbort.abort();
+      };
+      signal.addEventListener("abort", onSignal, { once: true });
+      let keepaliveError: unknown;
+      void keepalive.failure.catch((error: unknown) => {
+        keepaliveError = error;
+        commandAbort.abort();
+      });
+      try {
+        const result = await runWatchGroup(group, prepared, opts, commandAbort.signal);
+        stoppedReason = result.stoppedReason;
+        emitted = result.emitted;
+        if (keepaliveError !== undefined) {
+          throw keepaliveError instanceof Error
+            ? keepaliveError
+            : new Error("Unknown inspector keepalive failure");
+        }
+      } finally {
+        keepalive.cancel();
+        signal.removeEventListener("abort", onSignal);
+      }
     }, undefined, signal);
   });
   writeWatchSummary(stoppedReason, emitted, opts.json);
+}
+
+async function runWatchGroup(
+  group: InspectorSessionGroup,
+  command: PreparedWatchCommand,
+  opts: WatchCommandOptions,
+  signal: AbortSignal,
+): Promise<WatchLoopResult> {
+  const fanout = new BreakpointFanout(group, async (session, trackHandle) => {
+    if (command.setupEvals.length > 0) {
+      await runSetupEvals(session, command.setupEvals);
+    }
+    if (command.condition !== undefined) {
+      await validateExpression(session, command.condition);
+    }
+    const handles = await Promise.all(command.breakpoints.map((bp) =>
+      setBreakpoint(session, {
+        file: bp.file,
+        line: bp.line,
+        remoteRoot: command.remoteRoot,
+        ...(command.condition === undefined ? {} : { condition: command.condition }),
+        ...(command.hitCount === undefined ? {} : { hitCount: command.hitCount }),
+      }).then((handle) => {
+        trackHandle(handle);
+        return handle;
+      })));
+    warnOnUnboundBreakpoints(handles);
+    return { handles };
+  });
+  let emitted = 0;
+  let stoppedReason: WatchStopReason = "signal";
+  const deadline = computeDeadline(command.durationMs);
+  try {
+    await fanout.ready();
+    while (!signal.aborted) {
+      const remainingMs = remainingForLoop(deadline, command.perHitTimeoutMs);
+      if (remainingMs <= 0) {
+        stoppedReason = "duration";
+        break;
+      }
+      let hit;
+      try {
+        hit = await fanout.waitForFirst(remainingMs, { unmatchedPausePolicy: "wait-for-resume" }, signal);
+      } catch (error: unknown) {
+        if (error instanceof CfInspectorError && error.code === "ABORTED") {
+          stoppedReason = "signal";
+          break;
+        }
+        if (error instanceof CfInspectorError && (
+          error.code === "BREAKPOINT_NOT_HIT" || error.code === "UNRELATED_PAUSE_TIMEOUT"
+        )) {
+          if (deadline !== undefined && performance.now() >= deadline) {
+            stoppedReason = "duration";
+            break;
+          }
+          continue;
+        }
+        throw error;
+      }
+      const event = await captureWatchEvent(hit.session, command, hit.pause, emitted + 1, opts);
+      emitted += 1;
+      writeWatchEvent({ ...event, isolate: hit.session.isolate ?? { kind: "main" } }, opts.json);
+      try {
+        await resume(hit.session);
+        hit.session.debuggerState.paused = false;
+      } catch {
+        process.stderr.write("[cf-inspector] warning: Debugger.resume failed during watch.\n");
+        stoppedReason = "transport-closed";
+        break;
+      }
+      if (command.maxEvents !== undefined && emitted >= command.maxEvents) {
+        stoppedReason = "max-events";
+        break;
+      }
+    }
+    if (signal.aborted) {
+      stoppedReason = "signal";
+    }
+  } finally {
+    const cleanup = await fanout.cleanup();
+    process.stderr.write(
+      `[cf-inspector] breakpoint cleanup: cleared ${cleanup.cleared.toString()} of ${cleanup.attempted.toString()}; resumed ${cleanup.resumed.toString()} paused isolates.\n`,
+    );
+  }
+  if (emitted === 0 && (stoppedReason === "duration" || stoppedReason === "signal")) {
+    const outcomes = fanout.availableOutcomes();
+    warnOnBoundBreakpointWithoutHit(outcomes.flatMap((outcome) => outcome.setup.handles));
+  }
+  return { emitted, stoppedReason };
 }
 
 function prepareWatchCommand(opts: WatchCommandOptions, target: Target): PreparedWatchCommand {

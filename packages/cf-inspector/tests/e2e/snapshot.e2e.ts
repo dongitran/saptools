@@ -432,8 +432,8 @@ test("snapshot --condition that never matches returns BREAKPOINT_NOT_HIT after t
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("BREAKPOINT_NOT_HIT");
     expect(result.stderr).toContain("no hit was observed");
-    expect(result.stderr).toContain("worker isolate");
-    expect(result.stderr).toContain("list-targets");
+    expect(result.stderr).toContain("No selected isolate");
+    expect(result.stderr).toContain("check-breakpoint");
   } finally {
     await fixture.close();
   }

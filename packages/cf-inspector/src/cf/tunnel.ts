@@ -1,6 +1,11 @@
 import { startDebugger } from "@saptools/cf-debugger";
 import type { DebuggerHandle, SessionStatus, StartDebuggerOptions } from "@saptools/cf-debugger";
 
+import { fetchInspectorVersion } from "../inspector/discovery.js";
+import { CfInspectorError } from "../types.js";
+
+const REUSED_TUNNEL_GRACE_MS = 5_000;
+
 export interface TunnelTarget {
   readonly region: string;
   readonly apiEndpoint?: string;
@@ -99,6 +104,16 @@ export async function openCfTunnel(target: TunnelTarget): Promise<OpenedTunnel> 
     const localPort = existingTunnelPort(error);
     if (localPort === undefined) {
       throw error;
+    }
+    try {
+      await fetchInspectorVersion("127.0.0.1", localPort, REUSED_TUNNEL_GRACE_MS);
+    } catch (livenessError: unknown) {
+      const detail = livenessError instanceof Error ? livenessError.message : String(livenessError);
+      throw new CfInspectorError(
+        "INSPECTOR_DISCOVERY_FAILED",
+        `Another debugger session claims tunnel port ${localPort.toString()}, but its Node inspector did not respond within ${REUSED_TUNNEL_GRACE_MS.toString()}ms. The tunnel may be stale or still finishing setup; retry shortly, or inspect and stop the owning cf-debugger session before opening a fresh tunnel.`,
+        detail,
+      );
     }
     target.onStatus?.("ready", `Reusing existing tunnel on port ${localPort.toString()}`);
     return { localPort, dispose: (): Promise<void> => Promise.resolve() };

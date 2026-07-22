@@ -4,13 +4,14 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-import type { SnapshotResult } from "../../src/types.js";
+import type { SnapshotResult, WatchEvent } from "../../src/types.js";
 
 import { ensureCliBuilt, runCli, spawnFixture } from "./helpers.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOST_FIXTURE = resolve(HERE, "fixtures", "000-thread-host.mjs");
 const WORKER_FIXTURE = resolve(HERE, "fixtures", "001-thread-worker.mjs");
+const LATE_HOST_FIXTURE = resolve(HERE, "fixtures", "002-late-thread-host.mjs");
 
 interface ListedWorker {
   readonly index: number;
@@ -93,6 +94,162 @@ test("User can snapshot worker-local state and the worker resumes afterward", as
   }
 });
 
+test("User can snapshot worker-local state without selecting a worker", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  const breakpoint = `fixtures/001-thread-worker.mjs:${markerLine(WORKER_FIXTURE, "cf-inspector-worker-breakpoint").toString()}`;
+  try {
+    const result = await runCli([
+      "snapshot", "--port", fixture.port.toString(), "--bp", breakpoint,
+      "--capture", "workerLocal.threadLabel", "--timeout", "10",
+    ], 45_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const snapshot = JSON.parse(result.stdout) as SnapshotResult;
+    expect(snapshot.isolate).toMatchObject({ kind: "worker", workerId: expect.any(String) as unknown as string });
+    expect(captureValue(snapshot, "workerLocal.threadLabel")).toBe('"worker-session"');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("A worker spawned after snapshot starts is armed and can win", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({
+    fixturePath: LATE_HOST_FIXTURE,
+    readyText: "late-thread-host ready",
+  });
+  const breakpoint = `fixtures/001-thread-worker.mjs:${markerLine(WORKER_FIXTURE, "cf-inspector-worker-breakpoint").toString()}`;
+  try {
+    const result = await runCli([
+      "snapshot", "--port", fixture.port.toString(), "--bp", breakpoint,
+      "--capture", "workerLocal.threadLabel", "--timeout", "10",
+    ], 45_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect((JSON.parse(result.stdout) as SnapshotResult).isolate).toMatchObject({
+      kind: "worker",
+      workerId: expect.any(String) as unknown as string,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("User can pin a worker by stable workerId", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  const breakpoint = `fixtures/001-thread-worker.mjs:${markerLine(WORKER_FIXTURE, "cf-inspector-worker-breakpoint").toString()}`;
+  try {
+    const listed = await runCli(["list-targets", "--port", fixture.port.toString()], 30_000);
+    const targets = JSON.parse(listed.stdout) as readonly ListedTarget[];
+    const workerId = targets[0]?.workers[0]?.workerId;
+    expect(workerId).toBeDefined();
+    const result = await runCli([
+      "snapshot", "--port", fixture.port.toString(), "--worker-id", workerId ?? "missing",
+      "--bp", breakpoint, "--capture", "workerLocal.threadLabel", "--timeout", "10",
+    ], 45_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect((JSON.parse(result.stdout) as SnapshotResult).isolate).toEqual({ kind: "worker", workerId });
+
+    const missing = await runCli([
+      "snapshot", "--port", fixture.port.toString(), "--worker-id", "not-attached",
+      "--bp", breakpoint, "--timeout", "1",
+    ], 15_000);
+    expect(missing.exitCode).not.toBe(0);
+    expect(missing.stderr).toContain("workerId \"not-attached\"");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("User can explicitly restrict snapshot to the main isolate", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  const breakpoint = `fixtures/000-thread-host.mjs:${markerLine(HOST_FIXTURE, "cf-inspector-main-breakpoint").toString()}`;
+  try {
+    const result = await runCli([
+      "snapshot", "--port", fixture.port.toString(), "--main-only", "--bp", breakpoint,
+      "--capture", "mainLocal.threadLabel", "--timeout", "10",
+    ], 45_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    expect((JSON.parse(result.stdout) as SnapshotResult).isolate).toEqual({ kind: "main" });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("User can precheck breakable and unbreakable worker lines", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  try {
+    const breakable = await runCli([
+      "check-breakpoint", "--port", fixture.port.toString(), "--bp",
+      `fixtures/001-thread-worker.mjs:${markerLine(WORKER_FIXTURE, "cf-inspector-worker-breakpoint").toString()}`,
+    ], 30_000);
+    expect(breakable.exitCode, `stderr: ${breakable.stderr}`).toBe(0);
+    expect(JSON.parse(breakable.stdout)).toMatchObject({ status: "breakable" });
+
+    const unbreakable = await runCli([
+      "check-breakpoint", "--port", fixture.port.toString(), "--bp",
+      `fixtures/001-thread-worker.mjs:${markerLine(WORKER_FIXTURE, "function runWorkerTask").toString()}`,
+    ], 30_000);
+    expect(unbreakable.exitCode, `stderr: ${unbreakable.stderr}`).toBe(0);
+    expect(JSON.parse(unbreakable.stdout)).toMatchObject({ status: "unbreakable" });
+
+    const missing = await runCli([
+      "check-breakpoint", "--port", fixture.port.toString(), "--bp", "fixtures/not-loaded.mjs:1",
+    ], 30_000);
+    expect(JSON.parse(missing.stdout)).toMatchObject({ status: "script-not-loaded" });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("watch and log auto-attach to worker isolates", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  const breakpoint = `fixtures/001-thread-worker.mjs:${markerLine(WORKER_FIXTURE, "cf-inspector-worker-breakpoint").toString()}`;
+  try {
+    const watch = await runCli([
+      "watch", "--port", fixture.port.toString(), "--bp", breakpoint,
+      "--capture", "workerCounter", "--max-events", "2", "--timeout", "5",
+    ], 30_000);
+    expect(watch.exitCode, `stderr: ${watch.stderr}`).toBe(0);
+    const watchEvents = watch.stdout.trim().split("\n").map((line) => JSON.parse(line) as WatchEvent);
+    expect(watchEvents).toHaveLength(2);
+    expect(watchEvents.every((event) => event.isolate?.kind === "worker")).toBe(true);
+
+    const log = await runCli([
+      "log", "--port", fixture.port.toString(), "--at", breakpoint,
+      "--expr", "workerCounter", "--max-events", "2",
+    ], 30_000);
+    expect(log.exitCode, `stderr: ${log.stderr}`).toBe(0);
+    const logEvents = log.stdout.trim().split("\n").map((line) => JSON.parse(line) as {
+      readonly isolate?: { readonly kind: string };
+    });
+    expect(logEvents).toHaveLength(2);
+    expect(logEvents.every((event) => event.isolate?.kind === "worker")).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("exception auto-attaches to a worker isolate", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  try {
+    const result = await runCli([
+      "exception", "--port", fixture.port.toString(), "--type", "all",
+      "--capture", "workerCounter", "--timeout", "10",
+    ], 30_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const snapshot = JSON.parse(result.stdout) as SnapshotResult;
+    expect(snapshot.isolate?.kind).toBe("worker");
+    expect(snapshot.exception?.description).toContain("worker-caught-exception");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("User can still select raw target zero and inspect the main isolate", async () => {
   ensureCliBuilt();
   const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
@@ -112,6 +269,8 @@ test("User can still select raw target zero and inspect the main isolate", async
     expect(help.stdout).toContain("--target <index>");
     expect(help.stdout).toContain("/json/list");
     expect(help.stdout).toContain("--worker <index>");
+    expect(help.stdout).toContain("--worker-id <id>");
+    expect(help.stdout).toContain("--main-only");
   } finally {
     await fixture.close();
   }

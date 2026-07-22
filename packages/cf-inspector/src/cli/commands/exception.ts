@@ -2,9 +2,9 @@ import { performance } from "node:perf_hooks";
 import process from "node:process";
 
 import {
+  BreakpointFanout,
   resume,
   setPauseOnExceptions,
-  waitForPause,
 } from "../../inspector/index.js";
 import type { InspectorSession, PauseOnExceptionsState } from "../../inspector/index.js";
 import { parseRemoteRoot } from "../../pathMapper.js";
@@ -16,7 +16,8 @@ import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_EXCEPTION_TIMEOUT_SEC } from "../commandTypes.js";
 import type { ExceptionCommandOptions, Target } from "../commandTypes.js";
 import { writeHumanSnapshot, writeJson } from "../output.js";
-import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
+import { withTerminationSignal } from "../signals.js";
+import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
 import { roundDurationMs, warnOnCaptureMutationRisk, withPausedDuration } from "../warnings.js";
 
 const VALID_PAUSE_TYPES: readonly PauseOnExceptionsState[] = ["uncaught", "caught", "all"];
@@ -40,7 +41,8 @@ export async function handleException(opts: ExceptionCommandOptions): Promise<vo
     [...prepared.captures, ...prepared.stackCaptures],
     opts.allowMutation === true,
   );
-  const result = await runExceptionCommand(prepared, opts);
+  const result = await withTerminationSignal(async (signal) =>
+    await runExceptionCommand(prepared, opts, signal));
   if (opts.json) {
     writeJson(result);
   } else {
@@ -76,17 +78,25 @@ function prepareExceptionCommand(opts: ExceptionCommandOptions, target: Target):
 async function runExceptionCommand(
   command: PreparedExceptionCommand,
   opts: ExceptionCommandOptions,
+  signal?: AbortSignal,
 ): Promise<SnapshotResult> {
-  return await withSession(command.target, async (session): Promise<SnapshotResult> => {
-    await setPauseOnExceptions(session, command.state);
+  return await withSessions(command.target, async (group): Promise<SnapshotResult> => {
+    const fanout = new BreakpointFanout(group, async (session) => {
+      await setPauseOnExceptions(session, command.state);
+      return { handles: [] };
+    }, ["exception", "promiseRejection"]);
+    let winner: InspectorSession | undefined;
+    let preserveWinner = false;
     try {
-      const pause = await waitForPause(session, {
-        timeoutMs: command.timeoutMs,
+      await fanout.ready();
+      const hit = await fanout.waitForFirst(command.timeoutMs, {
         pauseReasons: ["exception", "promiseRejection"],
         unmatchedPausePolicy: "wait-for-resume",
-      });
+      }, signal);
+      winner = hit.session;
+      const pause = hit.pause;
       const pausedStartedAt = pause.receivedAtMs ?? performance.now();
-      const snapshot = await captureSnapshot(session, pause, {
+      const snapshot = await captureSnapshot(hit.session, pause, {
         captures: command.captures,
         includeScopes: opts.includeScopes === true,
         maxValueLength: command.maxValueLength,
@@ -95,13 +105,18 @@ async function runExceptionCommand(
         throwOnSideEffect: command.throwOnSideEffect,
       });
       if (opts.keepPaused === true) {
-        return withPausedDuration(snapshot, null);
+        preserveWinner = true;
+        return { ...withPausedDuration(snapshot, null), isolate: hit.session.isolate ?? { kind: "main" } };
       }
-      return await resumeAfterException(session, snapshot, pausedStartedAt);
+      const result = await resumeAfterException(hit.session, snapshot, pausedStartedAt);
+      return { ...result, isolate: hit.session.isolate ?? { kind: "main" } };
     } finally {
-      await disablePauseOnExceptionsBestEffort(session);
+      await Promise.allSettled(group.list().map(async (session) => {
+        await disablePauseOnExceptionsBestEffort(session);
+      }));
+      await fanout.cleanup(2_000, preserveWinner ? winner : undefined);
     }
-  });
+  }, undefined, signal);
 }
 
 async function resumeAfterException(

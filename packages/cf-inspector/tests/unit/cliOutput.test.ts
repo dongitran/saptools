@@ -325,7 +325,7 @@ describe("worker diagnostics", () => {
     expect(output).toContain("target 0 of 3");
     expect(output).toContain("--target <index>");
     expect(output).toContain("main isolate");
-    expect(output).toContain("--worker <index>");
+    expect(output).toContain("--worker-id <id>");
   });
 
   it("does not warn when raw-target and worker selectors are explicit", () => {
@@ -356,9 +356,8 @@ describe("worker diagnostics", () => {
       }]);
     });
     expect(output).toContain("no hit was observed");
-    expect(output).toContain("worker isolate");
-    expect(output).toContain("list-targets");
-    expect(output).toContain("--worker <index>");
+    expect(output).toContain("No selected isolate");
+    expect(output).toContain("check-breakpoint");
   });
 
   it("does not emit the worker hint for an unbound breakpoint", () => {
