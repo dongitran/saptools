@@ -1,6 +1,6 @@
 ---
 name: service-flow
-description: Use when indexing, linking, tracing, graphing, inspecting, diagnosing, cleaning, testing, or changing SAP CAP service-to-service flows with the service-flow CLI or @saptools/service-flow package, especially for multi-repository workspaces, SQLite state, handler implementation selection, runtime placeholders, dynamic targets, parser/linker evidence, and deterministic validation.
+description: Use when indexing, linking, tracing, graphing, inspecting, diagnosing, cleaning, testing, or changing SAP CAP service-to-service flows with the service-flow CLI or @saptools/service-flow package, especially for multi-repository workspaces, SQLite lifecycle, exact async event-subscriber traversal, compact JSON graphs, handler implementation selection, runtime placeholders, dynamic targets, parser/linker evidence, and deterministic validation.
 ---
 
 # Service Flow
@@ -12,6 +12,7 @@ Use `service-flow` to build and inspect a static, evidence-backed call graph acr
 Keep these boundaries explicit:
 
 - Treat the result as static analysis, not a live runtime trace.
+- Treat exact workspace event-name dispatch as static inference, not proof of broker, channel, tenant, payload, or runtime delivery.
 - Do not start CAP applications, read `.env`, contact BTP, or call remote services.
 - Keep resolution fail-closed. Report ambiguity or missing evidence instead of selecting a plausible target.
 - Treat persisted graph decisions as authoritative. Runtime substitutions enrich one trace in memory and never rewrite SQLite.
@@ -71,6 +72,8 @@ Apply these lifecycle rules:
 - Use `index --force` after analyzer upgrades, when doctor requests it, or when fingerprint skipping must be bypassed.
 - Run `link` after every fact-changing index. Linking always rebuilds the graph; `link --force` adds no stronger behavior.
 - Treat `graph_stale` as a request to relink, not as permission to trust the old graph.
+- A v11/0.1.65 database migrates to schema 12 without guessing call roles or spans. Run `index --force`, then `link --force`; link refuses stale facts before deleting the previous graph.
+- Package, SQLite schema, and analyzer versions are independent. Package 0.1.67 retains schema 12 and analyzer `0.1.66-facts.1`, so do not force-index solely because that package patch changed when doctor reports current facts.
 
 ## Initialize and Discover Repositories
 
@@ -151,6 +154,8 @@ service-flow trace ... --include-db --include-external --include-async
 
 `graph` uses the same repository, service, operation, path, runtime-variable, and implementation selectors, fixes depth at 100, and includes DB, external, and async edges by default.
 
+With `--include-async`, an emit follows the exact, case-sensitive raw event name to every matching current-generation subscription in the same workspace. Each registration remains visible, duplicate registrations expand one converged handler body, and resolved generic function or static-method symbols continue downstream at the next depth. Unresolved, ambiguous, missing, case-only, and stale associations never descend. Subscriber evaluation starts with empty binding and payload context; a subscription never reverse-triggers emitters.
+
 ## Resolve Runtime-Dependent Targets
 
 Start in strict mode:
@@ -212,12 +217,13 @@ Treat variables and implementation hints as reviewed trace-local hypotheses, not
 Choose output deliberately:
 
 - Use trace table output for quick human review.
-- Use trace JSON for automation and complete evidence: `{ start, nodes, edges, diagnostics }`.
+- Use trace JSON for automation and complete evidence: `{ start, nodes, edges, diagnostics }`. Detailed JSON remains the authoritative audit artifact.
+- Use `compact-json` for a lossy, bounded AI-oriented semantic topology from the same traversal. It is one minified JSON line, omits raw evidence/candidate bodies/runtime values, and correlates edges through invocation-scoped `traceOrdinals` plus generation-scoped references.
 - Use Mermaid for presentation only; it emits edges, not full evidence or diagnostics.
-- Use graph JSON when machine-readable broad traversal is required.
-- Do not rely on unsupported format fallback behavior. Supply documented formats explicitly.
+- Use graph JSON when detailed machine-readable broad traversal is required; use graph compact JSON when context size matters.
+- Trace accepts exactly `table|json|mermaid|compact-json`; graph accepts exactly `mermaid|json|compact-json`. Invalid formats fail before database access with no stdout.
 
-Important edge types include outbound call types, `local_symbol_call`, `operation_implemented_by_handler`, `dynamic_candidate_branch`, and `cycle`.
+Important edge types include outbound call types, `local_symbol_call`, `operation_implemented_by_handler`, `event_name_matches_subscription_handler`, `dynamic_candidate_branch`, and `cycle`. The persisted subscription relation is `EVENT_SUBSCRIPTION_HANDLED_BY`.
 
 For every questionable edge, inspect:
 
@@ -314,6 +320,10 @@ Preserve these invariants:
 - Runtime trace decisions do not mutate persisted graph rows.
 - Candidate display limits never constrain canonical decision queries.
 - Output shapes, include flags, exit behavior, and pipeline-safe broken-pipe handling remain backward compatible unless the task explicitly changes them.
+- Ordinary symbol calls and event-handler references retain explicit roles and complete UTF-16 outer-call spans. Associate a subscription handler only by workspace, repository, normalized file, full span, and event role; never fall back to caller or line.
+- Keep `factOrigin` independent from resolver-owned `candidateStrategy`, including package-import post-link resolution.
+- Build compact topology through the optional semantic edge recorder during the same trace. Never infer endpoints from display labels, copy arbitrary evidence, or run a second graph algorithm.
+- Change `ANALYZER_VERSION` only when generated facts or compatibility require reindexing; an output-only package version must leave it unchanged.
 - Keep provenance and display-only detail in bounded evidence. Store resolver-required or independently queryable semantics in canonical typed columns/tables; add a migration only when the existing schema cannot represent them.
 - Use neutral fixtures. Never copy private workspace paths, package names, topology, endpoints, or credentials into tests.
 
@@ -358,6 +368,7 @@ Inspect a clean fixture database read-only and verify:
 - no `index_runs` row remains `running`;
 - changed repositories have current fact and graph generations with no stale reason;
 - expected fact, symbol-call, outbound-call, and graph-edge counts remain stable after a repeated force-index/relink cycle;
+- every current call has a valid full span and non-legacy role, and every subscription has exactly one bounded subscription-handler edge;
 - all persisted evidence is valid bounded JSON.
 
 Update the package version and `CHANGELOG.md` only when the requested release scope requires them. Keep technical notes synchronized when their documented correctness matrix changes.
@@ -383,6 +394,10 @@ Use the exact reported `--var` keys, inspect rejected candidates in JSON, and tr
 ### An operation resolves but traversal stops
 
 Inspect the implementation edge, registration pairing, decorator evidence, package dependency, and selected-handler provenance. Apply a scoped suggested hint only when it identifies the intended indexed repository.
+
+### An emitted event does not enter a subscriber
+
+Enable `--include-async`, then inspect the exact binary event name and the persisted `EVENT_SUBSCRIPTION_HANDLED_BY` edge. Case-only names do not match; unresolved or ambiguous handler references intentionally stop. Do not infer broker compatibility or copy emitter runtime context into the subscriber.
 
 ### Doctor is clean but CI should enforce quality
 

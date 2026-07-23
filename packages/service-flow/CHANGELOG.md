@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.67
+
+- Published the completed event-subscriber and compact-graph release as an output/package-only patch. SQLite remains schema 12 and `ANALYZER_VERSION` remains `0.1.66-facts.1`, proving package version changes no longer force an unnecessary fact reindex.
+
 ## 0.1.66
 
 - Made event-subscription handler identity durable with explicit `event_subscribe_handler` symbol-call roles, resolver-independent `factOrigin` provenance, and exact zero-based UTF-16 outer-call spans on outbound and symbol-call facts. Ordinary calls use `ordinary_call`; migrated facts remain fail-closed as `legacy_unknown` instead of receiving heuristic roles or spans.
