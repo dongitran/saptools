@@ -1,6 +1,6 @@
 {
   "name": "@saptools/hana-lens",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Static AST analysis CLI for SAP CAP workspaces",
   "type": "module",
   "publishConfig": {

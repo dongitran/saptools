@@ -207,9 +207,57 @@ describe("cache kind scope", () => {
     expect(applyCacheKindFilter(results, CACHE_KINDS.SERVICE).map((result) => Object.keys(result.definitions))).toEqual([
       ["acme.api.InventoryService"],
       [
+        "acme.api.InventoryService.Stock",
         "acme.api.InventoryService.Code",
         "acme.api.InventoryService.Container",
         "acme.common.Code",
+      ],
+    ]);
+  });
+
+  it("aggregates service shape across every package copy of a definition", () => {
+    const results = [
+      {
+        packageName: "@acme/service-declarations",
+        via: "cds",
+        definitions: { "acme.api.CatalogService": { kind: "service" } },
+      },
+      {
+        packageName: "@acme/service-model",
+        via: "cds",
+        definitions: {
+          "acme.api.CatalogService.Phantom": { kind: "entity", "@cds.persistence.skip": true },
+          "acme.catalog.Shared": { kind: "entity", "@cds.persistence.skip": true },
+        },
+      },
+      {
+        packageName: "@acme/service-provider",
+        via: "cds",
+        definitions: {
+          "acme.api.CatalogService.Phantom": { kind: "entity" },
+          "acme.api.CatalogService.PersistedRecord": { kind: "entity" },
+          "acme.catalog.Shared": { kind: "entity" },
+        },
+      },
+    ] as const;
+
+    expect(applyCacheKindFilter(results, CACHE_KINDS.DB).map((result) => Object.keys(result.definitions))).toEqual([
+      [],
+      [],
+      [
+        "acme.api.CatalogService.PersistedRecord",
+        "acme.catalog.Shared",
+      ],
+    ]);
+    expect(applyCacheKindFilter(results, CACHE_KINDS.SERVICE).map((result) => Object.keys(result.definitions))).toEqual([
+      ["acme.api.CatalogService"],
+      [
+        "acme.api.CatalogService.Phantom",
+        "acme.catalog.Shared",
+      ],
+      [
+        "acme.api.CatalogService.Phantom",
+        "acme.api.CatalogService.PersistedRecord",
       ],
     ]);
   });

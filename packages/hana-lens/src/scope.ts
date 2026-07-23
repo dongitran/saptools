@@ -47,15 +47,26 @@ function hasProjectionShape(definition: Record<string, unknown>): boolean {
   return definition["query"] !== undefined || definition["projection"] !== undefined;
 }
 
-function isFreeSupportKind(kind: unknown): boolean {
-  return kind === "type" || kind === "aspect";
-}
-
-function isPersistenceEntity(definition: Record<string, unknown>): boolean {
-  const hasServiceShape = hasProjectionShape(definition)
+function isServiceShaped(definition: Record<string, unknown>): boolean {
+  return hasProjectionShape(definition)
     || definition["@cds.external"] === true
     || definition["@cds.persistence.skip"] === true;
-  return definition["kind"] === "entity" && !hasServiceShape;
+}
+
+function collectNonPersistentNames(results: readonly CompileResult[]): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const result of results) {
+    for (const [name, definition] of Object.entries(result.definitions)) {
+      if (isRecord(definition) && isServiceShaped(definition)) {
+        names.add(name);
+      }
+    }
+  }
+  return names;
+}
+
+function isFreeSupportKind(kind: unknown): boolean {
+  return kind === "type" || kind === "aspect";
 }
 
 function isInScope(
@@ -63,12 +74,19 @@ function isInScope(
   definition: Record<string, unknown>,
   kind: CacheKind,
   serviceNames: ReadonlySet<string>,
+  nonPersistentNames: ReadonlySet<string>,
 ): boolean {
   if (kind === CACHE_KINDS.ALL) {
     return true;
   }
-  // CAP persists plain entities declared inside service bodies, so shape must win over ownership.
-  if (isPersistenceEntity(definition)) {
+  if (definition["kind"] === "entity" && !isServiceShaped(definition)) {
+    if (isServiceOwned(name, serviceNames)) {
+      if (nonPersistentNames.has(name)) {
+        return kind === CACHE_KINDS.SERVICE;
+      }
+      // CAP persists and exposes plain entities declared inside service bodies.
+      return true;
+    }
     return kind === CACHE_KINDS.DB;
   }
   if (isServiceOwned(name, serviceNames)) {
@@ -84,11 +102,12 @@ function filterDefinitions(
   result: CompileResult,
   kind: CacheKind,
   serviceNames: ReadonlySet<string>,
+  nonPersistentNames: ReadonlySet<string>,
 ): Readonly<Record<string, HanaLensDefinition>> {
   return Object.fromEntries(
     Object.entries(result.definitions)
       .filter(([name, definition]) => isRecord(definition)
-        && isInScope(name, definition, kind, serviceNames)),
+        && isInScope(name, definition, kind, serviceNames, nonPersistentNames)),
   );
 }
 
@@ -100,8 +119,9 @@ export function applyCacheKindFilter(
     return [...results];
   }
   const serviceNames = collectServiceNames(results);
+  const nonPersistentNames = collectNonPersistentNames(results);
   return results.map((result) => ({
     ...result,
-    definitions: filterDefinitions(result, kind, serviceNames),
+    definitions: filterDefinitions(result, kind, serviceNames, nonPersistentNames),
   }));
 }

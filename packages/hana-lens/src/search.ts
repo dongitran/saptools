@@ -1,6 +1,6 @@
 import { matchRegexCandidates } from "./001-regex-search.js";
 import { levenshtein } from "./levenshtein.js";
-import { findPreferredTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
+import { findReferenceTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
 import { PACKAGE_ANNOTATION } from "./types.js";
 import type { FieldSearchResult, HanaLensCsn, HanaLensDefinition, IncomingReference, SearchResult } from "./types.js";
 
@@ -149,7 +149,7 @@ function projectionSources(definition: HanaLensDefinition): readonly string[] {
 }
 
 export function findIncomingReferences(csn: HanaLensCsn, entityName: string): readonly IncomingReference[] {
-  const requestedTargets = new Set(findPreferredTargetCandidates(csn, entityName).map((candidate) => candidate.name));
+  const requestedTargets = new Set(findReferenceTargetCandidates(csn, entityName).map((candidate) => candidate.name));
   if (requestedTargets.size === 0) {
     throw new Error(`Entity not found: ${entityName}`);
   }

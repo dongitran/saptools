@@ -34,6 +34,12 @@ export function findPreferredTargetCandidates(csn: HanaLensCsn, targetName: stri
     : [{ name: targetName, definition: exact }];
 }
 
+export function findReferenceTargetCandidates(csn: HanaLensCsn, targetName: string): readonly ResolvedTarget[] {
+  return targetName.includes(".")
+    ? findPreferredTargetCandidates(csn, targetName)
+    : findTargetCandidates(csn, targetName);
+}
+
 function packageNameOf(definition: HanaLensDefinition): string | undefined {
   return definition[PACKAGE_ANNOTATION];
 }

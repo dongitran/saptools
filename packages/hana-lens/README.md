@@ -335,6 +335,12 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 
 ## 🗒️ Changelog
 
+### `0.4.3` — Cross-package scope and reference fixes
+
+- aggregates projection, external, and persistence-skip shape across every package copy of an FQN, preventing plain provider copies of service models from leaking into `db`
+- keeps genuine service-local persistence entities available in both `db` and `service`
+- unions reference targets for short names even when an exact definition key shadows namespaced entities, while preserving exact fully qualified lookup
+
 ### `0.4.2` — Scope correctness and read-command consistency
 
 - classifies plain service-local entities by persistence shape before service ownership, retaining physical CAP tables in the default `db` cache

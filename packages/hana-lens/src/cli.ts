@@ -6,7 +6,7 @@ import { readCache } from "./cache.js";
 import { describeEntity } from "./describe.js";
 import { parseCacheKind } from "./scope.js";
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "./search.js";
-import { findPreferredTargetCandidates } from "./targets.js";
+import { findReferenceTargetCandidates } from "./targets.js";
 
 type BuildResult = Awaited<ReturnType<typeof buildCache>>;
 
@@ -123,7 +123,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (command === "references") {
     const entityName = requireArgument(args, "entity_name");
     const ast = await readCache();
-    const matchedTargetNames = findPreferredTargetCandidates(ast, entityName)
+    const matchedTargetNames = findReferenceTargetCandidates(ast, entityName)
       .map((candidate) => candidate.name);
     process.stdout.write(
       `${formatIncomingReferences(entityName, findIncomingReferences(ast, entityName), matchedTargetNames)}\n`,

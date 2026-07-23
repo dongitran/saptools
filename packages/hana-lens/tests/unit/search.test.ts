@@ -2,6 +2,7 @@
 import { performance } from "node:perf_hooks";
 
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "../../src/search.js";
+import { findReferenceTargetCandidates } from "../../src/targets.js";
 import type { HanaLensCsn } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
 import { describe, it } from "../helpers/test.js";
@@ -236,6 +237,26 @@ describe("findIncomingReferences", () => {
     } };
 
     expect(formatIncomingReferences("demo.sales.Project", findIncomingReferences(csn, "demo.sales.Project"))).toBe("Incoming References to [demo.sales.Project]:\n- demo.sales.Task (via field: projectRef)");
+  });
+
+  it("unions suffix targets when a short name also exists as an exact definition key", () => {
+    const csn: HanaLensCsn = { definitions: {
+      User: { kind: "type", type: "cds.String" },
+      "acme.identity.User": { kind: "entity", elements: { ID: { type: "cds.UUID", key: true } } },
+      "acme.people.User": { kind: "entity", elements: { ID: { type: "cds.UUID", key: true } } },
+      "acme.identity.UserAudit": { elements: { user: { type: "cds.Association", target: "acme.identity.User" } } },
+      "acme.people.UserAudit": { elements: { user: { type: "cds.Association", target: "acme.people.User" } } },
+    } };
+    const targetNames = findReferenceTargetCandidates(csn, "User").map((candidate) => candidate.name);
+    const references = findIncomingReferences(csn, "User");
+    const output = formatIncomingReferences("User", references, targetNames);
+
+    expect(references).toEqual([
+      { entityName: "acme.identity.UserAudit", fieldName: "user" },
+      { entityName: "acme.people.UserAudit", fieldName: "user" },
+    ]);
+    expect(output).toContain('Note: "User" matched 3 definitions');
+    expect(output).toContain("references below are the union.");
   });
 
   it("prefers an exact requested target over longer suffix matches", () => {

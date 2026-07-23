@@ -255,13 +255,14 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       const service = runBuild(root, ["--kind", "service"]);
       expect(service.status).toBe(0);
-      expect(service.stdout).toContain("cached=5");
+      expect(service.stdout).toContain("cached=6");
       expect(service.stdout).toContain("compiled=2 skipped=0 via=cds kind=service");
       expect(Object.keys((await readCache(root)).definitions)).toEqual([
         "acme.catalog.Status",
         "remote.catalog.Product",
         "acme.api.CatalogService",
         "acme.api.CatalogService.Widgets",
+        "acme.api.CatalogService.UploadBuffer",
         "acme.shared",
       ]);
 
@@ -504,6 +505,9 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
         "demo.common.RequestStatus": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", enum: { SUBMITTED: { val: "S" }, REJECTED: { val: "REJECTED" } } },
         "demo.common.UserName": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", length: 255 },
         "demo.common.CustomerLink": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.Association", target: "demo.master.Customer" },
+        User: { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String" },
+        "demo.identity.User": { [PACKAGE_ANNOTATION]: "@demo/identity", kind: "entity", elements: { ID: { key: true, type: "cds.UUID" } } },
+        "demo.identity.UserAudit": { [PACKAGE_ANNOTATION]: "@demo/identity", kind: "entity", elements: { user: { type: "cds.Association", target: "demo.identity.User" } } },
         "demo.operations.Lookup": { [PACKAGE_ANNOTATION]: "@demo/operations", kind: "function", params: { requestID: { type: "cds.UUID" } }, returns: { type: "cds.Boolean" } },
         "demo.empty.EmptyEntity": { [PACKAGE_ANNOTATION]: "@demo/empty" },
       } });
@@ -536,6 +540,20 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(shortReferences.stdout).toContain('Note: "BusinessRequest" matched 2 definitions (demo.other.BusinessRequest, demo.sales.BusinessRequest); references below are the union.');
       expect(shortReferences.stdout).toContain("- demo.master.Customer (via field: request)");
       expect(shortReferences.stdout).toContain("- demo.other.RequestAudit (via field: request)");
+
+      const shadowedShortReferences = runCli(["references", "User"], root);
+      expect(shadowedShortReferences.status).toBe(0);
+      expect(shadowedShortReferences.stdout).toContain('Note: "User" matched 2 definitions');
+      expect(shadowedShortReferences.stdout).toContain("references below are the union.");
+      expect(shadowedShortReferences.stdout).toContain("- demo.identity.UserAudit (via field: user)");
+
+      const exactUserReferences = runCli(["references", "demo.identity.User"], root);
+      expect(exactUserReferences.status).toBe(0);
+      expect(exactUserReferences.stdout).toBe("Incoming References to [demo.identity.User]:\n- demo.identity.UserAudit (via field: user)\n");
+
+      const exactShortDescribe = runCli(["describe", "User"], root);
+      expect(exactShortDescribe.status).toBe(0);
+      expect(exactShortDescribe.stdout).toBe("cds.String\n");
 
       const shortDescribe = runCli(["describe", "Customer"], root);
       expect(shortDescribe.status).toBe(0);
