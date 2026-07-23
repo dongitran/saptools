@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.66
+
+- Made event-subscription handler identity durable with explicit `event_subscribe_handler` symbol-call roles, resolver-independent `factOrigin` provenance, and exact zero-based UTF-16 outer-call spans on outbound and symbol-call facts. Ordinary calls use `ordinary_call`; migrated facts remain fail-closed as `legacy_unknown` instead of receiving heuristic roles or spans.
+- Upgraded SQLite to schema 12 with indexed call-site/role columns, stale-analyzer lifecycle checks, bounded read-only upgrade diagnostics, and a link preflight that refuses legacy or incomplete facts before replacing the existing graph. Upgrading from 0.1.65 requires `index --force` followed by `link --force`.
+- Persisted one bounded `EVENT_SUBSCRIPTION_HANDLED_BY` edge per subscription after final symbol-call resolution, using the exact workspace/repository/file/full-span association and stable resolved, ambiguous, unresolved, or missing-association targets. Link never falls back to caller, line, start offset, labels, or case-folded event names.
+- Continued async traces from an emitted event through every exact, case-sensitive workspace-name subscriber registration into each distinct resolved generic handler symbol and its downstream scope. Preserved registration fan-out and duplicate bridges, isolated subscriber context, enforced causal depth, convergence, and structural cycle safeguards, and kept ambiguous/unresolved/missing associations non-traversable. This is explicitly `static_name_only` inference, not proof of runtime broker/channel/tenant/payload delivery.
+- Prevented event-handler-role and legacy symbol calls from leaking through ordinary synchronous local-symbol traversal when async traversal is disabled.
+- Added versioned `compact-json` output to trace and graph. `service-flow/compact-graph@1` uses canonical semantic endpoints, sorted dictionaries, fixed-width tuples, dense output-local IDs, bounded allowlisted decision/diagnostic summaries, deterministic aggregation, and invocation-scoped `traceOrdinals` plus generation-scoped audit references.
+- Kept existing pretty detailed JSON as the authoritative complete evidence/candidate artifact, along with existing table and Mermaid output. Compact JSON is intentionally lossy and omits raw evidence, candidate bodies and scores, payload/call expressions, helper chains, supplied runtime values, and arbitrary diagnostic/remediation text; it is deterministic only for identical database state and inputs.
+- Made invalid trace/graph formats fail before database access with non-zero status, no stdout, and an explicit accepted-format list instead of silently falling back.
+- Decoupled package/CLI version `0.1.66`, SQLite schema version `12`, and analyzer compatibility `0.1.66-facts.1`, allowing future output-only package patches to retain the analyzer without forcing a reindex.
+
 ## 0.1.65
 
 - Captured event-subscription handler references from `.on('Event', handlerRef)` as resolvable symbol-call facts using the existing import-binding-aware machinery for relative imports, package imports, namespace members, same-file symbols, and static accessors.

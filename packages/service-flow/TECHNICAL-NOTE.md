@@ -1,5 +1,45 @@
 # Service Flow Resolution Notes
 
+## 0.1.66 event-subscriber and compact graph notes
+
+### Fact identity, migration, and link lifecycle
+
+- Schema 12 adds nullable `call_site_start_offset`/`call_site_end_offset` columns to outbound and symbol calls and a required symbol-call role. Current parsers record zero-based, half-open TypeScript source spans in UTF-16 code units. An ordinary symbol call owns its invocation span; an event handler reference owns the outer subscription `.on(...)` span, so the outbound registration and handler-reference fact share an exact AST call-site identity.
+- Current facts use `ordinary_call` or `event_subscribe_handler`. The migration default `legacy_unknown` is deliberately fail-closed: v11/0.1.65 rows receive neither a guessed role nor reconstructed spans from caller, line, JSON, or labels. Migrating marks repositories stale with `schema_v12_call_sites_require_reindex`; link refuses stale analyzer facts, `legacy_unknown`, or invalid/missing current-analyzer spans before replacing graph edges.
+- Event-handler provenance is durable and orthogonal to resolution. Parser evidence retains `factOrigin: event_subscribe_handler_reference`, while `candidateStrategy` remains resolver-owned and can change during index-time or package-import resolution without erasing the origin, role, or span.
+- Subscription association requires the same workspace, repository, normalized file, complete non-null outer-call span, and `event_subscribe_handler` role, then verifies source-line and available caller-symbol equality. There is no fallback to caller-only, file/line-only, start-only, callee labels, nearest symbols, or case-folded names. Missing or inconsistent identity yields one stable unresolved association; multiple role-site facts yield one ambiguous association.
+- Linking runs subscription association after package-import symbol resolution and persists exactly one `EVENT_SUBSCRIPTION_HANDLED_BY` edge per `async_subscribe` registration. A resolved handler targets its generic executable symbol; ambiguous or unresolved references target a stable symbol reference; a missing or invalid association targets a stable subscription-handler reference. This persisted relation proves that a subscription declaration names a handler, not that a particular emitter reaches it at runtime.
+- Package/CLI `VERSION`, SQLite `CURRENT_SCHEMA_VERSION`, and fact `ANALYZER_VERSION` are independent compatibility contracts. This release uses package 0.1.66, schema 12, and analyzer `0.1.66-facts.1`; an output-only package patch can retain the analyzer value. Compact `source.analyzerVersion` reports a unique persisted value, or the sentinel `none`, `mixed`, or `legacy_unknown` when that guarantee is unavailable.
+
+Upgrade a 0.1.65 workspace explicitly:
+
+```bash
+service-flow index --workspace /workspace --force
+service-flow link --workspace /workspace --force
+```
+
+Read-only commands do not migrate or mutate facts. They return bounded `schema_upgrade_required` or `reindex_required` diagnostics for unsupported state rather than leaking missing-column SQL errors. A migrated-but-not-reindexed schema 12 store never treats `legacy_unknown` as an ordinary call, and a failed link preflight leaves the previous graph and stale reason intact.
+
+### Async traversal semantics
+
+- `includeAsync=false` excludes both event dispatch and event-handler-role rows from ordinary local-symbol traversal. With async enabled, only `HANDLER_EMITS_EVENT` initiates dispatch. `EVENT_CONSUMED_BY_HANDLER` remains an observed subscription call and never reverse-triggers emitters or other subscriptions.
+- An emit loads current-generation `EVENT_SUBSCRIPTION_HANDLED_BY` rows from the same workspace with exact binary, case-sensitive equality on the raw event name. Each registration renders one `event_name_matches_subscription_handler` bridge with `matchStrategy=workspace_exact_event_name` and `dispatchCertainty=static_name_only`. Multiple exact registrations are fan-out; duplicate registrations remain separate bridge observations even when they resolve to one handler.
+- A resolved bridge queues the generic handler symbol at the next causal depth with an empty binding/payload context. The bridge remains visible at the maximum depth but the body is not expanded. Unresolved, ambiguous, missing, or stale associations render bounded reasons and stop. An emitted event with no exact indexed subscriber remains terminal without a warning because an external consumer is valid.
+- Structural ancestry and evaluation scheduling use separate canonical keys. Structural identity stops self- and mutual-event cycles even if contextual values differ; the evaluation key includes a deterministic context fingerprint so legitimately different call contexts can still be evaluated. Convergent duplicate registrations preserve every bridge, expand one already-scheduled target body once, and are not mislabeled as cycles.
+- Exact workspace name equality is intentionally a static inference. It does not prove broker/channel compatibility, destination, tenant, payload transfer, deployment, ordering, delivery, or runtime reachability. Case-only near matches stay disconnected.
+
+### Compact semantic graph contract
+
+- Existing table, Mermaid, and pretty detailed JSON retain their established shapes. Detailed JSON remains the complete audit artifact for raw evidence, candidates, source locations, and effective/persisted decisions. `compact-json` is a separate lossy projection built by an optional observer during the same trace execution; it neither changes `TraceResult` nor runs an independent SQL graph algorithm.
+- The compact schema is `service-flow/compact-graph@1`. `start`, `query`, `source`, `summary`, sorted repository/file dictionaries, tuple-column declarations, nodes, edges, and diagnostics are always present. Tuple rows have fixed widths and explicit `null` cells. Breaking a declared column, field, status, aggregation, detail, diagnostic, or correlation meaning requires a new `@N` version.
+- Semantic endpoints are captured from structured IDs at detailed-edge creation: operation to implementation handler, caller symbol/scope to callee symbol or target, event to subscriber symbol/reference, and target/scope to cycle. Outbound calls without a source symbol use an exact call-site endpoint. A genuinely unavailable side receives a side-specific synthetic endpoint; display labels are never merged into identity.
+- Repositories, files, and canonical nodes use binary code-point sorting. Dense `n0...` and `e0...` IDs are assigned only after sorting and are output-local. Edges aggregate only when step, type, source, target, canonical status, confidence, and bounded decision details match. Multiplicity remains in `count`; all member detailed-edge indexes remain sorted in `traceOrdinals`.
+- `traceOrdinals` is an invocation-scoped coordinate into the exact companion detailed trace. Bounded `details.refs` carries unioned graph/call/operation/symbol/handler IDs for same-generation drill-down. Neither ordinal nor database reference is a durable cross-rebuild ID; `source.schemaVersion`, `source.analyzerVersion`, and `source.graphGeneration` declare their compatibility scope.
+- Canonical statuses are `resolved`, `terminal`, `inferred`, `dynamic`, `ambiguous`, `unresolved`, and `cycle`. A resolved subscription-handler reference reached through workspace event-name equality is `inferred`, never runtime-proven `resolved`; a true ancestry cycle takes precedence. Summary status counts and per-edge counts describe original detailed observations, not just aggregated rows, and ordinals partition the detailed edge indexes exactly.
+- Decision and diagnostic projection is an explicit bounded allowlist. It can retain safe resolution summaries, missing variable names and authoritative counts, dynamic/implementation strategy, stable reason codes, event-association metadata, one templated remediation hint, and bounded audit references. It never copies arbitrary evidence, diagnostic messages, remediation text, candidate bodies/scores, supplied values, payloads, AST/call expressions, helper chains, or mirrored evidence objects. Redaction remains a final layer.
+- Compact stdout is one minified JSON line plus one newline. Identical database state and inputs produce byte-identical output; a rebuild may legitimately change graph generation, trace ordinals, and database references. Large dynamic and async/DB regression fixtures enforce compact size against both pretty and minified detailed JSON without weakening the detailed artifact.
+- Trace accepts exactly `table|json|mermaid|compact-json`; graph accepts exactly `mermaid|json|compact-json`. Invalid formats fail before database access, write no stdout, and identify the accepted values on stderr. Compact output uses the existing shared stdout/EPIPE behavior and ordinary shell redirection rather than a new file-writing subsystem.
+
 ## 0.1.56 direct query execution-context notes
 
 - A structural direct CAP builder root now produces one `local_db_query` fact in four proven contexts: direct `await`, a return from the nearest `async` callable, a return from a callable with an AST-guaranteed `Promise` or `PromiseLike` contract, and a static direct element of awaited `Promise.all([...])`. Evidence adds `queryExecutionContext` as `await`, `async_return`, `promise_return`, or `promise_aggregate`, while retaining the existing direct dispatch and bounded source offsets.
@@ -167,7 +207,7 @@ Schema version 6 adds queryable external target metadata columns to `outbound_ca
 - Operation candidate scores are clamped into `[0, 1]` before graph or trace rendering.
 - Helper package linking uses exact `repositories.package_name` matches before normalized directory-name fallback. Ambiguous package names are represented as ambiguous graph edges with bounded candidate projections and count metadata.
 - Fingerprints hash normalized package facts and package bytes in addition to source file paths/content and analyzer version.
-- The CLI version imports package metadata, so package metadata, `service-flow --version`, changelog, and analyzer/fingerprint version share one release source.
+- The CLI version imports package metadata, while the analyzer/fingerprint compatibility value is declared independently. Releases that change generated facts advance the analyzer value; output-only package patches can leave it unchanged and avoid unnecessary reindex churn.
 - Supported runtime is Node.js 24+ with `node:sqlite` validation; older runtimes should fail with a compatibility message instead of a late `DatabaseSync` error.
 
 

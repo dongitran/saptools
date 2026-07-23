@@ -5,8 +5,12 @@ import { mkdtemp } from 'node:fs/promises';
 import { openDatabase, openReadOnlyDatabase } from '../../src/db/connection.js';
 import { factLifecycleDiagnostic } from '../../src/db/001-fact-lifecycle.js';
 import { migrate, schemaVersion } from '../../src/db/migrations.js';
+import { doctorDiagnostics } from '../../src/cli/doctor.js';
 import { indexWorkspace } from '../../src/indexer/workspace-indexer.js';
 import { linkWorkspace } from '../../src/linker/cross-repo-linker.js';
+import { traceAndCompact } from '../../src/trace/018-compact-trace.js';
+import { trace } from '../../src/trace/trace-engine.js';
+import { ANALYZER_VERSION } from '../../src/version.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 
 async function createExtensionWorkspace(root: string, operationName: string): Promise<void> {
@@ -75,6 +79,15 @@ describe('incremental indexing publication atomicity', () => {
   it('migrates v11 call facts without inventing spans or roles and blocks link before deletion', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-v11-call-sites-'));
     const dbPath = path.join(root, 'graph.db');
+    await writeFixtureFile(root, 'legacy-events/package.json', JSON.stringify({
+      name: '@neutral/legacy-events', version: '1.0.0',
+    }));
+    await writeFixtureFile(root, 'legacy-events/src/events.ts', `
+export function legacyHandler(): void {}
+export function register(): void {
+  messaging.on('LegacyEvent', legacyHandler);
+}
+`);
     const legacy = openDatabase(dbPath, { migrate: false });
     legacy.exec(`
       CREATE TABLE workspaces (
@@ -178,6 +191,28 @@ describe('incremental indexing publication atomicity', () => {
     });
     legacy.close();
 
+    const untouchedReader = openReadOnlyDatabase(dbPath);
+    const untouchedTrace = trace(
+      untouchedReader, { repo: 'legacy-events' }, { depth: 1, workspaceId: 1 },
+    );
+    const untouchedCompact = traceAndCompact(
+      untouchedReader, { repo: 'legacy-events' }, { depth: 1, workspaceId: 1 },
+    ).compact;
+    const untouchedDoctor = doctorDiagnostics(
+      untouchedReader, true, { workspaceId: 1 },
+    );
+    expect(untouchedTrace.diagnostics[0]).toMatchObject({
+      code: 'schema_upgrade_required', currentSchemaVersion: 11,
+    });
+    expect(untouchedCompact.diagnostics[0]?.[2]).toBe('schema_upgrade_required');
+    expect(untouchedDoctor[0]).toMatchObject({
+      code: 'schema_upgrade_required', currentSchemaVersion: 11,
+    });
+    expect(JSON.stringify([
+      untouchedTrace, untouchedCompact, untouchedDoctor,
+    ]).toLowerCase()).not.toContain('no such column');
+    untouchedReader.close();
+
     const migrated = openDatabase(dbPath);
     const outboundColumns = migrated.prepare('PRAGMA table_info(outbound_calls)').all();
     const symbolColumns = migrated.prepare('PRAGMA table_info(symbol_calls)').all();
@@ -238,6 +273,56 @@ describe('incremental indexing publication atomicity', () => {
       .filter((index) => index.name === 'idx_outbound_call_site')).toHaveLength(1);
     expect(migrated.prepare('PRAGMA index_list(symbol_calls)').all()
       .filter((index) => index.name === 'idx_symbol_call_site_role')).toHaveLength(1);
+
+    await expect(indexWorkspace(migrated, 1, { force: true })).resolves.toMatchObject({
+      repoCount: 1, indexedCount: 1, skippedCount: 0,
+    });
+    expect(factLifecycleDiagnostic(migrated, 1)).toBeUndefined();
+    const linked = linkWorkspace(migrated, 1);
+    expect(linked).toMatchObject({
+      subscriptionHandlerResolvedCount: 1,
+      subscriptionHandlerAmbiguousCount: 0,
+      subscriptionHandlerUnresolvedCount: 0,
+      subscriptionHandlerMissingAssociationCount: 0,
+    });
+    expect(linked.edgeCount).toBe(Number(
+      migrated.prepare('SELECT COUNT(*) count FROM graph_edges WHERE workspace_id=1')
+        .get()?.count,
+    ));
+    expect(migrated.prepare(`SELECT fact_analyzer_version analyzer,
+      graph_stale_reason staleReason FROM repositories WHERE id=1`).get()).toEqual({
+      analyzer: ANALYZER_VERSION, staleReason: null,
+    });
+    expect(migrated.prepare(`SELECT call_role callRole,
+      call_site_start_offset startOffset,call_site_end_offset endOffset,
+      json_extract(evidence_json,'$.factOrigin') factOrigin
+      FROM symbol_calls WHERE call_role='event_subscribe_handler'`).get())
+      .toMatchObject({
+        callRole: 'event_subscribe_handler',
+        factOrigin: 'event_subscribe_handler_reference',
+      });
+    const currentHandler = migrated.prepare(`SELECT call_site_start_offset startOffset,
+      call_site_end_offset endOffset FROM symbol_calls
+      WHERE call_role='event_subscribe_handler'`).get();
+    expect(typeof currentHandler?.startOffset).toBe('number');
+    expect(Number(currentHandler?.endOffset)).toBeGreaterThan(
+      Number(currentHandler?.startOffset),
+    );
+    expect(migrated.prepare(`SELECT edge_type edgeType,status,from_kind fromKind,
+      from_id fromId,to_kind toKind FROM graph_edges
+      WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'`).get()).toMatchObject({
+      edgeType: 'EVENT_SUBSCRIPTION_HANDLED_BY', status: 'resolved',
+      fromKind: 'event', fromId: 'LegacyEvent', toKind: 'symbol',
+    });
+    const lifecycleCodes = new Set([
+      'schema_upgrade_required', 'reindex_required',
+      'reindex_required_after_analyzer_upgrade',
+    ]);
+    expect(doctorDiagnostics(migrated, true, { workspaceId: 1 })
+      .filter((diagnostic) => lifecycleCodes.has(String(diagnostic.code))))
+      .toEqual([]);
+    expect(migrated.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+    expect(migrated.pragma('foreign_key_check')).toEqual([]);
     migrated.close();
   });
 

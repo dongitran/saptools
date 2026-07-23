@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { DEFAULT_IGNORES } from './config/defaults.js';
 import {
   createWorkspaceConfig,
@@ -21,6 +21,7 @@ import { indexWorkspace } from './indexer/workspace-indexer.js';
 import { linkWorkspace } from './linker/cross-repo-linker.js';
 import { doctorDiagnostics, linkUpgradeWarnings } from './cli/doctor.js';
 import { trace } from './trace/trace-engine.js';
+import { compactTrace } from './trace/018-compact-trace.js';
 import {
   parseVars,
   selectorRepoAmbiguousDiagnostic,
@@ -31,11 +32,55 @@ import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
 import { createStdoutWriter } from './output/000-stdout-policy.js';
+import { renderCompactJson } from './output/001-compact-json-output.js';
 import { VERSION } from './version.js';
-import type { DynamicMode } from './types.js';
+import type {
+  DynamicMode,
+  TraceOptions,
+  TraceResult,
+  TraceStart,
+} from './types.js';
 import { cleanWorkspaceState } from './cli/000-clean.js';
 
 const stdout = createStdoutWriter(process.stdout, fail);
+const TRACE_FORMATS = ['table', 'json', 'mermaid', 'compact-json'] as const;
+const GRAPH_FORMATS = ['mermaid', 'json', 'compact-json'] as const;
+
+type TraceFormat = (typeof TRACE_FORMATS)[number];
+type GraphFormat = (typeof GRAPH_FORMATS)[number];
+
+interface TraceCommandOptions {
+  workspace?: string;
+  repo?: string;
+  operation?: string;
+  service?: string;
+  path?: string;
+  handler?: string;
+  depth: string;
+  format: TraceFormat;
+  includeExternal?: boolean;
+  includeDb?: boolean;
+  includeAsync?: boolean;
+  implementationRepo?: string;
+  implementationHint: string[];
+  var: string[];
+  dynamicMode: string;
+  maxDynamicCandidates: string;
+}
+
+interface GraphCommandOptions {
+  workspace?: string;
+  repo?: string;
+  operation?: string;
+  service?: string;
+  path?: string;
+  format: GraphFormat;
+  implementationRepo?: string;
+  implementationHint: string[];
+  var: string[];
+  dynamicMode: string;
+  maxDynamicCandidates: string;
+}
 
 function writeStdout(value: string): void {
   stdout.write(value);
@@ -127,6 +172,79 @@ function selectRepository(db: Db, selector: string, workspaceId?: number): {
     ),
   };
 }
+
+function traceFormatOption(): Option {
+  return new Option('--format <format>', TRACE_FORMATS.join('|'))
+    .choices([...TRACE_FORMATS])
+    .default('table');
+}
+
+function graphFormatOption(): Option {
+  return new Option('--format <format>', GRAPH_FORMATS.join('|'))
+    .choices([...GRAPH_FORMATS])
+    .default('mermaid');
+}
+
+function writeTraceOutput(
+  db: Db,
+  start: TraceStart,
+  options: TraceOptions,
+  format: TraceFormat | GraphFormat,
+): void {
+  if (format === 'compact-json') {
+    writeStdout(renderCompactJson(compactTrace(db, start, options)));
+    return;
+  }
+  const result = trace(db, start, options);
+  writeStdout(renderDetailedTrace(result, format));
+}
+
+function renderDetailedTrace(
+  result: TraceResult,
+  format: Exclude<TraceFormat, 'compact-json'> | Exclude<GraphFormat, 'compact-json'>,
+): string {
+  if (format === 'json') return renderTraceJson(result);
+  if (format === 'mermaid') return renderMermaid(result);
+  return renderTraceTable(result);
+}
+
+function runTraceCommand(opts: TraceCommandOptions): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const start: TraceStart = {
+      repo: opts.repo, servicePath: opts.service, operation: opts.operation,
+      operationPath: opts.path, handler: opts.handler,
+    };
+    const options: TraceOptions = {
+      depth: Number(opts.depth), workspaceId, vars: parseVars(opts.var),
+      includeExternal: Boolean(opts.includeExternal),
+      includeDb: Boolean(opts.includeDb), includeAsync: Boolean(opts.includeAsync),
+      implementationRepo: opts.implementationRepo,
+      implementationHints: opts.implementationHint.map(parseImplementationHint),
+      dynamicMode: parseDynamicMode(opts.dynamicMode),
+      maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
+    };
+    writeTraceOutput(db, start, options, opts.format);
+  });
+}
+
+function runGraphCommand(opts: GraphCommandOptions): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const start: TraceStart = {
+      repo: opts.repo, operation: opts.operation, servicePath: opts.service,
+      operationPath: opts.path,
+    };
+    const options: TraceOptions = {
+      depth: 100, workspaceId, includeAsync: true, includeDb: true,
+      includeExternal: true, vars: parseVars(opts.var),
+      implementationRepo: opts.implementationRepo,
+      implementationHints: opts.implementationHint.map(parseImplementationHint),
+      dynamicMode: parseDynamicMode(opts.dynamicMode),
+      maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
+    };
+    writeTraceOutput(db, start, options, opts.format);
+  });
+}
+
 export function createProgram(): Command {
   const program = new Command();
   program
@@ -171,7 +289,7 @@ export function createProgram(): Command {
           const r = linkWorkspace(db, workspaceId);
           const upgradeWarnings = linkUpgradeWarnings(db, workspaceId);
           writeStdout(
-            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved\n`,
+            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved, ${r.subscriptionHandlerResolvedCount} subscription handlers resolved, ${r.subscriptionHandlerAmbiguousCount} subscription handlers ambiguous, ${r.subscriptionHandlerUnresolvedCount} subscription handlers unresolved, ${r.subscriptionHandlerMissingAssociationCount} subscription handler associations missing\n`,
           );
         }).catch(fail),
     );
@@ -184,7 +302,7 @@ export function createProgram(): Command {
     .option('--path <operationPath>')
     .option('--handler <name>')
     .option('--depth <n>', 'trace depth', '25')
-    .option('--format <format>', 'table|json|mermaid', 'table')
+    .addOption(traceFormatOption())
     .option('--include-external')
     .option('--include-db')
     .option('--include-async')
@@ -193,57 +311,7 @@ export function createProgram(): Command {
     .option('--var <key=value>', 'dynamic variable', collect, [])
     .option('--dynamic-mode <mode>', 'strict|candidates|infer', 'strict')
     .option('--max-dynamic-candidates <n>', 'maximum dynamic candidates to show', '5')
-    .action(
-      (opts: {
-        workspace?: string;
-        repo?: string;
-        operation?: string;
-        service?: string;
-        path?: string;
-        handler?: string;
-        depth: string;
-        format: string;
-        includeExternal?: boolean;
-        includeDb?: boolean;
-        includeAsync?: boolean;
-        implementationRepo?: string;
-        implementationHint: string[];
-        var: string[];
-        dynamicMode: string;
-        maxDynamicCandidates: string;
-      }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const result = trace(
-            db,
-            {
-              repo: opts.repo,
-              servicePath: opts.service,
-              operation: opts.operation,
-              operationPath: opts.path,
-              handler: opts.handler,
-            },
-            {
-              depth: Number(opts.depth),
-              workspaceId,
-              vars: parseVars(opts.var),
-              includeExternal: Boolean(opts.includeExternal),
-              includeDb: Boolean(opts.includeDb),
-              includeAsync: Boolean(opts.includeAsync),
-              implementationRepo: opts.implementationRepo,
-              implementationHints: opts.implementationHint.map(parseImplementationHint),
-              dynamicMode: parseDynamicMode(opts.dynamicMode),
-              maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
-            },
-          );
-          writeStdout(
-            opts.format === 'json'
-              ? renderTraceJson(result)
-              : opts.format === 'mermaid'
-                ? renderMermaid(result)
-                : renderTraceTable(result),
-          );
-        }).catch(fail),
-    );
+    .action((opts: TraceCommandOptions) => void runTraceCommand(opts).catch(fail));
   const list = program.command('list');
   list
     .command('repos')
@@ -348,55 +416,13 @@ export function createProgram(): Command {
     .option('--operation <name>')
     .option('--service <path>')
     .option('--path <operationPath>')
-    .option('--format <format>', 'mermaid|json', 'mermaid')
+    .addOption(graphFormatOption())
     .option('--implementation-repo <name>')
     .option('--implementation-hint <scope>', 'scoped implementation hint', collect, [])
     .option('--var <key=value>', 'dynamic variable', collect, [])
     .option('--dynamic-mode <mode>', 'strict|candidates|infer', 'strict')
     .option('--max-dynamic-candidates <n>', 'maximum dynamic candidates to show', '5')
-    .action(
-      (opts: {
-        workspace?: string;
-        repo?: string;
-        operation?: string;
-        service?: string;
-        path?: string;
-        format: string;
-        implementationRepo?: string;
-        implementationHint: string[];
-        var: string[];
-        dynamicMode: string;
-        maxDynamicCandidates: string;
-      }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const result = trace(
-            db,
-            {
-              repo: opts.repo,
-              operation: opts.operation,
-              servicePath: opts.service,
-              operationPath: opts.path,
-            },
-            {
-              depth: 100,
-              workspaceId,
-              includeAsync: true,
-              includeDb: true,
-              includeExternal: true,
-              vars: parseVars(opts.var),
-              implementationRepo: opts.implementationRepo,
-              implementationHints: opts.implementationHint.map(parseImplementationHint),
-              dynamicMode: parseDynamicMode(opts.dynamicMode),
-              maxDynamicCandidates: parsePositiveInteger(opts.maxDynamicCandidates, 5),
-            },
-          );
-          writeStdout(
-            opts.format === 'json'
-              ? renderTraceJson(result)
-              : renderMermaid(result),
-          );
-        }).catch(fail),
-    );
+    .action((opts: GraphCommandOptions) => void runGraphCommand(opts).catch(fail));
   const inspect = program.command('inspect');
   inspect
     .command('repo')

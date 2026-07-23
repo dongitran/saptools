@@ -25,7 +25,7 @@ Index independent Git repositories, persist CAP/CDS facts in SQLite, resolve cro
 - 🔗 **Service-to-service linking** — resolves `cds.connect.to(...)`, `remote.send(...)`, `cds.services.*` style calls, helper package imports, dynamic candidates, and unresolved evidence into graph edges
 - 🗄️ **SQLite-backed workspace cache** — stores deterministic facts under `.service-flow/service-flow.db` so large workspaces can be queried repeatedly without reparsing everything
 - 🧠 **Dynamic edge support** — preserves parameterized destinations and service paths such as `svc_${objectCode}_process`, then lets trace and graph commands apply runtime `--var key=value` values or explicitly explore/infer bounded dynamic target candidates
-- 📊 **Multiple output modes** — renders human-readable tables, JSON for automation, and Mermaid diagrams for architecture docs
+- 📊 **Multiple output modes** — renders human-readable tables, authoritative detailed JSON, Mermaid diagrams, and versioned compact JSON for AI-oriented topology analysis
 - 🩺 **Diagnostics-first workflow** — records parse/index issues and exposes them through `service-flow doctor` instead of hiding partial analysis
 - 🧩 **CAP helper-aware binding evidence** — follows imported helpers exported directly or through named export lists and separates alias, destination, and service-path expressions for dynamic `cds.connect.to(alias, options)` calls
 - 🧭 **Nested workspace discovery** — scans nested repositories even when the selected root is itself a valid Git repository, while ignoring empty `.git` placeholders
@@ -60,7 +60,7 @@ npm install @saptools/service-flow
 - Dynamic target exploration is explicit. Default `--dynamic-mode strict` keeps every target with unresolved runtime variables fail-closed, but diagnostics can provide complete copyable `--var` sets. `--dynamic-mode candidates` renders only viable, capped, explicitly unselected branches while the route remains unresolved, never enters their handler bodies, and adds no exploratory branch once complete explicit values resolve the route. `--dynamic-mode infer` traverses only when the top viable, complete candidate scores at least `0.85` and exceeds the runner-up by more than `0.05`; exact ties, candidates exactly on the margin, conflicts, duplicate identities, incomplete leaders, and weaker scores stay unresolved.
 - Explicit variables are applied before candidate ranking. When a call has one selected binding, its original service-path, alias, and destination templates are matched against each concrete candidate before any repository-wide fallback; a package-level require is considered only when its alias matches that binding in the same caller repository. A conflict between a supplied value and a value derived from one of those validated signals rejects the candidate and yields `no_candidate_after_runtime_substitution` rather than a resolver-only target.
 - Identity fallback removes an npm scope, splits camel case, lowercases, folds non-alphanumeric separator runs to `_`, and trims edge separators. It requires the complete normalized concrete route-owner package basename or repository name to match one placeholder with literal prefix and suffix, a resolved implementation for that effective operation, and workspace-wide unique identity/value evidence. A helper-owned implementation is valid evidence for an inherited operation, but helper and base-model names are never used as route identity. It never uses substrings, duplicate names, or discovery order. Generated commands shell-quote expression keys and values when required.
-- `--max-dynamic-candidates` bounds candidate branches, viable and rejected suggestions, variable sets, nested derivation/conflict evidence, and projected persisted candidate arrays in table and JSON output. Link-time and doctor candidate-like arrays carry stable total/shown/omitted metadata; canonical SQLite facts, rather than a displayed prefix, remain the source for trace inference and implementation hints. `omittedCandidateCount` means omitted **viable** candidates; rejected candidates have separate total, shown, and omitted counts.
+- `--max-dynamic-candidates` bounds candidate branches, viable and rejected suggestions, variable sets, nested derivation/conflict evidence, and projected persisted candidate arrays in table and detailed JSON output. Link-time and doctor candidate-like arrays carry stable total/shown/omitted metadata; canonical SQLite facts, rather than a displayed prefix, remain the source for trace inference and implementation hints. `omittedCandidateCount` means omitted **viable** candidates; rejected candidates have separate total, shown, and omitted counts.
 - Repository selectors on list, trace, graph, and inspect commands narrow scope by workspace and exact repository ID. Unknown selectors return empty machine-readable diagnostics instead of falling back to another workspace or the whole database.
 - Helper-package dependency edges prefer exact indexed package names. Duplicate package-name candidates are persisted as ambiguous evidence rather than silently selecting one repository.
 - Handler registration parsing is AST-based for common `createCombinedHandler({ handler: ... })` forms: direct arrays, arrays assembled with spreads, non-`handlers` array names, aliased class imports, default-imported arrays, named exported arrays, and safe relative re-exports. Class-level rows keep registration file/line and import evidence.
@@ -78,9 +78,11 @@ npm install @saptools/service-flow
 - Fresh databases include foreign keys for key graph, run, and diagnostic tables. Migrated legacy stores that still lack that metadata are reported by doctor with `legacy_schema_weaker_foreign_keys`; rebuild into a fresh database if strict structural parity is required.
 - Parser warnings describe analysis completeness, while routing status describes graph behavior. A terminal DB edge can remain terminal while still exposing parser warning evidence about an unknown entity.
 - Persisted graph rows take precedence during `trace` and `graph`: resolved call edges keep their `graph_edges.id`, `outbound_calls.id`, call-site file/line, outbound parser evidence, linker status/reason, and selected target evidence. Contextual runtime resolution can enrich evidence but does not replace an already resolved persisted target. Terminal start diagnostics such as ambiguous operations or rejected implementations return zero nodes and zero edges by default; candidates remain in structured diagnostics for automation.
+- Event-subscription handler facts have the durable role `event_subscribe_handler`, retain `factOrigin: event_subscribe_handler_reference`, and keep resolver-owned `candidateStrategy` separate. Bare identifiers, `Class.member` references, and one single-argument wrapper level are supported; inline callbacks, recursive or multi-argument wrappers, dynamic event names, `.once(...)`, and other unsupported shapes remain fail-closed.
+- A subscription and its handler reference associate only by workspace, repository, normalized source file, and the complete non-null outer `.on(...)` call span, with matching line/caller invariants. Link never falls back to caller, line, start offset, label, or case-folded name heuristics. Resolved, ambiguous, unresolved, and missing associations each persist one bounded `EVENT_SUBSCRIPTION_HANDLED_BY` row per registration.
 - OData entity paths are conservative terminal remote entity edges. Reads, mutations, deletes, navigation paths, media-stream paths such as `/Documents(ID)/content`, and uppercase unknown entity-set candidates do not inflate unresolved operation counts. Lowercase action/function-style paths remain eligible for indexed operation resolution.
 - External HTTP destinations are static only when a safe literal or local const literal proves the value. Identifier, property-read, function-call, and arbitrary destination expressions are dynamic with stable `destination:dynamic:<hash>` ids and neutral labels; conditional literal branches expose only safe candidate names.
-- Schema version 11 preserves the earlier reindex-required policy for legacy graph evidence and adds nullable writer-owner metadata without dropping prior run history. `doctor --strict` reports schema and analyzer drift when relink alone cannot make an upgraded database equivalent to a fresh index.
+- Schema version 12 stores the exact UTF-16, half-open outer-call span on outbound and symbol-call facts plus an explicit symbol-call role. Migrated rows retain null spans and `legacy_unknown` rather than receiving guessed provenance, so upgrading from 0.1.65 requires a forced index followed by a forced link. `doctor --strict` reports schema and analyzer drift when relink alone cannot make an upgraded database equivalent to a fresh index.
 
 
 ## 🚀 Quick Start
@@ -106,6 +108,16 @@ service-flow doctor --workspace /path/to/workspace
 ```
 
 After `init`, the workspace configuration and SQLite database live below the selected workspace by default. Run `index` whenever source changes; unchanged repositories are skipped unless `--force` is supplied. Then run `link` to rebuild the graph edges used by `trace` and `graph`.
+
+> [!IMPORTANT]
+> Version 0.1.66 upgrades the database to schema 12 and changes the fact analyzer to `0.1.66-facts.1`. A migrated 0.1.65 database deliberately leaves old symbol-call roles as `legacy_unknown` and call-site spans null. Refresh facts and graph edges before tracing:
+>
+> ```bash
+> service-flow index --workspace /path/to/workspace --force
+> service-flow link --workspace /path/to/workspace --force
+> ```
+>
+> Link refuses stale or incompletely reindexed facts before deleting the previous graph. Package/CLI version, SQLite schema version, and analyzer compatibility version are independent contracts; a later output-only package patch can keep the same analyzer version without forcing another reindex.
 
 ---
 
@@ -144,7 +156,7 @@ service-flow index --workspace /path/to/workspace --repo identity-service --forc
 
 ### 🔗 `service-flow link`
 
-Resolve indexed outbound calls after repositories have been indexed. This rebuilds the `graph_edges` table for the workspace. The summary separates remote operation calls resolved, local operation calls resolved, unresolved operation calls, ambiguous operation calls, dynamic operation calls, and terminal call edges so local CAP service resolutions are not labeled as remote.
+Resolve indexed outbound calls after repositories have been indexed. This rebuilds the `graph_edges` table for the workspace. The summary separates remote operation calls resolved, local operation calls resolved, unresolved operation calls, ambiguous operation calls, dynamic operation calls, terminal call edges, and resolved/ambiguous/unresolved/missing event-subscription handler associations. Each subscription creates one `EVENT_SUBSCRIPTION_HANDLED_BY` edge; emit sites do not multiply that persisted cardinality.
 
 ```bash
 service-flow link --workspace /path/to/workspace
@@ -158,13 +170,17 @@ service-flow link --workspace /path/to/workspace --force
 
 ### Pipeline-safe output
 
-Normal command output is safe to pipe to a Unix consumer that intentionally stops reading early. A closed stdout pipe stops further output without an unhandled `EPIPE` stack trace; unrelated stdout failures still use the normal stderr diagnostic and non-zero exit outcome. Complete JSON, table, and Mermaid output bytes are unchanged.
+Normal command output is safe to pipe to a Unix consumer that intentionally stops reading early. A closed stdout pipe stops further output without an unhandled `EPIPE` stack trace; unrelated stdout failures still use the normal stderr diagnostic and non-zero exit outcome. Complete detailed JSON, compact JSON, table, and Mermaid output bytes follow the same stdout policy.
+
+Trace and graph validate `--format` before opening the database. An unknown value writes a clear error to stderr, emits no stdout, and exits non-zero instead of silently falling back to a different format.
 
 ### 🧵 `service-flow trace`
 
-Trace one starting point and render table, JSON, or Mermaid output. Trace now
+Trace one starting point and render table, detailed JSON, compact JSON, or Mermaid output. Trace
 walks linked `graph_edges`, so a resolved remote operation is followed into the
 target handler up to `--depth` instead of showing only calls in the first file.
+
+With `--include-async`, an emitted event is matched by its exact, case-sensitive raw name to every current-generation subscription in the same indexed workspace. Each registration produces a bridge to its resolved handler, and each distinct handler scope is expanded at most once for the same evaluation context. Duplicate registrations therefore remain visible without duplicating the handler body. A bridge is still rendered at the depth boundary, but its handler body is not expanded; structural self-cycles and mutual event cycles are rendered and stopped deterministically. Subscriber evaluation begins with an empty binding/payload context. This is a workspace-wide static name inference, not proof that a runtime broker, channel, tenant, ordering rule, payload, or deployed application will deliver an event. A subscribe call never reverse-triggers emitters, and `includeAsync=false` neither follows event bridges nor treats event-handler references as ordinary synchronous calls.
 
 ### Symbol-scoped helper traversal
 
@@ -173,12 +189,13 @@ target handler up to `--depth` instead of showing only calls in the first file.
 Local CAP calls through `cds.services.<Service>.<operation>()`, bracket service lookups, and simple aliases are indexed as local operation calls. Linking first stays within the same repository and matches the target operation by exact qualified CDS service name, exact simple service name, exact service path, or an unambiguous service-path suffix. If no same-repository service exists, the linker can use implementation-context evidence to resolve model-package operations for helper packages: a resolved/ambiguous implementation candidate, registration package, or dependency/import edge must tie the caller repository to the model operation. Name-only global matches are preserved as unresolved candidate evidence rather than guessed links. Entity accessors such as `cds.services.db.entities(...)` are treated as entity metadata access, not operation calls.
 
 Conservative local symbol traversal intentionally excludes decorators, built-ins such as `JSON.parse`, collection methods, third-party APIs, and arbitrary property chains unless the callee can plausibly resolve to an indexed local symbol. Named export lists such as `export { loadTemplate as publicLoadTemplate }` are indexed with the public exported name so relative imports can resolve. One-level object-literal helpers are indexed as symbols named like `cacheHelper.getConfiguration`; nested object literals are not yet expanded beyond the first helper level. `parseGeneratedConstants` remains a public low-level parser export for callers that need it, but generated constants are not persisted as graph facts in this patch; linking uses the deterministic decorator normalizer described above.
-JSON output includes typed nodes for calls, operations, database entities,
+Detailed JSON output includes typed nodes for calls, operations, database entities,
 external destinations, and unresolved/dynamic candidates when edges exist. Chained CAP DB queries inside `cds.run(...)` and direct supported builders are parsed with TypeScript AST evidence for `SELECT`, `INSERT`, `UPSERT`, `UPDATE`, and `DELETE` forms. A direct builder needs both a recognized CAP root and a proven execution context: direct `await`, return from an `async` or syntactically guaranteed-Promise callable, or a static element of awaited `Promise.all([...])`. Plain query factories and unrelated methods named `from`, `where`, or `set` are not promoted to database facts. When the query target is genuinely dynamic, graph status remains terminal and JSON retains `parserWarning` evidence, while table and Mermaid render the target as `Entity: unknown` rather than a numeric call id.
 
 ```bash
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork
 service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --format json
+service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --include-async --format compact-json
 service-flow trace --workspace /path/to/workspace --handler EntryHandler --depth 1 --format json
 service-flow trace --workspace /path/to/workspace --service /FacadeService --path /doWork --depth 2
 service-flow trace --workspace /path/to/workspace --repo facade-service --operation doWork --var objectCode=xx --var objectType=Thing
@@ -195,7 +212,7 @@ service-flow trace --workspace /path/to/workspace --service /FacadeService --pat
 | `--path <operationPath>` | Start from an operation path such as `/doWork` |
 | `--handler <name>` | Start from a handler class or handler-like selector |
 | `--depth <n>` | Maximum executable/service scope depth; defaults to `25`. Implementation hops are rendered at the current scope depth, while downstream handler bodies consume the next depth. The `step` field never exceeds the requested depth. |
-| `--format <format>` | `table`, `json`, or `mermaid`; defaults to `table` |
+| `--format <format>` | Exactly `table`, `json`, `mermaid`, or `compact-json`; defaults to `table` |
 | `--include-external` | Include external HTTP/destination edges in traversal output |
 | `--include-db` | Include local DB query edges in traversal output |
 | `--include-async` | Include async publish/subscribe edges in traversal output |
@@ -212,6 +229,7 @@ Render a deeper architecture graph from the same selector model used by `trace`.
 ```bash
 service-flow graph --workspace /path/to/workspace --service /FacadeService --path /doWork
 service-flow graph --workspace /path/to/workspace --repo facade-service --operation doWork --format json
+service-flow graph --workspace /path/to/workspace --repo facade-service --operation doWork --format compact-json
 ```
 
 | Flag | Description |
@@ -221,7 +239,7 @@ service-flow graph --workspace /path/to/workspace --repo facade-service --operat
 | `--operation <name>` | Filter/start by operation name |
 | `--service <path>` | Filter/start by service path |
 | `--path <operationPath>` | Filter/start by operation path |
-| `--format <format>` | `mermaid` or `json`; defaults to `mermaid` |
+| `--format <format>` | Exactly `mermaid`, `json`, or `compact-json`; defaults to `mermaid` |
 | `--implementation-repo <name>` | Select one implementation repository for every ambiguous hop |
 | `--implementation-hint <scope>` | Apply a repeatable scoped implementation selection |
 | `--var <key=value>` | Apply repeatable runtime substitutions |
@@ -369,7 +387,7 @@ service-flow trace --workspace /path/to/workspace --repo facade-service --operat
 
 When a concrete target exists after variable substitution, the trace shows both the parameterized evidence and the resolved match. When it does not, `service-flow` keeps the edge as a dynamic candidate or unresolved edge so the missing link remains visible.
 
-When runtime values are missing, strict trace output includes the missing variable names plus bounded candidate guidance when indexed operations and routing metadata can derive values. JSON includes `dynamicTargetExploration`, `dynamicTargetCandidates`, `dynamicTargetCandidateSuggestions`, `suggestedVarSets`, and `dynamicTargetInference`; table output shows compact candidate counts and copyable `--var` examples. Use `--dynamic-mode candidates` to render capped exploratory branches, or `--dynamic-mode infer` to continue only through a unique fully-derived candidate.
+When runtime values are missing, strict trace output includes the missing variable names plus bounded candidate guidance when indexed operations and routing metadata can derive values. Detailed JSON includes `dynamicTargetExploration`, `dynamicTargetCandidates`, `dynamicTargetCandidateSuggestions`, `suggestedVarSets`, and `dynamicTargetInference`; compact JSON retains only allowlisted counts and missing variable names, while table output shows compact candidate counts and copyable `--var` examples. Use `--dynamic-mode candidates` to render capped exploratory branches, or `--dynamic-mode infer` to continue only through a unique fully-derived candidate.
 
 Direct sends and same-file or imported wrappers share one path-candidate analysis. Literals and immutable aliases resolve; conditional or branch-assigned static alternatives remain ambiguous with bounded raw and normalized candidate projections plus counts; dynamic reassignments remain dynamic with the exact runtime identifier. Wrapper definition sends are treated as templates when a concrete caller-site edge can be indexed.
 
@@ -409,6 +427,7 @@ service-flow init /path/to/workspace --db /custom/path/service-flow.db
 - It does **not** execute CAP services, load `.env` files, call SAP BTP, or connect to remote systems.
 - Persisted summaries and CLI output redact keys that look like credentials, including `authorization`, `cookie`, `token`, `secret`, `password`, `key`, and `credential`.
 - Payload bodies are summarized for traceability; runtime payload values are not required for indexing.
+- Compact JSON is projected through a field-by-field allowlist. It omits raw parser/outbound evidence, candidate and score bodies, payloads, call arguments, helper-chain bodies, supplied variable values, and arbitrary diagnostic/remediation text. Query metadata contains supplied variable names only; `runtimeValuesOmitted` is always `true`, so exact replay requires the original supplied values retained by the caller.
 
 ---
 
@@ -424,7 +443,9 @@ Step  Type                 From                                To               
 2     remote_action        facade-service:srv/functions/Entry  /IdentityService/resolveAccess      srv/functions/EntryHandler.ts:10
 ```
 
-### JSON
+### Detailed JSON
+
+`--format json` remains the complete, pretty-printed `TraceResult` and the authoritative audit artifact for raw evidence, candidate inspection, locations, and effective versus persisted decisions. It is intentionally large.
 
 ```json
 {
@@ -439,6 +460,40 @@ Step  Type                 From                                To               
 }
 ```
 
+### Compact JSON
+
+`--format compact-json` projects the same traversal into the minified, newline-terminated `service-flow/compact-graph@1` contract. It is a lossy AI-oriented semantic topology and bounded decision summary; use the detailed JSON companion whenever exact evidence is required.
+
+```json
+{"schema":"service-flow/compact-graph@1","start":{"repo":"facade-service","servicePath":"/FacadeService","operation":"doWork","operationPath":null,"handler":null},"query":{"depth":25,"includeAsync":true,"includeDb":true,"includeExternal":true,"dynamicMode":"strict","maxDynamicCandidates":5,"suppliedVariableNames":[],"runtimeValuesOmitted":true,"implementationRepo":null,"implementationHints":[]},"source":{"schemaVersion":12,"analyzerVersion":"0.1.66-facts.1","graphGeneration":7},"summary":{"completeness":"complete","fullTraceNodes":2,"fullTraceEdges":1,"fullTraceDiagnostics":0,"nodes":2,"edges":1,"collapsedEdges":0,"statusCounts":{"resolved":0,"terminal":1,"inferred":0,"dynamic":0,"ambiguous":0,"unresolved":0,"cycle":0},"projection":{"evidence":"summary-only","syntheticEndpoints":0,"omittedUnreferencedFullNodes":0}},"repos":["facade-service"],"files":["srv/EntryHandler.ts"],"nodeColumns":["id","kind","label","repo","file","line"],"nodes":[["n0","symbol","EntryHandler.doWork",0,0,8],["n1","db_entity","Template",null,null,null]],"edgeColumns":["id","traceOrdinals","step","type","from","to","status","confidence","count","details"],"edges":[["e0",[0],1,"local_db_query","n0","n1","terminal",0.95,1,null]],"diagnosticColumns":["fullDiagnosticIndex","severity","code","message","file","line","details"],"diagnostics":[]}
+```
+
+The `nodeColumns`, `edgeColumns`, and `diagnosticColumns` arrays define fixed-width tuples; absent cells are explicit `null`. Any breaking change to those columns or to the declared v1 top-level/query/source/summary/status/aggregation/diagnostic semantics requires a new `@N` schema. Repository and file dictionaries are sorted, and dense `n0...`/`e0...` IDs are assigned after canonical sorting. Those dense IDs are output-local and are not stable database identifiers.
+
+Each compact edge's `traceOrdinals` contains the zero-based detailed edge index or indexes from the exact corresponding trace invocation. Aggregated equivalent observations retain their multiplicity in `count` and their complete sorted ordinal list. These ordinals are valid only for the same database generation, selector, traversal options, implementation hints, and runtime inputs. Bounded `details.refs` can also carry graph, call, operation, symbol, or handler IDs for exact drill-down in the declared `source.graphGeneration`; those database references are generation-scoped rather than long-lived IDs.
+
+`source.analyzerVersion` is the one persisted analyzer value for the selected scope. It is `none` when no repositories exist, `mixed` when multiple analyzer versions are present, and `legacy_unknown` when the persisted value is absent. Reindex before relying on topology whenever the source reports a sentinel rather than the current analyzer.
+
+For identical database state and inputs, canonical dictionaries, semantic endpoints, aggregation, and ordering make compact output byte-deterministic. Database rebuilds can legitimately change graph generation, trace ordinals, and generation-scoped references, so byte identity is not promised across arbitrary rebuilds. Representative large traces are regression-tested against both pretty and minified detailed JSON size budgets; compact output does not achieve this by weakening detailed JSON.
+
+Write the compact graph and its detailed audit companion through ordinary stdout redirection:
+
+```bash
+service-flow graph \
+  --workspace /path/to/workspace \
+  --repo facade-service \
+  --service /FacadeService \
+  --operation doWork \
+  --format compact-json > order-flow.graph.json
+
+service-flow graph \
+  --workspace /path/to/workspace \
+  --repo facade-service \
+  --service /FacadeService \
+  --operation doWork \
+  --format json > order-flow.trace.json
+```
+
 ### Mermaid
 
 ```mermaid
@@ -451,6 +506,7 @@ flowchart TD
 ## ⚠️ Limitations
 
 - Static analysis cannot know every runtime branch, feature flag, or environment-specific destination.
+- Exact event-name matching is a workspace-scoped static inference. It does not establish broker, destination, channel, tenant, payload compatibility, ordering, deployment, or runtime delivery.
 - Dynamic service names and paths may need `--var key=value` values to resolve concrete targets.
 - Highly customized frameworks can still appear as unresolved edges until parser support is added.
 - Parse failures are stored as diagnostics and reported by `service-flow doctor`.
