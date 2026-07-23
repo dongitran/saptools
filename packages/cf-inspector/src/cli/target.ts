@@ -9,6 +9,7 @@ import { CfInspectorError } from "../types.js";
 
 import { DEFAULT_CF_TIMEOUT_SEC } from "./commandTypes.js";
 import type { SharedTargetOptions, Target } from "./commandTypes.js";
+import { acquireDebugSessionLock } from "./sessionLock.js";
 import { warnOnImplicitInspectorSelection } from "./warnings.js";
 
 export type ProgressReporter = (message: string) => void;
@@ -217,32 +218,37 @@ export async function withSession<T>(
   reportProgress?: ProgressReporter,
   signal?: AbortSignal,
 ): Promise<T> {
-  const tunnel = await openTarget(target, reportProgress, signal);
-  let session: InspectorSession | undefined;
+  const lock = await acquireDebugSessionLock(target);
   try {
-    reportProgress?.(
-      `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
-    );
-    session = await connectInspector({
-      port: tunnel.port,
-      host: tunnel.host,
-      ...selectionOptions(target.targetIndex, target.workerIndex),
-      ...(target.workerId === undefined ? {} : { workerId: target.workerId }),
-    });
-    warnOnImplicitInspectorSelection(
-      session,
-      target.targetIndex !== undefined,
-      target.workerIndex !== undefined || target.workerId !== undefined,
-    );
-    reportProgress?.("Inspector session is ready.");
-    return await fn(session, tunnel.port);
-  } finally {
-    if (session) {
-      reportProgress?.("Closing the inspector session...");
-      await session.dispose();
-      reportProgress?.("Inspector session closed.");
+    const tunnel = await openTarget(target, reportProgress, signal);
+    let session: InspectorSession | undefined;
+    try {
+      reportProgress?.(
+        `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
+      );
+      session = await connectInspector({
+        port: tunnel.port,
+        host: tunnel.host,
+        ...selectionOptions(target.targetIndex, target.workerIndex),
+        ...(target.workerId === undefined ? {} : { workerId: target.workerId }),
+      });
+      warnOnImplicitInspectorSelection(
+        session,
+        target.targetIndex !== undefined,
+        target.workerIndex !== undefined || target.workerId !== undefined,
+      );
+      reportProgress?.("Inspector session is ready.");
+      return await fn(session, tunnel.port);
+    } finally {
+      if (session) {
+        reportProgress?.("Closing the inspector session...");
+        await session.dispose();
+        reportProgress?.("Inspector session closed.");
+      }
+      await tunnel.dispose();
     }
-    await tunnel.dispose();
+  } finally {
+    await lock.release();
   }
 }
 
@@ -252,41 +258,46 @@ export async function withSessions<T>(
   reportProgress?: ProgressReporter,
   signal?: AbortSignal,
 ): Promise<T> {
-  const tunnel = await openTarget(target, reportProgress, signal);
-  let group: InspectorSessionGroup | undefined;
+  const lock = await acquireDebugSessionLock(target);
   try {
-    reportProgress?.(
-      `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
-    );
-    const autoAttach = target.targetIndex === undefined && target.workerIndex === undefined &&
-      target.workerId === undefined && target.mainOnly !== true;
-    if (autoAttach) {
-      group = await connectInspectorGroup({ port: tunnel.port, host: tunnel.host });
-    } else {
-      const session = await connectInspector({
-        port: tunnel.port,
-        host: tunnel.host,
-        ...selectionOptions(target.targetIndex, target.workerIndex, target.workerId),
-      });
-      group = singleSessionGroup(session);
-    }
-    reportProgress?.("Inspector session is ready.");
-    return await fn(group, tunnel.port);
-  } finally {
+    const tunnel = await openTarget(target, reportProgress, signal);
+    let group: InspectorSessionGroup | undefined;
     try {
-      if (group !== undefined) {
-        const sessionCount = group.list().length;
-        reportProgress?.(sessionCount === 1
-          ? "Closing the inspector session..."
-          : `Closing ${sessionCount.toString()} inspector sessions...`);
-        await group.dispose();
-        reportProgress?.(sessionCount === 1
-          ? "Inspector session closed."
-          : "Inspector sessions closed.");
+      reportProgress?.(
+        `Connecting to the Node.js inspector at ${tunnel.host}:${tunnel.port.toString()}...`,
+      );
+      const autoAttach = target.targetIndex === undefined && target.workerIndex === undefined &&
+        target.workerId === undefined && target.mainOnly !== true;
+      if (autoAttach) {
+        group = await connectInspectorGroup({ port: tunnel.port, host: tunnel.host });
+      } else {
+        const session = await connectInspector({
+          port: tunnel.port,
+          host: tunnel.host,
+          ...selectionOptions(target.targetIndex, target.workerIndex, target.workerId),
+        });
+        group = singleSessionGroup(session);
       }
+      reportProgress?.("Inspector session is ready.");
+      return await fn(group, tunnel.port);
     } finally {
-      await tunnel.dispose();
+      try {
+        if (group !== undefined) {
+          const sessionCount = group.list().length;
+          reportProgress?.(sessionCount === 1
+            ? "Closing the inspector session..."
+            : `Closing ${sessionCount.toString()} inspector sessions...`);
+          await group.dispose();
+          reportProgress?.(sessionCount === 1
+            ? "Inspector session closed."
+            : "Inspector sessions closed.");
+        }
+      } finally {
+        await tunnel.dispose();
+      }
     }
+  } finally {
+    await lock.release();
   }
 }
 

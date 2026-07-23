@@ -13,6 +13,16 @@ If `cf-inspector` is missing, install it from `@saptools/cf-inspector`: `npm ins
 
 Treat captured runtime values as sensitive. Snapshots, scopes, logpoints, exception values, and app environment data can contain tokens, user data, credentials, or business payloads. Redact before sharing outside the local task.
 
+Only one local `cf-inspector` process may actively debug the same target. Every
+command that opens a debugger session (`snapshot`, `watch`, `exception`, `log`,
+`check-breakpoint`, `eval`, and `list-scripts`) acquires a target-scoped lock
+before connecting. If `TARGET_ALREADY_DEBUGGED` is returned, do not retry in
+parallel or bypass the guard: wait for the reported owner PID to finish. A dead
+owner's stale lock is reclaimed automatically. `attach` and `list-targets` are
+safe discovery operations and do not acquire this lock. Debuggers on another
+machine or outside `cf-inspector` remain the operator's responsibility because
+a local lock cannot detect them.
+
 ## First Steps
 
 1. Identify whether the user wants a one-shot snapshot, continuous breakpoint watch, logpoint stream, exception capture, runtime evaluation, script listing, or connectivity check.
@@ -207,6 +217,7 @@ Common `CfInspectorError.code` values:
 - `INVALID_PAUSE_TYPE`: `exception --type` is not `uncaught`, `caught`, or `all`.
 - `INSPECTOR_DISCOVERY_FAILED`: `/json/list` did not expose a target.
 - `INSPECTOR_CONNECTION_FAILED`: WebSocket handshake or transport failed.
+- `TARGET_ALREADY_DEBUGGED`: another live local `cf-inspector` process owns the target; wait for it to finish.
 - `CDP_REQUEST_FAILED`: CDP method failed.
 - `BREAKPOINT_NOT_HIT`: timeout while waiting for a matching pause.
 - `UNRELATED_PAUSE`: target paused elsewhere and strict mode was enabled.

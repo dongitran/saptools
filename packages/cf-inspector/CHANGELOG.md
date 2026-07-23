@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.1 - 2026-07-23
+
+### Exclusive debugger sessions
+
+- Refuse a second local `cf-inspector` session for the same inspector target
+  before it opens a debugger WebSocket. The dedicated
+  `TARGET_ALREADY_DEBUGGED` error identifies the live owner and explains the
+  risk to application traffic.
+- Added process-owned, target-scoped lock files under
+  `~/.saptools/cf-inspector/locks`, with automatic dead-PID reclamation and
+  ownership-safe cleanup on normal, error, timeout, and signal exits.
+- Added local real-inspector coverage for deterministic CDP breakpoint-ID
+  collisions, competing resume behavior, command-wide exclusion, first-session
+  continuity, and SIGKILL stale-lock recovery.
+
 ## 0.7.0 - 2026-07-22
 
 ### Automatic isolate fan-out

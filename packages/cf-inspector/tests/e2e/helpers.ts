@@ -191,11 +191,15 @@ export interface RunCliResult {
   readonly exitCode: number;
 }
 
-export async function runCli(args: readonly string[], timeoutMs = 30_000): Promise<RunCliResult> {
+export async function runCli(
+  args: readonly string[],
+  timeoutMs = 30_000,
+  env: Readonly<Record<string, string>> = {},
+): Promise<RunCliResult> {
   return await new Promise<RunCliResult>((resolveOnce, rejectOnce) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      env: { ...process.env, ...env },
     });
     let stdout = "";
     let stderr = "";

@@ -16,6 +16,15 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 
 ---
 
+> **Debug-session safety:** only one local `cf-inspector` process may actively
+> debug a given target at a time. Concurrent CDP debugger clients can receive
+> the same pause and race `Debugger.resume`, disrupting the target and real
+> application traffic. A second local invocation now fails before connecting
+> with `TARGET_ALREADY_DEBUGGED`; wait for the named owner process to finish.
+> Locks left by dead processes are reclaimed automatically. Debuggers running
+> on another machine or outside `cf-inspector` cannot be detected by this local
+> guard and must still be coordinated operationally.
+
 ## ✨ Features
 
 - 🎯 **One-shot snapshot** — `cf-inspector snapshot --bp src/handler.ts:42` sets the breakpoint, waits for it to hit, captures requested expressions, auto-resumes, prints JSON, exits
