@@ -4,10 +4,16 @@ import { discoverInspectorTargets } from "../../inspector/discovery.js";
 import type { InspectorTarget } from "../../inspector/discovery.js";
 import { listScripts } from "../../inspector/runtime.js";
 import { discoverNodeWorkerTargets } from "../../inspector/session.js";
-import type { InspectorWorkerTarget } from "../../inspector/types.js";
-import type { ListScriptsCommandOptions, ListTargetsCommandOptions } from "../commandTypes.js";
+import type { InspectorSession, InspectorWorkerTarget } from "../../inspector/types.js";
+import type { InspectorIsolate, ListedScriptInfo } from "../../types.js";
+import type {
+  ListScriptsCommandOptions,
+  ListTargetsCommandOptions,
+  Target,
+} from "../commandTypes.js";
 import { writeJson } from "../output.js";
-import { openTarget, resolveTargetWithCurrentCfTarget, withSession } from "../target.js";
+import { openTarget, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
+import { warnOnImplicitInspectorSelection } from "../warnings.js";
 
 type ScriptUrlFilter = (url: string) => boolean;
 type FilterToken = string | { readonly kind: "wildcard"; readonly minChars: 0 | 1 };
@@ -15,15 +21,57 @@ type FilterToken = string | { readonly kind: "wildcard"; readonly minChars: 0 | 
 export async function handleListScripts(opts: ListScriptsCommandOptions): Promise<void> {
   const target = await resolveTargetWithCurrentCfTarget(opts);
   const filter = compileScriptUrlFilter(opts.filter);
-  const scripts = (await withSession(target, (session) => Promise.resolve(listScripts(session))))
+  const scripts = (await withSessions(target, (group) => {
+    const sessions = group.list();
+    warnOnListScriptsSelection(target, {
+      targetCount: group.targetCount,
+      targetIndex: group.targetIndex,
+      ...(sessions[0]?.workerTargets === undefined
+        ? {}
+        : { workerTargets: sessions[0].workerTargets }),
+    });
+    return Promise.resolve(collectListedScripts(sessions));
+  }))
     .filter((script) => filter === undefined || filter(script.url));
   if (opts.json) {
     writeJson(scripts);
     return;
   }
   for (const script of scripts) {
-    process.stdout.write(`${script.scriptId}\t${script.url}\n`);
+    process.stdout.write(
+      `${script.scriptId}\t${script.url}\t${formatIsolate(script.isolate)}\n`,
+    );
   }
+}
+
+export function warnOnListScriptsSelection(
+  target: Target,
+  selection: Pick<InspectorSession, "targetCount" | "targetIndex" | "workerTargets">,
+): void {
+  const autoAttach = target.targetIndex === undefined &&
+    target.workerIndex === undefined &&
+    target.workerId === undefined &&
+    target.mainOnly !== true;
+  const isolateWasExplicit = autoAttach ||
+    target.workerIndex !== undefined ||
+    target.workerId !== undefined ||
+    target.mainOnly === true;
+  warnOnImplicitInspectorSelection(
+    selection,
+    target.targetIndex !== undefined,
+    isolateWasExplicit,
+  );
+}
+
+function collectListedScripts(sessions: readonly InspectorSession[]): readonly ListedScriptInfo[] {
+  return sessions.flatMap((session) => listScripts(session).map((script) => ({
+    ...script,
+    isolate: session.isolate ?? { kind: "main" },
+  })));
+}
+
+function formatIsolate(isolate: InspectorIsolate): string {
+  return isolate.kind === "worker" ? `worker:${isolate.workerId}` : "main";
 }
 
 export async function handleListTargets(opts: ListTargetsCommandOptions): Promise<void> {

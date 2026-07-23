@@ -14,6 +14,16 @@ export interface SessionBreakpointSetup {
   readonly handles: readonly BreakpointHandle[];
 }
 
+export interface SessionBreakpointOutcome {
+  readonly session: InspectorSession;
+  readonly setup: SessionBreakpointSetup;
+}
+
+export interface FanoutReadyOptions {
+  readonly includeNewSessions?: boolean;
+  readonly onReady?: (outcomes: readonly SessionBreakpointOutcome[]) => void;
+}
+
 interface SessionRecord {
   readonly session: InspectorSession;
   readonly handles: BreakpointHandle[];
@@ -39,6 +49,8 @@ export class BreakpointFanout {
   private readonly detachError: () => void;
   private activeRace: ActivePauseRace | undefined;
   private pauseReasons: readonly string[] = [];
+  private pendingSetupError: Error | undefined;
+  private preserveReadinessErrors = false;
 
   public constructor(
     group: InspectorSessionGroup,
@@ -72,14 +84,56 @@ export class BreakpointFanout {
       this.activeRace?.remove(session);
     });
     this.detachError = group.onError((error) => {
+      if (this.setupErrors.length === 0 && this.pendingSetupError === undefined) {
+        this.pendingSetupError = error;
+      }
       for (const reject of this.setupErrors) {
         reject(error);
       }
     });
   }
 
-  public async ready(): Promise<void> {
-    await Promise.all([...this.records.values()].map((record) => record.setup));
+  public async ready(options: FanoutReadyOptions = {}): Promise<void> {
+    if (options.includeNewSessions !== true) {
+      const records = [...this.records.values()];
+      await Promise.all(records.map((record) => record.setup));
+      options.onReady?.(this.outcomesFor(records));
+      return;
+    }
+    this.preserveReadinessErrors = true;
+    const pendingError = this.takePendingSetupError();
+    if (pendingError !== undefined) {
+      throw pendingError;
+    }
+    let rejectGroupError: (error: unknown) => void = (): void => undefined;
+    const groupError = new Promise<never>((_resolve, reject) => {
+      rejectGroupError = reject;
+    });
+    this.setupErrors.push(rejectGroupError);
+    try {
+      let stableRecords: readonly SessionRecord[] | undefined;
+      while (stableRecords === undefined) {
+        const records = [...this.records.values()];
+        await Promise.race([
+          Promise.all(records.map((record) => record.setup)),
+          groupError,
+        ]);
+        const stable = records.length === this.records.size &&
+          records.every((record) => this.records.get(record.session) === record);
+        if (stable) {
+          stableRecords = records;
+        }
+      }
+      // Run the callback before this promise resolves. A session-registration
+      // callback cannot interleave between this stable check and the emitted
+      // readiness event on JavaScript's single thread.
+      options.onReady?.(this.outcomesFor(stableRecords));
+    } finally {
+      const index = this.setupErrors.indexOf(rejectGroupError);
+      if (index >= 0) {
+        this.setupErrors.splice(index, 1);
+      }
+    }
   }
 
   public trackHandle(session: InspectorSession, handle: BreakpointHandle): void {
@@ -89,11 +143,21 @@ export class BreakpointFanout {
     }
   }
 
-  public availableOutcomes(): readonly { readonly session: InspectorSession; readonly setup: SessionBreakpointSetup }[] {
-    return [...this.records.values()].map((record) => ({
+  public availableOutcomes(): readonly SessionBreakpointOutcome[] {
+    return this.outcomesFor([...this.records.values()]);
+  }
+
+  private outcomesFor(records: readonly SessionRecord[]): readonly SessionBreakpointOutcome[] {
+    return records.map((record) => ({
       session: record.session,
       setup: { handles: record.handles },
     }));
+  }
+
+  private takePendingSetupError(): Error | undefined {
+    const error = this.pendingSetupError;
+    this.pendingSetupError = undefined;
+    return error;
   }
 
   public async waitForFirst(
@@ -108,6 +172,12 @@ export class BreakpointFanout {
     this.pauseReasons = options.pauseReasons ?? [];
     this.activeRace = race;
     this.setupErrors.push(race.reject);
+    if (this.preserveReadinessErrors) {
+      const pendingError = this.takePendingSetupError();
+      if (pendingError !== undefined) {
+        race.reject(pendingError);
+      }
+    }
     for (const record of this.records.values()) {
       race.add(record);
     }

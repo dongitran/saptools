@@ -44,6 +44,26 @@ the code. Use `--worker-id <id>` to pin one live worker, `--main-only` to ignore
 workers, or the legacy `--worker <index>` only when positional selection is
 specifically required.
 
+When an external request or job must run only after debugger setup, pass
+`--ready-event` to `snapshot`, `watch`, `exception`, or `log`. Scan stderr
+line-by-line, parse JSON object lines while ignoring ordinary progress and
+warnings, and trigger only after receiving:
+
+```json
+{"event":"breakpoint-armed","schemaVersion":1,"command":"snapshot","sessions":3,"resolvedLocations":2,"timeoutMs":30000}
+```
+
+Require `event === "breakpoint-armed"`, `schemaVersion === 1`, and the expected
+`command`. Do not guess a startup delay or poll human prose such as
+`Waiting up to`. The event is emitted once, after every initially/currently
+registered isolate completes arming and before the command waits. Later workers
+still auto-arm but are not included in that event's counts. `resolvedLocations` is `null` for
+`exception`, and `timeoutMs` is `null` for `log`. No event is emitted unless
+`--ready-event` is passed; an explicitly requested event remains visible with
+`snapshot --quiet`. With `log --ready-event`, events received while the other
+initial sessions are still arming are neither emitted nor counted, so consume
+log stdout only after the marker.
+
 ```bash
 cf-inspector snapshot --port 9229 \
   --bp dist/handler.js:42 \
@@ -88,7 +108,11 @@ Use `eval` for global runtime state, not paused-frame locals.
 cf-inspector eval --port 9229 --expr 'process.uptime()'
 ```
 
-Use `list-scripts` when breakpoints do not bind or path mapping is uncertain. `--filter` accepts literal text, `|` alternatives, and `.*` / `.+` wildcards.
+Use `list-scripts` when breakpoints do not bind or path mapping is uncertain.
+Without an isolate selector it aggregates the main isolate and every current
+worker. Every JSON entry has an `isolate` tag; `--no-json` appends `main` or
+`worker:<workerId>` as a third tab-separated column. `--filter` accepts literal
+text, `|` alternatives, and `.*` / `.+` wildcards.
 
 ```bash
 cf-inspector list-scripts --port 9229 --filter '/home/vcap/app|ValidatePayloadWorker'
@@ -200,6 +224,7 @@ Default command output is JSON except stream trailers:
 - `snapshot`, `exception`, `eval`, `list-scripts`, and `attach` print formatted JSON to stdout.
 - `log` and `watch` print one compact JSON object per event to stdout.
 - `log` and `watch` write a JSON summary trailer to stderr in JSON mode, such as `{"stopped":"max-events","emitted":3}`.
+- With `--ready-event`, `snapshot`, `watch`, `exception`, and `log` first write one versioned `{"event":"breakpoint-armed",...}` JSON line to stderr after arming. Treat it separately from stream summary trailers.
 - `eval` exits non-zero when JSON output contains `exceptionDetails`.
 
 For agent parsing, read stdout events line by line and parse the final stderr JSON trailer separately.

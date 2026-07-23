@@ -37,6 +37,8 @@ Built so an AI agent (or a CI job) can drive a debugger from a single shell comm
 - 📡 **Non-pausing logpoints** — `cf-inspector log --at file:line --expr 'JSON.stringify({…})'` streams JSON Lines as the line executes without pausing the inspectee, with optional `--condition`, `--hit-count`, and `--max-events`
 - 🛡️ **Read-only capture guard** — snapshot, watch, and exception captures use V8's side-effect analysis by default; `--allow-mutation` is an explicit escape hatch
 - 🧵 **Automatic worker fan-out** — snapshot, watch, exception, and log attach to the main isolate plus every current or newly-spawned NodeWorker; explicit selectors remain available for pinning
+- 🚦 **Machine-readable readiness** — opt into a versioned `breakpoint-armed` stderr event before triggering external traffic; no prose matching or guessed delay required
+- 📜 **Isolate-aware script listing** — `list-scripts` aggregates the main isolate and every current worker, tagging every script with its isolate
 - 🧠 **Agent-friendly** — JSON-by-default I/O, deterministic shapes, and explicit `truncated`/`originalLength`/`omittedCount` metadata for bounded values
 - 🧭 **Path mapping** — local `src/handler.ts:42` is matched against the remote URL via a `urlRegex`, with optional `--remote-root` literal or regex (same DSL as `cds-debug`)
 - 🔁 **Composes with `cf-debugger`** — pass `--app/--region/--org/--space` and the tunnel is opened automatically; pass `--port` to attach to anything CDP-speaking
@@ -97,6 +99,42 @@ Use `--worker-id <id>` to pin a stable live worker ID from `list-targets`,
 pin a raw inspector target, or `--main-only` to deliberately ignore workers.
 Explicit selectors preserve single-isolate behavior.
 
+### Automation readiness contract
+
+Commands that arm debugger behavior before waiting (`snapshot`, `watch`,
+`exception`, and `log`) accept `--ready-event`. The flag writes exactly one
+compact JSON object to `stderr` after every session present during initial
+arming has completed its CDP setup and immediately before the command waits or
+streams:
+
+```json
+{"event":"breakpoint-armed","schemaVersion":1,"command":"snapshot","sessions":3,"resolvedLocations":2,"timeoutMs":30000}
+```
+
+This is the supported synchronization contract for callers that must start the
+CLI before firing an HTTP request, queue job, or other external trigger. Parse
+the JSON line and require `event === "breakpoint-armed"` plus
+`schemaVersion === 1`, then confirm `command` matches the invocation; do not
+poll prose such as `Waiting up to`.
+
+| Field | Contract |
+| --- | --- |
+| `event` | Always `"breakpoint-armed"` |
+| `schemaVersion` | Event schema version; currently `1` |
+| `command` | `snapshot`, `watch`, `exception`, or `log` |
+| `sessions` | Number of main/worker sessions whose initial arming completed before emission |
+| `resolvedLocations` | Total locations V8 had already resolved, or `null` for `exception`; `0` can still represent an accepted URL breakpoint that may resolve when a script loads |
+| `timeoutMs` | Snapshot/exception wait or watch per-hit timeout; `null` for log |
+
+Workers attaching after this one-time event are still armed dynamically, but
+are not included in its `sessions` or `resolvedLocations` totals. If initial
+arming fails or the command is cancelled first, no readiness event is emitted.
+With `log --ready-event`, matching events received while the remaining initial
+sessions are still arming are neither emitted nor counted, so the log stream
+cannot precede its readiness marker.
+Without `--ready-event`, stderr/stdout behavior is unchanged. An explicitly
+requested event is still emitted with `snapshot --quiet`.
+
 ---
 
 ## 🧰 CLI
@@ -143,6 +181,7 @@ cf-inspector snapshot --port 9229 \
 | `--include-scopes` | Include expanded paused-frame scopes under `topFrame.scopes`. Omitted by default to keep targeted captures concise |
 | `--no-json` | Print a human-readable summary instead of JSON |
 | `--quiet` | Suppress snapshot progress messages on stderr |
+| `--ready-event` | Emit the versioned `breakpoint-armed` JSON event on stderr after every current isolate is armed |
 | `--keep-paused` | Skip `Debugger.resume` after capture |
 | `--fail-on-unmatched-pause` | Fail immediately if the target pauses somewhere else instead of waiting cooperatively |
 
@@ -269,6 +308,7 @@ When the user expression throws, the event is emitted with `error` instead of `v
 | `--max-value-length <chars>` | Maximum characters per log value (streaming default: `4096`). Truncated events include `truncated` and `originalLength` |
 | `--remote-root <value>` | Optional path-mapping anchor (same DSL as `snapshot`) |
 | `--no-json` | Print human-readable lines instead of JSON Lines |
+| `--ready-event` | Emit the versioned `breakpoint-armed` JSON event on stderr after every current isolate is armed |
 
 Native logpoint expressions and conditions have no V8 side-effect gate. The
 CLI warns when its best-effort syntax scan recognizes assignments or common
@@ -319,6 +359,7 @@ Each event is a `WatchEvent`:
 | `--allow-mutation` | Disable the capture side-effect guard and explicitly allow mutation-shaped native conditions |
 | `--include-scopes` | Include expanded paused-frame scopes per hit |
 | `--no-json` | Print human-readable lines instead of JSON Lines |
+| `--ready-event` | Emit the versioned `breakpoint-armed` JSON event on stderr after every current isolate is armed |
 
 ### 💥 `cf-inspector exception`
 
@@ -365,6 +406,7 @@ Result is a `SnapshotResult` with an extra `exception` field:
 | `--max-value-length <chars>` | Maximum characters per captured value (one-shot default: `131072`) |
 | `--keep-paused` | Skip `Debugger.resume` after capture |
 | `--no-json` | Print a human-readable summary instead of JSON |
+| `--ready-event` | Emit the versioned `breakpoint-armed` JSON event on stderr after pause-on-exception is active in every current isolate |
 
 ### 🧮 `cf-inspector eval`
 
@@ -382,11 +424,22 @@ cf-inspector eval --port 9229 --expr 'process.uptime()'
 
 ### 📜 `cf-inspector list-scripts`
 
-Print every script the V8 instance knows about (useful for debugging path-mapping issues). Add `--filter <pattern>` to narrow noisy script lists with a literal/wildcard pattern; `|` separates alternatives and `.*` / `.+` match variable text.
+Print every script known by the main isolate and each currently attached
+NodeWorker (useful for debugging path-mapping issues). Each JSON entry carries
+`isolate: {"kind":"main"}` or
+`isolate: {"kind":"worker","workerId":"…"}`, so duplicate per-isolate
+`scriptId` values remain unambiguous. Add `--filter <pattern>` to narrow noisy
+script lists with a literal/wildcard pattern; `|` separates alternatives and
+`.*` / `.+` match variable text.
 
 ```bash
 cf-inspector list-scripts --port 9229 --filter 'dist/.+\.js'
 ```
+
+With `--no-json`, rows are
+`scriptId<TAB>url<TAB>isolate`, where isolate is `main` or
+`worker:<workerId>`. `--main-only`, `--worker-id`, `--worker`, and `--target`
+retain their normal narrowing behavior.
 
 ### 🎯 `cf-inspector list-targets`
 

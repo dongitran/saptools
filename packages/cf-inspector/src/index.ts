@@ -1,5 +1,7 @@
 export { CfInspectorError } from "./types.js";
 export type {
+  ArmedCommand,
+  ArmedEvent,
   BreakLocation,
   BreakpointHandle,
   BreakpointLocation,
@@ -11,6 +13,7 @@ export type {
   FrameSnapshot,
   InspectorConnectOptions,
   InspectorIsolate,
+  ListedScriptInfo,
   GetPossibleBreakpointsOptions,
   PauseEvent,
   RemoteRootSetting,
@@ -68,11 +71,13 @@ export {
 export type {
   DebuggerState,
   EvaluateOnFrameOptions,
+  FanoutReadyOptions,
   InspectorSession,
   InspectorSessionGroup,
   InspectorTarget,
   InspectorWorkerTarget,
   PauseOnExceptionsState,
+  SessionBreakpointOutcome,
   SetBreakpointInput,
   StepIntoOptions,
   WaitForPauseOptions,

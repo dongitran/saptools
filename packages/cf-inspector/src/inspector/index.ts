@@ -8,7 +8,13 @@ export {
 export { discoverInspectorTargets, fetchInspectorVersion, startInspectorKeepalive } from "./discovery.js";
 export { waitForPause } from "./pause.js";
 export { BreakpointFanout } from "./fanout.js";
-export type { FanoutCleanupSummary, IsolatePause, SessionBreakpointSetup } from "./fanout.js";
+export type {
+  FanoutCleanupSummary,
+  FanoutReadyOptions,
+  IsolatePause,
+  SessionBreakpointOutcome,
+  SessionBreakpointSetup,
+} from "./fanout.js";
 export {
   evaluateGlobal,
   evaluateOnFrame,

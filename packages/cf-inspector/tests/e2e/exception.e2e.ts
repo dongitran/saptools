@@ -31,6 +31,7 @@ test("exception captures uncaught exception with materialized exception value", 
     expect(exceptionValue.length).toBeGreaterThan(0);
     expect(parsed.exception?.description ?? exceptionValue).toContain("stack-fixture uncaught");
     expect(typeof parsed.pausedDurationMs).toBe("number");
+    expect(result.stderr).not.toContain('"event":"breakpoint-armed"');
   } finally {
     await fixture.close();
   }

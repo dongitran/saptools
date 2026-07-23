@@ -274,6 +274,33 @@ describe("streamLogpoint", () => {
     });
   });
 
+  it("does not count or emit matching events while the readiness gate is closed", async () => {
+    const { session, fire, sendCalls } = makeSession();
+    const events: unknown[] = [];
+    let open = false;
+    const stream = streamLogpoint(session, {
+      location,
+      expression: "payload",
+      maxEvents: 1,
+      eventGate: () => open,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    await new Promise<void>((resolveOnce) => setImmediate(resolveOnce));
+    const setCall = sendCalls.find((call) => call.method === "Debugger.setBreakpointByUrl");
+    const sentinel = /__CFI_LOG_[0-9a-f]+__/.exec(String(setCall?.params["condition"]))?.[0] ?? "";
+
+    fire([{ type: "string", value: sentinel }, { type: "string", value: "before" }]);
+    expect(events).toHaveLength(0);
+    open = true;
+    fire([{ type: "string", value: sentinel }, { type: "string", value: "after" }]);
+
+    await expect(stream).resolves.toMatchObject({ emitted: 1, stoppedReason: "max-events" });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ value: "after" });
+  });
+
   it("rejects an invalid maxValueLength value", async () => {
     const { session } = makeSession();
     await expect(streamLogpoint(session, {

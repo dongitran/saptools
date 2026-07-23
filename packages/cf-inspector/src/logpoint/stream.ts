@@ -27,6 +27,7 @@ export interface LogpointStreamOptions {
   readonly condition?: string;
   readonly maxValueLength?: number;
   readonly signal?: AbortSignal;
+  readonly eventGate?: () => boolean;
   readonly onEvent: (event: LogpointEvent) => void;
   readonly onBreakpointSet?: (handle: BreakpointHandle) => void;
 }
@@ -87,6 +88,9 @@ export async function streamLogpoint(
     }
     const event = toLogpointEvent(raw, sentinel, options.location, maxValueLength);
     if (event === undefined) {
+      return;
+    }
+    if (options.eventGate?.() === false) {
       return;
     }
     emitted += 1;

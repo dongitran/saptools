@@ -43,6 +43,7 @@ test("log streams JSON Lines from a logpoint and stops on duration", async () =>
     };
     expect(trailer.stopped).toBe("duration");
     expect(trailer.emitted).toBe(events.length);
+    expect(result.stderr).not.toContain('"event":"breakpoint-armed"');
   } finally {
     await fixture.close();
   }

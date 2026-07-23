@@ -52,6 +52,7 @@ test("watch streams a JSON-line snapshot for each hit and stops on duration", as
     const summary = parseTrailer(result.stderr);
     expect(summary.stopped).toBe("duration");
     expect(summary.emitted).toBe(events.length);
+    expect(result.stderr).not.toContain('"event":"breakpoint-armed"');
   } finally {
     await fixture.close();
   }

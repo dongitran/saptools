@@ -8,7 +8,7 @@ import { parseBreakpointSpec, parseRemoteRoot } from "../../pathMapper.js";
 import { DEFAULT_STREAM_MAX_VALUE_LENGTH } from "../../snapshot/values.js";
 import { CfInspectorError } from "../../types.js";
 import type { LogCommandOptions } from "../commandTypes.js";
-import { writeLogEvent } from "../output.js";
+import { writeArmedEvent, writeLogEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
 import {
@@ -50,6 +50,7 @@ export async function handleLog(opts: LogCommandOptions): Promise<void> {
         ...(condition === undefined ? {} : { condition }),
         maxValueLength,
         json: opts.json,
+        emitReadyEvent: opts.readyEvent === true,
         signal,
       });
       writeLogSummary(result.stoppedReason, result.emitted, opts.json);
@@ -67,6 +68,7 @@ interface LogGroupOptions {
   readonly condition?: string;
   readonly maxValueLength: number;
   readonly json: boolean;
+  readonly emitReadyEvent: boolean;
   readonly signal: AbortSignal;
 }
 
@@ -83,9 +85,13 @@ async function runLogGroup(
   const tasks = new Set<Promise<LogpointStreamResult>>();
   const removedSessions = new Set<InspectorSession>();
   const results: LogpointStreamResult[] = [];
+  const pendingArming = new Set<InspectorSession>();
+  const resolvedLocations = new Map<InspectorSession, number>();
   let fatalError: unknown;
   let emitted = 0;
   let reason: LogGroupResult["stoppedReason"] = "signal";
+  let sessionRegistrationComplete = false;
+  let readyEventEmitted = !options.emitReadyEvent;
   let resolveStop: (() => void) | undefined;
   const stopped = new Promise<void>((resolve) => {
     resolveStop = resolve;
@@ -108,9 +114,42 @@ async function runLogGroup(
   const timer = options.durationMs === undefined ? undefined : setTimeout(() => {
     finish("duration");
   }, options.durationMs);
+  const detachError = options.emitReadyEvent
+    ? group.onError((error) => {
+      if (controller.signal.aborted) {
+        return;
+      }
+      fatalError = error;
+      finish("transport-closed");
+    })
+    : (): void => undefined;
+  const emitReadyEventIfArmed = (): void => {
+    if (
+      readyEventEmitted ||
+      !sessionRegistrationComplete ||
+      pendingArming.size > 0 ||
+      resolvedLocations.size === 0 ||
+      controller.signal.aborted
+    ) {
+      return;
+    }
+    writeArmedEvent({
+      command: "log",
+      sessions: resolvedLocations.size,
+      resolvedLocations: [...resolvedLocations.values()].reduce(
+        (total, count) => total + count,
+        0,
+      ),
+      timeoutMs: null,
+    });
+    readyEventEmitted = true;
+  };
   const startSession = (session: InspectorSession): void => {
     if (controller.signal.aborted) {
       return;
+    }
+    if (!readyEventEmitted) {
+      pendingArming.add(session);
     }
     const task = (async (): Promise<LogpointStreamResult> => {
       await validateExpression(session, options.expression);
@@ -125,6 +164,9 @@ async function runLogGroup(
         ...(options.condition === undefined ? {} : { condition: options.condition }),
         maxValueLength: options.maxValueLength,
         signal: controller.signal,
+        ...(options.emitReadyEvent
+          ? { eventGate: (): boolean => readyEventEmitted }
+          : {}),
         onEvent: (event) => {
           if (controller.signal.aborted) {
             return;
@@ -137,6 +179,11 @@ async function runLogGroup(
         },
         onBreakpointSet: (handle) => {
           warnOnUnboundBreakpoints([handle]);
+          if (!readyEventEmitted) {
+            resolvedLocations.set(session, handle.resolvedLocations.length);
+            pendingArming.delete(session);
+            emitReadyEventIfArmed();
+          }
         },
       });
     })();
@@ -149,6 +196,12 @@ async function runLogGroup(
         }
       },
       (error: unknown) => {
+        if (
+          options.emitReadyEvent &&
+          (removedSessions.has(session) || fatalError !== undefined)
+        ) {
+          return;
+        }
         fatalError = error;
         finish("transport-closed");
       },
@@ -157,8 +210,27 @@ async function runLogGroup(
     });
   };
   const detach = group.onSession(startSession);
+  sessionRegistrationComplete = true;
+  emitReadyEventIfArmed();
   const detachRemoved = group.onSessionRemoved((session) => {
     removedSessions.add(session);
+    if (!readyEventEmitted) {
+      if (controller.signal.aborted) {
+        pendingArming.delete(session);
+        resolvedLocations.delete(session);
+        return;
+      }
+      if (pendingArming.has(session)) {
+        fatalError = new CfInspectorError(
+          "INSPECTOR_CONNECTION_FAILED",
+          "A worker detached before logpoint arming completed; no readiness event was emitted.",
+        );
+        finish("transport-closed");
+        return;
+      }
+      resolvedLocations.delete(session);
+      emitReadyEventIfArmed();
+    }
   });
   try {
     await stopped;
@@ -166,6 +238,7 @@ async function runLogGroup(
   } finally {
     detach();
     detachRemoved();
+    detachError();
     if (timer !== undefined) {
       clearTimeout(timer);
     }
@@ -193,3 +266,7 @@ function writeLogSummary(stoppedReason: string, emitted: number, json: boolean):
     `Stopped (${stoppedReason}); emitted ${emitted.toString()} log ${emitted === 1 ? "entry" : "entries"}.\n`,
   );
 }
+
+export const internalsForTesting = {
+  runLogGroup,
+};

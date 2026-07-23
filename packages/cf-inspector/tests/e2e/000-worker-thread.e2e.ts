@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
-import type { SnapshotResult, WatchEvent } from "../../src/types.js";
+import type { ListedScriptInfo, SnapshotResult, WatchEvent } from "../../src/types.js";
 
 import { ensureCliBuilt, runCli, spawnFixture } from "./helpers.js";
 
@@ -62,6 +62,40 @@ test("User can discover a live worker under its raw inspector target", async () 
     expect(targets[0]?.workers[0]?.url).toContain("001-thread-worker.mjs");
     expect(result.stderr).toMatch(/1 (?:raw )?inspector target/i);
     expect(result.stderr).toMatch(/1 worker/i);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("list-scripts aggregates main and worker scripts with unambiguous isolate tags", async () => {
+  ensureCliBuilt();
+  const fixture = await spawnFixture({ fixturePath: HOST_FIXTURE, readyText: "thread-host ready" });
+  try {
+    const result = await runCli([
+      "list-scripts",
+      "--port", fixture.port.toString(),
+      "--filter", "000-thread-host\\.mjs|001-thread-worker\\.mjs",
+    ], 30_000);
+    expect(result.exitCode, `stderr: ${result.stderr}`).toBe(0);
+    const scripts = JSON.parse(result.stdout) as readonly ListedScriptInfo[];
+    expect(scripts.some((script) =>
+      script.url.includes("000-thread-host.mjs") &&
+      script.isolate.kind === "main")).toBe(true);
+    expect(scripts.some((script) =>
+      script.url.includes("001-thread-worker.mjs") &&
+      script.isolate.kind === "worker" &&
+      script.isolate.workerId.length > 0)).toBe(true);
+
+    const mainOnly = await runCli([
+      "list-scripts",
+      "--port", fixture.port.toString(),
+      "--main-only",
+      "--filter", "000-thread-host\\.mjs|001-thread-worker\\.mjs",
+      "--no-json",
+    ], 30_000);
+    expect(mainOnly.exitCode, `stderr: ${mainOnly.stderr}`).toBe(0);
+    expect(mainOnly.stdout).toContain("000-thread-host.mjs\tmain");
+    expect(mainOnly.stdout).not.toContain("001-thread-worker.mjs");
   } finally {
     await fixture.close();
   }

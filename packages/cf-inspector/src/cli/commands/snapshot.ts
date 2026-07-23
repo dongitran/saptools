@@ -18,7 +18,7 @@ import type { BreakpointLocation, RemoteRootSetting, SnapshotResult } from "../.
 import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { SnapshotCommandOptions, Target } from "../commandTypes.js";
-import { writeHumanSnapshot, writeJson, writeProgress } from "../output.js";
+import { writeArmedEvent, writeHumanSnapshot, writeJson, writeProgress } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
 import type { ProgressReporter } from "../target.js";
@@ -133,18 +133,40 @@ async function runSnapshotCommand(
     let winner: InspectorSession | undefined;
     let preserveWinner = false;
     try {
-      await fanout.ready();
-      if (command.setupEvals.length > 0) {
-        reportProgress?.("Setup evaluation complete.");
+      const reportArmedSetup = (
+        outcomes: Parameters<typeof reportBreakpointOutcomes>[0],
+      ): void => {
+        if (opts.readyEvent === true && signal?.aborted === true) {
+          return;
+        }
+        if (command.setupEvals.length > 0) {
+          reportProgress?.("Setup evaluation complete.");
+        }
+        if (command.condition !== undefined) {
+          reportProgress?.("Breakpoint condition is valid.");
+        }
+        const setup = reportBreakpointOutcomes(outcomes, reportProgress);
+        reportProgress?.(
+          `Waiting up to ${(command.timeoutMs / 1000).toString()}s for a breakpoint hit...`,
+        );
+        if (opts.readyEvent === true && signal?.aborted !== true) {
+          writeArmedEvent({
+            command: "snapshot",
+            sessions: setup.sessions,
+            resolvedLocations: setup.resolvedLocations,
+            timeoutMs: command.timeoutMs,
+          });
+        }
+      };
+      if (opts.readyEvent === true) {
+        await fanout.ready({
+          includeNewSessions: true,
+          onReady: reportArmedSetup,
+        });
+      } else {
+        await fanout.ready();
+        reportArmedSetup(fanout.availableOutcomes());
       }
-      if (command.condition !== undefined) {
-        reportProgress?.("Breakpoint condition is valid.");
-      }
-      const outcomes = fanout.availableOutcomes();
-      reportBreakpointOutcomes(outcomes, reportProgress);
-      reportProgress?.(
-        `Waiting up to ${(command.timeoutMs / 1000).toString()}s for a breakpoint hit...`,
-      );
       const hit = await fanout.waitForFirst(command.timeoutMs, {
         unmatchedPausePolicy: opts.failOnUnmatchedPause === true ? "fail" : "wait-for-resume",
         ...(opts.failOnUnmatchedPause === true ? {} : { onUnmatchedPause: warnOnUnmatchedPause }),
@@ -192,7 +214,7 @@ function reportBreakpointOutcomes(
     readonly setup: { readonly handles: readonly Awaited<ReturnType<typeof setBreakpoint>>[] };
   }[],
   reportProgress?: ProgressReporter,
-): void {
+): BreakpointSetupSummary {
   for (const outcome of outcomes) {
     warnOnUnboundBreakpoints(outcome.setup.handles);
   }
@@ -206,11 +228,17 @@ function reportBreakpointOutcomes(
     reportProgress?.(
       `Breakpoint setup complete: ${locations.toString()} resolved ${locations === 1 ? "location" : "locations"}.`,
     );
-    return;
+    return { sessions: outcomes.length, resolvedLocations: locations };
   }
   reportProgress?.(
     `Breakpoint setup complete: sessions=${outcomes.length.toString()} boundSessions=${boundSessions.toString()} resolvedLocations=${locations.toString()}.`,
   );
+  return { sessions: outcomes.length, resolvedLocations: locations };
+}
+
+interface BreakpointSetupSummary {
+  readonly sessions: number;
+  readonly resolvedLocations: number;
 }
 
 async function captureSnapshotResult(
@@ -270,6 +298,14 @@ async function runSnapshotOnSession(
   reportProgress?.(
     `Waiting up to ${(command.timeoutMs / 1000).toString()}s for a breakpoint hit...`,
   );
+  if (opts.readyEvent === true) {
+    writeArmedEvent({
+      command: "snapshot",
+      sessions: 1,
+      resolvedLocations: resolvedCount,
+      timeoutMs: command.timeoutMs,
+    });
+  }
   const pause = await waitForCommandPause(session, opts, handles, command.timeoutMs);
   const captureCount = command.captures.length;
   reportProgress?.(

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  writeArmedEvent,
   writeHumanSnapshot,
   writeJson,
   writeLogEvent,
@@ -52,6 +53,28 @@ describe("CLI output helpers", () => {
     });
 
     expect(output).toBe("[cf-inspector] Waiting up to 30s for a breakpoint hit...\n");
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it("writes a stable versioned breakpoint-armed event as one stderr JSON line", () => {
+    const output = captureStderr(() => {
+      writeArmedEvent({
+        command: "snapshot",
+        sessions: 3,
+        resolvedLocations: 2,
+        timeoutMs: 30_000,
+      });
+    });
+
+    expect(JSON.parse(output)).toEqual({
+      event: "breakpoint-armed",
+      schemaVersion: 1,
+      command: "snapshot",
+      sessions: 3,
+      resolvedLocations: 2,
+      timeoutMs: 30_000,
+    });
+    expect(output.endsWith("\n")).toBe(true);
     expect(writeSpy).not.toHaveBeenCalled();
   });
 

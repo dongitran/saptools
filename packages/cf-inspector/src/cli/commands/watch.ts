@@ -19,7 +19,7 @@ import type { BreakpointHandle, BreakpointLocation, RemoteRootSetting, WatchEven
 import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_BREAKPOINT_TIMEOUT_SEC } from "../commandTypes.js";
 import type { Target, WatchCommandOptions } from "../commandTypes.js";
-import { writeJson, writeWatchEvent } from "../output.js";
+import { writeArmedEvent, writeJson, writeWatchEvent } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
 import {
@@ -124,7 +124,31 @@ async function runWatchGroup(
   let stoppedReason: WatchStopReason = "signal";
   const deadline = computeDeadline(command.durationMs);
   try {
-    await fanout.ready();
+    await fanout.ready(opts.readyEvent === true
+      ? {
+        includeNewSessions: true,
+        onReady: (outcomes) => {
+          if (
+            signal.aborted ||
+            remainingForLoop(deadline, command.perHitTimeoutMs) <= 0
+          ) {
+            return;
+          }
+          writeArmedEvent({
+            command: "watch",
+            sessions: outcomes.length,
+            resolvedLocations: outcomes.reduce(
+              (total, outcome) => total + outcome.setup.handles.reduce(
+                (sessionTotal, handle) => sessionTotal + handle.resolvedLocations.length,
+                0,
+              ),
+              0,
+            ),
+            timeoutMs: command.perHitTimeoutMs,
+          });
+        },
+      }
+      : {});
     while (!signal.aborted) {
       const remainingMs = remainingForLoop(deadline, command.perHitTimeoutMs);
       if (remainingMs <= 0) {
@@ -253,6 +277,17 @@ async function runWatchLoop(
     ),
   );
   warnOnUnboundBreakpoints(handles);
+  if (opts.readyEvent === true && !signal.aborted) {
+    writeArmedEvent({
+      command: "watch",
+      sessions: 1,
+      resolvedLocations: handles.reduce(
+        (total, handle) => total + handle.resolvedLocations.length,
+        0,
+      ),
+      timeoutMs: command.perHitTimeoutMs,
+    });
+  }
 
   const deadline = computeDeadline(command.durationMs);
   let emitted = 0;

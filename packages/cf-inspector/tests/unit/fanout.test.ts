@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { CdpClient } from "../../src/cdp/client.js";
 import { BreakpointFanout } from "../../src/inspector/fanout.js";
+import type { SessionBreakpointSetup } from "../../src/inspector/fanout.js";
 import type { InspectorSession, InspectorSessionGroup } from "../../src/inspector/types.js";
 import { CfInspectorError } from "../../src/types.js";
 import type { BreakpointHandle, InspectorIsolate, PauseEvent } from "../../src/types.js";
@@ -43,6 +44,12 @@ class FakeGroup implements InspectorSessionGroup {
     }
     for (const listener of this.removedListeners) {
       listener(session);
+    }
+  }
+
+  public fail(error: Error): void {
+    for (const listener of this.errorListeners) {
+      listener(error);
     }
   }
 
@@ -190,6 +197,126 @@ describe("BreakpointFanout", () => {
     worker.pause();
 
     await expect(pending).resolves.toMatchObject({ session: worker.session });
+    await fanout.cleanup();
+  });
+
+  it("does not report ready while a newly attached worker is still arming", async () => {
+    const group = new FakeGroup();
+    const main = fakeSession({ kind: "main" }, "bp-main");
+    const worker = fakeSession({ kind: "worker", workerId: "10" }, "bp-worker");
+    group.add(main.session);
+    const releases = new Map<InspectorSession, () => void>();
+    const setup = vi.fn(async (session: InspectorSession): Promise<SessionBreakpointSetup> =>
+      await new Promise<SessionBreakpointSetup>((resolve) => {
+        releases.set(session, () => {
+          resolve({ handles: [breakpoint(session.target.id)] });
+        });
+      }));
+    const fanout = new BreakpointFanout(group, setup);
+    let readyResolved = false;
+    const ready = fanout.ready({ includeNewSessions: true }).then(() => {
+      readyResolved = true;
+    });
+    await vi.waitFor(() => {
+      expect(releases.has(main.session)).toBe(true);
+    });
+    group.add(worker.session);
+    await vi.waitFor(() => {
+      expect(releases.has(worker.session)).toBe(true);
+    });
+
+    releases.get(main.session)?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(readyResolved).toBe(false);
+
+    releases.get(worker.session)?.();
+    await ready;
+    expect(readyResolved).toBe(true);
+    await fanout.cleanup();
+  });
+
+  it("runs the readiness callback before a post-resolution worker can alter its snapshot", async () => {
+    const group = new FakeGroup();
+    const main = fakeSession({ kind: "main" }, "bp-main");
+    const worker = fakeSession({ kind: "worker", workerId: "12" }, "bp-worker");
+    group.add(main.session);
+    let releaseWorker: (() => void) | undefined;
+    const fanout = new BreakpointFanout(group, async (session) => {
+      if (session !== worker.session) {
+        return { handles: [breakpoint(session.target.id)] };
+      }
+      return await new Promise<SessionBreakpointSetup>((resolve) => {
+        releaseWorker = () => {
+          resolve({ handles: [breakpoint(session.target.id)] });
+        };
+      });
+    });
+    const order: string[] = [];
+    const ready = fanout.ready({
+      includeNewSessions: true,
+      onReady: (outcomes) => {
+        order.push(`event:${outcomes.length.toString()}`);
+      },
+    });
+    void ready.then(() => {
+      order.push("add");
+      group.add(worker.session);
+    });
+
+    await ready;
+    await Promise.resolve();
+    expect(order).toEqual(["event:1", "add"]);
+    expect(releaseWorker).toEqual(expect.any(Function));
+    releaseWorker?.();
+    await fanout.cleanup();
+  });
+
+  it("rejects readiness instead of emitting when the session group fails during arming", async () => {
+    const group = new FakeGroup();
+    const main = fakeSession({ kind: "main" }, "bp-main");
+    group.add(main.session);
+    let releaseSetup: (() => void) | undefined;
+    const fanout = new BreakpointFanout(group, async (session) =>
+      await new Promise<SessionBreakpointSetup>((resolve) => {
+        releaseSetup = () => {
+          resolve({ handles: [breakpoint(session.target.id)] });
+        };
+      }));
+    const onReady = vi.fn();
+    const ready = fanout.ready({ includeNewSessions: true, onReady });
+    await vi.waitFor(() => {
+      expect(releaseSetup).toEqual(expect.any(Function));
+    });
+
+    group.fail(new Error("worker attach failure during initial arming"));
+
+    await expect(ready).rejects.toThrow("worker attach failure during initial arming");
+    expect(onReady).not.toHaveBeenCalled();
+    releaseSetup?.();
+    await fanout.cleanup();
+  });
+
+  it("keeps the pre-existing default readiness behavior when a group error is not requested", async () => {
+    const group = new FakeGroup();
+    const main = fakeSession({ kind: "main" }, "bp-main");
+    group.add(main.session);
+    let releaseSetup: (() => void) | undefined;
+    const fanout = new BreakpointFanout(group, async (session) =>
+      await new Promise<SessionBreakpointSetup>((resolve) => {
+        releaseSetup = () => {
+          resolve({ handles: [breakpoint(session.target.id)] });
+        };
+      }));
+    const ready = fanout.ready();
+    await vi.waitFor(() => {
+      expect(releaseSetup).toEqual(expect.any(Function));
+    });
+
+    group.fail(new Error("ignored late-worker attach error"));
+    releaseSetup?.();
+
+    await expect(ready).resolves.toBeUndefined();
     await fanout.cleanup();
   });
 

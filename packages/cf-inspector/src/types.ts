@@ -245,6 +245,17 @@ export type InspectorIsolate =
   | { readonly kind: "main" }
   | { readonly kind: "worker"; readonly workerId: string };
 
+export type ArmedCommand = "snapshot" | "watch" | "exception" | "log";
+
+export interface ArmedEvent {
+  readonly event: "breakpoint-armed";
+  readonly schemaVersion: 1;
+  readonly command: ArmedCommand;
+  readonly sessions: number;
+  readonly resolvedLocations: number | null;
+  readonly timeoutMs: number | null;
+}
+
 export interface ScriptInfo {
   readonly scriptId: string;
   readonly url: string;
@@ -261,6 +272,10 @@ export interface ScriptInfo {
   readonly isModule?: boolean;
   readonly length?: number;
   readonly stackTrace?: StackTraceInfo;
+}
+
+export interface ListedScriptInfo extends ScriptInfo {
+  readonly isolate: InspectorIsolate;
 }
 
 export interface InspectorConnectOptions {

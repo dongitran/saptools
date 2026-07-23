@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 - 2026-07-23
+
+### Machine-readable debugger readiness
+
+- Added opt-in `--ready-event` support to `snapshot`, `watch`, `exception`, and
+  `log`. Each command writes the same versioned `breakpoint-armed` JSON event
+  to stderr after all initially/currently registered isolates finish arming and
+  immediately before waiting or streaming.
+- Kept default stdout, stderr, progress prose, and final JSON behavior
+  unchanged when the new flag is absent. `snapshot --quiet --ready-event`
+  suppresses progress lines while retaining the explicitly requested event.
+- Gate `log --ready-event` output until aggregate arming completes, so no
+  matching log event is emitted or counted ahead of the readiness marker.
+- Added a local externally-triggered inspector fixture proving all four
+  commands can synchronize without guessed startup delays.
+
+### Isolate-aware script listing
+
+- **BEHAVIOR CHANGE:** `list-scripts` now follows the normal implicit fan-out
+  model, aggregating scripts from the main isolate and all current workers.
+  JSON entries include an `isolate` tag; human rows append isolate as a third
+  tab-separated column. Explicit isolate selectors still narrow the command.
+
 ## 0.7.1 - 2026-07-23
 
 ### Exclusive debugger sessions

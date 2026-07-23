@@ -15,7 +15,7 @@ import type { RemoteRootSetting, SnapshotResult } from "../../types.js";
 import { parseCaptureList } from "../captureParser.js";
 import { DEFAULT_EXCEPTION_TIMEOUT_SEC } from "../commandTypes.js";
 import type { ExceptionCommandOptions, Target } from "../commandTypes.js";
-import { writeHumanSnapshot, writeJson } from "../output.js";
+import { writeArmedEvent, writeHumanSnapshot, writeJson } from "../output.js";
 import { withTerminationSignal } from "../signals.js";
 import { parsePositiveInt, resolveTargetWithCurrentCfTarget, withSessions } from "../target.js";
 import { roundDurationMs, warnOnCaptureMutationRisk, withPausedDuration } from "../warnings.js";
@@ -88,7 +88,22 @@ async function runExceptionCommand(
     let winner: InspectorSession | undefined;
     let preserveWinner = false;
     try {
-      await fanout.ready();
+      await fanout.ready(opts.readyEvent === true
+        ? {
+          includeNewSessions: true,
+          onReady: (outcomes) => {
+            if (signal?.aborted === true) {
+              return;
+            }
+            writeArmedEvent({
+              command: "exception",
+              sessions: outcomes.length,
+              resolvedLocations: null,
+              timeoutMs: command.timeoutMs,
+            });
+          },
+        }
+        : {});
       const hit = await fanout.waitForFirst(command.timeoutMs, {
         pauseReasons: ["exception", "promiseRejection"],
         unmatchedPausePolicy: "wait-for-resume",

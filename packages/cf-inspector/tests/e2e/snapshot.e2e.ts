@@ -63,6 +63,7 @@ test("User can capture a snapshot and see ordered progress", async () => {
       expect(currentIndex, `missing or out-of-order progress: ${message}`).toBeGreaterThan(previousIndex);
       previousIndex = currentIndex;
     }
+    expect(result.stderr).not.toContain('"event":"breakpoint-armed"');
   } finally {
     await fixture.close();
   }

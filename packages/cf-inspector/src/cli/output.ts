@@ -1,7 +1,13 @@
 import process from "node:process";
 
 import type { LogpointEvent } from "../logpoint/events.js";
-import type { ExceptionSnapshot, FrameSnapshot, SnapshotResult, WatchEvent } from "../types.js";
+import type {
+  ArmedEvent,
+  ExceptionSnapshot,
+  FrameSnapshot,
+  SnapshotResult,
+  WatchEvent,
+} from "../types.js";
 
 interface TruncationSummary {
   readonly truncated?: true;
@@ -11,6 +17,17 @@ interface TruncationSummary {
 
 export function writeProgress(message: string): void {
   process.stderr.write(`[cf-inspector] ${message}\n`);
+}
+
+export function writeArmedEvent(
+  event: Omit<ArmedEvent, "event" | "schemaVersion">,
+): void {
+  const payload: ArmedEvent = {
+    event: "breakpoint-armed",
+    schemaVersion: 1,
+    ...event,
+  };
+  process.stderr.write(`${JSON.stringify(payload)}\n`);
 }
 
 export function writeJson(value: unknown): void {

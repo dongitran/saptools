@@ -60,6 +60,7 @@ export interface SnapshotCommandOptions extends SharedTargetOptions {
   readonly includeScopes?: boolean;
   readonly quiet?: boolean;
   readonly allowMutation?: boolean;
+  readonly readyEvent?: boolean;
 }
 
 export interface EvalCommandOptions extends SharedTargetOptions {
@@ -86,6 +87,7 @@ export interface LogCommandOptions extends SharedTargetOptions {
   readonly condition?: string;
   readonly maxValueLength?: string;
   readonly json: boolean;
+  readonly readyEvent?: boolean;
 }
 
 export interface AttachCommandOptions extends SharedTargetOptions {
@@ -108,6 +110,7 @@ export interface WatchCommandOptions extends SharedTargetOptions {
   readonly includeScopes?: boolean;
   readonly json: boolean;
   readonly allowMutation?: boolean;
+  readonly readyEvent?: boolean;
 }
 
 export interface ExceptionCommandOptions extends SharedTargetOptions {
@@ -122,6 +125,7 @@ export interface ExceptionCommandOptions extends SharedTargetOptions {
   readonly keepPaused?: boolean;
   readonly json: boolean;
   readonly allowMutation?: boolean;
+  readonly readyEvent?: boolean;
 }
 
 export interface CheckBreakpointCommandOptions extends SharedTargetOptions {

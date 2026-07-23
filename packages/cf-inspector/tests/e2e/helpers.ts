@@ -30,6 +30,7 @@ export interface SpawnFixtureOptions {
   readonly env?: Readonly<Record<string, string>>;
   readonly fixturePath?: string;
   readonly readyText?: string;
+  readonly pipeStdin?: boolean;
 }
 
 interface InspectorList {
@@ -128,9 +129,14 @@ function waitForFixtureOutput(
 export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<SpawnedFixture> {
   const fixture = options.fixturePath ?? FIXTURE_PATH;
   const child = spawn(process.execPath, ["--inspect=0", fixture], {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.pipeStdin === true ? "pipe" : "ignore", "pipe", "pipe"],
     env: { ...process.env, ...options.env },
   });
+  const stderr = child.stderr;
+  if (stderr === null) {
+    child.kill("SIGTERM");
+    throw new Error("Fixture stderr is unavailable");
+  }
   const fixtureReady = options.readyText === undefined
     ? Promise.resolve()
     : waitForFixtureOutput(child, options.readyText, 10_000);
@@ -141,11 +147,11 @@ export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<S
       stderrBuf += chunk.toString("utf8");
       const detected = parseDebuggerListening(stderrBuf);
       if (detected !== undefined) {
-        child.stderr.off("data", onErr);
+        stderr.off("data", onErr);
         resolveOnce(detected);
       }
     };
-    child.stderr.on("data", onErr);
+    stderr.on("data", onErr);
     child.once("error", rejectOnce);
     child.once("exit", () => {
       rejectOnce(new Error(`Fixture exited before inspector was ready. stderr: ${stderrBuf}`));

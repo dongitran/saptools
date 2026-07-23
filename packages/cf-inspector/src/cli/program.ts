@@ -65,6 +65,9 @@ const collectStrings = (value: string, prev: readonly string[] = []): readonly s
   value,
 ];
 
+const READY_EVENT_DESCRIPTION =
+  "Emit a versioned breakpoint-armed JSON event on stderr after every current isolate is armed";
+
 function readPackageVersion(): string {
   let current = dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 4; depth += 1) {
@@ -139,6 +142,7 @@ function registerSnapshot(program: Command): void {
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--no-json", "Print a human-readable summary instead of JSON")
     .option("--quiet", "Suppress progress messages on stderr")
+    .option("--ready-event", READY_EVENT_DESCRIPTION)
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
     .option("--fail-on-unmatched-pause", "Fail immediately if the target pauses somewhere else")
     .action(async (opts: SnapshotCommandOptions): Promise<void> => {
@@ -159,6 +163,7 @@ function registerLog(program: Command): void {
     .option("--condition <expr>", "Only log when this JS expression evaluates truthy on the inspectee")
     .option("--max-value-length <chars>", "Maximum characters per log value before truncation (default: 4096)")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
+    .option("--ready-event", READY_EVENT_DESCRIPTION)
     .action(async (opts: LogCommandOptions): Promise<void> => {
       await handleLog(opts);
     });
@@ -184,6 +189,7 @@ function registerWatch(program: Command): void {
     .option("--allow-mutation", "Allow mutation-capable captures and native breakpoint conditions to run")
     .option("--include-scopes", "Include expanded paused-frame scopes per hit")
     .option("--no-json", "Print human-readable lines instead of JSON Lines")
+    .option("--ready-event", READY_EVENT_DESCRIPTION)
     .action(async (opts: WatchCommandOptions): Promise<void> => {
       await handleWatch(opts);
     });
@@ -205,6 +211,7 @@ function registerException(program: Command): void {
     .option("--include-scopes", "Include expanded paused-frame scopes in the snapshot")
     .option("--keep-paused", "Skip Debugger.resume after capture; Node may resume when this CLI disconnects")
     .option("--no-json", "Print a human-readable summary instead of JSON")
+    .option("--ready-event", READY_EVENT_DESCRIPTION)
     .action(async (opts: ExceptionCommandOptions): Promise<void> => {
       await handleException(opts);
     });
@@ -223,10 +230,12 @@ function registerEval(program: Command): void {
 
 function registerListScripts(program: Command): void {
   applyTargetOptions(
-    program.command("list-scripts").description("Print the scripts the V8 instance currently knows about"),
+    program.command("list-scripts").description(
+      "Print scripts from the main isolate and every worker, tagged by isolate",
+    ),
   )
     .option("--filter <pattern>", "Only include script URLs matching this pattern")
-    .option("--no-json", "Print scriptId<TAB>url instead of JSON")
+    .option("--no-json", "Print scriptId<TAB>url<TAB>isolate instead of JSON")
     .action(async (opts: ListScriptsCommandOptions): Promise<void> => {
       await handleListScripts(opts);
     });
