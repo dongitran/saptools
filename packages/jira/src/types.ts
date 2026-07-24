@@ -93,8 +93,12 @@ export interface AssignJiraIssueOptions extends JiraIssueKeyRequestOptions {
 }
 
 export interface FetchJiraIssueDetailOptions extends JiraIssueKeyRequestOptions {
+  readonly attachmentOutputDir?: string;
+  readonly downloadAttachments?: boolean;
   readonly downloadImages?: boolean;
   readonly imageOutputDir?: string;
+  readonly maxAttachmentBytes?: number;
+  readonly maxAttachments?: number;
   readonly maxImageBytes?: number;
   readonly maxImages?: number;
 }
@@ -158,8 +162,11 @@ export interface JiraIssueComment {
 }
 
 export interface JiraIssueAttachment {
+  readonly downloadError?: string;
   readonly filename: string;
+  readonly fileUrl?: string;
   readonly id: string;
+  readonly localPath?: string;
   readonly mimeType: string;
   readonly size: number;
 }

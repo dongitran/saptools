@@ -23,7 +23,6 @@ import {
   fetchJiraCurrentUser,
   fetchJiraCustomFields,
   fetchJiraIssueDescriptionAdf,
-  fetchJiraIssueDetail,
   fetchJiraIssueEditMetadata,
   fetchJiraIssueRemoteLinks,
   fetchJiraIssueTransitions,
@@ -44,7 +43,6 @@ import { createCustomFieldSnapshot, resolveFieldByDisplayName, searchCustomField
 import type { CustomFieldSnapshot, PinnedCustomFieldConfig } from "./custom-fields.js";
 import {
   formatConnectionStatus,
-  formatIssueDetail,
   formatIssueLinks,
   formatIssueTransitions,
   formatJiraIssueCommentAdded,
@@ -56,10 +54,10 @@ import {
   formatPinnedCustomFieldHint,
   formatPinnedCustomFields,
 } from "./format.js";
+import { addIssueCommand } from "./issue-command.js";
 import type {
   AddJiraIssueWorklogOptions,
   FetchAssignedJiraIssuesOptions,
-  FetchJiraIssueDetailOptions,
   JiraAuthOptions,
   JiraRequestOptions,
   JiraAssigneeResolution,
@@ -98,13 +96,6 @@ interface FieldsUpdateFlags extends JsonFlags {
 
 interface IssuesFlags extends JsonFlags {
   readonly max?: string;
-}
-
-interface IssueFlags extends JsonFlags {
-  readonly imageDir?: string;
-  readonly images?: boolean;
-  readonly maxImageBytes?: string;
-  readonly maxImages?: string;
 }
 
 interface TransitionFlags {
@@ -268,28 +259,6 @@ function addIssuesCommand(program: Command): void {
         program,
         requestOptions.cloudId,
         flags.json === true ? issues : formatIssues(issues),
-        flags.json === true,
-      );
-    });
-}
-
-function addIssueCommand(program: Command): void {
-  program
-    .command("issue")
-    .description("Show one Jira issue")
-    .argument("<key>", "Jira issue key")
-    .option("--json", "Print JSON output", false)
-    .option("--no-images", "Do not download inline Jira images")
-    .option("--image-dir <path>", "Directory for saved inline Jira images")
-    .option("--max-image-bytes <number>", "Maximum bytes per saved Jira image")
-    .option("--max-images <number>", "Maximum inline Jira images to save")
-    .action(async (issueKey: string, flags: IssueFlags): Promise<void> => {
-      const requestOptions = await toIssueDetailOptions(program, issueKey, flags);
-      const detail = await fetchJiraIssueDetail(requestOptions);
-      await writeOutputWithOptionalHint(
-        program,
-        requestOptions.cloudId,
-        flags.json === true ? detail : formatIssueDetail(detail),
         flags.json === true,
       );
     });
@@ -767,25 +736,6 @@ async function toWorklogOptions(
   };
 }
 
-async function toIssueDetailOptions(
-  program: Command,
-  issueKey: string,
-  flags: IssueFlags,
-): Promise<FetchJiraIssueDetailOptions> {
-  const requestOptions = await toIssueRequestOptions(program, issueKey);
-  const maxImageBytes = parseOptionalPositiveInteger(
-    flags.maxImageBytes,
-    "--max-image-bytes <number>",
-  );
-  const maxImages = parseOptionalPositiveInteger(flags.maxImages, "--max-images <number>");
-  return {
-    ...requestOptions,
-    downloadImages: flags.images !== false,
-    ...(flags.imageDir === undefined ? {} : { imageOutputDir: flags.imageDir }),
-    ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
-    ...(maxImages === undefined ? {} : { maxImages }),
-  };
-}
 
 async function toIssueRequestOptions(
   program: Command,

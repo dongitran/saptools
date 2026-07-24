@@ -4,6 +4,7 @@ import { JiraAdfDocumentSchema, textToAdfDocument, type JiraAdfDocument } from "
 import { parseJiraAssignableUsers, parseJiraCurrentUser } from "./assignment.js";
 import { JiraCustomFieldSearchPageSchema, JiraIssueEditMetadataSchema, normalizeCustomField, normalizeFieldSchema } from "./custom-fields.js";
 import type { JiraCustomFieldSearchPage, JiraIssueEditableField, NormalizedCustomField } from "./custom-fields.js";
+import { hydrateIssueAttachments } from "./issue-attachments.js";
 import {
   collectAdfMediaReferences,
   collectDescriptionImageReferences,
@@ -428,9 +429,12 @@ export async function fetchJiraIssueDetail(
     ...parsed.descriptionImageReferences,
     ...(mappedComments?.imageReferences ?? parsed.commentImageReferences),
   ];
-  return options.downloadImages === true
+  const detailWithImages = options.downloadImages === true
     ? await hydrateIssueImages(detail, imageReferences, options)
     : detail;
+  return options.downloadAttachments === true
+    ? await hydrateIssueAttachments(detailWithImages, options)
+    : detailWithImages;
 }
 
 export async function fetchJiraIssueRemoteLinks(

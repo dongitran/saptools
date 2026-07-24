@@ -151,6 +151,47 @@ describe("CLI text formatters", () => {
     );
   });
 
+  it("formats downloaded attachment links and per-file failures", () => {
+    const detail: JiraIssueDetail = {
+      assigneeDisplayName: null,
+      attachments: [
+        {
+          filename: "values.xml",
+          fileUrl: "file:///tmp/values.xml",
+          id: "20001",
+          localPath: "/tmp/values.xml",
+          mimeType: "application/xml",
+          size: 20,
+        },
+        {
+          downloadError: "Attachment download returned HTTP 404.",
+          filename: "missing.xlsx",
+          id: "20002",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          size: 30,
+        },
+      ],
+      comments: [],
+      descriptionAdf: null,
+      descriptionText: "",
+      images: [],
+      issueType: "Task",
+      key: "OPS-123",
+      linkedCloneIssues: [],
+      priority: null,
+      status: "Open",
+      statusCategory: "To Do",
+      summary: "Attachment output",
+      updated: "2026-07-24T00:00:00.000+0000",
+    };
+
+    expect(formatIssueDetail(detail)).toContain([
+      "Attachment files:",
+      "values.xml: file:///tmp/values.xml",
+      "missing.xlsx: Attachment download returned HTTP 404.",
+    ].join("\n"));
+  });
+
   it("formats issue content write confirmations", () => {
     expect(formatJiraIssueDescriptionUpdated("OPS-123")).toBe("Description updated on OPS-123.");
     expect(formatJiraIssueSummaryUpdated("OPS-123")).toBe("Summary updated on OPS-123.");

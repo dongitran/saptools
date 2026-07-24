@@ -49,6 +49,7 @@ export function formatIssueDetail(detail: JiraIssueDetail): string {
     "",
     `Comments: ${detail.comments.length.toString()}`,
     `Attachments: ${detail.attachments.length.toString()}`,
+    formatIssueAttachments(detail),
     formatIssueImages(detail),
     `Clone links: ${detail.linkedCloneIssues.length.toString()}`,
   ]
@@ -89,6 +90,18 @@ export function formatJiraIssueCommentAdded(issueKey: string): string {
 function formatIssueSummaryLine(issue: JiraIssueSummary): string {
   const priority = issue.priority ?? "No priority";
   return `${issue.key}\t[${issue.status}]\t${priority}\t${issue.summary}`;
+}
+
+function formatIssueAttachments(detail: JiraIssueDetail): string {
+  const lines = detail.attachments.flatMap((attachment) => {
+    if (attachment.fileUrl !== undefined) {
+      return [`${attachment.filename}: ${attachment.fileUrl}`];
+    }
+    return attachment.downloadError === undefined
+      ? []
+      : [`${attachment.filename}: ${attachment.downloadError}`];
+  });
+  return lines.length === 0 ? "" : `Attachment files:\n${lines.join("\n")}`;
 }
 
 function formatIssueImages(detail: JiraIssueDetail): string {
