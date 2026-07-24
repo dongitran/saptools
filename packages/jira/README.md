@@ -20,9 +20,11 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 ## ✨ Features
 
 - 🔁 **Shared JiraOps token** — reads and refreshes `~/.jira-oauth/tokens.json`, the default `jira-oauth-client` store used by JiraOps.
+- 🪪 **Connected identity** — reads the current Jira account profile without exposing its bearer token.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
-- 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text and raw ADF, paginated comments, attachments, and clone-linked issues.
+- 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text and raw ADF, paginated comments, locally downloaded attachments, and clone-linked issues.
 - 📝 **Issue content writes** — updates summaries, media-safe descriptions, and ADF comments.
+- 🛟 **Recoverable comment deletion** — saves a private, durable local backup before deleting one comment.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
 - 🔄 **Transitions** — lists available status transitions and applies a selected transition ID.
 - 👤 **Safe assignment** — assigns one issue only after resolving exactly one active issue-assignable Jira account.
@@ -84,6 +86,12 @@ Your Atlassian OAuth app must allow the `jira-oauth-client` callback URL:
 http://localhost:30129/callback
 ```
 
+The new REST operations are covered by the existing classic Jira OAuth scopes:
+`jira whoami` needs `read:jira-user`, issue and attachment reads need
+`read:jira-work`, and comment deletion needs `write:jira-work`. The default
+`jira-oauth-client` login also requests `offline_access` so stored tokens can be
+refreshed.
+
 Use a custom token file only when you deliberately do not want to share the JiraOps token:
 
 ```bash
@@ -102,6 +110,19 @@ Show whether a shared Jira token is present and still usable.
 jira status
 jira status --json
 ```
+
+### `jira whoami`
+
+Show the connected Jira account without printing or extracting its bearer token:
+
+```bash
+jira whoami
+```
+
+Human output includes the display name, account ID, email availability, and
+active/inactive status. Jira may omit the email address because of profile privacy
+settings; `jira whoami --json` keeps the `emailAddress` key and returns `null` in
+that case. Use the JSON form only when a script needs to parse these fields.
 
 ### `jira connect`
 
@@ -157,11 +178,49 @@ Read one issue's detail payload.
 jira issue OPS-123
 jira issue OPS-123 --json
 jira issue OPS-123 --no-images
+jira issue OPS-123 --no-attachments
 ```
 
-Inline Jira images in the description or comments are saved to the OS temp directory by default. Downloaded local image metadata is returned only in the top-level `images[]` array as `fileUrl`/`filePath` entries plus attachment metadata; join images to `attachments[]` with `image.attachmentId === attachment.id`. Use `--image-dir <path>`, `--max-image-bytes <number>`, or `--max-images <number>` to control local image capture.
-
 JSON issue details include both `descriptionText` and `descriptionAdf`. `descriptionText` is a flattened convenience string. `descriptionAdf` is the raw ADF document when Jira returns a valid document, or `null` when the issue has no valid description ADF.
+
+#### Issue Images
+
+Inline Jira images in the description or comments are saved to the OS temp
+directory by default. Downloaded local image metadata is returned in the top-level
+`images[]` array as `fileUrl`/`filePath` entries. Use `--no-images`,
+`--image-dir <path>`, `--max-image-bytes <number>`, or `--max-images <number>` to
+control local image capture.
+
+Image capture defaults to at most 20 images and 10,000,000 bytes per image under
+`os.tmpdir()/saptools-jira/issue-images/<issue-key>/...`.
+
+#### Issue Attachments
+
+`jira issue <key>` downloads every attachment type by default, including non-image
+files such as XML and XLSX. Each successfully saved `attachments[]` entry gains
+`localPath` and `fileUrl`; a skipped or failed entry keeps its metadata and gains a
+neutral `downloadError` without aborting the other downloads.
+
+Attachment downloads default to at most 20 entries and 10,000,000 bytes per
+attachment under
+`os.tmpdir()/saptools-jira/issue-attachments/<issue-key>/...`. Control them with:
+
+```bash
+jira issue OPS-123 --no-attachments
+jira issue OPS-123 --attachment-dir ./controlled-jira-files
+jira issue OPS-123 --max-attachments 5
+jira issue OPS-123 --max-attachment-bytes 2000000
+```
+
+`--no-attachments` skips only the general attachment list; `--no-images` skips only
+inline-image capture, and the flags compose independently. If an attachment is also
+an inline image, the CLI reuses the saved image path and fetches that attachment ID
+only once.
+
+> [!IMPORTANT]
+> Issue reads now write bounded attachment files locally by default. Use
+> `--no-attachments` for metadata-only reads, or `--attachment-dir` for a
+> controlled location. Remove sensitive downloads when they are no longer needed.
 
 ### `jira describe <key>`
 
@@ -255,6 +314,27 @@ JSON output:
   "issueKey": "OPS-123",
   "commentId": "40001"
 }
+```
+
+### `jira comment-delete <key> <comment-id>`
+
+Delete one issue comment only after its full current content has been written and
+synced to a private local backup:
+
+```bash
+jira comment-delete OPS-123 10098
+```
+
+There is no backup-skip option. If the comment cannot be fetched or the backup
+cannot be written, Jira receives no `DELETE` request. If Jira rejects the deletion,
+the backup remains in place and the command does not retry. Successful human output
+reports the absolute recovery path; scripted callers can use
+`jira comment-delete OPS-123 10098 --json`.
+
+Backups are cloud-scoped to avoid collisions between Jira sites:
+
+```text
+~/.saptools/jira/clouds/<cloudId>/comments/<issueKey>/<commentId>.json
 ```
 
 ### `jira links <key>`
@@ -441,6 +521,8 @@ E2E tests pre-seed a temp `HOME/.jira-oauth/tokens.json` and run the built `dist
 - OAuth app credentials come from `JIRA_CLIENT_ID`, `JIRA_CLIENT_SECRET`, or explicit flags.
 - Access and refresh tokens are stored only in the shared token file, with owner-only permissions when this package writes it.
 - Jira HTTP errors are reported as neutral messages and do not include response bodies.
+- Downloaded issue attachments can contain sensitive ticket data. Prefer a controlled `--attachment-dir` and remove files after use.
+- Comment backups contain the full original comment and remain under the private cloud-scoped `~/.saptools/jira/` tree, including when Jira rejects a delete.
 - Custom field snapshots and pinned-field configs under `~/.saptools/jira/clouds/<cloudId>/` store only normalized metadata, never credentials, Authorization headers, raw Jira responses, or field values.
 - Do not commit `~/.jira-oauth/tokens.json`, custom token stores, access tokens, refresh tokens, or Authorization headers.
 
