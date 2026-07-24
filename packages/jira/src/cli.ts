@@ -13,8 +13,17 @@ import {
   connectJira,
   disconnectJira,
   getJiraConnectionStatus,
-  requireStoredOrRefreshJiraTokens,
 } from "./auth.js";
+import {
+  parseOptionalPositiveInteger,
+  resolveTokens,
+  toAuthOptions,
+  toIssueRequestOptions,
+  toRequestOptions,
+  toRequestOptionsFromTokens,
+  writeOutput,
+  writeOutputWithOptionalHint,
+} from "./cli-shared.js";
 import {
   addJiraIssueWorklog,
   assignJiraIssue,
@@ -50,17 +59,14 @@ import {
   formatCustomFieldDiscovery,
   formatCustomFieldRows,
   formatIssues,
-  formatPinnedCustomFieldHint,
   formatPinnedCustomFields,
 } from "./format.js";
 import { addIssueCommand } from "./issue-command.js";
 import type {
   AddJiraIssueWorklogOptions,
   FetchAssignedJiraIssuesOptions,
-  JiraAuthOptions,
   JiraRequestOptions,
   JiraAssigneeResolution,
-  JiraTokens,
 } from "./types.js";
 import { addWhoamiCommand } from "./whoami-command.js";
 import {
@@ -70,15 +76,6 @@ import {
   type WorklogSummary,
   type WorklogSummaryFilter,
 } from "./worklog-history.js";
-
-interface GlobalFlags {
-  readonly apiRoot?: string;
-  readonly clientId?: string;
-  readonly clientSecret?: string;
-  readonly port?: string;
-  readonly tokenStore?: string;
-  readonly hints?: boolean;
-}
 
 interface JsonFlags {
   readonly json?: boolean;
@@ -703,52 +700,8 @@ async function toWorklogOptions(
   };
 }
 
-
-async function toIssueRequestOptions(
-  program: Command,
-  issueKey: string,
-): Promise<JiraRequestOptions & { readonly issueKey: string }> {
-  return {
-    ...(await toRequestOptions(program)),
-    issueKey,
-  };
-}
-
-async function toRequestOptions(program: Command): Promise<JiraRequestOptions> {
-  return toRequestOptionsFromTokens(program, await resolveTokens(program));
-}
-
-function toRequestOptionsFromTokens(program: Command, tokens: JiraTokens): JiraRequestOptions {
-  const flags = program.opts<GlobalFlags>();
-  const apiRoot = resolveApiRoot(flags);
-  return {
-    accessToken: tokens.accessToken,
-    cloudId: tokens.cloudId,
-    ...(apiRoot === undefined ? {} : { apiRoot }),
-  };
-}
-
-async function resolveTokens(program: Command): Promise<JiraTokens> {
-  return await requireStoredOrRefreshJiraTokens(toAuthOptions(program));
-}
-
 async function clearStoredJiraConnection(program: Command): Promise<void> {
   await disconnectJira(toAuthOptions(program));
-}
-
-function toAuthOptions(program: Command): JiraAuthOptions {
-  const flags = program.opts<GlobalFlags>();
-  const port = parseOptionalPositiveInteger(flags.port, "--port <number>");
-  return {
-    ...(flags.clientId === undefined ? {} : { clientId: flags.clientId }),
-    ...(flags.clientSecret === undefined ? {} : { clientSecret: flags.clientSecret }),
-    ...(port === undefined ? {} : { port }),
-    ...(flags.tokenStore === undefined ? {} : { tokenStorePath: flags.tokenStore }),
-  };
-}
-
-function resolveApiRoot(flags: GlobalFlags): string | undefined {
-  return flags.apiRoot ?? process.env["SAPTOOLS_JIRA_API_ROOT"];
 }
 
 function normalizeWorklogStarted(raw: string | undefined, now: Date): string {
@@ -809,19 +762,6 @@ function parseRequiredPositiveInteger(raw: string | undefined, label: string): n
   return parsed;
 }
 
-function parseOptionalPositiveInteger(raw: string | undefined, label: string): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-
-  const parsed = Number(raw);
-  if (Number.isSafeInteger(parsed) && parsed > 0) {
-    return parsed;
-  }
-
-  throw new Error(`${label} must be a positive integer`);
-}
-
 function requireText(value: string | undefined, label: string): string {
   if (value === undefined || value.trim().length === 0) {
     throw new Error(`required option '${label}'`);
@@ -865,30 +805,6 @@ function firstResolvedField<T extends { readonly name: string }>(matches: readon
 
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
-}
-
-async function writeOutputWithOptionalHint(
-  program: Command,
-  cloudId: string,
-  value: unknown,
-  isJson: boolean,
-): Promise<void> {
-  if (isJson) {
-    writeOutput(value);
-    return;
-  }
-
-  const flags = program.opts<GlobalFlags>();
-  const hint = flags.hints === false
-    ? ""
-    : formatPinnedCustomFieldHint(await readPinnedCustomFields(cloudId));
-  writeOutput(typeof value === "string" && hint.length > 0 ? `${value}\n\n${hint}` : value);
-}
-
-function writeOutput(value: unknown): void {
-  process.stdout.write(
-    typeof value === "string" ? `${value}\n` : `${JSON.stringify(value, null, 2)}\n`,
-  );
 }
 
 function writeErrorOutput(value: unknown): void {

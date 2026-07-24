@@ -12,6 +12,7 @@ import {
   hydrateIssueImages,
   type JiraIssueImageReference,
 } from "./issue-images.js";
+import { assertJiraResponseOk, jsonJiraHeaders, readJiraHeaders } from "./jira-http.js";
 import type {
   AddJiraIssueCommentOptions,
   AddJiraIssueWorklogOptions,
@@ -184,7 +185,7 @@ export async function fetchJiraCustomFields(
     const response = await fetchImpl(buildJiraFieldSearchUrl(options.cloudId, startAt, maxResults, options.apiRoot), {
       headers: readJiraHeaders(options.accessToken),
     });
-    assertOk(response, "Jira custom fields could not be loaded.");
+    assertJiraResponseOk(response, "Jira custom fields could not be loaded.");
     const page = parseCustomFieldPage(await response.json());
     fields.push(...page.values.map(normalizeCustomField));
     totalFromApi = page.total ?? fields.length;
@@ -203,7 +204,7 @@ export async function fetchJiraIssueEditMetadata(
   const response = await fetchImpl(buildJiraIssueEditMetaUrl(options.cloudId, options.issueKey, options.apiRoot), {
     headers: readJiraHeaders(options.accessToken),
   });
-  assertOk(response, "Jira issue edit metadata could not be loaded.");
+  assertJiraResponseOk(response, "Jira issue edit metadata could not be loaded.");
   const parsed = JiraIssueEditMetadataSchema.safeParse(await response.json());
   if (!parsed.success) {throw new Error("Jira issue edit metadata response was not valid.");}
   return new Map(Object.entries(parsed.data.fields).map(([id, field]) => [id, {
@@ -230,7 +231,7 @@ export async function updateJiraIssueFields(options: UpdateJiraIssueFieldsOption
       method: "PUT",
     },
   );
-  assertOk(response, "Jira issue fields could not be updated.");
+  assertJiraResponseOk(response, "Jira issue fields could not be updated.");
 }
 
 export async function fetchJiraIssueDescriptionAdf(
@@ -241,7 +242,7 @@ export async function fetchJiraIssueDescriptionAdf(
     buildJiraIssueDescriptionUrl(options.cloudId, options.issueKey, options.apiRoot),
     { headers: readJiraHeaders(options.accessToken) },
   );
-  assertOk(response, "Jira issue description could not be loaded.");
+  assertJiraResponseOk(response, "Jira issue description could not be loaded.");
   const parsed = JiraIssueDescriptionResponseSchema.safeParse(await response.json());
   if (parsed.success) {
     return parsed.data.fields.description ?? null;
@@ -291,7 +292,7 @@ export async function addJiraIssueComment(
       method: "POST",
     },
   );
-  assertOk(response, "Jira issue comment could not be added.");
+  assertJiraResponseOk(response, "Jira issue comment could not be added.");
   const parsed = JiraCommentCreateResponseSchema.safeParse(await response.json());
   if (parsed.success) {
     return { id: String(parsed.data.id) };
@@ -351,7 +352,7 @@ export async function fetchJiraCurrentUser(options: JiraRequestOptions): Promise
   const response = await fetchImpl(buildJiraCurrentUserUrl(options.cloudId, options.apiRoot), {
     headers: readJiraHeaders(options.accessToken),
   });
-  assertOk(response, "Jira current user could not be loaded.");
+  assertJiraResponseOk(response, "Jira current user could not be loaded.");
   return parseJiraCurrentUser(await response.json());
 }
 
@@ -368,7 +369,7 @@ export async function searchJiraAssignableUsers(
     ),
     { headers: readJiraHeaders(options.accessToken) },
   );
-  assertOk(response, "Jira assignable users could not be loaded.");
+  assertJiraResponseOk(response, "Jira assignable users could not be loaded.");
   return parseJiraAssignableUsers(await response.json());
 }
 
@@ -391,7 +392,7 @@ export async function assignJiraIssue(options: AssignJiraIssueOptions): Promise<
       method: "PUT",
     },
   );
-  assertOk(response, "Jira issue assignee could not be updated.");
+  assertJiraResponseOk(response, "Jira issue assignee could not be updated.");
 }
 
 export async function fetchAssignedJiraIssues(
@@ -406,7 +407,7 @@ export async function fetchAssignedJiraIssues(
       method: "POST",
     },
   );
-  assertOk(response, "Assigned Jira issues could not be loaded.");
+  assertJiraResponseOk(response, "Assigned Jira issues could not be loaded.");
   const responseBody: unknown = await response.json();
   return parseAssignedIssuesResponse(responseBody);
 }
@@ -419,7 +420,7 @@ export async function fetchJiraIssueDetail(
     buildJiraIssueDetailUrl(options.cloudId, options.issueKey, options.apiRoot),
     { headers: readJiraHeaders(options.accessToken) },
   );
-  assertOk(response, "Jira issue detail could not be loaded.");
+  assertJiraResponseOk(response, "Jira issue detail could not be loaded.");
   const responseBody: unknown = await response.json();
   const parsed = parseJiraIssueDetail(responseBody);
   const mappedComments = await fetchPaginatedIssueComments(options);
@@ -445,7 +446,7 @@ export async function fetchJiraIssueRemoteLinks(
     buildJiraIssueRemoteLinksUrl(options.cloudId, options.issueKey, options.apiRoot),
     { headers: readJiraHeaders(options.accessToken) },
   );
-  assertOk(response, "Jira remote links could not be loaded.");
+  assertJiraResponseOk(response, "Jira remote links could not be loaded.");
   const responseBody: unknown = await response.json();
   return parseRemoteLinksResponse(responseBody);
 }
@@ -458,7 +459,7 @@ export async function fetchJiraIssueTransitions(
     buildJiraIssueTransitionsUrl(options.cloudId, options.issueKey, options.apiRoot),
     { headers: readJiraHeaders(options.accessToken) },
   );
-  assertOk(response, "Jira issue transitions could not be loaded.");
+  assertJiraResponseOk(response, "Jira issue transitions could not be loaded.");
   const responseBody: unknown = await response.json();
   return parseTransitionsResponse(responseBody);
 }
@@ -475,7 +476,7 @@ export async function transitionJiraIssue(
       method: "POST",
     },
   );
-  assertOk(response, "Jira issue transition could not be applied.");
+  assertJiraResponseOk(response, "Jira issue transition could not be applied.");
 }
 
 export async function addJiraIssueWorklog(
@@ -494,7 +495,7 @@ export async function addJiraIssueWorklog(
       method: "POST",
     },
   );
-  assertOk(response, "Jira worklog could not be added.");
+  assertJiraResponseOk(response, "Jira worklog could not be added.");
 }
 
 export function extractTextFromAdf(value: unknown): string {
@@ -768,28 +769,6 @@ function collectAdfText(value: unknown): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function assertOk(response: Response, message: string): void {
-  if (response.ok) {
-    return;
-  }
-
-  throw new Error(message);
-}
-
-function readJiraHeaders(accessToken: string): Record<string, string> {
-  return {
-    Accept: "application/json",
-    Authorization: `Bearer ${accessToken}`,
-  };
-}
-
-function jsonJiraHeaders(accessToken: string): Record<string, string> {
-  return {
-    ...readJiraHeaders(accessToken),
-    "Content-Type": "application/json",
-  };
 }
 
 function buildWorklogRequestBody(
