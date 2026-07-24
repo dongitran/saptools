@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
 const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const ATTACHMENT_BYTES = new TextEncoder().encode("<values><value>Example</value></values>");
 
 interface JiraTokensFixture {
   readonly accessToken: string;
@@ -27,6 +28,7 @@ interface JiraTokensFixture {
 
 interface RecordedRequest {
   readonly authorization: string | undefined;
+  readonly backupExistsAtReceipt?: boolean;
   readonly body: string;
   readonly method: string;
   readonly url: string;
@@ -46,7 +48,7 @@ interface CliContext {
   readonly run: (args: readonly string[]) => Promise<{ readonly stdout: string; readonly stderr: string }>;
 }
 
-function createTokens(): JiraTokensFixture {
+function createTokens(overrides: Partial<JiraTokensFixture> = {}): JiraTokensFixture {
   return {
     accessToken: "e2e-access-token",
     refreshToken: "e2e-refresh-token",
@@ -56,15 +58,18 @@ function createTokens(): JiraTokensFixture {
     cloudId: "cloud-1",
     cloudName: "E2E Jira",
     issuedAt: Date.now(),
+    ...overrides,
   };
 }
 
-async function prepareCliContext(): Promise<CliContext> {
+async function prepareCliContext(
+  tokenOverrides: Partial<JiraTokensFixture> = {},
+): Promise<CliContext> {
   const home = await mkdtemp(join(tmpdir(), "saptools-jira-e2e-"));
   const tokenPath = join(home, ".jira-oauth", "tokens.json");
-  const fakeJira = await startFakeJiraServer();
+  const fakeJira = await startFakeJiraServer(home);
   await mkdir(dirname(tokenPath), { recursive: true });
-  await writeFile(tokenPath, `${JSON.stringify(createTokens(), null, 2)}\n`, {
+  await writeFile(tokenPath, `${JSON.stringify(createTokens(tokenOverrides), null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
@@ -94,10 +99,10 @@ async function prepareCliContext(): Promise<CliContext> {
   };
 }
 
-async function startFakeJiraServer(): Promise<FakeJiraServer> {
+async function startFakeJiraServer(home: string): Promise<FakeJiraServer> {
   const requests: RecordedRequest[] = [];
   const server = createServer((request, response) => {
-    void handleFakeJiraRequest(request, response, requests);
+    void handleFakeJiraRequest(request, response, requests, home);
   });
 
   await new Promise<void>((resolvePromise, reject) => {
@@ -124,19 +129,39 @@ async function handleFakeJiraRequest(
   request: IncomingMessage,
   response: ServerResponse,
   requests: RecordedRequest[],
+  home: string,
 ): Promise<void> {
   const body = await readRequestBody(request);
   const method = request.method ?? "GET";
   const url = request.url ?? "/";
+  const backupExistsAtReceipt = method === "DELETE"
+    ? await commentBackupExists(home, url)
+    : undefined;
   requests.push({
     authorization: request.headers.authorization,
+    ...(backupExistsAtReceipt === undefined ? {} : { backupExistsAtReceipt }),
     body,
     method,
     url,
   });
 
   if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/myself") {
-    writeJson(response, { accountId: "account-me", active: true, displayName: "Current User" });
+    writeJson(response, {
+      accountId: "account-me",
+      active: true,
+      displayName: "Current User",
+      emailAddress: "current.user@example.com",
+    });
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-no-email/rest/api/3/myself") {
+    writeJson(response, { accountId: "account-private", active: true, displayName: "Private User" });
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-malformed/rest/api/3/myself") {
+    writeJson(response, { accountId: "account-malformed" });
     return;
   }
 
@@ -232,7 +257,43 @@ async function handleFakeJiraRequest(
           ],
         },
         comment: { comments: [] },
-        attachment: [{ id: "20001", filename: "deployment.png", mimeType: "image/png", size: 8 }],
+        attachment: [
+          { id: "20001", filename: "deployment.png", mimeType: "image/png", size: 8 },
+          {
+            id: "20002",
+            filename: "values.xml",
+            mimeType: "application/xml",
+            size: ATTACHMENT_BYTES.byteLength,
+          },
+        ],
+        issuelinks: [],
+      },
+    });
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/OPS-ATTACHMENTS?")) {
+    writeJson(response, {
+      key: "OPS-ATTACHMENTS",
+      fields: {
+        summary: "Attachment failures",
+        status: { name: "Open", statusCategory: { name: "To Do" } },
+        priority: null,
+        assignee: null,
+        issuetype: { name: "Task" },
+        updated: "2026-07-24T00:00:00.000+0000",
+        description: null,
+        comment: { comments: [] },
+        attachment: [
+          { id: "21001", filename: "failed.xml", mimeType: "application/xml", size: 0 },
+          { id: "21002", filename: "empty.xml", mimeType: "application/xml", size: 0 },
+          {
+            id: "21003",
+            filename: "success.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size: ATTACHMENT_BYTES.byteLength,
+          },
+        ],
         issuelinks: [],
       },
     });
@@ -257,9 +318,43 @@ async function handleFakeJiraRequest(
     return;
   }
 
+  if (
+    method === "GET" &&
+    url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ATTACHMENTS/comment?startAt=0&maxResults=100"
+  ) {
+    writeJson(response, { comments: [], maxResults: 100, startAt: 0, total: 0 });
+    return;
+  }
+
   if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/20001") {
     response.writeHead(200, { "content-type": "image/png" });
     response.end(IMAGE_BYTES);
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/20002") {
+    response.writeHead(200, { "content-type": "application/xml" });
+    response.end(ATTACHMENT_BYTES);
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/21001") {
+    response.writeHead(500, { "content-type": "text/plain" });
+    response.end("private failure detail");
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/21002") {
+    response.writeHead(200, { "content-type": "application/xml" });
+    response.end();
+    return;
+  }
+
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/21003") {
+    response.writeHead(200, {
+      "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    response.end(ATTACHMENT_BYTES);
     return;
   }
 
@@ -302,6 +397,31 @@ async function handleFakeJiraRequest(
     return;
   }
 
+  const commentMatch = /^\/ex\/jira\/cloud-1\/rest\/api\/3\/issue\/([^/]+)\/comment\/([^/?]+)$/u.exec(url);
+  if (method === "GET" && commentMatch !== null) {
+    const issueKey = decodeURIComponent(commentMatch[1] ?? "");
+    const commentId = decodeURIComponent(commentMatch[2] ?? "");
+    if (issueKey === "OPS-NOTFOUND") {
+      response.writeHead(404, { "content-type": "text/plain" });
+      response.end("private missing detail");
+      return;
+    }
+    writeJson(response, fakeComment(commentId));
+    return;
+  }
+
+  if (method === "DELETE" && commentMatch !== null) {
+    const issueKey = decodeURIComponent(commentMatch[1] ?? "");
+    if (issueKey === "OPS-DELETE-FAIL") {
+      response.writeHead(500, { "content-type": "text/plain" });
+      response.end("private delete detail");
+      return;
+    }
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
   if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-500/worklog") {
     response.writeHead(500, { "content-type": "text/plain" });
     response.end("nope");
@@ -310,6 +430,52 @@ async function handleFakeJiraRequest(
 
   response.writeHead(404, { "content-type": "text/plain" });
   response.end("not found");
+}
+
+function fakeComment(commentId: string): Record<string, unknown> {
+  return {
+    author: {
+      accountId: "synthetic-reviewer",
+      displayName: "Synthetic Reviewer",
+    },
+    body: {
+      type: "doc",
+      version: 1,
+      content: [{
+        type: "paragraph",
+        content: [{ type: "text", text: `Recover comment ${commentId}` }],
+      }],
+    },
+    created: "2026-07-24T08:00:00.000+0000",
+    id: commentId,
+    updated: "2026-07-24T09:00:00.000+0000",
+  };
+}
+
+async function commentBackupExists(home: string, requestUrl: string): Promise<boolean> {
+  const matched = /^\/ex\/jira\/([^/]+)\/rest\/api\/3\/issue\/([^/]+)\/comment\/([^/?]+)$/u.exec(requestUrl);
+  if (matched === null) {
+    return false;
+  }
+  const cloudId = decodeURIComponent(matched[1] ?? "");
+  const issueKey = decodeURIComponent(matched[2] ?? "");
+  const commentId = decodeURIComponent(matched[3] ?? "");
+  const path = join(
+    home,
+    ".saptools",
+    "jira",
+    "clouds",
+    cloudId,
+    "comments",
+    issueKey,
+    `${commentId}.json`,
+  );
+  try {
+    const value: unknown = JSON.parse(await readFile(path, "utf8"));
+    return isRecord(value) && value["id"] === commentId && isRecord(value["body"]);
+  } catch {
+    return false;
+  }
 }
 
 function handleAssignableSearch(url: string, response: ServerResponse): void {
@@ -441,6 +607,75 @@ test.describe("Jira CLI", () => {
     }
   });
 
+  test("User can inspect the connected Jira account without exposing a token", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const human = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "whoami"]);
+      const json = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "whoami", "--json"]);
+
+      expect(human.stdout).toContain("Display name: Current User");
+      expect(human.stdout).toContain("Account ID: account-me");
+      expect(human.stdout).toContain("Email: current.user@example.com");
+      expect(human.stdout).toContain("Status: Active");
+      expect(human.stdout).not.toContain("e2e-access-token");
+      expect(JSON.parse(json.stdout)).toEqual({
+        accountId: "account-me",
+        active: true,
+        displayName: "Current User",
+        emailAddress: "current.user@example.com",
+      });
+      expect(json.stdout).not.toContain("e2e-access-token");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Whoami handles private email and neutral auth or response failures", async () => {
+    const privateCtx = await prepareCliContext({ cloudId: "cloud-no-email" });
+    try {
+      const result = await privateCtx.run([
+        "--api-root",
+        privateCtx.fakeJira.apiRoot,
+        "whoami",
+        "--json",
+      ]);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        accountId: "account-private",
+        emailAddress: null,
+      });
+    } finally {
+      await privateCtx.cleanup();
+    }
+
+    const malformedCtx = await prepareCliContext({ cloudId: "cloud-malformed" });
+    try {
+      await expect(malformedCtx.run([
+        "--api-root",
+        malformedCtx.fakeJira.apiRoot,
+        "whoami",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("Jira current user profile response was not valid."),
+      });
+    } finally {
+      await malformedCtx.cleanup();
+    }
+
+    const missingTokenCtx = await prepareCliContext();
+    try {
+      await rm(join(missingTokenCtx.home, ".jira-oauth"), { recursive: true, force: true });
+      await expect(missingTokenCtx.run([
+        "--api-root",
+        missingTokenCtx.fakeJira.apiRoot,
+        "whoami",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("Jira token is required."),
+      });
+      expect(missingTokenCtx.fakeJira.requests()).toHaveLength(0);
+    } finally {
+      await missingTokenCtx.cleanup();
+    }
+  });
+
   test("User can list assigned issues using the shared token store", async () => {
     const ctx = await prepareCliContext();
     try {
@@ -472,7 +707,12 @@ test.describe("Jira CLI", () => {
       ]);
 
       const parsedDetail = JSON.parse(detail.stdout) as {
-        readonly attachments: readonly Record<string, unknown>[];
+        readonly attachments: readonly {
+          readonly downloadError?: string;
+          readonly fileUrl?: string;
+          readonly id: string;
+          readonly localPath?: string;
+        }[];
         readonly comments: readonly Record<string, unknown>[];
         readonly descriptionAdf: unknown;
         readonly descriptionText: string;
@@ -480,20 +720,30 @@ test.describe("Jira CLI", () => {
       };
       expect(parsedDetail).toMatchObject({ descriptionText: "Deploy safely" });
       expect(hasMediaId(parsedDetail.descriptionAdf, "media-platform-id")).toBe(true);
-      expect(parsedDetail.attachments[0]).toEqual({
-        filename: "deployment.png",
+      expect(parsedDetail.attachments).toHaveLength(2);
+      expect(parsedDetail.attachments[0]).toMatchObject({
+        fileUrl: expect.stringMatching(/^file:\/\//u),
         id: "20001",
-        mimeType: "image/png",
-        size: 8,
+        localPath: parsedDetail.images[0]?.filePath,
       });
-      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "localPath")).toBe(false);
-      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "fileUrl")).toBe(false);
+      expect(parsedDetail.attachments[1]).toMatchObject({
+        fileUrl: expect.stringMatching(/^file:\/\//u),
+        id: "20002",
+        localPath: expect.stringContaining("20002-values.xml"),
+      });
       expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "byteLength")).toBe(false);
       expect(Object.hasOwn(parsedDetail.comments[0] ?? {}, "images")).toBe(false);
       expect(parsedDetail.images[0]?.fileUrl).toMatch(/^file:\/\//u);
       await expect(readFile(parsedDetail.images[0]?.filePath ?? "")).resolves.toEqual(
         Buffer.from(IMAGE_BYTES),
       );
+      await expect(readFile(parsedDetail.attachments[1]?.localPath ?? "")).resolves.toEqual(
+        Buffer.from(ATTACHMENT_BYTES),
+      );
+      const imageFetches = ctx.fakeJira.requests().filter((request) => {
+        return request.url.endsWith("/attachment/content/20001");
+      });
+      expect(imageFetches).toHaveLength(1);
       expect(JSON.parse(links.stdout)).toEqual([expect.objectContaining({ title: "Docs" })]);
       expect(JSON.parse(transitions.stdout)).toEqual([expect.objectContaining({ id: "31" })]);
     } finally {
@@ -597,7 +847,7 @@ test.describe("Jira CLI", () => {
   });
 
 
-  test("User can read issue details without downloading images", async () => {
+  test("No-images skips inline image hydration but still downloads all attachments", async () => {
     const ctx = await prepareCliContext();
     try {
       const detail = await ctx.run([
@@ -609,21 +859,189 @@ test.describe("Jira CLI", () => {
         "--no-images",
       ]);
       const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly attachments: readonly {
+          readonly id: string;
+          readonly localPath?: string;
+        }[];
+        readonly images: readonly unknown[];
+      };
+
+      expect(parsedDetail.images).toEqual([]);
+      expect(parsedDetail.attachments).toEqual([
+        expect.objectContaining({ id: "20001", localPath: expect.any(String) }),
+        expect.objectContaining({ id: "20002", localPath: expect.any(String) }),
+      ]);
+      expect(ctx.fakeJira.requests().filter((entry) => {
+        return entry.url.includes("/attachment/content/");
+      })).toHaveLength(2);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("No-attachments remains independent from inline image hydration", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const detail = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "issue",
+        "OPS-123",
+        "--json",
+        "--no-attachments",
+      ]);
+      const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly attachments: readonly Record<string, unknown>[];
+        readonly images: readonly unknown[];
+      };
+
+      expect(parsedDetail.images).toHaveLength(1);
+      expect(parsedDetail.attachments).toHaveLength(2);
+      expect(parsedDetail.attachments.every((attachment) => {
+        return !Object.hasOwn(attachment, "localPath") && !Object.hasOwn(attachment, "fileUrl");
+      })).toBe(true);
+      expect(ctx.fakeJira.requests().filter((entry) => {
+        return entry.url.includes("/attachment/content/");
+      }).map((entry) => entry.url)).toEqual([
+        "/ex/jira/cloud-1/rest/api/3/attachment/content/20001",
+      ]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("No-images and no-attachments together skip all attachment content requests", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const detail = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "issue",
+        "OPS-123",
+        "--json",
+        "--no-images",
+        "--no-attachments",
+      ]);
+      const parsedDetail = JSON.parse(detail.stdout) as {
         readonly attachments: readonly Record<string, unknown>[];
         readonly images: readonly unknown[];
       };
 
       expect(parsedDetail.images).toEqual([]);
-      expect(parsedDetail.attachments[0]).toEqual({
-        filename: "deployment.png",
-        id: "20001",
-        mimeType: "image/png",
-        size: 8,
+      expect(parsedDetail.attachments).toHaveLength(2);
+      expect(ctx.fakeJira.requests().some((entry) => {
+        return entry.url.includes("/attachment/content/");
+      })).toBe(false);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Attachment output, byte, and count controls degrade per file", async () => {
+    const customDirCtx = await prepareCliContext();
+    try {
+      const attachmentDir = join(customDirCtx.home, "controlled-attachments");
+      const detail = await customDirCtx.run([
+        "--api-root",
+        customDirCtx.fakeJira.apiRoot,
+        "issue",
+        "OPS-123",
+        "--json",
+        "--no-images",
+        "--attachment-dir",
+        attachmentDir,
+      ]);
+      const parsed = JSON.parse(detail.stdout) as {
+        readonly attachments: readonly { readonly localPath?: string }[];
+      };
+      expect(parsed.attachments.every((attachment) => {
+        return attachment.localPath?.startsWith(attachmentDir) === true;
+      })).toBe(true);
+    } finally {
+      await customDirCtx.cleanup();
+    }
+
+    const capCtx = await prepareCliContext();
+    try {
+      const countLimited = await capCtx.run([
+        "--api-root",
+        capCtx.fakeJira.apiRoot,
+        "issue",
+        "OPS-123",
+        "--json",
+        "--max-attachments",
+        "1",
+      ]);
+      const countAttachments = (JSON.parse(countLimited.stdout) as {
+        readonly attachments: readonly {
+          readonly downloadError?: string;
+          readonly id: string;
+        }[];
+      }).attachments;
+      expect(countAttachments[0]).toMatchObject({ id: "20001" });
+      expect(countAttachments[1]?.downloadError).toContain("1 attachment limit");
+      expect(capCtx.fakeJira.requests().some((entry) => {
+        return entry.url.endsWith("/attachment/content/20002");
+      })).toBe(false);
+    } finally {
+      await capCtx.cleanup();
+    }
+
+    const byteCtx = await prepareCliContext();
+    try {
+      const byteLimited = await byteCtx.run([
+        "--api-root",
+        byteCtx.fakeJira.apiRoot,
+        "issue",
+        "OPS-123",
+        "--json",
+        "--max-attachment-bytes",
+        "3",
+      ]);
+      const byteAttachments = (JSON.parse(byteLimited.stdout) as {
+        readonly attachments: readonly { readonly downloadError?: string; readonly id: string }[];
+      }).attachments;
+      expect(byteAttachments[1]?.downloadError).toContain("3 byte download limit");
+      expect(byteCtx.fakeJira.requests().some((entry) => {
+        return entry.url.endsWith("/attachment/content/20002");
+      })).toBe(false);
+    } finally {
+      await byteCtx.cleanup();
+    }
+  });
+
+  test("One failed or empty attachment does not abort remaining downloads", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const detail = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "issue",
+        "OPS-ATTACHMENTS",
+        "--json",
+      ]);
+      const attachments = (JSON.parse(detail.stdout) as {
+        readonly attachments: readonly {
+          readonly downloadError?: string;
+          readonly id: string;
+          readonly localPath?: string;
+          readonly mimeType: string;
+        }[];
+      }).attachments;
+
+      expect(attachments[0]?.downloadError).toContain("HTTP 500");
+      expect(attachments[1]?.downloadError).toContain("empty body");
+      expect(attachments[2]).toMatchObject({
+        id: "21003",
+        localPath: expect.any(String),
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
-      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "localPath")).toBe(false);
-      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "fileUrl")).toBe(false);
-      expect(Object.hasOwn(parsedDetail.attachments[0] ?? {}, "byteLength")).toBe(false);
-      expect(ctx.fakeJira.requests().some((entry) => entry.url.includes("/attachment/content/20001"))).toBe(false);
+      await expect(readFile(attachments[2]?.localPath ?? "")).resolves.toEqual(
+        Buffer.from(ATTACHMENT_BYTES),
+      );
+      expect(ctx.fakeJira.requests().filter((entry) => {
+        return entry.url.includes("/attachment/content/210");
+      })).toHaveLength(3);
     } finally {
       await ctx.cleanup();
     }
@@ -809,6 +1227,169 @@ test.describe("Jira CLI", () => {
           content: [{ type: "paragraph", content: [{ type: "text", text: "Review note" }] }],
         },
       });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Comment deletion writes a full backup before every DELETE request", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const human = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "comment-delete",
+        "OPS-DELETE",
+        "10098",
+      ]);
+      const humanBackupPath = join(
+        ctx.home,
+        ".saptools",
+        "jira",
+        "clouds",
+        "cloud-1",
+        "comments",
+        "OPS-DELETE",
+        "10098.json",
+      );
+      expect(human.stdout).toContain(
+        `Deleted comment 10098 on OPS-DELETE. Backup saved to ${humanBackupPath}`,
+      );
+      expect(JSON.parse(await readFile(humanBackupPath, "utf8"))).toEqual({
+        authorDisplayName: "Synthetic Reviewer",
+        body: {
+          type: "doc",
+          version: 1,
+          content: [{
+            type: "paragraph",
+            content: [{ type: "text", text: "Recover comment 10098" }],
+          }],
+        },
+        created: "2026-07-24T08:00:00.000+0000",
+        id: "10098",
+        updated: "2026-07-24T09:00:00.000+0000",
+      });
+
+      const json = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "comment-delete",
+        "OPS-DELETE",
+        "10099",
+        "--json",
+      ]);
+      const jsonBackupPath = join(dirname(humanBackupPath), "10099.json");
+      expect(JSON.parse(json.stdout)).toEqual({
+        backupPath: jsonBackupPath,
+        commentId: "10099",
+        deleted: true,
+        issueKey: "OPS-DELETE",
+      });
+      const deleteRequests = ctx.fakeJira.requests().filter((entry) => entry.method === "DELETE");
+      expect(deleteRequests).toHaveLength(2);
+      expect(deleteRequests.every((entry) => entry.backupExistsAtReceipt === true)).toBe(true);
+      expect(deleteRequests.map((entry) => entry.url)).toEqual([
+        "/ex/jira/cloud-1/rest/api/3/issue/OPS-DELETE/comment/10098",
+        "/ex/jira/cloud-1/rest/api/3/issue/OPS-DELETE/comment/10099",
+      ]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Comment deletion never calls DELETE when the backup write fails", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const issueBackupDirectory = join(
+        ctx.home,
+        ".saptools",
+        "jira",
+        "clouds",
+        "cloud-1",
+        "comments",
+        "OPS-BACKUP-FAIL",
+      );
+      await mkdir(dirname(issueBackupDirectory), { recursive: true });
+      await writeFile(issueBackupDirectory, "blocking file", "utf8");
+
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "comment-delete",
+        "OPS-BACKUP-FAIL",
+        "10098",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("Error:"),
+        stdout: "",
+      });
+      const requests = ctx.fakeJira.requests();
+      expect(requests.some((entry) => entry.method === "GET" && entry.url.includes("OPS-BACKUP-FAIL"))).toBe(true);
+      expect(requests.some((entry) => entry.method === "DELETE")).toBe(false);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Missing comments fail before backup and DELETE", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const backupPath = join(
+        ctx.home,
+        ".saptools",
+        "jira",
+        "clouds",
+        "cloud-1",
+        "comments",
+        "OPS-NOTFOUND",
+        "40400.json",
+      );
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "comment-delete",
+        "OPS-NOTFOUND",
+        "40400",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("Jira issue comment could not be loaded."),
+        stdout: "",
+      });
+      await expect(readFile(backupPath, "utf8")).rejects.toBeInstanceOf(Error);
+      expect(ctx.fakeJira.requests().some((entry) => entry.method === "DELETE")).toBe(false);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("A failed Jira DELETE keeps the backup and is not retried", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const backupPath = join(
+        ctx.home,
+        ".saptools",
+        "jira",
+        "clouds",
+        "cloud-1",
+        "comments",
+        "OPS-DELETE-FAIL",
+        "50000.json",
+      );
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "comment-delete",
+        "OPS-DELETE-FAIL",
+        "50000",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("Jira issue comment could not be deleted."),
+        stdout: "",
+      });
+      expect(JSON.parse(await readFile(backupPath, "utf8"))).toMatchObject({
+        id: "50000",
+        authorDisplayName: "Synthetic Reviewer",
+      });
+      const deleteRequests = ctx.fakeJira.requests().filter((entry) => entry.method === "DELETE");
+      expect(deleteRequests).toHaveLength(1);
+      expect(deleteRequests[0]?.backupExistsAtReceipt).toBe(true);
     } finally {
       await ctx.cleanup();
     }
