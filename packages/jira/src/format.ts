@@ -2,6 +2,7 @@ import type { CustomFieldSnapshot, NormalizedCustomField, PinnedCustomFieldConfi
 import { customFieldTypeSuffix } from "./custom-fields.js";
 import type {
   JiraConnectionStatus,
+  JiraCurrentUserProfile,
   JiraIssueDetail,
   JiraIssueRemoteLink,
   JiraIssueSummary,
@@ -23,6 +24,15 @@ export function formatIssues(issues: readonly JiraIssueSummary[]): string {
   return issues.length > 0
     ? issues.map(formatIssueSummaryLine).join("\n")
     : "No Jira issues found.";
+}
+
+export function formatJiraCurrentUserProfile(profile: JiraCurrentUserProfile): string {
+  return [
+    `Display name: ${profile.displayName}`,
+    `Account ID: ${profile.accountId}`,
+    `Email: ${profile.emailAddress ?? "Not available"}`,
+    `Status: ${profile.active ? "Active" : "Inactive"}`,
+  ].join("\n");
 }
 
 export function formatIssueDetail(detail: JiraIssueDetail): string {

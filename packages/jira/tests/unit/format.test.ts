@@ -6,6 +6,7 @@ import {
   formatIssueLinks,
   formatIssueTransitions,
   formatIssues,
+  formatJiraCurrentUserProfile,
   formatJiraIssueCommentAdded,
   formatJiraIssueDescriptionUpdated,
   formatJiraIssueSummaryUpdated,
@@ -16,6 +17,7 @@ import {
 } from "../../src/format.js";
 import type {
   JiraConnectionStatus,
+  JiraCurrentUserProfile,
   JiraIssueDetail,
   JiraIssueRemoteLink,
   JiraIssueSummary,
@@ -61,6 +63,27 @@ describe("CLI text formatters", () => {
 
     expect(formatIssues(issues)).toContain("OPS-123");
     expect(formatIssues([])).toBe("No Jira issues found.");
+  });
+
+  it("formats connected Jira account profiles including private email", () => {
+    const profile: JiraCurrentUserProfile = {
+      accountId: "account-1",
+      active: true,
+      displayName: "Current User",
+      emailAddress: "current.user@example.com",
+    };
+
+    expect(formatJiraCurrentUserProfile(profile)).toBe([
+      "Display name: Current User",
+      "Account ID: account-1",
+      "Email: current.user@example.com",
+      "Status: Active",
+    ].join("\n"));
+    expect(formatJiraCurrentUserProfile({
+      ...profile,
+      active: false,
+      emailAddress: null,
+    })).toContain("Email: Not available\nStatus: Inactive");
   });
 
   it("formats detail, links, and transitions", () => {

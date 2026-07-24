@@ -18,6 +18,13 @@ export interface JiraConnectionStatus {
   readonly usable: boolean;
 }
 
+export interface JiraCurrentUserProfile {
+  readonly accountId: string;
+  readonly active: boolean;
+  readonly displayName: string;
+  readonly emailAddress: string | null;
+}
+
 export interface JiraOAuthClientLike {
   readonly getStoredTokens: () => JiraTokens | null;
   readonly refresh: (refreshToken: string) => Promise<JiraTokens>;

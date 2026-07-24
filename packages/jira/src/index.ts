@@ -10,3 +10,4 @@ export * from "./urls.js";
 export * from "./custom-fields.js";
 export * from "./custom-field-store.js";
 export * from "./custom-field-values.js";
+export * from "./current-user.js";

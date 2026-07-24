@@ -65,6 +65,7 @@ import type {
   JiraAssigneeResolution,
   JiraTokens,
 } from "./types.js";
+import { addWhoamiCommand } from "./whoami-command.js";
 import {
   appendJiraWorklogHistory,
   formatJiraDate,
@@ -166,6 +167,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     .option("--no-hints", "Suppress local custom field hint footers");
 
   addStatusCommand(program);
+  addWhoamiCommand(program);
   addConnectCommand(program);
   addDisconnectCommand(program);
   addLogoutCommand(program);
