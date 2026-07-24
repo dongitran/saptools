@@ -16,7 +16,6 @@ import {
   requireStoredOrRefreshJiraTokens,
 } from "./auth.js";
 import {
-  addJiraIssueComment,
   addJiraIssueWorklog,
   assignJiraIssue,
   fetchAssignedJiraIssues,
@@ -32,6 +31,7 @@ import {
   updateJiraIssueFields,
   updateJiraIssueSummary,
 } from "./client.js";
+import { addCommentCommands } from "./comment-commands.js";
 import {
   readCustomFieldSnapshot,
   readPinnedCustomFields,
@@ -45,7 +45,6 @@ import {
   formatConnectionStatus,
   formatIssueLinks,
   formatIssueTransitions,
-  formatJiraIssueCommentAdded,
   formatJiraIssueDescriptionUpdated,
   formatJiraIssueSummaryUpdated,
   formatCustomFieldDiscovery,
@@ -122,12 +121,6 @@ interface SummaryFlags extends JsonFlags {
   readonly notifyUsers?: boolean;
 }
 
-interface CommentFlags extends JsonFlags {
-  readonly adfFile?: string;
-  readonly text?: string;
-  readonly textFile?: string;
-}
-
 interface WorklogFlags {
   readonly comment?: string;
   readonly minutes?: string;
@@ -171,7 +164,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addAssignCommand(program);
   addDescribeCommand(program);
   addSummaryCommand(program);
-  addCommentCommand(program);
+  addCommentCommands(program);
   addWorklogCommand(program);
   addWorklogsCommand(program);
   addFieldsCommand(program);
@@ -501,32 +494,6 @@ function addSummaryCommand(program: Command): void {
         program,
         requestOptions.cloudId,
         flags.json === true ? result : formatJiraIssueSummaryUpdated(issueKey),
-        flags.json === true,
-      );
-    });
-}
-
-function addCommentCommand(program: Command): void {
-  program
-    .command("comment")
-    .description("Add a Jira issue comment from plain text or raw ADF")
-    .argument("<key>", "Jira issue key")
-    .option("--text <text>", "Plain text comment body")
-    .option("--text-file <path>", "Read a plain text comment body from a file")
-    .option("--adf-file <path>", "Read a raw ADF JSON comment body from a file")
-    .option("--json", "Print JSON output", false)
-    .action(async (issueKey: string, flags: CommentFlags): Promise<void> => {
-      const requestOptions = await toIssueRequestOptions(program, issueKey);
-      const bodyInput = await readJiraAdfBodyInput(flags);
-      const comment = await addJiraIssueComment({
-        ...requestOptions,
-        body: bodyInput.document,
-      });
-      const result = { issueKey, commentId: comment.id };
-      await writeOutputWithOptionalHint(
-        program,
-        requestOptions.cloudId,
-        flags.json === true ? result : formatJiraIssueCommentAdded(issueKey),
         flags.json === true,
       );
     });

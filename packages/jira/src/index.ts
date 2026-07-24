@@ -11,3 +11,5 @@ export * from "./custom-fields.js";
 export * from "./custom-field-store.js";
 export * from "./custom-field-values.js";
 export * from "./current-user.js";
+export * from "./issue-comments.js";
+export * from "./comment-backup.js";

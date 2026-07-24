@@ -137,6 +137,18 @@ export interface JiraIssueCommentResult {
   readonly id: string;
 }
 
+export interface JiraIssueCommentRequestOptions extends JiraIssueKeyRequestOptions {
+  readonly commentId: string;
+}
+
+export interface JiraIssueCommentDetail {
+  readonly authorDisplayName: string;
+  readonly body: JiraAdfDocument;
+  readonly created: string;
+  readonly id: string;
+  readonly updated: string;
+}
+
 export interface AssignedIssuesSearchBody {
   readonly fields: readonly string[];
   readonly jql: string;

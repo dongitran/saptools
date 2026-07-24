@@ -10,6 +10,7 @@ import {
   buildJiraCurrentUserUrl,
   buildJiraIssueAssigneeUrl,
   buildJiraIssueCommentCreateUrl,
+  buildJiraIssueCommentUrl,
   buildJiraIssueCommentsUrl,
   buildJiraIssueDescriptionUrl,
   buildJiraIssueDetailUrl,
@@ -36,6 +37,9 @@ describe("Jira URL builders", () => {
     );
     expect(buildJiraIssueCommentCreateUrl("cloud 1", "OPS/123")).toBe(
       "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123/comment",
+    );
+    expect(buildJiraIssueCommentUrl("cloud 1", "OPS/123", "100/98")).toBe(
+      "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123/comment/100%2F98",
     );
     expect(buildJiraIssueDescriptionUrl("cloud 1", "OPS/123")).toBe(
       "https://api.atlassian.com/ex/jira/cloud%201/rest/api/3/issue/OPS%2F123?fields=description",

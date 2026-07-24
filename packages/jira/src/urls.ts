@@ -81,6 +81,15 @@ export function buildJiraIssueCommentCreateUrl(
   return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/comment`;
 }
 
+export function buildJiraIssueCommentUrl(
+  cloudId: string,
+  issueKey: string,
+  commentId: string,
+  apiRoot = DEFAULT_JIRA_API_ROOT,
+): string {
+  return `${buildJiraIssueCommentCreateUrl(cloudId, issueKey, apiRoot)}/${encodeURIComponent(commentId)}`;
+}
+
 export function buildJiraIssueDescriptionUrl(
   cloudId: string,
   issueKey: string,

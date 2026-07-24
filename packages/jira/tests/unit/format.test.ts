@@ -8,6 +8,7 @@ import {
   formatIssues,
   formatJiraCurrentUserProfile,
   formatJiraIssueCommentAdded,
+  formatJiraIssueCommentDeleted,
   formatJiraIssueDescriptionUpdated,
   formatJiraIssueSummaryUpdated,
   formatCustomFieldRows,
@@ -196,6 +197,8 @@ describe("CLI text formatters", () => {
     expect(formatJiraIssueDescriptionUpdated("OPS-123")).toBe("Description updated on OPS-123.");
     expect(formatJiraIssueSummaryUpdated("OPS-123")).toBe("Summary updated on OPS-123.");
     expect(formatJiraIssueCommentAdded("OPS-123")).toBe("Comment added to OPS-123.");
+    expect(formatJiraIssueCommentDeleted("OPS-123", "10098", "/private/backups/10098.json"))
+      .toBe("Deleted comment 10098 on OPS-123. Backup saved to /private/backups/10098.json");
   });
 });
 

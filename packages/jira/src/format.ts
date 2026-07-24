@@ -87,6 +87,14 @@ export function formatJiraIssueCommentAdded(issueKey: string): string {
   return `Comment added to ${issueKey}.`;
 }
 
+export function formatJiraIssueCommentDeleted(
+  issueKey: string,
+  commentId: string,
+  backupPath: string,
+): string {
+  return `Deleted comment ${commentId} on ${issueKey}. Backup saved to ${backupPath}`;
+}
+
 function formatIssueSummaryLine(issue: JiraIssueSummary): string {
   const priority = issue.priority ?? "No priority";
   return `${issue.key}\t[${issue.status}]\t${priority}\t${issue.summary}`;
