@@ -2,6 +2,24 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.5.2 - 2026-07-25
+
+- **Security fix:** the `0.5.1` fix for `WITH`-prefixed guard bypasses shipped
+  with its own gap — a `WITH` statement whose CTE name was a double-quoted
+  identifier (e.g. `WITH "x" AS (...) DELETE FROM ...`) was misclassified as
+  `unknown` instead of resolving to its real trailing statement, and that
+  `unknown` classification was previously treated as non-destructive and
+  exempt from the automatic pre-write backup. A quoted-CTE-name write with no
+  `WHERE` clause reached the database with no client-side block at all, and
+  no backup was attempted for a quoted-CTE-name write of any shape. Anyone
+  who upgraded to `0.5.1` believing that release fully closed the `WITH`
+  guard-bypass class should know it did not, quite yet — this release does.
+  The parser now correctly recognizes a quoted CTE name instead of skipping
+  past it as if it were blank space; a genuinely unparseable `WITH` statement
+  (for any reason, not only quoting) is now also treated as destructive by
+  the safety guard and refuses the pre-write backup outright, rather than
+  silently falling back to "not destructive, no backup" as it did before.
+
 ## 0.5.1 - 2026-07-25
 
 - **Security fix:** a `WITH`-prefixed write (e.g. `WITH x AS (...) DELETE

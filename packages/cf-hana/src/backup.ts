@@ -2,13 +2,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { WriteBackupOperation, WriteBackupPlan } from "./001-backup-planner.js";
+import type { WriteBackupOperation, WriteBackupPlan } from "./backup-planner.js";
 import { MAX_RESULT_STORE_BYTES } from "./config.js";
 import { BackupRequiredError } from "./errors.js";
 import { formatCsv } from "./format.js";
 import type { QueryResult } from "./types.js";
 
-export { buildWriteBackupPlan } from "./001-backup-planner.js";
+export { buildWriteBackupPlan } from "./backup-planner.js";
 export type { WriteBackupOperation, WriteBackupPlan };
 
 const SAPTOOLS_DIR_NAME = ".saptools";

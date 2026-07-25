@@ -177,6 +177,47 @@ function isAsKeywordAt(masked: string, index: number): boolean {
 }
 
 /**
+ * Skip a single CTE name at `start` and return the index just past it.
+ * `cteListEndIndex`'s surrounding walk otherwise skips whitespace and reads
+ * an identifier entirely against `masked` - but a quoted identifier's masked
+ * span is blanked out exactly like real whitespace, indistinguishable from
+ * it without consulting the original text. So this skips genuine
+ * whitespace/comments against the unmasked `sql` first (mirroring
+ * `firstKeyword`'s own prologue), then, if the next real character is a
+ * quote mark, jumps past the whole quoted span via `skipQuotedText` instead
+ * of falling through to the bare-identifier scan - which would otherwise
+ * slide straight through the quoted name and misread whatever keyword comes
+ * next (typically `AS`) as if it were the CTE's name.
+ */
+function skipCteName(sql: string, masked: string, start: number): number {
+  let index = start;
+  while (index < sql.length) {
+    const char = sql.charAt(index);
+    if (char.trim().length === 0) {
+      index += 1;
+      continue;
+    }
+    if (char === "-" && sql.charAt(index + 1) === "-") {
+      index = skipLineComment(sql, index);
+      continue;
+    }
+    if (char === "/" && sql.charAt(index + 1) === "*") {
+      index = skipBlockComment(sql, index);
+      continue;
+    }
+    break;
+  }
+  if (sql.charAt(index) === "'" || sql.charAt(index) === '"') {
+    return skipQuotedText(sql, index);
+  }
+  let end = index;
+  while (end < masked.length && isIdentifierChar(masked.charAt(end))) {
+    end += 1;
+  }
+  return end;
+}
+
+/**
  * The position where a `WITH` statement's real trailing statement begins —
  * just past its comma-separated CTE definitions (each `name [(cols)] AS
  * (body)`) — found by structurally walking that grammar rather than
@@ -186,13 +227,10 @@ function isAsKeywordAt(masked: string, index: number): boolean {
  * itself does not parse (malformed input, or an unrecognized variant) —
  * callers must fail closed on that, never default it to "select".
  */
-function cteListEndIndex(masked: string, afterWith: number): number | undefined {
+function cteListEndIndex(sql: string, masked: string, afterWith: number): number | undefined {
   let index = afterWith;
   for (;;) {
-    index = skipWhitespace(masked, index);
-    while (index < masked.length && isIdentifierChar(masked.charAt(index))) {
-      index += 1;
-    }
+    index = skipCteName(sql, masked, index);
     index = skipWhitespace(masked, index);
     if (masked.charAt(index) === "(") {
       // An optional explicit column list: `cte_name (col1, col2) AS (...)`.
@@ -241,7 +279,7 @@ export function resolveWithStatement(sql: string): EffectiveStatement | undefine
     return undefined;
   }
   const masked = maskIgnoredSqlText(sql);
-  const trailingIndex = cteListEndIndex(masked, withIndex + "WITH".length);
+  const trailingIndex = cteListEndIndex(sql, masked, withIndex + "WITH".length);
   if (trailingIndex === undefined) {
     return undefined;
   }

@@ -112,7 +112,17 @@ export function inspectStatement(sql: string): StatementInspection {
     };
   }
   if (kind === "unknown") {
-    return { kind, destructive: keyword === "CALL" };
+    // Only an *unresolved* WITH-led statement (its CTE-list failed to parse
+    // at all - see resolveWithStatement) falls back to destructive here; a
+    // WITH-led statement that resolves fine but whose real trailing keyword
+    // is simply an unrecognized, non-CALL kind (e.g. EXPLAIN) must match its
+    // bare equivalent, not be swept into this fallback just because the
+    // statement happens to start with WITH. Fail closed and require explicit
+    // authorization only when the shape genuinely could not be determined:
+    // this is a safety net independent of the parser's own correctness, not
+    // a substitute for fixing a specific parsing gap when one is found.
+    const unresolvedWith = leading === "WITH" && withResolved === undefined;
+    return { kind, destructive: keyword === "CALL" || unresolvedWith };
   }
   return { kind, destructive: false };
 }

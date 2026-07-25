@@ -143,6 +143,19 @@ describe("inspectStatement", () => {
     expect(result.destructive).toBe(true);
   });
 
+  it("does not broaden a resolved (not just unparseable) WITH-led statement to destructive when its real trailing keyword is an unrecognized, non-CALL kind", () => {
+    // resolveWithStatement succeeds here (the CTE-list parses fine; the real
+    // trailing keyword is EXPLAIN) - this must match its bare equivalent
+    // exactly like the WITH-led DDL/CALL cases above do, not be swept into
+    // the "genuinely unparseable" fallback just because the statement
+    // happens to start with WITH.
+    const result = inspectStatement(
+      "WITH x AS (SELECT 1 FROM DUMMY) EXPLAIN PLAN FOR SELECT 1 FROM DUMMY",
+    );
+    expect(result.kind).toBe("unknown");
+    expect(result.destructive).toBe(false);
+  });
+
   it("flags a WITH-led DDL statement as destructive/non-destructive exactly like its non-WITH equivalent", () => {
     expect(
       inspectStatement("WITH x AS (SELECT 1 FROM DUMMY) DROP TABLE T").destructive,
@@ -158,9 +171,27 @@ describe("inspectStatement", () => {
     ).toBe(false);
   });
 
-  it("treats an unparseable WITH-led statement as unknown and not destructive", () => {
+  it("treats a genuinely unparseable WITH-led statement as destructive via the fallback, not just CALL", () => {
+    // Failing closed here (rather than the prior "unknown -> not destructive"
+    // default) is deliberate: an unparseable CTE-list means the real trailing
+    // statement's shape could not be determined at all, so it must require
+    // explicit authorization instead of silently being treated as safe.
     const result = inspectStatement("WITH not even close to a real CTE list");
     expect(result.kind).toBe("unknown");
+    expect(result.destructive).toBe(true);
+  });
+
+  it("flags a quoted-CTE-name unscoped write as destructive, matching its unquoted equivalent", () => {
+    const result = inspectStatement('WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM T');
+    expect(result.kind).toBe("dml");
+    expect(result.destructive).toBe(true);
+  });
+
+  it("treats a WHERE-scoped quoted-CTE-name write as non-destructive, matching its unquoted equivalent", () => {
+    const result = inspectStatement(
+      'WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM T WHERE ID = 1',
+    );
+    expect(result.kind).toBe("dml");
     expect(result.destructive).toBe(false);
   });
 });
@@ -278,6 +309,49 @@ describe("evaluateGuard", () => {
     expect(
       evaluateGuard(withDrop, { readOnly: false, allowDestructive: true }).allowed,
     ).toBe(true);
+  });
+
+  it("blocks the quoted-CTE-name unscoped write under the destructive guard", () => {
+    const decision = evaluateGuard('WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM T', {
+      readOnly: false,
+      allowDestructive: false,
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.violation).toBe("destructive");
+  });
+
+  it("blocks the quoted-CTE-name write under the read-only guard", () => {
+    const decision = evaluateGuard(
+      'WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM T WHERE ID = 1',
+      { readOnly: true, allowDestructive: true },
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.violation).toBe("read-only");
+  });
+
+  it("allows a WHERE-scoped quoted-CTE-name write without requiring --allow-destructive", () => {
+    const decision = evaluateGuard(
+      'WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM T WHERE ID = 1',
+      { readOnly: false, allowDestructive: false },
+    );
+    expect(decision.allowed).toBe(true);
+  });
+
+  it("blocks a genuinely unparseable WITH-led statement under the destructive guard", () => {
+    const decision = evaluateGuard("WITH not even close to a real CTE list", {
+      readOnly: false,
+      allowDestructive: false,
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.violation).toBe("destructive");
+  });
+
+  it("permits a genuinely unparseable WITH-led statement once --allow-destructive is set", () => {
+    const decision = evaluateGuard("WITH not even close to a real CTE list", {
+      readOnly: false,
+      allowDestructive: true,
+    });
+    expect(decision.allowed).toBe(true);
   });
 });
 

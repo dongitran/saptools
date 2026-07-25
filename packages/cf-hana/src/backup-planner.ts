@@ -6,8 +6,8 @@ import {
   readQualifiedTarget,
   skipTrivia,
   topLevelTokens,
-} from "./003-backup-sql-parser.js";
-import type { ParsedTarget, TopLevelToken } from "./003-backup-sql-parser.js";
+} from "./backup-sql-parser.js";
+import type { ParsedTarget, TopLevelToken } from "./backup-sql-parser.js";
 import { BackupRequiredError, QueryError } from "./errors.js";
 import {
   assertParamArity,
@@ -457,6 +457,16 @@ export function buildWriteBackupPlan(
   // buildMergeWriteBackupPlan's absolute token-position check correct - it
   // would otherwise inspect the CTE name instead of MERGE's own INTO/DELTA).
   const withResolved = leading === "WITH" ? resolveWithStatement(trimmed) : undefined;
+  if (leading === "WITH" && withResolved === undefined) {
+    // The CTE-list itself failed to parse, so the real trailing statement's
+    // shape - write or otherwise - cannot be determined at all. Refuse
+    // outright rather than silently skipping the backup, mirroring this
+    // file's own precedent (e.g. buildMergeWriteBackupPlan) of failing
+    // closed when a statement's shape can't be confidently derived.
+    throw new BackupRequiredError(
+      "WITH write refused: cannot determine the statement's real trailing keyword",
+    );
+  }
   const keyword = withResolved?.keyword ?? leading;
   if (!isWriteKeyword(keyword)) {
     return undefined;

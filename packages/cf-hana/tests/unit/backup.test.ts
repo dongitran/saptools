@@ -10,6 +10,7 @@ import {
   writeSqlBackup,
 } from "../../src/backup.js";
 import type { SqlBackupWriteInput } from "../../src/backup.js";
+import { BackupRequiredError } from "../../src/errors.js";
 
 let rootDir: string;
 
@@ -382,6 +383,30 @@ describe("write backup planning", () => {
       expect(
         buildWriteBackupPlan("WITH x AS (SELECT 1 FROM DUMMY) SELECT * FROM x"),
       ).toBeUndefined();
+    });
+
+    it("derives a correct backup plan for a quoted-CTE-name write, matching its unquoted equivalent", () => {
+      const plainPlan = buildWriteBackupPlan("DELETE FROM ORDERS WHERE STATUS = ?", ["OPEN"]);
+      const quotedPlan = buildWriteBackupPlan(
+        'WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM ORDERS WHERE STATUS = ?',
+        ["OPEN"],
+      );
+      expect(quotedPlan?.operation).toBe("delete");
+      expect(quotedPlan?.selectSql).toBe(plainPlan?.selectSql);
+      expect(quotedPlan?.selectParams).toEqual(plainPlan?.selectParams);
+      expect(quotedPlan?.statementSql).toBe(
+        'WITH "x" AS (SELECT 1 FROM DUMMY) DELETE FROM ORDERS WHERE STATUS = ?',
+      );
+    });
+
+    it("refuses (rather than silently skipping) the backup for a genuinely unparseable WITH-led statement", () => {
+      // Deliberately broader than the quoted-name fix above: any WITH-list
+      // this parser cannot resolve at all - for whatever reason - must
+      // refuse outright instead of silently proceeding with no safety net,
+      // even though this specific input isn't known to be a write.
+      expect(() => buildWriteBackupPlan("WITH not even close to a real CTE list", [])).toThrow(
+        BackupRequiredError,
+      );
     });
   });
 });

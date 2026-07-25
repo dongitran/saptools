@@ -1,10 +1,10 @@
 import { Command } from "commander";
 
+import { connect } from "./api.js";
 import {
   enrichAndRethrowQueryError,
   rethrowWithPrivilegeHint,
-} from "./002-cli-query-hints.js";
-import { connect } from "./api.js";
+} from "./cli-query-hints.js";
 import { registerResultCommands } from "./cli-results.js";
 import type { HanaClient } from "./client.js";
 import {
