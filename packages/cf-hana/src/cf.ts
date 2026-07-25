@@ -175,10 +175,11 @@ async function execWithRetries(
   bin: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-  timeoutMs: number = DEFAULT_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  maxAttempts: number = CF_RETRY_ATTEMPTS,
 ): Promise<string> {
   let lastErr: unknown;
-  for (let attempt = 0; attempt < CF_RETRY_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const { stdout } = await execFileAsync(bin, args, {
         env,
@@ -211,7 +212,7 @@ async function execWithRetries(
         throw err; // Fail fast for user errors or missing binary
       }
 
-      if (attempt < CF_RETRY_ATTEMPTS - 1) {
+      if (attempt < maxAttempts - 1) {
         await new Promise((r) => setTimeout(r, CF_RETRY_BASE_DELAY_MS * (attempt + 1)));
       }
     }
@@ -219,16 +220,28 @@ async function execWithRetries(
   throw lastErr;
 }
 
+interface RunCfExecOptions {
+  readonly timeoutMs?: number;
+  readonly maxAttempts?: number;
+}
+
 async function runCf(
   args: readonly string[],
   ctx: CfExecContext,
   overrides: Record<string, string> = {},
+  execOptions: RunCfExecOptions = {},
 ): Promise<string> {
   const { bin, argsPrefix } = resolveCfBin();
   const env = buildEnv(ctx, overrides);
 
   try {
-    return await execWithRetries(bin, [...argsPrefix, ...args], env);
+    return await execWithRetries(
+      bin,
+      [...argsPrefix, ...args],
+      env,
+      execOptions.timeoutMs,
+      execOptions.maxAttempts,
+    );
   } catch (lastErr) {
     const e = lastErr as { stderr?: string | Buffer; message?: string } | undefined;
     const detail = e?.stderr ? String(e.stderr) : (e?.message ?? "");
@@ -273,18 +286,39 @@ export async function cfEnvDirect(appName: string): Promise<string> {
   return await execWithRetries(bin, [...argsPrefix, "env", appName], env);
 }
 
-/** List apps in the target org/space, isolated context (tunnel jump-host discovery). */
-export async function cfApps(ctx: CfExecContext): Promise<string> {
-  return await runCf(["apps"], ctx);
+/**
+ * List apps in the target org/space, isolated context (tunnel jump-host
+ * discovery). An optional `timeoutMs` bounds this to a single attempt (no
+ * retries) instead of the default retry policy - a slow call inside an
+ * already-tight shared tunnel-fallback deadline shouldn't be retried into an
+ * even slower one; this discovery call is best-effort, unlike the
+ * correctness-critical `cfAuth`/`cfTargetSpace` retries.
+ */
+export async function cfApps(ctx: CfExecContext, timeoutMs?: number): Promise<string> {
+  return await runCf(
+    ["apps"],
+    ctx,
+    {},
+    timeoutMs === undefined ? {} : { timeoutMs, maxAttempts: 1 },
+  );
 }
 
-/** List apps in the current ambient target, no CF_HOME override (mirrors {@link cfEnvDirect}). */
-export async function cfAppsDirect(): Promise<string> {
+/**
+ * List apps in the current ambient target, no CF_HOME override (mirrors
+ * {@link cfEnvDirect}). See {@link cfApps} for the `timeoutMs` behavior.
+ */
+export async function cfAppsDirect(timeoutMs?: number): Promise<string> {
   const { bin, argsPrefix } = resolveCfBin();
   const env = { ...process.env };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
-  return await execWithRetries(bin, [...argsPrefix, "apps"], env);
+  return await execWithRetries(
+    bin,
+    [...argsPrefix, "apps"],
+    env,
+    timeoutMs,
+    timeoutMs === undefined ? undefined : 1,
+  );
 }
 
 export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined> {

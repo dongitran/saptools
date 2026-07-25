@@ -1,4 +1,12 @@
-import { classifyStatement, firstKeyword } from "./statements.js";
+import {
+  classifyStatement,
+  firstKeyword,
+  hasTopLevelKeyword,
+  maskIgnoredSqlText,
+  resolveWithStatement,
+  skipBlockComment,
+  skipQuotedText,
+} from "./statements.js";
 import type { StatementKind } from "./types.js";
 
 const DESTRUCTIVE_DDL_KEYWORDS = new Set(["DROP", "TRUNCATE", "ALTER"]);
@@ -27,93 +35,6 @@ export interface AutoLimitResult {
   readonly sql: string;
   readonly applied: boolean;
   readonly requestedLimit?: number;
-}
-
-function skipQuotedText(sql: string, start: number): number {
-  const quote = sql[start];
-  let index = start + 1;
-  while (index < sql.length) {
-    if (sql[index] === quote) {
-      if (sql[index + 1] === quote) {
-        index += 2;
-        continue;
-      }
-      index += 1;
-      break;
-    }
-    index += 1;
-  }
-  return index;
-}
-
-function skipLineComment(sql: string, start: number): number {
-  let index = start + 2;
-  while (index < sql.length && sql[index] !== "\n") {
-    index += 1;
-  }
-  return index;
-}
-
-function skipBlockComment(sql: string, start: number): number {
-  let index = start + 2;
-  while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) {
-    index += 1;
-  }
-  return Math.min(index + 2, sql.length);
-}
-
-function maskIgnoredSqlText(sql: string): string {
-  let masked = "";
-  let index = 0;
-  while (index < sql.length) {
-    const char = sql[index];
-    if (char === "'" || char === '"') {
-      const end = skipQuotedText(sql, index);
-      masked += " ".repeat(end - index);
-      index = end;
-      continue;
-    }
-    if (char === "-" && sql[index + 1] === "-") {
-      const end = skipLineComment(sql, index);
-      masked += " ".repeat(end - index);
-      index = end;
-      continue;
-    }
-    if (char === "/" && sql[index + 1] === "*") {
-      const end = skipBlockComment(sql, index);
-      masked += " ".repeat(end - index);
-      index = end;
-      continue;
-    }
-    masked += char ?? "";
-    index += 1;
-  }
-  return masked;
-}
-
-function hasTopLevelKeyword(sql: string, keyword: string): boolean {
-  const masked = maskIgnoredSqlText(sql);
-  let depth = 0;
-  for (let index = 0; index < masked.length; index += 1) {
-    const char = masked[index];
-    if (char === "(") {
-      depth += 1;
-      continue;
-    }
-    if (char === ")") {
-      depth = Math.max(0, depth - 1);
-      continue;
-    }
-    if (
-      depth === 0 &&
-      masked.slice(index, index + keyword.length).toUpperCase() === keyword &&
-      !/[A-Za-z0-9_$#]/.test(masked.charAt(index - 1)) &&
-      !/[A-Za-z0-9_$#]/.test(masked.charAt(index + keyword.length))
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function isUnconditionalMergeDelete(sql: string): boolean {
@@ -167,19 +88,31 @@ function appendLimit(sql: string, limit: number): string {
 /** Inspect a statement's kind and whether it is destructive. */
 export function inspectStatement(sql: string): StatementInspection {
   const kind = classifyStatement(sql);
-  const keyword = firstKeyword(sql);
+  const leading = firstKeyword(sql);
+  // For a WITH-led statement, every destructive check below must reason
+  // about the real DML verb after the CTE definitions, not "WITH" itself -
+  // both for which keyword to check, and (via `tail`) so a check like
+  // isMalformedReplace's own `hasTopLevelKeyword(sql, "WITH")` cannot be
+  // trivially (and wrongly) satisfied by the statement's own leading WITH.
+  const withResolved = leading === "WITH" ? resolveWithStatement(sql) : undefined;
+  const keyword = withResolved?.keyword ?? leading;
+  const tail = withResolved === undefined ? sql : sql.slice(withResolved.index);
+
   if (kind === "ddl") {
     return { kind, destructive: DESTRUCTIVE_DDL_KEYWORDS.has(keyword) };
   }
   if (kind === "dml") {
     const destructive =
-      (UNSCOPED_WRITE_KEYWORDS.has(keyword) && !hasTopLevelKeyword(sql, "WHERE")) ||
-      (keyword === "MERGE" && isUnconditionalMergeDelete(sql)) ||
-      (keyword === "REPLACE" && isMalformedReplace(sql));
+      (UNSCOPED_WRITE_KEYWORDS.has(keyword) && !hasTopLevelKeyword(tail, "WHERE")) ||
+      (keyword === "MERGE" && isUnconditionalMergeDelete(tail)) ||
+      (keyword === "REPLACE" && isMalformedReplace(tail));
     return {
       kind,
       destructive,
     };
+  }
+  if (kind === "unknown") {
+    return { kind, destructive: keyword === "CALL" };
   }
   return { kind, destructive: false };
 }

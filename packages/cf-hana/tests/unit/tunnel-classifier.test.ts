@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CfHanaError, QueryError } from "../../src/errors.js";
-import { isConnectivityFailure } from "../../src/tunnel/classifier.js";
+import { isConnectivityFailure, isUnattributedQueryFailure } from "../../src/tunnel/classifier.js";
 
 function openConnError(): Error {
   return Object.assign(
@@ -65,5 +65,28 @@ describe("isConnectivityFailure", () => {
     expect(isConnectivityFailure(new Error("plain error"))).toBe(false);
     expect(isConnectivityFailure("just a string")).toBe(false);
     expect(isConnectivityFailure(undefined)).toBe(false);
+  });
+});
+
+describe("isUnattributedQueryFailure", () => {
+  it("matches a QueryError carrying neither a databaseCode nor a sqlState", () => {
+    const error = new QueryError("connection reset");
+    expect(isUnattributedQueryFailure(error)).toBe(true);
+  });
+
+  it("does not match a QueryError with a numeric databaseCode (a genuine HANA rejection)", () => {
+    const error = new QueryError("invalid schema name", { databaseCode: 362 });
+    expect(isUnattributedQueryFailure(error)).toBe(false);
+  });
+
+  it("does not match a QueryError with a sqlState", () => {
+    const error = new QueryError("invalid schema name", { sqlState: "42000" });
+    expect(isUnattributedQueryFailure(error)).toBe(false);
+  });
+
+  it("does not match a non-QueryError value", () => {
+    expect(isUnattributedQueryFailure(new CfHanaError("CONNECTION", "x"))).toBe(false);
+    expect(isUnattributedQueryFailure(new Error("plain error"))).toBe(false);
+    expect(isUnattributedQueryFailure(undefined)).toBe(false);
   });
 });

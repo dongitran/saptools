@@ -1,4 +1,4 @@
-import { CfHanaError } from "../errors.js";
+import { CfHanaError, QueryError } from "../errors.js";
 
 const CONNECT_TIMEOUT_MESSAGE = "HANA connection timed out";
 const OPEN_CONNECTION_CODE = "EHDBOPENCONN";
@@ -43,4 +43,20 @@ export function isConnectivityFailure(error: unknown): boolean {
     return false;
   }
   return hasOpenConnectionCause(error.cause, 0);
+}
+
+/**
+ * A `QueryError` — typically from a freshly-opened connection's own
+ * post-connect setup, e.g. `SET SCHEMA` — that carries neither a
+ * `databaseCode` nor a `sqlState` never got a genuine SQL-level response
+ * from HANA. It looks like a transport-level failure (the connection died
+ * right after opening) disguised as a `QueryError`, not an actionable
+ * rejection like "schema not found" or "insufficient privilege" (both of
+ * which always carry one of these). A tunnel whose own setup handshake
+ * fails this way isn't meaningfully "ready" and should not be cached as such.
+ */
+export function isUnattributedQueryFailure(error: unknown): boolean {
+  return (
+    error instanceof QueryError && error.databaseCode === undefined && error.sqlState === undefined
+  );
 }

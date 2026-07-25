@@ -9,7 +9,12 @@ import {
 } from "./003-backup-sql-parser.js";
 import type { ParsedTarget, TopLevelToken } from "./003-backup-sql-parser.js";
 import { BackupRequiredError, QueryError } from "./errors.js";
-import { assertParamArity, countPlaceholders, firstKeyword } from "./statements.js";
+import {
+  assertParamArity,
+  countPlaceholders,
+  firstKeyword,
+  resolveWithStatement,
+} from "./statements.js";
 import type { SqlParam } from "./types.js";
 
 export type WriteBackupOperation = "update" | "upsert" | "replace" | "merge" | "delete";
@@ -443,11 +448,26 @@ export function buildWriteBackupPlan(
   sql: string,
   params: readonly SqlParam[] = [],
 ): WriteBackupPlan | undefined {
-  const statementSql = trimStatementSql(sql);
-  const keyword = firstKeyword(statementSql);
+  const trimmed = trimStatementSql(sql);
+  const leading = firstKeyword(trimmed);
+  // A WITH-prefixed write's real keyword sits after its CTE definitions; the
+  // per-keyword builders below locate their target/WHERE/VALUES relative to
+  // wherever that keyword starts, not to index 0 of the original string, so
+  // the CTE prefix must be sliced off before dispatching (this also keeps
+  // buildMergeWriteBackupPlan's absolute token-position check correct - it
+  // would otherwise inspect the CTE name instead of MERGE's own INTO/DELTA).
+  const withResolved = leading === "WITH" ? resolveWithStatement(trimmed) : undefined;
+  const keyword = withResolved?.keyword ?? leading;
   if (!isWriteKeyword(keyword)) {
     return undefined;
   }
-  assertParamArity(statementSql, params);
-  return dispatchWriteBackupPlan(keyword, statementSql, params);
+  const startIndex = withResolved?.index ?? 0;
+  const statementSql = trimmed.slice(startIndex);
+  const slicedParams = params.slice(countPlaceholders(trimmed.slice(0, startIndex)));
+  assertParamArity(statementSql, slicedParams);
+  const plan = dispatchWriteBackupPlan(keyword, statementSql, slicedParams);
+  // The audit-trail statementSql records what actually ran, CTE included -
+  // restoring the full original costs nothing since dispatch never inspects
+  // this field itself, only the pieces of `statementSql` used to build it.
+  return plan === undefined ? undefined : { ...plan, statementSql: trimmed };
 }

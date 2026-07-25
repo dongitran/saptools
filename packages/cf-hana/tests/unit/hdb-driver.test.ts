@@ -203,4 +203,37 @@ describe("hdb driver", () => {
       servername: connectParams.host,
     });
   });
+
+  it("disables cloud redirect unconditionally on the direct path", async () => {
+    const state: HdbMockState = {
+      clients: [],
+      dropError: undefined,
+      schemaError: undefined,
+      closeCount: 0,
+      disconnectCount: 0,
+      autoCommit: true,
+    };
+    await openMockConnection(state);
+
+    expect(state.createClientOptions).toMatchObject({ disableCloudRedirect: true });
+  });
+
+  it("disables cloud redirect unconditionally on the tunneled path", async () => {
+    const state: HdbMockState = {
+      clients: [],
+      dropError: undefined,
+      schemaError: undefined,
+      closeCount: 0,
+      disconnectCount: 0,
+      autoCommit: true,
+    };
+    await openMockConnection(state, {
+      ...connectParams,
+      host: "127.0.0.1",
+      port: 39999,
+      servername: connectParams.host,
+    });
+
+    expect(state.createClientOptions).toMatchObject({ disableCloudRedirect: true });
+  });
 });

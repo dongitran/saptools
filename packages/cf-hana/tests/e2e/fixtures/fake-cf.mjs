@@ -127,12 +127,23 @@ if (cmd === "env") {
 
 if (cmd === "apps") {
   trace({ kind: "apps", cfHome: process.env.CF_HOME ? "isolated" : "current" });
-  out("Getting apps in org example-org / space space-demo as user@example.com...");
-  out("");
-  out("name          requested state   processes   routes");
-  out("app-demo      started           web:1/1     app-demo.cf.example.com");
-  out("sibling-app   started           web:1/1     sibling-app.cf.example.com");
-  process.exit(0);
+  const emit = () => {
+    out("Getting apps in org example-org / space space-demo as user@example.com...");
+    out("");
+    out("name          requested state   processes   routes");
+    out("app-demo      started           web:1/1     app-demo.cf.example.com");
+    out("sibling-app   started           web:1/1     sibling-app.cf.example.com");
+    process.exit(0);
+  };
+  const delayMs = Number(process.env.CF_HANA_FAKE_CF_APPS_DELAY_MS ?? "0");
+  // Simulates a slow `cf apps` response against a large space (live-measured
+  // at ~20s) so tests can prove candidate discovery is bounded to the
+  // remaining shared deadline rather than left to run unbounded.
+  if (delayMs > 0) {
+    setTimeout(emit, delayMs);
+  } else {
+    emit();
+  }
 }
 
 if (cmd === "ssh") {

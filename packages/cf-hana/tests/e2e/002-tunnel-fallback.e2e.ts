@@ -118,6 +118,20 @@ test("--refresh-tunnel forces a fresh tunnel despite a live cached one", async (
   expect(countSshInvocations(await readFakeCfTraceEntries(home))).toBe(2);
 });
 
+test("A slow cf apps response never delays the fallback when the target app itself succeeds", async () => {
+  const result = await runCli(
+    args(["ping", SELECTOR, "--read-only"], { failConnect: "once" }),
+    { ...fakeEnv({ failConnect: "once" }), CF_HANA_FAKE_CF_APPS_DELAY_MS: "3000" },
+  );
+
+  expect(result.exitCode).toBe(0);
+  const trace = await readFakeCfTraceEntries(home);
+  // The target app (a known candidate) succeeds without ever needing `cf
+  // apps` discovery, so the injected 3s discovery delay is never paid.
+  expect(trace.some((entry) => entry.kind === "apps")).toBe(false);
+  expect(countSshInvocations(trace)).toBe(1);
+});
+
 test("Candidate iteration moves past a denied app to the next candidate", async () => {
   const result = await runCli(
     args(["ping", SELECTOR, "--read-only"], { failConnect: "once", denyApps: ["app-demo"] }),
@@ -128,6 +142,20 @@ test("Candidate iteration moves past a denied app to the next candidate", async 
   const trace = await readFakeCfTraceEntries(home);
   expect(countSshInvocations(trace)).toBe(2);
   expect(trace.some((entry) => entry.kind === "ssh" && entry.app === "sibling-app")).toBe(true);
+});
+
+test("A denied candidate's real failure reason surfaces on stderr instead of being silently dropped", async () => {
+  const result = await runCli(
+    args(["ping", SELECTOR, "--read-only"], {
+      failConnect: "always",
+      denyApps: ["app-demo", "sibling-app"],
+      tunnel: true,
+    }),
+    fakeEnv({ failConnect: "always", denyApps: ["app-demo", "sibling-app"] }),
+  );
+
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("not authorized to perform the requested action");
 });
 
 test("--tunnel skips the direct attempt entirely, proven by which error surfaces on total exhaustion", async () => {

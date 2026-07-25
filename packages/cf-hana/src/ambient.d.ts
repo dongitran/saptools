@@ -43,6 +43,8 @@ declare module "hdb" {
     readonly useTLS?: boolean;
     /** Overrides the TLS SNI/certificate-hostname target independently of `host`. */
     readonly servername?: string;
+    /** Disables HANA Cloud's reactive `dbConnectInfo`-based redirect during auth. */
+    readonly disableCloudRedirect?: boolean;
   }
 
   export function createClient(options: HdbClientOptions): HdbClient;

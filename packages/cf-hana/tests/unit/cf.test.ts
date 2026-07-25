@@ -186,6 +186,45 @@ describe("CF CLI retries for network resilience", () => {
     );
   });
 
+  it("does not retry cfAppsDirect when a bounded timeoutMs is passed (single attempt)", async () => {
+    const execFileMock = vi.mocked(execFile);
+    execFileMock.mockImplementation(((file: string, args: string[], options: unknown, cb: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
+      const err = new Error("Timeout") as Error & { killed?: boolean };
+      err.killed = true;
+      cb(err);
+      return {} as unknown;
+    }) as unknown as typeof execFile);
+
+    const promise = cfAppsDirect(5_000).catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    const err = await promise;
+
+    expect(err).toBeDefined();
+    expect(execFileMock).toHaveBeenCalledTimes(1); // no retries, unlike the default policy
+    expect(execFileMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining(["apps"]),
+      expect.objectContaining({ timeout: 5_000, killSignal: "SIGKILL" }),
+      expect.any(Function),
+    );
+  });
+
+  it("still applies the default timeout and retry policy for cfAppsDirect when no timeoutMs is passed", async () => {
+    const execFileMock = vi.mocked(execFile);
+    execFileMock.mockImplementation(((file: string, args: string[], options: unknown, cb: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
+      const err = new Error("Connection reset") as Error & { stderr?: string };
+      err.stderr = "connection reset";
+      cb(err);
+      return {} as unknown;
+    }) as unknown as typeof execFile);
+
+    const promise = cfAppsDirect().catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(execFileMock).toHaveBeenCalledTimes(3); // CF_RETRY_ATTEMPTS is still 3 by default
+  });
+
   it("formats error messages and redacts passwords for cf auth", async () => {
     const execFileMock = vi.mocked(execFile);
     execFileMock.mockImplementation(((file: string, args: string[], options: unknown, cb: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {

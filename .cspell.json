@@ -182,7 +182,9 @@
     "EHDBOPENCONN",
     "unexecutable",
     "keepalive",
-    "unrefs"
+    "unrefs",
+    "untunneled",
+    "unreaped"
   ],
   "ignorePaths": [
     "**/node_modules/**",

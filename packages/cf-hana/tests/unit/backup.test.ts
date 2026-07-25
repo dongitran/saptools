@@ -282,6 +282,108 @@ describe("write backup planning", () => {
       /DELETE FROM/,
     );
   });
+
+  describe("WITH-prefixed writes", () => {
+    it("derives the same SELECT for a WITH-prefixed DELETE as the non-WITH equivalent", () => {
+      const plainPlan = buildWriteBackupPlan("DELETE FROM ORDERS WHERE STATUS = ?", ["OPEN"]);
+      const withPlan = buildWriteBackupPlan(
+        "WITH x AS (SELECT 1 FROM DUMMY) DELETE FROM ORDERS WHERE STATUS = ?",
+        ["OPEN"],
+      );
+      expect(withPlan?.operation).toBe("delete");
+      expect(withPlan?.selectSql).toBe(plainPlan?.selectSql);
+      expect(withPlan?.selectParams).toEqual(plainPlan?.selectParams);
+      // The audit-trail statementSql keeps the full original, WITH included.
+      expect(withPlan?.statementSql).toBe(
+        "WITH x AS (SELECT 1 FROM DUMMY) DELETE FROM ORDERS WHERE STATUS = ?",
+      );
+    });
+
+    it("derives the same SELECT for a WITH-prefixed UPDATE as the non-WITH equivalent", () => {
+      const plainPlan = buildWriteBackupPlan(
+        "UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+        ["DONE", 7],
+      );
+      const withPlan = buildWriteBackupPlan(
+        "WITH x AS (SELECT 1 FROM DUMMY) UPDATE ORDERS SET STATUS = ? WHERE ID = ?",
+        ["DONE", 7],
+      );
+      expect(withPlan?.operation).toBe("update");
+      expect(withPlan?.selectSql).toBe(plainPlan?.selectSql);
+      expect(withPlan?.selectParams).toEqual(plainPlan?.selectParams);
+    });
+
+    it("derives the same SELECT for a WITH-prefixed UPSERT as the non-WITH equivalent", () => {
+      const plainPlan = buildWriteBackupPlan("UPSERT ORDERS VALUES (?, ?) WHERE ID = ?", [
+        7,
+        "DONE",
+        7,
+      ]);
+      const withPlan = buildWriteBackupPlan(
+        "WITH x AS (SELECT 1 FROM DUMMY) UPSERT ORDERS VALUES (?, ?) WHERE ID = ?",
+        [7, "DONE", 7],
+      );
+      expect(withPlan?.operation).toBe("upsert");
+      expect(withPlan?.selectSql).toBe(plainPlan?.selectSql);
+      expect(withPlan?.selectParams).toEqual(plainPlan?.selectParams);
+    });
+
+    it("derives the same exact matched-row pre-image for a WITH-prefixed MERGE INTO", () => {
+      // This is the case that specifically requires slicing to a substring
+      // starting at the real keyword rather than passing the full WITH-
+      // prefixed string through: the MERGE builder locates its INTO/DELTA
+      // branch by an absolute token position (token[1]), which only lines
+      // up correctly when the string actually starts at MERGE.
+      const mergeSql =
+        "MERGE INTO ORDERS target USING SOURCE_ROWS source ON target.ID = source.ID " +
+        "WHEN MATCHED THEN DELETE";
+      const withSql = `WITH x AS (SELECT 1 FROM DUMMY) ${mergeSql}`;
+      const plainPlan = buildWriteBackupPlan(mergeSql);
+      const withPlan = buildWriteBackupPlan(withSql);
+
+      expect(withPlan?.operation).toBe("merge");
+      expect(withPlan?.selectSql).toBe(plainPlan?.selectSql);
+      expect(withPlan?.selectParams).toEqual(plainPlan?.selectParams);
+      expect(withPlan?.statementSql).toBe(withSql);
+    });
+
+    it("resolves the real keyword past multiple CTE definitions", () => {
+      const withPlan = buildWriteBackupPlan(
+        "WITH a AS (SELECT 1 FROM DUMMY), b AS (SELECT 2 FROM DUMMY) " +
+          "DELETE FROM ORDERS WHERE STATUS = ?",
+        ["OPEN"],
+      );
+      expect(withPlan).toMatchObject({
+        operation: "delete",
+        selectSql: "SELECT * FROM ORDERS WHERE STATUS = ?",
+        selectParams: ["OPEN"],
+      });
+    });
+
+    it("re-slices parameters correctly when the CTE itself uses a placeholder", () => {
+      const plan = buildWriteBackupPlan(
+        "WITH x AS (SELECT * FROM T2 WHERE Y = ?) DELETE FROM ORDERS WHERE ID = ?",
+        ["cte-value", 7],
+      );
+      expect(plan).toMatchObject({
+        operation: "delete",
+        selectSql: "SELECT * FROM ORDERS WHERE ID = ?",
+        selectParams: [7],
+      });
+    });
+
+    it("does not produce a backup plan for a WITH-prefixed INSERT, matching plain INSERT", () => {
+      expect(
+        buildWriteBackupPlan("WITH x AS (SELECT 1 FROM DUMMY) INSERT INTO T VALUES (1)", [1]),
+      ).toBeUndefined();
+    });
+
+    it("returns undefined for a WITH-led read, matching plain SELECT", () => {
+      expect(
+        buildWriteBackupPlan("WITH x AS (SELECT 1 FROM DUMMY) SELECT * FROM x"),
+      ).toBeUndefined();
+    });
+  });
 });
 
 describe("writeSqlBackup", () => {

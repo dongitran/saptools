@@ -2,6 +2,52 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.5.1 - 2026-07-25
+
+- **Security fix:** a `WITH`-prefixed write (e.g. `WITH x AS (...) DELETE
+  FROM ...`) and a bare `CALL <procedure>()` both previously slipped past
+  the `--read-only` and destructive-statement guards entirely — the former
+  was always classified as a harmless `SELECT` regardless of what it
+  actually did, and the latter was never classified as destructive at all,
+  so it ran with no `--allow-destructive` confirmation even in the default
+  (non-read-only) mode. Both are now correctly classified and guarded.
+  Anyone relying on `--read-only` or the destructive-statement guard as a
+  hard trust boundary should treat this as the release that closes that gap.
+  The automatic pre-write backup now also correctly recognizes and protects
+  a `WITH`-prefixed `UPDATE`/`DELETE`/`UPSERT`/`MERGE`, matching what a
+  non-`WITH` equivalent write already produced.
+- Disable SAP HANA Cloud's reactive mid-auth redirect on every connection
+  (direct and tunneled): on a genuine multi-node HANA Cloud instance, the
+  server can redirect an already-established connection to an internal
+  per-node hostname that isn't reachable outside SAP's own network, which
+  previously defeated the SSH-tunnel fallback by silently abandoning the
+  tunnel for a fresh, untunneled connection that failed the same way the
+  original direct connection did.
+- Fix the SSH-tunnel fallback's candidate discovery calling `cf apps`
+  (measured at up to ~20s against a large space) before ever trying the
+  already-known target app or a cached "last worked" app, which could
+  starve the entire shared fallback budget before a working candidate got a
+  chance. Known candidates are now always tried first; `cf apps` is only
+  called if none of them work, and is bounded to whatever budget remains
+  rather than retried on its own separate timeout/retry policy.
+- Cap the direct-connect attempt's own timeout to the tunnel fallback's
+  per-candidate ceiling whenever a fallback is available, so a silently
+  hanging (rather than actively refused) direct connection can no longer
+  consume its full configured timeout before the tunnel path gets a chance
+  — lowering the documented worst-case latency from ~85s to ~40s.
+- Fix `--refresh-tunnel` leaking the SSH process it superseded; the old
+  tunnel is now terminated instead of running until its keepalive elapses.
+- Surface a failed tunnel candidate's actual stderr (e.g. "SSH disabled for
+  this app") via the existing connectivity status output on stderr, instead
+  of discarding it silently.
+- Fix a freshly-established or reused tunnel being cached as usable even
+  when its own post-connect setup failed in a way that looked like a
+  dropped connection rather than a genuine, actionable HANA rejection.
+- Bound how long a process waits for another concurrent invocation to
+  finish establishing the same host's tunnel, so the entire shared deadline
+  can no longer be spent waiting on a leader whose owning process has
+  already died.
+
 ## 0.5.0 - 2026-07-25
 
 - Add an SSH-tunnel fallback for HANA Cloud hosts unreachable directly (e.g.

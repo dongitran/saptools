@@ -261,6 +261,13 @@ async function connectHdb(params: DriverConnectParams): Promise<DriverConnection
     password: params.password,
     ca: params.certificate,
     useTLS: true,
+    // HANA Cloud can reactively redirect a connection mid-auth to an
+    // internal per-node hostname (pod-locality routing). That target is
+    // often unreachable outside SAP's own network, and for a tunneled
+    // connection it would silently abandon the SSH forward for a fresh,
+    // untunneled socket. The original bound host is always a real, working
+    // endpoint, so disabling the redirect is safe on the direct path too.
+    disableCloudRedirect: true,
     ...(params.servername === undefined ? {} : { servername: params.servername }),
   });
   await openClient(client, params.connectTimeoutMs);

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { connect as netConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,10 +26,12 @@ export interface TunnelChildProcess {
   unref(): void;
 }
 
+export type SpawnTunnelStdio = "ignore" | readonly ["ignore", "ignore", number];
+
 export type SpawnTunnelProcessFn = (
   command: string,
   args: readonly string[],
-  options: { readonly detached: true; readonly stdio: "ignore"; readonly env: NodeJS.ProcessEnv },
+  options: { readonly detached: true; readonly stdio: SpawnTunnelStdio; readonly env: NodeJS.ProcessEnv },
 ) => TunnelChildProcess;
 
 export interface SpawnTunnelParams {
@@ -54,6 +56,19 @@ export interface SpawnTunnelDeps {
   readonly probePort?: (port: number) => Promise<boolean>;
   readonly allocatePort?: () => Promise<number>;
   readonly killProcess?: (pid: number | undefined) => void;
+  /**
+   * Called with a short diagnostic (the failed candidate's captured stderr
+   * tail) when this candidate fails to become ready. Never called on
+   * success, or when the capture produced no content.
+   */
+  readonly onFailureDiagnostic?: (message: string) => void;
+  /**
+   * Defaults to a real mkdtemp+open-backed stderr capture. Inject a fast,
+   * no-I/O override (e.g. `() => Promise.resolve(undefined)`) in tests that
+   * don't exercise diagnostic capture, so their timing stays independent of
+   * genuine filesystem I/O.
+   */
+  readonly openStderrCapture?: () => Promise<StderrCapture | undefined>;
 }
 
 function assertPositiveSafeInteger(label: string, value: number): void {
@@ -209,6 +224,56 @@ function raceTunnelReadiness(
   });
 }
 
+const STDERR_TAIL_MAX_CHARS = 4096;
+
+export interface StderrCapture {
+  readonly path: string;
+  readonly fd: number;
+  close(): Promise<void>;
+}
+
+/**
+ * A detached, cross-invocation-surviving process can't use a pipe for
+ * stdio (an unread pipe would block the writer once the parent exits), so
+ * a candidate's diagnostic output is instead redirected to a small temp
+ * file - a file write has no such backpressure. Setup failures (e.g. no tmp
+ * space) degrade to no capture rather than blocking the tunnel attempt.
+ */
+async function openStderrCapture(): Promise<StderrCapture | undefined> {
+  try {
+    const dir = await mkdtemp(join(tmpdir(), "saptools-cf-hana-tunnel-log-"));
+    const path = join(dir, "stderr.log");
+    const handle = await open(path, "w");
+    return {
+      path,
+      fd: handle.fd,
+      close: async () => {
+        await handle.close().catch(() => {
+          // Best-effort cleanup.
+        });
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A bounded, whitespace-collapsed tail of the capture file, or `undefined` if empty/unreadable. */
+async function readStderrTail(path: string): Promise<string | undefined> {
+  try {
+    const content = (await readFile(path, "utf8")).trim().replace(/\s+/g, " ");
+    if (content.length === 0) {
+      return undefined;
+    }
+    return content.length > STDERR_TAIL_MAX_CHARS
+      ? content.slice(-STDERR_TAIL_MAX_CHARS)
+      : content;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Spawns a detached `cf ssh -L` forward and races "the local port becomes
  * connectable" against "the process exited/errored early" against the
@@ -246,7 +311,27 @@ export async function spawnTunnel(
   ];
   const env: NodeJS.ProcessEnv =
     params.cfHome === undefined ? { ...process.env } : { ...process.env, CF_HOME: params.cfHome };
-  const child = spawnProcess(bin, args, { detached: true, stdio: "ignore", env });
+  const openCapture = deps.openStderrCapture ?? openStderrCapture;
+  const capture = await openCapture();
+  const stdio: SpawnTunnelStdio = capture === undefined ? "ignore" : ["ignore", "ignore", capture.fd];
+  const child = spawnProcess(bin, args, { detached: true, stdio, env });
 
-  return await raceTunnelReadiness(child, localPort, boundMs, probePort, killProcess);
+  const result = await raceTunnelReadiness(child, localPort, boundMs, probePort, killProcess);
+  if (capture !== undefined) {
+    if (result === undefined) {
+      try {
+        const tail = await readStderrTail(capture.path);
+        if (tail !== undefined) {
+          deps.onFailureDiagnostic?.(tail);
+        }
+      } catch {
+        // Diagnostic reporting is best-effort: a consumer-supplied
+        // onFailureDiagnostic must never be able to leak the capture's temp
+        // file (by skipping the close() below) or mask this candidate's
+        // real (failed) outcome by throwing out of spawnTunnel instead.
+      }
+    }
+    await capture.close();
+  }
+  return result;
 }

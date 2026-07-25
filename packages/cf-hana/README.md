@@ -389,9 +389,57 @@ unattended live SSH path open just because its keepalive has not lapsed.
 
 In the worst case (a silently-dropping network path, so the direct attempt
 runs its full connect timeout, and no candidate app works either), `auto`
-mode takes roughly 60s (direct) + 25s (tunnel budget) before surfacing a
-final error — bounded and predictable, not open-ended. Use `--tunnel` to skip
-the 60s direct cost for a host you already know is unreachable.
+mode takes roughly 15s (direct, capped once a tunnel fallback is available —
+see below) + 25s (tunnel budget) ≈ 40s before surfacing a final error —
+bounded and predictable, not open-ended. Use `--tunnel` to skip the direct
+cost entirely for a host you already know is unreachable.
+
+Whenever a tunnel fallback is available at all (`auto` mode, the default),
+the direct attempt's own timeout is capped at the tunnel side's own
+per-candidate ceiling (15s by default) even if a longer timeout is
+configured — a silently-hanging (rather than actively refused) direct
+connection would otherwise consume its entire configured timeout before the
+tunnel path got a chance at all. This only ever shortens an
+otherwise-hanging attempt; it never affects a host that refuses quickly, or
+a configured timeout that is already shorter.
+
+`cf-hana` also disables SAP HANA Cloud's reactive mid-auth redirect (used
+for per-node/pod locality routing) on every connection, direct or tunneled:
+without this, a multi-node HANA Cloud instance can redirect an
+already-established connection to a different internal hostname that isn't
+reachable outside SAP's own network, silently abandoning a working SSH
+tunnel for a fresh, untunneled connection that fails for the same reason the
+original direct connection did. The original bound host is always a real,
+working endpoint for your binding, so this has no effect on which schema,
+user, or data you reach.
+
+### Known limitations
+
+- **Cross-org reaper and concurrent processes.** Every connection attempt
+  closes any cached tunnel tagged for a different Cloud Foundry org than the
+  current target, regardless of remaining lifetime — intentional hygiene so
+  switching orgs never leaves a stale tunnel open. On a shared machine, this
+  can also close another, unrelated, concurrently-running invocation's
+  active tunnel to a different org; there is no portable, low-cost way to
+  detect "is this port actively in use by someone else" from outside that
+  TCP session.
+- **Stale-tunnel reaping trusts the recorded pid.** The reaper terminates a
+  dead or expired tunnel's process by its recorded pid, with no additional
+  identity check (e.g. confirming the pid still refers to a `cf ssh`
+  process). On a long-uptime machine, pid reuse could in principle target an
+  unrelated process; this is a narrow race not worth a platform-specific
+  check for.
+- **Programmatic (non-CLI) pool usage can strand idle connections.** The
+  connection pool reuses the most-recently-released idle connection first
+  (LIFO); a long-lived process that opens a burst of connections and then
+  settles into serial one-at-a-time use can leave earlier connections
+  idle-but-unreaped for the pool's lifetime. The CLI itself always drains
+  its pool at the end of every command, so this only affects long-lived
+  programmatic use of the library.
+- **Pre-write backups are never pruned.** Unlike SQL history (5-day
+  retention) and saved query results (TTL plus `result prune`/`result
+  clear`), files under `~/.saptools/cf-hana/backups/` accumulate
+  indefinitely with no retention policy or cleanup command.
 
 ## Requirements
 

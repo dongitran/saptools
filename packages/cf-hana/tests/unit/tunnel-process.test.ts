@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { access, mkdtemp } from "node:fs/promises";
+import { writeSync } from "node:fs";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +15,11 @@ import {
   spawnTunnel,
   withScopedCfSession,
 } from "../../src/tunnel/process.js";
-import type { SpawnTunnelProcessFn, TunnelChildProcess } from "../../src/tunnel/process.js";
+import type {
+  SpawnTunnelProcessFn,
+  StderrCapture,
+  TunnelChildProcess,
+} from "../../src/tunnel/process.js";
 
 class FakeChild extends EventEmitter implements TunnelChildProcess {
   unrefCalled = false;
@@ -108,13 +113,17 @@ describe("spawnTunnel", () => {
 
   it("resolves undefined without crashing when the binary cannot be spawned (ENOENT)", async () => {
     const child = new FakeChild(undefined);
-    const { spawnProcess } = fakeSpawnProcess(child);
     const killProcess = vi.fn();
-    // allocatePort is injected as an already-resolved promise so the whole
-    // chain up to `child.on(...)` attachment settles within one microtask
-    // tick, before the queued emit below — the real allocator's socket I/O
-    // is not guaranteed to finish that fast, which would otherwise risk
-    // emitting before a listener exists and hanging the test.
+    // Scheduled from inside the mock itself (not at the top level of the
+    // test) so it is guaranteed to fire after spawnTunnel's synchronous
+    // listener attachment, regardless of how many other async hops (real stderr-
+    // capture filesystem I/O, allocatePort, ...) precede the spawn call.
+    const spawnProcess: SpawnTunnelProcessFn = (_command, _args) => {
+      queueMicrotask(() => {
+        child.emit("error", Object.assign(new Error("spawn cf ENOENT"), { code: "ENOENT" }));
+      });
+      return child;
+    };
     const resultPromise = spawnTunnel(
       { ...BASE_PARAMS, deadline: Date.now() + 10_000 },
       {
@@ -125,16 +134,17 @@ describe("spawnTunnel", () => {
       },
     );
 
-    queueMicrotask(() => {
-      child.emit("error", Object.assign(new Error("spawn cf ENOENT"), { code: "ENOENT" }));
-    });
-
     await expect(resultPromise).resolves.toBeUndefined();
   });
 
   it("resolves undefined when the process exits before the port opens", async () => {
     const child = new FakeChild(4242);
-    const { spawnProcess } = fakeSpawnProcess(child);
+    const spawnProcess: SpawnTunnelProcessFn = (_command, _args) => {
+      queueMicrotask(() => {
+        child.emit("exit", 1);
+      });
+      return child;
+    };
     const resultPromise = spawnTunnel(
       { ...BASE_PARAMS, deadline: Date.now() + 10_000 },
       {
@@ -143,10 +153,6 @@ describe("spawnTunnel", () => {
         allocatePort: () => Promise.resolve(39_002),
       },
     );
-
-    queueMicrotask(() => {
-      child.emit("exit", 1);
-    });
 
     await expect(resultPromise).resolves.toBeUndefined();
   });
@@ -198,6 +204,9 @@ describe("spawnTunnel", () => {
           probePort: () => Promise.resolve(false),
           killProcess,
           allocatePort: () => Promise.resolve(39_003),
+          // Real mkdtemp+open filesystem I/O does not resolve on fake-timer
+          // ticks; a no-I/O stand-in keeps this test's timing fake-timer-only.
+          openStderrCapture: () => Promise.resolve(undefined),
         },
       );
 
@@ -222,6 +231,7 @@ describe("spawnTunnel", () => {
           spawnProcess,
           probePort: () => Promise.resolve(false),
           allocatePort: () => Promise.resolve(39_004),
+          openStderrCapture: () => Promise.resolve(undefined),
         },
       );
 
@@ -236,6 +246,112 @@ describe("spawnTunnel", () => {
       await vi.advanceTimersByTimeAsync(2);
       await expect(resultPromise).resolves.toBeUndefined();
     });
+  });
+});
+
+describe("spawnTunnel - stderr diagnostic capture", () => {
+  it("reports the spawned process's real stderr tail via onFailureDiagnostic when the tunnel fails to become ready", async () => {
+    const child = new FakeChild(4242);
+    const onFailureDiagnostic = vi.fn();
+    const spawnProcess: SpawnTunnelProcessFn = (_command, _args, options) => {
+      // A real fd, backed by a real temp file - write to it exactly like a
+      // real cf ssh process's stderr would, then fail like a denied app.
+      const { stdio } = options;
+      if (Array.isArray(stdio) && typeof stdio[2] === "number") {
+        writeSync(stdio[2], "You are not authorized to perform the requested action\n");
+      }
+      queueMicrotask(() => {
+        child.emit("exit", 1);
+      });
+      return child;
+    };
+
+    const result = await spawnTunnel(
+      { ...BASE_PARAMS, deadline: Date.now() + 10_000 },
+      { spawnProcess, probePort: () => Promise.resolve(false), onFailureDiagnostic },
+    );
+
+    expect(result).toBeUndefined();
+    expect(onFailureDiagnostic).toHaveBeenCalledTimes(1);
+    expect(onFailureDiagnostic.mock.calls[0]?.[0]).toContain(
+      "not authorized to perform the requested action",
+    );
+  });
+
+  it("still cleans up the capture and resolves undefined even when onFailureDiagnostic itself throws", async () => {
+    const child = new FakeChild(4242);
+    const spawnProcess: SpawnTunnelProcessFn = (_command, _args) => {
+      queueMicrotask(() => {
+        child.emit("exit", 1);
+      });
+      return child;
+    };
+    const dir = await mkdtemp(join(tmpdir(), "cf-hana-process-diag-"));
+    const path = join(dir, "stderr.log");
+    await writeFile(path, "a consumer callback should not be able to hide this\n");
+    let closeCalled = false;
+    const openStderrCapture = (): Promise<StderrCapture | undefined> =>
+      Promise.resolve({
+        path,
+        fd: -1,
+        close: () => {
+          closeCalled = true;
+          return Promise.resolve();
+        },
+      });
+    const onFailureDiagnostic = (): void => {
+      throw new Error("consumer callback blew up");
+    };
+
+    const result = await spawnTunnel(
+      { ...BASE_PARAMS, deadline: Date.now() + 10_000 },
+      {
+        spawnProcess,
+        probePort: () => Promise.resolve(false),
+        allocatePort: () => Promise.resolve(39_888),
+        openStderrCapture,
+        onFailureDiagnostic,
+      },
+    );
+
+    expect(result).toBeUndefined();
+    expect(closeCalled).toBe(true);
+  });
+
+  it("does not call onFailureDiagnostic when the candidate succeeds", async () => {
+    const child = new FakeChild(4242);
+    const onFailureDiagnostic = vi.fn();
+    const { spawnProcess } = fakeSpawnProcess(child);
+
+    await spawnTunnel(
+      { ...BASE_PARAMS, deadline: Date.now() + 10_000 },
+      { spawnProcess, probePort: () => Promise.resolve(true), onFailureDiagnostic },
+    );
+
+    expect(onFailureDiagnostic).not.toHaveBeenCalled();
+  });
+
+  it("does not call onFailureDiagnostic when the failed candidate wrote nothing to stderr", async () => {
+    const child = new FakeChild(4242);
+    const onFailureDiagnostic = vi.fn();
+    const spawnProcess: SpawnTunnelProcessFn = (_command, _args) => {
+      queueMicrotask(() => {
+        child.emit("exit", 1);
+      });
+      return child;
+    };
+    const resultPromise = spawnTunnel(
+      { ...BASE_PARAMS, deadline: Date.now() + 10_000 },
+      {
+        spawnProcess,
+        probePort: () => Promise.resolve(false),
+        allocatePort: () => Promise.resolve(39_777),
+        onFailureDiagnostic,
+      },
+    );
+
+    await resultPromise;
+    expect(onFailureDiagnostic).not.toHaveBeenCalled();
   });
 });
 
