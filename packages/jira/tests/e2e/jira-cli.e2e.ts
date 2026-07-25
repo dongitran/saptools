@@ -305,6 +305,57 @@ async function handleFakeJiraRequest(
     return;
   }
 
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/OPS-STRUCTURED?")) {
+    writeJson(response, {
+      key: "OPS-STRUCTURED",
+      fields: {
+        summary: "Structured description rendering",
+        status: { name: "Open", statusCategory: { name: "To Do" } },
+        priority: null,
+        assignee: null,
+        issuetype: { name: "Task" },
+        updated: "2026-07-24T00:00:00.000+0000",
+        description: {
+          type: "doc",
+          version: 1,
+          content: [
+            { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Expected Result" }] },
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "The dashboard should load" },
+                { type: "hardBreak" },
+                { type: "text", text: "within two seconds." },
+              ],
+            },
+            {
+              type: "bulletList",
+              content: [
+                {
+                  type: "listItem",
+                  content: [{ type: "paragraph", content: [{ type: "text", text: "Region: us-east-1" }] }],
+                },
+                {
+                  type: "listItem",
+                  content: [{ type: "paragraph", content: [{ type: "text", text: "Service: checkout" }] }],
+                },
+              ],
+            },
+            { type: "rule" },
+            {
+              type: "mediaSingle",
+              content: [{ type: "media", attrs: { alt: "diagram.png", id: "structured-media-id", type: "file" } }],
+            },
+          ],
+        },
+        comment: { comments: [] },
+        attachment: [],
+        issuelinks: [],
+      },
+    });
+    return;
+  }
+
   if (
     method === "GET" &&
     url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/comment?startAt=0&maxResults=100"
@@ -323,6 +374,46 @@ async function handleFakeJiraRequest(
     url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ATTACHMENTS/comment?startAt=0&maxResults=100"
   ) {
     writeJson(response, { comments: [], maxResults: 100, startAt: 0, total: 0 });
+    return;
+  }
+
+  if (
+    method === "GET" &&
+    url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-STRUCTURED/comment?startAt=0&maxResults=100"
+  ) {
+    writeJson(response, {
+      comments: [
+        {
+          id: "40001",
+          author: { displayName: "Reviewer" },
+          body: {
+            type: "doc",
+            version: 1,
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "Verified on staging." }] },
+              {
+                type: "orderedList",
+                content: [
+                  {
+                    type: "listItem",
+                    content: [{ type: "paragraph", content: [{ type: "text", text: "Deploy build 42" }] }],
+                  },
+                  {
+                    type: "listItem",
+                    content: [{ type: "paragraph", content: [{ type: "text", text: "Run smoke tests" }] }],
+                  },
+                ],
+              },
+            ],
+          },
+          created: "2026-07-24T01:00:00.000+0000",
+        },
+      ],
+      isLast: true,
+      maxResults: 100,
+      startAt: 0,
+      total: 1,
+    });
     return;
   }
 
@@ -718,7 +809,9 @@ test.describe("Jira CLI", () => {
         readonly descriptionText: string;
         readonly images: readonly { readonly filePath: string; readonly fileUrl: string }[];
       };
-      expect(parsedDetail).toMatchObject({ descriptionText: "Deploy safely" });
+      expect(parsedDetail).toMatchObject({
+        descriptionText: "Deploy safely\n\n[image: deployment.png]",
+      });
       expect(hasMediaId(parsedDetail.descriptionAdf, "media-platform-id")).toBe(true);
       expect(parsedDetail.attachments).toHaveLength(2);
       expect(parsedDetail.attachments[0]).toMatchObject({
@@ -746,6 +839,43 @@ test.describe("Jira CLI", () => {
       expect(imageFetches).toHaveLength(1);
       expect(JSON.parse(links.stdout)).toEqual([expect.objectContaining({ title: "Docs" })]);
       expect(JSON.parse(transitions.stdout)).toEqual([expect.objectContaining({ id: "31" })]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can read a structure-preserving description and comment body", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const detail = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "issue",
+        "OPS-STRUCTURED",
+        "--json",
+      ]);
+      const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly comments: readonly { readonly bodyText: string }[];
+        readonly descriptionText: string;
+      };
+
+      expect(parsedDetail.descriptionText).toBe(
+        [
+          "Expected Result",
+          "",
+          "The dashboard should load\nwithin two seconds.",
+          "",
+          "- Region: us-east-1",
+          "- Service: checkout",
+          "",
+          "---",
+          "",
+          "[image: diagram.png]",
+        ].join("\n"),
+      );
+      expect(parsedDetail.comments[0]?.bodyText).toBe(
+        ["Verified on staging.", "", "1. Deploy build 42", "2. Run smoke tests"].join("\n"),
+      );
     } finally {
       await ctx.cleanup();
     }

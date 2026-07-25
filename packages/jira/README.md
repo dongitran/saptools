@@ -181,7 +181,7 @@ jira issue OPS-123 --no-images
 jira issue OPS-123 --no-attachments
 ```
 
-JSON issue details include both `descriptionText` and `descriptionAdf`. `descriptionText` is a flattened convenience string. `descriptionAdf` is the raw ADF document when Jira returns a valid document, or `null` when the issue has no valid description ADF.
+JSON issue details include both `descriptionText` and `descriptionAdf`. `descriptionText` is a plain-text convenience string that preserves the description's block structure: headings, paragraphs, and rules each land on their own line, list items get a `-`/number marker, and each inline `media`/`mediaSingle` node is rendered in place as `[image: <filename-or-id>]`. `descriptionAdf` is the raw ADF document when Jira returns a valid document, or `null` when the issue has no valid description ADF. Every comment's `bodyText` is produced the same way.
 
 #### Issue Images
 

@@ -45,7 +45,7 @@ hana-credentials.json
 .saptools/
 test-regions.json
 .bruno/
-notes/
+packages/notes/
 privates/
 
 # OS/editor files
@@ -61,3 +61,6 @@ Thumbs.db
 # Agent implementation plans
 implementation_plan.md
 **/implementation_plan.md
+IMPLEMENTATION_PLAN.md
+**/IMPLEMENTATION_PLAN.md
+packages/notes/

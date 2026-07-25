@@ -1,3 +1,4 @@
+export * from "./adf-text.js";
 export * from "./adf.js";
 export * from "./auth.js";
 export * from "./assignment.js";

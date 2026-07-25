@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { extractTextFromAdf } from "./adf-text.js";
 import { JiraAdfDocumentSchema, textToAdfDocument, type JiraAdfDocument } from "./adf.js";
 import { parseJiraAssignableUsers, parseJiraCurrentUser } from "./assignment.js";
 import { JiraCustomFieldSearchPageSchema, JiraIssueEditMetadataSchema, normalizeCustomField, normalizeFieldSchema } from "./custom-fields.js";
@@ -498,10 +499,6 @@ export async function addJiraIssueWorklog(
   assertJiraResponseOk(response, "Jira worklog could not be added.");
 }
 
-export function extractTextFromAdf(value: unknown): string {
-  return collectAdfText(value).join(" ").replaceAll(/\s+/gu, " ").trim();
-}
-
 function parseCustomFieldPage(responseBody: unknown): JiraCustomFieldSearchPage {
   const parsed = JiraCustomFieldSearchPageSchema.safeParse(responseBody);
   if (parsed.success) {return parsed.data;}
@@ -753,22 +750,6 @@ function isClonesRelationship(relationship: string): boolean {
 
 function normalizeId(value: string | number | undefined, index: number, prefix: string): string {
   return value === undefined ? `${prefix}-${index.toString()}` : String(value);
-}
-
-function collectAdfText(value: unknown): string[] {
-  if (!isRecord(value)) {
-    return [];
-  }
-
-  const current = typeof value["text"] === "string" ? [value["text"]] : [];
-  const content = value["content"];
-  return Array.isArray(content)
-    ? [...current, ...content.flatMap((child: unknown) => collectAdfText(child))]
-    : current;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function buildWorklogRequestBody(

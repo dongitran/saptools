@@ -87,7 +87,7 @@ jira issue OPS-123
 ```
 
 - The default call downloads every attachment locally; no separate attachment-download command or token/curl workaround is needed.
-- `--json`: use only when a script must parse summary, status, priority, assignee, flattened description text, raw `descriptionAdf`, paginated comments, attachments, clone links, and saved-file metadata.
+- `--json`: use only when a script must parse summary, status, priority, assignee, structure-preserving description text, raw `descriptionAdf`, paginated comments, attachments, clone links, and saved-file metadata.
 - `--no-attachments`: keep attachment metadata without downloading the general attachment list.
 - `--attachment-dir <path>`: save general attachments in a controlled folder.
 - `--max-attachments <number>`: cap the number of general attachments saved.
@@ -306,6 +306,7 @@ ID only once.
 
 When using `jira issue <key>` and the JSON output contains `images[]`, inspect every saved `images[].filePath` before answering the user. Explain the visible content in each image carefully:
 
+- Description and comment text now preserve structure: each inline `media`/`mediaSingle` node appears in place as `[image: <filename-or-id>]`, so use that marker's surrounding heading, paragraph, or list item to tell which point in the ticket each downloaded image actually illustrates.
 - Identify the screen, page, dialog, browser/tool panel, or application area shown.
 - Call out selected filters, form values, table columns, highlighted rows, error text, request names, response fields, or any DevTools/F12 panels visible.
 - Connect the image evidence back to the ticket's expected and actual behavior.
