@@ -101,6 +101,10 @@ Key options:
 - `--result-ttl-minutes <n>`: change explicit or automatic saved-result expiry.
 - `--read-only`: block non-read statements.
 - `--allow-destructive`: only for explicit user-requested destructive work.
+- `--tunnel`: skip the direct connection attempt and connect via an SSH
+  tunnel through another app in the same org/space immediately.
+- `--refresh-tunnel`: bypass a cached/live SSH tunnel and force a fresh
+  establishment attempt.
 
 ## Troubleshooting
 
@@ -121,3 +125,11 @@ current technical user and sibling bindings. Retry with an explicit
 CLI does not retry automatically.
 
 If a query is too broad, add a `WHERE` clause or use `--limit <n>`. Keep `--read-only` enabled unless the user explicitly requests a write.
+
+If a direct connection fails (e.g. an IP-allowlisted HANA Cloud instance),
+`cf-hana` automatically retries through an SSH tunnel via another app in the
+same org/space — no separate action is needed. If a host is already known
+from a prior command in this session to need a tunnel, pass `--tunnel` to
+skip the direct attempt and its connect-timeout cost. If every candidate app
+fails too, the original connection error is preserved unchanged; do not
+retry with a different selector without checking with the user first.

@@ -1,7 +1,7 @@
 import { appendFile } from "node:fs/promises";
 
 import { envName, readEnv } from "../config.js";
-import { QueryError } from "../errors.js";
+import { CfHanaError, QueryError } from "../errors.js";
 import { classifyStatement } from "../statements.js";
 import type { SqlParam, StatementKind } from "../types.js";
 
@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 
 let catalogFailureInjected = false;
+let connectFailureInjectedOnce = false;
 
 /**
  * Deterministic in-memory driver used by hermetic end-to-end tests and offline
@@ -256,11 +257,37 @@ class FakeConnection implements DriverConnection {
   }
 }
 
+/**
+ * Opt-in connectivity-failure fixture for the tunnel-fallback E2E suite,
+ * mirroring the existing `FAKE_FAIL_STATEMENT` pattern: `"once"` fails only
+ * the first `connect()` call (every later call in the process succeeds);
+ * `"always"` fails every call. Unset, `connect()` never fails - identical to
+ * today. The thrown error is shaped exactly like a real hdb connectivity
+ * failure so it exercises the real classifier, not a generic error.
+ */
+function maybeFailConnect(): void {
+  const mode = readEnv(envName("FAKE_FAIL_CONNECT"));
+  if (mode !== "once" && mode !== "always") {
+    return;
+  }
+  if (mode === "once" && connectFailureInjectedOnce) {
+    return;
+  }
+  connectFailureInjectedOnce = true;
+  const cause = Object.assign(
+    new Error("Could not connect to any host: [ fake-host:443 - forced fixture failure ]"),
+    { code: "EHDBOPENCONN" },
+  );
+  throw new CfHanaError("CONNECTION", `Failed to connect to HANA: ${cause.message}`, { cause });
+}
+
 /** Build the deterministic test-only fake HANA driver. */
 export function createFakeDriver(): HanaDriver {
   return {
     name: "fake",
-    connect: (_params: DriverConnectParams): Promise<DriverConnection> =>
-      Promise.resolve(new FakeConnection()),
+    connect: (_params: DriverConnectParams): Promise<DriverConnection> => {
+      maybeFailConnect();
+      return Promise.resolve(new FakeConnection());
+    },
   };
 }

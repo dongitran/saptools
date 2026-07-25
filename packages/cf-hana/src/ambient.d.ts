@@ -41,6 +41,8 @@ declare module "hdb" {
     readonly password: string;
     readonly ca?: string | readonly string[];
     readonly useTLS?: boolean;
+    /** Overrides the TLS SNI/certificate-hostname target independently of `host`. */
+    readonly servername?: string;
   }
 
   export function createClient(options: HdbClientOptions): HdbClient;

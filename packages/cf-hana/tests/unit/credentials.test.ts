@@ -42,6 +42,9 @@ VCAP_APPLICATION:${vcapApplication()}`);
     expect(resolved.regionConfirmed).toBe(true);
     expect(resolved.selectorCanBePinned).toBe(true);
     expect(resolved.bindings).toHaveLength(1);
+    expect(resolved.apiEndpoint).toBe(sampleTarget.apiEndpoint);
+    expect(resolved.orgName).toBe(sampleTarget.orgName);
+    expect(resolved.spaceName).toBe(sampleTarget.spaceName);
   });
 
   it("refuses a bare selector when the ambient CF target changes during discovery", async () => {
@@ -145,8 +148,12 @@ VCAP_APPLICATION:{}`);
       selectorSource: "explicit",
       regionConfirmed: true,
       selectorCanBePinned: true,
+      apiEndpoint: "https://api.cf.cn40.platform.sapcloud.cn",
+      orgName: "example-org",
+      spaceName: "space-demo",
     });
     expect(indexed.selectorSource).toBe("explicit");
+    expect(indexed.apiEndpoint).toBe("https://api.cf.eu20-001.hana.ondemand.com");
   });
 
   it("rejects invalid explicit selector shapes and unknown regions before auth", async () => {

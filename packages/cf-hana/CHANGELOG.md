@@ -2,6 +2,24 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.5.0 - 2026-07-25
+
+- Add an SSH-tunnel fallback for HANA Cloud hosts unreachable directly (e.g.
+  IP-allowlisted landscapes): on a classified connectivity failure, discover
+  a jump-host app in the same org/space via `cf apps`, open a local
+  `cf ssh -L` port-forward, and retry through it. Zero behavior change when
+  the direct connection succeeds.
+- Add `--tunnel` to skip the direct attempt and connect via a tunnel
+  immediately, and `--refresh-tunnel` to bypass a cached/live tunnel and
+  force a fresh attempt. No disable switch: the fallback can only help or
+  no-op, and rethrows the original connection error unchanged on total
+  failure.
+- Persist and reuse the live tunnel under `~/.saptools/cf-hana/tunnel/`
+  across every connection this CLI's pool opens and across separate
+  invocations run in a row against the same host, with a race-free
+  concurrent-establishment marker and automatic reaping of dead or
+  cross-org tunnels.
+
 ## 0.4.0 - 2026-07-14
 
 - Back up `REPLACE` and matched `MERGE INTO` pre-images, cap backup size, and

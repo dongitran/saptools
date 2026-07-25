@@ -93,6 +93,11 @@ export async function readFakeCfTraceEntries(home: string): Promise<readonly Fak
     .map((line) => JSON.parse(line) as FakeCfTraceEntry);
 }
 
+/** Counts `cf ssh` invocations traced by the fake `cf` binary. */
+export function countSshInvocations(entries: readonly FakeCfTraceEntry[]): number {
+  return entries.filter((entry) => entry.kind === "ssh").length;
+}
+
 /** Spawn the built CLI and capture its output. */
 export function runCli(
   args: readonly string[],

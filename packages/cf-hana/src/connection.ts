@@ -1,12 +1,15 @@
+import type { SapCredentials } from "./config.js";
 import type { DriverConnection, HanaDriver } from "./driver/types.js";
 import { CfHanaError, DestructiveStatementError, ReadOnlyViolationError } from "./errors.js";
 import { applyAutoLimit, evaluateGuard } from "./safety.js";
 import { assertParamArity, classifyStatement } from "./statements.js";
+import { connectWithTunnelFallback } from "./tunnel/fallback.js";
 import type {
   QueryOptions,
   QueryResult,
   QueryResultColumn,
   QueryRow,
+  SelectorSource,
   SqlParam,
 } from "./types.js";
 
@@ -22,6 +25,20 @@ export interface ConnectionConfig {
   readonly readOnly: boolean;
   readonly allowDestructive: boolean;
   readonly autoLimit: number | false;
+  /** The resolved Cloud Foundry app/org/space/API this connection targets. */
+  readonly appName: string;
+  readonly orgName: string;
+  readonly spaceName: string;
+  readonly apiEndpoint: string;
+  readonly selectorSource: SelectorSource;
+  /** SAP BTP identity used to resolve bindings, reused for tunnel-fallback CF sessions. */
+  readonly sapCredentials?: SapCredentials;
+  /** `"always"` skips the direct attempt and connects via a tunnel immediately. */
+  readonly tunnelMode: "auto" | "always";
+  /** Bypasses a cached/live tunnel and forces a fresh establishment attempt. */
+  readonly refreshTunnel: boolean;
+  /** CLI-only stderr visibility hook; left unset, the library stays silent. */
+  readonly onTunnelStatus?: (message: string) => void;
 }
 
 interface RunOptions {
@@ -148,15 +165,7 @@ export class Connection {
   ) {}
 
   static async open(driver: HanaDriver, config: ConnectionConfig): Promise<Connection> {
-    const driverConnection = await driver.connect({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      schema: config.schema,
-      certificate: config.certificate,
-      connectTimeoutMs: config.connectTimeoutMs,
-    });
+    const driverConnection = await connectWithTunnelFallback(driver, config);
     return new Connection(driverConnection, config);
   }
 

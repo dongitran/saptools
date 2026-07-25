@@ -3,10 +3,13 @@ import { execFile } from "node:child_process";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import {
+  cfAppsDirect,
   cfAuth,
   cfEnvDirect,
   extractCfEnvApplicationIdentity,
+  parseCfAppsOutput,
   readCurrentCfTarget,
+  resolveCfBin,
   withCfSession,
 } from "../../src/cf.js";
 
@@ -154,6 +157,35 @@ describe("CF CLI retries for network resilience", () => {
     expect(execFileMock).toHaveBeenCalledTimes(3); // CF_RETRY_ATTEMPTS is 3
   });
 
+  it("retries cfAppsDirect on network timeout and succeeds", async () => {
+    const execFileMock = vi.mocked(execFile);
+    let attempts = 0;
+    execFileMock.mockImplementation(((file: string, args: string[], options: unknown, cb: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
+      attempts++;
+      if (attempts < 3) {
+        const err = new Error("Timeout") as Error & { killed?: boolean };
+        err.killed = true;
+        cb(err);
+      } else {
+        cb(null, { stdout: "name   requested state\napp-a   started", stderr: "" });
+      }
+      return {} as unknown;
+    }) as unknown as typeof execFile);
+
+    const promise = cfAppsDirect();
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(attempts).toBe(3);
+    expect(result).toContain("app-a");
+    expect(execFileMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining(["apps"]),
+      expect.objectContaining({ timeout: 60000, killSignal: "SIGKILL" }),
+      expect.any(Function),
+    );
+  });
+
   it("formats error messages and redacts passwords for cf auth", async () => {
     const execFileMock = vi.mocked(execFile);
     execFileMock.mockImplementation(((file: string, args: string[], options: unknown, cb: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
@@ -221,5 +253,53 @@ User-Provided:
         "VCAP_SERVICES: {}\nVCAP_APPLICATION: {\"application_name\":\"app-demo\"",
       ),
     ).toThrow(/Malformed VCAP_APPLICATION JSON/);
+  });
+});
+
+describe("resolveCfBin", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to the plain cf binary with no argument prefix", () => {
+    vi.stubEnv("CF_HANA_CF_BIN", undefined);
+    expect(resolveCfBin()).toEqual({ bin: "cf", argsPrefix: [] });
+  });
+
+  it("uses the current Node executable to run a .js/.mjs cf shim, with the shim as the first argument", () => {
+    vi.stubEnv("CF_HANA_CF_BIN", "/path/to/fake-cf.mjs");
+    expect(resolveCfBin()).toEqual({
+      bin: process.execPath,
+      argsPrefix: ["/path/to/fake-cf.mjs"],
+    });
+  });
+
+  it("uses a custom non-JS binary path directly", () => {
+    vi.stubEnv("CF_HANA_CF_BIN", "/usr/local/bin/cf8");
+    expect(resolveCfBin()).toEqual({ bin: "/usr/local/bin/cf8", argsPrefix: [] });
+  });
+});
+
+describe("parseCfAppsOutput", () => {
+  it("parses name and requested state from a realistic cf apps table", () => {
+    const stdout = `Getting apps in org my-org / space my-space as user@example.com...
+
+name          requested state   processes           routes
+app-a         started            web:1/1             app-a.cf.example.com
+app-b         stopped            web:0/1             app-b.cf.example.com
+`;
+    expect(parseCfAppsOutput(stdout)).toEqual([
+      { name: "app-a", state: "started" },
+      { name: "app-b", state: "stopped" },
+    ]);
+  });
+
+  it("tolerates a trailing blank line and extra whitespace", () => {
+    const stdout = "name    requested state\n\n  app-a    started  \n\n";
+    expect(parseCfAppsOutput(stdout)).toEqual([{ name: "app-a", state: "started" }]);
+  });
+
+  it("returns an empty list when no recognizable header is present", () => {
+    expect(parseCfAppsOutput("No apps found\n")).toEqual([]);
   });
 });

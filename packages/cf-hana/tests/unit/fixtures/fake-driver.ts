@@ -87,14 +87,16 @@ export class FakeHanaConnection implements DriverConnection {
 export class FakeHanaDriver implements HanaDriver {
   readonly name = "fake";
   readonly connections: FakeHanaConnection[] = [];
+  readonly connectCalls: DriverConnectParams[] = [];
   connectCount = 0;
   connectError: Error | undefined = undefined;
   readonly connectErrors: Error[] = [];
 
   constructor(private readonly responder: FakeResponder = () => ({})) {}
 
-  connect(_params: DriverConnectParams): Promise<DriverConnection> {
+  connect(params: DriverConnectParams): Promise<DriverConnection> {
     this.connectCount += 1;
+    this.connectCalls.push(params);
     const queuedError = this.connectErrors.shift();
     const error = queuedError ?? this.connectError;
     if (error !== undefined) {

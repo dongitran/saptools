@@ -38,6 +38,9 @@ export interface ResolvedBindings {
   readonly selectorSource: SelectorSource;
   readonly regionConfirmed: boolean;
   readonly selectorCanBePinned: boolean;
+  readonly apiEndpoint: string;
+  readonly orgName: string;
+  readonly spaceName: string;
 }
 
 interface ResolvedAppTarget {
@@ -254,6 +257,9 @@ export async function resolveAppBindings(
     selectorSource: target.selectorSource,
     regionConfirmed: target.regionConfirmed,
     selectorCanBePinned: target.selectorCanBePinned,
+    apiEndpoint: target.apiEndpoint,
+    orgName: target.orgName,
+    spaceName: target.spaceName,
   };
 }
 

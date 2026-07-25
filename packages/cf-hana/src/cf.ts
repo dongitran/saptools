@@ -155,7 +155,7 @@ export async function withCfSession<T>(work: (ctx: CfExecContext) => Promise<T>)
   }
 }
 
-function resolveCfBin(): { bin: string; argsPrefix: readonly string[] } {
+export function resolveCfBin(): { bin: string; argsPrefix: readonly string[] } {
   const raw = process.env["CF_HANA_CF_BIN"] ?? "cf";
   if (/\.(?:c|m)?js$/i.test(raw)) {
     return { bin: process.execPath, argsPrefix: [raw] };
@@ -273,6 +273,20 @@ export async function cfEnvDirect(appName: string): Promise<string> {
   return await execWithRetries(bin, [...argsPrefix, "env", appName], env);
 }
 
+/** List apps in the target org/space, isolated context (tunnel jump-host discovery). */
+export async function cfApps(ctx: CfExecContext): Promise<string> {
+  return await runCf(["apps"], ctx);
+}
+
+/** List apps in the current ambient target, no CF_HOME override (mirrors {@link cfEnvDirect}). */
+export async function cfAppsDirect(): Promise<string> {
+  const { bin, argsPrefix } = resolveCfBin();
+  const env = { ...process.env };
+  delete env["SAP_EMAIL"];
+  delete env["SAP_PASSWORD"];
+  return await execWithRetries(bin, [...argsPrefix, "apps"], env);
+}
+
 export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined> {
   const { bin, argsPrefix } = resolveCfBin();
   const env = { ...process.env };
@@ -320,6 +334,39 @@ function parseTargetFields(stdout: string): Map<string, string> {
     if (key && val) {map.set(key, val);}
   }
   return map;
+}
+
+export interface CfAppRow {
+  readonly name: string;
+  readonly state: string;
+}
+
+/**
+ * Parses `cf apps` table output. This is a display table, not a stable
+ * machine format, so parsing stays deliberately tolerant: it looks for a
+ * header row starting with "name" and reads the first two whitespace-
+ * delimited columns (name, requested state) from every non-blank row after
+ * it, ignoring anything it doesn't recognize rather than throwing.
+ */
+export function parseCfAppsOutput(stdout: string): readonly CfAppRow[] {
+  const lines = stdout.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => /^\s*name\s+\S/i.test(line));
+  if (headerIndex === -1) {
+    return [];
+  }
+  const rows: CfAppRow[] = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const [name, state] = trimmed.split(/\s+/);
+    if (name === undefined || state === undefined) {
+      continue;
+    }
+    rows.push({ name, state });
+  }
+  return rows;
 }
 
 export function formatCurrentCfAppSelector(target: CurrentCfTarget, appName: string): string {

@@ -178,7 +178,11 @@
     "terminalizes",
     "unindexed",
     "backgrounded",
-    "pkill"
+    "pkill",
+    "EHDBOPENCONN",
+    "unexecutable",
+    "keepalive",
+    "unrefs"
   ],
   "ignorePaths": [
     "**/node_modules/**",

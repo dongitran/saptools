@@ -63,6 +63,12 @@ export interface ConnectOptions {
   readonly password?: string;
   /** Connection pool tuning, or `false` for a single dedicated connection. */
   readonly pool?: PoolOptions | false;
+  /** Skip the direct connection attempt and connect via an SSH tunnel immediately. */
+  readonly tunnel?: boolean;
+  /** Bypass a cached/live tunnel and force a fresh establishment attempt. */
+  readonly refreshTunnel?: boolean;
+  /** CLI-only stderr visibility hook for tunnel-fallback progress; unset stays silent. */
+  readonly onTunnelStatus?: (message: string) => void;
 }
 
 export interface QueryOptions {

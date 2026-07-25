@@ -38,6 +38,7 @@ interface HdbMockState {
   closeCount: number;
   disconnectCount: number;
   autoCommit: boolean;
+  createClientOptions?: Record<string, unknown>;
 }
 
 const connectParams: DriverConnectParams = {
@@ -106,17 +107,21 @@ function createMockClient(state: HdbMockState): MockClient {
   return client;
 }
 
-async function openMockConnection(state: HdbMockState): Promise<DriverConnection> {
+async function openMockConnection(
+  state: HdbMockState,
+  params: DriverConnectParams = connectParams,
+): Promise<DriverConnection> {
   vi.resetModules();
   vi.doMock("hdb", () => ({
-    createClient: (): MockClient => {
+    createClient: (options: Record<string, unknown>): MockClient => {
+      state.createClientOptions = options;
       const client = createMockClient(state);
       state.clients.push(client);
       return client;
     },
   }));
   const { createHdbDriver } = await import("../../src/driver/hdb.js");
-  return await createHdbDriver().connect(connectParams);
+  return await createHdbDriver().connect(params);
 }
 
 afterEach(() => {
@@ -156,5 +161,46 @@ describe("hdb driver", () => {
     await expect(failure).rejects.toMatchObject({ databaseCode: 260 });
     expect(state.disconnectCount).toBe(1);
     expect(state.closeCount).toBe(1);
+  });
+
+  it("does not pass a servername to createClient on the direct path", async () => {
+    const state: HdbMockState = {
+      clients: [],
+      dropError: undefined,
+      schemaError: undefined,
+      closeCount: 0,
+      disconnectCount: 0,
+      autoCommit: true,
+    };
+    await openMockConnection(state);
+
+    expect(state.createClientOptions).toMatchObject({
+      host: connectParams.host,
+      useTLS: true,
+    });
+    expect(state.createClientOptions).not.toHaveProperty("servername");
+  });
+
+  it("passes an explicit servername to createClient for a tunneled connection", async () => {
+    const state: HdbMockState = {
+      clients: [],
+      dropError: undefined,
+      schemaError: undefined,
+      closeCount: 0,
+      disconnectCount: 0,
+      autoCommit: true,
+    };
+    await openMockConnection(state, {
+      ...connectParams,
+      host: "127.0.0.1",
+      port: 39999,
+      servername: connectParams.host,
+    });
+
+    expect(state.createClientOptions).toMatchObject({
+      host: "127.0.0.1",
+      port: 39999,
+      servername: connectParams.host,
+    });
   });
 });

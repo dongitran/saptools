@@ -43,6 +43,13 @@ export function sampleConnectionConfig(
     readOnly: false,
     allowDestructive: false,
     autoLimit: 100,
+    appName: "app-demo",
+    orgName: "example-org",
+    spaceName: "space-demo",
+    apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+    selectorSource: "explicit",
+    tunnelMode: "auto",
+    refreshTunnel: false,
     ...overrides,
   };
 }

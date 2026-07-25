@@ -7,9 +7,11 @@ import {
   CLI_VERSION,
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_QUERY_TIMEOUT_MS,
+  readSapCredentials,
 } from "./config.js";
 import type { ConnectionConfig } from "./connection.js";
 import { resolveAppBindings, selectBinding, toConnectionTarget } from "./credentials.js";
+import type { ResolvedBindings, SelectedConnectionTarget } from "./credentials.js";
 import { createDriver } from "./driver/index.js";
 import { appendSqlHistory } from "./history.js";
 import type { SqlHistoryOperation } from "./history.js";
@@ -51,6 +53,37 @@ function toPoolOptions(options: ConnectOptions): PoolOptions {
   return options.pool ?? {};
 }
 
+/** Build the frozen per-client connection config, including tunnel-fallback context. */
+export function buildConnectionConfig(
+  resolved: ResolvedBindings,
+  target: SelectedConnectionTarget,
+  options: ConnectOptions,
+): ConnectionConfig {
+  const sapCredentials = readSapCredentials({ email: options.email, password: options.password });
+  return {
+    host: target.host,
+    port: target.port,
+    user: target.user,
+    password: target.password,
+    schema: target.schema,
+    certificate: target.certificate,
+    connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+    queryTimeoutMs: options.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS,
+    readOnly: options.readOnly ?? false,
+    allowDestructive: options.allowDestructive ?? false,
+    autoLimit: options.autoLimit ?? DEFAULT_AUTO_LIMIT,
+    appName: resolved.appName,
+    orgName: resolved.orgName,
+    spaceName: resolved.spaceName,
+    apiEndpoint: resolved.apiEndpoint,
+    selectorSource: resolved.selectorSource,
+    tunnelMode: options.tunnel === true ? "always" : "auto",
+    refreshTunnel: options.refreshTunnel ?? false,
+    ...(sapCredentials === undefined ? {} : { sapCredentials }),
+    ...(options.onTunnelStatus === undefined ? {} : { onTunnelStatus: options.onTunnelStatus }),
+  };
+}
+
 function toSelectedBindingInfo(
   bindings: readonly HanaBinding[],
   selected: HanaBinding,
@@ -84,20 +117,7 @@ export class HanaClient {
     const bindingInfo = toSelectedBindingInfo(resolved.bindings, binding);
     const target = toConnectionTarget(binding, role);
     const driver = createDriver();
-
-    const config: ConnectionConfig = {
-      host: target.host,
-      port: target.port,
-      user: target.user,
-      password: target.password,
-      schema: target.schema,
-      certificate: target.certificate,
-      connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-      queryTimeoutMs: options.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS,
-      readOnly: options.readOnly ?? false,
-      allowDestructive: options.allowDestructive ?? false,
-      autoLimit: options.autoLimit ?? DEFAULT_AUTO_LIMIT,
-    };
+    const config = buildConnectionConfig(resolved, target, options);
     const poolOptions = toPoolOptions(options);
 
     const info: HanaClientInfo = {

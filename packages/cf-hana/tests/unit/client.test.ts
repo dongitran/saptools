@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as cf from "../../src/cf.js";
 import type { CurrentCfTarget } from "../../src/cf.js";
-import { HanaClient } from "../../src/client.js";
+import { HanaClient, buildConnectionConfig } from "../../src/client.js";
 import type { ConnectionConfig } from "../../src/connection.js";
+import type { ResolvedBindings, SelectedConnectionTarget } from "../../src/credentials.js";
 import { ConnectionPool } from "../../src/pool.js";
 import { classifyStatement } from "../../src/statements.js";
 import type { HanaClientInfo } from "../../src/types.js";
@@ -123,6 +124,66 @@ afterEach(async () => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   await rm(tempHome, { recursive: true, force: true });
+});
+
+const RESOLVED_AMBIENT: ResolvedBindings = {
+  selector: "eu10/example-org/space-demo/app-demo",
+  appName: "app-demo",
+  bindings: [],
+  source: "live",
+  selectorSource: "ambient",
+  regionConfirmed: true,
+  selectorCanBePinned: true,
+  apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+  orgName: "example-org",
+  spaceName: "space-demo",
+};
+
+const RESOLVED_EXPLICIT: ResolvedBindings = { ...RESOLVED_AMBIENT, selectorSource: "explicit" };
+
+const TARGET: SelectedConnectionTarget = {
+  host: "hana.example.internal",
+  port: 443,
+  user: "DB_USER",
+  password: "db-password",
+  schema: "APP_SCHEMA",
+  certificate: "test-certificate",
+  databaseId: "DB-1",
+};
+
+describe("buildConnectionConfig", () => {
+  it("threads resolved org/space/apiEndpoint/selectorSource into the connection config", () => {
+    const config = buildConnectionConfig(RESOLVED_AMBIENT, TARGET, {});
+    expect(config).toMatchObject({
+      appName: "app-demo",
+      orgName: "example-org",
+      spaceName: "space-demo",
+      apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+      selectorSource: "ambient",
+    });
+  });
+
+  it("populates sapCredentials for an explicit selector when SAP env vars are set", () => {
+    const config = buildConnectionConfig(RESOLVED_EXPLICIT, TARGET, {});
+    expect(config.sapCredentials).toEqual({ email: "user@example.com", password: "secret" });
+  });
+
+  it("omits sapCredentials entirely when no SAP identity is available", () => {
+    vi.stubEnv("SAP_EMAIL", "");
+    vi.stubEnv("SAP_PASSWORD", "");
+    const config = buildConnectionConfig(RESOLVED_AMBIENT, TARGET, {});
+    expect(config).not.toHaveProperty("sapCredentials");
+  });
+
+  it("prefers explicit email/password options over environment variables", () => {
+    vi.stubEnv("SAP_EMAIL", "env@example.com");
+    vi.stubEnv("SAP_PASSWORD", "env-secret");
+    const config = buildConnectionConfig(RESOLVED_EXPLICIT, TARGET, {
+      email: "flag@example.com",
+      password: "flag-secret",
+    });
+    expect(config.sapCredentials).toEqual({ email: "flag@example.com", password: "flag-secret" });
+  });
 });
 
 describe("HanaClient", () => {

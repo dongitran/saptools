@@ -261,6 +261,7 @@ async function connectHdb(params: DriverConnectParams): Promise<DriverConnection
     password: params.password,
     ca: params.certificate,
     useTLS: true,
+    ...(params.servername === undefined ? {} : { servername: params.servername }),
   });
   await openClient(client, params.connectTimeoutMs);
   try {

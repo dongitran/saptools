@@ -15,6 +15,12 @@ export interface DriverConnectParams {
   readonly schema: string;
   readonly certificate: string;
   readonly connectTimeoutMs: number;
+  /**
+   * TLS certificate-hostname override. Set only when `host` is a tunnel
+   * endpoint (e.g. `127.0.0.1`) so certificate verification still targets
+   * the real HANA hostname. Unset on the direct path.
+   */
+  readonly servername?: string;
 }
 
 /** A live, single HANA connection. Implementations wrap a concrete driver. */

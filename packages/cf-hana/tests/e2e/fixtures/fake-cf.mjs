@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { appendFileSync, readFileSync } from "node:fs";
+import { createServer } from "node:net";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -124,4 +125,66 @@ if (cmd === "env") {
   err(`App ${app} not found or has no HANA binding (fake)`);
 }
 
-err(`Unsupported cf command in fake: ${args.join(" ")}`);
+if (cmd === "apps") {
+  trace({ kind: "apps", cfHome: process.env.CF_HOME ? "isolated" : "current" });
+  out("Getting apps in org example-org / space space-demo as user@example.com...");
+  out("");
+  out("name          requested state   processes   routes");
+  out("app-demo      started           web:1/1     app-demo.cf.example.com");
+  out("sibling-app   started           web:1/1     sibling-app.cf.example.com");
+  process.exit(0);
+}
+
+if (cmd === "ssh") {
+  const app = args[1];
+  const forwardIndex = args.indexOf("-L");
+  const forward = forwardIndex === -1 ? undefined : args[forwardIndex + 1];
+  trace({ kind: "ssh", app, cfHome: process.env.CF_HOME ? "isolated" : "current" });
+
+  const deniedApps = (process.env.CF_HANA_FAKE_CF_SSH_DENY_APPS ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+
+  if (deniedApps.includes(app)) {
+    // Mirrors the live-measured "SSH disabled on this app" shape: a real
+    // failure takes several seconds, not milliseconds - simulate a short,
+    // deterministic delay instead of literally waiting seconds in CI.
+    setTimeout(() => {
+      err("You are not authorized to perform the requested action");
+    }, 150);
+  } else if (forward === undefined) {
+    err(`missing -L forward: ${args.join(" ")}`);
+  } else {
+    const localPort = Number(forward.split(":")[0]);
+    const cIndex = args.indexOf("-c");
+    const remoteCommand = cIndex === -1 ? undefined : args[cIndex + 1];
+    const sleepMatch = remoteCommand ? /^sleep (\d+)$/.exec(remoteCommand) : null;
+    const keepaliveSeconds = sleepMatch ? Number(sleepMatch[1]) : 60;
+
+    const server = createServer((socket) => {
+      socket.on("error", () => {
+        // A probe connecting and immediately disconnecting is expected.
+      });
+    });
+    server.listen(localPort, "127.0.0.1");
+    // Mirrors the real remote `sleep <keepalive>` command: the session
+    // self-terminates once it elapses, exactly like the genuine tunnel.
+    const keepaliveTimer = setTimeout(() => {
+      server.close(() => {
+        process.exit(0);
+      });
+    }, keepaliveSeconds * 1000);
+    process.on("SIGTERM", () => {
+      clearTimeout(keepaliveTimer);
+      server.close(() => {
+        process.exit(0);
+      });
+    });
+    // Otherwise deliberately does not exit: a real `cf ssh -L` session stays
+    // open for the life of its remote command; this fake mirrors that by
+    // idling until killed or the keepalive elapses, like the real tunnel.
+  }
+} else {
+  err(`Unsupported cf command in fake: ${args.join(" ")}`);
+}

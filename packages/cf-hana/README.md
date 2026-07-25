@@ -105,7 +105,8 @@ cf-hana result  <command>                   Inspect saved query refs
 
 Common options: `--refresh` (deprecated compatibility flag; binding discovery is already live), `--role <runtime|hdi>`, `--binding <name>` /
 `--binding-index <n>`, `--timeout <ms>`, `--read-only`, `--allow-destructive`,
-`--limit <n>`, `--no-auto-limit`. The `query` command also accepts
+`--limit <n>`, `--no-auto-limit`, `--tunnel`, `--refresh-tunnel` (see
+[Connectivity fallback](#connectivity-fallback)). The `query` command also accepts
 `--param <value>` (repeatable), `--cell-limit <n>`, `--save`, `--no-auto-save`,
 `--format <table|json|json-compact|csv>`, `--result-ttl-minutes <n>`, and
 `--refresh-metadata`. `tables` and `columns` support the same four format values.
@@ -350,6 +351,47 @@ mode `0600`.
 
 The guard is a convenience, not a security control: always pass values as bound
 parameters.
+
+## Connectivity fallback
+
+HANA Cloud instances are frequently IP-allowlisted to only accept connections
+from inside the same Cloud Foundry landscape. When a direct connection fails
+in a way that means the initial socket could never be established — not an
+authentication, privilege, or query failure — `cf-hana` can retry through an
+SSH port-forward opened via `cf ssh` against another app in the same org/space,
+which usually can reach the host even when your machine cannot.
+
+- **`auto` (default)**: tries the direct connection first, with zero added
+  behavior when it succeeds. Only a classified connectivity failure triggers
+  the fallback: discover a jump-host app (the target app itself, then a few
+  other started apps via `cf apps`), open a local port-forward, and retry
+  through `127.0.0.1`.
+- **`--tunnel`**: skips the direct attempt and connects via a tunnel
+  immediately — for a host already known to be unreachable directly, so you
+  are not paying the connect-timeout cost (up to 60s) on every invocation.
+- **`--refresh-tunnel`**: bypasses a cached/live tunnel and forces a fresh
+  establishment attempt.
+
+There is deliberately no flag to disable this capability: a tunnel attempt
+only ever engages after a direct failure (or when explicitly requested via
+`--tunnel`), and on total failure it rethrows the original connection error
+unchanged, so it can only help or no-op.
+
+The live tunnel is reused — both across every connection this CLI's own pool
+opens in one invocation, and across separate `cf-hana` invocations run in a
+row against the same host (this CLI's realistic dominant usage pattern, e.g.
+an AI agent running several queries back to back) — instead of re-negotiating
+SSH on every single command. State lives at `~/.saptools/cf-hana/tunnel/`
+(mode `0700`/`0600`, no credentials). A cached tunnel is closed immediately,
+regardless of its remaining lifetime, the moment a later invocation targets a
+different Cloud Foundry org — a different client's landscape never keeps an
+unattended live SSH path open just because its keepalive has not lapsed.
+
+In the worst case (a silently-dropping network path, so the direct attempt
+runs its full connect timeout, and no candidate app works either), `auto`
+mode takes roughly 60s (direct) + 25s (tunnel budget) before surfacing a
+final error — bounded and predictable, not open-ended. Use `--tunnel` to skip
+the 60s direct cost for a host you already know is unreachable.
 
 ## Requirements
 

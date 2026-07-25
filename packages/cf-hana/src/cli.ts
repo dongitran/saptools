@@ -39,6 +39,8 @@ interface ConnectionCliOptions {
   readonly limit?: number;
   readonly autoLimit: boolean;
   readonly refreshMetadata: boolean;
+  readonly tunnel: boolean;
+  readonly refreshTunnel: boolean;
 }
 
 interface FormattedCliOptions extends ConnectionCliOptions {
@@ -78,8 +80,12 @@ function printResolvedTarget(info: HanaClientInfo): void {
   );
 }
 
+function printTunnelStatus(message: string): void {
+  process.stderr.write(`${CLI_NAME}: ${message}\n`);
+}
+
 async function connectForCli(selector: string, options: ConnectOptions): Promise<HanaClient> {
-  const client = await connect(selector, options);
+  const client = await connect(selector, { ...options, onTunnelStatus: printTunnelStatus });
   printResolvedTarget(client.info);
   return client;
 }
@@ -158,6 +164,8 @@ function toConnectOptions(opts: ConnectionCliOptions): ConnectOptions {
     readOnly: opts.readOnly,
     allowDestructive: opts.allowDestructive,
     autoLimit: opts.autoLimit ? (opts.limit ?? DEFAULT_AUTO_LIMIT) : false,
+    tunnel: opts.tunnel,
+    refreshTunnel: opts.refreshTunnel,
     ...(opts.binding === undefined ? {} : { bindingName: opts.binding }),
     ...(opts.bindingIndex === undefined ? {} : { bindingIndex: opts.bindingIndex }),
     ...(opts.timeout === undefined
@@ -291,7 +299,17 @@ function withConnectionOptions(command: Command): Command {
     .option("--timeout <ms>", "connection and query timeout in milliseconds", parseIntOption)
     .option("--limit <n>", "row cap auto-applied to bare SELECT statements", parseIntOption)
     .option("--no-auto-limit", "disable the automatic SELECT row cap")
-    .option("--refresh-metadata", "bypass the 30-minute table/view metadata suggestion cache", false);
+    .option("--refresh-metadata", "bypass the 30-minute table/view metadata suggestion cache", false)
+    .option(
+      "--tunnel",
+      "skip the direct connection attempt and connect via an SSH tunnel immediately",
+      false,
+    )
+    .option(
+      "--refresh-tunnel",
+      "bypass a cached/live SSH tunnel and force a fresh establishment attempt",
+      false,
+    );
 }
 
 function withFormattedConnectionOptions(command: Command): Command {
