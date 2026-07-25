@@ -345,6 +345,14 @@ mode `0600`.
 - **Destructive guard** blocks `DROP` / `TRUNCATE` / `ALTER` and `UPDATE` / `DELETE`
   without a top-level `WHERE`, plus unconditional matched `MERGE DELETE`, unless
   `allowDestructive` / `--allow-destructive` is set.
+- **Single statement per call** is an enforced, guarded property: a SQL
+  argument containing more than one genuine top-level statement (separated
+  by a real, non-quoted, non-commented `;`) is refused unconditionally — not
+  overridable by `--allow-destructive` or `--read-only`. `CREATE PROCEDURE`/
+  `FUNCTION`/`TRIGGER` bodies are exempted, since their `BEGIN`/`END` blocks
+  legitimately contain internal semicolons; content appended after such a
+  routine body's own `END` is a disclosed, out-of-scope exception to this
+  guarantee (see CHANGELOG).
 - **Auto-limit** appends a `LIMIT` to bare `SELECT` statements (default 100);
   `QueryResult.truncated` reports when it clipped the result. Disable with
   `autoLimit: false` / `--no-auto-limit`.

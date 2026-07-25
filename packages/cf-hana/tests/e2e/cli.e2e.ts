@@ -93,7 +93,7 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.5.2");
+  expect(result.stdout).toContain("0.5.3");
 });
 
 test("User can inspect resolved connection metadata", async () => {
@@ -489,6 +489,19 @@ test("User cannot run an unscoped DELETE before explicit approval", async () => 
 
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("destructive statement blocked");
+  await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
+  await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User cannot smuggle a second statement past a properly scoped write, even with --allow-destructive", async () => {
+  const result = await runCli(
+    ["query", SELECTOR, "DELETE FROM ORDERS WHERE ID = 1; DROP TABLE OTHER", "--allow-destructive"],
+    fakeEnv({ trace: true }),
+  );
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("one SQL statement per call");
+  expect(result.stderr).not.toContain("backup");
   await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
   await expect(readBackupFiles(home)).resolves.toEqual([]);
 });

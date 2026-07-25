@@ -2,6 +2,66 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.5.3 - 2026-07-26
+
+- **Security fix:** the safety guard and pre-write backup planner only ever
+  looked at a SQL string's leading statement — nothing checked whether the
+  string contained a second, `;`-separated statement after it. A properly
+  `WHERE`-scoped write (exactly the kind of statement the guard is designed
+  to wave through) could carry an entirely separate, unscoped statement
+  (`DELETE FROM t WHERE id=1; DROP TABLE other`) past the guard with **no
+  flags required at all**, in both normal and `--read-only` mode. Until this
+  release, the only thing preventing a smuggled second statement from
+  actually running was SAP HANA's own rejection of multi-statement text —
+  behavior this tool never guaranteed and must not be understood to rely on.
+  `cf-hana` now refuses any SQL argument containing more than one genuine
+  top-level statement, unconditionally — not overridable by
+  `--allow-destructive` or `--read-only` — via a structural, quote/comment/
+  paren-aware scan for a real (not string-literal, not commented-out,
+  not nested) `;` separator, matching the same "cannot safely determine the
+  statement's true shape, refuse rather than guess" precedent already
+  established for an unresolvable `WITH` clause. The pre-write backup
+  planner applies the identical check before doing anything else, since it
+  runs on every CLI statement before the main guard does and would otherwise
+  fold a smuggled statement straight into its derived backup `SELECT`.
+- `CREATE PROCEDURE`/`FUNCTION`/`TRIGGER` definitions **that have a real
+  `BEGIN`/`END` body** — and, separately, HANA SQLScript anonymous
+  `DO [(...)] BEGIN ... END` blocks — are exempted from this check, since a
+  genuine routine/block body legitimately contains many internal,
+  top-level-looking semicolons that are not additional smuggled statements.
+  An independent review caught that the first implementation of this
+  exemption checked only the leading keyword pair (e.g. `CREATE PROCEDURE`)
+  with no body required at all, which would have let a bare
+  `CREATE PROCEDURE p; DROP TABLE other` skip the multi-statement check
+  entirely with no flags required — fixed before release by requiring an
+  actual top-level `BEGIN` and `END` to be present. **Disclosed, intentional
+  residual limitation:** the exemption still covers the entire
+  routine-creation statement once a body is confirmed present, so content
+  genuinely appended *after* such a body's own `END` (e.g.
+  `CREATE PROCEDURE p AS BEGIN ... END; DROP TABLE other`) is not caught by
+  this check either — a full SQLScript `BEGIN`/`END`-nesting-aware parser
+  would be required to find where the routine body truly ends, which is out
+  of scope for this fix. This narrows a previously-universal gap down to one
+  specific, harder-to-reach statement shape; it does not close it completely.
+- Also caught by that same review and fixed before release: a lone
+  zero-width space or similar invisible Unicode formatting character
+  trailing an otherwise ordinary single statement's `;` — a realistic
+  artifact of pasting SQL out of a chat app, word processor, or web page —
+  was being treated as a smuggled second statement and incorrectly refused.
+  An unclosed top-level parenthesis before a genuine `;` separator (itself
+  already invalid SQL) also defeated detection and the existing `WHERE`-scope
+  check simultaneously; it is now treated the same as an unresolvable `WITH`
+  clause — refused outright, since the statement's real shape can't be
+  determined.
+- Separately noticed while verifying this fix, not fixed here: the `0.5.2`
+  `WITH`-CTE-list parser (`cteListEndIndex`) does not fail closed for a `;`
+  placed *inside* a multi-CTE list (between two CTE definitions rather than
+  after the whole list) — it returns a defined result with an empty
+  `keyword` instead of `undefined`. This is not a live guard bypass on its
+  own (any input reaching this path also has a genuine top-level `;`, which
+  this release's new check independently catches), but it is a real,
+  pre-existing gap in the `0.5.2` parser worth a future, narrowly-scoped fix.
+
 ## 0.5.2 - 2026-07-25
 
 - **Security fix:** the `0.5.1` fix for `WITH`-prefixed guard bypasses shipped

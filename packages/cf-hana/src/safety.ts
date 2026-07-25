@@ -1,8 +1,10 @@
 import {
   classifyStatement,
   firstKeyword,
+  hasMultipleStatements,
   hasTopLevelKeyword,
   maskIgnoredSqlText,
+  MULTI_STATEMENT_MESSAGE,
   resolveWithStatement,
   skipBlockComment,
   skipQuotedText,
@@ -12,7 +14,7 @@ import type { StatementKind } from "./types.js";
 const DESTRUCTIVE_DDL_KEYWORDS = new Set(["DROP", "TRUNCATE", "ALTER"]);
 const UNSCOPED_WRITE_KEYWORDS = new Set(["UPDATE", "DELETE"]);
 
-export type GuardViolation = "read-only" | "destructive";
+export type GuardViolation = "read-only" | "destructive" | "multi-statement";
 
 export interface GuardConfig {
   readonly readOnly: boolean;
@@ -29,6 +31,8 @@ export interface GuardDecision {
 export interface StatementInspection {
   readonly kind: StatementKind;
   readonly destructive: boolean;
+  /** True when `sql` contains more than one genuine top-level statement. */
+  readonly multiStatement: boolean;
 }
 
 export interface AutoLimitResult {
@@ -87,6 +91,16 @@ function appendLimit(sql: string, limit: number): string {
 
 /** Inspect a statement's kind and whether it is destructive. */
 export function inspectStatement(sql: string): StatementInspection {
+  // Checked before classifyStatement is even consulted: a genuine second
+  // top-level statement after a ';' means the real shape of "everything
+  // past the first statement" cannot be vouched for at all, regardless of
+  // what the first statement looks like on its own. See evaluateGuard,
+  // which treats this as unconditional - not overridable by
+  // --allow-destructive, unlike an ordinary destructive classification.
+  if (hasMultipleStatements(sql)) {
+    return { kind: "unknown", destructive: true, multiStatement: true };
+  }
+
   const kind = classifyStatement(sql);
   const leading = firstKeyword(sql);
   // For a WITH-led statement, every destructive check below must reason
@@ -99,7 +113,7 @@ export function inspectStatement(sql: string): StatementInspection {
   const tail = withResolved === undefined ? sql : sql.slice(withResolved.index);
 
   if (kind === "ddl") {
-    return { kind, destructive: DESTRUCTIVE_DDL_KEYWORDS.has(keyword) };
+    return { kind, destructive: DESTRUCTIVE_DDL_KEYWORDS.has(keyword), multiStatement: false };
   }
   if (kind === "dml") {
     const destructive =
@@ -109,6 +123,7 @@ export function inspectStatement(sql: string): StatementInspection {
     return {
       kind,
       destructive,
+      multiStatement: false,
     };
   }
   if (kind === "unknown") {
@@ -122,14 +137,26 @@ export function inspectStatement(sql: string): StatementInspection {
     // this is a safety net independent of the parser's own correctness, not
     // a substitute for fixing a specific parsing gap when one is found.
     const unresolvedWith = leading === "WITH" && withResolved === undefined;
-    return { kind, destructive: keyword === "CALL" || unresolvedWith };
+    return { kind, destructive: keyword === "CALL" || unresolvedWith, multiStatement: false };
   }
-  return { kind, destructive: false };
+  return { kind, destructive: false, multiStatement: false };
 }
 
 /** Decide whether a statement may run under the given safety configuration. */
 export function evaluateGuard(sql: string, config: GuardConfig): GuardDecision {
   const inspection = inspectStatement(sql);
+
+  // Unconditional: unlike an ordinary destructive classification, this is
+  // never overridable by --allow-destructive (nor is it read-only-specific),
+  // since the real shape of the smuggled content is simply unknown.
+  if (inspection.multiStatement) {
+    return {
+      allowed: false,
+      destructive: true,
+      violation: "multi-statement",
+      reason: MULTI_STATEMENT_MESSAGE,
+    };
+  }
 
   if (config.readOnly && inspection.kind !== "select") {
     return {

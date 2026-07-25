@@ -109,16 +109,21 @@ describe("write backup planning", () => {
     });
   });
 
-  it("preserves non-trailing and whitespace-separated semicolons", () => {
-    const sql = `UPDATE ORDERS SET STATUS = 1 ${";".repeat(20_000)}X`;
-    expect(buildWriteBackupPlan(sql)).toMatchObject({
-      operation: "update",
-      statementSql: sql,
-      selectSql: "SELECT * FROM ORDERS",
-    });
+  it("preserves a whitespace-separated semicolon that has nothing real after it", () => {
     expect(buildWriteBackupPlan("DELETE FROM ORDERS ; ;")).toMatchObject({
       statementSql: "DELETE FROM ORDERS ;",
     });
+  });
+
+  it("refuses (rather than silently including) real content following a long run of semicolons", () => {
+    // This SQL string used to be accepted here (trimStatementSql only strips
+    // a *trailing* run of semicolons, so mid-string ones like these survive
+    // it) - but "X" is genuine, non-whitespace content sitting after a real
+    // top-level ';', which is exactly the shape the multi-statement guard
+    // now refuses regardless of whether that content happens to parse as a
+    // recognizable SQL statement on its own.
+    const sql = `UPDATE ORDERS SET STATUS = 1 ${";".repeat(20_000)}X`;
+    expect(() => buildWriteBackupPlan(sql)).toThrow(BackupRequiredError);
   });
 
   it("derives a SELECT for UPSERT with a WHERE clause", () => {
@@ -407,6 +412,50 @@ describe("write backup planning", () => {
       expect(() => buildWriteBackupPlan("WITH not even close to a real CTE list", [])).toThrow(
         BackupRequiredError,
       );
+    });
+  });
+
+  describe("multi-statement guard", () => {
+    it("refuses a genuine second statement smuggled after a scoped write", () => {
+      expect(() =>
+        buildWriteBackupPlan("DELETE FROM t WHERE id=1; DROP TABLE other"),
+      ).toThrow(BackupRequiredError);
+    });
+
+    it("refuses before its own param-arity/keyword-search logic ever scans the smuggled tail", () => {
+      // If this ran after the existing keyword-search logic, the DELETE
+      // builder would fold "; DROP TABLE other" straight into the derived
+      // backup SELECT's WHERE clause text. Confirms the multi-statement
+      // check runs first and stops all of that - no plan is ever built, and
+      // the bound parameter for the first statement's placeholder does not
+      // trigger a confusing arity error first.
+      expect(() =>
+        buildWriteBackupPlan("DELETE FROM t WHERE id=?; DROP TABLE other", ["1"]),
+      ).toThrow(BackupRequiredError);
+    });
+
+    it("refuses even for a statement that is not itself a write, since backupWriteStatement is called unconditionally", () => {
+      expect(() =>
+        buildWriteBackupPlan("SELECT 1 FROM DUMMY; SELECT 2 FROM DUMMY"),
+      ).toThrow(BackupRequiredError);
+    });
+
+    it("does not refuse a routine-body definition despite its internal semicolons", () => {
+      expect(
+        buildWriteBackupPlan("CREATE PROCEDURE my_proc AS BEGIN DECLARE x INT; END;"),
+      ).toBeUndefined();
+    });
+
+    it("the thrown message does not reuse the WITH-refused wording", () => {
+      let thrown: unknown;
+      try {
+        buildWriteBackupPlan("DELETE FROM t WHERE id=1; DROP TABLE other");
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(BackupRequiredError);
+      expect((thrown as Error).message).not.toMatch(/WITH write refused/);
+      expect((thrown as Error).message).toMatch(/one SQL statement per call/);
     });
   });
 });

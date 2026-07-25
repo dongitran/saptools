@@ -184,7 +184,8 @@
     "keepalive",
     "unrefs",
     "untunneled",
-    "unreaped"
+    "unreaped",
+    "fullwidth"
   ],
   "ignorePaths": [
     "**/node_modules/**",

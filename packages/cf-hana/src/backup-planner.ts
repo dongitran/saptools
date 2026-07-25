@@ -13,6 +13,8 @@ import {
   assertParamArity,
   countPlaceholders,
   firstKeyword,
+  hasMultipleStatements,
+  MULTI_STATEMENT_MESSAGE,
   resolveWithStatement,
 } from "./statements.js";
 import type { SqlParam } from "./types.js";
@@ -449,6 +451,17 @@ export function buildWriteBackupPlan(
   params: readonly SqlParam[] = [],
 ): WriteBackupPlan | undefined {
   const trimmed = trimStatementSql(sql);
+  // Checked before anything else in this function - including the
+  // WITH-resolution check right below, and every per-keyword builder's own
+  // keyword search/param-arity logic - because backupWriteStatement() calls
+  // this for *every* CLI statement before the main safety guard ever runs.
+  // Without this, a genuine second statement smuggled after a properly
+  // scoped write would still have its WHERE clause (and everything past it,
+  // including the smuggled content) folded straight into the derived
+  // backup SELECT by the builders below.
+  if (hasMultipleStatements(trimmed)) {
+    throw new BackupRequiredError(MULTI_STATEMENT_MESSAGE);
+  }
   const leading = firstKeyword(trimmed);
   // A WITH-prefixed write's real keyword sits after its CTE definitions; the
   // per-keyword builders below locate their target/WHERE/VALUES relative to

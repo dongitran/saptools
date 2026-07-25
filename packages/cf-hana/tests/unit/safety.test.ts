@@ -194,6 +194,58 @@ describe("inspectStatement", () => {
     expect(result.kind).toBe("dml");
     expect(result.destructive).toBe(false);
   });
+
+  describe("multi-statement detection", () => {
+    it("flags a genuine second statement as destructive and multiStatement", () => {
+      const result = inspectStatement("SELECT 1 FROM DUMMY; DELETE FROM real_table");
+      expect(result.multiStatement).toBe(true);
+      expect(result.destructive).toBe(true);
+    });
+
+    it("does not flag a single statement with a lone trailing semicolon", () => {
+      const result = inspectStatement("SELECT * FROM t;");
+      expect(result.multiStatement).toBe(false);
+    });
+
+    it("does not flag a routine-body definition despite its internal semicolons", () => {
+      const result = inspectStatement(
+        "CREATE PROCEDURE my_proc AS BEGIN DECLARE x INT; END;",
+      );
+      expect(result.multiStatement).toBe(false);
+      expect(result.kind).toBe("ddl");
+      expect(result.destructive).toBe(false);
+    });
+
+    it("composes with WITH resolution: a legitimate WITH followed by a smuggled DELETE is caught", () => {
+      const result = inspectStatement(
+        "WITH x AS (SELECT 1 FROM DUMMY) SELECT * FROM x; DELETE FROM t",
+      );
+      expect(result.multiStatement).toBe(true);
+      expect(result.destructive).toBe(true);
+    });
+
+    it("composes with a multi-line, human-formatted WITH and a smuggled DELETE after a blank line", () => {
+      const sql =
+        "WITH x AS (\n" +
+        "    SELECT 1 AS n\n" +
+        "    FROM DUMMY\n" +
+        ")\n" +
+        "SELECT n FROM x;\n" +
+        "\n" +
+        "DELETE FROM t";
+      const result = inspectStatement(sql);
+      expect(result.multiStatement).toBe(true);
+      expect(result.destructive).toBe(true);
+    });
+
+    it("composes with a quoted-CTE-name WITH followed by a smuggled DELETE", () => {
+      const result = inspectStatement(
+        'WITH "x" AS (SELECT 1 FROM DUMMY) SELECT * FROM "x"; DELETE FROM t',
+      );
+      expect(result.multiStatement).toBe(true);
+      expect(result.destructive).toBe(true);
+    });
+  });
 });
 
 describe("evaluateGuard", () => {
@@ -352,6 +404,153 @@ describe("evaluateGuard", () => {
       allowDestructive: true,
     });
     expect(decision.allowed).toBe(true);
+  });
+
+  describe("multi-statement blocking", () => {
+    it("blocks the severity-defining case with zero flags: a scoped write hiding an unscoped DROP", () => {
+      const decision = evaluateGuard("DELETE FROM t WHERE id=1; DROP TABLE other", {
+        readOnly: false,
+        allowDestructive: false,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("blocks the UPDATE equivalent of the severity-defining case", () => {
+      const decision = evaluateGuard("UPDATE t SET x=1 WHERE id=1; DROP TABLE other", {
+        readOnly: false,
+        allowDestructive: false,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("is not overridable by --allow-destructive", () => {
+      const decision = evaluateGuard("DELETE FROM t WHERE id=1; DROP TABLE other", {
+        readOnly: false,
+        allowDestructive: true,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("still blocks under --read-only (with a multi-statement violation, not a read-only one)", () => {
+      const decision = evaluateGuard("SELECT 1 FROM DUMMY; DELETE FROM real_table", {
+        readOnly: true,
+        allowDestructive: false,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("blocks even when every individual statement is independently harmless", () => {
+      // Intentional, not an oversight: HANA itself already rejects this exact
+      // input with a syntax error, so blocking it client-side with a clearer
+      // message is a usability improvement, not a new restriction on
+      // something that used to meaningfully work.
+      const decision = evaluateGuard("SELECT 1 FROM DUMMY; SELECT 2 FROM DUMMY", {
+        readOnly: false,
+        allowDestructive: false,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("a dangerous-first statement is still blocked, and blocked as multi-statement too", () => {
+      const decision = evaluateGuard("DROP TABLE other; SELECT 1 FROM DUMMY", {
+        readOnly: false,
+        allowDestructive: true,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("catches every destructive shape the guard already recognizes when smuggled second", () => {
+      const fixtures = [
+        "SELECT 1 FROM t WHERE id=1; TRUNCATE TABLE other",
+        "UPDATE t SET x=1 WHERE id=1; ALTER TABLE other DROP COLUMN y",
+        "SELECT 1 FROM t; MERGE INTO other USING src ON 1=1 WHEN MATCHED THEN DELETE",
+        "SELECT 1 FROM t WHERE id=1; INSERT INTO other VALUES (1, 2, 3)",
+        "SELECT 1 FROM t WHERE id=1; CALL some_proc()",
+        "DELETE FROM a WHERE id=1; DELETE FROM b WHERE id=1; DROP TABLE c",
+      ];
+      for (const sql of fixtures) {
+        const decision = evaluateGuard(sql, { readOnly: false, allowDestructive: true });
+        expect(decision.allowed).toBe(false);
+        expect(decision.violation).toBe("multi-statement");
+      }
+    });
+
+    it("allows a routine-body definition through despite its internal semicolons", () => {
+      const decision = evaluateGuard(
+        "CREATE PROCEDURE my_proc AS BEGIN DECLARE x INT; END;",
+        { readOnly: false, allowDestructive: false },
+      );
+      expect(decision.allowed).toBe(true);
+    });
+
+    it("disclosed limitation: content appended after a routine body's own END is not caught by this check", () => {
+      const decision = evaluateGuard(
+        "CREATE PROCEDURE p AS BEGIN DECLARE x INT; END; DROP TABLE other",
+        { readOnly: false, allowDestructive: false },
+      );
+      expect(decision.allowed).toBe(true);
+    });
+
+    it("the reason message is distinct from the WITH-refused/backup message and names the real cause", () => {
+      const decision = evaluateGuard("DELETE FROM t WHERE id=1; DROP TABLE other", {
+        readOnly: false,
+        allowDestructive: false,
+      });
+      expect(decision.reason).not.toMatch(/backup/i);
+      expect(decision.reason).not.toMatch(/WITH write refused/);
+      expect(decision.reason).toMatch(/one SQL statement per call/);
+    });
+
+    it("case-insensitivity: the detection has no case-sensitivity assumptions", () => {
+      const decision = evaluateGuard("SeLeCt 1 FROM dummy; DeLeTe FROM t", {
+        readOnly: false,
+        allowDestructive: true,
+      });
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    describe("review-driven fixes", () => {
+      it("blocks a routine-keyword statement with no real body, unconditionally (independent-review finding)", () => {
+        const decision = evaluateGuard("CREATE PROCEDURE p; DROP TABLE other", {
+          readOnly: false,
+          allowDestructive: true,
+        });
+        expect(decision.allowed).toBe(false);
+        expect(decision.violation).toBe("multi-statement");
+      });
+
+      it("allows a HANA anonymous DO block through despite its internal semicolons", () => {
+        const decision = evaluateGuard(
+          "DO BEGIN DECLARE x INT; SELECT 1 INTO x FROM DUMMY; END;",
+          { readOnly: false, allowDestructive: false },
+        );
+        expect(decision.allowed).toBe(true);
+      });
+
+      it("does not block a single statement with a stray trailing zero-width space", () => {
+        const decision = evaluateGuard("SELECT 1 FROM t;​", {
+          readOnly: false,
+          allowDestructive: false,
+        });
+        expect(decision.allowed).toBe(true);
+      });
+
+      it("blocks an unclosed top-level paren hiding a real separator, unconditionally", () => {
+        const decision = evaluateGuard(
+          "DELETE FROM t WHERE id IN (1, 2; DROP TABLE other",
+          { readOnly: false, allowDestructive: true },
+        );
+        expect(decision.allowed).toBe(false);
+        expect(decision.violation).toBe("multi-statement");
+      });
+    });
   });
 });
 
