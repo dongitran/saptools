@@ -15,6 +15,18 @@ describe("describeEntity", () => {
     expect(describeEntity(ast, "A", false)).toBe("[PK] ID: cds.String(36)\n[computed] computed: cds.Timestamp\n[PK] [computed] generatedID: cds.UUID\ntoB: cds.Association to B");
   });
 
+  it("prints virtual, not-null, and localized markers", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Article: { elements: {
+        stock: { type: "cds.Integer", virtual: true },
+        code: { type: "cds.String", notNull: true },
+        title: { type: "cds.String", localized: true },
+      } },
+    } };
+
+    expect(describeEntity(csn, "Article", false)).toBe("[virtual] stock: cds.Integer\n[not null] code: cds.String\n[localized] title: cds.String");
+  });
+
   it("prints Decimal precision and scale while preserving length parameters", () => {
     const csn: HanaLensCsn = { definitions: {
       Measurement: { elements: {
@@ -256,6 +268,94 @@ describe("describeEntity", () => {
     expect(message).toContain("specify the full name");
   });
 
+  it("renders operation parameters alongside a non-empty elements body instead of dropping them", () => {
+    const csn: HanaLensCsn = { definitions: {
+      GetActiveOwners: {
+        kind: "function",
+        params: { includeInactive: { type: "cds.Boolean" } },
+        elements: { ID: { type: "cds.UUID", key: true }, name: { type: "cds.String" } },
+      },
+    } };
+
+    expect(describeEntity(csn, "GetActiveOwners", false)).toBe("- param includeInactive: cds.Boolean\n[PK] ID: cds.UUID\nname: cds.String");
+  });
+
+  it("shows definition-level annotations, not only element-level ones, behind --with-annotations", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Orders: {
+        "@readonly": true,
+        "@title": "Orders",
+        elements: { ID: { type: "cds.UUID", key: true } },
+      },
+    } };
+
+    expect(describeEntity(csn, "Orders", false)).toBe("[PK] ID: cds.UUID");
+    expect(describeEntity(csn, "Orders", false, true)).toBe('@readonly=true @title="Orders"\n[PK] ID: cds.UUID');
+  });
+
+  it("never leaks hana-lens's own package-name bookkeeping into --with-annotations output", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "demo.sales.Orders": {
+        [PACKAGE_ANNOTATION]: "@demo/sales",
+        "@readonly": true,
+        elements: { ID: { type: "cds.UUID", key: true, [PACKAGE_ANNOTATION]: "@demo/sales" } },
+      },
+    } };
+
+    const output = describeEntity(csn, "demo.sales.Orders", false, true);
+
+    expect(output).toBe('@readonly=true\n[PK] ID: cds.UUID');
+    expect(output.includes(PACKAGE_ANNOTATION)).toBe(false);
+  });
+
+  it("renders an anonymous-aspect composition target using its inline element names", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Order: { elements: {
+        items: {
+          type: "cds.Composition",
+          cardinality: { max: "*" },
+          targetAspect: { elements: { product: { type: "cds.String" }, quantity: { type: "cds.Integer" } } },
+        },
+      } },
+    } };
+
+    expect(describeEntity(csn, "Order", false)).toBe("items: cds.Composition to many { product, quantity }");
+  });
+
+  it("labels a non-element expansion branch with the target's resolved name", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Root: { elements: { link: { type: "cds.Association", target: "Leaf" } } },
+      Leaf: {},
+    } };
+
+    expect(describeEntity(csn, "Root", true)).toBe("link: cds.Association to Leaf\n- Leaf: (no elements)");
+  });
+
+  it("truncates expansion once the depth limit is reached, marking what was cut off", () => {
+    const csn: HanaLensCsn = { definitions: {
+      Root: { elements: { toL1: { type: "cds.Association", target: "L1" } } },
+      L1: { elements: { toL2: { type: "cds.Association", target: "L2" } } },
+      L2: { elements: { toL3: { type: "cds.Association", target: "L3" } } },
+      L3: { elements: { ID: { type: "cds.String" } } },
+    } };
+
+    expect(describeEntity(csn, "Root", true)).toBe(
+      "toL1: cds.Association to L1\n- toL2: cds.Association to L2\n-- toL3: cds.Association to L3\n--- L3: truncated",
+    );
+  });
+
+  it("reports a cycle as circular even when its closing edge lands exactly at the depth limit, not truncated", () => {
+    const csn: HanaLensCsn = { definitions: {
+      A: { elements: { toB: { type: "cds.Association", target: "B" } } },
+      B: { elements: { toC: { type: "cds.Association", target: "C" } } },
+      C: { elements: { toA: { type: "cds.Association", target: "A" } } },
+    } };
+
+    expect(describeEntity(csn, "A", true)).toBe(
+      "toB: cds.Association to B\n- toC: cds.Association to C\n-- toA: cds.Association to A\n--- A: circular",
+    );
+  });
+
   it("bounds long ambiguous short-name candidate lists", () => {
     const csn: HanaLensCsn = { definitions: Object.fromEntries(Array.from(
       { length: 7 },
@@ -277,7 +377,12 @@ describe("describeEntity", () => {
 
 describe("formatCsnExpression", () => {
   it("formats refs, operators, and literal values densely", () => {
-    expect(formatCsnExpression([{ ref: ["status"] }, "=", { val: "Active" }, "and", { ref: ["priority"] }, ">", { val: 3 }])).toBe("status = \"Active\" and priority > 3");
+    // Single-quoted, SQL/CQL style: a double-quoted literal copied into HANA would read as an identifier.
+    expect(formatCsnExpression([{ ref: ["status"] }, "=", { val: "Active" }, "and", { ref: ["priority"] }, ">", { val: 3 }])).toBe("status = 'Active' and priority > 3");
+  });
+
+  it("escapes an embedded single quote in a string literal", () => {
+    expect(formatCsnExpression([{ ref: ["name"] }, "=", { val: "O'Brien" }])).toBe("name = 'O''Brien'");
   });
 
   it("falls back to JSON for unknown nodes without throwing", () => {
@@ -293,7 +398,12 @@ describe("formatCsnExpression", () => {
       { ref: [{ id: "task", where: [{ ref: ["active"] }, "=", { val: true }] }, "ownerID"] },
       "in",
       { list: [{ val: "A" }, { val: "B" }] },
-    ])).toBe("(task.status = \"Open\" or task.priority > 3) and contains(task.title, \"urgent\") and task[active = true].ownerID in (\"A\", \"B\")");
+    ])).toBe("(task.status = 'Open' or task.priority > 3) and contains(task.title, 'urgent') and task[active = true].ownerID in ('A', 'B')");
+  });
+
+  it("formats named-argument function calls distinctly from positional ones", () => {
+    expect(formatCsnExpression([{ func: "YEARS_BETWEEN", args: { P1: { val: "2024-01-01" }, P2: { ref: ["today"] } } }]))
+      .toBe("YEARS_BETWEEN(P1 => '2024-01-01', P2 => today)");
   });
 
   it("keeps fallback safe when an unknown node cannot be JSON serialized", () => {

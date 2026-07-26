@@ -62,12 +62,27 @@ async function compileWithCds(targetDirectory: string): Promise<CdsCompileAttemp
     return { outcome: "compiled", csn: await cdsCandidate["compile"](["*"]) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `@sap/cds compiled the model in ${targetDirectory} and reported an error: ${message} `
-      + "(this is a CDS model problem, not a missing or unusable @sap/cds install; --allow-fallback will not change this outcome)",
-      { cause: error },
-    );
+    throw new Error(describeCompileError(targetDirectory, message), { cause: error });
   }
+}
+
+// The compiler's own "can't find ... module" phrasing (verified stable across real unresolvable
+// `using` imports) means the model reference points at a missing/misnamed file -- a load-adjacent
+// problem, not a semantic error about the model itself. Distinguishing the two only changes the
+// message; it deliberately does not change which branch is fallback-eligible (see the call-site
+// split above), since 068's own regression test already locks in that a compile()-time throw stays
+// fatal regardless of what its message happens to say.
+function isUnresolvableModuleError(message: string): boolean {
+  return /Can't find (?:local|package) module/u.test(message);
+}
+
+function describeCompileError(targetDirectory: string, message: string): string {
+  if (isUnresolvableModuleError(message)) {
+    return `@sap/cds compiled the model in ${targetDirectory} but could not resolve a referenced file: ${message} `
+      + "(this looks like a missing or misnamed source file, not a CDS model semantics problem)";
+  }
+  return `@sap/cds compiled the model in ${targetDirectory} and reported an error: ${message} `
+    + "(this is a CDS model problem, not a missing or unusable @sap/cds install; --allow-fallback will not change this outcome)";
 }
 
 async function findCdsFiles(directory: string): Promise<readonly string[]> {
@@ -166,16 +181,27 @@ async function main(): Promise<void> {
   if (targetDirectory === undefined || packageName === undefined) {
     throw new Error("Usage: compile-worker <targetDir> <packageName> [allowFallback]");
   }
-  process.chdir(targetDirectory);
+  // No process.chdir here: spawn() already starts this process with cwd set to targetDirectory,
+  // so an extra chdir is redundant at best -- and actively wrong if targetDirectory is ever
+  // relative, since it would then chdir a second time relative to the already-correct cwd.
   const { csn, via } = await compileCsn(targetDirectory, allowFallbackRaw === "1");
   if (!isRecord(csn) || !isRecord(csn["definitions"])) {
     throw new Error("@sap/cds returned a CSN without definitions");
   }
   const definitions = createDefinitionRecord();
   for (const [name, definition] of Object.entries(csn["definitions"])) {
-    if (isRecord(definition)) {
-      definitions[name] = { ...definition, [PACKAGE_ANNOTATION]: packageName } as HanaLensDefinition;
+    if (!isRecord(definition)) {
+      continue;
     }
+    // cds.* is the framework's own reserved namespace (e.g. cds.outbox.Messages, injected for the
+    // transactional outbox feature) -- never attribute a framework built-in to whichever workspace
+    // package happened to compile first; it does not belong to any of them. It still belongs in
+    // the cache, unattributed, so `--kind all` stays the complete compiled model and describe/
+    // references can still resolve it; every package emits the same shared shape, so the merge's
+    // existing identical-definition collapse keeps just one copy.
+    definitions[name] = name.startsWith("cds.")
+      ? definition as HanaLensDefinition
+      : { ...definition, [PACKAGE_ANNOTATION]: packageName } as HanaLensDefinition;
   }
   process.stdout.write(`${JSON.stringify({ packageName, definitions, via })}\n`);
 }

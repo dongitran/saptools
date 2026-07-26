@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { availableParallelism } from "node:os";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import type { CompileOutcome, CompileResult, SapPackage } from "./types.js";
@@ -7,6 +9,11 @@ import { isRecord } from "./validation.js";
 
 const FAILURE_NAME_LIMIT = 5;
 const FAILURE_REASON_LIMIT = 2_000;
+// Each compile is its own child process (two pipe descriptors plus a process-table entry); an
+// unbounded spawn made descriptor exhaustion reachable on large workspaces. A cap near core count
+// costs nothing for CPU-bound compilation and was independently verified not to change output
+// content (serial and concurrent runs produced hash-identical caches).
+const MAX_CONCURRENT_COMPILES = Math.max(1, availableParallelism());
 
 function workerPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "compile-worker.js");
@@ -38,6 +45,33 @@ export function parseCompileResult(raw: string, packageName: string): CompileRes
   throw new Error(`Compile worker for ${packageName} returned ${foundJson ? "an invalid payload" : "malformed JSON"}`);
 }
 
+// A non-zero exit or a termination signal (OOM killer, an external timeout, an unrelated teardown
+// hook) can still follow a complete, valid payload already flushed to stdout -- so this always
+// tries to parse stdout first, regardless of how the process ended, and only falls back to an
+// exit-code/signal-based error when no usable result actually exists. Kept separate from the
+// spawn/event-listener plumbing so this decision is directly unit-testable with synthetic inputs.
+export function resolveCompileOutcome(
+  packageName: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stdout: string,
+  stderr: string,
+): CompileResult {
+  try {
+    return parseCompileResult(stdout, packageName);
+  } catch (parseError) {
+    if (code === 0) {
+      throw parseError instanceof Error ? parseError : new Error(String(parseError));
+    }
+  }
+  const trimmedStderr = stderr.trim();
+  const stderrDetail = trimmedStderr.length > 0 ? trimmedStderr : "(no stderr output)";
+  const exitDetail = signal === null
+    ? (code === null ? "unknown exit condition" : `exit code ${code.toString()}`)
+    : `terminated by signal ${signal}`;
+  throw new Error(`Compilation failed for ${packageName}: ${stderrDetail} (${exitDetail})`);
+}
+
 export async function compilePackage(targetPackage: SapPackage, allowFallback: boolean): Promise<CompileResult> {
   return await new Promise<CompileResult>((resolve, reject) => {
     const child = spawn(process.execPath, [
@@ -50,21 +84,29 @@ export async function compilePackage(targetPackage: SapPackage, allowFallback: b
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
     });
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    // Registered before touching child.stdout/stderr: if spawn cannot allocate stdio pipes
+    // (e.g. descriptor exhaustion), those streams are undefined and accessing them would throw
+    // synchronously with this listener never attached, escalating to an uncaught process exit.
     child.on("error", (error) => {
       reject(error);
     });
-    child.on("close", (code) => {
-      const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
-      if (code !== 0) {
-        reject(new Error(`Compilation failed for ${targetPackage.name}: ${stderr}`));
-        return;
-      }
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    // TypeScript infers non-null Readable here from the literal stdio tuple above, but that does
+    // not hold if spawn itself fails to allocate the pipes -- the very case this is guarding.
+    const stdout = child.stdout as Readable | undefined;
+    const stderrStream = child.stderr as Readable | undefined;
+    stdout?.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    stderrStream?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("close", (code, signal) => {
       try {
-        resolve(parseCompileResult(Buffer.concat(stdoutChunks).toString("utf8"), targetPackage.name));
+        resolve(resolveCompileOutcome(
+          targetPackage.name,
+          code,
+          signal,
+          Buffer.concat(stdoutChunks).toString("utf8"),
+          Buffer.concat(stderrChunks).toString("utf8"),
+        ));
       } catch (error) {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
@@ -72,14 +114,44 @@ export async function compilePackage(targetPackage: SapPackage, allowFallback: b
   });
 }
 
+async function compileWithConcurrencyLimit(
+  packages: readonly SapPackage[],
+  allowFallback: boolean,
+  limit: number,
+): Promise<PromiseSettledResult<CompileResult>[]> {
+  // Every index from 0 to packages.length - 1 is claimed by exactly one worker below (the read
+  // of nextIndex and its increment happen with no `await` between them, so two workers can never
+  // claim the same index), so by the time every worker finishes, results has no gaps.
+  const results: PromiseSettledResult<CompileResult>[] = [];
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    for (let index = nextIndex; index < packages.length; index = nextIndex) {
+      nextIndex += 1;
+      const targetPackage = packages[index];
+      if (targetPackage === undefined) {
+        continue;
+      }
+      try {
+        const value = await compilePackage(targetPackage, allowFallback);
+        results[index] = { status: "fulfilled", value };
+      } catch (error) {
+        results[index] = { status: "rejected", reason: error };
+      }
+    }
+  }
+  const workerCount = Math.max(1, Math.min(limit, packages.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    await worker();
+  }));
+  return results;
+}
+
 export async function compilePackages(
   packages: readonly SapPackage[],
   allowFallback: boolean,
   strict: boolean,
 ): Promise<CompileOutcome> {
-  const settled = await Promise.allSettled(
-    packages.map(async (targetPackage) => await compilePackage(targetPackage, allowFallback)),
-  );
+  const settled = await compileWithConcurrencyLimit(packages, allowFallback, MAX_CONCURRENT_COMPILES);
   const compiled: CompileResult[] = [];
   const skipped: CompileOutcome["skipped"][number][] = [];
   for (const [index, result] of settled.entries()) {

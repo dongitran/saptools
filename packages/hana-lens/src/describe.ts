@@ -1,4 +1,5 @@
 import { findPreferredTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
+import { PACKAGE_ANNOTATION } from "./types.js";
 import type { HanaLensCsn, HanaLensDefinition, HanaLensElement } from "./types.js";
 
 const MAX_EXPAND_DEPTH = 2;
@@ -77,9 +78,15 @@ function formatExpressionRef(ref: readonly unknown[]): string {
   return ref.map(formatExpressionRefSegment).join(".");
 }
 
+// Single-quoted, matching SQL/CQL string-literal syntax -- double quotes denote an
+// identifier there, so a double-quoted literal copied into HANA would read as a column.
+function formatStringLiteral(value: string): string {
+  return `'${value.replace(/'/gu, "''")}'`;
+}
+
 function formatExpressionValue(value: unknown): string {
   if (typeof value === "string") {
-    return JSON.stringify(value);
+    return formatStringLiteral(value);
   }
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint" || value === null) {
     return String(value);
@@ -111,7 +118,12 @@ function formatCsnExpressionToken(token: unknown): string {
     return `(${formatCsnExpression(token["xpr"])})`;
   }
   if (typeof token["func"] === "string") {
-    const args = Array.isArray(token["args"]) ? formatExpressionArguments(token["args"]) : "";
+    const rawArgs = token["args"];
+    const args = Array.isArray(rawArgs)
+      ? formatExpressionArguments(rawArgs)
+      : isRecord(rawArgs)
+        ? Object.entries(rawArgs).map(([argName, argValue]) => `${argName} => ${formatCsnExpressionToken(argValue)}`).join(", ")
+        : "";
     return `${token["func"]}(${args})`;
   }
   if (Array.isArray(token["list"])) {
@@ -134,12 +146,14 @@ function formatAnnotationValue(value: unknown): string {
   return formatUnknownExpressionNode(value);
 }
 
-function formatAnnotations(element: HanaLensElement, withAnnotations: boolean): string {
-  if (!withAnnotations) {
+function formatAnnotations(source: unknown, withAnnotations: boolean): string {
+  if (!withAnnotations || !isRecord(source)) {
     return "";
   }
-  const annotations = Object.entries(element)
-    .filter(([key]) => key.startsWith("@"))
+  const annotations = Object.entries(source)
+    // hana-lens's own bookkeeping, not a CSN annotation from the model -- it must never appear
+    // alongside real @-annotations in --with-annotations output.
+    .filter(([key]) => key.startsWith("@") && key !== PACKAGE_ANNOTATION)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${formatAnnotationValue(value)}`);
   return annotations.length === 0 ? "" : ` ${annotations.join(" ")}`;
@@ -147,9 +161,8 @@ function formatAnnotations(element: HanaLensElement, withAnnotations: boolean): 
 
 function typeTextWithCondition(element: HanaLensTypeNode): string {
   const text = typeText(element);
-  const target = element.target;
   const isAssociation = element.type === "cds.Association" || element.type === "cds.Composition";
-  if (!isAssociation || typeof target !== "string") {
+  if (!isAssociation) {
     return text;
   }
   const maximum = element.cardinality?.max;
@@ -157,42 +170,70 @@ function typeTextWithCondition(element: HanaLensTypeNode): string {
   const condition = Array.isArray(element.on) && element.on.length > 0
     ? ` ON [${formatCsnExpression(element.on)}]`
     : "";
-  return `${text} to ${many}${target}${condition}`;
+  const target = element.target;
+  if (typeof target === "string") {
+    return `${text} to ${many}${target}${condition}`;
+  }
+  // An inline/anonymous aspect target (`Composition of many { ... }`) has no named target at
+  // all -- its shape lives in targetAspect instead, matching the same anonymous-struct rendering
+  // typeText already uses for a plain `{ elements }` node with no type.
+  const targetAspect = element.targetAspect;
+  if (isRecord(targetAspect) && isRecord(targetAspect["elements"])) {
+    return `${text} to ${many}{ ${Object.keys(targetAspect["elements"]).join(", ")} }${condition}`;
+  }
+  return text;
 }
 
 function isPrimary(element: HanaLensElement): boolean {
   return element.key === true;
 }
 
-function formatElement(name: string, element: HanaLensElement, depth: number, withAnnotations: boolean): string {
-  const prefix = depth === 0 ? "" : `${"-".repeat(depth)} `;
-  const marker = `${isPrimary(element) ? "[PK] " : ""}${element["@Core.Computed"] === true ? "[computed] " : ""}`;
-  return `${prefix}${marker}${name}: ${typeTextWithCondition(element)}${formatAnnotations(element, withAnnotations)}`;
+function linePrefix(depth: number): string {
+  return depth === 0 ? "" : `${"-".repeat(depth)} `;
 }
 
 function nestedPrefix(depth: number): string {
   return `${"-".repeat(depth + 1)} `;
 }
 
-function describeOperation(definition: HanaLensDefinition): readonly string[] {
-  const lines = [`(${definition.kind ?? "operation"})`];
-  const params = definition.params;
-  if (isRecord(params)) {
-    for (const [name, parameter] of Object.entries(params)) {
-      if (isRecord(parameter)) {
-        lines.push(`- param ${name}: ${typeTextWithCondition(parameter)}`);
-      }
-    }
+function formatElement(name: string, element: HanaLensElement, depth: number, withAnnotations: boolean): string {
+  const markers = [
+    isPrimary(element) ? "[PK] " : "",
+    element["@Core.Computed"] === true ? "[computed] " : "",
+    element.virtual === true ? "[virtual] " : "",
+    element.notNull === true ? "[not null] " : "",
+    element.localized === true ? "[localized] " : "",
+  ];
+  const marker = markers.join("");
+  return `${linePrefix(depth)}${marker}${name}: ${typeTextWithCondition(element)}${formatAnnotations(element, withAnnotations)}`;
+}
+
+function describeParams(params: HanaLensDefinition["params"], depth: number): readonly string[] {
+  if (!isRecord(params)) {
+    return [];
   }
+  return Object.entries(params)
+    .filter((entry): entry is [string, HanaLensElement] => isRecord(entry[1]))
+    .map(([name, parameter]) => `${linePrefix(depth)}- param ${name}: ${typeTextWithCondition(parameter)}`);
+}
+
+function describeOperation(definition: HanaLensDefinition, depth: number, label?: string): readonly string[] {
+  const labelPrefix = label === undefined ? "" : `${label}: `;
+  const lines = [`${linePrefix(depth)}${labelPrefix}(${definition.kind ?? "operation"})`, ...describeParams(definition.params, depth)];
   const returns = definition.returns;
   if (isRecord(returns)) {
-    lines.push(`- returns: ${typeTextWithCondition(returns)}`);
+    lines.push(`${linePrefix(depth)}- returns: ${typeTextWithCondition(returns)}`);
   }
   return lines;
 }
 
+function describeAnnotationHeader(definition: HanaLensDefinition, withAnnotations: boolean, depth: number): readonly string[] {
+  const rendered = formatAnnotations(definition, withAnnotations).trim();
+  return rendered.length === 0 ? [] : [`${linePrefix(depth)}${rendered}`];
+}
+
 function describeExpandedTarget(csn: HanaLensCsn, definition: HanaLensDefinition, element: HanaLensElement, expand: boolean, withAnnotations: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
-  if (!expand || depth >= MAX_EXPAND_DEPTH || element.target === undefined || !isAssociationElement(element)) {
+  if (!expand || element.target === undefined || !isAssociationElement(element)) {
     return [];
   }
 
@@ -203,32 +244,50 @@ function describeExpandedTarget(csn: HanaLensCsn, definition: HanaLensDefinition
   if (resolution.status === "ambiguous") {
     return [`${nestedPrefix(depth)}${element.target}: ambiguous`];
   }
+  // Checked before the depth limit: a cycle closing exactly at the boundary is a real structural
+  // fact about the model that must never be masked as mere truncation.
   if (seen.has(resolution.target.name)) {
     return [`${nestedPrefix(depth)}${resolution.target.name}: circular`];
+  }
+  if (depth >= MAX_EXPAND_DEPTH) {
+    return [`${nestedPrefix(depth)}${resolution.target.name}: truncated`];
   }
 
   const nextSeen = new Set(seen);
   nextSeen.add(resolution.target.name);
-  return describeDefinition(csn, resolution.target.definition, expand, withAnnotations, depth + 1, nextSeen);
+  return describeDefinition(csn, resolution.target.definition, expand, withAnnotations, depth + 1, nextSeen, resolution.target.name);
 }
 
-function describeDefinition(csn: HanaLensCsn, definition: HanaLensDefinition, expand: boolean, withAnnotations: boolean, depth: number, seen: ReadonlySet<string>): readonly string[] {
+function describeDefinition(
+  csn: HanaLensCsn,
+  definition: HanaLensDefinition,
+  expand: boolean,
+  withAnnotations: boolean,
+  depth: number,
+  seen: ReadonlySet<string>,
+  label?: string,
+): readonly string[] {
+  const header = describeAnnotationHeader(definition, withAnnotations, depth);
+  const labelPrefix = label === undefined ? "" : `${label}: `;
   const elements = definition.elements;
   if (elements === undefined || Object.keys(elements).length === 0) {
     if (isRecord(definition.enum)) {
       const base = definition.type ?? "enum";
       const formattedEnum = formatEnum(definition);
-      return [`${base}${formattedEnum === "" ? " enum[]" : formattedEnum}`];
+      return [...header, `${linePrefix(depth)}${labelPrefix}${base}${formattedEnum === "" ? " enum[]" : formattedEnum}`];
     }
     if (definition.type !== undefined || definition.items !== undefined) {
-      return [typeTextWithCondition(definition)];
+      return [...header, `${linePrefix(depth)}${labelPrefix}${typeTextWithCondition(definition)}`];
     }
     if (definition.kind === "action" || definition.kind === "function") {
-      return describeOperation(definition);
+      return [...header, ...describeOperation(definition, depth, label)];
     }
-    return ["(no elements)"];
+    const paramLines = describeParams(definition.params, depth);
+    return paramLines.length > 0
+      ? [...header, ...paramLines]
+      : [...header, `${linePrefix(depth)}${labelPrefix}(no elements)`];
   }
-  const lines: string[] = [];
+  const lines: string[] = [...header, ...describeParams(definition.params, depth)];
   for (const [name, element] of Object.entries(elements)) {
     lines.push(formatElement(name, element, depth, withAnnotations), ...describeExpandedTarget(csn, definition, element, expand, withAnnotations, depth, seen));
   }

@@ -117,12 +117,37 @@ describe("searchDefinitions", () => {
     expect(() => searchDefinitions(ast, "[", true)).toThrow();
     expect(() => searchDefinitions(ast, "   ", false)).toThrow("Search keyword must not be empty");
     expect(() => searchDefinitions(ast, "x".repeat(257), true)).toThrow("Regex pattern is too long");
+    expect(() => searchDefinitions(ast, "x".repeat(257), false)).toThrow("Search keyword is too long");
   });
 
   it("preserves regex whitespace while continuing to trim fuzzy keywords", () => {
     expect(searchDefinitions(ast, " BusinessRequest$", true)).toEqual([]);
     expect(searchDefinitions(ast, "  businesrequest  ", false)[0]?.name).toBe("srv.BusinessRequest");
-    expect(() => searchDefinitions(ast, "   ", true)).toThrow("Search keyword must not be empty");
+    // A whitespace-only pattern is a valid (if unusual) regex matching literal spaces -- it must not
+    // be rejected as an empty keyword the way an all-whitespace fuzzy search is.
+    expect(searchDefinitions(ast, "   ", true)).toEqual([]);
+    expect(() => searchDefinitions(ast, "   ", false)).toThrow("Search keyword must not be empty");
+  });
+
+  it("ranks substring matches by where they start, not by candidate length", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "srv.OrderHistoryDetailRecord": {},
+      "srv.OrderX": {},
+    } };
+
+    expect(searchDefinitions(csn, "order", false).map((result) => result.name)).toEqual([
+      "srv.OrderHistoryDetailRecord",
+      "srv.OrderX",
+    ]);
+  });
+
+  it("matches a typo inside a namespace segment, not only the final name component", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.slaes.Report": {},
+      "acme.other.Thing": {},
+    } };
+
+    expect(searchDefinitions(csn, "sales", false).map((result) => result.name)).toEqual(["acme.slaes.Report"]);
   });
 
   it("evaluates an adversarial regex search within a bounded time", () => {
@@ -251,14 +276,42 @@ describe("findIncomingReferences", () => {
     expect(formatIncomingReferences("acme.Project", findIncomingReferences(csn, "acme.Project"))).toBe("Incoming References to [acme.Project]:\n- acme.ProjectProjection (via field: (projection))\n- acme.ProjectQuery (via field: (projection))\n- acme.ProjectUnion (via field: (projection))");
   });
 
+  it("finds a parameterized (object-shaped ref) projection source", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.Project": { elements: { ID: { type: "cds.UUID", key: true } } },
+      "acme.ProjectView": {
+        projection: { from: { ref: [{ id: "acme.Project", args: { P_YEAR: { val: 2024 } } }] } },
+      },
+    } };
+
+    expect(formatIncomingReferences("acme.Project", findIncomingReferences(csn, "acme.Project")))
+      .toBe("Incoming References to [acme.Project]:\n- acme.ProjectView (via field: (projection))");
+  });
+
+  it("finds elements that reuse a type definition by reference, marked distinctly from associations", () => {
+    const csn: HanaLensCsn = { definitions: {
+      "acme.Address": { kind: "type", elements: { city: { type: "cds.String" } } },
+      "acme.Customer": { elements: { shipTo: { type: "acme.Address" } } },
+      "acme.Warehouse": { elements: { location: { type: "acme.Address" }, tenant: { type: "cds.String" } } },
+    } };
+
+    expect(findIncomingReferences(csn, "acme.Address")).toEqual([
+      { entityName: "acme.Customer", fieldName: "shipTo", viaType: true },
+      { entityName: "acme.Warehouse", fieldName: "location", viaType: true },
+    ]);
+    expect(formatIncomingReferences("acme.Address", findIncomingReferences(csn, "acme.Address")))
+      .toBe("Incoming References to [acme.Address]:\n- acme.Customer (via field: shipTo, type reference)\n- acme.Warehouse (via field: location, type reference)");
+  });
+
   it("throws for non-existent entities", () => {
     expect(() => findIncomingReferences({ definitions: {} }, "Missing")).toThrow("Entity not found: Missing");
   });
 
-  it("keeps the compact header when an existing entity has no incoming references", () => {
+  it("makes a zero-reference result explicit rather than an empty-looking header", () => {
     const csn: HanaLensCsn = { definitions: { Project: { elements: {} } } };
 
-    expect(formatIncomingReferences("Project", findIncomingReferences(csn, "Project"))).toBe("Incoming References to [Project]:");
+    expect(formatIncomingReferences("Project", findIncomingReferences(csn, "Project")))
+      .toBe("Incoming References to [Project]:\n(no incoming references found)");
   });
 
   it("uses same-package target resolution and skips ambiguous short targets", () => {

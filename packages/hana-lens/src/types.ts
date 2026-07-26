@@ -8,6 +8,10 @@ export interface HanaLensElement {
   readonly scale?: number;
   readonly key?: boolean;
   readonly target?: string;
+  readonly targetAspect?: Readonly<Record<string, unknown>>;
+  readonly virtual?: boolean;
+  readonly notNull?: boolean;
+  readonly localized?: boolean;
   readonly "@Core.Computed"?: boolean;
   readonly on?: readonly unknown[];
   readonly enum?: Readonly<Record<string, unknown>>;
@@ -26,6 +30,7 @@ export interface HanaLensDefinition {
   readonly precision?: number;
   readonly scale?: number;
   readonly target?: string;
+  readonly targetAspect?: Readonly<Record<string, unknown>>;
   readonly on?: readonly unknown[];
   readonly enum?: Readonly<Record<string, unknown>>;
   readonly items?: HanaLensElement;
@@ -36,6 +41,7 @@ export interface HanaLensDefinition {
   readonly projection?: Readonly<Record<string, unknown>>;
   readonly query?: Readonly<Record<string, unknown>>;
   readonly [PACKAGE_ANNOTATION]?: string;
+  readonly [key: `@${string}`]: unknown;
 }
 
 export interface HanaLensCsn {
@@ -62,6 +68,7 @@ export interface FieldSearchResult {
 export interface IncomingReference {
   readonly entityName: string;
   readonly fieldName: string;
+  readonly viaType?: boolean;
 }
 
 export interface SearchResult {

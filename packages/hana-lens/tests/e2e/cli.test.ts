@@ -381,6 +381,80 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
     });
   }, 30_000);
 
+  it("suggests the correctly spelled command for a top-level command typo", () => {
+    const searchTypo = runCli(["serach", "keyword"], process.cwd());
+    expect(searchTypo.status).toBe(1);
+    expect(searchTypo.stderr).toContain("Unknown command: serach; did you mean search?");
+
+    const buildTypo = runCli(["biuld-cache", "--dir", ".", "--prefix", "@acme/"], process.cwd());
+    expect(buildTypo.status).toBe(1);
+    expect(buildTypo.stderr).toContain("Unknown command: biuld-cache; did you mean build-cache?");
+
+    const unrelated = runCli(["totallyUnrelatedGarbage"], process.cwd());
+    expect(unrelated.status).toBe(1);
+    expect(unrelated.stderr.includes("did you mean")).toBe(false);
+  });
+
+  it("rejects a repeated --dir, --prefix, or --kind flag before compiling anything", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(path.join(root, "packages", "db_plain"), "@acme/db_plain", "namespace acme; entity Plain { key ID: UUID; }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const repeatedDir = runCli(["build-cache", "--dir", root, "--dir", root, "--prefix", "@acme/"], root, isolatedCli);
+      expect(repeatedDir.status).toBe(1);
+      expect(repeatedDir.stderr).toContain("--dir was specified more than once");
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+
+      const repeatedPrefix = runCli(["build-cache", "--dir", root, "--prefix", "@acme/", "--prefix", "@acme/"], root, isolatedCli);
+      expect(repeatedPrefix.status).toBe(1);
+      expect(repeatedPrefix.stderr).toContain("--prefix was specified more than once");
+
+      const repeatedKind = runBuild(root, ["--kind", "db", "--kind", "service"], isolatedCli);
+      expect(repeatedKind.status).toBe(1);
+      expect(repeatedKind.stderr).toContain("--kind was specified more than once");
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+    });
+  }, 30_000);
+
+  it("rejects --kind with a missing value instead of silently defaulting to db", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(path.join(root, "packages", "db_plain"), "@acme/db_plain", "namespace acme; entity Plain { key ID: UUID; }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const trailingKind = runBuild(root, ["--allow-fallback", "--kind"], isolatedCli);
+      expect(trailingKind.status).toBe(1);
+      expect(trailingKind.stderr).toContain("--kind requires a value: db|service|all");
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+
+      const kindFollowedByFlag = runBuild(root, ["--kind", "--allow-fallback"], isolatedCli);
+      expect(kindFollowedByFlag.status).toBe(1);
+      expect(kindFollowedByFlag.stderr).toContain("--kind requires a value: db|service|all");
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+    });
+  }, 30_000);
+
+  it("rejects extra positional arguments instead of silently ignoring them", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCache(root, { definitions: { "acme.Widget": { kind: "entity", elements: { ID: { key: true, type: "cds.UUID" } } } } });
+
+      const searchExtra = runCli(["search", "Widget", "extra"], root);
+      expect(searchExtra.status).toBe(1);
+      expect(searchExtra.stderr).toContain("Unexpected extra argument(s): extra");
+
+      const searchFieldExtra = runCli(["search-field", "ID", "extra"], root);
+      expect(searchFieldExtra.status).toBe(1);
+      expect(searchFieldExtra.stderr).toContain("Unexpected extra argument(s): extra");
+
+      const referencesExtra = runCli(["references", "acme.Widget", "extra"], root);
+      expect(referencesExtra.status).toBe(1);
+      expect(referencesExtra.stderr).toContain("Unexpected extra argument(s): extra");
+
+      const describeExtra = runCli(["describe", "acme.Widget", "extra"], root);
+      expect(describeExtra.status).toBe(1);
+      expect(describeExtra.stderr).toContain("Unexpected extra argument(s): extra");
+    });
+  });
+
   it("reports excluded scan directories and a scan_warnings count while still caching the valid package", async () => {
     await withTempWorkspace(async (root) => {
       const malformed = path.join(root, "packages", "db_malformed");
@@ -396,6 +470,27 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(build.stderr).toContain(`Excluded 1 director(ies) during scan: ${malformed}`);
       expect(build.stderr).toContain("Malformed package.json");
       expect((await readCache(root)).definitions["acme.Plain"]?.[PACKAGE_ANNOTATION]).toBe("@acme/db_plain");
+    });
+  }, 30_000);
+
+  it("reports excluded_packages in the summary line when a fallback-name collision drops a package", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(path.join(root, "alpha"), "@acme/alpha", "namespace acme.alpha; entity AlphaThing { key ID: UUID; }");
+      await writeCapPackage(path.join(root, "domain-a", "core"), "@acme/alpha", "namespace acme.alphaCore; entity AlphaCoreThing { key ID: UUID; }");
+      await writeCapPackage(path.join(root, "beta"), "@acme/beta", "namespace acme.beta; entity BetaThing { key ID: UUID; }");
+      await writeCapPackage(path.join(root, "domain-b", "core"), "@acme/beta", "namespace acme.betaCore; entity BetaCoreThing { key ID: UUID; }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const build = runBuild(root, ["--allow-fallback"], isolatedCli);
+
+      // Both losers (domain-a/core, domain-b/core) independently derive the fallback name
+      // "@acme/core" -- one survives deterministically (directory-sorted-first), the other is
+      // excluded and counted, rather than the whole group silently vanishing from the cache.
+      expect(build.status).toBe(0);
+      expect(build.stdout).toContain("packages=3");
+      expect(build.stdout).toContain("excluded_packages=1");
+      expect(build.stderr).toContain('Excluding fallback package name "@acme/core"');
+      expect(Object.keys((await readCache(root)).definitions)).toContain("acme.alphaCore.AlphaCoreThing");
     });
   }, 30_000);
 
@@ -674,7 +769,7 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
         "demo.master.Customer": { [PACKAGE_ANNOTATION]: "@demo/master", elements: { ID: { key: true, type: "cds.Integer" }, name: { type: "cds.String", length: 80 }, request: { type: "cds.Association", target: "demo.sales.BusinessRequest" } } },
         "demo.other.BusinessRequest": { [PACKAGE_ANNOTATION]: "@demo/other", elements: { ID: { key: true, type: "cds.UUID" } } },
         "demo.other.RequestAudit": { [PACKAGE_ANNOTATION]: "@demo/other", elements: { request: { type: "cds.Association", target: "demo.other.BusinessRequest" } } },
-        "demo.sales.BusinessRequestView": { [PACKAGE_ANNOTATION]: "@demo/service", kind: "entity", projection: { from: { ref: ["demo.sales.BusinessRequest"] } } },
+        "demo.sales.BusinessRequestView": { [PACKAGE_ANNOTATION]: "@demo/service", kind: "entity", "@readonly": true, projection: { from: { ref: ["demo.sales.BusinessRequest"] } } },
         "demo.common.RequestStatus": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", enum: { SUBMITTED: { val: "S" }, REJECTED: { val: "REJECTED" } } },
         "demo.common.UserName": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.String", length: 255 },
         "demo.common.CustomerLink": { [PACKAGE_ANNOTATION]: "@demo/common", kind: "type", type: "cds.Association", target: "demo.master.Customer" },
@@ -703,6 +798,16 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       const annotated = runCli(["describe", "demo.sales.BusinessRequest", "--with-annotations"], root);
       expect(annotated.status).toBe(0);
       expect(annotated.stdout).toContain('status: cds.String enum[ACTIVE = "A", INACTIVE] @readonly=true @title="Status"');
+
+      // demo.sales.BusinessRequestView carries a definition-level (not element-level) annotation --
+      // it must stay hidden by default and only surface behind --with-annotations.
+      const viewCompact = runCli(["describe", "demo.sales.BusinessRequestView"], root);
+      expect(viewCompact.status).toBe(0);
+      expect(viewCompact.stdout.includes("@readonly")).toBe(false);
+
+      const viewAnnotated = runCli(["describe", "demo.sales.BusinessRequestView", "--with-annotations"], root);
+      expect(viewAnnotated.status).toBe(0);
+      expect(viewAnnotated.stdout).toContain("@readonly=true");
 
       const references = runCli(["references", "demo.sales.BusinessRequest"], root);
       expect(references.status).toBe(0);
@@ -899,12 +1004,17 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("WARNING: 1 definition name(s) defined differently in >1 package");
       expect(result.stderr).toContain("acme.dup.Shared (@acme/db_first vs @acme/db_second)");
-      expect((await readCache(root)).definitions["acme.dup.Shared"]?.elements?.["ID"]?.key).toBe(true);
+      // Neither copy's element set is a superset of the other's ({ID} vs {code}) -- the winner is
+      // decided deterministically by content (normalized signature comparison), not by which
+      // package happened to scan first.
+      const cachedShared = (await readCache(root)).definitions["acme.dup.Shared"];
+      expect(cachedShared?.elements?.["code"]?.key).toBe(true);
+      expect(cachedShared?.elements?.["ID"]).toBe(undefined);
 
       await rm(path.join(root, CACHE_FILE_NAME), { force: true });
       const strict = runBuild(root, ["--allow-fallback", "--strict"], isolatedCli);
       expect(strict.status).toBe(1);
-      expect(strict.stderr).toContain("Strict mode: 1 conflicting definition name(s)");
+      expect(strict.stderr).toContain("Strict mode: 1 definition name(s) defined differently in >1 package (1 conflicting copies)");
       expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
     });
   }, 30_000);

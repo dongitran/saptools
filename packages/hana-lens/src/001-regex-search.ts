@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const REGEX_TIMEOUT_MS = 200;
+// Raised from 200ms: under real parallel load, an ordinary keyword (not a pathological pattern)
+// was observed hitting the native budget and falling back every time, making the fallback path a
+// live concern for everyday queries rather than only adversarial ones. A pattern that is genuinely
+// catastrophic still completes quickly on the linear engine regardless of how high this is set, so
+// raising it does not meaningfully worsen the worst case -- the fallback engine is the real bound.
+const REGEX_TIMEOUT_MS = 500;
 const LINEAR_REGEX_TIMEOUT_MS = 1_000;
 const REGEX_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const WORKER_PATH = fileURLToPath(new URL("./002-regex-worker.js", import.meta.url));
@@ -49,6 +55,14 @@ function parseWorkerResponse(raw: string, candidateCount: number): RegexWorkerRe
 }
 
 function matchWithLinearEngine(pattern: string, candidates: readonly string[]): readonly boolean[] {
+  // Always announced, whether this fallback attempt succeeds or fails below: a result set (or
+  // error) produced under different syntax/Unicode semantics must never be silently
+  // indistinguishable from one the native engine produced.
+  process.stderr.write(
+    `Warning: regex evaluation exceeded the native engine's ${REGEX_TIMEOUT_MS.toString()}ms time budget; `
+    + "falling back to the linear-time engine, which has different syntax support (no lookahead, "
+    + "no backreferences) and different Unicode range handling.\n",
+  );
   const result = spawnSync(process.execPath, [LINEAR_WORKER_PATH], {
     encoding: "utf8",
     env: { ...process.env, NODE_OPTIONS: "", NODE_PATH: "" },
@@ -64,7 +78,13 @@ function matchWithLinearEngine(pattern: string, candidates: readonly string[]): 
   }
   const response = parseWorkerResponse(result.stdout, candidates.length);
   if (response?.status === "invalid") {
-    throw new SyntaxError(response.message);
+    // The pattern may well be valid JavaScript regex syntax that the native engine would have
+    // accepted -- it never got the chance to. Never present the fallback engine's own rejection
+    // as if the pattern itself were invalid syntax in general.
+    throw new SyntaxError(
+      `Pattern exceeded the native engine's ${REGEX_TIMEOUT_MS.toString()}ms time budget and fell back `
+      + `to the linear-time engine, which rejected it: ${response.message}`,
+    );
   }
   if (response?.status !== "ok") {
     throw new Error("Regex evaluation exceeded the safe time limit");

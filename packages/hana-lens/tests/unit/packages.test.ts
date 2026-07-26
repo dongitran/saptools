@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "node:test";
@@ -11,6 +11,7 @@ import { describe, it } from "../helpers/test.js";
 interface ScanCapture {
   readonly packages: readonly SapPackage[];
   readonly warnings: readonly PackageScanWarning[];
+  readonly excluded: readonly PackageScanWarning[];
   readonly stderr: string;
 }
 
@@ -30,7 +31,7 @@ describe("package scanning and linking", () => {
     await writeFile(path.join(root, "packages", "a", "package.json"), JSON.stringify({ name: "@demo/a" }));
     await fsMkdir(path.join(root, "gen", "b"));
     await writeFile(path.join(root, "gen", "b", "package.json"), JSON.stringify({ name: "@demo/b" }));
-    await expect(scanForPackages(root, "@demo/")).resolves.toEqual({ packages: [{ name: "@demo/a", directory: path.join(root, "packages", "a") }], warnings: [] });
+    await expect(scanForPackages(root, "@demo/")).resolves.toEqual({ packages: [{ name: "@demo/a", directory: path.join(root, "packages", "a") }], warnings: [], excluded: [] });
     await rm(root, { recursive: true, force: true });
   });
 
@@ -162,7 +163,7 @@ describe("package scanning and linking", () => {
     });
   });
 
-  it("excludes all fallback packages when two losers derive the same name", async () => {
+  it("keeps one deterministic survivor rather than dropping the whole group when two losers derive the same fallback name", async () => {
     await withTempWorkspace("hana-lens-fallback-pair-", async (root): Promise<void> => {
       const alpha = path.join(root, "alpha");
       const beta = path.join(root, "beta");
@@ -175,15 +176,48 @@ describe("package scanning and linking", () => {
 
       const result = await scanWithStderr(root);
 
+      // Neither loser kept its declared name, so the fallback-name collision has no
+      // keptDeclaredName tiebreaker to fall back on -- the directory-sorted-first candidate
+      // (domain-a sorts before domain-b) survives as "@demo/core" instead of the whole group
+      // being silently dropped, and the other loser is reported via `excluded`, not just stderr.
       expect(result.packages).toEqual([
         { name: "@demo/alpha", directory: alpha },
         { name: "@demo/beta", directory: beta },
+        { name: "@demo/core", directory: alphaCore },
       ]);
       expect(result.stderr.trim().split("\n")).toHaveLength(3);
       expect(result.stderr).toContain("@demo/core");
       expect(result.stderr).toContain(alphaCore);
       expect(result.stderr).toContain(betaCore);
       expect(result.stderr).toContain("missing from the cache");
+      expect(result.excluded).toEqual([{
+        directory: betaCore,
+        reason: 'Excluding fallback package name "@demo/core"; entities under this folder will be missing from the cache',
+      }]);
+    });
+  });
+
+  it("keeps exactly one deterministic survivor when three or more fallback names collide", async () => {
+    await withTempWorkspace("hana-lens-fallback-triple-", async (root): Promise<void> => {
+      const alpha = path.join(root, "alpha");
+      const beta = path.join(root, "beta");
+      const gamma = path.join(root, "gamma");
+      const alphaCore = path.join(root, "domain-a", "core");
+      const betaCore = path.join(root, "domain-b", "core");
+      const gammaCore = path.join(root, "domain-c", "core");
+      await writePackageJson(alpha, "@demo/alpha");
+      await writePackageJson(alphaCore, "@demo/alpha");
+      await writePackageJson(beta, "@demo/beta");
+      await writePackageJson(betaCore, "@demo/beta");
+      await writePackageJson(gamma, "@demo/gamma");
+      await writePackageJson(gammaCore, "@demo/gamma");
+
+      const result = await scanForPackages(root, "@demo/");
+      const corePackages = result.packages.filter((entry) => entry.name === "@demo/core");
+
+      expect(result.packages).toHaveLength(4);
+      expect(corePackages).toEqual([{ name: "@demo/core", directory: alphaCore }]);
+      expect(result.excluded.map((warning) => warning.directory).sort()).toEqual([betaCore, gammaCore].sort());
     });
   });
 
@@ -273,7 +307,7 @@ describe("package scanning and linking", () => {
   });
 
   it("returns an empty package list for missing workspaces", async () => {
-    await expect(scanForPackages(path.join(os.tmpdir(), "hana-lens-does-not-exist"), "@demo/")).resolves.toEqual({ packages: [], warnings: [] });
+    await expect(scanForPackages(path.join(os.tmpdir(), "hana-lens-does-not-exist"), "@demo/")).resolves.toEqual({ packages: [], warnings: [], excluded: [] });
   });
 
   it("rejects existing non-symlink paths instead of hiding auto-link conflicts", async () => {
@@ -297,6 +331,80 @@ describe("package scanning and linking", () => {
     await expect(readlink(path.join(a, "node_modules", "@demo", "b"))).resolves.toBe(b);
     await rm(root, { recursive: true, force: true });
   });
+
+  it("prunes a stale symlink that no longer corresponds to a scanned package", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-prune-"));
+    const a = path.join(root, "a");
+    const b = path.join(root, "b");
+    const staleTarget = path.join(root, "gone");
+    await fsMkdir(path.join(a, "node_modules", "@demo"));
+    await fsMkdir(b);
+    await fsMkdir(staleTarget);
+    await symlink(staleTarget, path.join(a, "node_modules", "@demo", "old"), "dir");
+
+    await autoLinkPackages([{ name: "@demo/a", directory: a }, { name: "@demo/b", directory: b }], "@demo/");
+
+    const entries = await readdir(path.join(a, "node_modules", "@demo"));
+    expect(entries.includes("old")).toBe(false);
+    expect(entries.includes("b")).toBe(true);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("never prunes a real directory even when it does not match a scanned package", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-prune-real-"));
+    const a = path.join(root, "a");
+    const b = path.join(root, "b");
+    await fsMkdir(path.join(a, "node_modules", "@demo", "manual-install"));
+    await fsMkdir(b);
+
+    await autoLinkPackages([{ name: "@demo/a", directory: a }, { name: "@demo/b", directory: b }], "@demo/");
+
+    const entries = await readdir(path.join(a, "node_modules", "@demo"));
+    expect(entries.includes("manual-install")).toBe(true);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("rolls back every link this call created when a later linking attempt fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-rollback-"));
+    const a = path.join(root, "a");
+    const b = path.join(root, "b");
+    await fsMkdir(a);
+    await fsMkdir(b);
+    // A real (non-symlink) directory already sits where b's link to a would go, so b's linking
+    // pass fails -- after a's own pass (linking to b) has already succeeded.
+    await fsMkdir(path.join(b, "node_modules", "@demo", "a"));
+
+    await expect(autoLinkPackages([
+      { name: "@demo/a", directory: a },
+      { name: "@demo/b", directory: b },
+    ], "@demo/")).rejects.toThrow("path already exists and is not a symlink");
+
+    const aScopeEntries = await readdir(path.join(a, "node_modules", "@demo")).catch(() => []);
+    expect(aScopeEntries).toEqual([]);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("isolates a single unlinkable package name instead of aborting linking for the rest", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-unlinkable-"));
+    const bareScope = path.join(root, "bare-scope");
+    const a = path.join(root, "a");
+    const b = path.join(root, "b");
+    await fsMkdir(bareScope);
+    await fsMkdir(a);
+    await fsMkdir(b);
+
+    // "@demo/" (the bare scope, no direct-child short name) cannot be turned into a link
+    // segment -- that single unlinkable name must not stop a and b from linking to each other.
+    await autoLinkPackages([
+      { name: "@demo/", directory: bareScope },
+      { name: "@demo/a", directory: a },
+      { name: "@demo/b", directory: b },
+    ], "@demo/");
+
+    await expect(readlink(path.join(a, "node_modules", "@demo", "b"))).resolves.toBe(b);
+    await expect(readlink(path.join(b, "node_modules", "@demo", "a"))).resolves.toBe(a);
+    await rm(root, { recursive: true, force: true });
+  });
 });
 
 async function fsMkdir(directory: string): Promise<void> {
@@ -316,7 +424,7 @@ async function scanWithStderr(root: string): Promise<ScanCapture> {
   });
   try {
     const result = await scanForPackages(root, "@demo/");
-    return { packages: result.packages, warnings: result.warnings, stderr: chunks.join("") };
+    return { packages: result.packages, warnings: result.warnings, excluded: result.excluded, stderr: chunks.join("") };
   } finally {
     stderrWrite.mock.restore();
   }

@@ -114,36 +114,52 @@ function resolveDeclaredNameCollisions(found: ReadonlyMap<string, readonly strin
   return candidates;
 }
 
-function excludeFallbackNameCollisions(candidates: readonly ResolvedPackageCandidate[]): readonly SapPackage[] {
+interface FallbackCollisionResult {
+  readonly packages: readonly SapPackage[];
+  readonly excluded: readonly PackageScanWarning[];
+}
+
+function excludeFallbackNameCollisions(candidates: readonly ResolvedPackageCandidate[]): FallbackCollisionResult {
   const grouped = new Map<string, readonly ResolvedPackageCandidate[]>();
   for (const candidate of candidates) {
     grouped.set(candidate.name, [...(grouped.get(candidate.name) ?? []), candidate]);
   }
   const survivors: ResolvedPackageCandidate[] = [];
+  const excludedWarnings: PackageScanWarning[] = [];
   const groups = [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right));
   for (const [name, group] of groups) {
     if (group.length === 1) {
       survivors.push(...group);
       continue;
     }
-    const original = group.find((candidate) => candidate.keptDeclaredName);
-    const excluded = group
-      .filter((candidate) => candidate !== original)
-      .sort((left, right) => left.directory.localeCompare(right.directory));
+    const sortedByDirectory = [...group].sort((left, right) => left.directory.localeCompare(right.directory));
+    // Two different collision groups can each independently derive the same fallback name, so
+    // neither member here may have kept its declared name -- pick a deterministic survivor
+    // instead of dropping the whole group, which previously lost every package in it.
+    const original = group.find((candidate) => candidate.keptDeclaredName) ?? sortedByDirectory[0];
+    const excluded = sortedByDirectory.filter((candidate) => candidate !== original);
     if (original !== undefined) {
       survivors.push(original);
+    }
+    for (const loser of excluded) {
+      excludedWarnings.push({
+        directory: loser.directory,
+        reason: `Excluding fallback package name ${JSON.stringify(name)}; entities under this folder will be missing from the cache`,
+      });
     }
     const directories = excluded.map((candidate) => JSON.stringify(candidate.directory)).join(", ");
     process.stderr.write(`Warning: Excluding fallback package name ${JSON.stringify(name)} from ${directories}; entities under these folders will be missing from the cache.\n`);
   }
-  return survivors
-    .map(({ name, directory }) => ({ name, directory }))
-    .sort((left, right) => left.name.localeCompare(right.name));
+  return {
+    packages: survivors.map(({ name, directory }) => ({ name, directory })).sort((left, right) => left.name.localeCompare(right.name)),
+    excluded: excludedWarnings,
+  };
 }
 
 export interface PackageScanResult {
   readonly packages: readonly SapPackage[];
   readonly warnings: readonly PackageScanWarning[];
+  readonly excluded: readonly PackageScanWarning[];
 }
 
 function describeScanFailure(error: unknown): string {
@@ -193,9 +209,11 @@ export async function scanForPackages(workspaceDirectory: string, prefix: string
   }
 
   await visit(path.resolve(workspaceDirectory));
+  const collisionResult = excludeFallbackNameCollisions(resolveDeclaredNameCollisions(found, normalizedPrefix));
   return {
-    packages: excludeFallbackNameCollisions(resolveDeclaredNameCollisions(found, normalizedPrefix)),
+    packages: collisionResult.packages,
     warnings,
+    excluded: collisionResult.excluded,
   };
 }
 
@@ -218,21 +236,87 @@ async function prepareSymlinkDestination(linkPath: string, targetPath: string): 
   }
 }
 
+async function pruneStaleLinks(scopeDirectory: string, validNames: ReadonlySet<string>, normalizedPrefix: string): Promise<void> {
+  let entries: readonly Dirent[];
+  try {
+    entries = await readdir(scopeDirectory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  await Promise.all(entries.map(async (entry) => {
+    // Treats the scope directory as fully owned by this auto-linker: a symlink whose name doesn't
+    // match a package still in scope is assumed stale and removed, without checking what it
+    // actually points at. A real directory or file (e.g. a genuine npm install) is never touched
+    // regardless of name, matching the same safety check prepareSymlinkDestination already applies
+    // before replacing an existing link.
+    if (!entry.isSymbolicLink() || validNames.has(`${normalizedPrefix}${entry.name}`)) {
+      return;
+    }
+    await rm(path.join(scopeDirectory, entry.name), { recursive: true, force: true });
+  }));
+}
+
+function firstRejection(outcomes: readonly PromiseSettledResult<void>[]): PromiseRejectedResult | undefined {
+  return outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+}
+
 export async function autoLinkPackages(packages: readonly SapPackage[], prefix: string): Promise<void> {
+  const normalizedPrefix = normalizePackagePrefix(prefix);
   const scope = packageScope(prefix);
-  await Promise.all(packages.map(async (sourcePackage) => {
+  const validNames = new Set(packages.map((sapPackage) => sapPackage.name));
+  const createdLinks: string[] = [];
+
+  async function linkOneTarget(scopeDirectory: string, sourcePackage: SapPackage, targetPackage: SapPackage): Promise<void> {
+    let shortName: string;
+    try {
+      shortName = packageShortName(targetPackage.name, prefix);
+    } catch (error) {
+      // A single unlinkable name (e.g. one that only matches the bare scope) must not abort
+      // linking for every other, perfectly valid package.
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Warning: Unable to link ${JSON.stringify(targetPackage.name)} into ${JSON.stringify(sourcePackage.directory)}: ${detail}\n`);
+      return;
+    }
+    const linkPath = path.join(scopeDirectory, shortName);
+    await prepareSymlinkDestination(linkPath, targetPackage.directory);
+    try {
+      await symlink(targetPackage.directory, linkPath, "dir");
+      createdLinks.push(linkPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+  }
+
+  async function linkFromSource(sourcePackage: SapPackage): Promise<void> {
     const scopeDirectory = path.join(sourcePackage.directory, "node_modules", scope);
     await mkdir(scopeDirectory, { recursive: true });
-    await Promise.all(packages.filter((targetPackage) => targetPackage.name !== sourcePackage.name).map(async (targetPackage) => {
-      const linkPath = path.join(scopeDirectory, packageShortName(targetPackage.name, prefix));
-      await prepareSymlinkDestination(linkPath, targetPackage.directory);
-      try {
-        await symlink(targetPackage.directory, linkPath, "dir");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw error;
-        }
-      }
-    }));
+    await pruneStaleLinks(scopeDirectory, validNames, normalizedPrefix);
+    const targets = packages.filter((targetPackage) => targetPackage.name !== sourcePackage.name);
+    // Settled, not raced: every target in this source's scope must finish attempting its link --
+    // success or failure -- before this source's own outcome is decided, so a slower sibling
+    // target can never still be creating a link after the caller has already rolled everything back.
+    const failure = firstRejection(await Promise.allSettled(targets.map(async (targetPackage) => {
+      await linkOneTarget(scopeDirectory, sourcePackage, targetPackage);
+    })));
+    if (failure !== undefined) {
+      throw failure.reason;
+    }
+  }
+
+  const failure = firstRejection(await Promise.allSettled(packages.map(async (sourcePackage) => {
+    await linkFromSource(sourcePackage);
+  })));
+  if (failure === undefined) {
+    return;
+  }
+  await Promise.all(createdLinks.map(async (linkPath) => {
+    try {
+      await rm(linkPath, { recursive: true, force: true });
+    } catch {
+      // best-effort rollback; a failure removing a link during cleanup must not mask the original error.
+    }
   }));
+  throw failure.reason;
 }

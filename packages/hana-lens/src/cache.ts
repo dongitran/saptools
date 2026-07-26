@@ -38,6 +38,46 @@ function isProjection(definition: unknown): boolean {
     && (definition["query"] !== undefined || definition["projection"] !== undefined);
 }
 
+// A missing `elements` map counts as zero elements, the same as an empty one -- both mean
+// "this copy offers no named columns" for the purpose of comparing completeness.
+function elementKeys(definition: unknown): ReadonlySet<string> {
+  if (!isRecord(definition) || !isRecord(definition["elements"])) {
+    return new Set();
+  }
+  return new Set(Object.keys(definition["elements"]));
+}
+
+function isStrictSupersetOf(candidate: ReadonlySet<string>, other: ReadonlySet<string>): boolean {
+  return candidate.size > other.size && [...other].every((key) => candidate.has(key));
+}
+
+// Content-based, order-independent: whichever copy of a conflicting FQN is processed first,
+// the one with the strictly larger (superset) element set always ends up cached. Only when
+// neither is a superset of the other (equal element counts, or genuinely divergent modelling)
+// does this fall back to the pre-existing non-projection preference -- and even then, never
+// installing a definition with fewer elements than the one it would replace.
+function preferNextDefinition(previousDefinition: unknown, nextDefinition: unknown): boolean {
+  const previousKeys = elementKeys(previousDefinition);
+  const nextKeys = elementKeys(nextDefinition);
+  if (isStrictSupersetOf(nextKeys, previousKeys)) {
+    return true;
+  }
+  if (isStrictSupersetOf(previousKeys, nextKeys)) {
+    return false;
+  }
+  const previousIsProjection = isProjection(previousDefinition);
+  const nextIsProjection = isProjection(nextDefinition);
+  if (previousIsProjection !== nextIsProjection) {
+    return previousIsProjection && nextKeys.size >= previousKeys.size;
+  }
+  // Same projection-ness on both sides, and neither's element set is a superset of the other's
+  // (e.g. disjoint fields {A,B} vs {B,C}): genuinely incomparable copies of the same FQN, already
+  // flagged as a conflict. Break the tie by content rather than arrival order, so which copy wins
+  // -- and therefore the cache itself -- stays identical across repeated builds regardless of
+  // package scan order.
+  return definitionSignature(nextDefinition) > definitionSignature(previousDefinition);
+}
+
 export function cachePath(workspaceDirectory = process.cwd()): string {
   return path.join(workspaceDirectory, CACHE_FILE_NAME);
 }
@@ -59,6 +99,7 @@ export function mergeCompileResults(results: readonly CompileResult[], strict = 
   const definitions = createDefinitionRecord();
   const owners = new Map<string, string>();
   const conflicts: DefinitionConflict[] = [];
+  const conflictingNames = new Set<string>();
   for (const result of results) {
     for (const [definitionName, definition] of Object.entries(result.definitions)) {
       const previousOwner = owners.get(definitionName);
@@ -72,22 +113,27 @@ export function mergeCompileResults(results: readonly CompileResult[], strict = 
         continue;
       }
       conflicts.push({ name: definitionName, firstOwner: previousOwner, nextOwner: result.packageName });
-      if (isProjection(previousDefinition) && !isProjection(definition)) {
+      conflictingNames.add(definitionName);
+      if (preferNextDefinition(previousDefinition, definition)) {
         owners.set(definitionName, result.packageName);
         definitions[definitionName] = definition;
       }
     }
   }
   if (conflicts.length > 0) {
-    const detail = conflicts.slice(0, 5)
+    const shownConflicts = conflicts.slice(0, 5);
+    const detail = shownConflicts
       .map((conflict) => `${conflict.name} (${conflict.firstOwner} vs ${conflict.nextOwner})`)
       .join("; ");
+    const shownNameCount = new Set(shownConflicts.map((conflict) => conflict.name)).size;
+    const remaining = conflictingNames.size - shownNameCount;
+    const detailSuffix = remaining > 0 ? `, ... (+${remaining.toString()} more name(s))` : "";
+    const scope = `${conflictingNames.size.toString()} definition name(s) defined differently in >1 package `
+      + `(${conflicts.length.toString()} conflicting copies)`;
     if (strict) {
-      throw new Error(`Strict mode: ${conflicts.length.toString()} conflicting definition name(s): ${detail}`);
+      throw new Error(`Strict mode: ${scope}: ${detail}${detailSuffix}`);
     }
-    process.stderr.write(
-      `WARNING: ${conflicts.length.toString()} definition name(s) defined differently in >1 package; kept one, others dropped: ${detail}\n`,
-    );
+    process.stderr.write(`WARNING: ${scope}; kept one, others dropped: ${detail}${detailSuffix}\n`);
   }
   return { definitions };
 }

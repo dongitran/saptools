@@ -151,11 +151,86 @@ describe("cache IO", () => {
       return true;
     });
     try {
-      expect(() => mergeCompileResults(results, true)).toThrow("Strict mode: 1 conflicting definition name(s): acme.Shared (@acme/db_one vs @acme/db_two)");
+      expect(() => mergeCompileResults(results, true)).toThrow(
+        "Strict mode: 1 definition name(s) defined differently in >1 package (1 conflicting copies): acme.Shared (@acme/db_one vs @acme/db_two)",
+      );
       expect(chunks.join("")).toBe("");
     } finally {
       stderrWrite.mock.restore();
     }
+  });
+
+  it("keeps the more complete non-projection copy based on element coverage, not arrival order", () => {
+    const partial = { kind: "entity", "@hanaLens.packageName": "@acme/db_one", elements: { ID: { key: true, type: "cds.UUID" } } };
+    const complete = { kind: "entity", "@hanaLens.packageName": "@acme/db_two", elements: { ID: { key: true, type: "cds.UUID" }, name: { type: "cds.String" } } };
+
+    const partialFirst = mergeWithStderr([
+      { packageName: "@acme/db_one", definitions: { "acme.Shared": partial }, via: "cds" },
+      { packageName: "@acme/db_two", definitions: { "acme.Shared": complete }, via: "cds" },
+    ]);
+    expect(partialFirst.ast.definitions["acme.Shared"]?.["@hanaLens.packageName"]).toBe("@acme/db_two");
+
+    const completeFirst = mergeWithStderr([
+      { packageName: "@acme/db_two", definitions: { "acme.Shared": complete }, via: "cds" },
+      { packageName: "@acme/db_one", definitions: { "acme.Shared": partial }, via: "cds" },
+    ]);
+    expect(completeFirst.ast.definitions["acme.Shared"]?.["@hanaLens.packageName"]).toBe("@acme/db_two");
+  });
+
+  it("breaks a tie between disjoint, equally-sized non-projection copies by content, not arrival order", () => {
+    // Neither {A,B} nor {B,C} is a superset of the other -- genuinely incomparable copies of the
+    // same FQN. The chosen survivor must be the same regardless of which one is scanned first.
+    const alphaCopy = { kind: "entity", "@hanaLens.packageName": "@acme/alpha", elements: { A: { type: "cds.String" }, B: { type: "cds.String" } } };
+    const betaCopy = { kind: "entity", "@hanaLens.packageName": "@acme/beta", elements: { B: { type: "cds.String" }, C: { type: "cds.String" } } };
+
+    const alphaFirst = mergeCompileResults([
+      { packageName: "@acme/alpha", definitions: { "acme.Shared": alphaCopy }, via: "cds" },
+      { packageName: "@acme/beta", definitions: { "acme.Shared": betaCopy }, via: "cds" },
+    ]);
+    const betaFirst = mergeCompileResults([
+      { packageName: "@acme/beta", definitions: { "acme.Shared": betaCopy }, via: "cds" },
+      { packageName: "@acme/alpha", definitions: { "acme.Shared": alphaCopy }, via: "cds" },
+    ]);
+
+    expect(alphaFirst.definitions["acme.Shared"]).toEqual(betaFirst.definitions["acme.Shared"]);
+  });
+
+  it("separates the distinct-name count from the pairwise-conflict count for one name conflicting across 3+ packages", () => {
+    const shared = (length: number): Record<string, unknown> => ({ kind: "type", type: "cds.String", length });
+    const results = [
+      { packageName: "@acme/a", definitions: { "acme.Shared": shared(1) }, via: "cds" },
+      { packageName: "@acme/b", definitions: { "acme.Shared": shared(2) }, via: "cds" },
+      { packageName: "@acme/c", definitions: { "acme.Shared": shared(3) }, via: "cds" },
+    ] as const;
+
+    const result = mergeWithStderr(results);
+
+    expect(result.stderr).toContain("WARNING: 1 definition name(s) defined differently in >1 package (2 conflicting copies)");
+  });
+
+  it("bases the remaining-names suffix on distinct names left to show, not on leftover conflict copies", () => {
+    const shared = (length: number): Record<string, unknown> => ({ kind: "type", type: "cds.String", length });
+    const results = [
+      { packageName: "@acme/a0", definitions: { "acme.Shared": shared(1) }, via: "cds" },
+      { packageName: "@acme/a1", definitions: { "acme.Shared": shared(2) }, via: "cds" },
+      { packageName: "@acme/a2", definitions: { "acme.Shared": shared(3) }, via: "cds" },
+      { packageName: "@acme/b0", definitions: { "acme.D2": shared(1) }, via: "cds" },
+      { packageName: "@acme/b1", definitions: { "acme.D2": shared(2) }, via: "cds" },
+      { packageName: "@acme/c0", definitions: { "acme.D3": shared(1) }, via: "cds" },
+      { packageName: "@acme/c1", definitions: { "acme.D3": shared(2) }, via: "cds" },
+      { packageName: "@acme/d0", definitions: { "acme.D4": shared(1) }, via: "cds" },
+      { packageName: "@acme/d1", definitions: { "acme.D4": shared(2) }, via: "cds" },
+      { packageName: "@acme/e0", definitions: { "acme.D5": shared(1) }, via: "cds" },
+      { packageName: "@acme/e1", definitions: { "acme.D5": shared(2) }, via: "cds" },
+    ] as const;
+
+    const result = mergeWithStderr(results);
+
+    // 6 pairwise conflicts (2 for acme.Shared, 1 each for D2-D5) across 5 distinct names; the first
+    // 5 conflict entries shown cover only 4 distinct names (both acme.Shared copies land inside that
+    // slice), so exactly 1 name -- not 0 -- remains unlisted.
+    expect(result.stderr).toContain("WARNING: 5 definition name(s) defined differently in >1 package (6 conflicting copies)");
+    expect(result.stderr).toContain(", ... (+1 more name(s))");
   });
 
   it("keeps a __proto__-named definition as a real enumerable entry instead of corrupting the container", () => {
@@ -327,6 +402,51 @@ describe("cache kind scope", () => {
         "acme.api.CatalogService.PersistedRecord",
       ],
     ]);
+  });
+
+  it("keeps a referenced if-unused code list in db scope but drops an unreferenced one", () => {
+    const results = [{
+      packageName: "@acme/model",
+      via: "cds",
+      definitions: {
+        "sap.common.Currencies": { kind: "entity", "@cds.persistence.skip": "if-unused", elements: { code: { key: true, type: "cds.String" } } },
+        "sap.common.UnusedCodeList": { kind: "entity", "@cds.persistence.skip": "if-unused", elements: { code: { key: true, type: "cds.String" } } },
+        "acme.Order": { kind: "entity", elements: {
+          ID: { key: true, type: "cds.UUID" },
+          currency: { type: "cds.Association", target: "sap.common.Currencies" },
+        } },
+      },
+    } as const];
+
+    const db = applyCacheKindFilter(results, CACHE_KINDS.DB);
+    const service = applyCacheKindFilter(results, CACHE_KINDS.SERVICE);
+
+    expect(Object.keys(db[0]?.definitions ?? {})).toEqual(["sap.common.Currencies", "acme.Order"]);
+    expect(Object.keys(service[0]?.definitions ?? {})).toEqual(["sap.common.UnusedCodeList"]);
+  });
+
+  it("documents the accepted limitation: a bare fallback-parser target can suffix-match an unrelated if-unused entity", () => {
+    const results = [{
+      packageName: "@acme/model",
+      via: "fallback",
+      definitions: {
+        "ns1.Code": { kind: "entity", "@cds.persistence.skip": "if-unused", elements: { value: { type: "cds.String" } } },
+        "ns2.Order": { kind: "entity", elements: {
+          ID: { key: true, type: "cds.UUID" },
+          // Bare, unqualified target -- typical of the degraded --allow-fallback parser, which
+          // never namespace-qualifies association targets.
+          code: { type: "cds.Association", target: "Code" },
+        } },
+      },
+    } as const];
+
+    const db = applyCacheKindFilter(results, CACHE_KINDS.DB);
+
+    // ns1.Code is not really what "code" points at, but the bare suffix match still counts it as
+    // referenced -- kept in db rather than dropped. Erring toward keeping is the accepted,
+    // documented direction (see isReferenced's comment): it never causes a genuinely-needed
+    // table to vanish, only an occasional unused one to linger.
+    expect(Object.keys(db[0]?.definitions ?? {})).toContain("ns1.Code");
   });
 
   it("keeps persistence association targets reference-closed for describe expansion", () => {

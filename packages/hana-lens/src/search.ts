@@ -20,37 +20,47 @@ function packageNameOf(definition: HanaLensCsn["definitions"][string]): string {
 
 function searchableNameParts(name: string): readonly string[] {
   const parts = name.split(".").filter((part) => part.length > 0);
-  const last = parts.at(-1);
-  return last === undefined || last === name ? [name] : [name, last];
+  return parts.length <= 1 ? [name] : [name, ...parts];
+}
+
+// Exact match (including an exact whole-segment match, since segments are candidates too) always
+// wins. A substring match ranks by where it starts, not by the candidate's overall length -- so a
+// long, descriptive name that matches at the same position as a short one ties with it instead of
+// always losing to "shortest wins", which previously buried more relevant, longer entity names.
+function scoreCandidate(keyword: string, candidate: string): number {
+  if (candidate === keyword) {
+    return -2000;
+  }
+  const matchIndex = candidate.indexOf(keyword);
+  return matchIndex === -1 ? levenshtein(keyword, candidate) : -1000 + matchIndex;
 }
 
 function fuzzyScore(keyword: string, definitionName: string): number {
-  return Math.min(...searchableNameParts(definitionName.toLowerCase()).map((candidate) => {
-    const containsBoost = candidate.includes(keyword) ? -1000 : 0;
-    return levenshtein(keyword, candidate) + containsBoost;
-  }));
-}
-
-function assertRegexLength(pattern: string): void {
-  if (pattern.length > 256) {
-    throw new Error("Regex pattern is too long");
-  }
+  return Math.min(...searchableNameParts(definitionName.toLowerCase()).map((candidate) => scoreCandidate(keyword, candidate)));
 }
 
 function assertKeyword(keyword: string, regexMode: boolean): string {
-  const trimmedKeyword = keyword.trim();
-  if (trimmedKeyword.length === 0) {
+  // A whitespace-only string is a genuinely valid, if unusual, regex (it matches literal spaces),
+  // so only regex mode's own emptiness check applies to the untrimmed keyword; trimming before
+  // checking -- as fuzzy mode deliberately does, since a fuzzy search for pure whitespace is
+  // meaningless -- must not also reject a regex pattern that is not actually empty.
+  const searchKeyword = regexMode ? keyword : keyword.trim();
+  if (searchKeyword.length === 0) {
     throw new Error("Search keyword must not be empty");
   }
-  return regexMode ? keyword : trimmedKeyword;
+  // Worker timeouts plus the linear fallback are the ReDoS boundary for regex mode; fuzzy mode's
+  // own levenshtein comparisons are O(keyword x candidate), so an unbounded keyword is a CPU risk
+  // there too. Both share one clear length error before either evaluation path even starts.
+  if (searchKeyword.length > 256) {
+    throw new Error(regexMode ? "Regex pattern is too long" : "Search keyword is too long");
+  }
+  return searchKeyword;
 }
 
 export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly SearchResult[] {
   const searchKeyword = assertKeyword(keyword, regexMode);
   const entries = Object.entries(csn.definitions);
   if (regexMode) {
-    // Worker timeouts plus the linear fallback are the ReDoS boundary; the parent keeps only a clear length error.
-    assertRegexLength(searchKeyword);
     const candidateGroups = entries.map(([name]) => ({ name, candidates: searchableNameParts(name) }));
     const matches = matchRegexCandidates(
       searchKeyword,
@@ -86,9 +96,6 @@ export function searchDefinitions(csn: HanaLensCsn, keyword: string, regexMode: 
 export function searchFields(csn: HanaLensCsn, keyword: string, regexMode: boolean): readonly FieldSearchResult[] {
   const searchKeyword = assertKeyword(keyword, regexMode);
   const normalizedKeyword = searchKeyword.toLowerCase();
-  if (regexMode) {
-    assertRegexLength(searchKeyword);
-  }
   const fields: { readonly entityName: string; readonly fieldName: string }[] = [];
   for (const [entityName, definition] of Object.entries(csn.definitions)) {
     if (definition.elements !== undefined) {
@@ -135,6 +142,11 @@ function projectionSources(definition: HanaLensDefinition): readonly string[] {
       const first: unknown = ref[0];
       if (typeof first === "string") {
         sources.add(first);
+      } else if (isRecord(first) && typeof first["id"] === "string") {
+        // A parameterized source (e.g. a calculation view) serializes its ref as
+        // { id, args } rather than a bare string -- describe.ts's expression formatter
+        // already reads segment.id for the identical shape.
+        sources.add(first["id"]);
       }
     }
     // Only source-bearing FROM/JOIN nodes count; field refs in columns or filters are not target definitions.
@@ -161,13 +173,25 @@ export function findIncomingReferences(csn: HanaLensCsn, entityName: string): re
     const elements = definition.elements;
     if (elements !== undefined) {
       for (const [fieldName, element] of Object.entries(elements)) {
-        const targetName = element.target;
-        if (!isAssociationElement(element) || targetName === undefined) {
+        if (isAssociationElement(element)) {
+          const targetName = element.target;
+          if (targetName === undefined) {
+            continue;
+          }
+          const resolution = resolveTarget(csn, targetName, definition);
+          if (resolution.status === "resolved" && requestedTargets.has(resolution.target.name)) {
+            references.push({ entityName: sourceName, fieldName });
+          }
           continue;
         }
-        const resolution = resolveTarget(csn, targetName, definition);
-        if (resolution.status === "resolved" && requestedTargets.has(resolution.target.name)) {
-          references.push({ entityName: sourceName, fieldName });
+        // A `type` reuses another definition by its FQN; cds.* builtins never resolve to a
+        // cached definition, so this skips straight past the overwhelming majority of scalar
+        // elements before resolveTarget's O(n) fallback scan would otherwise run per element.
+        if (element.type !== undefined && !element.type.startsWith("cds.")) {
+          const resolution = resolveTarget(csn, element.type, definition);
+          if (resolution.status === "resolved" && resolution.target.definition.kind === "type" && requestedTargets.has(resolution.target.name)) {
+            references.push({ entityName: sourceName, fieldName, viaType: true });
+          }
         }
       }
     }
@@ -225,7 +249,9 @@ export function formatIncomingReferences(
   const lines = [
     ...(note === undefined ? [] : [note]),
     `Incoming References to [${entityName}]:`,
-    ...shown.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`),
+    ...(shown.length === 0
+      ? ["(no incoming references found)"]
+      : shown.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName}${reference.viaType === true ? ", type reference" : ""})`)),
   ];
   if (references.length > shown.length) {
     process.stderr.write(`... showing ${shown.length.toString()} of ${references.length.toString()} references\n`);

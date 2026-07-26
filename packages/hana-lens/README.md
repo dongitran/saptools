@@ -104,24 +104,27 @@ What it does:
 
 - ignores `node_modules`, `.git`, `dist`, and `gen`
 - stops recursion once it finds a matching package root
-- resolves duplicate package names by folder match, then uses folder-derived fallbacks and excludes only fallbacks that still collide
+- resolves duplicate package names by folder match, then uses folder-derived fallbacks; if two fallback names still collide, keeps one deterministic survivor and excludes the rest rather than dropping the whole group
 - creates virtual sibling links under each package's `node_modules/<scope>`
-- removes broken symlinks before relinking
+- removes broken symlinks before relinking, and prunes stale links left over from packages no longer in scope
+- isolates one unlinkable package name, or one broken symlink target, without aborting linking for every other package; rolls back every symlink this run created if linking still fails
 - spawns one worker process per package before calling `@sap/cds.compile(['*'])`
 - resolves `@sap/cds` from each analyzed package/workspace before trying the CLI installation
-- skips failed packages with a bounded stderr summary by default; `--strict` restores abort-on-any-failure behavior
-- filters successful compiler output by CAP semantics before merging and writing the cache
+- skips failed packages with a bounded stderr summary by default; `--strict` restores abort-on-any-failure behavior; a spawn-level failure (not just a compiler error) is skipped the same way instead of crashing the build
+- keeps a worker's compiled payload even if it later exits non-zero or is killed by a signal, as long as a valid result was already written
+- classifies an unresolvable module reference separately from a CDS model-semantics error in skip reasons, and never attributes a `cds.*` framework built-in to whichever package compiled first
+- filters successful compiler output by CAP semantics before merging and writing the cache; `@cds.persistence.skip: 'if-unused'` is resolved by actual usage, so a referenced code list stays in `db` and an unreferenced one does not
 - annotates definitions with `@hanaLens.packageName`
-- silently collapses identical shared definitions, while different definitions with the same fully qualified name warn and deterministically keep one, preferring persistence definitions over projections (`--strict` makes conflicts fatal)
+- silently collapses identical shared definitions; different definitions with the same fully qualified name warn and deterministically keep whichever copy has the more complete element set (independent of processing order), falling back to preferring persistence definitions over projections only when neither is more complete (`--strict` makes conflicts fatal)
 - writes `.hana-lens-cache.json` as newline-free minified JSON
 
 | Kind | Cached definitions |
 | --- | --- |
-| `db` (default) | Persistence entities classified by CAP shape, including physical tables declared inside a service body, plus free types/aspects. Queries and projections (including DB views), external definitions, persistence-skipped definitions, and contexts are excluded. |
-| `service` | The non-persistence layer: service-owned definitions, queries/projections, external or persistence-skipped definitions, operations, contexts/events/annotations, and free types/aspects. Physical persistence entities are excluded even when declared inside a service body. |
+| `db` (default) | Persistence entities classified by CAP shape, including physical tables declared inside a service body, plus free types/aspects. Queries and projections (including DB views), external definitions, and persistence-skipped definitions are excluded — except a `'if-unused'` skip that is actually referenced elsewhere in the model, which stays in `db` since CAP still persists it. Contexts are excluded. |
+| `service` | The non-persistence layer: service-owned definitions, queries/projections, external or persistence-skipped definitions (including an unreferenced `'if-unused'` skip), operations, contexts/events/annotations, and free types/aspects. Physical persistence entities are excluded even when declared inside a service body. |
 | `all` | The complete compiled model, matching the pre-0.4 cache scope. |
 
-All matching packages are still compiled before scoping. Together, `db` and `service` account for every `all` definition; free top-level types/aspects intentionally appear in both for reference closure. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `scan_warnings=`, `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; `scan_warnings=` counts directories excluded during scanning because their `package.json` was malformed or unreadable (also reported on stderr); and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
+All matching packages are still compiled before scoping. Together, `db` and `service` account for every `all` definition; free top-level types/aspects intentionally appear in both for reference closure. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `scan_warnings=`, `excluded_packages=`, `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; `scan_warnings=` counts directories excluded during scanning because their `package.json` was malformed or unreadable (also reported on stderr); `excluded_packages=` counts packages dropped by a fallback-name collision that still collided after folder-derived renaming (also reported on stderr); and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
 
 > [!WARNING]
 > `--allow-fallback` cannot reliably identify service ownership, queries/projections, or CAP persistence flags. Its `db` and `service` scopes are therefore incomplete in addition to the parser limitations described above; any fallback use prints a degraded-cache warning to stderr.
@@ -151,7 +154,7 @@ my.service.BusinessRequest|@my-cap/sales
 my.service.BusinessRequestItem|@my-cap/sales
 ```
 
-Default mode is case-insensitive and typo-tolerant, ordered by fuzzy score and then definition name. Substring matches are retained, while distant fuzzy guesses are filtered out. A query with no results prints `No matches for "<keyword>"`. Regex mode tests both each fully qualified definition name and its final segment, so `^BusinessRequest$` can match `my.service.BusinessRequest`; matches remain deduplicated and ordered by definition name. Regex input is preserved verbatim, capped at 256 characters, and evaluated in an isolated native-JavaScript worker with a fixed timeout before a linear RE2JS fallback. This worker boundary provides the ReDoS protection; if the fallback cannot compile a JavaScript-only construct, its syntax error is reported. The typed API returns the full sorted match set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
+Default mode is case-insensitive and typo-tolerant, ordered by where the keyword matches (earlier wins) rather than by candidate length, then by definition name; a typo anywhere in a namespace segment matches, not only in the final component; the keyword is capped at 256 characters, the same bound already applied to regex patterns. Substring matches are retained, while distant fuzzy guesses are filtered out. A query with no results prints `No matches for "<keyword>"`. Regex mode tests every dot-separated segment of each definition name (the fully qualified name, each namespace segment, and the final component), so `^BusinessRequest$` or `^service$` can both match `my.service.BusinessRequest`; matches remain deduplicated and ordered by definition name. Regex input is preserved verbatim (a whitespace-only pattern is valid and matches literal spaces), capped at 256 characters, and evaluated in an isolated native-JavaScript worker with a fixed timeout before a linear RE2JS fallback. This worker boundary provides the ReDoS protection; a fallback attempt always prints a stderr warning about the syntax/Unicode differences involved, and if the fallback engine itself then rejects the pattern, the message says so explicitly rather than calling it invalid syntax outright. The typed API returns the full sorted match set. When the CLI has more than 10 results, it appends `... showing 10 of M matches` after the visible rows.
 
 ### 🔎 `hana-lens search-field <keyword> [--regex]`
 
@@ -167,35 +170,41 @@ When no field matches, the command prints `No field matches for "<keyword>"` and
 
 ### 🔗 `hana-lens references <entity_name>`
 
-List definitions that point to an entity through an association/composition or a projection/query source. Direct references name the field; projection/query sources use the stable `(projection)` marker and appear once per source.
+List definitions that point to an entity through an association/composition, a type reuse (`type: my.master.Customer` on another element), or a projection/query source. Direct references name the field; a type-reuse reference adds a `, type reference` marker; projection/query sources use the stable `(projection)` marker and appear once per source.
 
 ```text
 Incoming References to [my.master.Customer]:
 - my.service.BusinessRequest (via field: customer)
+- my.service.CustomerLink (via field: customer, type reference)
 - my.service.CustomerView (via field: (projection))
 ```
 
-Rows are sorted by entity and field. An exact fully qualified name wins over longer suffix matches. A unique short name resolves directly; when a short name matches multiple definitions, the CLI explicitly lists the bounded candidate set and states that the displayed references are their union. The CLI shows at most 25 rows, then appends `... showing 25 of M references` when truncated. Requesting an entity absent from the cache fails with `Entity not found: <name>`.
+Rows are sorted by entity and field. An exact fully qualified name wins over longer suffix matches. A unique short name resolves directly; when a short name matches multiple definitions, the CLI explicitly lists the bounded candidate set and states that the displayed references are their union. The CLI shows at most 25 rows, then appends `... showing 25 of M references` when truncated. An entity with zero incoming references prints an explicit `(no incoming references found)` line rather than leaving just the header. Requesting an entity absent from the cache fails with `Entity not found: <name>`.
 
-### 🧾 `hana-lens describe <definition_name> [--expand]`
+### 🧾 `hana-lens describe <definition_name> [--expand] [--with-annotations]`
 
 Print one cached definition without padded columns, tables, or emojis.
 
 ```bash
 hana-lens describe my.service.BusinessRequest
 hana-lens describe my.service.BusinessRequest --expand
+hana-lens describe my.service.BusinessRequest --with-annotations
 hana-lens describe BusinessRequest
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--expand` | Follow `cds.Association` and `cds.Composition` targets with a safety depth limit |
+| `--expand` | Follow `cds.Association` and `cds.Composition` targets with a safety depth limit of 2; a target past the limit prints a `truncated` marker instead of stopping silently |
+| `--with-annotations` | Print `@`-annotations, both on the definition itself and on each element |
 
 Dense output example:
 
 ```text
 [PK] [computed] reqID: cds.String(36)
 [computed] createdAt: cds.Timestamp
+[virtual] balance: cds.Decimal(9, 2)
+[not null] status: cds.String
+[localized] title: cds.String(120)
 amount: cds.Decimal(3, 1)
 history: array of cds.Map
 labels: array of { value, label }
@@ -205,9 +214,17 @@ items: cds.Composition to many my.service.BusinessRequestItem ON [items.requestI
 - name: cds.String(80)
 ```
 
-`[PK]` marks `key: true`; `[computed]` marks `@Core.Computed`; both appear when both properties are present. Associations and compositions include their target, add `many` for to-many cardinality, and append a valid `ON` expression when present. Expansion reports compact `missing`, `ambiguous`, or `circular` markers when a target cannot be expanded safely.
+`[PK]` marks `key: true`; `[computed]` marks `@Core.Computed`; `[virtual]`, `[not null]`, and `[localized]` mark the element's respective CSN flags; all that apply appear together. Associations and compositions include their target — an inline/anonymous aspect target (`Composition of many { ... }` with no named entity) renders its element names the same way a `{ elements }` type does — add `many` for to-many cardinality, and append a valid `ON` expression when present. A bound action/function's parameters are printed alongside a non-empty elements body (its return-type shape), not only when it has no elements. Expansion reports compact `missing`, `ambiguous`, or `circular` markers when a target cannot be expanded safely, prefixes and labels every expanded line with its nesting depth and resolved target name even when the target itself has no elements, and marks a target past the depth limit `truncated` rather than silently stopping.
 
 `describe` accepts either an exact fully qualified name or a unique final segment. Ambiguous short names fail with a deterministic, bounded candidate list and ask for the full name instead of selecting an arbitrary definition.
+
+With `--with-annotations`, annotations on the definition itself (e.g. `@readonly` on a service-exposed entity) print on their own line before the elements, in addition to each element's own annotations:
+
+```text
+@readonly=true @title="Business Request"
+[PK] reqID: cds.String(36)
+status: cds.String @Common.ValueList={"CollectionPath":"Statuses"}
+```
 
 Definitions without elements retain their useful type information. Scalar and association typedefs use the same type text as fields, enums include assigned values when they differ from their key, and actions/functions start with `(action)`/`(function)` before their parameters and return type:
 
@@ -334,6 +351,22 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 ---
 
 ## 🗒️ Changelog
+
+### `0.5.0` — Reference completeness, definition-level annotations, and contained build failures
+
+- resolves `references` through type reuse (not only associations/compositions) and parameterized projection sources, and states explicitly when an entity has zero incoming references instead of leaving a bare header
+- surfaces annotations on the definition itself under `--with-annotations`, not only on its elements; also keeps a bound operation's parameters when it also has a non-empty elements body, and renders an anonymous-aspect composition target by its inline element names
+- fixes cache-merge quality to keep whichever copy of a conflicting definition has the more complete element set, independent of processing order, instead of a projection-only heuristic that could keep a strictly poorer copy
+- separates the distinct-conflicting-name count from the pairwise-conflicting-copy count in merge warnings, and bounds the "+more names" suffix by names actually left to show
+- rejects a missing `--kind` value, a repeated `--dir`/`--prefix`/`--kind` flag, and extra positional arguments instead of silently defaulting, ignoring the repeat, or dropping the extra argument; suggests the closest command on a top-level typo
+- accounts for fallback-name-collision exclusions in a new `excluded_packages=` build summary field, keeps one deterministic survivor instead of dropping an entire colliding group, prunes stale symlinks from packages no longer in scope, and rolls back every symlink a run created if linking still fails partway through
+- isolates a spawn-level failure (e.g. descriptor exhaustion) as a per-package skip instead of crashing the whole build, and no longer discards a compiled payload a worker already wrote just because it later exited non-zero or was killed by a signal
+- classifies an unresolvable-module compile error separately from a CDS model-semantics error in skip reasons, and never attributes a `cds.*` framework built-in (e.g. `cds.outbox.Messages`) to whichever package happened to compile it first
+- resolves `@cds.persistence.skip: 'if-unused'` by actual reference usage: a referenced code list (e.g. `sap.common.Currencies`) stays in `db`, an unreferenced one does not
+- fixes `--expand` to depth-prefix and label non-element target branches (previously ambiguous when several targets expanded to the same shape at the same depth) and to mark a target past the depth limit `truncated` instead of silently stopping
+- ranks fuzzy search matches by where the keyword starts rather than by candidate length, matches a typo anywhere in a namespace segment rather than only the final one, and caps the fuzzy keyword length the same way the regex pattern length was already capped
+- reports honestly when a regex fallback attempt's own rejection — not the pattern's syntax — is what actually failed after a native-engine timeout, and always warns before evaluating on the fallback engine
+- **breaking:** `references` output gains an explicit no-references line and a `viaType` marker on type-reuse rows; merge-conflict and fallback-collision-exclusion warning wording changes to separate names from copies; `--expand` output gains depth-prefixed/labeled non-element branches and a `truncated` marker; regex-fallback failure messages are reworded; adds `excluded_packages` to `PackageScanResult` and the build summary line, `viaType` to `IncomingReference`, and `targetAspect`/`virtual`/`notNull`/`localized` to the typed API
 
 ### `0.4.5` — Flag-typo coverage, scan-warning accounting, and atomic cache writes
 

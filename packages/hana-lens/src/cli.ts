@@ -41,15 +41,35 @@ function readOption(args: readonly string[], name: string): string | undefined {
 }
 
 function requireArgument(args: readonly string[], name: string): string {
-  const value = args.find((argument) => !argument.startsWith("--"));
+  const [value, ...extra] = args.filter((argument) => !argument.startsWith("--"));
   if (value === undefined) {
     throw new Error(`Missing required argument: ${name}`);
+  }
+  if (extra.length > 0) {
+    throw new Error(`Unexpected extra argument(s): ${extra.join(", ")}`);
   }
   return value;
 }
 
 function hasFlag(args: readonly string[], name: string): boolean {
   return args.includes(name);
+}
+
+function assertOptionNotRepeated(args: readonly string[], name: string): void {
+  if (args.filter((argument) => argument === name).length > 1) {
+    throw new Error(`${name} was specified more than once`);
+  }
+}
+
+function assertKindValuePresent(args: readonly string[]): void {
+  const index = args.indexOf("--kind");
+  if (index === -1) {
+    return;
+  }
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error("--kind requires a value: db|service|all");
+  }
 }
 
 function aggregateCompileVia(compiled: BuildResult["compiled"]): string {
@@ -69,6 +89,12 @@ function printBuildWarnings(result: BuildResult): void {
     const remaining = result.scanWarnings.length - SKIP_SUMMARY_LIMIT;
     const suffix = remaining > 0 ? `, ... (+${remaining.toString()} more)` : "";
     process.stderr.write(`Excluded ${result.scanWarnings.length.toString()} director(ies) during scan: ${names}${suffix}\n`);
+  }
+  if (result.excludedPackages.length > 0) {
+    const names = result.excludedPackages.slice(0, SKIP_SUMMARY_LIMIT).map((exclusion) => exclusion.directory).join(", ");
+    const remaining = result.excludedPackages.length - SKIP_SUMMARY_LIMIT;
+    const suffix = remaining > 0 ? `, ... (+${remaining.toString()} more)` : "";
+    process.stderr.write(`Excluded ${result.excludedPackages.length.toString()} package(s) due to a fallback name collision: ${names}${suffix}\n`);
   }
   if (result.skipped.length > 0) {
     const names = result.skipped.slice(0, SKIP_SUMMARY_LIMIT).map((skip) => skip.package).join(", ");
@@ -117,6 +143,10 @@ function rejectFlagTypos(command: string, args: readonly string[]): void {
 }
 
 async function runBuildCache(args: readonly string[]): Promise<void> {
+  for (const optionName of ["--dir", "--prefix", "--kind"]) {
+    assertOptionNotRepeated(args, optionName);
+  }
+  assertKindValuePresent(args);
   const kind = parseCacheKind(readOption(args, "--kind"));
   const result = await buildCache(
     requireOption(args, "--dir"),
@@ -130,14 +160,23 @@ async function runBuildCache(args: readonly string[]): Promise<void> {
   printBuildWarnings(result);
   process.stdout.write(
     `cached=${Object.keys(result.ast.definitions).length.toString()} packages=${result.packages.length.toString()}`
-    + ` scan_warnings=${result.scanWarnings.length.toString()} file=${result.cacheFile}`
+    + ` scan_warnings=${result.scanWarnings.length.toString()} excluded_packages=${result.excludedPackages.length.toString()} file=${result.cacheFile}`
     + ` compiled=${result.compiled.length.toString()} skipped=${result.skipped.length.toString()} via=${aggregateCompileVia(result.compiled)}`
     + ` kind=${kind}\n`,
   );
 }
 
 function printHelp(): void {
-  process.stdout.write("hana-lens <command>\n\nCommands:\n  build-cache --dir <workspace_path> --prefix <package_prefix> [--kind db|service|all] [--allow-fallback] [--strict]\n  search <keyword> [--regex]\n  search-field <keyword> [--regex]\n  references <entity_name>\n  describe <entity_name> [--expand] [--with-annotations]\n");
+  process.stdout.write("hana-lens <command>\n\nCommands:\n  build-cache --dir <workspace_path> --prefix <package_prefix> [--kind db|service|all] [--allow-fallback] [--strict]\n  search <keyword> [--regex]\n  search-field <keyword> [--regex]\n  references <entity_name>\n  describe <entity_name> [--expand] [--with-annotations]\n\n--expand follows association/composition targets up to 2 levels deep; deeper targets are marked truncated.\n");
+}
+
+const KNOWN_COMMANDS_FOR_SUGGESTION = ["build-cache", "search", "search-field", "references", "describe", "--help"];
+
+function suggestCommand(command: string): string | undefined {
+  return KNOWN_COMMANDS_FOR_SUGGESTION
+    .map((candidate) => ({ candidate, distance: levenshtein(command.toLowerCase(), candidate) }))
+    .filter((entry) => entry.distance <= FLAG_TYPO_DISTANCE)
+    .sort((left, right) => left.distance - right.distance)[0]?.candidate;
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -186,7 +225,8 @@ export async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  throw new Error(`Unknown command: ${command}`);
+  const suggestion = suggestCommand(command);
+  throw new Error(`Unknown command: ${command}${suggestion === undefined ? "" : `; did you mean ${suggestion}?`}`);
 }
 
 try {
