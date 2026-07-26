@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaIndexesSql, schemaTablesSql } from './schema.js';
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   handler_methods: [
     { name: 'decorator_resolution_json', ddl: "ALTER TABLE handler_methods ADD COLUMN decorator_resolution_json TEXT NOT NULL DEFAULT '{}'" },
@@ -8,6 +8,9 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   service_bindings: [
     { name: 'helper_chain_json', ddl: 'ALTER TABLE service_bindings ADD COLUMN helper_chain_json TEXT' },
     { name: 'alias_expr', ddl: 'ALTER TABLE service_bindings ADD COLUMN alias_expr TEXT' },
+    { name: 'binding_site_start_offset', ddl: 'ALTER TABLE service_bindings ADD COLUMN binding_site_start_offset INTEGER' },
+    { name: 'binding_site_end_offset', ddl: 'ALTER TABLE service_bindings ADD COLUMN binding_site_end_offset INTEGER' },
+    { name: 'owner_resolution', ddl: "ALTER TABLE service_bindings ADD COLUMN owner_resolution TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK(owner_resolution IN ('owned_exact','ownerless_file_scope','legacy_unknown'))" },
   ],
   repositories: [
     { name: 'fingerprint', ddl: 'ALTER TABLE repositories ADD COLUMN fingerprint TEXT' },
@@ -16,6 +19,7 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'graph_stale_reason', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_reason TEXT' },
     { name: 'graph_stale_at', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_at TEXT' },
     { name: 'fact_analyzer_version', ddl: "ALTER TABLE repositories ADD COLUMN fact_analyzer_version TEXT DEFAULT 'legacy'" },
+    { name: 'package_public_surface_json', ddl: 'ALTER TABLE repositories ADD COLUMN package_public_surface_json TEXT' },
   ],
   graph_edges: [
     { name: 'status', ddl: "ALTER TABLE graph_edges ADD COLUMN status TEXT NOT NULL DEFAULT 'unresolved'" },
@@ -81,7 +85,8 @@ function addMissingColumns(db: Db): void {
     }
   }
 }
-function normalizeLegacyStatus(db: Db): void {
+function normalizeLegacyStatus(db: Db, priorVersion: number): void {
+  if (priorVersion >= 12) return;
   db.prepare("UPDATE graph_edges SET status=CASE WHEN edge_type='REMOTE_CALL_RESOLVES_TO_OPERATION' THEN 'resolved' WHEN edge_type IN ('HANDLER_RUNS_DB_QUERY','HANDLER_CALLS_EXTERNAL_HTTP','HANDLER_EMITS_EVENT','EVENT_CONSUMED_BY_HANDLER') THEN 'terminal' WHEN edge_type='DYNAMIC_EDGE_CANDIDATE' THEN 'dynamic' WHEN status='ambiguous' THEN 'ambiguous' ELSE status END").run();
   db.prepare("UPDATE repositories SET graph_stale_reason='schema_migration_requires_relink', graph_stale_at=COALESCE(graph_stale_at, datetime('now')) WHERE EXISTS (SELECT 1 FROM graph_edges WHERE graph_edges.workspace_id=repositories.workspace_id) AND graph_generation=0").run();
 }
@@ -92,6 +97,13 @@ function markCallSiteMigrationStale(db: Db, priorVersion: number): void {
       graph_stale_at=COALESCE(graph_stale_at,datetime('now'))
     WHERE index_status='indexed' OR last_indexed_at IS NOT NULL`).run();
 }
+function markFactProvenanceMigrationStale(db: Db, priorVersion: number): void {
+  if (priorVersion >= 13) return;
+  db.prepare(`UPDATE repositories
+    SET graph_stale_reason='schema_v13_fact_provenance_requires_reindex',
+      graph_stale_at=COALESCE(graph_stale_at,datetime('now'))
+    WHERE index_status='indexed' OR last_indexed_at IS NOT NULL`).run();
+}
 export function migrate(db: Db): void {
   db.transaction(() => {
     const version = userVersion(db);
@@ -99,8 +111,9 @@ export function migrate(db: Db): void {
     db.exec(schemaTablesSql);
     addMissingColumns(db);
     db.exec(schemaIndexesSql);
-    normalizeLegacyStatus(db);
+    normalizeLegacyStatus(db, version);
     markCallSiteMigrationStale(db, version);
+    markFactProvenanceMigrationStale(db, version);
     const violations = db.pragma('foreign_key_check');
     if (violations.length > 0) throw new Error('SQLite foreign_key_check failed during migration');
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);

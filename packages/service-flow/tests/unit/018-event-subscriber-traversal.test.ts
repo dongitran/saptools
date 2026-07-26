@@ -148,7 +148,10 @@ async function writeAmbiguousHandlers(root: string): Promise<void> {
   await writeFixtureFile(root, 'ambiguous-handlers/.git-fixture');
   await writeFixtureFile(root, 'ambiguous-handlers/package.json', JSON.stringify({
     name: '@neutral/ambiguous-handlers', version: '1.0.0',
+    exports: './src/index.ts',
   }));
+  await writeFixtureFile(root, 'ambiguous-handlers/src/index.ts',
+    "export * from './a.js';\nexport * from './b.js';\n");
   for (const suffix of ['a', 'b'])
     await writeFixtureFile(root, `ambiguous-handlers/src/${suffix}.ts`,
       `export function ambiguousHandler(): void { void '${suffix}'; }\n`);
@@ -527,12 +530,12 @@ describe('event subscriber trace traversal', () => {
       JSON.stringify(diagnostic).includes('NoSubscriber'))).toBe(false);
   });
 
-  it('renders unresolved, ambiguous, and missing associations without descending', () => {
+  it('renders unresolved and ambiguous associations without descending', () => {
+    const current = fixtureState();
     const result = traceMain();
     const expected = [
       ['UnresolvedEvent', 'unresolved'],
       ['AmbiguousEvent', 'ambiguous'],
-      ['MissingEvent', 'unresolved'],
     ] as const;
     for (const [eventName, status] of expected) {
       const bridges = eventBridges(result, eventName);
@@ -541,6 +544,16 @@ describe('event subscriber trace traversal', () => {
       expect(bridges[0]?.evidence.bodyExpansion).toBe('not_resolved');
       expect(bridges[0]?.unresolvedReason).toEqual(expect.any(String));
     }
+    expect(eventBridges(result, 'MissingEvent')).toEqual([]);
+    const inline = current.db.prepare(`SELECT
+        json_extract(evidence_json,'$.handlerReferenceStatus') status
+      FROM outbound_calls
+      WHERE call_type='async_subscribe' AND event_name_expr='MissingEvent'`).get();
+    expect(inline?.status).toBe('unsupported_inline');
+    const persisted = current.db.prepare(`SELECT COUNT(*) count FROM graph_edges
+      WHERE workspace_id=? AND edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+        AND from_id='MissingEvent'`).get(current.workspaceId);
+    expect(persisted?.count).toBe(0);
     expect(result.nodes.some((node) => node.symbolName === 'ambiguousHandler')).toBe(false);
   });
 
@@ -847,7 +860,7 @@ describe('event subscriber trace traversal', () => {
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
       table: '9c1f98848c06f449abc626f31d62c2d66e1ef6d25dfa89561ab94e5f7464730c',
-      json: '0d33c074f9d3c89dcbc966af97280e9e6dffca8f89c362becac0833380bfdeb1',
+      json: '002d0d189dd06a8377b016927e816005d2b60a359b7cf42dd227629c81a7600b',
       mermaid: '2d36a809da6e00301c83e1b0d601984f953eb771402de9df864d1df5bdea4906',
     });
   });
@@ -910,9 +923,9 @@ describe('event subscriber trace traversal', () => {
       json: sha256(renderTraceJson(result)),
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
-      table: '67638027e82560a029add5f5521a3cfc8187450a406bf2f8911785e675c93169',
-      json: 'c58a2dcf486d4705b41d8bb6891cc04e0f973c315e547500da178f4550737ae2',
-      mermaid: 'eda933d82cf8c3503873e4900fdd9a42b67312062a0d78d87cedc19eefe15537',
+      table: '5dbf60ab63fd2f84f7999798551fd263467108d67f21e280da50ec1092277682',
+      json: 'e9d477d0273ec181a2de853d51d043fc97956f3bad0d2a4edb37086a34657e43',
+      mermaid: '7982410ac03edf29e41e5b446f1d8ad50d7affc1961c873ef114af382d911435',
     });
   });
 });

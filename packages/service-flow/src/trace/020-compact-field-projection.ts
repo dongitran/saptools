@@ -17,8 +17,12 @@ import type {
   CompactStartV1,
   CompactStatusCountsV1,
 } from './014-compact-contract.js';
+import {
+  compactMissingRemediation,
+  projectCompactMissingNames,
+  type CompactMissingNameProjection,
+} from './021-compact-decision-normalization.js';
 
-const compactNameLimit = 8;
 const compactDiagnosticMessages: Readonly<Record<string, string>> = {
   schema_upgrade_required: 'The database schema must be upgraded before tracing.',
   reindex_required: 'Current analyzer facts are required before tracing.',
@@ -56,14 +60,10 @@ function resolutionDecision(input: CompactDecisionInput): CompactDecisionV1 {
 }
 
 function addNameDecision(out: CompactDecisionV1, input: CompactDecisionInput): void {
-  const allNames = safeVariableNames(input.missingVariableNames);
-  const names = allNames.slice(0, compactNameLimit);
-  const total = Math.max(compactCount(input.missingVariableCount), allNames.length);
-  if (names.length > 0) out.missingVariableNames = names;
-  if (total === 0) return;
-  out.missingVariableCount = total;
-  out.shownMissingVariableCount = names.length;
-  out.omittedMissingVariableCount = Math.max(0, total - names.length);
+  const projection = projectCompactMissingNames(
+    input.missingVariableNames, input.missingVariableCount,
+  );
+  applyMissingProjection(out, projection);
 }
 
 function addDynamicDecision(out: CompactDecisionV1, input: CompactDecisionInput): void {
@@ -117,12 +117,22 @@ function addRemediationDecision(
   out: CompactDecisionV1,
   input: CompactDecisionInput,
 ): void {
-  const hint = input.remediationCode
-    ? compactRemediationHint(input.remediationCode) : undefined;
+  const hint = decisionRemediation(input);
   if (!hint) return;
   out.remediationHint = hint;
   const total = Math.max(1, compactCount(input.remediationHintCount));
   out.omittedRemediationHintCount = Math.max(0, total - 1);
+}
+
+function decisionRemediation(input: CompactDecisionInput): string | undefined {
+  if (input.remediationCode === 'provide_runtime_variables') {
+    const projection = projectCompactMissingNames(
+      input.missingVariableNames, input.missingVariableCount,
+    );
+    return compactMissingRemediation(projection, 'detailed trace edge');
+  }
+  return input.remediationCode
+    ? compactRemediationHint(input.remediationCode) : undefined;
 }
 
 export function projectCompactDiagnostics(
@@ -200,15 +210,6 @@ export function compactStatusTotal(counts: CompactStatusCountsV1): number {
     + counts.ambiguous + counts.unresolved + counts.cycle;
 }
 
-export function removeEquivalentCompactPersistedDecision(
-  decision: CompactDecisionV1,
-): void {
-  if (decision.persistedResolutionStatus !== decision.effectiveResolutionStatus) return;
-  if (!decision.persistedTarget || decision.persistedTarget !== decision.effectiveTarget) return;
-  delete decision.persistedResolutionStatus;
-  delete decision.persistedTarget;
-}
-
 function compactBlockingDiagnostic(item: CompactDiagnosticRowV1): boolean {
   if (item[1] === 'error') return true;
   return item[2] === 'schema_upgrade_required'
@@ -242,9 +243,9 @@ function compactDiagnosticDetails(
   const out: CompactDiagnosticDetailsV1 = {};
   const reasonCode = compactSafeCode(value.reasonCode);
   if (reasonCode) out.reasonCode = reasonCode;
-  addDiagnosticNames(out, value);
+  if (code === 'trace_runtime_variables_missing') addDiagnosticNames(out, value);
   addDiagnosticCounts(out, value);
-  const hint = compactDiagnosticRemediation(code);
+  const hint = compactDiagnosticRemediation(code, out);
   if (hint) {
     out.remediationHint = hint;
     out.omittedHintCount = Math.max(
@@ -258,14 +259,21 @@ function addDiagnosticNames(
   out: CompactDiagnosticDetailsV1,
   value: Record<string, unknown>,
 ): void {
-  const allNames = safeVariableNames(compactStringArray(value.missingVariables));
-  const names = allNames.slice(0, compactNameLimit);
-  const total = Math.max(allNames.length, compactCount(value.missingVariableCount));
-  if (names.length > 0) out.missingVariableNames = names;
-  if (total === 0) return;
-  out.missingVariableCount = total;
-  out.shownMissingVariableCount = names.length;
-  out.omittedMissingVariableCount = Math.max(0, total - names.length);
+  const projection = projectCompactMissingNames(
+    compactStringArray(value.missingVariables), value.missingVariableCount,
+  );
+  applyMissingProjection(out, projection);
+}
+
+function applyMissingProjection(
+  out: CompactDecisionV1 | CompactDiagnosticDetailsV1,
+  projection: CompactMissingNameProjection,
+): void {
+  if (projection.names.length > 0) out.missingVariableNames = projection.names;
+  if (projection.total === 0) return;
+  out.missingVariableCount = projection.total;
+  out.shownMissingVariableCount = projection.shown;
+  out.omittedMissingVariableCount = projection.omitted;
 }
 
 function addDiagnosticCounts(
@@ -303,11 +311,19 @@ function compactDiagnosticSeverity(value: unknown): 'error' | 'warning' | 'info'
   return value === 'error' || value === 'warning' ? value : 'info';
 }
 
-function compactDiagnosticRemediation(code: string): string | undefined {
+function compactDiagnosticRemediation(
+  code: string,
+  details: CompactDiagnosticDetailsV1,
+): string | undefined {
   if (code === 'schema_upgrade_required' || code === 'reindex_required')
     return compactRemediationHint('reindex_and_link');
   if (code === 'trace_runtime_variables_missing')
-    return compactRemediationHint('provide_runtime_variables');
+    return compactMissingRemediation({
+      names: details.missingVariableNames ?? [],
+      total: details.missingVariableCount ?? 0,
+      shown: details.shownMissingVariableCount ?? 0,
+      omitted: details.omittedMissingVariableCount ?? 0,
+    }, 'detailed diagnostic');
   if (code === 'implementation_hint_mismatch')
     return compactRemediationHint('select_implementation');
   return undefined;
@@ -356,11 +372,6 @@ export function projectCompactDecisionTarget(
 function compactSafeSourceFile(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 512
     && !/^[a-z]+:\/\//i.test(value) && !/[\r\n]/.test(value) ? value : undefined;
-}
-
-function safeVariableNames(values: string[] | undefined): string[] {
-  return compactSortedUnique((values ?? [])
-    .filter((value) => /^[A-Za-z_$][\w$]*$/.test(value)));
 }
 
 function compactCount(value: unknown): number {

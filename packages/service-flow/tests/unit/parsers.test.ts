@@ -459,8 +459,13 @@ describe('executable symbol parser trace-quality cases', () => {
       'this.otherMethod',
     ]);
     const externalCall = parsedEntry.calls.find((call) => call.calleeExpression === 'externalLib.doThing');
-    expect(externalCall).toMatchObject({ calleeLocalName: 'doThing', importSource: 'external-lib' });
-    expect(externalCall?.evidence).toMatchObject({ relation: 'package_import', targetName: 'doThing' });
+    expect(externalCall).toMatchObject({
+      calleeLocalName: 'default.doThing',
+      importSource: 'external-lib',
+    });
+    expect(externalCall?.evidence).toMatchObject({
+      relation: 'package_import', targetName: 'default.doThing',
+    });
     const objectHelperCall = parsedEntry.calls.find((call) => call.calleeExpression === 'cacheHelper.getConfiguration');
     expect(objectHelperCall).toMatchObject({ calleeLocalName: 'cacheHelper.getConfiguration', importSource: './helper' });
     expect(objectHelperCall?.evidence).toMatchObject({ relation: 'relative_import', targetName: 'cacheHelper.getConfiguration' });
@@ -504,8 +509,13 @@ describe('executable symbol parser trace-quality cases', () => {
     expect(parsedHandler.calls.map((call) => call.calleeExpression).sort()).toEqual(['DomainWorker.instance', 'PackageWorker.instance', 'worker.runHeavyCheck']);
     expect(parsedHandler.calls.find((call) => call.calleeExpression === 'worker.runHeavyCheck')?.evidence).toMatchObject({ relation: 'relative_import_proxy_member', caller: 'handle', targetName: 'runHeavyCheck', factory: 'DomainWorker.instance' });
     const packageWorkerCall = parsedHandler.calls.find((call) => call.calleeExpression === 'PackageWorker.instance');
-    expect(packageWorkerCall).toMatchObject({ calleeLocalName: 'instance', importSource: '@scope/worker' });
-    expect(packageWorkerCall?.evidence).toMatchObject({ relation: 'package_import', targetName: 'instance' });
+    expect(packageWorkerCall).toMatchObject({
+      calleeLocalName: 'PackageWorker.instance',
+      importSource: '@scope/worker',
+    });
+    expect(packageWorkerCall?.evidence).toMatchObject({
+      relation: 'package_import', targetName: 'PackageWorker.instance',
+    });
   });
 
 
@@ -833,14 +843,16 @@ describe('outbound AST parser hardening', () => {
     expect(symbols.some((symbol) => symbol.qualifiedName.includes('#callback:'))).toBe(false);
   });
 
-  it('keeps a synthetic owner for CAP lifecycle registrations without an async fact', async () => {
+  it('does not create a registration owner for filtered CAP lifecycle hooks', async () => {
     const { calls, symbols } = await parseSource(`
       cds.on('served', async () => {
         logger.info('ready');
       });
     `);
     expect(calls).toHaveLength(0);
-    expect(symbols.some((symbol) => symbol.kind === 'event_registration' && symbol.qualifiedName.includes('module:src/handler.ts#event:served:'))).toBe(true);
+    expect(symbols.some((symbol) => symbol.kind === 'event_registration'
+      && symbol.qualifiedName.includes('module:src/handler.ts#event:served:')))
+      .toBe(false);
   });
 });
 

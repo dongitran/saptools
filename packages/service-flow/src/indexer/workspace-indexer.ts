@@ -3,6 +3,10 @@ import { listRepositories, reposByName } from '../db/repositories.js';
 import { errorMessage } from '../utils/diagnostics.js';
 import { prepareRepositoryIndex, publishPreparedRepositoryIndex, recordIndexFailure, type PreparedRepositoryIndex } from './repository-indexer.js';
 import { materializeCdsExtensionOperations } from './cds-extension-resolver.js';
+import {
+  createPackageInvalidationBatch,
+  finalizePackageTargetInvalidations,
+} from '../db/004-package-target-invalidation.js';
 // Ownerless rows predate PID coordination; this matches doctor's stale-run threshold without taking over a recent legacy writer.
 const LEGACY_OWNER_RECOVERY_MS = 60 * 60 * 1_000;
 type RunningIndexRow = Record<string, unknown>;
@@ -81,41 +85,128 @@ export async function indexWorkspace(
   workspaceId: number,
   options: { repo?: string; force: boolean; injectDerivedMaterializationFailure?: boolean },
 ): Promise<{ repoCount: number; indexedCount: number; skippedCount: number; fileCount: number; diagnosticCount: number }> {
-  const repos = options.repo
-    ? reposByName(db, options.repo, workspaceId)
-    : listRepositories(db, workspaceId);
-  if (options.repo && repos.length === 0)
-    throw new Error(`selector_repo_not_found: no indexed repository matched ${options.repo}.`);
-  if (options.repo && repos.length > 1)
-    throw new Error(`selector_repo_ambiguous: repository selector ${options.repo} matched ${repos.length} repositories; use a unique repository name.`);
+  const repos = selectedRepositories(db, workspaceId, options.repo);
   const runId = claimIndexRun(db, workspaceId, repos.length);
-  let fileCount = 0;
-  let diagnosticCount = 0;
-  let skippedCount = 0;
-  const preparedRows: PreparedRepositoryIndex[] = [];
-  let activeRepoId: number | undefined;
+  const state: PreparationState = {
+    fileCount: 0, diagnosticCount: 0, skippedCount: 0, rows: [],
+  };
   try {
-    for (const repo of repos) {
-      activeRepoId = repo.id;
-      const result = await prepareRepositoryIndex(repo, options.force);
-      preparedRows.push(result);
-      fileCount += result.fileCount;
-      diagnosticCount += result.diagnosticCount;
-      skippedCount += result.skipped ? 1 : 0;
-    }
-    db.transaction(() => {
-      for (const row of preparedRows) {
-        activeRepoId = row.repo.id;
-        publishPreparedRepositoryIndex(db, row);
-      }
-      if (options.injectDerivedMaterializationFailure) throw new Error('Injected derived materialization failure');
-      materializeCdsExtensionOperations(db, workspaceId);
-      db.prepare("UPDATE index_runs SET finished_at=?, status='success', file_count=?, diagnostic_count=? WHERE id=?").run(new Date().toISOString(), fileCount, diagnosticCount, runId);
-    });
-    return { repoCount: repos.length, indexedCount: repos.length - skippedCount, skippedCount, fileCount, diagnosticCount };
+    await prepareRepositories(repos, options.force, state);
+    publishPreparedRows(db, workspaceId, options, runId, state);
+    return indexSummary(repos.length, state);
   } catch (error) {
-    db.prepare("UPDATE index_runs SET finished_at=?, status='failed', file_count=?, diagnostic_count=?, error_message=? WHERE id=?").run(new Date().toISOString(), fileCount, diagnosticCount + 1, errorMessage(error), runId);
-    if (activeRepoId && preparedRows.length < repos.length) recordIndexFailure(db, activeRepoId, error);
+    finishFailedRun(db, runId, state, error);
+    if (state.activeRepoId && state.rows.length < repos.length)
+      recordIndexFailure(db, state.activeRepoId, error);
     throw error;
   }
+}
+
+type IndexRepository = ReturnType<typeof listRepositories>[number];
+interface PreparationState {
+  fileCount: number;
+  diagnosticCount: number;
+  skippedCount: number;
+  rows: PreparedRepositoryIndex[];
+  activeRepoId?: number;
+}
+
+function selectedRepositories(
+  db: Db,
+  workspaceId: number,
+  repoName: string | undefined,
+): IndexRepository[] {
+  const repos = repoName
+    ? reposByName(db, repoName, workspaceId)
+    : listRepositories(db, workspaceId);
+  if (repoName && repos.length === 0)
+    throw new Error(
+      `selector_repo_not_found: no indexed repository matched ${repoName}.`,
+    );
+  if (repoName && repos.length > 1)
+    throw new Error(
+      `selector_repo_ambiguous: repository selector ${repoName} matched ${repos.length} repositories; use a unique repository name.`,
+    );
+  return repos;
+}
+
+async function prepareRepositories(
+  repos: readonly IndexRepository[],
+  force: boolean,
+  state: PreparationState,
+): Promise<void> {
+  for (const repo of repos) {
+    state.activeRepoId = repo.id;
+    const result = await prepareRepositoryIndex(repo, force);
+    state.rows.push(result);
+    state.fileCount += result.fileCount;
+    state.diagnosticCount += result.diagnosticCount;
+    state.skippedCount += result.skipped ? 1 : 0;
+  }
+}
+
+function publishPreparedRows(
+  db: Db,
+  workspaceId: number,
+  options: { injectDerivedMaterializationFailure?: boolean },
+  runId: number,
+  state: PreparationState,
+): void {
+  db.transaction(() => {
+    const invalidations = createPackageInvalidationBatch(
+      state.rows.filter((row) => !row.skipped).map((row) => row.repo.id),
+    );
+    for (const row of state.rows) {
+      state.activeRepoId = row.repo.id;
+      publishPreparedRepositoryIndex(db, row, invalidations);
+    }
+    if (options.injectDerivedMaterializationFailure)
+      throw new Error('Injected derived materialization failure');
+    materializeCdsExtensionOperations(db, workspaceId);
+    finalizePackageTargetInvalidations(db, invalidations);
+    finishSuccessfulRun(db, runId, state);
+  });
+}
+
+function finishSuccessfulRun(
+  db: Db,
+  runId: number,
+  state: PreparationState,
+): void {
+  db.prepare(`UPDATE index_runs SET finished_at=?,status='success',
+    file_count=?,diagnostic_count=? WHERE id=?`).run(
+    new Date().toISOString(), state.fileCount, state.diagnosticCount, runId,
+  );
+}
+
+function finishFailedRun(
+  db: Db,
+  runId: number,
+  state: PreparationState,
+  error: unknown,
+): void {
+  db.prepare(`UPDATE index_runs SET finished_at=?,status='failed',
+    file_count=?,diagnostic_count=?,error_message=? WHERE id=?`).run(
+    new Date().toISOString(), state.fileCount, state.diagnosticCount + 1,
+    errorMessage(error), runId,
+  );
+}
+
+function indexSummary(
+  repoCount: number,
+  state: PreparationState,
+): {
+  repoCount: number;
+  indexedCount: number;
+  skippedCount: number;
+  fileCount: number;
+  diagnosticCount: number;
+} {
+  return {
+    repoCount,
+    indexedCount: repoCount - state.skippedCount,
+    skippedCount: state.skippedCount,
+    fileCount: state.fileCount,
+    diagnosticCount: state.diagnosticCount,
+  };
 }

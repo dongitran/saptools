@@ -18,16 +18,33 @@ import { classifyRepository } from '../discovery/classify-repository.js';
 import { parseCdsFile } from '../parsers/cds-parser.js';
 import { parseDecorators } from '../parsers/decorator-parser.js';
 import { parseHandlerRegistrations } from '../parsers/handler-registration-parser.js';
-import { parseOutboundCalls } from '../parsers/outbound-call-parser.js';
+import {
+  classifyOutboundCallsInSource,
+  parseOutboundCalls,
+} from '../parsers/outbound-call-parser.js';
 import { parseExecutableSymbols } from '../parsers/symbol-parser.js';
 import {
   loadPackageJsonSnapshot,
 } from '../parsers/package-json-parser.js';
 import { parseServiceBindings } from '../parsers/service-binding-parser.js';
+import { reconcileSourceFacts } from '../parsers/007-source-fact-reconciliation.js';
+import {
+  analyzeRepositoryPackageSurface,
+  mergePackageSymbolEvidence,
+} from '../parsers/008-package-surface-publication.js';
+import type {
+  PackagePublicSurfaceFact,
+} from '../parsers/003-package-public-surface.js';
 import { normalizePath } from '../utils/path-utils.js';
 import { errorMessage } from '../utils/diagnostics.js';
 import { sha256Text } from '../utils/hashing.js';
 import { ANALYZER_VERSION } from '../version.js';
+import {
+  createPackageInvalidationBatch,
+  finalizePackageTargetInvalidations,
+  invalidatePackageTargetFacts,
+  type PackageInvalidationBatch,
+} from '../db/004-package-target-invalidation.js';
 import {
   loadRepositorySourceContext,
   type RepositorySourceContext,
@@ -55,6 +72,7 @@ export interface PreparedRepositoryIndex extends IndexRepoResult {
   fingerprint?: string;
   kind?: string;
   parsed?: ParsedFacts;
+  packagePublicSurface?: PackagePublicSurfaceFact;
 }
 export async function indexRepository(
   db: Db,
@@ -64,7 +82,11 @@ export async function indexRepository(
 ): Promise<IndexRepoResult> {
   try {
     const prepared = await prepareRepositoryIndex(repo, force, instrumentation);
-    if (!prepared.skipped) db.transaction(() => publishPreparedRepositoryIndex(db, prepared));
+    if (!prepared.skipped) db.transaction(() => {
+      const batch = createPackageInvalidationBatch([prepared.repo.id]);
+      publishPreparedRepositoryIndex(db, prepared, batch);
+      finalizePackageTargetInvalidations(db, batch);
+    });
     return { fileCount: prepared.fileCount, diagnosticCount: prepared.diagnosticCount, skipped: prepared.skipped };
   } catch (error) {
     recordIndexFailure(db, repo.id, error);
@@ -89,13 +111,21 @@ export async function prepareRepositoryIndex(
     sources, packageFacts, packageSnapshot.rawText,
   );
   if (!force && repo.fingerprint === fingerprint) return { repo, fileCount: 0, diagnosticCount: 0, skipped: true };
-  const parsed = await parseAllSourceFacts(repo.absolute_path, sources);
+  const parsedFacts = await parseAllSourceFacts(repo.absolute_path, sources);
+  const packageSurface = analyzeRepositoryPackageSurface(
+    packageFacts, packageSnapshot.manifest, sources,
+  );
+  const parsed = {
+    ...parsedFacts,
+    symbols: mergePackageSymbolEvidence(parsedFacts.symbols, packageSurface),
+  };
   return {
     repo,
     packageFacts,
     fingerprint,
     kind: await classifyRepository(repo.absolute_path, packageFacts),
     parsed,
+    packagePublicSurface: packageSurface.surface,
     fileCount: sourceFiles.length,
     diagnosticCount: parsed.handlers.filter((handler) =>
       handler.hasHandlerDecorator
@@ -104,12 +134,31 @@ export async function prepareRepositoryIndex(
     skipped: false,
   };
 }
-export function publishPreparedRepositoryIndex(db: Db, prepared: PreparedRepositoryIndex): void {
+export function publishPreparedRepositoryIndex(
+  db: Db,
+  prepared: PreparedRepositoryIndex,
+  invalidations: PackageInvalidationBatch,
+): void {
   if (prepared.skipped) return;
-  if (!prepared.packageFacts || !prepared.parsed || !prepared.fingerprint || !prepared.kind) throw new Error('Prepared repository index is missing publication facts');
+  if (!prepared.packageFacts || !prepared.parsed || !prepared.fingerprint
+    || !prepared.kind || !prepared.packagePublicSurface)
+    throw new Error('Prepared repository index is missing publication facts');
   const now = new Date().toISOString();
   const repoId = prepared.repo.id;
-  db.prepare('UPDATE repositories SET package_name=?, package_version=?, dependencies_json=?, kind=?, index_status=? WHERE id=?').run(prepared.packageFacts.packageName, prepared.packageFacts.packageVersion, JSON.stringify(prepared.packageFacts.dependencies), prepared.kind, 'indexing', repoId);
+  invalidatePackageTargetFacts(
+    db, repoId, prepared.packageFacts.packageName, invalidations,
+  );
+  db.prepare(`UPDATE repositories SET package_name=?, package_version=?,
+    dependencies_json=?,package_public_surface_json=?,kind=?,index_status=?
+    WHERE id=?`).run(
+    prepared.packageFacts.packageName,
+    prepared.packageFacts.packageVersion,
+    JSON.stringify(prepared.packageFacts.dependencies),
+    JSON.stringify(prepared.packagePublicSurface),
+    prepared.kind,
+    'indexing',
+    repoId,
+  );
   clearRepoFacts(db, repoId);
   insertRequires(db, repoId, prepared.packageFacts.cdsRequires);
   const fileStmt = db.prepare('INSERT INTO files(repo_id,relative_path,extension,sha256,size_bytes,last_indexed_at) VALUES(?,?,?,?,?,?) ON CONFLICT(repo_id,relative_path) DO UPDATE SET sha256=excluded.sha256,size_bytes=excluded.size_bytes,last_indexed_at=excluded.last_indexed_at');
@@ -139,13 +188,25 @@ async function parseAllSourceFacts(
     facts.fileRecords.push({ relativePath: normalizePath(file), extension: path.extname(file), sha256: sha256Text(snapshot.text), sizeBytes: snapshot.sizeBytes });
     if (file.endsWith('.cds')) facts.services.push(...(await parseCdsFile(root, file, sources)));
     if (/\.[jt]s$/.test(file)) {
+      const source = snapshot.sourceFile();
+      const classified = classifyOutboundCallsInSource(source, file);
       facts.handlers.push(...(await parseDecorators(root, file, sources)));
       facts.registrations.push(...(await parseHandlerRegistrations(root, file, sources)));
-      facts.bindings.push(...(await parseServiceBindings(root, file, sources)));
-      const symbolFacts = await parseExecutableSymbols(root, file, sources);
-      facts.symbols.push(...symbolFacts.symbols);
-      facts.symbolCalls.push(...symbolFacts.calls);
-      facts.calls.push(...(await parseOutboundCalls(root, file, sources)));
+      const bindings = await parseServiceBindings(root, file, sources);
+      const symbolFacts = await parseExecutableSymbols(
+        root, file, sources, classified,
+      );
+      const outboundCalls = await parseOutboundCalls(
+        root, file, sources, classified, bindings,
+      );
+      const reconciled = reconcileSourceFacts(
+        source, classified, bindings, outboundCalls,
+        symbolFacts.symbols, symbolFacts.calls,
+      );
+      facts.bindings.push(...reconciled.bindings);
+      facts.symbols.push(...reconciled.symbols);
+      facts.symbolCalls.push(...reconciled.symbolCalls);
+      facts.calls.push(...reconciled.outboundCalls);
     }
   }
   return facts;

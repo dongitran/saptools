@@ -224,7 +224,7 @@ describe('enum decorator implementation linking', () => {
   it('persists enum decorator values and links their implementation', async () => {
     const { db, workspaceId } = await prepareFixtureWorkspace();
     linkWorkspace(db, workspaceId);
-    expect(schemaVersion(db)).toBe(12);
+    expect(schemaVersion(db)).toBe(13);
     const decorator = db.prepare(`
       SELECT hm.decorator_value decoratorValue,
         hm.decorator_raw_expression decoratorRawExpression,
@@ -577,7 +577,12 @@ describe('lifecycle handler indexing and trace behavior', () => {
 describe('trace selector diagnostics', () => {
   it('does not select the first repository when a package selector is ambiguous', async () => {
     const { db, workspaceId } = await prepareLifecycleWorkspace(true);
-    db.prepare(`UPDATE repositories SET package_name='@neutral/shared-lifecycle'
+    db.prepare(`UPDATE repositories
+      SET package_name='@neutral/shared-lifecycle',
+        package_public_surface_json=json_set(
+          package_public_surface_json,'$.packageName',
+          '@neutral/shared-lifecycle'
+        )
       WHERE name IN ('lifecycle-service','second-lifecycle-service')`).run();
     linkWorkspace(db, workspaceId);
     const result = trace(db, {

@@ -47,24 +47,95 @@ function placeholders(value?: string): string[] {
   return extractPlaceholderKeys(value);
 }
 
-export function connectFactFromCall(call: ts.CallExpression): Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'> | undefined {
-  const expr = call.expression;
-  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== 'to') return undefined;
-  const inner = expr.expression;
-  if (!ts.isPropertyAccessExpression(inner) || inner.name.text !== 'connect' || inner.expression.getText() !== 'cds') return undefined;
+type ConnectFact = Omit<
+  HelperBinding,
+  'exportedName' | 'sourceFile' | 'sourceLine'
+>;
+
+function connectMethod(
+  call: ts.CallExpression,
+): 'to' | 'messaging' | undefined {
+  const expression = call.expression;
+  if (!ts.isPropertyAccessExpression(expression)
+    || !['to', 'messaging'].includes(expression.name.text)) return undefined;
+  const receiver = expression.expression;
+  if (!ts.isPropertyAccessExpression(receiver)
+    || receiver.name.text !== 'connect'
+    || receiver.expression.getText() !== 'cds') return undefined;
+  return expression.name.text === 'messaging' ? 'messaging' : 'to';
+}
+
+function connectObject(
+  first: ts.Expression,
+  second: ts.Expression | undefined,
+): ts.ObjectLiteralExpression | undefined {
+  if (ts.isObjectLiteralExpression(first)) return first;
+  return second && ts.isObjectLiteralExpression(second)
+    ? second
+    : undefined;
+}
+
+function connectNames(
+  method: 'to' | 'messaging',
+  first: ts.Expression,
+): { alias?: string; aliasExpr?: string } {
+  if (ts.isStringLiteralLike(first)
+    || ts.isNoSubstitutionTemplateLiteral(first))
+    return { alias: first.text };
+  if (ts.isObjectLiteralExpression(first))
+    return method === 'messaging' ? { alias: 'messaging' } : {};
+  return { aliasExpr: stringValue(first) };
+}
+
+function literalConnectFact(
+  first: ts.Expression,
+  object: ts.ObjectLiteralExpression | undefined,
+): ConnectFact | undefined {
+  if (object || (!ts.isStringLiteralLike(first)
+    && !ts.isNoSubstitutionTemplateLiteral(first))) return undefined;
+  return { alias: first.text, isDynamic: false, placeholders: [] };
+}
+
+function dynamicConnectFact(
+  placeholdersFound: readonly string[],
+  expressions: { destinationExpr?: string; servicePathExpr?: string },
+): boolean {
+  return placeholdersFound.length > 0
+    || (!expressions.destinationExpr && !expressions.servicePathExpr);
+}
+
+export function connectFactFromCall(
+  call: ts.CallExpression,
+): ConnectFact | undefined {
+  const method = connectMethod(call);
+  if (!method) return undefined;
   const first = call.arguments[0];
-  if (!first) return undefined;
+  if (!first)
+    return method === 'messaging'
+      ? { alias: 'messaging', isDynamic: false, placeholders: [] }
+      : undefined;
   const second = call.arguments[1];
-  const objectArg = ts.isObjectLiteralExpression(first) ? first : second && ts.isObjectLiteralExpression(second) ? second : undefined;
-  let alias: string | undefined;
-  let aliasExpr: string | undefined;
-  if (ts.isStringLiteralLike(first) || ts.isNoSubstitutionTemplateLiteral(first)) alias = first.text;
-  else if (!ts.isObjectLiteralExpression(first)) aliasExpr = stringValue(first);
-  if ((ts.isStringLiteralLike(first) || ts.isNoSubstitutionTemplateLiteral(first)) && !objectArg) return { alias: first.text, isDynamic: false, placeholders: [] };
-  if (!objectArg && aliasExpr) return { aliasExpr, isDynamic: true, placeholders: placeholders(aliasExpr) };
+  const objectArg = connectObject(first, second);
+  const names = connectNames(method, first);
+  const literal = literalConnectFact(first, objectArg);
+  if (literal) return literal;
+  if (!objectArg && names.aliasExpr) return {
+    aliasExpr: names.aliasExpr,
+    isDynamic: true,
+    placeholders: placeholders(names.aliasExpr),
+  };
   const expressions = objectArg ? objectExpressions(objectArg) : {};
-  const ph = [...placeholders(aliasExpr ?? alias), ...placeholders(expressions.destinationExpr), ...placeholders(expressions.servicePathExpr)];
-  return { alias, aliasExpr, ...expressions, isDynamic: ph.length > 0 || (!expressions.destinationExpr && !expressions.servicePathExpr), placeholders: ph };
+  const ph = [
+    ...placeholders(names.aliasExpr ?? names.alias),
+    ...placeholders(expressions.destinationExpr),
+    ...placeholders(expressions.servicePathExpr),
+  ];
+  return {
+    ...names,
+    ...expressions,
+    isDynamic: dynamicConnectFact(ph, expressions),
+    placeholders: ph,
+  };
 }
 
 function objectExpressions(objectArg: ts.ObjectLiteralExpression): { destinationExpr?: string; servicePathExpr?: string } {

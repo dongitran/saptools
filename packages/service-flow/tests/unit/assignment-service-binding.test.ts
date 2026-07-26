@@ -23,7 +23,7 @@ describe('assignment expression service bindings', () => {
     await write(root, 'handler.ts', "import cds from '@sap/cds';\nasync function run() {\n  let client;\n  client = await (cds.connect.to('RemoteService') as unknown);\n}\n");
     const rows = await parseServiceBindings(root, 'handler.ts');
     expect(rows.find((row) => row.variableName === 'client')).toMatchObject({ alias: 'RemoteService', sourceLine: 4 });
-    expect(rows.find((row) => row.variableName === 'client')?.helperChain?.[0]).toMatchObject({ callerVariable: 'client', aliasKind: 'assignment', scopeRule: 'same-file-source-order' });
+    expect(rows.find((row) => row.variableName === 'client')?.helperChain?.[0]).toMatchObject({ callerVariable: 'client', aliasKind: 'assignment', scopeRule: 'exact_lexical_scope' });
   });
 
   it('parses late assignments from imported helpers returning a client', async () => {

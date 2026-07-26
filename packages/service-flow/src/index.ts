@@ -35,3 +35,15 @@ export type {
 export { parseImplementationHint } from './trace/implementation-hints.js';
 export type { DynamicMode, ImplementationHint, TraceOptions } from './types.js';
 export { redactValue, redactText } from './utils/redaction.js';
+export type { Db } from './db/connection.js';
+export type {
+  CallType,
+  EdgeType,
+  ExecutableSymbolFact,
+  OutboundCallFact,
+  SymbolCallFact,
+  SymbolCallRole,
+  TraceEdge,
+  TraceResult,
+  TraceStart,
+} from './types.js';

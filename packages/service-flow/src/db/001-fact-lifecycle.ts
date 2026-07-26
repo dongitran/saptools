@@ -1,5 +1,18 @@
 import type { Db } from './connection.js';
 import { CURRENT_SCHEMA_VERSION, schemaVersion } from './migrations.js';
+import {
+  invalidFactJsonCategories,
+  type FactJsonCategoryCount,
+} from './002-fact-json-inventory.js';
+import {
+  invalidFactSemanticCategories,
+  type FactSemanticCategoryCount,
+  type PackageFactPhase,
+} from './003-current-fact-semantics.js';
+import {
+  invalidSchemaStructureCategories,
+  type SchemaStructureCategoryCount,
+} from './005-schema-structure.js';
 import { ANALYZER_VERSION } from '../version.js';
 
 export type FactLifecycleCode =
@@ -18,6 +31,7 @@ const remediation = [
   'service-flow index --workspace /workspace --force',
   'service-flow link --workspace /workspace --force',
 ].join('\n');
+const CATEGORY_LIMIT = 24;
 
 function count(db: Db, sql: string, ...params: unknown[]): number {
   const row = db.prepare(sql).get(...params);
@@ -32,35 +46,13 @@ function oldAnalyzerCount(db: Db, workspaceId?: number): number {
   workspaceId, workspaceId, ANALYZER_VERSION);
 }
 
-function invalidCurrentFactCount(db: Db, workspaceId?: number): number {
-  const outbound = count(db, `SELECT COUNT(*) count
-    FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
-    WHERE (? IS NULL OR r.workspace_id=?) AND r.fact_analyzer_version=?
-      AND (typeof(c.call_site_start_offset)<>'integer'
-        OR typeof(c.call_site_end_offset)<>'integer'
-        OR c.call_site_start_offset<0
-        OR c.call_site_end_offset<=c.call_site_start_offset)`,
-  workspaceId, workspaceId, ANALYZER_VERSION);
-  const symbols = count(db, `SELECT COUNT(*) count
-    FROM symbol_calls c JOIN repositories r ON r.id=c.repo_id
-    WHERE (? IS NULL OR r.workspace_id=?)
-      AND (c.call_role='legacy_unknown'
-        OR (r.fact_analyzer_version=? AND (
-          typeof(c.call_site_start_offset)<>'integer'
-          OR typeof(c.call_site_end_offset)<>'integer'
-          OR c.call_site_start_offset<0
-          OR c.call_site_end_offset<=c.call_site_start_offset
-          OR c.call_role NOT IN ('ordinary_call','event_subscribe_handler'))))`,
-  workspaceId, workspaceId, ANALYZER_VERSION);
-  return outbound + symbols;
-}
-
 export function factLifecycleDiagnostic(
   db: Db,
   workspaceId?: number,
+  phase: PackageFactPhase = 'pre_package',
 ): FactLifecycleDiagnostic | undefined {
   return schemaLifecycleDiagnostic(db)
-    ?? currentFactLifecycleDiagnostic(db, workspaceId);
+    ?? currentFactLifecycleDiagnostic(db, workspaceId, phase);
 }
 
 export function schemaLifecycleDiagnostic(
@@ -83,29 +75,67 @@ export function schemaLifecycleDiagnostic(
     currentSchemaVersion: currentSchema,
     requiredSchemaVersion: CURRENT_SCHEMA_VERSION,
   };
+  const structureCategories = invalidSchemaStructureCategories(db);
+  if (structureCategories.length > 0)
+    return reindexDiagnostic(0, structureCategories);
   return undefined;
 }
 
 export function currentFactLifecycleDiagnostic(
   db: Db,
   workspaceId?: number,
+  phase: PackageFactPhase = 'pre_package',
 ): FactLifecycleDiagnostic | undefined {
   const staleRepositories = oldAnalyzerCount(db, workspaceId);
-  const invalidFacts = invalidCurrentFactCount(db, workspaceId);
-  if (staleRepositories === 0 && invalidFacts === 0) return undefined;
+  if (staleRepositories > 0)
+    return reindexDiagnostic(staleRepositories, []);
+  const jsonCategories = invalidFactJsonCategories(db, workspaceId);
+  if (jsonCategories.length > 0)
+    return reindexDiagnostic(0, jsonCategories);
+  const semanticCategories = invalidFactSemanticCategories(
+    db, workspaceId, phase,
+  );
+  if (semanticCategories.length === 0) return undefined;
+  return reindexDiagnostic(0, semanticCategories);
+}
+
+type InvalidFactCategory =
+  | FactJsonCategoryCount
+  | FactSemanticCategoryCount
+  | SchemaStructureCategoryCount;
+
+function reindexDiagnostic(
+  staleRepositories: number,
+  categories: InvalidFactCategory[],
+): FactLifecycleDiagnostic {
+  const invalidFacts = categories.reduce((sum, item) => sum + item.count, 0);
+  const shown = categories.slice(0, CATEGORY_LIMIT);
   return {
     severity: 'error',
     code: 'reindex_required',
-    message: 'Call-site facts are stale or lack typed roles and exact spans; force index and link before tracing or rebuilding graph edges.',
+    message: 'Current facts are stale or fail bounded semantic integrity checks; force index and link before tracing or rebuilding graph edges.',
     remediation,
     staleRepositoryCount: staleRepositories,
     invalidCallFactCount: invalidFacts,
+    invalidFactCategories: shown,
+    invalidFactCategoryCount: categories.length,
+    shownInvalidFactCategoryCount: shown.length,
+    omittedInvalidFactCategoryCount: categories.length - shown.length,
     requiredAnalyzerVersion: ANALYZER_VERSION,
   };
 }
 
-export function assertWorkspaceLinkable(db: Db, workspaceId: number): void {
-  const diagnostic = factLifecycleDiagnostic(db, workspaceId);
+export function assertWorkspaceLinkable(
+  db: Db,
+  workspaceId: number,
+  phase: PackageFactPhase = 'pre_package',
+): void {
+  const diagnostic = factLifecycleDiagnostic(db, workspaceId, phase);
   if (!diagnostic) return;
-  throw new Error(`${diagnostic.code}: ${diagnostic.message}\n${diagnostic.remediation}`);
+  const categories = Array.isArray(diagnostic.invalidFactCategories)
+    ? ` categories=${JSON.stringify(diagnostic.invalidFactCategories)}`
+    : '';
+  throw new Error(
+    `${diagnostic.code}: ${diagnostic.message}${categories}\n${diagnostic.remediation}`,
+  );
 }

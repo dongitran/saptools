@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
 import { externalHttpTarget } from '../linker/external-http-target.js';
-import type { OutboundCallFact } from '../types.js';
+import type { OutboundCallFact, ServiceBindingFact } from '../types.js';
 import { normalizePath, stripQuotes } from '../utils/path-utils.js';
 import { summarizeExpression } from '../utils/redaction.js';
 import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
@@ -461,16 +461,23 @@ export function classifyOutboundCallsInSource(source: ts.SourceFile, filePath: s
   visit(source);
   return calls;
 }
-export function containsSupportedOutboundCall(node: ts.Node): boolean {
+export function containsSupportedOutboundCall(
+  node: ts.Node,
+  classified?: readonly ClassifiedOutboundCall[],
+): boolean {
   const source = node.getSourceFile();
   const start = node.getFullStart();
   const end = node.getEnd();
-  return classifyOutboundCallsInSource(source, source.fileName).some((call) => call.node.getStart(source) >= start && call.node.getEnd() <= end);
+  const calls = classified ?? classifyOutboundCallsInSource(source, source.fileName);
+  return calls.some((call) =>
+    call.node.getStart(source) >= start && call.node.getEnd() <= end);
 }
 export async function parseOutboundCalls(
   repoPath: string,
   filePath: string,
   context?: RepositorySourceContext,
+  classified?: readonly ClassifiedOutboundCall[],
+  preparedBindings?: readonly ServiceBindingFact[],
 ): Promise<OutboundCallFact[]> {
   const snapshot = context?.get(filePath);
   const text = snapshot?.text
@@ -479,13 +486,19 @@ export async function parseOutboundCalls(
     filePath, text, ts.ScriptTarget.Latest, true,
     filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
   );
-  const bindingNames = new Set((await parseServiceBindings(
+  const bindings = preparedBindings ?? await parseServiceBindings(
     repoPath, filePath, context,
-  )).map((binding) => binding.variableName));
+  );
+  const bindingNames = new Set(bindings.map((binding) => binding.variableName));
   const importedWrappers = await parseImportedWrapperCalls(
     repoPath, filePath, source, bindingNames, context,
   );
-  return [...classifyOutboundCallsInSource(source, filePath).map((call) => call.fact), ...importedWrappers, ...parseLocalServiceCalls(text, filePath, source)];
+  const nativeCalls = classified ?? classifyOutboundCallsInSource(source, filePath);
+  return [
+    ...nativeCalls.map((call) => call.fact),
+    ...importedWrappers,
+    ...parseLocalServiceCalls(text, filePath, source),
+  ];
 }
 function parseLocalServiceCalls(
   text: string,

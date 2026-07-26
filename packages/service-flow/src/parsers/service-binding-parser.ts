@@ -3,195 +3,175 @@ import ts from 'typescript';
 import type { ServiceBindingFact } from '../types.js';
 import { normalizePath } from '../utils/path-utils.js';
 import {
-  connectFactFromCall,
-  findConnectInExpression,
   importsFor,
   lineOf,
   readSource,
-  transactionReceiverName,
-  unwrapCall,
-  unwrapIdentityExpression,
   type ClassHelperReturn,
   type HelperBinding,
-  type ImportBinding,
 } from './service-binding-parser-helpers.js';
+import {
+  collectReturnedObjectBindings,
+  directConnectFact,
+  directConnectFactFromFunctionLike,
+  functionLikeInitializer,
+  type LocalBindingFact,
+} from './014-service-binding-helper-flow.js';
+import { collectServiceBindings } from './015-service-binding-collector.js';
 import type { RepositorySourceContext } from './ts-project.js';
 
-function collectLocalBindingFacts(
-  fn: ts.FunctionLikeDeclaration,
-): Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>> {
-  const bindings = new Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>>();
-  function visit(node: ts.Node): void {
-    if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
-      return;
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const fact = findConnectInExpression(node.initializer);
-      if (fact) bindings.set(node.name.text, fact);
-      const sourceName = transactionReceiverName(node.initializer);
-      if (sourceName) {
-        const source = bindings.get(sourceName);
-        if (source) bindings.set(node.name.text, { ...source, helperChain: [...(source.helperChain ?? []), { aliasOf: sourceName, callerVariable: node.name.text, aliasKind: 'transaction', transactionAliasSource: sourceName }] });
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(fn);
-  return bindings;
+interface LocalHelperFact extends LocalBindingFact {
+  sourceLine: number;
+  returnedProperty?: string;
 }
 
-function collectReturnedObjectBindings(
-  fn: ts.FunctionLikeDeclaration,
-): Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>> {
-  const bindings = collectLocalBindingFacts(fn);
-  const returns = new Map<string, string>();
-  function visit(node: ts.Node): void {
-    if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
-      return;
-    if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
-      for (const prop of node.expression.properties) {
-        if (ts.isShorthandPropertyAssignment(prop)) returns.set(prop.name.text, prop.name.text);
-        if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) {
-          const propertyName = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : undefined;
-          if (propertyName) returns.set(propertyName, prop.initializer.text);
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(fn);
-  const out = new Map<string, Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>>();
-  for (const [propertyName, variableName] of returns) {
-    const fact = bindings.get(variableName);
-    if (fact) out.set(propertyName, fact);
-  }
-  return out;
+function directlyExportedNames(statement: ts.Statement): string[] {
+  const direct = ts.canHaveModifiers(statement)
+    && (ts.getModifiers(statement)?.some((modifier) =>
+      modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false);
+  if (!direct) return [];
+  if (ts.isFunctionDeclaration(statement) && statement.name)
+    return [statement.name.text];
+  if (!ts.isVariableStatement(statement)) return [];
+  return statement.declarationList.declarations.flatMap((declaration) =>
+    ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
 }
 
-function functionLikeInitializer(
-  expr: ts.Expression | undefined,
-): ts.FunctionLikeDeclaration | undefined {
-  if (!expr) return undefined;
-  if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) return expr;
-  return undefined;
+function namedExports(statement: ts.Statement): Array<{
+  exportedName: string;
+  localName: string;
+}> {
+  if (!ts.isExportDeclaration(statement)
+    || !statement.exportClause
+    || !ts.isNamedExports(statement.exportClause)) return [];
+  return statement.exportClause.elements.map((element) => ({
+    exportedName: element.name.text,
+    localName: element.propertyName?.text ?? element.name.text,
+  }));
 }
 
-function directReturnConnectFact(
-  fn: ts.FunctionLikeDeclaration,
-): Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'> | undefined {
-  const localBindings = collectLocalBindingFacts(fn);
-  let returned: ts.Expression | undefined;
-  function visit(node: ts.Node): void {
-    if (node !== fn && (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)))
-      return;
-    if (!returned && ts.isReturnStatement(node) && node.expression)
-      returned = node.expression;
-    if (!returned) ts.forEachChild(node, visit);
-  }
-  visit(fn);
-  if (!returned) return undefined;
-  if (ts.isIdentifier(returned)) return localBindings.get(returned.text);
-  return findConnectInExpression(returned);
-}
-
-function directConnectFactFromFunctionLike(
-  fn: ts.FunctionLikeDeclaration,
-): Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'> | undefined {
-  if (ts.isArrowFunction(fn) && fn.body && !ts.isBlock(fn.body))
-    return findConnectInExpression(fn.body);
-  return directReturnConnectFact(fn);
-}
-
-function exportedLocalNames(sf: ts.SourceFile): Map<string, string> {
+function exportedLocalNames(source: ts.SourceFile): Map<string, string> {
   const exports = new Map<string, string>();
-  for (const stmt of sf.statements) {
-    const direct = ts.canHaveModifiers(stmt)
-      ? (ts
-          .getModifiers(stmt)
-          ?.some(
-            (m: ts.ModifierLike) => m.kind === ts.SyntaxKind.ExportKeyword,
-          ) ?? false)
-      : false;
-    if (direct && ts.isFunctionDeclaration(stmt) && stmt.name)
-      exports.set(stmt.name.text, stmt.name.text);
-    if (direct && ts.isVariableStatement(stmt))
-      for (const decl of stmt.declarationList.declarations)
-        if (ts.isIdentifier(decl.name)) exports.set(decl.name.text, decl.name.text);
-    if (!ts.isExportDeclaration(stmt) || !stmt.exportClause) continue;
-    if (!ts.isNamedExports(stmt.exportClause)) continue;
-    for (const el of stmt.exportClause.elements)
-      exports.set(el.name.text, el.propertyName?.text ?? el.name.text);
+  for (const statement of source.statements) {
+    for (const name of directlyExportedNames(statement))
+      exports.set(name, name);
+    for (const entry of namedExports(statement))
+      exports.set(entry.exportedName, entry.localName);
   }
   return exports;
 }
+
+function recordFunctionFacts(
+  facts: Map<string, LocalHelperFact>,
+  localName: string,
+  node: ts.Node,
+  helper: ts.FunctionLikeDeclaration,
+  source: ts.SourceFile,
+): void {
+  const sourceLine = lineOf(source, node);
+  const direct = directConnectFactFromFunctionLike(helper);
+  if (direct) facts.set(localName, { ...direct, sourceLine });
+  for (const [returnedProperty, fact] of collectReturnedObjectBindings(helper))
+    facts.set(`${localName}#${returnedProperty}`, {
+      ...fact,
+      returnedProperty,
+      sourceLine,
+    });
+}
+
+function localHelperFacts(source: ts.SourceFile): Map<string, LocalHelperFact> {
+  const facts = new Map<string, LocalHelperFact>();
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name)
+      recordFunctionFacts(
+        facts, statement.name.text, statement, statement, source,
+      );
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
+        continue;
+      const helper = functionLikeInitializer(declaration.initializer);
+      if (helper)
+        recordFunctionFacts(
+          facts, declaration.name.text, declaration, helper, source,
+        );
+      else {
+        const fact = directConnectFact(declaration.initializer);
+        if (fact)
+          facts.set(declaration.name.text, {
+            ...fact,
+            sourceLine: lineOf(source, declaration),
+          });
+      }
+    }
+  }
+  return facts;
+}
+
+function exportedHelperFacts(
+  source: ts.SourceFile,
+  filePath: string,
+): HelperBinding[] {
+  const facts = localHelperFacts(source);
+  const output: HelperBinding[] = [];
+  for (const [exportedName, localName] of exportedLocalNames(source))
+    for (const [key, fact] of facts) {
+      const [factLocal, returnedProperty] = key.split('#');
+      if (factLocal !== localName) continue;
+      output.push({
+        ...fact,
+        exportedName,
+        returnedProperty,
+        sourceFile: normalizePath(filePath),
+      });
+    }
+  return output;
+}
+
 async function helperBindings(
   repoPath: string,
   filePath: string,
   context?: RepositorySourceContext,
 ): Promise<HelperBinding[]> {
-  const sf = await readSource(path.join(repoPath, filePath), context, filePath);
-  if (!sf) return [];
-  const sourceFileAst = sf;
-  const out: HelperBinding[] = [];
-  const exportedLocals = exportedLocalNames(sf);
-  const factsByLocal = new Map<
-    string,
-    Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'> & {
-      sourceLine: number;
-    }
-  >();
-  for (const stmt of sf.statements) {
-    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
-      const fact = directConnectFactFromFunctionLike(stmt);
-      if (fact) factsByLocal.set(stmt.name.text, { ...fact, sourceLine: lineOf(sf, stmt) });
-      for (const [returnedProperty, objectFact] of collectReturnedObjectBindings(stmt))
-        factsByLocal.set(`${stmt.name.text}#${returnedProperty}`, { ...objectFact, returnedProperty, sourceLine: lineOf(sf, stmt) });
-    }
-    if (ts.isVariableStatement(stmt))
-      for (const decl of stmt.declarationList.declarations) {
-        if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
-        const helper = functionLikeInitializer(decl.initializer);
-        if (helper) {
-          const directReturn = directConnectFactFromFunctionLike(helper);
-          if (directReturn)
-            factsByLocal.set(decl.name.text, {
-              ...directReturn,
-              sourceLine: lineOf(sourceFileAst, decl),
-            });
-          for (const [returnedProperty, objectFact] of collectReturnedObjectBindings(helper))
-            factsByLocal.set(`${decl.name.text}#${returnedProperty}`, {
-              ...objectFact,
-              returnedProperty,
-              sourceLine: lineOf(sourceFileAst, decl),
-            });
-          continue;
-        }
-        const fact = findConnectInExpression(decl.initializer);
-        if (fact)
-          factsByLocal.set(decl.name.text, {
-            ...fact,
-            sourceLine: lineOf(sourceFileAst, decl),
-          });
-      }
-  }
-  for (const [exportedName, localName] of exportedLocals) {
-    const fact = factsByLocal.get(localName);
-    if (fact)
-      out.push({
-        ...fact,
-        exportedName,
-        sourceFile: normalizePath(filePath),
-        sourceLine: fact.sourceLine,
-      });
-  }
-  for (const [key, fact] of factsByLocal) {
-    const [localName, returnedProperty] = key.split('#');
-    if (!returnedProperty) continue;
-    for (const [exportedName, exportedLocal] of exportedLocals) {
-      if (exportedLocal !== localName) continue;
-      out.push({ ...fact, exportedName, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: fact.sourceLine });
+  const source = await readSource(
+    path.join(repoPath, filePath), context, filePath,
+  );
+  return source ? exportedHelperFacts(source, filePath) : [];
+}
+
+function classHelperFacts(
+  source: ts.SourceFile,
+  className: string,
+  helperName: string,
+  helper: ts.FunctionLikeDeclaration,
+): ClassHelperReturn[] {
+  return [...collectReturnedObjectBindings(helper)].map(
+    ([propertyName, fact]) => ({
+      className,
+      helperName,
+      propertyName,
+      variableName: propertyName,
+      fact,
+      sourceLine: lineOf(source, helper),
+    }),
+  );
+}
+
+function collectClassHelpers(source: ts.SourceFile): ClassHelperReturn[] {
+  const helpers: ClassHelperReturn[] = [];
+  for (const statement of source.statements) {
+    if (!ts.isClassDeclaration(statement) || !statement.name) continue;
+    for (const member of statement.members) {
+      if (!ts.isPropertyDeclaration(member)
+        || !ts.isIdentifier(member.name)
+        || !member.initializer) continue;
+      const helper = functionLikeInitializer(member.initializer);
+      if (helper)
+        helpers.push(...classHelperFacts(
+          source, statement.name.text, member.name.text, helper,
+        ));
     }
   }
-  return out;
+  return helpers;
 }
 
 export async function parseServiceBindings(
@@ -199,446 +179,16 @@ export async function parseServiceBindings(
   filePath: string,
   context?: RepositorySourceContext,
 ): Promise<ServiceBindingFact[]> {
-  const sf = await readSource(path.join(repoPath, filePath), context, filePath);
-  if (!sf) return [];
-  const sourceFileAst = sf;
-  const out: ServiceBindingFact[] = [];
-  const imports = await importsFor(repoPath, filePath, sf);
-  const helperCache = new Map<string, HelperBinding[]>();
-  const classHelpers = collectClassHelpers(sourceFileAst);
-  const localObjectHelpers = new Map<string, HelperBinding[]>();
-  const localDirectHelpers = new Map<string, HelperBinding>();
-  const objectHelperVariables = new Map<string, Array<{ helper: HelperBinding; imp?: ImportBinding }>>();
-  for (const stmt of sourceFileAst.statements) {
-    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
-      const directFact = directConnectFactFromFunctionLike(stmt);
-      if (directFact) localDirectHelpers.set(stmt.name.text, { ...directFact, exportedName: stmt.name.text, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, stmt) });
-      const rows: HelperBinding[] = [];
-      for (const [returnedProperty, fact] of collectReturnedObjectBindings(stmt))
-        rows.push({ ...fact, exportedName: stmt.name.text, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, stmt) });
-      if (rows.length > 0) localObjectHelpers.set(stmt.name.text, rows);
-    }
-    if (ts.isVariableStatement(stmt)) {
-      for (const decl of stmt.declarationList.declarations) {
-        if (!ts.isIdentifier(decl.name)) continue;
-        const helper = functionLikeInitializer(decl.initializer);
-        if (!helper) continue;
-        const directFact = directConnectFactFromFunctionLike(helper);
-        if (directFact) localDirectHelpers.set(decl.name.text, { ...directFact, exportedName: decl.name.text, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, decl) });
-        const rows: HelperBinding[] = [];
-        for (const [returnedProperty, fact] of collectReturnedObjectBindings(helper))
-          rows.push({ ...fact, exportedName: decl.name.text, returnedProperty, sourceFile: normalizePath(filePath), sourceLine: lineOf(sourceFileAst, decl) });
-        if (rows.length > 0) localObjectHelpers.set(decl.name.text, rows);
-      }
-    }
-  }
-  async function importedHelpers(
-    localName: string,
-  ): Promise<Array<{ imp: ImportBinding; helper: HelperBinding }>> {
-    const imp = imports.find((i) => i.localName === localName && i.sourceFile);
-    if (!imp?.sourceFile) return [];
-    if (!helperCache.has(imp.sourceFile))
-      helperCache.set(
-        imp.sourceFile,
-        await helperBindings(repoPath, imp.sourceFile, context),
-      );
-    return (helperCache.get(imp.sourceFile) ?? [])
-      .filter((h) => h.exportedName === imp.exportedName)
-      .map((helper) => ({ imp, helper }));
-  }
-  async function importedHelper(
-    localName: string,
-  ): Promise<{ imp: ImportBinding; helper: HelperBinding } | undefined> {
-    return (await importedHelpers(localName)).find((row) => !row.helper.returnedProperty);
-  }
-  function bindingForVariable(variableName: string): ServiceBindingFact | undefined {
-    const sourceFile = normalizePath(filePath);
-    return [...out]
-      .reverse()
-      .find((row) => row.variableName === variableName && row.sourceFile === sourceFile);
-  }
-  function cloneAliasBinding(targetName: string, sourceName: string, aliasKind: 'identity' | 'identity-assignment' | 'transaction', node: ts.Node): void {
-    const existing = bindingForVariable(sourceName);
-    if (!existing) return;
-    out.push({
-      ...existing,
-      variableName: targetName,
-      sourceLine: lineOf(sourceFileAst, node),
-      helperChain: [
-        ...(existing.helperChain ?? []),
-        {
-          callerVariable: targetName,
-          aliasOf: sourceName,
-          aliasKind,
-          scopeRule: 'same-file-source-order',
-          ...(aliasKind === 'transaction' ? { transactionAliasSource: sourceName } : {}),
-        },
-      ],
-    });
-  }
-  function recordIdentityAlias(decl: ts.VariableDeclaration): void {
-    if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
-    const unwrapped = unwrapIdentityExpression(decl.initializer);
-    if (!ts.isIdentifier(unwrapped)) return;
-    cloneAliasBinding(decl.name.text, unwrapped.text, 'identity', decl);
-  }
-
-  async function recordBindingFromExpression(targetName: string, expr: ts.Expression, node: ts.Node, aliasKind: 'declaration' | 'assignment'): Promise<void> {
-    const call = unwrapCall(expr);
-    if (!call) return;
-    const direct = connectFactFromCall(call);
-    if (direct)
-      out.push({
-        variableName: targetName,
-        ...direct,
-        sourceFile: normalizePath(filePath),
-        sourceLine: lineOf(sourceFileAst, node),
-        helperChain: aliasKind === 'assignment'
-          ? [{ callerVariable: targetName, assignedFrom: call.expression.getText(sourceFileAst), aliasKind, scopeRule: 'same-file-source-order' }]
-          : undefined,
-      });
-    else if (ts.isIdentifier(call.expression)) {
-      const localDirect = localDirectHelpers.get(call.expression.text);
-      const resolved = localDirect ? { helper: localDirect, imp: undefined } : await importedHelper(call.expression.text);
-      if (resolved)
-        out.push({
-          variableName: targetName,
-          alias: resolved.helper.alias,
-          aliasExpr: resolved.helper.aliasExpr,
-          destinationExpr: resolved.helper.destinationExpr,
-          servicePathExpr: resolved.helper.servicePathExpr,
-          isDynamic: resolved.helper.isDynamic,
-          placeholders: resolved.helper.placeholders,
-          sourceFile: normalizePath(filePath),
-          sourceLine: lineOf(sourceFileAst, node),
-          helperChain: [
-            ...(resolved.helper.helperChain ?? []),
-            {
-              callerVariable: targetName,
-              ...(aliasKind === 'assignment' ? { assignedFrom: call.expression.text, aliasKind, scopeRule: 'same-file-source-order' } : {}),
-              importedHelper: call.expression.text,
-              importSource: resolved.imp?.sourceFile,
-              exportedSymbol: resolved.imp?.exportedName ?? resolved.helper.exportedName,
-              helperSourceFile: resolved.helper.sourceFile,
-              helperSourceLine: resolved.helper.sourceLine,
-            },
-          ],
-        });
-    }
-  }
-  async function recordVariable(decl: ts.VariableDeclaration): Promise<void> {
-    if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
-    await recordBindingFromExpression(decl.name.text, decl.initializer, decl, 'declaration');
-  }
-
-  async function helpersForCall(call: ts.CallExpression): Promise<Array<{ helper: HelperBinding; imp?: ImportBinding }>> {
-    if (!ts.isIdentifier(call.expression)) return [];
-    const local = localObjectHelpers.get(call.expression.text) ?? [];
-    const imported = await importedHelpers(call.expression.text);
-    return [...local.map((helper) => ({ helper })), ...imported];
-  }
-  async function rememberObjectHelperVariable(decl: ts.VariableDeclaration): Promise<void> {
-    if (!ts.isIdentifier(decl.name) || !decl.initializer) return;
-    const call = unwrapCall(decl.initializer);
-    if (!call) return;
-    const helpers = (await helpersForCall(call)).filter((row) => row.helper.returnedProperty);
-    if (helpers.length > 0) objectHelperVariables.set(decl.name.text, helpers);
-  }
-  function recordObjectPropertyBinding(targetName: string, expr: ts.Expression, node: ts.Node): boolean {
-    const unwrapped = unwrapIdentityExpression(expr);
-    if (!ts.isPropertyAccessExpression(unwrapped) || !ts.isIdentifier(unwrapped.expression)) return false;
-    const helpers = objectHelperVariables.get(unwrapped.expression.text) ?? [];
-    const matches = helpers.filter((row) => row.helper.returnedProperty === unwrapped.name.text);
-    if (matches.length !== 1) return false;
-    const resolved = matches[0];
-    out.push({
-      variableName: targetName,
-      alias: resolved.helper.alias,
-      aliasExpr: resolved.helper.aliasExpr,
-      destinationExpr: resolved.helper.destinationExpr,
-      servicePathExpr: resolved.helper.servicePathExpr,
-      isDynamic: resolved.helper.isDynamic,
-      placeholders: resolved.helper.placeholders,
-      sourceFile: normalizePath(filePath),
-      sourceLine: lineOf(sourceFileAst, node),
-      helperChain: [
-        ...(resolved.helper.helperChain ?? []),
-        {
-          callerVariable: targetName,
-          sourceVariable: unwrapped.expression.text,
-          returnedProperty: unwrapped.name.text,
-          assignedFromProperty: unwrapped.getText(sourceFileAst),
-          importSource: resolved.imp?.sourceFile,
-          exportedSymbol: resolved.imp?.exportedName,
-          helperSourceFile: resolved.helper.sourceFile,
-          helperSourceLine: resolved.helper.sourceLine,
-        },
-      ],
-    });
-    return true;
-  }
-  async function recordDestructuredHelper(decl: ts.VariableDeclaration): Promise<void> {
-    if (!ts.isObjectBindingPattern(decl.name) || !decl.initializer) return;
-    const call = unwrapCall(decl.initializer);
-    if (!call) return;
-    const helpers = await helpersForCall(call);
-    if (helpers.length === 0) return;
-    for (const el of decl.name.elements) {
-      if (!ts.isIdentifier(el.name)) continue;
-      const propertyName = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
-      const matches = helpers.filter((row) => row.helper.returnedProperty === propertyName);
-      if (matches.length !== 1) continue;
-      const resolved = matches[0];
-      out.push({
-        variableName: el.name.text,
-        alias: resolved.helper.alias,
-        aliasExpr: resolved.helper.aliasExpr,
-        destinationExpr: resolved.helper.destinationExpr,
-        servicePathExpr: resolved.helper.servicePathExpr,
-        isDynamic: resolved.helper.isDynamic,
-        placeholders: resolved.helper.placeholders,
-        sourceFile: normalizePath(filePath),
-        sourceLine: lineOf(sourceFileAst, decl),
-        helperChain: [...(resolved.helper.helperChain ?? []), { callerVariable: el.name.text, helperFunction: call.expression.getText(sourceFileAst), returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
-      });
-    }
-  }
-  async function recordDestructuredAssignment(pattern: ts.ObjectLiteralExpression, expr: ts.Expression, node: ts.Node): Promise<void> {
-    const call = unwrapCall(expr);
-    if (!call) return;
-    const helpers = await helpersForCall(call);
-    if (helpers.length === 0) return;
-    for (const prop of pattern.properties) {
-      let propertyName: string | undefined;
-      let targetName: string | undefined;
-      if (ts.isShorthandPropertyAssignment(prop)) {
-        propertyName = prop.name.text;
-        targetName = prop.name.text;
-      } else if (ts.isPropertyAssignment(prop)) {
-        propertyName = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : undefined;
-        targetName = ts.isIdentifier(prop.initializer) ? prop.initializer.text : undefined;
-      }
-      if (!propertyName || !targetName) continue;
-      const matches = helpers.filter((row) => row.helper.returnedProperty === propertyName);
-      if (matches.length !== 1) continue;
-      const resolved = matches[0];
-      out.push({
-        variableName: targetName,
-        alias: resolved.helper.alias,
-        aliasExpr: resolved.helper.aliasExpr,
-        destinationExpr: resolved.helper.destinationExpr,
-        servicePathExpr: resolved.helper.servicePathExpr,
-        isDynamic: resolved.helper.isDynamic,
-        placeholders: resolved.helper.placeholders,
-        sourceFile: normalizePath(filePath),
-        sourceLine: lineOf(sourceFileAst, node),
-        helperChain: [...(resolved.helper.helperChain ?? []), { callerVariable: targetName, assignedFrom: call.expression.getText(sourceFileAst), aliasKind: 'assignment', scopeRule: 'same-file-source-order', returnedProperty: propertyName, importSource: resolved.imp?.sourceFile, exportedSymbol: resolved.imp?.exportedName, helperSourceFile: resolved.helper.sourceFile, helperSourceLine: resolved.helper.sourceLine }],
-      });
-    }
-  }
-  function recordDestructuredClassHelper(decl: ts.VariableDeclaration): void {
-    if (!ts.isObjectBindingPattern(decl.name) || !decl.initializer) return;
-    const call = unwrapCall(decl.initializer);
-    if (!call || !ts.isPropertyAccessExpression(call.expression)) return;
-    const target = call.expression;
-    if (target.expression.kind !== ts.SyntaxKind.ThisKeyword) return;
-    for (const el of decl.name.elements) {
-      if (!ts.isIdentifier(el.name)) continue;
-      const propertyName = el.propertyName && ts.isIdentifier(el.propertyName)
-        ? el.propertyName.text
-        : el.name.text;
-      const helper = classHelpers.find(
-        (h) => h.helperName === target.name.text && h.propertyName === propertyName,
-      );
-      if (!helper) continue;
-      out.push({
-        variableName: el.name.text,
-        ...helper.fact,
-        sourceFile: normalizePath(filePath),
-        sourceLine: lineOf(sourceFileAst, decl),
-        helperChain: [
-          {
-            callerVariable: el.name.text,
-            className: helper.className,
-            classHelper: helper.helperName,
-            returnedProperty: helper.propertyName,
-            helperVariable: helper.variableName,
-            helperSourceFile: normalizePath(filePath),
-            helperSourceLine: helper.sourceLine,
-          },
-        ],
-      });
-    }
-  }
-
-  function arrayElementsFromExpression(expr: ts.Expression): { elements: ts.NodeArray<ts.Expression>; promiseAll: boolean } | undefined {
-    const unwrapped = unwrapIdentityExpression(expr);
-    if (ts.isArrayLiteralExpression(unwrapped)) return { elements: unwrapped.elements, promiseAll: false };
-    const call = unwrapCall(expr);
-    if (!call) return undefined;
-    if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== 'all' || call.expression.expression.getText(sourceFileAst) !== 'Promise') return undefined;
-    const first = call.arguments[0];
-    if (!first) return undefined;
-    const container = unwrapIdentityExpression(first);
-    if (!ts.isArrayLiteralExpression(container)) return undefined;
-    return { elements: container.elements, promiseAll: true };
-  }
-
-  async function recordArrayElementBinding(targetName: string, expr: ts.Expression, node: ts.Node, arrayIndex: number, promiseAll: boolean): Promise<void> {
-    const before = out.length;
-    await recordBindingFromExpression(targetName, expr, node, 'declaration');
-    if (out.length > before) {
-      const row = out[out.length - 1];
-      row.helperChain = [
-        ...(row.helperChain ?? []),
-        { callerVariable: targetName, targetVariable: targetName, arrayIndex, promiseAll, arrayContainer: promiseAll ? 'Promise.all' : 'array_literal' },
-      ];
-      return;
-    }
-    const unwrapped = unwrapIdentityExpression(expr);
-    if (ts.isIdentifier(unwrapped)) {
-      const existing = bindingForVariable(unwrapped.text);
-      if (!existing) return;
-      out.push({
-        ...existing,
-        variableName: targetName,
-        sourceLine: lineOf(sourceFileAst, node),
-        helperChain: [
-          ...(existing.helperChain ?? []),
-          { callerVariable: targetName, targetVariable: targetName, sourceVariable: unwrapped.text, aliasKind: 'array-destructuring', arrayIndex, promiseAll, arrayContainer: promiseAll ? 'Promise.all' : 'array_literal' },
-        ],
-      });
-    }
-  }
-
-  async function recordArrayDestructuredVariable(decl: ts.VariableDeclaration): Promise<void> {
-    if (!ts.isArrayBindingPattern(decl.name) || !decl.initializer) return;
-    const container = arrayElementsFromExpression(decl.initializer);
-    if (!container) return;
-    for (let index = 0; index < decl.name.elements.length; index += 1) {
-      const el = decl.name.elements[index];
-      if (!el || ts.isOmittedExpression(el) || ts.isBindingElement(el) && el.dotDotDotToken) continue;
-      if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
-      const source = container.elements[index];
-      if (!source || ts.isOmittedExpression(source)) continue;
-      await recordArrayElementBinding(el.name.text, source, decl, index, container.promiseAll);
-    }
-  }
-
-  async function recordArrayDestructuredAssignment(pattern: ts.ArrayLiteralExpression, expr: ts.Expression, node: ts.Node): Promise<void> {
-    const container = arrayElementsFromExpression(expr);
-    if (!container) return;
-    for (let index = 0; index < pattern.elements.length; index += 1) {
-      const el = pattern.elements[index];
-      if (!el || ts.isOmittedExpression(el) || ts.isSpreadElement(el) || !ts.isIdentifier(el)) continue;
-      const source = container.elements[index];
-      if (!source || ts.isOmittedExpression(source)) continue;
-      await recordArrayElementBinding(el.text, source, node, index, container.promiseAll);
-    }
-  }
-
-  const events: Array<{ pos: number; node: ts.VariableDeclaration | ts.BinaryExpression }> = [];
-  function collectEvents(node: ts.Node): void {
-    if (ts.isVariableDeclaration(node)) events.push({ pos: node.getStart(sourceFileAst), node });
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken)
-      events.push({ pos: node.getStart(sourceFileAst), node });
-    ts.forEachChild(node, collectEvents);
-  }
-  collectEvents(sourceFileAst);
-  events.sort((a, b) => a.pos - b.pos);
-  for (const event of events) {
-    if (ts.isVariableDeclaration(event.node)) {
-      const decl = event.node;
-      await recordDestructuredHelper(decl);
-      await recordArrayDestructuredVariable(decl);
-      recordDestructuredClassHelper(decl);
-      await rememberObjectHelperVariable(decl);
-      if (ts.isIdentifier(decl.name) && decl.initializer) recordObjectPropertyBinding(decl.name.text, decl.initializer, decl);
-      await recordVariable(decl);
-      recordIdentityAlias(decl);
-      if (ts.isIdentifier(decl.name) && decl.initializer) {
-        const sourceName = transactionReceiverName(decl.initializer);
-        if (sourceName) cloneAliasBinding(decl.name.text, sourceName, 'transaction', decl);
-      }
-      continue;
-    }
-    const assignment = event.node;
-    if (ts.isIdentifier(assignment.left)) {
-      const rhs = unwrapIdentityExpression(assignment.right);
-      if (ts.isIdentifier(rhs)) {
-        cloneAliasBinding(assignment.left.text, rhs.text, 'identity-assignment', assignment);
-        continue;
-      }
-      if (recordObjectPropertyBinding(assignment.left.text, assignment.right, assignment)) continue;
-      await recordBindingFromExpression(assignment.left.text, assignment.right, assignment, 'assignment');
-      continue;
-    }
-    const left = ts.isParenthesizedExpression(assignment.left) ? assignment.left.expression : assignment.left;
-    if (ts.isObjectLiteralExpression(left))
-      await recordDestructuredAssignment(left, assignment.right, assignment);
-    if (ts.isArrayLiteralExpression(left))
-      await recordArrayDestructuredAssignment(left, assignment.right, assignment);
-  }
-  return out;
-}
-
-function collectClassHelpers(sf: ts.SourceFile): ClassHelperReturn[] {
-  const helpers: ClassHelperReturn[] = [];
-  for (const stmt of sf.statements) {
-    if (!ts.isClassDeclaration(stmt) || !stmt.name) continue;
-    for (const member of stmt.members) {
-      if (!ts.isPropertyDeclaration(member) || !member.initializer) continue;
-      if (!ts.isIdentifier(member.name)) continue;
-      const className = stmt.name.text;
-      const helperName = member.name.text;
-      const initializer = member.initializer;
-      if (!ts.isArrowFunction(initializer) && !ts.isFunctionExpression(initializer))
-        continue;
-      const bindings = new Map<
-        string,
-        Omit<HelperBinding, 'exportedName' | 'sourceFile' | 'sourceLine'>
-      >();
-      function visit(node: ts.Node): void {
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-          const fact = findConnectInExpression(node.initializer);
-          if (fact) bindings.set(node.name.text, fact);
-        }
-        if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
-          for (const prop of node.expression.properties) {
-            if (ts.isShorthandPropertyAssignment(prop)) {
-              const fact = bindings.get(prop.name.text);
-              if (fact)
-                helpers.push({
-                  className,
-                  helperName,
-                  propertyName: prop.name.text,
-                  variableName: prop.name.text,
-                  fact,
-                  sourceLine: lineOf(sf, prop),
-                });
-            }
-            if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) {
-              const propertyName =
-                ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name)
-                  ? prop.name.text
-                  : undefined;
-              const fact = propertyName ? bindings.get(prop.initializer.text) : undefined;
-              if (propertyName && fact)
-                helpers.push({
-                  className,
-                  helperName,
-                  propertyName,
-                  variableName: prop.initializer.text,
-                  fact,
-                  sourceLine: lineOf(sf, prop),
-                });
-            }
-          }
-        }
-        ts.forEachChild(node, visit);
-      }
-      visit(initializer);
-    }
-  }
-  return helpers;
+  const source = await readSource(
+    path.join(repoPath, filePath), context, filePath,
+  );
+  if (!source) return [];
+  return collectServiceBindings({
+    source,
+    filePath,
+    imports: await importsFor(repoPath, filePath, source),
+    classHelpers: collectClassHelpers(source),
+    loadHelperBindings: async (helperFile) =>
+      helperBindings(repoPath, helperFile, context),
+  });
 }

@@ -160,8 +160,63 @@ export interface ServiceBindingFact {
   placeholders: string[];
   sourceFile: string;
   sourceLine: number;
+  bindingSiteStartOffset?: number;
+  bindingSiteEndOffset?: number;
+  sourceSymbolQualifiedName?: string;
+  ownerResolution?: ServiceBindingOwnerResolution;
   helperChain?: Array<Record<string, unknown>>;
 }
+export type ServiceBindingOwnerResolution =
+  | 'owned_exact'
+  | 'ownerless_file_scope'
+  | 'legacy_unknown';
+export type ServiceBindingReferenceStatus =
+  | 'resolved_exact'
+  | 'ambiguous'
+  | 'unresolved'
+  | 'not_applicable';
+export type ServiceBindingReferenceReason =
+  | 'binding_not_found'
+  | 'binding_declared_after_call'
+  | 'binding_scope_ambiguous'
+  | 'scope_chain_limit_exceeded'
+  | 'unsupported_reaching_assignment'
+  | 'unsupported_var_binding'
+  | 'binding_flow_unsupported';
+export interface LexicalScopeFact {
+  kind: 'source_file'
+    | 'module_block'
+    | 'function'
+    | 'class'
+    | 'loop'
+    | 'case_block'
+    | 'block'
+    | 'catch';
+  startOffset: number;
+  endOffset: number;
+}
+export interface ServiceBindingReference {
+  status: ServiceBindingReferenceStatus;
+  variableName?: string;
+  bindingSourceFile?: string;
+  bindingSiteStartOffset?: number;
+  bindingSiteEndOffset?: number;
+  resolutionStrategy?: 'lexical_declaration'
+    | 'lexical_alias_declaration'
+    | 'deterministic_reaching_assignment';
+  lexicalScopeChain?: LexicalScopeFact[];
+  bindingScopeIndex?: number;
+  scopeChainTotal: number;
+  scopeChainShown: number;
+  scopeChainOmitted: number;
+  reason?: ServiceBindingReferenceReason;
+}
+export type HandlerReferenceStatus =
+  | 'role_required'
+  | 'unsupported_inline'
+  | 'unsupported_wrapper'
+  | 'unsupported_reference_shape'
+  | 'missing_argument';
 export interface OutboundCallFact {
   callType: CallType;
   sourceSymbolQualifiedName?: string;
@@ -178,6 +233,7 @@ export interface OutboundCallFact {
   sourceLine: number;
   callSiteStartOffset?: number;
   callSiteEndOffset?: number;
+  serviceBindingReference?: ServiceBindingReference;
   confidence: number;
   unresolvedReason?: string;
   evidence?: Record<string, unknown>;

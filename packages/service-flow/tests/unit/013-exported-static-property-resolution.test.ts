@@ -87,7 +87,9 @@ const fixtureFiles: FixtureFile[] = [
   ['consumer/src/local/static-tools.ts', localProviderSource],
   ['static-tools/.git-fixture', ''],
   ['static-tools/package.json', JSON.stringify({
-    name: '@neutral/static-tools', version: '1.0.0',
+    name: '@neutral/static-tools',
+    version: '1.0.0',
+    exports: './src/static-tools.ts',
   })],
   ['static-tools/src/static-tools.ts', providerSource],
 ];
@@ -202,10 +204,15 @@ function expectResolvedCall(
 }
 
 function expectIndexResolution(rows: Array<Record<string, unknown>>): void {
-  expectResolvedCall(rows, 'src/handlers/BarrelHandler.ts', 'BarrelTools.run', {
-    relation: 'relative_import', candidateStrategy: 'relative_import_exported_exact',
-    targetSourceFile: 'src/local/static-tools.ts', targetQualifiedName: 'BarrelTools.run',
-    targetExported: 1,
+  expect(callRow(rows, 'src/handlers/BarrelHandler.ts', 'BarrelTools.run'))
+    .toMatchObject({
+      relation: 'relative_import',
+      candidateStrategy: 'relative_import_exported_exact',
+      candidateCount: 1,
+      status: 'unresolved',
+      targetSourceFile: null,
+      targetQualifiedName: null,
+      unresolvedReason: 'relative_import_requested_module_has_no_target',
   });
   expectResolvedCall(rows, 'src/handlers/DirectHandler.ts', 'DirectTools.run', {
     relation: 'relative_import', candidateStrategy: 'relative_import_exported_exact',
@@ -225,14 +232,15 @@ function expectPackageIndexBaseline(rows: Array<Record<string, unknown>>): void 
     row.sourceFile === 'src/handlers/PackageHandler.ts' && row.relation === 'package_import');
   expect(packageRows).toHaveLength(5);
   expect(packageRows.every((row) => row.status === 'unresolved'
-    && row.candidateStrategy === 'package_import_unresolved'
+    && row.candidateStrategy === 'package_import_pending'
     && row.candidateCount === 0 && row.calleeSymbolId === null)).toBe(true);
 }
 
 function expectPackageResolution(rows: Array<Record<string, unknown>>): void {
   for (const member of ['arrowTask', 'expressionTask', 'methodTask', 'callSibling']) {
     expectResolvedCall(rows, 'src/handlers/PackageHandler.ts', `StaticTools.${member}`, {
-      relation: 'package_import', candidateStrategy: 'package_import_workspace_resolved',
+      relation: 'package_import',
+      candidateStrategy: 'package_public_surface_exact',
       resolvedModulePath: 'src/static-tools', targetRepoName: 'static-tools',
       targetPackageName: '@neutral/static-tools', targetSourceFile: 'src/static-tools.ts',
       targetQualifiedName: `StaticTools.${member}`, targetExported: 1,
@@ -240,8 +248,10 @@ function expectPackageResolution(rows: Array<Record<string, unknown>>): void {
   }
   expect(callRow(rows, 'src/handlers/PackageHandler.ts', 'StaticTools.instanceTask'))
     .toMatchObject({
-      status: 'unresolved', candidateStrategy: 'package_import_unresolved',
+      status: 'unresolved',
+      candidateStrategy: 'package_public_surface_unresolved',
       candidateCount: 0, calleeSymbolId: null, targetSourceFile: null,
+      unresolvedReason: 'package_public_name_not_exposed',
     });
 }
 
@@ -270,9 +280,7 @@ function expectTraceDescent(snapshot: Record<string, string[]>): void {
   ]));
   expect(snapshot.PackageHandler?.some((edge) =>
     edge.startsWith('StaticTools.instanceTask->'))).toBe(false);
-  expect(snapshot.BarrelHandler).toEqual(expect.arrayContaining([
-    expect.stringContaining('BarrelTools.run->'), expect.stringContaining('barrelLeaf->'),
-  ]));
+  expect(snapshot.BarrelHandler).toEqual([]);
   expect(snapshot.DirectHandler).toEqual(expect.arrayContaining([
     expect.stringContaining('DirectTools.run->'), expect.stringContaining('directLeaf->'),
   ]));

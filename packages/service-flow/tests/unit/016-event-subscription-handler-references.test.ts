@@ -168,7 +168,9 @@ const fixtureFiles: FixtureFile[] = [
   ['event-app/src/namespace.ts', 'export function exportedFn(): void {}\n'],
   ['event-handlers/.git-fixture', ''],
   ['event-handlers/package.json', JSON.stringify({
-    name: '@neutral/event-handlers', version: '1.0.0',
+    name: '@neutral/event-handlers',
+    version: '1.0.0',
+    exports: './src/package-handler.ts',
   })],
   ['event-handlers/src/package-handler.ts',
     'export function packageHandler(): void {}\n'],
@@ -356,7 +358,7 @@ function expectResolvedHandlerRows(rows: SubscriptionRow[]): void {
   expect(rowFor(rows, 'EventPackage')).toMatchObject({
     expression: 'packageHandler', importSource: '@neutral/event-handlers',
     relation: 'package_import', calleeLocalName: 'packageHandler',
-    candidateStrategy: 'package_import_workspace_resolved', candidateCount: 1,
+    candidateStrategy: 'package_public_surface_exact', candidateCount: 1,
     targetSourceFile: 'src/package-handler.ts', targetQualifiedName: 'packageHandler',
     targetRepoName: 'event-handlers', callerKind: 'event_registration',
   });
@@ -365,7 +367,7 @@ function expectResolvedHandlerRows(rows: SubscriptionRow[]): void {
     relation: 'relative_import', calleeLocalName: 'fallbackHandler',
     candidateStrategy: 'relative_import_exported_exact', candidateCount: 1,
     targetSourceFile: 'src/handlers.ts', targetQualifiedName: 'fallbackHandler',
-    callerKind: 'function', callerQualifiedName: 'registerFallback',
+    callerKind: 'event_registration',
   });
 }
 
@@ -400,8 +402,9 @@ describe('event-subscription handler references', () => {
       && call.callSiteEndOffset > call.callSiteStartOffset)).toBe(true);
     expect(handlers.find((call) => call.calleeExpression === 'handlerFn')
       ?.callerQualifiedName).toMatch(/^module:src\/register\.ts#event:EventFoo:/);
-    expect(handlers.find((call) => call.calleeExpression === 'fallbackHandler'))
-      .toMatchObject({ callerQualifiedName: 'registerFallback' });
+    expect(handlers.find((call) =>
+      call.calleeExpression === 'fallbackHandler')?.callerQualifiedName)
+      .toMatch(/^module:src\/register\.ts#event:EventFallback:/);
 
     for (const needle of [
       "'EventInline'", "'EventFunction'", "'EventMulti'", "'EventNested'",
@@ -428,7 +431,7 @@ describe('event-subscription handler references', () => {
       const indexedRows = subscriptionRows(db);
       expect(indexedRows.filter((row) => row.expression !== null)).toHaveLength(8);
       expect(rowFor(indexedRows, 'EventPackage')).toMatchObject({
-        status: 'unresolved', candidateStrategy: 'package_import_unresolved',
+        status: 'unresolved', candidateStrategy: 'package_import_pending',
         candidateCount: 0, targetSourceFile: null,
       });
       expect(indexedRows.filter((row) => row.expression !== null
@@ -438,18 +441,18 @@ describe('event-subscription handler references', () => {
       linkWorkspace(db, workspaceId);
       expectResolvedHandlerRows(subscriptionRows(db));
       expect(databaseCounts(db)).toEqual({
-        symbols: 26,
+        symbols: 25,
         symbolCalls: 9,
         subscriptions: 13,
         emissions: 0,
-        graphEdges: 27,
+        graphEdges: 22,
         subscriptionEdges: 13,
       });
       expect(db.prepare(`SELECT COUNT(*) count FROM symbols
         WHERE kind='event_registration' AND source_file=? AND start_line=?`)
-        .get(sourceFile, sourceLine("'EventFallback'"))?.count).toBe(0);
+        .get(sourceFile, sourceLine("'EventFallback'"))?.count).toBe(1);
       expect(db.prepare(`SELECT COUNT(*) count FROM symbols
-        WHERE kind='event_registration'`).get()?.count).toBe(14);
+        WHERE kind='event_registration'`).get()?.count).toBe(13);
       expect(db.prepare(`SELECT sc.status,caller.qualified_name callerQualifiedName,
         target.qualified_name targetQualifiedName,
         json_extract(sc.evidence_json,'$.candidateStrategy') candidateStrategy,
@@ -466,7 +469,6 @@ describe('event-subscription handler references', () => {
         WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
         GROUP BY status ORDER BY status`).all()).toEqual([
         { status: 'resolved', count: 8 },
-        { status: 'unresolved', count: 5 },
       ]);
 
       const first = stableState(db);
@@ -480,6 +482,210 @@ describe('event-subscription handler references', () => {
       expect(stableState(db)).toEqual(first);
       expect(db.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
       expect(db.pragma('foreign_key_check')).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fails closed for a shadowed import and resolves local overload bodies', async () => {
+    const root = await mkdtemp(path.join(
+      os.tmpdir(), 'service-flow-event-handler-shadow-',
+    ));
+    await Promise.all([
+      writeFixtureFile(root, 'app/.git-fixture', ''),
+      writeFixtureFile(root, 'app/package.json', JSON.stringify({
+        name: '@neutral/shadow-app',
+        version: '1.0.0',
+        dependencies: { '@neutral/shadow-handlers': '1.0.0' },
+      })),
+      writeFixtureFile(root, 'app/src/register.ts', `
+        import { remoteHandler as shadowHandler }
+          from '@neutral/shadow-handlers';
+        {
+          function shadowHandler(): void {}
+          void shadowHandler;
+        }
+        function overloadedHandler(value: string): void;
+        function overloadedHandler(value: unknown): void { void value; }
+        class LocalHandlers {
+          static handle(value: string): void;
+          static handle(value: unknown): void { void value; }
+        }
+        let mutableHandler = (): void => {};
+        mutableHandler = (): void => {};
+        const mutableHandlers = { handle(): void {} };
+        mutableHandlers.handle = (): void => {};
+        const aliasedHandlers = { handle(): void {} };
+        const handlerAlias = aliasedHandlers;
+        handlerAlias.handle = (): void => {};
+        const assignedHandlers = { handle(): void {} };
+        Object.assign(assignedHandlers, { handle(): void {} });
+        const selfMutatingHandlers = {
+          handle(): void {},
+          replace(): void {
+            this.handle = (): void => {};
+          },
+        };
+        selfMutatingHandlers.replace();
+        export function register(shadowHandler: () => void): void {
+          messaging.on('Shadowed', shadowHandler);
+          messaging.on('Overloaded', overloadedHandler);
+          messaging.on('ClassOverloaded', LocalHandlers.handle);
+          messaging.on('Mutable', mutableHandler);
+          messaging.on('MutableMember', mutableHandlers.handle);
+          messaging.on('AliasedMember', aliasedHandlers.handle);
+          messaging.on('AssignedMember', assignedHandlers.handle);
+          messaging.on('SelfMutatingMember', selfMutatingHandlers.handle);
+          shadowHandler();
+        }
+      `),
+      writeFixtureFile(root, 'handlers/.git-fixture', ''),
+      writeFixtureFile(root, 'handlers/package.json', JSON.stringify({
+        name: '@neutral/shadow-handlers',
+        version: '1.0.0',
+        exports: './src/index.ts',
+      })),
+      writeFixtureFile(
+        root, 'handlers/src/index.ts',
+        'export function remoteHandler(): void {}\n',
+      ),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    try {
+      linkWorkspace(db, workspaceId);
+      const rows = db.prepare(`SELECT oc.event_name_expr eventName,
+        sc.status status,target.qualified_name targetName,
+        json_extract(sc.evidence_json,'$.relation') relation,
+        json_extract(sc.evidence_json,'$.candidateStrategy') strategy
+        FROM outbound_calls oc
+        JOIN symbol_calls sc ON sc.repo_id=oc.repo_id
+          AND sc.source_file=oc.source_file
+          AND sc.call_site_start_offset=oc.call_site_start_offset
+          AND sc.call_site_end_offset=oc.call_site_end_offset
+          AND sc.call_role='event_subscribe_handler'
+        LEFT JOIN symbols target ON target.id=sc.callee_symbol_id
+        ORDER BY oc.event_name_expr`).all();
+      expect(rows).toEqual([
+        {
+          eventName: 'AliasedMember', status: 'unresolved', targetName: null,
+          relation: 'indexed_local_symbol_unproven',
+          strategy: 'exact_symbol_match',
+        },
+        {
+          eventName: 'AssignedMember', status: 'unresolved', targetName: null,
+          relation: 'indexed_local_symbol_unproven',
+          strategy: 'exact_symbol_match',
+        },
+        {
+          eventName: 'ClassOverloaded', status: 'resolved',
+          targetName: 'LocalHandlers.handle',
+          relation: 'indexed_local_symbol', strategy: 'same_file_exact',
+        },
+        {
+          eventName: 'Mutable', status: 'unresolved', targetName: null,
+          relation: 'indexed_local_symbol_unproven',
+          strategy: 'exact_symbol_match',
+        },
+        {
+          eventName: 'MutableMember', status: 'unresolved', targetName: null,
+          relation: 'indexed_local_symbol_unproven',
+          strategy: 'exact_symbol_match',
+        },
+        {
+          eventName: 'Overloaded', status: 'resolved',
+          targetName: 'overloadedHandler',
+          relation: 'indexed_local_symbol', strategy: 'same_file_exact',
+        },
+        {
+          eventName: 'SelfMutatingMember', status: 'unresolved',
+          targetName: null,
+          relation: 'indexed_local_symbol_unproven',
+          strategy: 'exact_symbol_match',
+        },
+        {
+          eventName: 'Shadowed', status: 'unresolved', targetName: null,
+          relation: 'indexed_local_symbol_unproven',
+          strategy: 'exact_symbol_match',
+        },
+      ]);
+      expect(db.prepare(`SELECT COUNT(*) count FROM symbol_calls
+        WHERE call_role='ordinary_call'
+          AND callee_expression='shadowHandler'`).get()?.count).toBe(0);
+      expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
+        WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+          AND status='resolved'
+          AND json_extract(evidence_json,'$.eventName')
+            IN ('Shadowed','Mutable','MutableMember',
+              'AliasedMember','AssignedMember','SelfMutatingMember')`)
+        .get()?.count).toBe(0);
+      expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
+        WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+          AND status='resolved'`)
+        .get()?.count).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    {
+      label: 'shadowed CommonJS export',
+      reason: 'package_public_name_not_exposed',
+      provider: `
+        function hidden() {}
+        const exports = {};
+        exports.remoteHandler = hidden;
+      `,
+    },
+    {
+      label: 'mutated CommonJS namespace export',
+      reason: 'package_public_surface_unsupported',
+      provider: `
+        const api = { remoteHandler() {} };
+        module.exports = api;
+        api.remoteHandler = () => {};
+      `,
+    },
+  ])('does not turn a $label into a resolved event edge', async ({
+    provider,
+    reason,
+  }) => {
+    const root = await mkdtemp(path.join(
+      os.tmpdir(), 'service-flow-event-handler-cjs-shadow-',
+    ));
+    await Promise.all([
+      writeFixtureFile(root, 'app/.git-fixture', ''),
+      writeFixtureFile(root, 'app/package.json', JSON.stringify({
+        name: '@neutral/cjs-shadow-app',
+        dependencies: { '@neutral/cjs-shadow-handlers': '1.0.0' },
+      })),
+      writeFixtureFile(root, 'app/src/register.ts', `
+        import { remoteHandler } from '@neutral/cjs-shadow-handlers';
+        export function register(): void {
+          messaging.on('Remote', remoteHandler);
+        }
+      `),
+      writeFixtureFile(root, 'handlers/.git-fixture', ''),
+      writeFixtureFile(root, 'handlers/package.json', JSON.stringify({
+        name: '@neutral/cjs-shadow-handlers',
+        version: '1.0.0',
+        exports: './src/index.js',
+      })),
+      writeFixtureFile(root, 'handlers/src/index.js', provider),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    try {
+      linkWorkspace(db, workspaceId);
+      expect(db.prepare(`SELECT status,callee_symbol_id calleeSymbolId,
+        unresolved_reason reason FROM symbol_calls
+        WHERE call_role='event_subscribe_handler'`).get()).toMatchObject({
+        status: 'unresolved',
+        calleeSymbolId: null,
+        reason,
+      });
+      expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
+        WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+          AND status='resolved'`).get()?.count).toBe(0);
     } finally {
       db.close();
     }

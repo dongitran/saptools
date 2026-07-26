@@ -1,17 +1,32 @@
-import { posix } from 'node:path';
 import type { OutboundCallFact, SymbolCallFact } from '../types.js';
-import { projectBounded } from '../utils/000-bounded-projection.js';
+import {
+  selectCallOwner,
+  type OwnerCandidate,
+  type OwnerSelection,
+} from '../parsers/004-fact-identity.js';
 import type { Db, Statement } from './connection.js';
+import {
+  resolveRelativeSymbolCall,
+} from './006-relative-symbol-resolution.js';
+import {
+  parsePackageImportReference,
+} from '../parsers/012-package-fact-contract.js';
+import {
+  resolvedBindingReferenceProofValid,
+  type BindingProofCall,
+  type BindingProofTarget,
+} from './012-binding-reference-proof.js';
 
 export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]): void {
-  const callerStmt = db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1');
   const insertStmt = db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,call_site_start_offset,call_site_end_offset,call_role,status,confidence,evidence_json,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   for (const r of rows) {
-    const caller = callerStmt.get(repoId, r.sourceFile, r.callerQualifiedName) as { id?: number } | undefined;
+    assertImportProvenance(r);
+    const callerId = requiredSymbolCallOwnerId(db, repoId, r);
     const target = resolveSymbolCallTarget(db, repoId, r);
+    const cardinality = resolutionCardinality(target);
     insertStmt.run(
       repoId,
-      caller?.id,
+      callerId,
       target.id,
       r.calleeExpression,
       r.importSource,
@@ -26,11 +41,49 @@ export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]
         ...r.evidence,
         candidateStrategy: target.strategy,
         candidateCount: target.candidateCount,
+        eligibleCandidateCount: cardinality.eligibleCandidateCount,
+        selectedCandidateCount: cardinality.selectedCandidateCount,
+        candidateSetComplete: cardinality.candidateSetComplete,
+        unresolvedReason: target.reason,
         resolvedModulePath: target.resolvedModulePath,
       }),
       target.reason,
     );
   }
+}
+
+function assertImportProvenance(call: SymbolCallFact): void {
+  if (call.importSource === undefined || call.importSource.startsWith('.'))
+    return;
+  const direct = directPackageProvenanceValid(call);
+  const derived = derivedPackageProvenanceValid(call);
+  if (!direct && !derived)
+    throw new Error(
+      'invalid_prepared_repository_snapshot:package_import_provenance_missing',
+    );
+}
+
+function directPackageProvenanceValid(call: SymbolCallFact): boolean {
+  const binding = parsePackageImportReference(call.evidence.importBinding);
+  return Boolean(binding
+    && call.evidence.relation === 'package_import'
+    && call.evidence.derivedImportBinding === undefined
+    && call.importSource === binding.rawModuleSpecifier
+    && call.evidence.targetName === binding.requestedPublicName);
+}
+
+function derivedPackageProvenanceValid(call: SymbolCallFact): boolean {
+  const binding = parsePackageImportReference(
+    call.evidence.derivedImportBinding,
+  );
+  if (!binding || typeof binding.referencedMemberName !== 'string')
+    return false;
+  const expected = typeof call.evidence.proxyVariableName === 'string'
+    ? binding.referencedMemberName : binding.requestedPublicName;
+  return call.evidence.relation === 'package_import_derived_member'
+    && call.evidence.importBinding === undefined
+    && call.importSource === binding.rawModuleSpecifier
+    && call.evidence.targetName === expected;
 }
 
 interface SymbolTargetRow {
@@ -46,38 +99,114 @@ interface SymbolCallResolution {
   reason: string | null;
   strategy: string;
   candidateCount: number;
+  eligibleCandidateCount: number;
+  candidateSetComplete: boolean;
   resolvedModulePath?: string;
 }
 
-const stripExt = (value: string): string => value.replace(/\.(ts|tsx|js|jsx|cds)$/, '');
+interface PersistedOwnerCandidate extends OwnerCandidate {
+  id: number;
+}
+
+function persistedCallOwners(
+  db: Db,
+  repoId: number,
+  sourceFile: string,
+  start: number | undefined,
+  end: number | undefined,
+): PersistedOwnerCandidate[] {
+  if (start === undefined || end === undefined) return [];
+  const rows = db.prepare(`SELECT id,kind,qualified_name qualifiedName,
+    start_offset startOffset,end_offset endOffset FROM symbols
+    WHERE repo_id=? AND source_file=? AND start_offset<=? AND end_offset>=?`)
+    .all(repoId, sourceFile, start, end);
+  return rows.flatMap(persistedOwnerCandidate);
+}
+
+function persistedOwnerCandidate(
+  row: Record<string, unknown>,
+): PersistedOwnerCandidate[] {
+  if (typeof row.id !== 'number' || typeof row.kind !== 'string'
+    || typeof row.qualifiedName !== 'string'
+    || typeof row.startOffset !== 'number'
+    || typeof row.endOffset !== 'number') return [];
+  return [{
+    id: row.id,
+    kind: row.kind,
+    qualifiedName: row.qualifiedName,
+    startOffset: row.startOffset,
+    endOffset: row.endOffset,
+  }];
+}
+
+function requiredSymbolCallOwnerId(
+  db: Db,
+  repoId: number,
+  call: SymbolCallFact,
+): number {
+  const candidates = persistedCallOwners(
+    db, repoId, call.sourceFile,
+    call.callSiteStartOffset, call.callSiteEndOffset,
+  );
+  const selected = selectCallOwner(
+    candidates,
+    call.callSiteStartOffset ?? -1,
+    call.callSiteEndOffset ?? -1,
+    call.callRole === 'event_subscribe_handler',
+  );
+  if (selected.status !== 'resolved'
+    || selected.owner?.qualifiedName !== call.callerQualifiedName)
+    throw new Error('invalid_prepared_repository_snapshot:symbol_call_owner_mismatch');
+  return selected.owner.id;
+}
+
+function resolutionCardinality(
+  target: SymbolCallResolution,
+): {
+  eligibleCandidateCount: number;
+  selectedCandidateCount: 0 | 1;
+  candidateSetComplete: boolean;
+} {
+  return {
+    eligibleCandidateCount: target.eligibleCandidateCount,
+    selectedCandidateCount: target.status === 'resolved' ? 1 : 0,
+    candidateSetComplete: target.candidateSetComplete,
+  };
+}
 
 function symbolTargetRows(rows: Array<Record<string, unknown>>): SymbolTargetRow[] {
   return rows.flatMap((row) => typeof row.id === 'number' ? [{
     id: row.id,
     kind: typeof row.kind === 'string' ? row.kind : undefined,
-    sourceFile: nullableString(row.sourceFile),
-    evidenceJson: nullableString(row.evidenceJson),
+    sourceFile: typeof row.sourceFile === 'string' ? row.sourceFile : null,
+    evidenceJson: typeof row.evidenceJson === 'string'
+      ? row.evidenceJson : null,
   }] : []);
 }
 
-function relativeModuleTargets(callerSourceFile: string, importSource: string): Set<string> {
-  const base = posix.dirname(callerSourceFile);
-  const joined = stripExt(posix.normalize(posix.join(base, importSource)));
-  return new Set([joined, `${joined}/index`]);
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
 }
 
-function moduleRows(rows: SymbolTargetRow[], r: SymbolCallFact): SymbolTargetRow[] {
-  if (!r.importSource) return [];
-  const targets = relativeModuleTargets(r.sourceFile, r.importSource);
-  return rows.filter((row) => typeof row.sourceFile === 'string'
-    && targets.has(stripExt(row.sourceFile)));
+function executableTarget(row: SymbolTargetRow): boolean {
+  if (!row.evidenceJson || !row.kind
+    || !['function', 'method', 'object_method', 'callback'].includes(row.kind))
+    return false;
+  try {
+    const evidence = record(JSON.parse(row.evidenceJson) as unknown);
+    const body = record(evidence?.executableBodyEligibility);
+    return body?.eligible === true && body.reason === 'body_present';
+  } catch {
+    return false;
+  }
 }
 
 function resolvedSymbol(
   row: SymbolTargetRow,
   strategy: string,
   candidateCount: number,
-  moduleScoped = false,
+  eligibleCandidateCount = 1,
 ): SymbolCallResolution {
   return {
     id: row.id,
@@ -85,18 +214,76 @@ function resolvedSymbol(
     reason: null,
     strategy,
     candidateCount,
-    resolvedModulePath: moduleScoped && row.sourceFile
-      ? stripExt(row.sourceFile)
-      : undefined,
+    eligibleCandidateCount,
+    candidateSetComplete: true,
+  };
+}
+
+function unresolvedSymbol(
+  strategy: string,
+  reason: string,
+  candidateCount: number,
+  eligibleCandidateCount = 0,
+  candidateSetComplete = true,
+): SymbolCallResolution {
+  return {
+    id: null,
+    status: 'unresolved',
+    reason,
+    strategy,
+    candidateCount,
+    eligibleCandidateCount,
+    candidateSetComplete,
+  };
+}
+
+function ambiguousSymbol(
+  strategy: string,
+  reason: string,
+  candidateCount: number,
+  eligibleCandidateCount: number,
+): SymbolCallResolution {
+  return {
+    id: null,
+    status: 'ambiguous',
+    reason,
+    strategy,
+    candidateCount,
+    eligibleCandidateCount,
+    candidateSetComplete: true,
   };
 }
 
 function exportedSymbolRows(db: Db, repoId: number, r: SymbolCallFact): SymbolTargetRow[] {
-  return symbolTargetRows(db.prepare('SELECT id,kind,source_file sourceFile,evidence_json evidenceJson FROM symbols WHERE repo_id=? AND source_file<>? AND exported=1 AND (exported_name=? OR name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName, r.calleeLocalName));
+  return symbolTargetRows(db.prepare(`SELECT id,kind,
+    source_file sourceFile,evidence_json evidenceJson FROM symbols
+    WHERE repo_id=? AND source_file<>? AND exported=1
+      AND (exported_name=? OR name=? OR qualified_name=?)
+    ORDER BY id`).all(
+    repoId, r.sourceFile,
+    r.calleeLocalName, r.calleeLocalName, r.calleeLocalName,
+  ));
 }
 
 function isRelativeImportedSymbolCall(r: SymbolCallFact): boolean {
   return Boolean(r.importSource?.startsWith('.'));
+}
+
+function eligibleSymbolResolution(
+  rows: SymbolTargetRow[],
+  strategy: string,
+  ambiguousReason: string,
+): SymbolCallResolution | undefined {
+  if (rows.length === 0) return undefined;
+  const eligible = rows.filter(executableTarget);
+  if (eligible.length === 1 && eligible[0])
+    return resolvedSymbol(eligible[0], strategy, rows.length, 1);
+  if (eligible.length > 1) return ambiguousSymbol(
+    strategy, ambiguousReason, rows.length, eligible.length,
+  );
+  return unresolvedSymbol(
+    strategy, 'symbol_target_has_no_executable_body', rows.length,
+  );
 }
 
 function sameFileResolution(
@@ -105,191 +292,91 @@ function sameFileResolution(
   r: SymbolCallFact,
   relation: unknown,
 ): SymbolCallResolution | undefined {
-  const bareImport = relation === 'relative_import' && isRelativeImportedSymbolCall(r)
-    && !String(r.calleeLocalName).includes('.');
-  if (bareImport || relation === 'relative_import_namespace_member'
-    || relation === 'package_import') return undefined;
-  const rows = symbolTargetRows(db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND (name=? OR qualified_name=?) ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName));
-  if (rows.length === 1 && rows[0]) return resolvedSymbol(rows[0], 'same_file_exact', 1);
-  return rows.length > 1
-    ? {
-        id: null,
-        status: 'ambiguous',
-        reason: 'Multiple same-file symbol targets matched exactly',
-        strategy: 'same_file_exact',
-        candidateCount: rows.length,
-      }
-    : undefined;
-}
-
-function classInstanceResolution(
-  db: Db,
-  repoId: number,
-  r: SymbolCallFact,
-  relation: unknown,
-): SymbolCallResolution | undefined {
-  if (relation !== 'class_instance_method' || !isRelativeImportedSymbolCall(r))
+  if (isRelativeImportedSymbolCall(r) || relation === 'package_import')
     return undefined;
-  const rows = symbolTargetRows(db.prepare('SELECT id FROM symbols WHERE repo_id=? AND source_file<>? AND qualified_name=? ORDER BY id').all(repoId, r.sourceFile, r.calleeLocalName));
-  if (rows.length === 1 && rows[0])
-    return resolvedSymbol(rows[0], 'relative_import_class_instance_method', 1);
-  return rows.length > 1
-    ? {
-        id: null,
-        status: 'ambiguous',
-        reason: 'Multiple relative class instance method targets matched exactly',
-        strategy: 'relative_import_class_instance_method',
-        candidateCount: rows.length,
-      }
-    : undefined;
+  if (relation === 'indexed_local_symbol_unproven')
+    return unresolvedSymbol(
+      'exact_symbol_match', 'no_local_symbol_target', 0,
+    );
+  if (relation === 'indexed_local_symbol'
+    && r.evidence.localTargetIdentity !== undefined)
+    return exactLocalSymbolResolution(db, repoId, r);
+  const rows = symbolTargetRows(db.prepare(`SELECT id,kind,
+    source_file sourceFile,evidence_json evidenceJson FROM symbols
+    WHERE repo_id=? AND source_file=?
+      AND (name=? OR qualified_name=?) ORDER BY id`).all(
+    repoId, r.sourceFile, r.calleeLocalName, r.calleeLocalName,
+  ));
+  return eligibleSymbolResolution(
+    rows, 'same_file_exact', 'multiple_same_file_symbol_targets',
+  );
 }
 
-function namespaceResolution(
+function exactLocalSymbolResolution(
   db: Db,
   repoId: number,
-  r: SymbolCallFact,
-  relation: unknown,
-): SymbolCallResolution | undefined {
-  if (relation !== 'relative_import_namespace_member'
-    || !isRelativeImportedSymbolCall(r)) return undefined;
-  const rows = moduleRows(exportedSymbolRows(db, repoId, r), r);
-  if (rows.length === 1 && rows[0])
-    return resolvedSymbol(rows[0], 'relative_import_namespace_member', 1, true);
-  if (rows.length > 1) return {
-    id: null,
-    status: 'ambiguous',
-    reason: 'Multiple namespace member targets matched the imported module',
-    strategy: 'relative_import_namespace_member',
-    candidateCount: rows.length,
-  };
-  return {
-    id: null,
-    status: 'unresolved',
-    reason: 'No namespace member target matched the imported module',
-    strategy: 'relative_import_namespace_member',
-    candidateCount: 0,
-  };
-}
-
-function proxyResolution(
-  rows: SymbolTargetRow[],
-  r: SymbolCallFact,
-  relation: unknown,
-): SymbolCallResolution | undefined {
-  if (relation !== 'relative_import_proxy_member' || rows.length <= 1) return undefined;
-  const mapped = rows.filter(isExportedObjectMapping);
-  if (mapped.length > 0) {
-    const concrete = rows.find((row) => row.kind !== 'object_alias') ?? mapped[0];
-    return {
-      id: concrete?.id ?? null,
-      status: 'resolved',
-      reason: null,
-      strategy: 'proxy_member_exported_object_map',
-      candidateCount: rows.length,
-    };
-  }
-  const scoped = moduleRows(rows, r);
-  if (scoped.length === 1 && scoped[0])
-    return resolvedSymbol(scoped[0], 'relative_import_path_disambiguated', rows.length, true);
-  return {
-    id: null,
-    status: 'ambiguous',
-    reason: 'Proxy member target requires explicit factory/module/type evidence; global member name is ambiguous',
-    strategy: 'proxy_member_no_global_name_fallback',
-    candidateCount: rows.length,
-  };
-}
-
-function isExportedObjectMapping(row: SymbolTargetRow): boolean {
-  const evidence = String(row.evidenceJson ?? '');
-  return evidence.includes('exported_object_shorthand')
-    || evidence.includes('exported_object_literal');
+  call: SymbolCallFact,
+): SymbolCallResolution {
+  const target = record(call.evidence.localTargetIdentity);
+  if (!target
+    || typeof target.sourceFile !== 'string'
+    || typeof target.qualifiedName !== 'string'
+    || typeof target.startOffset !== 'number'
+    || typeof target.endOffset !== 'number')
+    return unresolvedSymbol(
+      'exact_symbol_match', 'no_local_symbol_target', 0,
+    );
+  const rows = symbolTargetRows(db.prepare(`SELECT id,kind,
+    source_file sourceFile,evidence_json evidenceJson FROM symbols
+    WHERE repo_id=? AND source_file=? AND qualified_name=?
+      AND start_offset=? AND end_offset=? ORDER BY id`).all(
+    repoId, target.sourceFile, target.qualifiedName,
+    target.startOffset, target.endOffset,
+  ));
+  return eligibleSymbolResolution(
+    rows, 'same_file_exact', 'multiple_same_file_symbol_targets',
+  ) ?? unresolvedSymbol(
+    'exact_symbol_match', 'no_local_symbol_target', 0,
+  );
 }
 
 function exportedResolution(
   rows: SymbolTargetRow[],
-  r: SymbolCallFact,
-  relation: unknown,
 ): SymbolCallResolution | undefined {
-  if (rows.length === 1 && rows[0]) return resolvedSymbol(
-    rows[0],
-    relation === 'relative_import_proxy_member'
-      ? 'proxy_member_unique_exported_candidate'
-      : 'relative_import_exported_exact',
-    1,
-    moduleRows(rows, r).length === 1,
+  return eligibleSymbolResolution(
+    rows, 'exported_exact', 'multiple_exported_symbol_targets',
   );
-  if (rows.length <= 1) return undefined;
-  const scoped = isRelativeImportedSymbolCall(r) ? moduleRows(rows, r) : [];
-  if (scoped.length === 1 && scoped[0])
-    return resolvedSymbol(scoped[0], 'relative_import_path_disambiguated', rows.length, true);
-  return {
-    id: null,
-    status: 'ambiguous',
-    reason: 'Multiple exported symbol targets matched exactly',
-    strategy: 'exported_exact',
-    candidateCount: rows.length,
-  };
 }
 
-function accessorResolution(
-  db: Db,
-  repoId: number,
-  r: SymbolCallFact,
-  relation: unknown,
-): SymbolCallResolution | undefined {
-  if (relation !== 'relative_import' || !isRelativeImportedSymbolCall(r)
-    || !/^[^.]+\.[^.]+$/.test(String(r.calleeLocalName))) return undefined;
-  const methodRows = symbolTargetRows(db.prepare("SELECT id,kind,source_file sourceFile FROM symbols WHERE repo_id=? AND source_file<>? AND kind='method' AND qualified_name=? ORDER BY id").all(repoId, r.sourceFile, r.calleeLocalName));
-  const scoped = moduleRows(methodRows, r);
-  if (scoped.length === 1 && scoped[0]) return resolvedSymbol(
-    scoped[0],
-    'relative_import_static_accessor_instance_method',
-    1,
-    true,
-  );
-  return scoped.length > 1
-    ? {
-        id: null,
-        status: 'ambiguous',
-        reason: 'Multiple static-accessor instance method targets matched the imported module',
-        strategy: 'relative_import_static_accessor_instance_method',
-        candidateCount: scoped.length,
-      }
-    : undefined;
-}
-
-function resolveSymbolCallTarget(
+export function resolveSymbolCallTarget(
   db: Db,
   repoId: number,
   r: SymbolCallFact,
 ): SymbolCallResolution {
   const relation = r.evidence.relation;
-  const early = sameFileResolution(db, repoId, r, relation)
-    ?? classInstanceResolution(db, repoId, r, relation)
-    ?? namespaceResolution(db, repoId, r, relation);
+  const relative = resolveRelativeSymbolCall(db, repoId, r, relation);
+  if (relative) return relative;
+  const early = sameFileResolution(db, repoId, r, relation);
   if (early) return early;
-  const rows = relation === 'package_import' ? [] : exportedSymbolRows(db, repoId, r);
-  const matched = proxyResolution(rows, r, relation)
-    ?? exportedResolution(rows, r, relation)
-    ?? accessorResolution(db, repoId, r, relation);
+  if (relation === 'package_import_derived_member') return unresolvedSymbol(
+    'package_import_derived_member_unsupported',
+    'package_derived_member_provenance_insufficient',
+    0,
+  );
+  if (relation === 'package_import') return unresolvedSymbol(
+    'package_import_pending',
+    'package_resolution_pending',
+    0,
+    0,
+    false,
+  );
+  const matched = exportedResolution(exportedSymbolRows(db, repoId, r));
   if (matched) return matched;
-  if (relation === 'package_import') return {
-    id: null,
-    status: 'unresolved',
-    reason: 'Package import target resolution requires a post-publication workspace pass',
-    strategy: 'package_import_unresolved',
-    candidateCount: 0,
-  };
-  return {
-    id: null,
-    status: 'unresolved',
-    reason: 'No local symbol target matched exactly',
-    strategy: relation === 'relative_import_proxy_member'
-      ? 'proxy_member_no_global_name_fallback'
-      : 'exact_symbol_match',
-    candidateCount: 0,
-  };
+  return unresolvedSymbol(
+    'exact_symbol_match',
+    'no_local_symbol_target',
+    0,
+  );
 }
 
 export function insertCalls(
@@ -308,12 +395,7 @@ function outboundCallInsertStatement(db: Db): Statement {
     call_site_end_offset,confidence,unresolved_reason,local_service_name,
     local_service_lookup,alias_chain_json,evidence_json,external_target_kind,
     external_target_id,external_target_label,external_target_dynamic,service_binding_id
-  ) VALUES(
-    ?,COALESCE(
-      (SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND qualified_name=? ORDER BY id LIMIT 1),
-      (SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1)
-    ),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-  )`);
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 }
 
 function insertOutboundCall(
@@ -322,19 +404,20 @@ function insertOutboundCall(
   repoId: number,
   call: OutboundCallFact,
 ): void {
+  const sourceSymbolId = outboundOwnerId(db, repoId, call);
   const binding = resolvePersistedBinding(db, repoId, call);
   const external = externalTargetValues(call.externalTarget);
   const evidence = {
     ...(call.evidence ?? {}),
-    serviceBindingResolution: binding.evidence,
+    serviceBindingReference: binding.reference,
+    serviceBindingResolution: binding.resolution,
   };
   stmt.run(
-    repoId, repoId, call.sourceFile, call.sourceSymbolQualifiedName,
-    repoId, call.sourceFile, call.sourceLine, call.sourceLine,
+    repoId, sourceSymbolId,
     call.callType, call.method, call.operationPathExpr, call.queryEntity,
     call.eventNameExpr, call.payloadSummary, call.sourceFile, call.sourceLine,
     call.callSiteStartOffset, call.callSiteEndOffset, call.confidence,
-    call.unresolvedReason ?? binding.unresolvedReason,
+    call.unresolvedReason,
     call.localServiceName, call.localServiceLookup,
     serializedAliasChain(call.aliasChain),
     JSON.stringify(evidence), external.kind, external.stableId, external.label,
@@ -359,17 +442,57 @@ function externalTargetValues(
   };
 }
 
-interface BindingCandidate {
+interface PersistedBinding {
   id: number;
   symbolId?: number | null;
   variableName: string;
-  alias?: string | null;
-  aliasExpr?: string | null;
-  destinationExpr?: string | null;
-  servicePathExpr?: string | null;
   sourceFile: string;
-  sourceLine: number;
-  helperChainJson?: string | null;
+  siteStart: number;
+  siteEnd: number;
+  ownerResolution: string;
+  ownerStartOffset: number | null;
+  ownerEndOffset: number | null;
+}
+
+function outboundOwnerId(
+  db: Db,
+  repoId: number,
+  call: OutboundCallFact,
+): number | null {
+  const candidates = persistedCallOwners(
+    db, repoId, call.sourceFile,
+    call.callSiteStartOffset, call.callSiteEndOffset,
+  );
+  const selected = selectCallOwner(
+    candidates,
+    call.callSiteStartOffset ?? -1,
+    call.callSiteEndOffset ?? -1,
+    call.callType === 'async_subscribe',
+  );
+  const resolution = call.evidence?.sourceOwnerResolution;
+  if (resolution === 'ownerless_file_scope')
+    return ownerlessOutboundOwner(selected.status);
+  return ownedOutboundOwner(call, resolution, selected);
+}
+
+function ownerlessOutboundOwner(status: string): null {
+  if (status !== 'none')
+    throw new Error('invalid_prepared_repository_snapshot:outbound_owner_mismatch');
+  return null;
+}
+
+function ownedOutboundOwner(
+  call: OutboundCallFact,
+  resolution: unknown,
+  selected: OwnerSelection<PersistedOwnerCandidate>,
+): number {
+  if (resolution !== 'owned_exact' || selected.status !== 'resolved'
+    || selected.owner?.qualifiedName !== call.sourceSymbolQualifiedName)
+    throw new Error('invalid_prepared_repository_snapshot:outbound_owner_mismatch');
+  const owner = selected.owner;
+  if (!owner)
+    throw new Error('invalid_prepared_repository_snapshot:outbound_owner_mismatch');
+  return owner.id;
 }
 
 function resolvePersistedBinding(
@@ -378,160 +501,170 @@ function resolvePersistedBinding(
   call: OutboundCallFact,
 ): {
   bindingId: number | null;
-  unresolvedReason?: string;
-  evidence: Record<string, unknown>;
+  reference: NonNullable<OutboundCallFact['serviceBindingReference']>;
+  resolution: Record<string, unknown>;
 } {
-  if (!call.serviceVariableName)
-    return { bindingId: null, evidence: { status: 'not_applicable', candidateCount: 0 } };
-  const candidates = bindingCandidates(db, repoId, call);
-  const prior = candidates.filter((candidate) => candidate.sourceLine <= call.sourceLine);
-  const families = new Set(prior.map(bindingSignature));
-  if (prior.length > 0 && families.size === 1) {
-    const selected = prior.at(-1);
-    return {
-      bindingId: selected?.id ?? null,
-      evidence: bindingEvidence('selected', prior, selected),
-    };
-  }
-  if (prior.length > 1) {
-    return {
-      bindingId: null,
-      unresolvedReason: 'ambiguous_service_binding_candidates',
-      evidence: bindingEvidence('ambiguous', prior),
-    };
-  }
-  if (candidates.length > 0) {
-    return {
-      bindingId: null,
-      unresolvedReason: 'service_binding_declared_after_call',
-      evidence: bindingEvidence('rejected_future_binding', candidates),
-    };
-  }
+  const reference = call.serviceBindingReference;
+  if (!reference)
+    throw new Error('invalid_prepared_repository_snapshot:binding_reference_missing');
+  if (reference.status !== 'resolved_exact')
+    return unresolvedBinding(reference);
+  const candidates = exactBindingRows(db, repoId, reference);
+  const selected = candidates[0];
+  if (candidates.length !== 1 || !selected
+    || selected.variableName !== call.serviceVariableName)
+    throw new Error('invalid_prepared_repository_snapshot:binding_reference_mismatch');
+  assertResolvedBindingProof(repoId, call, selected, reference);
   return {
-    bindingId: null,
-    evidence: bindingEvidence('unrecoverable', []),
+    bindingId: selected.id,
+    reference,
+    resolution: {
+      status: 'selected_exact',
+      selectedBindingId: selected.id,
+      candidateCount: 1,
+    },
   };
 }
 
-function bindingCandidates(
-  db: Db,
+function bindingProofCall(
   repoId: number,
   call: OutboundCallFact,
-): BindingCandidate[] {
-  const ownerId = callSymbolId(db, repoId, call);
-  const rows = db.prepare(`
-    SELECT id,symbol_id symbolId,variable_name variableName,alias,alias_expr aliasExpr,
-      destination_expr destinationExpr,service_path_expr servicePathExpr,
-      source_file sourceFile,source_line sourceLine,helper_chain_json helperChainJson
-    FROM service_bindings
-    WHERE repo_id=? AND variable_name=? AND source_file=?
-      AND (? IS NULL OR symbol_id IS NULL OR symbol_id=?)
-    ORDER BY source_line,id
-  `).all(
+  bindingId: number,
+): BindingProofCall {
+  if (call.callSiteStartOffset === undefined
+    || call.callSiteEndOffset === undefined)
+    throw new Error(
+      'invalid_prepared_repository_snapshot:binding_lexical_proof_invalid',
+    );
+  return {
     repoId,
-    call.serviceVariableName,
-    call.sourceFile,
-    ownerId,
-    ownerId,
-  ) as Array<Record<string, unknown>>;
-  return rows.flatMap((row) => {
-    if (typeof row.id !== 'number' || typeof row.variableName !== 'string'
-      || typeof row.sourceFile !== 'string' || typeof row.sourceLine !== 'number')
-      return [];
-    return [{
-      id: row.id,
-      symbolId: nullableNumber(row.symbolId),
-      variableName: row.variableName,
-      alias: nullableString(row.alias),
-      aliasExpr: nullableString(row.aliasExpr),
-      destinationExpr: nullableString(row.destinationExpr),
-      servicePathExpr: nullableString(row.servicePathExpr),
-      sourceFile: row.sourceFile,
-      sourceLine: row.sourceLine,
-      helperChainJson: nullableString(row.helperChainJson),
-    }];
-  });
+    bindingId,
+    variableName: call.serviceVariableName,
+    sourceFile: call.sourceFile,
+    startOffset: call.callSiteStartOffset,
+    endOffset: call.callSiteEndOffset,
+  };
 }
 
-function nullableString(value: unknown): string | null | undefined {
-  return value === null || typeof value === 'string' ? value : undefined;
+function bindingProofTarget(
+  repoId: number,
+  binding: PersistedBinding,
+): BindingProofTarget {
+  return {
+    id: binding.id,
+    repoId,
+    symbolId: binding.symbolId ?? null,
+    variableName: binding.variableName,
+    sourceFile: binding.sourceFile,
+    startOffset: binding.siteStart,
+    endOffset: binding.siteEnd,
+    ownerResolution: binding.ownerResolution,
+    ownerStartOffset: binding.ownerStartOffset,
+    ownerEndOffset: binding.ownerEndOffset,
+  };
 }
 
-function nullableNumber(value: unknown): number | null | undefined {
+function assertResolvedBindingProof(
+  repoId: number,
+  call: OutboundCallFact,
+  binding: PersistedBinding,
+  reference: NonNullable<OutboundCallFact['serviceBindingReference']>,
+): void {
+  const valid = resolvedBindingReferenceProofValid(
+    bindingProofCall(repoId, call, binding.id),
+    reference,
+    bindingProofTarget(repoId, binding),
+  );
+  if (!valid)
+    throw new Error(
+      'invalid_prepared_repository_snapshot:binding_lexical_proof_invalid',
+    );
+}
+
+function unresolvedBinding(
+  reference: NonNullable<OutboundCallFact['serviceBindingReference']>,
+): {
+  bindingId: null;
+  reference: NonNullable<OutboundCallFact['serviceBindingReference']>;
+  resolution: Record<string, unknown>;
+} {
+  return {
+    bindingId: null,
+    reference,
+    resolution: {
+      status: reference.status,
+      candidateCount: 0,
+    },
+  };
+}
+
+function exactBindingRows(
+  db: Db,
+  repoId: number,
+  reference: NonNullable<OutboundCallFact['serviceBindingReference']>,
+): PersistedBinding[] {
+  const rows = db.prepare(`SELECT binding.id,binding.symbol_id symbolId,
+    binding.variable_name variableName,binding.source_file sourceFile,
+    binding.binding_site_start_offset siteStart,
+    binding.binding_site_end_offset siteEnd,
+    binding.owner_resolution ownerResolution,
+    owner.start_offset ownerStartOffset,owner.end_offset ownerEndOffset
+    FROM service_bindings binding
+    LEFT JOIN symbols owner ON owner.id=binding.symbol_id
+    WHERE binding.repo_id=? AND binding.source_file=?
+      AND binding.variable_name=?
+      AND binding.binding_site_start_offset=?
+      AND binding.binding_site_end_offset=?`).all(
+    repoId,
+    reference.bindingSourceFile,
+    reference.variableName,
+    reference.bindingSiteStartOffset,
+    reference.bindingSiteEndOffset,
+  );
+  return rows.flatMap(persistedBindingRow);
+}
+
+function persistedBindingRow(
+  row: Record<string, unknown>,
+): PersistedBinding[] {
+  const ownerStartOffset = nullableOffset(row.ownerStartOffset);
+  const ownerEndOffset = nullableOffset(row.ownerEndOffset);
+  if (!persistedBindingRequiredValid(row)
+    || ownerStartOffset === undefined || ownerEndOffset === undefined) return [];
+  return [{
+    id: row.id,
+    symbolId: row.symbolId === null || typeof row.symbolId === 'number'
+      ? row.symbolId : undefined,
+    variableName: row.variableName,
+    sourceFile: row.sourceFile,
+    siteStart: row.siteStart,
+    siteEnd: row.siteEnd,
+    ownerResolution: row.ownerResolution,
+    ownerStartOffset,
+    ownerEndOffset,
+  }];
+}
+
+function nullableOffset(value: unknown): number | null | undefined {
   return value === null || typeof value === 'number' ? value : undefined;
 }
 
-function callSymbolId(
-  db: Db,
-  repoId: number,
-  call: OutboundCallFact,
-): number | undefined {
-  const row = db.prepare(`
-    SELECT id FROM symbols
-    WHERE repo_id=? AND source_file=?
-      AND ((? IS NOT NULL AND qualified_name=?)
-        OR (start_line<=? AND end_line>=?))
-    ORDER BY CASE WHEN qualified_name=? THEN 0 ELSE 1 END,
-      (end_line-start_line),id
-    LIMIT 1
-  `).get(
-    repoId,
-    call.sourceFile,
-    call.sourceSymbolQualifiedName,
-    call.sourceSymbolQualifiedName,
-    call.sourceLine,
-    call.sourceLine,
-    call.sourceSymbolQualifiedName,
-  );
-  return typeof row?.id === 'number' ? row.id : undefined;
-}
-
-function bindingEvidence(
-  status: string,
-  candidates: BindingCandidate[],
-  selected?: BindingCandidate,
-): Record<string, unknown> {
-  const projection = projectBounded(candidates, (left, right) =>
-    Number(right.id === selected?.id) - Number(left.id === selected?.id)
-    || left.sourceFile.localeCompare(right.sourceFile)
-    || left.sourceLine - right.sourceLine
-    || left.id - right.id);
-  return {
-    status,
-    candidateCount: projection.totalCount,
-    shownCandidateCount: projection.shownCount,
-    omittedCandidateCount: projection.omittedCount,
-    selectedBindingId: selected?.id,
-    sourceOrderRule: 'binding_source_line_must_not_follow_call',
-    candidates: projection.items.map((candidate) => ({
-      bindingId: candidate.id,
-      symbolId: candidate.symbolId,
-      variableName: candidate.variableName,
-      alias: candidate.alias,
-      aliasExpr: candidate.aliasExpr,
-      destinationExpr: candidate.destinationExpr,
-      servicePathExpr: candidate.servicePathExpr,
-      sourceFile: candidate.sourceFile,
-      sourceLine: candidate.sourceLine,
-      helperChain: parseBindingChain(candidate.helperChainJson),
-    })),
-  };
-}
-
-function bindingSignature(candidate: BindingCandidate): string {
-  return JSON.stringify([
-    candidate.alias,
-    candidate.aliasExpr,
-    candidate.destinationExpr,
-    candidate.servicePathExpr,
-  ]);
-}
-
-function parseBindingChain(value: string | null | undefined): unknown {
-  if (!value) return undefined;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
-  }
+function persistedBindingRequiredValid(
+  row: Record<string, unknown>,
+): row is Record<string, unknown> & {
+  id: number;
+  variableName: string;
+  sourceFile: string;
+  siteStart: number;
+  siteEnd: number;
+  ownerResolution: string;
+} {
+  return [
+    typeof row.id === 'number',
+    typeof row.variableName === 'string',
+    typeof row.sourceFile === 'string',
+    typeof row.siteStart === 'number',
+    typeof row.siteEnd === 'number',
+    typeof row.ownerResolution === 'string',
+  ].every(Boolean);
 }

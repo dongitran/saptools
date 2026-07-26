@@ -7,6 +7,10 @@ import {
   analyzerVersionDiagnostics,
   schemaDriftDiagnostics,
 } from './002-doctor-lifecycle.js';
+import {
+  packagePendingDiagnostics,
+  symbolCallQuality,
+} from './003-doctor-package-resolution.js';
 export { linkUpgradeWarnings } from './002-doctor-lifecycle.js';
 
 type Diagnostic = Record<string, unknown>;
@@ -17,13 +21,23 @@ interface DoctorOptions {
 
 export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOptions = {}): Diagnostic[] {
   const lifecycle = factLifecycleDiagnostic(db, options.workspaceId);
-  if (lifecycle?.code === 'schema_upgrade_required'
-    || lifecycle?.code === 'unsupported_future_schema')
-    return boundDoctorDiagnostics([lifecycle]);
+  if (lifecycle) return boundDoctorDiagnostics([lifecycle]);
+  const globalLifecycle = options.workspaceId === undefined
+    ? undefined : factLifecycleDiagnostic(db);
+  if (globalLifecycle) return boundDoctorDiagnostics([
+    ...schemaDriftDiagnostics(db, strict, options.workspaceId),
+    ...analyzerVersionDiagnostics(db, strict, options.workspaceId),
+    {
+      severity: 'warning',
+      code: 'workspace_detail_checks_deferred',
+      message: 'Selected-workspace lifecycle is valid, but JSON-dependent global detail checks were deferred because another workspace requires reindexing.',
+      remediation: 'Run doctor for the affected workspace after force index and link.',
+    },
+  ]);
   const diagnostics = db.prepare('SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id').all() as Diagnostic[];
   return boundDoctorDiagnostics([
-    ...(lifecycle ? [lifecycle] : []),
     ...diagnostics,
+    ...packagePendingDiagnostics(db),
     ...healthDiagnostics(db, strict),
     ...remoteTargetWithoutImplementationDiagnostics(db, strict, Boolean(options.detail)),
     ...localServiceDiagnostics(db, strict),
@@ -168,15 +182,6 @@ function jsonEvidenceQuality(db: Db): Diagnostic[] {
     { severity: Number(outbound.missing ?? 0) + Number(outbound.invalid ?? 0) + Number(outbound.nonObject ?? 0) > 0 ? 'warning' : 'info', code: 'strict_outbound_evidence_quality', message: 'Outbound parser evidence JSON object aggregate', total: Number(outbound.total ?? 0), missing: Number(outbound.missing ?? 0), invalid: Number(outbound.invalid ?? 0), nonObject: Number(outbound.nonObject ?? 0), examples: outboundExamples },
     { severity: Number(graph.nonObject ?? 0) > 0 || Number(graph.withOutboundEvidence ?? 0) < Number(graph.total ?? 0) ? 'warning' : 'info', code: 'strict_graph_evidence_quality', message: 'Call-derived graph evidence and parser-evidence propagation aggregate', total: Number(graph.total ?? 0), nonObject: Number(graph.nonObject ?? 0), withOutboundEvidence: Number(graph.withOutboundEvidence ?? 0), examples: graphExamples },
   ];
-}
-
-function symbolCallQuality(db: Db): Diagnostic {
-  const row = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) resolved, SUM(CASE WHEN status='unresolved' THEN 1 ELSE 0 END) unresolved FROM symbol_calls").get() as Record<string, unknown>;
-  const top = db.prepare("SELECT callee_expression calleeExpression,COUNT(*) count FROM symbol_calls WHERE status='unresolved' GROUP BY callee_expression ORDER BY count DESC,callee_expression LIMIT 5").all() as Diagnostic[];
-  const total = Number(row.total ?? 0);
-  const unresolved = Number(row.unresolved ?? 0);
-  const ratio = total === 0 ? 0 : Number((unresolved / total).toFixed(4));
-  return { severity: ratio > 0.05 ? 'warning' : 'info', code: 'strict_symbol_call_quality', message: 'Symbol-call quality aggregate', total, resolved: Number(row.resolved ?? 0), unresolved, unresolvedRatio: ratio, unresolvedRatioThreshold: 0.05, topUnresolvedCallees: top };
 }
 
 function dbQueryQuality(db: Db): Diagnostic {
@@ -418,8 +423,13 @@ function serviceBindingQuality(db: Db, detail: boolean): Diagnostic {
 function bindingCategory(row: Diagnostic): string {
   const evidence = parseObject(row.evidenceJson);
   const resolution = parseObject(evidence.serviceBindingResolution);
+  const reference = parseObject(evidence.serviceBindingReference);
   if (resolution.status === 'rejected_future_binding') return 'direct_binding_missing';
-  if (resolution.status === 'ambiguous') return 'ambiguous_binding_candidates';
+  if (reference.reason === 'binding_declared_after_call')
+    return 'direct_binding_missing';
+  if (resolution.status === 'ambiguous' || reference.status === 'ambiguous'
+    || reference.reason === 'unsupported_reaching_assignment')
+    return 'ambiguous_binding_candidates';
   const receiver = evidence.receiver;
   const symbolEvidence = parseObject(row.symbolEvidenceJson);
   if (symbolHasReceiverParameter(symbolEvidence, receiver))
@@ -448,6 +458,7 @@ function bindingExample(row: Diagnostic): Diagnostic {
     receiver: evidence.receiver,
     unresolvedReason: row.unresolvedReason,
     bindingResolution: evidence.serviceBindingResolution,
+    bindingReference: evidence.serviceBindingReference,
   };
 }
 

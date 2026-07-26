@@ -8,6 +8,10 @@ import type {
   ServiceBindingFact,
   ExecutableSymbolFact,
 } from '../types.js';
+import {
+  selectCallOwner,
+  type OwnerCandidate,
+} from '../parsers/004-fact-identity.js';
 export interface RepoRow {
   id: number;
   name: string;
@@ -27,6 +31,24 @@ export interface WorkspaceRow {
   id: number;
   root_path: string;
   db_path: string;
+}
+function initialPackagePublicSurface(packageName?: string): string {
+  return JSON.stringify({
+    schema: 'service-flow/package-public-surface@1',
+    status: packageName ? 'incomplete' : 'not_applicable',
+    reason: packageName ? 'package_surface_pending_index' : null,
+    recordCap: 256,
+    total: 0,
+    shown: 0,
+    omitted: 0,
+    packageName: packageName ?? null,
+    exportsPresent: false,
+    exportsAuthoritative: false,
+    main: null,
+    module: null,
+    entries: [],
+    scopes: [],
+  });
 }
 export function upsertWorkspace(
   db: Db,
@@ -64,7 +86,15 @@ export function upsertRepository(
   },
 ): number {
   db.prepare(
-    `INSERT INTO repositories(workspace_id,name,absolute_path,relative_path,package_name,package_version,dependencies_json,kind,is_git_repo) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,absolute_path) DO UPDATE SET name=excluded.name,relative_path=excluded.relative_path,package_name=excluded.package_name,package_version=excluded.package_version,dependencies_json=excluded.dependencies_json,kind=excluded.kind`,
+    `INSERT INTO repositories(workspace_id,name,absolute_path,relative_path,
+      package_name,package_version,dependencies_json,
+      package_public_surface_json,kind,is_git_repo)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(workspace_id,absolute_path) DO UPDATE SET
+      name=excluded.name,relative_path=excluded.relative_path,
+      package_name=excluded.package_name,
+      package_version=excluded.package_version,
+      dependencies_json=excluded.dependencies_json,kind=excluded.kind`,
   ).run(
     workspaceId,
     r.name,
@@ -73,6 +103,7 @@ export function upsertRepository(
     r.packageName,
     r.packageVersion,
     JSON.stringify(r.dependencies ?? {}),
+    initialPackagePublicSurface(r.packageName),
     r.kind ?? 'unknown',
     r.isGitRepo ? 1 : 0,
   );
@@ -355,16 +386,14 @@ export function insertBindings(
   repoId: number,
   rows: ServiceBindingFact[],
 ): void {
+  assertUniquePreparedBindingSites(rows);
   const stmt = db.prepare(
-    'INSERT INTO service_bindings(repo_id,symbol_id,variable_name,alias,alias_expr,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,helper_chain_json) VALUES(?,(SELECT id FROM symbols WHERE repo_id=? AND source_file=? AND start_line<=? AND end_line>=? ORDER BY (end_line-start_line),id LIMIT 1),?,?,?,?,?,?,?,?,?,?)',
+    'INSERT INTO service_bindings(repo_id,symbol_id,variable_name,alias,alias_expr,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,binding_site_start_offset,binding_site_end_offset,owner_resolution,helper_chain_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
   );
   for (const r of rows)
     stmt.run(
       repoId,
-      repoId,
-      r.sourceFile,
-      r.sourceLine,
-      r.sourceLine,
+      bindingOwnerId(db, repoId, r),
       r.variableName,
       r.alias,
       r.aliasExpr,
@@ -374,8 +403,86 @@ export function insertBindings(
       JSON.stringify(r.placeholders),
       r.sourceFile,
       r.sourceLine,
+      r.bindingSiteStartOffset,
+      r.bindingSiteEndOffset,
+      r.ownerResolution,
       r.helperChain ? JSON.stringify(r.helperChain) : null,
     );
+}
+
+interface PersistedOwnerCandidate extends OwnerCandidate {
+  id: number;
+}
+
+function persistedOwnerCandidates(
+  db: Db,
+  repoId: number,
+  fact: ServiceBindingFact,
+): PersistedOwnerCandidate[] {
+  const rows = db.prepare(`SELECT id,kind,qualified_name qualifiedName,
+    start_offset startOffset,end_offset endOffset FROM symbols
+    WHERE repo_id=? AND source_file=? AND start_offset<=? AND end_offset>=?`)
+    .all(
+      repoId, fact.sourceFile, fact.bindingSiteStartOffset,
+      fact.bindingSiteEndOffset,
+    );
+  return rows.flatMap((row) =>
+    typeof row.id === 'number' && typeof row.kind === 'string'
+      && typeof row.qualifiedName === 'string'
+      && typeof row.startOffset === 'number'
+      && typeof row.endOffset === 'number'
+      ? [{
+          id: row.id,
+          kind: row.kind,
+          qualifiedName: row.qualifiedName,
+          startOffset: row.startOffset,
+          endOffset: row.endOffset,
+        }]
+      : []);
+}
+
+function bindingOwnerId(
+  db: Db,
+  repoId: number,
+  fact: ServiceBindingFact,
+): number | null {
+  const candidates = persistedOwnerCandidates(db, repoId, fact);
+  const selected = selectCallOwner(
+    candidates,
+    fact.bindingSiteStartOffset ?? -1,
+    fact.bindingSiteEndOffset ?? -1,
+  );
+  if (fact.ownerResolution === 'ownerless_file_scope') {
+    if (selected.status !== 'none')
+      throw new Error('invalid_prepared_repository_snapshot:binding_owner_mismatch');
+    return null;
+  }
+  if (fact.ownerResolution !== 'owned_exact'
+    || selected.status !== 'resolved'
+    || selected.owner?.qualifiedName !== fact.sourceSymbolQualifiedName)
+    throw new Error('invalid_prepared_repository_snapshot:binding_owner_mismatch');
+  const owner = selected.owner;
+  if (!owner)
+    throw new Error('invalid_prepared_repository_snapshot:binding_owner_mismatch');
+  return owner.id;
+}
+
+function assertUniquePreparedBindingSites(
+  rows: readonly ServiceBindingFact[],
+): void {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (row.bindingSiteStartOffset === undefined
+      || row.bindingSiteEndOffset === undefined)
+      throw new Error('invalid_prepared_repository_snapshot:binding_site_missing');
+    const key = [
+      row.sourceFile, row.variableName,
+      row.bindingSiteStartOffset, row.bindingSiteEndOffset,
+    ].join('\u0000');
+    if (seen.has(key))
+      throw new Error('invalid_prepared_repository_snapshot:duplicate_service_binding_site');
+    seen.add(key);
+  }
 }
 export function insertExecutableSymbols(db: Db, repoId: number, rows: ExecutableSymbolFact[]): void {
   const stmt = db.prepare('INSERT INTO symbols(repo_id,file_id,kind,name,qualified_name,exported,start_line,end_line,start_offset,end_offset,source_file,exported_name,evidence_json) VALUES(?,(SELECT id FROM files WHERE repo_id=? AND relative_path=?),?,?,?,?,?,?,?,?,?,?,?)');

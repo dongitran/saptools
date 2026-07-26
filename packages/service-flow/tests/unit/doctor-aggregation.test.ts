@@ -3,12 +3,34 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { openDatabase } from '../../src/db/connection.js';
+import {
+  insertCalls,
+  insertSymbolCalls,
+} from '../../src/db/000-call-fact-repository.js';
 import { upsertRepository, upsertWorkspace } from '../../src/db/repositories.js';
 import { doctorDiagnostics } from '../../src/cli/doctor.js';
 import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/000-bounded-projection.js';
+import {
+  insertOwnerlessCall,
+  markRepositoryCurrent,
+} from './current-fact-fixture.js';
 
-function insertService(db: ReturnType<typeof openDatabase>, repoId: number, servicePath: string, sourceLine: number): number {
-  return Number(db.prepare("INSERT INTO cds_services(repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(?,?,?,?,?,?,?) RETURNING id").get(repoId, servicePath.replace(/^\//, ''), servicePath.replace(/^\//, ''), servicePath, 0, 'srv/service.cds', sourceLine)?.id);
+function insertService(
+  db: ReturnType<typeof openDatabase>,
+  repoId: number,
+  servicePath: string,
+  sourceLine: number,
+  baseServiceId: number | null = null,
+): number {
+  const serviceName = servicePath.replace(/^\//, '');
+  return Number(db.prepare(`INSERT INTO cds_services(
+    repo_id,service_name,qualified_name,service_path,is_extend,
+    source_file,source_line,extension_base_service_id,extension_base_status
+  ) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id`).get(
+    repoId, serviceName, serviceName, servicePath,
+    baseServiceId === null ? 0 : 1, 'srv/service.cds', sourceLine,
+    baseServiceId, baseServiceId === null ? null : 'resolved',
+  )?.id);
 }
 
 function insertOperation(db: ReturnType<typeof openDatabase>, serviceId: number, operationName: string, sourceLine: number, provenance = 'direct', baseOperationId: number | null = null): number {
@@ -18,6 +40,73 @@ function insertOperation(db: ReturnType<typeof openDatabase>, serviceId: number,
 function insertImplementationEdge(db: ReturnType<typeof openDatabase>, workspaceId: number, operationId: number, status: string, evidence: Record<string, unknown>, reason: string): void {
   db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,unresolved_reason,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
     .run(workspaceId, 'OPERATION_IMPLEMENTED_BY_HANDLER', status, 'operation', String(operationId), 'handler_method_candidates', '1,2', 0.5, JSON.stringify(evidence), 0, reason, 1);
+}
+
+function insertExecutableSymbol(
+  db: ReturnType<typeof openDatabase>,
+  repoId: number,
+  name: string,
+  startOffset: number,
+  endOffset: number,
+): void {
+  db.prepare(`INSERT INTO symbols(
+    repo_id,kind,name,qualified_name,exported,start_line,end_line,
+    start_offset,end_offset,source_file,evidence_json
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(
+    repoId, 'function', name, name, 0, 1, 10,
+    startOffset, endOffset, 'srv/helper.ts',
+    JSON.stringify({
+      executableBodyEligibility: {
+        eligible: true,
+        reason: 'body_present',
+      },
+    }),
+  );
+}
+
+function insertSymbolAndWrapperFacts(
+  db: ReturnType<typeof openDatabase>,
+  repoId: number,
+): void {
+  insertExecutableSymbol(db, repoId, 'caller', 0, 100);
+  insertExecutableSymbol(db, repoId, 'callee', 110, 150);
+  insertSymbolCalls(db, repoId, [{
+    callerQualifiedName: 'caller',
+    calleeExpression: 'callee',
+    calleeLocalName: 'callee',
+    sourceFile: 'srv/helper.ts',
+    sourceLine: 2,
+    callSiteStartOffset: 20,
+    callSiteEndOffset: 30,
+    callRole: 'ordinary_call',
+    evidence: {
+      relation: 'indexed_local_symbol',
+      caller: 'caller',
+      targetName: 'callee',
+      callArguments: [{ kind: 'identifier', name: 'serviceClient' }],
+    },
+  }]);
+  insertCalls(db, repoId, [{
+    callType: 'remote_action',
+    sourceFile: 'srv/helper.ts',
+    sourceLine: 3,
+    callSiteStartOffset: 40,
+    callSiteEndOffset: 50,
+    sourceSymbolQualifiedName: 'caller',
+    confidence: 0.4,
+    unresolvedReason: 'dynamic_operation_path_identifier',
+    serviceBindingReference: {
+      status: 'not_applicable',
+      scopeChainTotal: 0,
+      scopeChainShown: 0,
+      scopeChainOmitted: 0,
+    },
+    evidence: {
+      sourceOwnerResolution: 'owned_exact',
+      receiver: 'serviceClient',
+      operationPathExpression: 'request.path',
+    },
+  }]);
 }
 
 describe('strict doctor implementation aggregation', () => {
@@ -33,12 +122,17 @@ describe('strict doctor implementation aggregation', () => {
       packageName: '@neutral/model-core',
       kind: 'cap-db-model',
     });
+    markRepositoryCurrent(db, repoId, '@neutral/model-core');
     const baseServiceId = insertService(db, repoId, '/BaseService', 1);
     const baseOperationId = insertOperation(db, baseServiceId, 'performWork', 2);
     const variants = ['A', 'B', 'C', 'D', 'E', 'F'];
     for (const suffix of variants) {
-      const serviceId = insertService(db, repoId, `/Tenant${suffix}Service`, 10);
-      const operationId = insertOperation(db, serviceId, 'performWork', 11, 'inherited', baseOperationId);
+      const serviceId = insertService(
+        db, repoId, `/Tenant${suffix}Service`, 10, baseServiceId,
+      );
+      const operationId = insertOperation(
+        db, serviceId, 'performWork', 2, 'inherited', baseOperationId,
+      );
       insertImplementationEdge(db, workspaceId, operationId, 'unresolved', {
         servicePath: `/Tenant${suffix}Service`,
         operationPath: '/performWork',
@@ -65,12 +159,7 @@ describe('strict doctor implementation aggregation', () => {
       ],
     }, 'Ambiguous registered handler implementation candidates');
 
-    const callerId = Number(db.prepare("INSERT INTO symbols(repo_id,kind,name,qualified_name,exported,start_line,end_line,source_file,evidence_json) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").get(repoId, 'function', 'caller', 'caller', 1, 1, 3, 'srv/helper.ts', '{}')?.id);
-    const calleeId = Number(db.prepare("INSERT INTO symbols(repo_id,kind,name,qualified_name,exported,start_line,end_line,source_file,evidence_json) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").get(repoId, 'function', 'callee', 'callee', 1, 5, 7, 'srv/helper.ts', '{}')?.id);
-    db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,source_file,source_line,status,confidence,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(repoId, callerId, calleeId, 'callee', 'srv/helper.ts', 2, 'resolved', 0.8, JSON.stringify({ callArguments: [{ kind: 'identifier', name: 'serviceClient' }] }));
-    db.prepare('INSERT INTO outbound_calls(repo_id,source_symbol_id,call_type,operation_path_expr,source_file,source_line,confidence,unresolved_reason,evidence_json) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(repoId, callerId, 'remote_action', null, 'srv/helper.ts', 3, 0.4, 'dynamic_operation_path_identifier', JSON.stringify({ receiver: 'serviceClient', operationPathExpression: 'request.path' }));
+    insertSymbolAndWrapperFacts(db, repoId);
 
     const diagnostics = doctorDiagnostics(db, true);
     expect(diagnostics.some((item) => item.code === 'implementation_candidates_rejected')).toBe(false);
@@ -150,13 +239,23 @@ describe('strict doctor implementation aggregation', () => {
       packageName: '@neutral/facade-service',
       kind: 'cap-service',
     });
+    markRepositoryCurrent(db, repoId, '@neutral/facade-service');
     const serviceId = insertService(db, repoId, '/ProductService', 1);
     const operationId = insertOperation(db, serviceId, 'activate', 2);
-    const insertCall = db.prepare('INSERT INTO outbound_calls(repo_id,call_type,operation_path_expr,source_file,source_line,confidence,evidence_json) VALUES(?,?,?,?,?,?,?) RETURNING id');
     const insertEdge = db.prepare('INSERT INTO graph_edges(workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,confidence,evidence_json,is_dynamic,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
     const lines = [10, 20, 30, 40, 50, 60];
     for (const line of lines) {
-      const callId = Number(insertCall.get(repoId, 'remote_action', '/activate', 'srv/facade.ts', line, 0.8, JSON.stringify({ parser: 'neutral_fixture' }))?.id);
+      const startOffset = line * 10;
+      const callId = insertOwnerlessCall(db, repoId, {
+        callType: 'remote_action',
+        method: 'POST',
+        operationPathExpr: '/activate',
+        sourceFile: 'srv/facade.ts',
+        sourceLine: line,
+        startOffset,
+        endOffset: startOffset + 8,
+        evidence: { parser: 'neutral_fixture' },
+      });
       insertEdge.run(workspaceId, 'REMOTE_CALL_RESOLVES_TO_OPERATION', 'resolved', 'call', String(callId), 'operation', String(operationId), 0.9, '{}', 0, 1);
     }
 

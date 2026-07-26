@@ -295,7 +295,7 @@ describe('call-scoped dynamic routing evidence', () => {
     expect(record(record(remote?.evidence).dynamicTargetExploration)
       .routingContext).toMatchObject({
       selectedBindingId: call.bindingId,
-      bindingResolutionStatus: 'selected',
+      bindingResolutionStatus: 'selected_exact',
       fallbackUsed: false,
       selectedBinding: {
         aliasExpr: 'worker_${entityCode}_process',
@@ -466,10 +466,12 @@ describe('call-scoped dynamic routing evidence', () => {
     const { db, workspaceId } = await prepareRoutingWorkspace();
     const paths = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta']
       .map((name) => `/${name}Route`);
-    const call = record(db.prepare(`SELECT id FROM outbound_calls
+    const call = record(db.prepare(`SELECT id,evidence_json evidenceJson
+      FROM outbound_calls
       WHERE call_type='remote_action' ORDER BY id LIMIT 1`).get());
     db.prepare('UPDATE outbound_calls SET evidence_json=? WHERE id=?').run(
       JSON.stringify({
+        ...record(JSON.parse(String(call.evidenceJson ?? '{}'))),
         parser: 'fixture',
         pathAnalysis: {
           status: 'ambiguous',

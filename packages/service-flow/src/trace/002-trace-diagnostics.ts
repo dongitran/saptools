@@ -7,7 +7,7 @@ export function loadTraceDiagnostics(
   workspaceId?: number,
 ): Array<Record<string, unknown>> {
   if (repoId === undefined && !includeWorkspaceDiagnostics) return [];
-  return db.prepare(`SELECT d.repo_id repoId,d.severity,d.code,d.message,
+  const diagnostics = db.prepare(`SELECT d.repo_id repoId,d.severity,d.code,d.message,
       d.source_file sourceFile,d.source_line sourceLine
     FROM diagnostics d LEFT JOIN repositories r ON r.id=d.repo_id
     WHERE (? IS NULL OR d.repo_id=?)
@@ -18,6 +18,41 @@ export function loadTraceDiagnostics(
       ) as Array<
         Record<string, unknown>
       >;
+  const pending = packagePendingCount(
+    db, repoId, includeWorkspaceDiagnostics, workspaceId,
+  );
+  if (pending > 0) diagnostics.unshift(packagePendingDiagnostic(pending));
+  return diagnostics;
+}
+
+function packagePendingCount(
+  db: Db,
+  repoId: number | undefined,
+  includeWorkspace: boolean,
+  workspaceId: number | undefined,
+): number {
+  const row = db.prepare(`SELECT COUNT(*) count FROM symbol_calls sc
+    JOIN repositories r ON r.id=sc.repo_id
+    WHERE sc.status='unresolved' AND sc.callee_symbol_id IS NULL
+      AND sc.unresolved_reason='package_resolution_pending'
+      AND (?=1 OR sc.repo_id=?)
+      AND (? IS NULL OR r.workspace_id=?)`).get(
+        includeWorkspace ? 1 : 0, repoId, workspaceId, workspaceId,
+      );
+  return Number(row?.count ?? 0);
+}
+
+function packagePendingDiagnostic(count: number): Record<string, unknown> {
+  return {
+    severity: 'warning',
+    code: 'package_import_resolution_pending',
+    message: 'Package-import facts await workspace linking.',
+    packageResolutionState: 'pre_link_pending',
+    pendingPackageImportCount: count,
+    graphState: 'stale',
+    requiredAction: 'relink',
+    remediation: 'Run service-flow link --force for this workspace.',
+  };
 }
 
 export function prependTraceDiagnostic(

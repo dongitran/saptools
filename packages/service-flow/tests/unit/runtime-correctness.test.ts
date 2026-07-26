@@ -49,6 +49,29 @@ describe('runtime substitution and resolution correctness', () => {
     db.close();
   });
 
+  it('does not derive operation candidates from an unresolved placeholder suffix', () => {
+    const db = openDatabase(':memory:');
+    db.exec(schemaSql);
+    db.prepare("INSERT INTO workspaces(id,root_path,db_path,created_at,updated_at) VALUES(1,'/w',':memory:','n','n')").run();
+    db.prepare("INSERT INTO repositories(id,workspace_id,name,absolute_path,relative_path,kind,is_git_repo) VALUES(1,1,'model','/w/model','model','cap-service',0)").run();
+    db.prepare("INSERT INTO cds_services(id,repo_id,service_name,qualified_name,service_path,is_extend,source_file,source_line) VALUES(1,1,'SyntheticService','SyntheticService','/synthetic',0,'srv/synthetic.cds',1)").run();
+    db.prepare("INSERT INTO cds_operations(service_id,operation_type,operation_name,operation_path,params_json,source_file,source_line) VALUES(1,'action','lookup','/lookup','[]','srv/synthetic.cds',2)").run();
+
+    const resolution = resolveOperation(db, {
+      servicePath: '/synthetic',
+      operationPath: '/${prefix}.lookup',
+      hasExplicitOverride: true,
+      isDynamic: true,
+    }, 1);
+
+    expect(resolution).toEqual({
+      status: 'dynamic',
+      candidates: [],
+      reasons: ['missing_variable:prefix'],
+    });
+    db.close();
+  });
+
   it('never reclassifies terminal or already resolved edges during inference', () => {
     const db = openDatabase(':memory:');
     const candidate = {

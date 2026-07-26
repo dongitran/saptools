@@ -114,7 +114,22 @@ const appFiles: FixtureFile[] = [
 
 const packageFiles: FixtureFile[] = [
   ['shared-helpers/.git-fixture', ''],
-  ['shared-helpers/package.json', JSON.stringify({ name: '@neutral/shared-helpers', version: '1.0.0' })],
+  ['shared-helpers/package.json', JSON.stringify({
+    name: '@neutral/shared-helpers',
+    version: '1.0.0',
+    exports: {
+      '.': './src/index.ts',
+      './sub': './src/sub/subpath-util.ts',
+    },
+  })],
+  ['shared-helpers/src/index.ts', `
+    export * from './shared-util';
+    export * from './duplicates/first';
+    export * from './duplicates/second';
+    export { Helper, OtherHelper } from './helper';
+    export * from './do-work';
+    export * from './aliases';
+  `],
   ['shared-helpers/src/shared-util.ts', 'function sharedLeaf(): void {}\nexport function sharedUtil(): void { sharedLeaf(); }\n'],
   ['shared-helpers/src/sub/subpath-util.ts', 'export function subpathUtil(): void {}\n'],
   ['shared-helpers/src/duplicates/first.ts', 'export function duplicateName(): void {}\n'],
@@ -257,8 +272,11 @@ function assertDuplicateResolution(rows: SymbolCallRow[]): void {
     resolvedModulePath: 'src/duplicates/value-helper', targetSourceFile: 'src/duplicates/value-helper.ts', targetQualifiedName: 'formatValue',
   });
   expect(callRow(rows, 'src/handlers/BarrelFormatHandler.ts', 'formatValue')).toMatchObject({
-    status: 'ambiguous', candidateStrategy: 'exported_exact', candidateCount: 3,
+    status: 'unresolved',
+    candidateStrategy: 'relative_import_path_disambiguated',
+    candidateCount: 3,
     resolvedModulePath: null, targetSourceFile: null,
+    unresolvedReason: 'relative_import_requested_module_has_no_target',
   });
 }
 
@@ -286,7 +304,7 @@ function assertPackageIndexBaseline(rows: SymbolCallRow[]): void {
   const calls = packageRows(rows);
   expect(calls).toHaveLength(12);
   expect(calls.every((row) => row.status === 'unresolved'
-    && row.candidateStrategy === 'package_import_unresolved'
+    && row.candidateStrategy === 'package_import_pending'
     && row.candidateCount === 0
     && row.calleeSymbolId === null
     && row.resolvedModulePath === null)).toBe(true);
@@ -301,8 +319,8 @@ function expectResolvedPackageCall(
   expect(typeof row.calleeSymbolId).toBe('number');
   expect(row).toMatchObject({
     status: 'resolved', confidence: 0.8, relation: 'package_import',
-    candidateStrategy: 'package_import_workspace_resolved', candidateCount: 1,
-    importSource: expected.importSource, resolvedModulePath: expected.sourceFile.replace(/\.ts$/, ''),
+    candidateStrategy: 'package_public_surface_exact', candidateCount: 1,
+    importSource: expected.importSource,
     targetSourceFile: expected.sourceFile, targetName: expected.name ?? expected.qualifiedName,
     targetQualifiedName: expected.qualifiedName, targetExportedName: expected.exportedName ?? expected.qualifiedName,
     targetExported: 1, targetRepoName: 'shared-helpers', targetPackageName: '@neutral/shared-helpers',
@@ -312,7 +330,10 @@ function expectResolvedPackageCall(
 
 function assertResolvedPackageCalls(rows: SymbolCallRow[]): void {
   const packageName = '@neutral/shared-helpers';
-  expectResolvedPackageCall(rows, 'sharedUtil', { importSource: packageName, sourceFile: 'src/shared-util.ts', qualifiedName: 'sharedUtil' });
+  expectResolvedPackageCall(rows, 'sharedUtil', {
+    importSource: packageName, sourceFile: 'src/shared-util.ts',
+    qualifiedName: 'sharedUtil',
+  });
   expectResolvedPackageCall(rows, 'subpathUtil', { importSource: `${packageName}/sub`, sourceFile: 'src/sub/subpath-util.ts', qualifiedName: 'subpathUtil' });
   expectResolvedPackageCall(rows, 'Helper.doWork', { importSource: packageName, sourceFile: 'src/helper.ts', qualifiedName: 'Helper.doWork' });
   expectResolvedPackageCall(rows, 'doWork', { importSource: packageName, sourceFile: 'src/do-work.ts', qualifiedName: 'doWork' });
@@ -320,39 +341,60 @@ function assertResolvedPackageCalls(rows: SymbolCallRow[]): void {
     importSource: packageName, sourceFile: 'src/aliases.ts', qualifiedName: 'internalName',
     name: 'internalName', exportedName: 'publicName',
   });
+  for (const expression of [
+    'sharedUtil', 'Helper.doWork', 'doWork', 'publicName',
+  ]) expect(callRow(rows, packageHandlerFile, expression).resolvedModulePath)
+    .toBe('src/index');
+  expect(callRow(
+    rows, packageHandlerFile, 'subpathUtil',
+  ).resolvedModulePath).toBe('src/sub/subpath-util');
 }
 
 function assertFailClosedPackageCalls(rows: SymbolCallRow[]): void {
   for (const expression of ['hiddenUtil', 'OtherHelper.doWork', 'internalName', 'Anything']) {
     const row = callRow(rows, packageHandlerFile, expression);
-    expect(row.unresolvedReason).toContain('Sibling package indexed but no matching exported symbol');
+    expect(row.unresolvedReason).toBe('package_public_name_not_exposed');
     expect(row).toMatchObject({
-      status: 'unresolved', candidateStrategy: 'package_import_unresolved', candidateCount: 0,
+      status: 'unresolved',
+      candidateStrategy: 'package_public_surface_unresolved',
+      candidateCount: 0,
       calleeSymbolId: null, resolvedModulePath: null, targetSourceFile: null,
     });
   }
-  for (const expression of ['externalOnly', 'selfOnly']) {
-    expect(callRow(rows, packageHandlerFile, expression)).toMatchObject({
-      status: 'unresolved', candidateStrategy: 'package_import_unresolved', candidateCount: 0,
+  expect(callRow(rows, packageHandlerFile, 'externalOnly')).toMatchObject({
+      status: 'unresolved',
+      candidateStrategy: 'package_public_surface_unresolved',
+      candidateCount: 0,
       calleeSymbolId: null, resolvedModulePath: null, targetSourceFile: null,
-      unresolvedReason: 'Package import target resolution requires a post-publication workspace pass',
-    });
-  }
+      unresolvedReason: 'package_repository_not_indexed',
+  });
+  expect(callRow(rows, packageHandlerFile, 'selfOnly')).toMatchObject({
+    status: 'unresolved',
+    candidateStrategy: 'package_public_surface_unresolved',
+    candidateCount: 0,
+    calleeSymbolId: null, resolvedModulePath: null, targetSourceFile: null,
+    unresolvedReason: 'package_public_surface_unsupported',
+  });
 }
 
 function assertPackageResolution(rows: SymbolCallRow[]): void {
   assertResolvedPackageCalls(rows);
   assertFailClosedPackageCalls(rows);
   expect(callRow(rows, packageHandlerFile, 'duplicateName')).toMatchObject({
-    status: 'ambiguous', relation: 'package_import', candidateStrategy: 'package_import_ambiguous',
-    candidateCount: 2, calleeSymbolId: null, resolvedModulePath: null, targetSourceFile: null,
-    unresolvedReason: 'Multiple exported sibling-package symbol targets matched exactly',
+    status: 'ambiguous', relation: 'package_import',
+    candidateStrategy: 'package_public_surface_ambiguous',
+    candidateCount: 2, calleeSymbolId: null,
+    resolvedModulePath: 'src/index', targetSourceFile: null,
+    unresolvedReason: 'package_public_target_ambiguous',
   });
   const calls = packageRows(rows);
   expect(calls).toHaveLength(12);
-  expect(calls.filter((row) => row.candidateStrategy === 'package_import_workspace_resolved')).toHaveLength(5);
-  expect(calls.filter((row) => row.candidateStrategy === 'package_import_unresolved')).toHaveLength(6);
-  expect(calls.filter((row) => row.candidateStrategy === 'package_import_ambiguous')).toHaveLength(1);
+  expect(calls.filter((row) =>
+    row.candidateStrategy === 'package_public_surface_exact')).toHaveLength(5);
+  expect(calls.filter((row) =>
+    row.candidateStrategy === 'package_public_surface_unresolved')).toHaveLength(6);
+  expect(calls.filter((row) =>
+    row.candidateStrategy === 'package_public_surface_ambiguous')).toHaveLength(1);
   expect(calls.every((row) => row.confidence === 0.8)).toBe(true);
   expect(calls.every((row) => row.evidenceValid === 1 && row.evidenceJson.length < 4096)).toBe(true);
 }
@@ -371,8 +413,9 @@ function assertPackageTrace(db: Db, workspaceId: number): void {
     'Helper.doWork', 'doWork', 'publicName', 'sharedLeaf', 'sharedUtil', 'subpathUtil',
   ]);
   expect(localEdges.find((edge) => edge.from === 'sharedUtil')?.evidence).toMatchObject({
-    relation: 'package_import', candidateStrategy: 'package_import_workspace_resolved',
-    candidateCount: 1, resolvedModulePath: 'src/shared-util', resolutionStatus: 'resolved',
+    relation: 'package_import', candidateStrategy: 'package_public_surface_exact',
+    candidateCount: 1, resolvedModulePath: 'src/index',
+    resolutionStatus: 'resolved',
   });
   expect(result.nodes).toContainEqual(expect.objectContaining({
     kind: 'symbol', repoName: 'shared-helpers', sourceFile: 'src/shared-util.ts', qualifiedName: 'sharedUtil',
@@ -390,20 +433,6 @@ function assertFailClosedFixtureExports(db: Db): void {
   expect(exportedSymbolCount(db, '@neutral/shared-helpers', 'canonicalDefault')).toBe(1);
   expect(exportedSymbolCount(db, '@neutral/shared-helpers', 'OtherHelper.otherWork')).toBe(1);
   expect(exportedSymbolCount(db, '@neutral/different-package', 'externalOnly')).toBe(1);
-}
-
-function assertStalePackageResolutionCleared(db: Db, workspaceId: number): void {
-  const changed = db.prepare(`UPDATE symbols SET exported=0
-    WHERE repo_id=(SELECT id FROM repositories WHERE workspace_id=? AND package_name=?)
-      AND qualified_name=?`).run(workspaceId, '@neutral/shared-helpers', 'sharedUtil');
-  expect(changed.changes).toBe(1);
-  linkWorkspace(db, workspaceId);
-  const row = callRow(symbolCallRows(db), packageHandlerFile, 'sharedUtil');
-  expect(row.unresolvedReason).toContain('Sibling package indexed but no matching exported symbol');
-  expect(row).toMatchObject({
-    status: 'unresolved', candidateStrategy: 'package_import_unresolved', candidateCount: 0,
-    calleeSymbolId: null, resolvedModulePath: null, targetSourceFile: null, confidence: 0.8,
-  });
 }
 
 function traceSnapshot(db: Db, workspaceId: number): Record<string, string[]> {
@@ -459,7 +488,7 @@ describe('import-binding-aware local symbol calls', () => {
     expectParsedCall(singleton, 'direct.execute', { calleeLocalName: 'TaskService.execute', importSource: '../services/task-service', relation: 'class_instance_method' });
     expectParsedCall(packageCalls, 'sharedUtil', { calleeLocalName: 'sharedUtil', importSource: '@neutral/shared-helpers', relation: 'package_import' });
     expectParsedCall(packageCalls, 'subpathUtil', { calleeLocalName: 'subpathUtil', importSource: '@neutral/shared-helpers/sub', relation: 'package_import' });
-    expectParsedCall(packageCalls, 'Helper.doWork', { calleeLocalName: 'doWork', importSource: '@neutral/shared-helpers', relation: 'package_import' });
+    expectParsedCall(packageCalls, 'Helper.doWork', { calleeLocalName: 'Helper.doWork', importSource: '@neutral/shared-helpers', relation: 'package_import' });
     expectParsedCall(packageCalls, 'doWork', { calleeLocalName: 'doWork', importSource: '@neutral/shared-helpers', relation: 'package_import' });
   });
 
@@ -493,8 +522,6 @@ describe('import-binding-aware local symbol calls', () => {
     expect(symbolCallRows(db)).toEqual(firstRows);
     expect(traceSnapshot(db, workspaceId)).toEqual(firstTraces);
     expect(databaseCounts(db)).toEqual(firstCounts);
-    assertStalePackageResolutionCleared(db, workspaceId);
-
     await indexWorkspace(db, workspaceId, { force: true });
     assertPackageIndexBaseline(symbolCallRows(db));
     linkWorkspace(db, workspaceId);

@@ -5,9 +5,28 @@ import type { ExecutableSymbolFact, SymbolCallFact } from '../types.js';
 import {
   classifyOutboundCallsInSource,
   containsSupportedOutboundCall,
+  type ClassifiedOutboundCall,
 } from './outbound-call-parser.js';
 import type { RepositorySourceContext } from './ts-project.js';
 import { normalizePath } from '../utils/path-utils.js';
+import { reconcileEventSubscriptions } from './005-event-subscription-facts.js';
+import { reconcileSymbolCallOwners } from './007-source-fact-reconciliation.js';
+import {
+  collectSymbolImportBindings,
+  type SymbolImportBinding,
+} from './002-symbol-import-bindings.js';
+import {
+  collectSymbolCallFacts,
+  symbolCallName,
+  type SymbolCallProxy,
+  type SymbolClassInstance,
+} from './009-symbol-call-facts.js';
+import {
+  executableBodyEligibility,
+} from './013-executable-body-eligibility.js';
+import {
+  collectDerivedSymbolContexts,
+} from './017-symbol-derived-contexts.js';
 
 function lineOf(source: ts.SourceFile, pos: number): number {
   return source.getLineAndCharacterOfPosition(pos).line + 1;
@@ -38,80 +57,9 @@ function exportDeclarations(source: ts.SourceFile): Map<string, string> {
   visit(source);
   return exports;
 }
-function isRelativeImport(value: string | undefined): boolean {
-  return Boolean(value?.startsWith('.'));
-}
-type HandlerReferenceRelation =
-  | 'relative_import'
-  | 'package_import'
-  | 'indexed_local_symbol'
-  | 'relative_import_namespace_member';
-interface HandlerReferenceTarget {
-  calleeExpression: string;
-  calleeLocalName: string;
-  importSource?: string;
-  relation: HandlerReferenceRelation;
-  wrapperFunction?: string;
-}
-function directHandlerReferenceTarget(
-  expression: ts.Expression,
-  source: ts.SourceFile,
-  imports: Map<string, string>,
-  namespaceImports: Set<string>,
-): HandlerReferenceTarget | undefined {
-  if (ts.isIdentifier(expression)) {
-    const importSource = imports.get(expression.text);
-    return {
-      calleeExpression: expression.text,
-      calleeLocalName: expression.text,
-      importSource,
-      relation: importSource
-        ? isRelativeImport(importSource) ? 'relative_import' : 'package_import'
-        : 'indexed_local_symbol',
-    };
-  }
-  if (!ts.isPropertyAccessExpression(expression) || expression.questionDotToken
-    || !ts.isIdentifier(expression.expression) || !ts.isIdentifier(expression.name))
-    return undefined;
-  const objectName = expression.expression.text;
-  const memberName = expression.name.text;
-  const importSource = imports.get(objectName);
-  if (namespaceImports.has(objectName)) return {
-    calleeExpression: expression.getText(source),
-    calleeLocalName: memberName,
-    importSource,
-    relation: 'relative_import_namespace_member',
-  };
-  const qualifiedName = `${objectName}.${memberName}`;
-  return {
-    calleeExpression: qualifiedName,
-    calleeLocalName: qualifiedName,
-    importSource,
-    relation: importSource
-      ? isRelativeImport(importSource) ? 'relative_import' : 'package_import'
-      : 'indexed_local_symbol',
-  };
-}
-function handlerReferenceTarget(
-  expression: ts.Expression,
-  source: ts.SourceFile,
-  imports: Map<string, string>,
-  namespaceImports: Set<string>,
-): HandlerReferenceTarget | undefined {
-  const direct = directHandlerReferenceTarget(
-    expression, source, imports, namespaceImports,
-  );
-  if (direct) return direct;
-  if (!ts.isCallExpression(expression) || expression.questionDotToken
-    || expression.arguments.length !== 1) return undefined;
-  const inner = directHandlerReferenceTarget(
-    expression.arguments[0], source, imports, namespaceImports,
-  );
-  return inner
-    ? { ...inner, wrapperFunction: expression.expression.getText(source) }
-    : undefined;
-}
-function isObjectFunction(node: ts.Node): boolean {
+function isObjectFunction(
+  node: ts.Node,
+): node is ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration {
   return ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node);
 }
 type ParameterBinding =
@@ -119,68 +67,10 @@ type ParameterBinding =
   | { index: number; kind: 'object_pattern'; properties: Array<{ property: string; local: string }> }
   | { index: number; kind: 'array_pattern'; elements: Array<{ index: number; local: string }> };
 type ParameterPropertyAlias = { parameter: string; property: string; local: string; kind: 'object_parameter_destructure'; line: number };
-const commonTerminalMembers = new Set(['push', 'includes', 'find', 'findIndex', 'map', 'filter', 'reduce', 'forEach', 'some', 'every', 'toUpperCase', 'toLowerCase', 'trim', 'split', 'join', 'get', 'set', 'has']);
-const loggerMembers = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'log']);
-const globalObjects = new Set(['JSON', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Math', 'Date', 'Promise', 'Reflect']);
-const builtInConstructors = new Set([
-  'Set', 'Map', 'WeakSet', 'WeakMap',
-  'Date', 'RegExp', 'URL', 'URLSearchParams',
-  'Error', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'AggregateError',
-  'ArrayBuffer', 'SharedArrayBuffer', 'DataView',
-  'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
-  'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
-  'Promise', 'AbortController',
-]);
-const capDslRoots = new Set(['SELECT', 'INSERT', 'UPSERT', 'UPDATE', 'DELETE']);
-const requestHelpers = new Set(['reject', 'error', 'info', 'warn', 'notify']);
-const transportMembers = new Set(['emit', 'publish', 'send', 'on']);
-function callName(expr: ts.Expression): { expression: string; local?: string; member?: string; receiver?: string } {
-  if (ts.isIdentifier(expr)) return { expression: expr.text, local: expr.text };
-  if (ts.isPropertyAccessExpression(expr)) {
-    const left = expr.expression.getText();
-    const root = left.split('.')[0];
-    return { expression: expr.getText(), local: left === 'this' ? undefined : root, member: expr.name.text, receiver: left };
-  }
-  return { expression: expr.getText() };
-}
 function requireSource(expr: ts.Expression): string | undefined {
   if (!ts.isCallExpression(expr) || !ts.isIdentifier(expr.expression) || expr.expression.text !== 'require') return undefined;
   const first = expr.arguments[0];
   return first && ts.isStringLiteral(first) ? first.text : undefined;
-}
-function ignoredFrameworkCall(callee: { expression: string; local?: string; member?: string; receiver?: string }): boolean {
-  if (callee.local && capDslRoots.has(callee.local)) return true;
-  if (callee.expression === 'cds.run' || callee.expression.startsWith('cds.connect.') || callee.expression.startsWith('cds.services.') || callee.expression.startsWith('cds.parse.')) return true;
-  if (callee.local === 'req' && callee.member && requestHelpers.has(callee.member)) return true;
-  if (callee.member && transportMembers.has(callee.member)) return true;
-  if (callee.local && globalObjects.has(callee.local)) return true;
-  if (callee.expression.startsWith('new Date().')) return true;
-  return false;
-}
-function nearest(symbols: ExecutableSymbolFact[], line: number): ExecutableSymbolFact | undefined {
-  return symbols.filter((s) => s.startLine <= line && s.endLine >= line).sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0];
-}
-function argumentEvidence(args: ts.NodeArray<ts.Expression>, source: ts.SourceFile): Array<Record<string, unknown>> {
-  return args.map((arg) => {
-    if (ts.isIdentifier(arg)) return { kind: 'identifier', name: arg.text };
-    if (ts.isObjectLiteralExpression(arg)) {
-      const properties: Array<Record<string, unknown>> = [];
-      for (const prop of arg.properties) {
-        if (ts.isShorthandPropertyAssignment(prop)) properties.push({ kind: 'shorthand', property: prop.name.text, argument: prop.name.text });
-        if (ts.isPropertyAssignment(prop)) {
-          const propName = nameOf(prop.name);
-          if (propName && ts.isIdentifier(prop.initializer)) properties.push({ kind: 'property_assignment', property: propName, argument: prop.initializer.text });
-        }
-      }
-      return { kind: 'object_literal', properties };
-    }
-    if (ts.isArrayLiteralExpression(arg)) {
-      const elements = arg.elements.flatMap((element, index): Array<Record<string, unknown>> =>
-        ts.isIdentifier(element) ? [{ index, kind: 'identifier', name: element.text }] : []);
-      return { kind: 'array_literal', elements };
-    }
-    return { kind: 'unsupported', expression: arg.getText(source) };
-  });
 }
 function bindingLocalName(name: ts.BindingName, initializer?: ts.Expression): string | undefined {
   if (ts.isIdentifier(name)) return name.text;
@@ -241,237 +131,476 @@ function parameterBindings(params: ts.NodeArray<ts.ParameterDeclaration>): Param
     return [];
   });
 }
+interface SymbolCollection {
+  source: ts.SourceFile;
+  sourceFile: string;
+  symbols: ExecutableSymbolFact[];
+  imports: Map<string, string>;
+  importBindings: SymbolImportBinding[];
+  classifiedCalls: readonly ClassifiedOutboundCall[];
+  exportNames: Map<string, string>;
+  objectExports: Set<string>;
+  exportedClasses: Set<string>;
+  declaredClasses: Set<string>;
+  proxies: Map<string, SymbolCallProxy[]>;
+  instances: Map<string, SymbolClassInstance[]>;
+}
+
+function symbolSourceEvidence(
+  collection: SymbolCollection,
+  node: ts.Node,
+  options: {
+    parentRoot: string;
+    qualifiedName: string;
+    declaredExportName?: string;
+    classContainerExported: boolean; classMemberExported: boolean;
+    objectExported: boolean;
+    evidence?: Record<string, unknown>;
+  },
+): Record<string, unknown> {
+  if (options.evidence) return options.evidence;
+  if (options.classMemberExported) return {
+    source: 'exported_class_member',
+    exportedClass: options.parentRoot,
+    memberKind: ts.getCombinedModifierFlags(node as ts.Declaration)
+      & ts.ModifierFlags.Static ? 'static_method' : 'class_method',
+  };
+  if (options.classContainerExported && ts.isMethodDeclaration(node)
+    && isPublicClassMethod(node)) return {
+    source: 'exported_class_instance_member', exportedClass: options.parentRoot,
+    memberKind: 'class_method',
+  };
+  if (options.declaredExportName) return {
+    exportedName: options.declaredExportName,
+    source: 'export_declaration',
+  };
+  return options.objectExported
+    ? { exportedName: options.qualifiedName, source: 'exported_object_literal' }
+    : {};
+}
+
+function executableEvidence(
+  node: ts.Node,
+  source: ts.SourceFile,
+): Record<string, unknown> {
+  if (!isFunctionLike(node)) return {};
+  const bindings = parameterBindings(node.parameters);
+  const parameters = bindings.flatMap((binding) =>
+    binding.kind === 'identifier' ? [binding.name] : []);
+  const aliases = parameterPropertyAliases(node, source);
+  return {
+    executableBodyEligibility: executableBodyEligibility(node, source),
+    ...(bindings.length > 0 ? { parameters, parameterBindings: bindings } : {}),
+    ...(aliases.length > 0 ? { parameterPropertyAliases: aliases } : {}),
+  };
+}
+
+interface SymbolNames {
+  parentRoot: string;
+  qualifiedName: string;
+  declaredExportName?: string;
+  objectExported: boolean;
+  classContainerExported: boolean;
+  classMemberExported: boolean;
+  effectiveName?: string;
+}
+
+function exportedClassMember(
+  collection: SymbolCollection,
+  kind: string,
+  parentName: string | undefined,
+  parentRoot: string,
+  node: ts.Node,
+): boolean {
+  if (kind !== 'method' || !parentName
+    || !collection.exportedClasses.has(parentRoot)
+    || !ts.isMethodDeclaration(node)) return false;
+  return Boolean(ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Static)
+    && isPublicClassMethod(node);
+}
+
+function symbolNames(
+  collection: SymbolCollection,
+  kind: string,
+  localName: string,
+  node: ts.Node,
+  parentName?: string,
+  exportedName?: string,
+): SymbolNames {
+  const parentRoot = parentName?.split('.')[0] ?? '';
+  const declaredExportName = exportedName ?? collection.exportNames.get(
+    parentName ? parentRoot : localName,
+  );
+  const qualifiedName = parentName ? `${parentName}.${localName}` : localName;
+  const objectExported = Boolean(
+    parentName && collection.objectExports.has(parentRoot),
+  );
+  const classMemberExported = exportedClassMember(
+    collection, kind, parentName, parentRoot, node,
+  );
+  const classContainerExported = Boolean(
+    parentName && collection.exportedClasses.has(parentRoot),
+  );
+  return {
+    parentRoot, declaredExportName, qualifiedName,
+    objectExported, classContainerExported, classMemberExported,
+    effectiveName: classMemberExported || objectExported
+      ? qualifiedName : declaredExportName,
+  };
+}
+
+function addExecutableSymbol(
+  collection: SymbolCollection,
+  kind: string,
+  localName: string,
+  node: ts.Node,
+  parentName?: string,
+  exportedName?: string,
+  evidence?: Record<string, unknown>,
+): void {
+  const names = symbolNames(
+    collection, kind, localName, node, parentName, exportedName,
+  );
+  const sourceEvidence = symbolSourceEvidence(collection, node, {
+    parentRoot: names.parentRoot,
+    qualifiedName: names.qualifiedName,
+    declaredExportName: names.declaredExportName,
+    classContainerExported: names.classContainerExported,
+    classMemberExported: names.classMemberExported,
+    objectExported: names.objectExported,
+    evidence,
+  });
+  collection.symbols.push({
+    kind,
+    localName: kind === 'object_method' ? names.qualifiedName : localName,
+    exportedName: names.effectiveName,
+    qualifiedName: names.qualifiedName,
+    sourceFile: collection.sourceFile,
+    startLine: lineOf(collection.source, node.getStart(collection.source)),
+    endLine: lineOf(collection.source, node.getEnd()),
+    startOffset: node.getStart(collection.source),
+    endOffset: node.getEnd(),
+    exported: exported(node) || Boolean(names.effectiveName),
+    importExportEvidence: {
+      ...sourceEvidence,
+      ...executableEvidence(node, collection.source),
+    },
+  });
+}
+
+function addAliasSymbol(
+  collection: SymbolCollection,
+  objectName: string,
+  propertyName: string,
+  node: ts.Node,
+): void {
+  collection.symbols.push({
+    kind: 'object_alias',
+    localName: propertyName,
+    exportedName: propertyName,
+    qualifiedName: `${objectName}.${propertyName}`,
+    sourceFile: collection.sourceFile,
+    startLine: lineOf(collection.source, node.getStart(collection.source)),
+    endLine: lineOf(collection.source, node.getEnd()),
+    startOffset: node.getStart(collection.source),
+    endOffset: node.getEnd(),
+    exported: true,
+    importExportEvidence: {
+      source: 'exported_object_shorthand',
+      objectName,
+      propertyName,
+      targetImportSource: collection.imports.get(propertyName),
+    },
+  });
+}
+
+function collectImportSources(collection: SymbolCollection): void {
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier))
+      collectEsmImportSources(collection.imports, node);
+    if (ts.isVariableStatement(node))
+      collectCjsImportSources(collection.imports, node);
+    ts.forEachChild(node, visit);
+  };
+  visit(collection.source);
+}
+
+function collectEsmImportSources(
+  imports: Map<string, string>,
+  node: ts.ImportDeclaration,
+): void {
+  if (!ts.isStringLiteral(node.moduleSpecifier)) return;
+  const source = node.moduleSpecifier.text;
+  const clause = node.importClause;
+  if (clause?.name) imports.set(clause.name.text, source);
+  const named = clause?.namedBindings;
+  if (named && ts.isNamedImports(named))
+    for (const item of named.elements) imports.set(item.name.text, source);
+  if (named && ts.isNamespaceImport(named))
+    imports.set(named.name.text, source);
+}
+
+function collectCjsImportSources(
+  imports: Map<string, string>,
+  node: ts.VariableStatement,
+): void {
+  for (const declaration of node.declarationList.declarations) {
+    const source = declaration.initializer
+      ? requireSource(declaration.initializer) : undefined;
+    if (!source) continue;
+    if (ts.isIdentifier(declaration.name))
+      imports.set(declaration.name.text, source);
+    if (ts.isObjectBindingPattern(declaration.name))
+      for (const item of declaration.name.elements)
+        if (ts.isIdentifier(item.name)) imports.set(item.name.text, source);
+  }
+}
+
+function classPropertySymbol(
+  collection: SymbolCollection,
+  node: ts.PropertyDeclaration,
+  parentClass: string,
+): void {
+  const initializer = node.initializer;
+  const localName = nameOf(node.name);
+  if (!localName || !initializer
+    || (!ts.isArrowFunction(initializer)
+      && !ts.isFunctionExpression(initializer))) return;
+  const staticPublic = publicStaticProperty(collection, node, parentClass);
+  const memberKind = propertyMemberKind(initializer, staticPublic);
+  addExecutableSymbol(
+    collection, 'method', localName, initializer, parentClass,
+    staticPublic ? `${parentClass}.${localName}` : undefined,
+    staticPublic
+      ? { source: 'exported_class_member', exportedClass: parentClass, memberKind }
+      : { source: 'class_property_function', memberKind },
+  );
+}
+
+function publicStaticProperty(
+  collection: SymbolCollection,
+  node: ts.PropertyDeclaration,
+  parentClass: string,
+): boolean {
+  const flags = ts.getCombinedModifierFlags(node);
+  return collection.exportedClasses.has(parentClass)
+    && Boolean(flags & ts.ModifierFlags.Static)
+    && (flags & ts.ModifierFlags.Private) === 0
+    && (flags & ts.ModifierFlags.Protected) === 0;
+}
+
+function propertyMemberKind(
+  initializer: ts.ArrowFunction | ts.FunctionExpression,
+  staticPublic: boolean,
+): string {
+  if (ts.isArrowFunction(initializer))
+    return staticPublic ? 'static_arrow_function' : 'arrow_function_property';
+  return staticPublic
+    ? 'static_function_expression'
+    : 'function_expression_property';
+}
+
+function objectCallable(
+  property: ts.ObjectLiteralElementLike,
+): ts.FunctionLikeDeclaration | undefined {
+  if (ts.isMethodDeclaration(property)) return property;
+  return ts.isPropertyAssignment(property)
+    && isObjectFunction(property.initializer)
+    ? property.initializer
+    : undefined;
+}
+
+function objectLiteralSymbols(
+  collection: SymbolCollection,
+  objectName: string,
+  object: ts.ObjectLiteralExpression,
+  objectIsExported: boolean,
+): void {
+  if (objectIsExported) collection.objectExports.add(objectName);
+  for (const property of object.properties) {
+    if (objectIsExported && ts.isShorthandPropertyAssignment(property))
+      addAliasSymbol(collection, objectName, property.name.text, property.name);
+    const callable = objectCallable(property);
+    const propertyName = callable ? nameOf(property.name) : undefined;
+    if (callable && propertyName)
+      addExecutableSymbol(
+        collection, 'object_method', propertyName, callable, objectName,
+      );
+  }
+}
+
+function variableSymbols(
+  collection: SymbolCollection,
+  node: ts.VariableStatement,
+): void {
+  for (const declaration of node.declarationList.declarations) {
+    const localName = nameOf(declaration.name);
+    const initializer = declaration.initializer;
+    if (!localName || !initializer) continue;
+    if (isFunctionLike(initializer)) addExecutableSymbol(
+      collection, 'function', localName, initializer, undefined,
+      exported(node) ? localName : collection.exportNames.get(localName),
+    );
+    if (ts.isObjectLiteralExpression(initializer))
+      objectLiteralSymbols(
+        collection, localName, initializer,
+        exported(node) || collection.exportNames.has(localName),
+      );
+  }
+}
+
+function collectClassDeclaration(
+  collection: SymbolCollection,
+  node: ts.Node,
+): boolean {
+  if (!ts.isClassDeclaration(node) || !node.name) return false;
+  collection.declaredClasses.add(node.name.text);
+  if (exported(node) || collection.exportNames.has(node.name.text))
+    collection.exportedClasses.add(node.name.text);
+  for (const member of node.members)
+    visitDeclaredSymbol(collection, member, node.name.text);
+  return true;
+}
+
+function collectMethodDeclaration(
+  collection: SymbolCollection,
+  node: ts.Node,
+  parentClass?: string,
+): boolean {
+  if (!ts.isMethodDeclaration(node)) return false;
+  const localName = nameOf(node.name);
+  if (localName)
+    addExecutableSymbol(collection, 'method', localName, node, parentClass);
+  return true;
+}
+
+function visitDeclaredSymbol(
+  collection: SymbolCollection,
+  node: ts.Node,
+  parentClass?: string,
+): void {
+  if (collectClassDeclaration(collection, node)) return;
+  if (collectMethodDeclaration(collection, node, parentClass)) return;
+  if (ts.isPropertyDeclaration(node)) {
+    if (parentClass) classPropertySymbol(collection, node, parentClass);
+    return;
+  }
+  if (ts.isFunctionDeclaration(node) && node.name) {
+    addExecutableSymbol(
+      collection, 'function', node.name.text, node, undefined,
+      exported(node) ? node.name.text : undefined,
+    );
+    return;
+  }
+  if (ts.isVariableStatement(node)) {
+    variableSymbols(collection, node);
+    return;
+  }
+  ts.forEachChild(node, (child) =>
+    visitDeclaredSymbol(collection, child, parentClass));
+}
+
+function collectDeclaredSymbols(collection: SymbolCollection): void {
+  visitDeclaredSymbol(collection, collection.source);
+}
+
+function isTopLevelCallback(
+  node: ts.Node,
+): node is ts.ArrowFunction | ts.FunctionExpression {
+  if ((!ts.isArrowFunction(node) && !ts.isFunctionExpression(node))
+    || !ts.isCallExpression(node.parent)) return false;
+  const callee = symbolCallName(node.parent.expression);
+  const member = callee.member ?? callee.local;
+  return Boolean(member && [
+    'bootstrap', 'served', 'connect', 'on', 'once', 'use',
+    'get', 'post', 'put', 'patch', 'delete', 'subscribe',
+  ].includes(member));
+}
+
+function collectCallbackSymbols(collection: SymbolCollection): void {
+  const visit = (node: ts.Node): void => {
+    if (isTopLevelCallback(node)
+      && containsSupportedOutboundCall(node, collection.classifiedCalls)) {
+      const startLine = lineOf(
+        collection.source, node.getStart(collection.source),
+      );
+      const name = `callback:${startLine}`;
+      collection.symbols.push({
+        kind: 'callback', localName: name,
+        qualifiedName: `module:${collection.sourceFile}#${name}`,
+        sourceFile: collection.sourceFile, startLine,
+        endLine: lineOf(collection.source, node.getEnd()),
+        startOffset: node.getStart(collection.source), endOffset: node.getEnd(),
+        exported: false,
+        importExportEvidence: {
+          source: 'synthetic_outbound_callback', callbackLine: startLine,
+        },
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(collection.source);
+}
+
+function createCollection(
+  source: ts.SourceFile,
+  sourceFile: string,
+  classifiedCalls: readonly ClassifiedOutboundCall[],
+): SymbolCollection {
+  return {
+    source, sourceFile, classifiedCalls,
+    symbols: [], imports: new Map(),
+    importBindings: collectSymbolImportBindings(source),
+    exportNames: exportDeclarations(source),
+    objectExports: new Set(), exportedClasses: new Set(),
+    declaredClasses: new Set(), proxies: new Map(), instances: new Map(),
+  };
+}
+
+function populateCollection(collection: SymbolCollection): void {
+  collectImportSources(collection);
+  collectDeclaredSymbols(collection);
+  collectCallbackSymbols(collection);
+  collectDerivedSymbolContexts(collection);
+}
+
+async function sourceFile(
+  repoPath: string,
+  filePath: string,
+  context?: RepositorySourceContext,
+): Promise<ts.SourceFile> {
+  const snapshot = context?.get(filePath);
+  const text = snapshot?.text
+    ?? await fs.readFile(path.join(repoPath, filePath), 'utf8');
+  return snapshot?.sourceFile() ?? ts.createSourceFile(
+    filePath, text, ts.ScriptTarget.Latest, true,
+    filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
+  );
+}
+
 export async function parseExecutableSymbols(
   repoPath: string,
   filePath: string,
   context?: RepositorySourceContext,
+  preparedOutboundCalls?: readonly ClassifiedOutboundCall[],
 ): Promise<{ symbols: ExecutableSymbolFact[]; calls: SymbolCallFact[] }> {
-  const snapshot = context?.get(filePath);
-  const text = snapshot?.text
-    ?? await fs.readFile(path.join(repoPath, filePath), 'utf8');
-  const source = snapshot?.sourceFile() ?? ts.createSourceFile(
-    filePath, text, ts.ScriptTarget.Latest, true,
-    filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS,
+  const source = await sourceFile(repoPath, filePath, context);
+  const normalizedFile = normalizePath(filePath);
+  const classified = preparedOutboundCalls
+    ?? classifyOutboundCallsInSource(source, normalizedFile);
+  const collection = createCollection(source, normalizedFile, classified);
+  populateCollection(collection);
+  const calls = collectSymbolCallFacts({
+    source, sourceFile: normalizedFile,
+    symbols: collection.symbols, imports: collection.imports,
+    importBindings: collection.importBindings,
+    proxies: collection.proxies, instances: collection.instances,
+  });
+  const events = reconcileEventSubscriptions(
+    source, classified, collection.symbols, calls,
   );
-  const sourceFile = normalizePath(filePath);
-  const symbols: ExecutableSymbolFact[] = [];
-  const calls: SymbolCallFact[] = [];
-  const imports = new Map<string, string>();
-  const namespaceImports = new Set<string>();
-  const eventSubscriptionOffsets = new Set(
-    classifyOutboundCallsInSource(source, sourceFile)
-      .filter((call) => call.fact.callType === 'async_subscribe')
-      .map((call) => `${call.node.getStart(source)}:${call.node.getEnd()}`),
-  );
-  const exportNames = exportDeclarations(source);
-  const objectExports = new Set<string>();
-  const exportedClasses = new Set<string>();
-  const declaredClasses = new Set<string>();
-  const proxyVariables = new Map<string, { importSource: string; factory: string; variableName: string }>();
-  const classInstances = new Map<string, { className: string; importSource?: string; propertyName?: string }>();
-  const addSymbol = (kind: string, localName: string, node: ts.Node, parentName?: string, exportedName?: string, evidence?: Record<string, unknown>): void => {
-    const parentRoot = parentName?.split('.')[0] ?? '';
-    const declaredExportName = exportedName ?? exportNames.get(parentName ? parentRoot : localName);
-    const qualifiedName = parentName ? `${parentName}.${localName}` : localName;
-    const objectExported = parentName ? objectExports.has(parentRoot) : false;
-    const classMemberExported = kind === 'method' && parentName ? exportedClasses.has(parentRoot) && ts.isMethodDeclaration(node) && (ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Static) !== 0 && isPublicClassMethod(node) : false;
-    const effectiveExportedName = classMemberExported || objectExported ? qualifiedName : declaredExportName;
-    const bindings = isFunctionLike(node) ? parameterBindings(node.parameters) : undefined;
-    const params = bindings?.flatMap((binding) => binding.kind === 'identifier' ? [binding.name] : []);
-    const sourceEvidence = evidence ?? (classMemberExported ? { source: 'exported_class_member', exportedClass: parentRoot, memberKind: (ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Static) !== 0 ? 'static_method' : 'class_method', parameters: params } : declaredExportName ? { exportedName: declaredExportName, source: 'export_declaration' } : objectExported ? { exportedName: qualifiedName, source: 'exported_object_literal' } : undefined);
-    const aliases = isFunctionLike(node) ? parameterPropertyAliases(node, source) : [];
-    const parameterEvidence = { ...(bindings && bindings.length > 0 ? { parameters: params, parameterBindings: bindings } : {}), ...(aliases.length > 0 ? { parameterPropertyAliases: aliases } : {}) };
-    symbols.push({ kind, localName: kind === 'object_method' ? qualifiedName : localName, exportedName: effectiveExportedName, qualifiedName, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: exported(node) || Boolean(effectiveExportedName), importExportEvidence: sourceEvidence ? { ...sourceEvidence, ...parameterEvidence } : bindings && bindings.length > 0 ? parameterEvidence : undefined });
+  return {
+    symbols: events.symbols,
+    calls: reconcileSymbolCallOwners(events.calls, events.symbols),
   };
-  const addAliasSymbol = (objectName: string, propertyName: string, node: ts.Node, targetImportSource?: string): void => {
-    symbols.push({ kind: 'object_alias', localName: propertyName, exportedName: propertyName, qualifiedName: `${objectName}.${propertyName}`, sourceFile, startLine: lineOf(source, node.getStart(source)), endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: true, importExportEvidence: { source: 'exported_object_shorthand', objectName, propertyName, targetImportSource } });
-  };
-  const visitImports = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-      const sourceText = node.moduleSpecifier.text;
-      const clause = node.importClause;
-      if (clause?.name) imports.set(clause.name.text, sourceText);
-      const named = clause?.namedBindings;
-      if (named && ts.isNamedImports(named)) for (const el of named.elements) imports.set(el.name.text, sourceText);
-      if (named && ts.isNamespaceImport(named)) {
-        imports.set(named.name.text, sourceText);
-        namespaceImports.add(named.name.text);
-      }
-    }
-    if (ts.isVariableStatement(node)) {
-      for (const declaration of node.declarationList.declarations) {
-        const requiredSource = declaration.initializer ? requireSource(declaration.initializer) : undefined;
-        if (ts.isIdentifier(declaration.name) && requiredSource) imports.set(declaration.name.text, requiredSource);
-        if (ts.isObjectBindingPattern(declaration.name) && requiredSource) for (const element of declaration.name.elements) if (ts.isIdentifier(element.name)) imports.set(element.name.text, requiredSource);
-      }
-    }
-    ts.forEachChild(node, visitImports);
-  };
-  visitImports(source);
-  const visitSymbols = (node: ts.Node, parentClass?: string): void => {
-    if (ts.isClassDeclaration(node) && node.name) {
-      declaredClasses.add(node.name.text);
-      if (exported(node) || exportNames.has(node.name.text)) exportedClasses.add(node.name.text);
-      for (const member of node.members) visitSymbols(member, node.name.text);
-      return;
-    }
-    if (ts.isMethodDeclaration(node)) {
-      const localName = nameOf(node.name);
-      if (localName) addSymbol('method', localName, node, parentClass);
-    } else if (ts.isPropertyDeclaration(node) && parentClass && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
-      const localName = nameOf(node.name);
-      if (localName) {
-        const flags = ts.getCombinedModifierFlags(node);
-        const staticPublicExported = exportedClasses.has(parentClass) && (flags & ts.ModifierFlags.Static) !== 0 && (flags & ts.ModifierFlags.Private) === 0 && (flags & ts.ModifierFlags.Protected) === 0;
-        const isArrow = ts.isArrowFunction(node.initializer);
-        const memberKind = isArrow
-          ? (staticPublicExported ? 'static_arrow_function' : 'arrow_function_property')
-          : (staticPublicExported ? 'static_function_expression' : 'function_expression_property');
-        addSymbol('method', localName, node.initializer, parentClass, staticPublicExported ? `${parentClass}.${localName}` : undefined, staticPublicExported
-          ? { source: 'exported_class_member', exportedClass: parentClass, memberKind }
-          : { source: 'class_property_function', memberKind });
-      }
-    } else if (ts.isFunctionDeclaration(node) && node.name) addSymbol('function', node.name.text, node, undefined, exported(node) ? node.name.text : undefined);
-    else if (ts.isVariableStatement(node)) {
-      for (const d of node.declarationList.declarations) {
-        const localName = nameOf(d.name);
-        if (!localName || !d.initializer) continue;
-        if (isFunctionLike(d.initializer)) addSymbol('function', localName, d.initializer, undefined, exported(node) ? localName : exportNames.get(localName));
-        if (ts.isObjectLiteralExpression(d.initializer)) {
-          const objectIsExported = exported(node) || exportNames.has(localName);
-          if (objectIsExported) objectExports.add(localName);
-          for (const prop of d.initializer.properties) {
-            if (objectIsExported && ts.isShorthandPropertyAssignment(prop)) addAliasSymbol(localName, prop.name.text, prop.name, imports.get(prop.name.text));
-            if (ts.isPropertyAssignment(prop) && isObjectFunction(prop.initializer)) {
-              const propName = nameOf(prop.name);
-              if (propName) addSymbol('object_method', propName, prop.initializer, localName);
-            } else if (ts.isMethodDeclaration(prop)) {
-              const propName = nameOf(prop.name);
-              if (propName) addSymbol('object_method', propName, prop, localName);
-            }
-          }
-        }
-      }
-    } else ts.forEachChild(node, (child) => visitSymbols(child, parentClass));
-  };
-  visitSymbols(source);
-
-  const isTopLevelCallback = (node: ts.Node): node is ts.ArrowFunction | ts.FunctionExpression => {
-    if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
-    if (!ts.isCallExpression(node.parent)) return false;
-    const callee = callName(node.parent.expression);
-    const member = callee.member ?? callee.local;
-    return Boolean(member && ['bootstrap', 'served', 'connect', 'on', 'once', 'use', 'get', 'post', 'put', 'patch', 'delete', 'subscribe'].includes(member));
-  };
-  const visitCallbackSymbols = (node: ts.Node): void => {
-    if (isTopLevelCallback(node) && containsSupportedOutboundCall(node)) {
-      const startLine = lineOf(source, node.getStart(source));
-      const name = `callback:${startLine}`;
-      symbols.push({ kind: 'callback', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_outbound_callback', callbackLine: startLine } });
-    }
-    ts.forEachChild(node, visitCallbackSymbols);
-  };
-  visitCallbackSymbols(source);
-
-  const visitEventRegistrationSymbols = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'on') {
-      const receiver = node.expression.expression.getText(source);
-      const eventArg = node.arguments[0];
-      if ((receiver === 'cds' || /^(srv|service|serviceClient|messaging|messageClient|eventClient|.*Client)$/.test(receiver)) && eventArg && (ts.isStringLiteral(eventArg) || ts.isNoSubstitutionTemplateLiteral(eventArg))) {
-        const startLine = lineOf(source, node.getStart(source));
-        const eventName = eventArg.text.replace(/[^A-Za-z0-9_$-]/g, '_');
-        const name = `event:${eventName}:${startLine}`;
-        symbols.push({ kind: 'event_registration', localName: name, qualifiedName: `module:${sourceFile}#${name}`, sourceFile, startLine, endLine: lineOf(source, node.getEnd()), startOffset: node.getStart(source), endOffset: node.getEnd(), exported: false, importExportEvidence: { source: 'synthetic_event_registration', eventName: eventArg.text, registrationLine: startLine, receiver } });
-      }
-      if (eventSubscriptionOffsets.has(`${node.getStart(source)}:${node.getEnd()}`)) {
-        const startLine = lineOf(source, node.getStart(source));
-        const handlerArgument = node.arguments[1];
-        const target = handlerArgument
-          ? handlerReferenceTarget(
-            handlerArgument, source, imports, namespaceImports,
-          )
-          : undefined;
-        const anchor = nearest(symbols, startLine);
-        if (target && anchor) calls.push({
-          callerQualifiedName: anchor.qualifiedName,
-          calleeExpression: target.calleeExpression,
-          calleeLocalName: target.calleeLocalName,
-          importSource: target.importSource,
-          sourceFile,
-          sourceLine: startLine,
-          callSiteStartOffset: node.getStart(source),
-          callSiteEndOffset: node.getEnd(),
-          callRole: 'event_subscribe_handler',
-          evidence: {
-            relation: target.relation,
-            caller: anchor.qualifiedName,
-            targetName: target.calleeLocalName,
-            ...(target.wrapperFunction
-              ? { wrapperFunction: target.wrapperFunction }
-              : {}),
-            factOrigin: 'event_subscribe_handler_reference',
-          },
-        });
-      }
-    }
-    ts.forEachChild(node, visitEventRegistrationSymbols);
-  };
-  visitEventRegistrationSymbols(source);
-  const visitProxyVariables = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isCallExpression(node.initializer) && ts.isPropertyAccessExpression(node.initializer.expression)) {
-      const callee = callName(node.initializer.expression);
-      const importSource = callee.local ? imports.get(callee.local) : undefined;
-      if (callee.member && importSource && isRelativeImport(importSource)) proxyVariables.set(node.name.text, { importSource, factory: callee.expression, variableName: node.name.text });
-    }
-    ts.forEachChild(node, visitProxyVariables);
-  };
-  visitProxyVariables(source);
-  const rememberClassInstance = (variableName: string, className: string, propertyName?: string): void => {
-    const importSource = imports.get(className);
-    if (!builtInConstructors.has(className) && ((importSource && isRelativeImport(importSource)) || declaredClasses.has(className))) classInstances.set(variableName, { className, importSource, propertyName });
-  };
-  const visitClassInstances = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression)) {
-      rememberClassInstance(node.name.text, node.initializer.expression.text);
-    }
-    if (ts.isPropertyDeclaration(node) && node.initializer && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression)) {
-      const propertyName = nameOf(node.name);
-      if (propertyName) rememberClassInstance(`this.${propertyName}`, node.initializer.expression.text, propertyName);
-    }
-    ts.forEachChild(node, visitClassInstances);
-  };
-  visitClassInstances(source);
-  const localCallables = new Set(symbols.flatMap((sym) => [sym.localName, sym.qualifiedName]));
-  const visitCalls = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const line = lineOf(source, node.getStart(source));
-      const caller = nearest(symbols, line);
-      if (caller) {
-        const callee = callName(node.expression);
-        const proxy = callee.local ? proxyVariables.get(callee.local) : undefined;
-        const instance = (callee.local ? classInstances.get(callee.local) : undefined) ?? (callee.receiver ? classInstances.get(callee.receiver) : undefined);
-        const importSource = instance?.importSource ?? proxy?.importSource ?? (callee.local ? imports.get(callee.local) : undefined) ?? (callee.member && callee.local ? imports.get(callee.local) : undefined);
-        const directThisMethod = callee.receiver === 'this';
-        const namespaceMember = Boolean(callee.member && callee.local && namespaceImports.has(callee.local));
-        const packageImport = Boolean(importSource && !isRelativeImport(importSource));
-        const targetName = instance && callee.member ? `${instance.className}.${callee.member}` : proxy && callee.member ? callee.member : directThisMethod ? callee.member : namespaceMember ? callee.member : packageImport ? (callee.member ?? callee.local) : callee.member && callee.local ? `${callee.local}.${callee.member}` : callee.local;
-        const className = caller.qualifiedName.includes('.') ? caller.qualifiedName.split('.')[0] : undefined;
-        const thisTarget = directThisMethod && className && callee.member ? `${className}.${callee.member}` : undefined;
-        const loggerLike = callee.receiver?.endsWith('.logger') || callee.local === 'logger' || (callee.expression.startsWith('this.logger.') && callee.member ? loggerMembers.has(callee.member) : false);
-        const terminalMember = callee.member ? commonTerminalMembers.has(callee.member) || loggerMembers.has(callee.member) : false;
-        const provenLocal = Boolean(targetName) && localCallables.has(String(targetName));
-        const provenThisMethod = Boolean(thisTarget && localCallables.has(thisTarget));
-        const provenRelativeImport = Boolean(isRelativeImport(importSource) && targetName);
-        const provenClassInstance = Boolean(instance && callee.member && targetName);
-        const provenPackageImport = Boolean(packageImport && targetName);
-        const ignored = loggerLike || terminalMember || ignoredFrameworkCall(callee);
-        const resolvedTarget = provenThisMethod ? thisTarget : targetName;
-        const keep = Boolean(resolvedTarget) && !ignored && (provenLocal || provenThisMethod || provenRelativeImport || provenClassInstance || provenPackageImport);
-        if (keep) calls.push({ callerQualifiedName: caller.qualifiedName, calleeExpression: callee.expression, calleeLocalName: resolvedTarget, receiverLocalName: callee.member ? (callee.local ?? callee.receiver) : undefined, importSource, sourceFile, sourceLine: line, callSiteStartOffset: node.getStart(source), callSiteEndOffset: node.getEnd(), callRole: 'ordinary_call', evidence: { relation: instance ? 'class_instance_method' : proxy ? 'relative_import_proxy_member' : packageImport ? 'package_import' : namespaceMember ? 'relative_import_namespace_member' : importSource ? 'relative_import' : provenThisMethod ? 'indexed_this_method' : 'indexed_local_symbol', caller: caller.qualifiedName, targetName: resolvedTarget, instanceVariable: instance ? (instance.propertyName ?? callee.local) : undefined, className: instance?.className, methodName: instance ? callee.member : undefined, classImportSource: instance?.importSource, callArguments: argumentEvidence(node.arguments, source), proxyVariableName: proxy?.variableName, factory: proxy?.factory, factoryExpression: proxy?.factory, factoryImportSource: proxy?.importSource, candidateStrategy: instance ? (instance.importSource ? 'relative_import_class_instance_method' : 'same_file_class_instance_method') : proxy ? 'proxy_member_exact_export_or_unique_member' : undefined } });
-      }
-    }
-    ts.forEachChild(node, visitCalls);
-  };
-  visitCalls(source);
-  return { symbols, calls };
 }

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../../src/db/connection.js';
 import { renderCompactJson } from '../../src/output/001-compact-json-output.js';
+import { renderTraceJson } from '../../src/output/json-output.js';
 import type {
   CompactEdgeObservation,
   CompactProjectionInput,
@@ -273,9 +274,9 @@ it('renders the exact empty fixed-width contract as one minified line', async ()
     const compact = projectCompactGraph(projectionInput(db, trace([detailedEdge(0)]), [item]));
     const decision = compact.edges[0]?.[9]?.decision;
 
-    expect(decision?.effectiveTarget).toContain('symbol:worker:src/handler.ts');
-    expect(decision).not.toHaveProperty('persistedResolutionStatus');
-    expect(decision).not.toHaveProperty('persistedTarget');
+    expect(compact.edges[0]?.[6]).toBe('resolved');
+    expect(compact.edges[0]?.[5]).toMatch(/^n\d+$/);
+    expect(decision).toBeUndefined();
   });
 
   it('omits raw evidence, supplied values, unsafe targets, and diagnostic hints', async () => {
@@ -283,12 +284,18 @@ it('renders the exact empty fixed-width contract as one minified line', async ()
     const privateUrl = 'https://private.invalid/hook?token=TOP_SECRET';
     const destination = 'PRIVATE_DESTINATION_SENTINEL';
     const bearer = 'Bearer eyJhbGciOiJub25lIn0.SENTINEL';
+    const unsafeMarker = 'UNSAFE_ASSIGNMENT_SENTINEL';
+    const unsafeMissing = `value = '${unsafeMarker}'\ncontrol`;
+    const suppliedName = 'tenantInfo.region?.toLowerCase()';
+    const suppliedValue = 'RUNTIME_VALUE_SENTINEL';
     const result = trace([detailedEdge(0, {
       privateUrl, destination, authorization: bearer,
       rawExpression: `send('${privateUrl}')`, payload: { secret: destination },
       dynamicTargetCandidates: [{ privateUrl }],
-    })], [{ severity: 'info', code: 'unknown_shape',
-      message: `${privateUrl} ${bearer}`, remediation: destination }]);
+    })], [{ severity: 'warning', code: 'trace_runtime_variables_missing',
+      message: `${privateUrl} ${bearer}`, remediation: destination,
+      missingVariables: ['SAFE_NAME', unsafeMissing],
+      missingVariableCount: 2 }]);
     const item = observation(0, target('Orders'), {
       kind: 'target', workspaceId: 1,
       targetKind: 'external_endpoint', targetId: 'endpoint:deadbeef',
@@ -297,19 +304,28 @@ it('renders the exact empty fixed-width contract as one minified line', async ()
         effectiveTarget: { kind: 'external_endpoint', id: privateUrl },
         persistedResolutionStatus: 'unresolved',
         persistedTarget: { kind: 'external_endpoint', id: privateUrl },
-        missingVariableNames: ['SAFE_NAME', privateUrl], missingVariableCount: 9 },
+        missingVariableNames: ['SAFE_NAME', unsafeMissing],
+        missingVariableCount: 2 },
     });
     const input = projectionInput(db, result, [item]);
-    input.options.vars = { SAFE_NAME: destination };
+    input.options.vars = { [suppliedName]: suppliedValue };
+    const detailed = renderTraceJson(result);
     const rendered = renderCompactJson(projectCompactGraph(input));
 
+    expect(detailed).toContain(privateUrl);
+    expect(detailed).toContain(destination);
+    expect(detailed).toContain(bearer);
+    expect(detailed).toContain(unsafeMarker);
     expect(rendered).not.toContain(privateUrl);
     expect(rendered).not.toContain(destination);
     expect(rendered).not.toContain(bearer);
+    expect(rendered).not.toContain(unsafeMarker);
+    expect(rendered).not.toContain(suppliedValue);
     expect(rendered).not.toContain('dynamicTargetCandidates');
     expect(rendered).not.toContain('rawExpression');
     expect(rendered).toContain('SAFE_NAME');
-    expect(rendered).toContain('external_endpoint:endpoint:deadbeef');
+    expect(rendered).toContain(suppliedName);
+    expect(rendered).toContain('"external_endpoint","endpoint:deadbeef"');
   });
 
   it('is byte deterministic under shuffled equivalent observation input', async () => {

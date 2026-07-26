@@ -50,17 +50,29 @@ describe('service binding persistence safety', () => {
     expect(calls.find((row) => row.operationPath === '/directCheck')?.serviceBindingId).toEqual(expect.any(Number));
     expect(calls.find((row) => row.operationPath === '/futureCheck')).toMatchObject({
       serviceBindingId: null,
-      unresolvedReason: 'service_binding_declared_after_call',
+      unresolvedReason: null,
     });
+    expect(JSON.parse(calls.find((row) =>
+      row.operationPath === '/futureCheck')?.evidenceJson ?? '{}'))
+      .toMatchObject({
+        serviceBindingReference: {
+          status: 'unresolved',
+          reason: 'binding_declared_after_call',
+        },
+      });
     const ambiguous = calls.find((row) => row.operationPath === '/ambiguousCheck');
     expect(ambiguous).toMatchObject({
       serviceBindingId: null,
-      unresolvedReason: 'ambiguous_service_binding_candidates',
+      unresolvedReason: null,
     });
     expect(JSON.parse(ambiguous?.evidenceJson ?? '{}')).toMatchObject({
+      serviceBindingReference: {
+        status: 'unresolved',
+        reason: 'unsupported_reaching_assignment',
+      },
       serviceBindingResolution: {
-        status: 'ambiguous',
-        candidateCount: 2,
+        status: 'unresolved',
+        candidateCount: 0,
       },
     });
     linkWorkspace(db, workspaceId);

@@ -22,6 +22,17 @@ export interface OperationResolution {
   candidates: OperationTarget[];
   reasons: string[];
 }
+interface OperationSignals {
+  servicePath?: string;
+  alias?: string;
+  destination?: string;
+  operationPath?: string;
+  serviceName?: string;
+  repoId?: number;
+  hasExplicitOverride?: boolean;
+  isDynamic?: boolean;
+  localServiceLookup?: string;
+}
 function rows(
   db: Db,
   operationPath: string,
@@ -60,31 +71,30 @@ function operationMatches(candidate: OperationTarget, operationPath: string | un
 }
 export function resolveOperation(
   db: Db,
-  signals: {
-    servicePath?: string;
-    alias?: string;
-    destination?: string;
-    operationPath?: string;
-    serviceName?: string;
-    repoId?: number;
-    hasExplicitOverride?: boolean;
-    isDynamic?: boolean;
-    localServiceLookup?: string;
-  },
+  signals: OperationSignals,
   workspaceId?: number,
 ): OperationResolution {
+  const early = earlyOperationResolution(db, signals, workspaceId);
+  if (early) return early;
+  const selected = selectOperationCandidates(db, signals, workspaceId);
+  if (!Array.isArray(selected)) return selected;
+  const candidates = scoreOperationCandidates(selected, signals);
+  return finalOperationResolution(candidates, signals);
+}
+
+function earlyOperationResolution(
+  db: Db,
+  signals: OperationSignals,
+  workspaceId: number | undefined,
+): OperationResolution | undefined {
   const missing = [signals.servicePath, signals.alias, signals.destination, signals.operationPath]
     .flatMap(extractPlaceholderKeys);
   if (missing.length > 0)
     return {
       status: 'dynamic',
-      candidates: signals.operationPath
-        ? rows(db, signals.operationPath, workspaceId).map((candidate) => ({
-            ...candidate,
-            score: 0.2,
-            reasons: ['operation_path_match'],
-          }))
-        : [],
+      candidates: dynamicOperationCandidates(
+        db, signals.operationPath, workspaceId,
+      ),
       reasons: [...new Set(missing)].map((name) => `missing_variable:${name}`),
     };
   if (!signals.operationPath)
@@ -93,72 +103,184 @@ export function resolveOperation(
       candidates: [],
       reasons: ['missing_operation_path'],
     };
-  const allCandidates = rows(db, signals.operationPath, workspaceId).map((c) => ({
+  return undefined;
+}
+
+function dynamicOperationCandidates(
+  db: Db,
+  operationPath: string | undefined,
+  workspaceId: number | undefined,
+): OperationTarget[] {
+  if (!operationPath || extractPlaceholderKeys(operationPath).length > 0)
+    return [];
+  return rows(db, operationPath, workspaceId).map((candidate) => ({
+    ...candidate,
+    score: 0.2,
+    reasons: ['operation_path_match'],
+  }));
+}
+
+function selectOperationCandidates(
+  db: Db,
+  signals: OperationSignals,
+  workspaceId?: number,
+): OperationTarget[] | OperationResolution {
+  const operationPath = signals.operationPath ?? '';
+  const allCandidates = rows(db, operationPath, workspaceId).map((c) => ({
     ...c,
     score: 0.2,
     reasons: ['operation_path_match'],
   }));
   let candidates = allCandidates.filter((c) => matchesLocalRepo(db, c.operationId, signals.repoId));
-  if (candidates.length === 0 && signals.repoId !== undefined && signals.serviceName) {
-    candidates = implementationContextCandidates(db, allCandidates, signals.repoId, signals.serviceName);
-    if (candidates.length === 0)
-      return {
-        status: 'unresolved',
-        candidates: allCandidates.filter((c) => serviceMatches(c, signals.serviceName)),
-        reasons: allCandidates.some((c) => serviceMatches(c, signals.serviceName)) ? ['local_service_candidate_without_caller_ownership'] : ['no_operation_candidates'],
-      };
-  }
+  if (candidates.length === 0 && signals.repoId !== undefined
+    && signals.serviceName)
+    candidates = implementationContextCandidates(
+      db, allCandidates, signals.repoId, signals.serviceName,
+    );
+  if (candidates.length === 0 && signals.repoId !== undefined
+    && signals.serviceName)
+    return missingOwnedCandidate(allCandidates, signals.serviceName);
   if (candidates.length === 0)
     return {
       status: 'unresolved',
       candidates: [],
       reasons: ['no_operation_candidates'],
     };
-  const hasStrongSignal = Boolean(
-    signals.servicePath ||
-    signals.serviceName ||
-    signals.alias ||
-    signals.destination ||
-    signals.hasExplicitOverride,
-  );
+  return candidates;
+}
+
+function missingOwnedCandidate(
+  candidates: OperationTarget[],
+  serviceName: string,
+): OperationResolution {
+  const matching = candidates.filter((candidate) =>
+    serviceMatches(candidate, serviceName));
+  return {
+    status: 'unresolved',
+    candidates: matching,
+    reasons: matching.length > 0
+      ? ['local_service_candidate_without_caller_ownership']
+      : ['no_operation_candidates'],
+  };
+}
+
+function scoreOperationCandidates(
+  candidates: OperationTarget[],
+  signals: OperationSignals,
+): OperationTarget[] {
   for (const c of candidates) {
-    if (signals.servicePath && c.servicePath === signals.servicePath) {
-      c.score += 0.75;
-      c.reasons.push('exact_service_path');
-    }
-    if (signals.servicePath && c.servicePath !== signals.servicePath) {
-      c.score -= 0.1;
-      c.reasons.push('service_path_mismatch');
-    }
-    if (signals.serviceName) {
-      const simple = signals.serviceName.split('.').at(-1) ?? signals.serviceName;
-      if (c.qualifiedName === signals.serviceName) {
-        c.score += 0.8;
-        c.reasons.push('exact_local_qualified_service_name');
-      } else if (c.serviceName === signals.serviceName || c.serviceName === simple) {
-        c.score += 0.75;
-        c.reasons.push('exact_local_simple_service_name');
-      } else if (c.servicePath === signals.serviceName || c.servicePath === `/${signals.serviceName}` || c.servicePath === `/${simple}`) {
-        c.score += 0.7;
-        c.reasons.push('exact_local_service_path');
-      } else if (c.servicePath.endsWith(`/${simple}`)) {
-        c.score += candidates.filter((candidate) => candidate.servicePath.endsWith(`/${simple}`)).length === 1 ? 0.65 : 0.2;
-        c.reasons.push('suffix_local_service_path');
-      } else c.reasons.push('local_service_name_mismatch');
-    }
-    if (signals.hasExplicitOverride) {
-      c.score += 0.2;
-      c.reasons.push(signals.repoId !== undefined ? 'explicit_local_service_call' : 'explicit_dynamic_override');
-    }
-    if (signals.repoId !== undefined && candidates.length === 1 && signals.serviceName && c.reasons.includes('local_service_name_mismatch') && operationMatches(c, signals.operationPath)) {
-      c.score = Math.max(c.score, 0.9);
-      c.reasons.push('same_repo_unique_operation_path_with_lookup_mismatch');
-    }
+    applyServicePathScore(c, signals.servicePath);
+    applyServiceNameScore(c, signals.serviceName, candidates);
+    applyOverrideScore(c, signals);
+    applyUniquePathRecovery(c, candidates, signals);
+    c.score = Math.max(0, Math.min(1, c.score));
   }
-  for (const c of candidates) c.score = Math.max(0, Math.min(1, c.score));
   candidates.sort(
-    (a, b) => b.score - a.score || a.repoName.localeCompare(b.repoName),
+    (a, b) => b.score - a.score || compareBinary(a.repoName, b.repoName),
   );
+  return candidates;
+}
+
+function applyServicePathScore(
+  candidate: OperationTarget,
+  servicePath: string | undefined,
+): void {
+  if (!servicePath) return;
+  const exact = candidate.servicePath === servicePath;
+  candidate.score += exact ? 0.75 : -0.1;
+  candidate.reasons.push(exact ? 'exact_service_path' : 'service_path_mismatch');
+}
+
+function serviceNameScore(
+  candidate: OperationTarget,
+  serviceName: string,
+  candidates: readonly OperationTarget[],
+): { score: number; reason: string } {
+  const simple = serviceName.split('.').at(-1) ?? serviceName;
+  if (candidate.qualifiedName === serviceName)
+    return { score: 0.8, reason: 'exact_local_qualified_service_name' };
+  if (candidate.serviceName === serviceName || candidate.serviceName === simple)
+    return { score: 0.75, reason: 'exact_local_simple_service_name' };
+  if ([serviceName, `/${serviceName}`, `/${simple}`]
+    .includes(candidate.servicePath))
+    return { score: 0.7, reason: 'exact_local_service_path' };
+  if (candidate.servicePath.endsWith(`/${simple}`)) return {
+    score: candidates.filter((item) =>
+      item.servicePath.endsWith(`/${simple}`)).length === 1 ? 0.65 : 0.2,
+    reason: 'suffix_local_service_path',
+  };
+  return { score: 0, reason: 'local_service_name_mismatch' };
+}
+
+function applyServiceNameScore(
+  candidate: OperationTarget,
+  serviceName: string | undefined,
+  candidates: readonly OperationTarget[],
+): void {
+  if (!serviceName) return;
+  const signal = serviceNameScore(candidate, serviceName, candidates);
+  candidate.score += signal.score;
+  candidate.reasons.push(signal.reason);
+}
+
+function applyOverrideScore(
+  candidate: OperationTarget,
+  signals: OperationSignals,
+): void {
+  if (!signals.hasExplicitOverride) return;
+  candidate.score += 0.2;
+  candidate.reasons.push(signals.repoId !== undefined
+    ? 'explicit_local_service_call' : 'explicit_dynamic_override');
+}
+
+function applyUniquePathRecovery(
+  candidate: OperationTarget,
+  candidates: readonly OperationTarget[],
+  signals: OperationSignals,
+): void {
+  if (signals.repoId === undefined || candidates.length !== 1
+    || !signals.serviceName
+    || !candidate.reasons.includes('local_service_name_mismatch')
+    || !operationMatches(candidate, signals.operationPath)) return;
+  candidate.score = Math.max(candidate.score, 0.9);
+  candidate.reasons.push(
+    'same_repo_unique_operation_path_with_lookup_mismatch',
+  );
+}
+
+function strongSignal(signals: OperationSignals): boolean {
+  return Boolean(signals.servicePath || signals.serviceName || signals.alias
+    || signals.destination || signals.hasExplicitOverride);
+}
+
+function targetSignalMatches(
+  candidate: OperationTarget,
+  signals: OperationSignals,
+): boolean {
+  if (candidate.servicePath === signals.servicePath) return true;
+  if (!signals.serviceName) return false;
+  return !candidate.reasons.includes('local_service_name_mismatch')
+    || candidate.reasons.includes(
+      'same_repo_unique_operation_path_with_lookup_mismatch',
+    );
+}
+
+function bestCandidateResolves(
+  best: OperationTarget | undefined,
+  second: OperationTarget | undefined,
+  signals: OperationSignals,
+): best is OperationTarget {
+  if (!best) return false;
+  return best.score >= 0.9
+    && targetSignalMatches(best, signals)
+    && operationMatches(best, signals.operationPath)
+    && (!second || best.score - second.score >= 0.25);
+}
+
+function finalOperationResolution(
+  candidates: OperationTarget[],
+  signals: OperationSignals,
+): OperationResolution {
   const best = candidates[0];
   const second = candidates[1];
   if (signals.isDynamic && !signals.hasExplicitOverride && !signals.servicePath)
@@ -167,19 +289,13 @@ export function resolveOperation(
       candidates,
       reasons: ['dynamic_target_without_override'],
     };
-  if (!hasStrongSignal)
+  if (!strongSignal(signals))
     return {
       status: candidates.length > 1 ? 'ambiguous' : 'unresolved',
       candidates,
       reasons: ['operation_path_only_has_no_strong_target_signal'],
     };
-  if (
-    best &&
-    best.score >= 0.9 &&
-    (best.servicePath === signals.servicePath || Boolean(signals.serviceName && (!best.reasons.includes('local_service_name_mismatch') || best.reasons.includes('same_repo_unique_operation_path_with_lookup_mismatch')))) &&
-    operationMatches(best, signals.operationPath) &&
-    (!second || best.score - second.score >= 0.25)
-  )
+  if (bestCandidateResolves(best, second, signals))
     return {
       status: 'resolved',
       target: best,
@@ -191,6 +307,10 @@ export function resolveOperation(
     candidates,
     reasons: ['candidate_score_below_resolution_threshold'],
   };
+}
+
+function compareBinary(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 function serviceMatches(candidate: OperationTarget, serviceName: string | undefined): boolean {
   if (!serviceName) return false;

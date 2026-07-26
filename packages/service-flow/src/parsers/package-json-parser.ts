@@ -7,10 +7,48 @@ interface ParsePackageJsonOptions {
 }
 export interface PackageJsonSnapshot {
   facts: PackageFacts;
+  manifest: PackageEntrypointManifest;
   rawText: string;
+}
+export interface PackageEntrypointManifest {
+  mainPresent: boolean;
+  main: string | null;
+  modulePresent: boolean;
+  module: string | null;
+  exportsPresent: boolean;
+  exportsValue: unknown;
+}
+function emptyManifest(): PackageEntrypointManifest {
+  return {
+    mainPresent: false,
+    main: null,
+    modulePresent: false,
+    module: null,
+    exportsPresent: false,
+    exportsValue: null,
+  };
+}
+function entrypointManifest(
+  json: Record<string, unknown>,
+): PackageEntrypointManifest {
+  const mainPresent = Object.hasOwn(json, 'main');
+  const modulePresent = Object.hasOwn(json, 'module');
+  const exportsPresent = Object.hasOwn(json, 'exports');
+  return {
+    mainPresent,
+    main: typeof json.main === 'string' ? json.main : null,
+    modulePresent,
+    module: typeof json.module === 'string' ? json.module : null,
+    exportsPresent,
+    exportsValue: exportsPresent ? json.exports : null,
+  };
 }
 function emptyPackageFacts(): PackageFacts {
   return { dependencies: {}, cdsRequires: [], scripts: {} };
+}
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null
+    && 'code' in error && error.code === 'ENOENT';
 }
 function recordOfString(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object') return {};
@@ -66,6 +104,7 @@ export async function loadPackageJsonSnapshot(
     const json = JSON.parse(raw) as Record<string, unknown>;
     return {
       rawText: raw,
+      manifest: entrypointManifest(json),
       facts: {
         packageName: typeof json.name === 'string' ? json.name : undefined,
         packageVersion:
@@ -79,10 +118,13 @@ export async function loadPackageJsonSnapshot(
       },
     };
   } catch (error) {
-    const missing = typeof error === 'object' && error !== null
-      && 'code' in error && error.code === 'ENOENT';
+    const missing = isMissingFileError(error);
     if (!options.strict || (options.allowMissing && missing))
-      return { facts: emptyPackageFacts(), rawText: '' };
+      return {
+        facts: emptyPackageFacts(),
+        manifest: emptyManifest(),
+        rawText: '',
+      };
     throw error;
   }
 }

@@ -20,10 +20,13 @@ import {
 } from './014-compact-contract.js';
 import {
   compactCompleteness, compactSafeCode, compactStatusCounts, compactStatusTotal,
-  projectCompactDecision, projectCompactDecisionTarget, projectCompactDiagnostics,
+  projectCompactDecisionTarget, projectCompactDiagnostics,
   projectCompactQuery, projectCompactStart,
-  removeEquivalentCompactPersistedDecision,
 } from './020-compact-field-projection.js';
+import {
+  projectObservationDecision,
+  type CompactDecisionNode,
+} from './024-compact-observation-decision.js';
 
 const REFERENCE_LIMIT = 5;
 
@@ -92,29 +95,25 @@ function observationDecision(
   input: CompactEdgeObservation,
   target: ResolvedNode,
 ): CompactDecisionV1 {
-  const decision = projectCompactDecision(input.decision);
-  if (decision.effectiveResolutionStatus && target.decisionTarget)
-    decision.effectiveTarget = target.decisionTarget;
-  if (decision.persistedResolutionStatus && input.decision?.persistedTarget) {
-    const persisted = persistedDecisionTarget(db, input.decision.persistedTarget);
-    if (persisted) decision.persistedTarget = persisted;
-  }
-  removeEquivalentCompactPersistedDecision(decision);
-  return decision;
+  return projectObservationDecision(
+    input, target, (value) => decisionInputNode(db, value),
+  );
 }
 
-function persistedDecisionTarget(
+function decisionInputNode(
   db: Db,
   target: CompactDecisionTargetInput,
-): string | undefined {
+): CompactDecisionNode {
   const numeric = numericId(target.id);
   if (target.kind === 'operation' && numeric !== undefined)
-    return operationNode(db, numeric)?.decisionTarget;
+    return operationNode(db, numeric) ?? {};
   if (target.kind === 'symbol' && numeric !== undefined)
-    return symbolNode(db, numeric)?.decisionTarget;
+    return symbolNode(db, numeric) ?? {};
   if (target.kind === 'handler_method' && numeric !== undefined)
-    return handlerNode(db, numeric)?.decisionTarget;
-  return projectCompactDecisionTarget(target.kind, target.id);
+    return handlerNode(db, numeric) ?? {};
+  return {
+    decisionTarget: projectCompactDecisionTarget(target.kind, target.id),
+  };
 }
 
 function resolveEndpoint(

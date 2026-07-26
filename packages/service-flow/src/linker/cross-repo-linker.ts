@@ -37,10 +37,11 @@ export interface LinkWorkspaceResult {
 export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, string> = {}): LinkWorkspaceResult {
   return db.transaction(() => {
     assertWorkspaceLinkable(db, workspaceId);
+    linkPackageImportSymbolCalls(db, workspaceId);
+    assertWorkspaceLinkable(db, workspaceId, 'terminal');
     const generation = nextGraphGeneration(db, workspaceId);
     db.prepare('DELETE FROM graph_edges WHERE workspace_id=?').run(workspaceId);
     const deps = linkHelperPackages(db, workspaceId, generation);
-    linkPackageImportSymbolCalls(db, workspaceId);
     const subscriptions = linkEventSubscriptionHandlers(
       db, workspaceId, generation,
     );

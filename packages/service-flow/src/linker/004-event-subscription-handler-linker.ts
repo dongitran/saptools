@@ -61,6 +61,8 @@ function subscriptionRows(db: Db, workspaceId: number): SubscriptionRow[] {
     c.confidence
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE r.workspace_id=? AND c.call_type='async_subscribe'
+      AND json_extract(c.evidence_json,'$.handlerReferenceStatus')
+        ='role_required'
     ORDER BY r.name COLLATE BINARY,r.id,c.source_file COLLATE BINARY,
       c.call_site_start_offset,c.call_site_end_offset,c.id`).all(
     workspaceId,

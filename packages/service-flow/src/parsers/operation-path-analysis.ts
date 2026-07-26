@@ -3,6 +3,7 @@ import {
   classifyODataPathIntent,
   normalizeODataOperationInvocationPath,
 } from '../linker/odata-path-normalizer.js';
+import { analyzeODataPathStructure } from '../linker/005-odata-path-structure.js';
 
 export type OperationPathStatus = 'static' | 'ambiguous' | 'dynamic' | 'unknown';
 
@@ -284,7 +285,11 @@ function normalizedCandidate(value: string, method: string): string[] {
   if (invocation?.wasInvocation) return [invocation.normalizedOperationPath];
   const intent = classifyODataPathIntent(value, method);
   if (intent.kind.startsWith('entity_')) return [];
-  if (!value.startsWith('/') || value.slice(1).includes('/') || value.includes('?')) return [];
+  const structure = analyzeODataPathStructure(value);
+  if (structure.status !== 'valid' || !value.startsWith('/')
+    || structure.segments.length !== 1
+    || structure.queryIndex !== undefined)
+    return [];
   return [value];
 }
 

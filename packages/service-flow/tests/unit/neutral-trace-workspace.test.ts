@@ -125,7 +125,11 @@ describe('neutral multi-repository trace workspace', () => {
     expect(contextual.serviceBindingId).toBeNull();
     expect(contextual.unresolvedReason).toBeNull();
     expect(JSON.parse(contextual.evidenceJson ?? '{}')).toMatchObject({
-      serviceBindingResolution: { status: 'unrecoverable' },
+      serviceBindingReference: {
+        status: 'unresolved',
+        reason: 'binding_not_found',
+      },
+      serviceBindingResolution: { status: 'unresolved' },
     });
 
     const bindingChains = db.prepare(`

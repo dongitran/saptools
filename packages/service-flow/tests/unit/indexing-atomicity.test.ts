@@ -42,17 +42,17 @@ function indexRunCount(db: Awaited<ReturnType<typeof prepareWorkspace>>['db'], s
 }
 
 describe('incremental indexing publication atomicity', () => {
-  it('rejects a future schema read-only before querying v12 tables', async () => {
+  it('rejects a future schema read-only before querying v13 tables', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-future-schema-'));
     const dbPath = path.join(root, 'graph.db');
     const future = openDatabase(dbPath, { migrate: false });
-    future.exec('PRAGMA user_version = 13');
+    future.exec('PRAGMA user_version = 14');
     future.close();
 
     const reader = openReadOnlyDatabase(dbPath);
     expect(factLifecycleDiagnostic(reader)).toMatchObject({
-      code: 'unsupported_future_schema', currentSchemaVersion: 13,
-      supportedSchemaVersion: 12,
+      code: 'unsupported_future_schema', currentSchemaVersion: 14,
+      supportedSchemaVersion: 13,
     });
     reader.close();
   });
@@ -70,7 +70,7 @@ describe('incremental indexing publication atomicity', () => {
     const ownerColumn = migrated.prepare('PRAGMA table_info(index_runs)').all().find((column) => column.name === 'owner_pid');
     const preserved = migrated.prepare('SELECT status,repo_count repoCount,owner_pid ownerPid FROM index_runs').get();
 
-    expect(schemaVersion(migrated)).toBe(12);
+    expect(schemaVersion(migrated)).toBe(13);
     expect(ownerColumn).toMatchObject({ name: 'owner_pid', type: 'INTEGER' });
     expect(preserved).toEqual({ status: 'success', repoCount: 2, ownerPid: null });
     migrated.close();
@@ -187,7 +187,7 @@ export function register(): void {
     );
     expect(factLifecycleDiagnostic(legacy, 1)).toMatchObject({
       code: 'schema_upgrade_required', currentSchemaVersion: 11,
-      requiredSchemaVersion: 12,
+      requiredSchemaVersion: 13,
     });
     legacy.close();
 
@@ -219,7 +219,7 @@ export function register(): void {
     const roleColumn = symbolColumns.find((column) => column.name === 'call_role');
     const outboundIndexes = migrated.prepare('PRAGMA index_list(outbound_calls)').all();
     const symbolIndexes = migrated.prepare('PRAGMA index_list(symbol_calls)').all();
-    expect(schemaVersion(migrated)).toBe(12);
+    expect(schemaVersion(migrated)).toBe(13);
     expect(outboundColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'call_site_start_offset', 'call_site_end_offset',
     ]));
@@ -249,7 +249,7 @@ export function register(): void {
     });
     expect(migrated.prepare(`SELECT graph_stale_reason reason,
       fact_analyzer_version analyzer FROM repositories WHERE id=1`).get()).toEqual({
-      reason: 'schema_v12_call_sites_require_reindex', analyzer: '0.1.65',
+      reason: 'schema_v13_fact_provenance_requires_reindex', analyzer: '0.1.65',
     });
     expect(factLifecycleDiagnostic(migrated, 1)).toMatchObject({
       code: 'reindex_required', staleRepositoryCount: 1,
@@ -259,7 +259,7 @@ export function register(): void {
     expect(migrated.prepare('SELECT * FROM graph_edges WHERE workspace_id=1').all())
       .toEqual(graphBefore);
     expect(migrated.prepare('SELECT graph_stale_reason reason FROM repositories WHERE id=1')
-      .get()?.reason).toBe('schema_v12_call_sites_require_reindex');
+      .get()?.reason).toBe('schema_v13_fact_provenance_requires_reindex');
     expect(migrated.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
     expect(migrated.pragma('foreign_key_check')).toEqual([]);
 

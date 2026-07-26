@@ -72,11 +72,29 @@ function insertRepository(
   packageName = `@neutral/${name}`,
   analyzerVersion = ANALYZER_VERSION,
 ): number {
+  const surface = {
+    schema: 'service-flow/package-public-surface@1',
+    status: 'complete',
+    reason: null,
+    recordCap: 256,
+    total: 0,
+    shown: 0,
+    omitted: 0,
+    packageName,
+    exportsPresent: false,
+    exportsAuthoritative: false,
+    main: null,
+    module: null,
+    entries: [],
+    scopes: [],
+  };
   return insertedId(db.prepare(`INSERT INTO repositories(
     workspace_id,name,absolute_path,relative_path,package_name,dependencies_json,
-    kind,is_git_repo,index_status,fact_analyzer_version,graph_stale_reason
-  ) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
+    package_public_surface_json,kind,is_git_repo,index_status,
+    fact_analyzer_version,graph_stale_reason
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
     workspaceId, name, `/workspace/${name}`, name, packageName, '{}',
+    JSON.stringify(surface),
     'helper-package', 1, 'indexed', analyzerVersion, 'facts_changed',
   ), 'repository');
 }
@@ -93,18 +111,52 @@ function insertSymbol(
     start_offset,end_offset,source_file,exported_name,evidence_json
   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
     repoId, 'function', name, name, exported ? 1 : 0, 1, 100,
-    0, 10_000, sourceFile, exported ? name : null, '{}',
+    0, 10_000, sourceFile, exported ? name : null,
+    JSON.stringify({
+      executableBodyEligibility: { eligible: true, reason: 'body_present' },
+    }),
   ), 'symbol');
 }
 
+function insertEventRegistration(
+  db: Db,
+  repoId: number,
+  eventName: string,
+  span: { start: number; end: number },
+): number {
+  return insertedId(db.prepare(`INSERT INTO symbols(
+    repo_id,kind,name,qualified_name,exported,start_line,end_line,
+    start_offset,end_offset,source_file,evidence_json
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
+    repoId, 'event_registration', eventName, `event:${eventName}`, 0, 1, 1,
+    span.start, span.end, 'src/events.ts', '{}',
+  ), 'event registration');
+}
+
 function insertSubscription(db: Db, repoId: number, input: SubscriptionInput): number {
+  const evidence = {
+    handlerReferenceStatus: 'role_required',
+    handlerReferenceShape: 'identifier',
+    sourceOwnerResolution: input.callerSymbolId === undefined
+      ? 'ownerless_file_scope' : 'owned_exact',
+    serviceBindingReference: {
+      status: 'not_applicable',
+      scopeChainTotal: 0,
+      scopeChainShown: 0,
+      scopeChainOmitted: 0,
+    },
+    serviceBindingResolution: {
+      status: 'not_applicable',
+      candidateCount: 0,
+    },
+  };
   return insertedId(db.prepare(`INSERT INTO outbound_calls(
     repo_id,source_symbol_id,call_type,event_name_expr,source_file,source_line,
     call_site_start_offset,call_site_end_offset,confidence,evidence_json
   ) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
     repoId, input.callerSymbolId, 'async_subscribe', input.eventName,
     input.sourceFile ?? 'src/events.ts', input.sourceLine ?? 1,
-    input.span.start, input.span.end, 0.8, '{}',
+    input.span.start, input.span.end, 0.8, JSON.stringify(evidence),
   ), 'subscription');
 }
 
@@ -115,25 +167,49 @@ function insertEmission(
   eventName: string,
   start: number,
 ): number {
+  const evidence = {
+    sourceOwnerResolution: 'owned_exact',
+    serviceBindingReference: {
+      status: 'not_applicable',
+      scopeChainTotal: 0,
+      scopeChainShown: 0,
+      scopeChainOmitted: 0,
+    },
+    serviceBindingResolution: {
+      status: 'not_applicable',
+      candidateCount: 0,
+    },
+  };
   return insertedId(db.prepare(`INSERT INTO outbound_calls(
     repo_id,source_symbol_id,call_type,event_name_expr,source_file,source_line,
     call_site_start_offset,call_site_end_offset,confidence,evidence_json
   ) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
-    repoId, callerSymbolId, 'async_emit', eventName, 'src/emitter.ts', 1,
-    start, start + 10, 0.8, '{}',
+    repoId, callerSymbolId, 'async_emit', eventName, 'src/events.ts', 1,
+    start, start + 10, 0.8, JSON.stringify(evidence),
   ), 'emission');
 }
 
 function insertSymbolCall(db: Db, repoId: number, input: SymbolCallInput): number {
   const status = input.status ?? 'resolved';
+  const eligible = status === 'resolved' ? 1 : status === 'ambiguous' ? 2 : 0;
+  const unresolvedReason = status === 'resolved'
+    ? null : input.unresolvedReason ?? `${status}_fixture`;
+  const caller = db.prepare(
+    'SELECT qualified_name qualifiedName FROM symbols WHERE id=?',
+  ).get(input.callerSymbolId)?.qualifiedName;
   const evidence = input.evidence ?? {
     relation: 'indexed_local_symbol',
+    caller,
     targetName: input.expression ?? 'handler',
     factOrigin: input.role === 'ordinary_call'
       ? undefined
       : 'event_subscribe_handler_reference',
     candidateStrategy: status === 'resolved' ? 'same_file_exact' : 'exact_symbol_match',
-    candidateCount: status === 'resolved' ? 1 : 0,
+    candidateCount: eligible,
+    eligibleCandidateCount: eligible,
+    selectedCandidateCount: status === 'resolved' ? 1 : 0,
+    candidateSetComplete: true,
+    unresolvedReason,
   };
   return insertedId(db.prepare(`INSERT INTO symbol_calls(
     repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,
@@ -145,8 +221,7 @@ function insertSymbolCall(db: Db, repoId: number, input: SymbolCallInput): numbe
     input.sourceFile ?? 'src/events.ts', input.sourceLine ?? 1,
     input.span.start, input.span.end,
     input.role ?? 'event_subscribe_handler', status, 0.8,
-    JSON.stringify(evidence), status === 'resolved'
-      ? null : input.unresolvedReason ?? `${status}_fixture`,
+    JSON.stringify(evidence), unresolvedReason,
   ), 'symbol call');
 }
 
@@ -180,6 +255,49 @@ function reasonByEvent(edges: EventEdge[], eventName: string): string | null {
   const edge = edges.find((candidate) => candidate.fromId === eventName);
   if (!edge) throw new Error(`Missing event edge ${eventName}`);
   return edge.reason;
+}
+
+function exposePackageHandler(
+  db: Db,
+  repoId: number,
+  symbolId: number,
+  packageName: string,
+): void {
+  const bodyEligibility = { eligible: true, reason: 'body_present' };
+  const exposure = {
+    entry: '.', modulePath: 'src/package-handler',
+    publicName: 'packageHandler',
+  };
+  const target = {
+    sourceFile: 'src/package-handler.ts', kind: 'function',
+    localName: 'packageHandler', qualifiedName: 'packageHandler',
+    startOffset: 0, endOffset: 10_000, bodyEligibility,
+  };
+  const surface = {
+    schema: 'service-flow/package-public-surface@1',
+    status: 'complete', reason: null, recordCap: 256,
+    total: 3, shown: 3, omitted: 0, packageName,
+    exportsPresent: false, exportsAuthoritative: false,
+    main: null, module: null,
+    entries: [{ entry: '.', modulePath: 'src/package-handler' }],
+    scopes: [{
+      ...exposure, candidateCount: 1, eligibleCandidateCount: 1,
+      selectedCandidateCount: 1, candidateSetComplete: true,
+      targets: [target],
+    }],
+  };
+  const symbolEvidence = {
+    executableBodyEligibility: bodyEligibility,
+    packagePublicSurface: {
+      schema: 'service-flow/package-public-surface@1',
+      recordCap: 256, bodyEligibility, exposures: [exposure],
+      exposureTotal: 1, shownExposureCount: 1, omittedExposureCount: 0,
+    },
+  };
+  db.prepare(`UPDATE repositories SET package_public_surface_json=?
+    WHERE id=?`).run(JSON.stringify(surface), repoId);
+  db.prepare('UPDATE symbols SET evidence_json=? WHERE id=?')
+    .run(JSON.stringify(symbolEvidence), symbolId);
 }
 
 describe('event subscription handler linker', () => {
@@ -401,21 +519,42 @@ describe('event subscription handler linker', () => {
       const packageRepo = insertRepository(
         db, workspaceId, 'event-handlers', '@neutral/event-handlers',
       );
-      const caller = insertSymbol(db, appRepo, 'register');
+      const span = { start: 20, end: 60 };
+      const caller = insertEventRegistration(
+        db, appRepo, 'PackageEvent', span,
+      );
       const target = insertSymbol(
         db, packageRepo, 'packageHandler', 'src/package-handler.ts', true,
       );
-      const span = { start: 20, end: 60 };
+      exposePackageHandler(
+        db, packageRepo, target, '@neutral/event-handlers',
+      );
       const subscribeCallId = insertSubscription(db, appRepo, {
         eventName: 'PackageEvent', callerSymbolId: caller, span,
       });
       const symbolCallId = insertSymbolCall(db, appRepo, {
         callerSymbolId: caller, expression: 'packageHandler', span,
         status: 'unresolved', importSource: '@neutral/event-handlers',
+        unresolvedReason: 'package_resolution_pending',
         evidence: {
+          caller: 'event:PackageEvent',
           relation: 'package_import', targetName: 'packageHandler',
           factOrigin: 'event_subscribe_handler_reference',
-          candidateStrategy: 'package_import_unresolved', candidateCount: 0,
+          importBinding: {
+            version: 1, moduleKind: 'package', bindingKind: 'esm_named',
+            localName: 'packageHandler', importedName: 'packageHandler',
+            requestedPackageName: '@neutral/event-handlers',
+            requestedModuleSubpath: '.',
+            rawModuleSpecifier: '@neutral/event-handlers',
+            typeOnly: false, referenceShape: 'identifier',
+            referencedMemberName: null, requestedPublicName: 'packageHandler',
+            bindingSiteStartOffset: 40,
+            bindingSiteEndOffset: 54,
+          },
+          candidateStrategy: 'package_import_pending',
+          candidateCount: 0, eligibleCandidateCount: 0,
+          selectedCandidateCount: 0, candidateSetComplete: false,
+          unresolvedReason: 'package_resolution_pending',
         },
       });
 
@@ -431,7 +570,7 @@ describe('event subscription handler linker', () => {
         status: 'resolved', calleeSymbolId: target,
         callRole: 'event_subscribe_handler', startOffset: span.start, endOffset: span.end,
         factOrigin: 'event_subscribe_handler_reference',
-        strategy: 'package_import_workspace_resolved',
+        strategy: 'package_public_surface_exact',
       });
       expect(first).toMatchObject({
         edgeCount: 2, subscriptionHandlerResolvedCount: 1,
@@ -450,7 +589,7 @@ describe('event subscription handler linker', () => {
       });
       expect(firstEdges[0]?.evidence).toMatchObject({
         subscribeCallId, symbolCallId, factOrigin: 'event_subscribe_handler_reference',
-        resolutionStrategy: 'package_import_workspace_resolved',
+        resolutionStrategy: 'package_public_surface_exact',
       });
 
       const second = linkWorkspace(db, workspaceId);
@@ -476,6 +615,7 @@ describe('event subscription handler linker', () => {
       const target = insertSymbol(db, repoId, 'target');
       const legacyCall = insertSymbolCall(db, repoId, {
         callerSymbolId: caller, calleeSymbolId: target,
+        expression: 'target',
         span: { start: null, end: null }, role: 'legacy_unknown',
       });
       db.prepare(`INSERT INTO graph_edges(

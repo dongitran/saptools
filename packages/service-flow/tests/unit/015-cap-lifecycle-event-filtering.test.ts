@@ -289,8 +289,8 @@ function expectLifecycleWorkspaceState(state: LifecycleWorkspaceState): void {
     && edge.targetKind === 'event'
     && edge.evidenceValid === 1
     && edge.evidenceLength < 8_192)).toBe(true);
-  expect(state.eventRegistrationCount).toBe(6);
-  expect(state.unownedBootstrapRegistrationCount).toBe(1);
+  expect(state.eventRegistrationCount).toBe(3);
+  expect(state.unownedBootstrapRegistrationCount).toBe(0);
   expect(state.defaultTraceAsyncCount).toBe(0);
   expect(state.asyncTraceEdges).toHaveLength(6);
   expect(state.asyncTraceEdges.map((edge) => edge.type).sort()).toEqual([
@@ -300,16 +300,14 @@ function expectLifecycleWorkspaceState(state: LifecycleWorkspaceState): void {
 }
 
 describe('CAP lifecycle and error hook event filtering', () => {
-  it('omits every cds lifecycle subscription while preserving registration symbols', async () => {
+  it('omits every cds lifecycle subscription and its registration identity', async () => {
     const sourceText = lifecycleEvents
       .map((eventName) => `cds.on('${eventName}', () => undefined);`)
       .join('\n');
     expect(eventFacts(sourceText)).toHaveLength(0);
     const registrations = (await executableSymbols(sourceText))
       .filter((symbol) => symbol.kind === 'event_registration');
-    expect(registrations).toHaveLength(lifecycleEvents.length);
-    expect(registrations.map((symbol) => symbol.importExportEvidence?.eventName).sort())
-      .toEqual([...lifecycleEvents].sort());
+    expect(registrations).toHaveLength(0);
   });
 
   it('omits facade lifecycle emits and publishes', () => {
