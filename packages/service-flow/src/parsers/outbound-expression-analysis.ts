@@ -55,7 +55,6 @@ export function queryWarning(expression: string): string {
     return 'query_variable_without_static_initializer';
   return 'dynamic_entity_expression';
 }
-
 export function parserEvidence(
   source: ts.SourceFile,
   node: ts.CallExpression,
@@ -109,7 +108,8 @@ type ExpressionSourceKind =
   | 'string_literal'
   | 'no_substitution_template'
   | 'template_with_substitutions'
-  | 'const_alias'
+  | 'const_alias' | 'const_identifier'
+  | 'enum_member' | 'const_object_property'
   | 'conditional_candidates'
   | 'dynamic_expression';
 

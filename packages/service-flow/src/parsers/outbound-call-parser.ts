@@ -15,6 +15,12 @@ import {
 import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
 import { parseServiceBindings } from './service-binding-parser.js';
 import type { RepositorySourceContext } from './ts-project.js';
+import {
+  createImportedEventNameResolver,
+} from './event-name-import-resolution.js';
+import {
+  createEventEnvironmentReferenceResolver,
+} from './event-environment-reference.js';
 
 export {
   classifyOutboundCallsInSource,
@@ -77,7 +83,13 @@ export async function parseOutboundCalls(
     repoPath, filePath, source, bindingNames, context,
   );
   const nativeCalls = classified
-    ?? classifyOutboundCallsInSource(source, filePath);
+    ?? classifyOutboundCallsInSource(source, filePath, context ? {
+      importedEventNameResolver: createImportedEventNameResolver(
+        context, source, filePath,
+      ),
+      eventEnvironmentReferenceResolver:
+        createEventEnvironmentReferenceResolver(context, source, filePath),
+    } : undefined);
   return [
     ...nativeCalls.map((call) => call.fact),
     ...importedWrappers,

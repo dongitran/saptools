@@ -11,6 +11,9 @@ import {
   packagePendingDiagnostics,
   symbolCallQuality,
 } from './doctor-package-resolution.js';
+import {
+  eventSurfaceQualityDiagnostics,
+} from './doctor-event-quality.js';
 export { linkUpgradeWarnings } from './doctor-lifecycle.js';
 
 type Diagnostic = Record<string, unknown>;
@@ -163,7 +166,7 @@ function parserQualityDiagnostics(db: Db, strict: boolean, options: DoctorOption
     externalHttpTargetQuality(db),
     odataInvocationResolutionQuality(db),
     ...jsonEvidenceQuality(db),
-    eventReceiverQuality(db),
+    ...eventSurfaceQualityDiagnostics(db, options.workspaceId),
     graphDynamicFlagQuality(db),
     symbol,
     dbq,
@@ -200,11 +203,6 @@ function outboundOwnershipQuality(db: Db): Diagnostic {
   const without = Number(row.withoutOwnership ?? 0);
   const ratio = total === 0 ? 0 : Number((without / total).toFixed(4));
   return { severity: ratio > 0.01 ? 'warning' : 'info', code: 'strict_outbound_source_ownership_quality', message: 'Outbound call source-symbol ownership aggregate', total, withoutOwnership: without, withoutOwnershipRatio: ratio, withoutOwnershipRatioThreshold: 0.01, ownerlessByType: byType, ownerlessExamples: examples };
-}
-
-function eventReceiverQuality(db: Db): Diagnostic {
-  const row = db.prepare("SELECT SUM(CASE WHEN call_type IN ('async_emit','async_subscribe') THEN 1 ELSE 0 END) eventTotal, SUM(CASE WHEN call_type IN ('async_emit','async_subscribe') AND (json_extract(evidence_json,'$.receiverClassification') IS NULL OR json_extract(evidence_json,'$.receiverClassification') <> 'cap_evidence') THEN 1 ELSE 0 END) questionable FROM outbound_calls").get() as Record<string, unknown>;
-  return { severity: Number(row.questionable ?? 0) > 0 ? 'warning' : 'info', code: 'strict_event_receiver_classification_quality', message: 'CAP event receiver classification aggregate', eventTotal: Number(row.eventTotal ?? 0), questionable: Number(row.questionable ?? 0) };
 }
 
 function graphDynamicFlagQuality(db: Db): Diagnostic {

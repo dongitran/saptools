@@ -3,6 +3,11 @@ import {
   linkEventTemplate,
   type LinkedEventTemplate,
 } from './event-template-link.js';
+import {
+  subscriptionEnvironmentTargets,
+  type SubscriptionEnvironmentTarget,
+} from './event-environment-link.js';
+import { parseEventSkeletonFact } from '../utils/event-skeleton.js';
 
 export interface SubscriptionHandlerLinkSummary {
   edgeCount: number;
@@ -25,6 +30,9 @@ interface SubscriptionRow {
   endOffset?: number | null;
   confidence: number;
   unresolvedReason?: string | null;
+  packageName?: string | null;
+  environmentJson?: string | null;
+  eventSkeletonJson?: string | null;
 }
 
 interface HandlerCallRow {
@@ -63,7 +71,10 @@ function subscriptionRows(db: Db, workspaceId: number): SubscriptionRow[] {
     c.source_symbol_id sourceSymbolId,c.event_name_expr eventName,
     c.source_file sourceFile,c.source_line sourceLine,
     c.call_site_start_offset startOffset,c.call_site_end_offset endOffset,
-    c.confidence,c.unresolved_reason unresolvedReason
+    c.confidence,c.unresolved_reason unresolvedReason,
+    c.event_skeleton_json eventSkeletonJson,
+    r.package_name packageName,
+    r.environment_declarations_json environmentJson
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE r.workspace_id=? AND c.call_type='async_subscribe'
       AND json_extract(c.evidence_json,'$.handlerReferenceStatus')
@@ -208,11 +219,18 @@ function evidenceFor(
   subscription: SubscriptionRow,
   association: HandlerAssociation,
   event: LinkedEventTemplate,
+  environment?: SubscriptionEnvironmentTarget,
 ): Record<string, unknown> {
   const call: Partial<HandlerCallRow> = association.call ?? {};
   const symbolCallReason = boundedSymbolCallReason(call.unresolvedReason);
+  const environmentAmbiguous = environment?.resolution.status === 'ambiguous'
+    || Number(environment?.collisionCount ?? 1) > 1;
+  const resolutionStatus = event.isDynamic
+    ? 'unresolved'
+    : environmentAmbiguous ? 'ambiguous' : association.status;
   return {
     eventName: subscription.eventName,
+    ...(eventSkeletonEvidence(subscription.eventSkeletonJson)),
     ...(event.substitution.placeholders.length > 0 ? {
       effectiveEventName: event.targetId,
       eventTemplateResolution: event.substitution,
@@ -226,6 +244,18 @@ function evidenceFor(
     factOrigin: association.factOrigin ?? call.factOrigin,
     repositoryId: subscription.repoId,
     repositoryName: subscription.repoName,
+    subscriptionConsumerRepositoryId: environment?.consumerRepoId,
+    subscriptionConsumerRepositoryName: environment?.consumerRepoName,
+    dispatchCertainty: environment?.resolution.status === 'resolved'
+      ? 'environment_declaration_exact' : 'static_name_only',
+    ...(environment?.resolution.status === 'not_applicable' ? {} : {
+      eventEnvironmentResolution: {
+        status: environment?.resolution.status,
+        reason: environment?.resolution.reason,
+        provenance: environment?.resolution.provenance,
+        collisionCount: environment?.collisionCount,
+      },
+    }),
     sourceFile: subscription.sourceFile,
     sourceLine: subscription.sourceLine,
     callSiteStartOffset: subscription.startOffset,
@@ -237,12 +267,21 @@ function evidenceFor(
     associationStatus: association.status,
     symbolCallResolutionStatus:
       association.symbolCallResolutionStatus ?? call.status,
-    resolutionStatus: association.status,
+    resolutionStatus,
     resolutionStrategy: call.strategy,
     candidateCount: call.candidateCount,
-    reasonCode: association.reasonCode,
+    reasonCode: environmentAmbiguous
+      ? environment?.resolution.reason ?? 'event_environment_value_collision'
+      : association.reasonCode,
     ...symbolCallReason,
   };
+}
+
+function eventSkeletonEvidence(
+  value: string | null | undefined,
+): Record<string, unknown> {
+  const skeleton = parseEventSkeletonFact(value);
+  return skeleton ? { eventSkeleton: skeleton } : {};
 }
 
 function boundedSymbolCallReason(
@@ -264,10 +303,20 @@ function insertAssociationEdge(
   subscription: SubscriptionRow,
   association: HandlerAssociation,
   event: LinkedEventTemplate,
+  environment?: SubscriptionEnvironmentTarget,
 ): void {
-  const status = event.isDynamic ? 'unresolved' : association.status;
+  const environmentAmbiguous = environment?.resolution.status === 'ambiguous'
+    || Number(environment?.collisionCount ?? 1) > 1;
+  const status = event.isDynamic
+    ? 'unresolved'
+    : environmentAmbiguous ? 'ambiguous' : association.status;
   const reason = event.isDynamic
-    ? 'event_template_variables_missing'
+    ? event.substitution.missing.length > 0
+      ? 'event_template_variables_missing'
+      : event.unresolvedReason ?? 'event_name_unsupported_constant_expression'
+    : environmentAmbiguous
+      ? environment?.resolution.reason
+        ?? 'event_environment_value_collision'
     : association.reasonCode ?? association.call?.unresolvedReason ?? null;
   db.prepare(`INSERT INTO graph_edges(
     workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
@@ -281,11 +330,66 @@ function insertAssociationEdge(
     association.toKind,
     association.toId,
     association.call?.confidence ?? subscription.confidence,
-    JSON.stringify(evidenceFor(subscription, association, event)),
+    JSON.stringify(evidenceFor(
+      subscription, association, event, environment,
+    )),
     event.isDynamic ? 1 : 0,
     reason,
     generation,
   );
+}
+
+function linkedSubscriptionEvents(
+  db: Db,
+  workspaceId: number,
+  subscription: SubscriptionRow,
+  variables: Record<string, string>,
+): Array<{
+  event: LinkedEventTemplate;
+  environment: SubscriptionEnvironmentTarget;
+}> {
+  const skeleton = parseEventSkeletonFact(subscription.eventSkeletonJson);
+  return subscriptionEnvironmentTargets(
+    db,
+    workspaceId,
+    subscription.packageName ?? undefined,
+    subscription.eventSkeletonJson,
+    subscription.environmentJson,
+    variables,
+  ).map((environment) => ({
+    environment,
+    event: linkEventTemplate(
+      subscription.eventName,
+      environment.resolution.variables,
+      subscription.unresolvedReason ?? undefined,
+      skeleton,
+    ),
+  }));
+}
+
+function targetStatus(
+  association: HandlerAssociation,
+  event: LinkedEventTemplate,
+  environment: SubscriptionEnvironmentTarget,
+): 'resolved' | 'ambiguous' | 'unresolved' {
+  if (event.isDynamic || association.status === 'unresolved')
+    return 'unresolved';
+  if (association.status === 'ambiguous'
+    || environment.resolution.status === 'ambiguous'
+    || environment.collisionCount > 1) return 'ambiguous';
+  return 'resolved';
+}
+
+function incrementSummary(
+  summary: SubscriptionHandlerLinkSummary,
+  status: 'resolved' | 'ambiguous' | 'unresolved',
+  missing: boolean,
+): void {
+  summary.edgeCount += 1;
+  summary.resolvedCount += status === 'resolved' ? 1 : 0;
+  summary.ambiguousCount += status === 'ambiguous' ? 1 : 0;
+  summary.unresolvedCount += status === 'unresolved' ? 1 : 0;
+  summary.missingAssociationCount += missing ? 1 : 0;
 }
 
 export function linkEventSubscriptionHandlers(
@@ -302,22 +406,22 @@ export function linkEventSubscriptionHandlers(
     missingAssociationCount: 0,
   };
   for (const subscription of subscriptionRows(db, workspaceId)) {
-    const event = linkEventTemplate(
-      subscription.eventName, variables,
-      subscription.unresolvedReason ?? undefined,
-    );
     const association = associationFor(
       subscription, roleSiteRows(db, subscription),
     );
-    insertAssociationEdge(
-      db, workspaceId, generation, subscription, association, event,
-    );
-    const status = event.isDynamic ? 'unresolved' : association.status;
-    summary.edgeCount += 1;
-    summary.resolvedCount += status === 'resolved' ? 1 : 0;
-    summary.ambiguousCount += status === 'ambiguous' ? 1 : 0;
-    summary.unresolvedCount += status === 'unresolved' ? 1 : 0;
-    summary.missingAssociationCount += association.missing ? 1 : 0;
+    for (const target of linkedSubscriptionEvents(
+      db, workspaceId, subscription, variables,
+    )) {
+      insertAssociationEdge(
+        db, workspaceId, generation, subscription, association,
+        target.event, target.environment,
+      );
+      incrementSummary(
+        summary,
+        targetStatus(association, target.event, target.environment),
+        association.missing,
+      );
+    }
   }
   return summary;
 }

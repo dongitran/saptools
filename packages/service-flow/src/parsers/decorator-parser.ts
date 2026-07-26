@@ -14,6 +14,10 @@ import {
   type RepositorySourceContext,
 } from './ts-project.js';
 import { normalizePath } from '../utils/path-utils.js';
+import {
+  collectStringConstantLookups,
+  type StringConstantLookups,
+} from './string-constant-lookups.js';
 
 type DecoratorResolution = HandlerMethodFact['decoratorResolution'];
 type ResolvedArgumentKind = Exclude<
@@ -21,9 +25,7 @@ type ResolvedArgumentKind = Exclude<
   'lifecycle_implicit' | 'unresolved'
 >;
 interface StringLookups {
-  identifiers: Map<string, string>;
-  enumMembers: Map<string, string>;
-  objectProperties: Map<string, string>;
+  strings: StringConstantLookups;
   capDecoratorNames: Map<string, string>;
   capDecoratorNamespaces: Set<string>;
 }
@@ -94,60 +96,14 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   ) current = current.expression;
   return current;
 }
-function stringValue(expression: ts.Expression | undefined): string | undefined {
-  if (!expression) return undefined;
-  const unwrapped = unwrapExpression(expression);
-  return ts.isStringLiteralLike(unwrapped) ? unwrapped.text : undefined;
-}
-function propertyName(node: ts.PropertyName): string | undefined {
-  if (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) return node.text;
-  return undefined;
-}
-function collectEnumMembers(
-  statement: ts.EnumDeclaration,
-  lookups: StringLookups,
-): void {
-  for (const member of statement.members) {
-    const name = propertyName(member.name);
-    const value = stringValue(member.initializer);
-    if (name && value !== undefined)
-      lookups.enumMembers.set(`${statement.name.text}.${name}`, value);
-  }
-}
-function collectObjectProperties(
-  name: string,
-  initializer: ts.Expression,
-  lookups: StringLookups,
-): void {
-  const object = unwrapExpression(initializer);
-  if (!ts.isObjectLiteralExpression(object)) return;
-  for (const property of object.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
-    const key = propertyName(property.name);
-    const value = stringValue(property.initializer);
-    if (key && value !== undefined)
-      lookups.objectProperties.set(`${name}.${key}`, value);
-  }
-}
 function collectStringLookups(source: ts.SourceFile): StringLookups {
   const lookups: StringLookups = {
-    identifiers: new Map(),
-    enumMembers: new Map(),
-    objectProperties: new Map(),
+    strings: collectStringConstantLookups(source),
     capDecoratorNames: new Map(),
     capDecoratorNamespaces: new Set(),
   };
   for (const statement of source.statements) {
     collectCapDecoratorImports(statement, lookups);
-    if (ts.isEnumDeclaration(statement)) collectEnumMembers(statement, lookups);
-    if (!ts.isVariableStatement(statement)
-      || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
-      const value = stringValue(declaration.initializer);
-      if (value !== undefined) lookups.identifiers.set(declaration.name.text, value);
-      collectObjectProperties(declaration.name.text, declaration.initializer, lookups);
-    }
   }
   return lookups;
 }
@@ -226,7 +182,7 @@ function resolveDecoratorArgument(
   if (ts.isStringLiteralLike(expression))
     return resolved(rawExpression, argumentExpression, expression.text, 'literal');
   if (ts.isIdentifier(expression)) {
-    const value = lookups.identifiers.get(expression.text);
+    const value = lookups.strings.identifiers.get(expression.text)?.value;
     return value === undefined
       ? unresolved(rawExpression, 'identifier_not_resolved_to_local_const_string', argumentExpression)
       : resolved(rawExpression, argumentExpression, value, 'const_identifier');
@@ -234,10 +190,10 @@ function resolveDecoratorArgument(
   if (ts.isPropertyAccessExpression(expression)
     && ts.isIdentifier(expression.expression)) {
     const key = `${expression.expression.text}.${expression.name.text}`;
-    const enumValue = lookups.enumMembers.get(key);
+    const enumValue = lookups.strings.enumMembers.get(key)?.value;
     if (enumValue !== undefined)
       return resolved(rawExpression, argumentExpression, enumValue, 'enum_member');
-    const objectValue = lookups.objectProperties.get(key);
+    const objectValue = lookups.strings.objectProperties.get(key)?.value;
     if (objectValue !== undefined)
       return resolved(rawExpression, argumentExpression, objectValue, 'const_object_property');
   }

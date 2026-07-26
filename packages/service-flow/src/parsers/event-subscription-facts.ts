@@ -15,6 +15,9 @@ import {
   localSymbolTarget,
   type LocalSymbolTargetIdentity,
 } from './local-symbol-reference.js';
+import {
+  eventLoopRegistrationEvidence,
+} from './event-loop-registration.js';
 
 interface HandlerTarget {
   calleeExpression: string;
@@ -235,6 +238,7 @@ function enrichSubscription(
   );
   const evidence = {
     ...(classified.fact.evidence ?? {}),
+    ...eventLoopRegistrationEvidence(classified.node, source),
     handlerReferenceStatus: classification.status,
     ...(classification.reason
       ? { handlerReferenceReason: classification.reason }

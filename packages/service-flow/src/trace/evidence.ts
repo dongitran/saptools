@@ -262,6 +262,8 @@ function runtimeDiagnosticTotals(
     const effective = parseObject(edge.evidence.effectiveResolution);
     if (!['dynamic', 'unresolved', 'ambiguous'].includes(String(effective.status ?? '')))
       continue;
+    for (const key of stringArray(edge.evidence.missingRuntimeVariables))
+      missing.add(key);
     const substitutions = edge.evidence.runtimeSubstitutions;
     if (!substitutions || typeof substitutions !== 'object' || Array.isArray(substitutions)) continue;
     for (const value of Object.values(substitutions as Record<string, RuntimeSubstitution>))
@@ -646,6 +648,11 @@ function parseObject(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 function numeric(value: unknown): number {

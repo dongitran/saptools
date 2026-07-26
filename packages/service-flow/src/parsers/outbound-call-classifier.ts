@@ -11,11 +11,9 @@ import {
   variableInitializers,
 } from './query-entity-resolution.js';
 import {
-  CDS_LIFECYCLE_EVENTS,
   calledWrapperNames,
   collectServiceVariables,
   externalHttpEvidence,
-  isSupportedEventReceiver,
   legacyPathCandidates,
   lineOf,
   literalPathSource,
@@ -36,6 +34,17 @@ import {
   type WrapperSpec,
 } from './outbound-expression-analysis.js';
 import {
+  analyzeEventCall,
+  createEventCallAnalysisContext,
+  type EventCallAnalysisContext,
+} from './event-call-analysis.js';
+import type {
+  ImportedEventNameResolver,
+} from './event-name-import-resolution.js';
+import type {
+  EventEnvironmentReferenceResolver,
+} from './event-environment-reference.js';
+import {
   analyzeOperationPath,
   operationPathExpression,
   pathUnresolvedReason,
@@ -45,6 +54,11 @@ import {
 export interface ClassifiedOutboundCall {
   fact: OutboundCallFact;
   node: ts.CallExpression;
+}
+
+export interface OutboundClassificationOptions {
+  importedEventNameResolver?: ImportedEventNameResolver;
+  eventEnvironmentReferenceResolver?: EventEnvironmentReferenceResolver;
 }
 
 function namedFunctionLike(
@@ -79,122 +93,6 @@ function collectWrapperSpecs(
   return specs;
 }
 
-interface EventCallClassification {
-  fact: Pick<OutboundCallFact,
-    'callType' | 'serviceVariableName' | 'eventNameExpr'
-    | 'confidence' | 'unresolvedReason'>;
-  evidence: Record<string, unknown>;
-}
-
-interface EventReceiver {
-  effectiveReceiver: string;
-  receiver?: string;
-  rootReceiver?: string;
-}
-
-function eventReceiver(
-  expression: ts.PropertyAccessExpression,
-  serviceVariables: Set<string>,
-): EventReceiver | undefined {
-  const receiver = receiverName(expression.expression);
-  const rootReceiver = rootReceiverName(expression.expression);
-  if (!isSupportedEventReceiver(receiver, rootReceiver, serviceVariables))
-    return undefined;
-  const effectiveReceiver = rootReceiver ?? receiver;
-  return effectiveReceiver
-    ? { receiver, rootReceiver, effectiveReceiver } : undefined;
-}
-
-function eventUnresolvedReason(
-  resolved: ExpressionResolution,
-): string | undefined {
-  if (resolved.status === 'static') return undefined;
-  return resolved.value !== undefined && resolved.placeholderKeys.length > 0
-    ? 'dynamic_event_name_identifier'
-    : 'dynamic_event_name_unsupported_expression';
-}
-
-function eventConfidence(reason: string | undefined): number {
-  if (!reason) return 0.8;
-  return reason === 'dynamic_event_name_identifier' ? 0.6 : 0.3;
-}
-
-function eventClassificationEvidence(
-  expression: ts.PropertyAccessExpression,
-  receiver: EventReceiver,
-  resolved: ExpressionResolution,
-): Record<string, unknown> {
-  return {
-    receiver: receiver.receiver,
-    rootReceiver: receiver.rootReceiver,
-    classifier: expression.name.text === 'on'
-      ? 'cap_service_event_subscription' : 'cap_service_event_emit',
-    receiverClassification: 'cap_evidence',
-    ...(resolved.status === 'static' ? {} : {
-      eventNameStatus: resolved.status,
-      eventNameSourceKind: resolved.sourceKind,
-      eventNamePlaceholderKeys: resolved.placeholderKeys,
-    }),
-  };
-}
-
-interface EventNameState {
-  eventName: string;
-  resolved: ExpressionResolution;
-  unresolvedReason?: string;
-}
-
-function eventNameState(node: ts.CallExpression): EventNameState | undefined {
-  const expression = node.arguments[0];
-  const resolved = resolveExpression(expression, node, 'operation_path');
-  let eventName = resolved.value;
-  if (eventName === undefined) eventName = resolved.rawExpression;
-  if (eventName === undefined && expression)
-    eventName = expression.getText(node.getSourceFile());
-  if (!eventName) return undefined;
-  return {
-    eventName,
-    resolved,
-    unresolvedReason: eventUnresolvedReason(resolved),
-  };
-}
-
-function excludedEventName(
-  expression: ts.PropertyAccessExpression,
-  receiver: EventReceiver,
-  state: EventNameState,
-): boolean {
-  if (state.resolved.status !== 'static') return false;
-  if (receiver.effectiveReceiver === 'cds'
-    && CDS_LIFECYCLE_EVENTS.has(state.eventName)) return true;
-  return expression.name.text === 'on' && state.eventName === 'error';
-}
-
-function eventCallClassification(
-  node: ts.CallExpression,
-  expression: ts.PropertyAccessExpression,
-  serviceVariables: Set<string>,
-): EventCallClassification | undefined {
-  const receiver = eventReceiver(expression, serviceVariables);
-  if (!receiver) return undefined;
-  const state = eventNameState(node);
-  if (!state || excludedEventName(expression, receiver, state))
-    return undefined;
-  return {
-    fact: {
-      callType: expression.name.text === 'on'
-        ? 'async_subscribe' : 'async_emit',
-      serviceVariableName: receiver.effectiveReceiver,
-      eventNameExpr: state.eventName,
-      confidence: eventConfidence(state.unresolvedReason),
-      unresolvedReason: state.unresolvedReason,
-    },
-    evidence: eventClassificationEvidence(
-      expression, receiver, state.resolved,
-    ),
-  };
-}
-
 type OutboundFactInput = Omit<
   OutboundCallFact, 'sourceFile' | 'sourceLine' | 'confidence'
 > & { confidence?: number };
@@ -208,6 +106,7 @@ interface OutboundCallContext {
   source: ts.SourceFile;
   initializers: Map<string, ts.Expression>;
   serviceVariables: Set<string>;
+  eventAnalysis: EventCallAnalysisContext;
   wrapperSpecs: Map<string, WrapperSpec>;
   add: AddOutboundCall;
 }
@@ -589,11 +488,10 @@ function classifyEventCall(
   const expression = node.expression;
   if (!ts.isPropertyAccessExpression(expression)
     || !['emit', 'publish', 'on'].includes(expression.name.text)) return false;
-  const event = eventCallClassification(
-    node, expression, context.serviceVariables,
-  );
-  if (event) context.add(node, event.fact, event.evidence);
-  return true;
+  const event = analyzeEventCall(node, expression, context.eventAnalysis);
+  if (event.status === 'classified')
+    context.add(node, event.fact, event.evidence);
+  return event.status !== 'unclassified';
 }
 
 function classifyExternalCall(
@@ -661,11 +559,16 @@ function visitOutboundCalls(
 export function classifyOutboundCallsInSource(
   source: ts.SourceFile,
   filePath: string,
+  options: OutboundClassificationOptions = {},
 ): ClassifiedOutboundCall[] {
   const calls: ClassifiedOutboundCall[] = [];
   const sourceFile = normalizePath(filePath);
   const initializers = variableInitializers(source);
   const serviceVariables = collectServiceVariables(source);
+  const eventAnalysis = createEventCallAnalysisContext(
+    source, serviceVariables, options.importedEventNameResolver,
+    options.eventEnvironmentReferenceResolver,
+  );
   const wrapperSpecs = collectWrapperSpecs(source);
   const internalRanges = [...wrapperSpecs.values()].map((spec) => ({
     start: spec.internalStart, end: spec.internalEnd,
@@ -682,7 +585,7 @@ export function classifyOutboundCallsInSource(
     } });
   };
   const context = {
-    source, initializers, serviceVariables, wrapperSpecs, add,
+    source, initializers, serviceVariables, eventAnalysis, wrapperSpecs, add,
   };
   visitOutboundCalls(
     source, internalRanges,

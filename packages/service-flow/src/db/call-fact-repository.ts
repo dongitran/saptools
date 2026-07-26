@@ -400,11 +400,12 @@ export function insertCalls(
 function outboundCallInsertStatement(db: Db): Statement {
   return db.prepare(`INSERT INTO outbound_calls(
     repo_id,source_symbol_id,call_type,method,operation_path_expr,query_entity,
-    event_name_expr,payload_summary,source_file,source_line,call_site_start_offset,
+    event_name_expr,event_skeleton_signature,event_skeleton_json,
+    payload_summary,source_file,source_line,call_site_start_offset,
     call_site_end_offset,confidence,unresolved_reason,local_service_name,
     local_service_lookup,alias_chain_json,evidence_json,external_target_kind,
     external_target_id,external_target_label,external_target_dynamic,service_binding_id
-  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 }
 
 function insertOutboundCall(
@@ -424,7 +425,9 @@ function insertOutboundCall(
   stmt.run(
     repoId, sourceSymbolId,
     call.callType, call.method, call.operationPathExpr, call.queryEntity,
-    call.eventNameExpr, call.payloadSummary, call.sourceFile, call.sourceLine,
+    call.eventNameExpr, call.eventSkeleton?.signature ?? null,
+    call.eventSkeleton ? JSON.stringify(call.eventSkeleton) : null,
+    call.payloadSummary, call.sourceFile, call.sourceLine,
     call.callSiteStartOffset, call.callSiteEndOffset, call.confidence,
     call.unresolvedReason,
     call.localServiceName, call.localServiceLookup,

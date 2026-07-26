@@ -155,6 +155,9 @@ function handlerEvidence(status?: ZeroRoleStatus): Record<string, unknown> {
 function outboundEvidence(status?: ZeroRoleStatus): string {
   return JSON.stringify({
     ...handlerEvidence(status),
+    receiverClassification: 'cap_evidence',
+    receiverProof: 'structural_cap_connect',
+    consideredBindingSites: [],
     sourceOwnerResolution: 'owned_exact',
     serviceBindingReference: {
       status: 'not_applicable',
@@ -275,6 +278,19 @@ function duplicateRole(db: Db, roleId: number): void {
     FROM symbol_calls WHERE id=?`).run(roleId);
 }
 
+function insertInvalidGeneratedConstant(db: Db): void {
+  db.prepare(`INSERT INTO generated_constants(
+    repo_id,source_file,source_line,name,container_name,member_name,value,
+    constant_kind,exported,stable,resolution_status,unresolved_reason,
+    declaration_start_offset,declaration_end_offset,
+    value_start_offset,value_end_offset
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    1, sourceFile, 2, 'TOPICS.CREATED', 'TOPICS', 'CREATED', null,
+    'const_object_property', 1, 1, 'resolved', null,
+    10, 30, 20, 25,
+  );
+}
+
 function graphSnapshot(db: Db): string {
   return JSON.stringify({
     graph: db.prepare('SELECT * FROM graph_edges ORDER BY id').all(),
@@ -290,6 +306,50 @@ function requiredRoleId(value: Fixture): number {
 }
 
 const mutations: EventMutation[] = [
+  {
+    label: 'missing event receiver classification',
+    categories: ['event_fact_semantics_invalid'],
+    mutate: ({ db, subscriptionId }) => updateEvidence(
+      db, 'outbound_calls', subscriptionId,
+      (value) => { delete value.receiverClassification; },
+    ),
+  },
+  {
+    label: 'invalid repository environment declaration counts',
+    categories: ['repository_environment_declarations_invalid'],
+    mutate: ({ db }) => db.prepare(`UPDATE repositories
+      SET environment_declarations_json=? WHERE id=1`).run(JSON.stringify({
+      schema: 'service-flow/environment-declarations@1',
+      status: 'not_applicable',
+      reason: null,
+      recordCap: 32,
+      total: 1,
+      shown: 0,
+      omitted: 1,
+      declarations: [],
+    })),
+  },
+  {
+    label: 'malformed event skeleton semantics',
+    categories: ['event_fact_semantics_invalid'],
+    mutate: ({ db, subscriptionId }) => {
+      db.prepare(`UPDATE outbound_calls SET event_name_expr=?,
+        unresolved_reason='dynamic_event_name_identifier',
+        event_skeleton_signature=?,event_skeleton_json='{}'
+        WHERE id=?`).run('${kind}RecordStored', 'a'.repeat(64), subscriptionId);
+      updateEvidence(db, 'outbound_calls', subscriptionId, (value) => {
+        value.eventNameUnresolvedReason = 'dynamic_event_name_identifier';
+        value.eventNameStatus = 'dynamic';
+        value.eventNameSourceKind = 'template_with_substitutions';
+        value.eventNamePlaceholderKeys = ['kind'];
+      });
+    },
+  },
+  {
+    label: 'invalid generated constant resolution matrix',
+    categories: ['generated_constant_fact_invalid'],
+    mutate: ({ db }) => insertInvalidGeneratedConstant(db),
+  },
   {
     label: 'missing handler-reference status',
     categories: ['subscription_handler_status_invalid'],

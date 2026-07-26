@@ -37,6 +37,14 @@ export const LINK_FACT_JSON_INVENTORY: readonly FactJsonInventoryItem[] = [
     repositoryJoin: '',
   },
   {
+    table: 'repositories',
+    column: 'environment_declarations_json',
+    nullable: false,
+    shape: 'object',
+    consumers: ['event-environment-resolver'],
+    repositoryJoin: '',
+  },
+  {
     table: 'handler_methods',
     column: 'decorator_resolution_json',
     nullable: false,
@@ -75,6 +83,14 @@ export const LINK_FACT_JSON_INVENTORY: readonly FactJsonInventoryItem[] = [
     nullable: true,
     shape: 'array',
     consumers: ['cross-repository-linker', 'trace-engine'],
+    repositoryJoin: directRepositoryJoin,
+  },
+  {
+    table: 'outbound_calls',
+    column: 'event_skeleton_json',
+    nullable: true,
+    shape: 'object',
+    consumers: ['event-shape-linker', 'event-runtime-resolver'],
     repositoryJoin: directRepositoryJoin,
   },
   {

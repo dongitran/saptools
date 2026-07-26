@@ -37,19 +37,38 @@ function directWriteTarget(node: ts.Node): boolean {
     && parent.initializer === use;
 }
 
-type MemberContainer = ts.ObjectLiteralExpression | ts.ClassLikeDeclaration;
-type StableMember = ts.ObjectLiteralElementLike | ts.ClassElement;
+type MemberContainer =
+  | ts.ObjectLiteralExpression
+  | ts.ClassLikeDeclaration
+  | ts.EnumDeclaration;
+type StableMember =
+  | ts.ObjectLiteralElementLike
+  | ts.ClassElement
+  | ts.EnumMember;
+
+function memberInitializer(
+  expression: ts.Expression,
+): ts.Expression {
+  if (ts.isParenthesizedExpression(expression)
+    || ts.isAsExpression(expression)
+    || ts.isSatisfiesExpression(expression)
+    || ts.isTypeAssertionExpression(expression))
+    return memberInitializer(expression.expression);
+  return expression;
+}
 
 function memberContainer(
   declaration: ts.Identifier,
 ): MemberContainer | undefined {
   const parent = declaration.parent;
   if (ts.isClassDeclaration(parent)) return parent;
+  if (ts.isEnumDeclaration(parent)) return parent;
   if (!ts.isVariableDeclaration(parent) || parent.name !== declaration
     || !parent.initializer) return undefined;
-  return ts.isObjectLiteralExpression(parent.initializer)
-    || ts.isClassExpression(parent.initializer)
-    ? parent.initializer
+  const initializer = memberInitializer(parent.initializer);
+  return ts.isObjectLiteralExpression(initializer)
+    || ts.isClassExpression(initializer)
+    ? initializer
     : undefined;
 }
 
@@ -81,10 +100,12 @@ function matchingMember(
 ): StableMember | undefined {
   const members = ts.isObjectLiteralExpression(value)
     ? value.properties
-    : value.members.filter((member) =>
-      ts.canHaveModifiers(member)
-      && ts.getModifiers(member)?.some((modifier) =>
-        modifier.kind === ts.SyntaxKind.StaticKeyword));
+    : ts.isEnumDeclaration(value)
+      ? value.members
+      : value.members.filter((member) =>
+        ts.canHaveModifiers(member)
+        && ts.getModifiers(member)?.some((modifier) =>
+          modifier.kind === ts.SyntaxKind.StaticKeyword));
   const matches = members.filter((member) =>
     'name' in member && member.name && memberName(member.name) === name);
   if (matches.length === 1) return matches[0];

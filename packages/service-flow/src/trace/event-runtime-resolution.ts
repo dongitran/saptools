@@ -14,6 +14,12 @@ import type {
   TraversalScopeState,
 } from './traversal-scope.js';
 import type { TraceGraphRow } from './evidence.js';
+import {
+  eventMissingVariableNames,
+  eventTemplateVariables,
+  parseEventSkeletonFact,
+  type EventSkeletonFact,
+} from '../utils/event-skeleton.js';
 
 export interface EventRuntimeResolution {
   row: TraceGraphRow;
@@ -35,6 +41,12 @@ function eventTemplate(evidence: Record<string, unknown>): string | undefined {
   const resolution = record(evidence.eventTemplateResolution);
   return typeof resolution?.original === 'string'
     ? resolution.original : undefined;
+}
+
+function eventSkeleton(
+  evidence: Record<string, unknown>,
+): EventSkeletonFact | undefined {
+  return parseEventSkeletonFact(evidence.eventSkeleton);
 }
 
 function missingReason(substitution: RuntimeSubstitution): string {
@@ -88,6 +100,10 @@ function eventEvidence(
     unresolvedReason,
     edgeType: row.edge_type,
   };
+  const skeleton = eventSkeleton(evidence);
+  const missing = eventMissingVariableNames(
+    skeleton, substitution.missing,
+  );
   return {
     ...evidence,
     runtimeSubstitutions: { eventName: substitution },
@@ -96,8 +112,10 @@ function eventEvidence(
     ),
     ...(substitution.supplied.length > 0
       ? { runtimeVariablesApplied: true } : {}),
-    ...(substitution.missing.length > 0
-      ? { missingRuntimeVariables: substitution.missing } : {}),
+    ...(missing.length > 0 ? {
+      missingRuntimeVariables: missing,
+      missingVariableCount: missing.length,
+    } : {}),
     effectiveResolution,
     linker: {
       status: effectiveResolution.status,
@@ -137,7 +155,10 @@ export function runtimeEventResolution(
   const template = eventTemplate(evidence);
   if (!template || row.to_kind === 'event' && variables === undefined)
     return undefined;
-  const substitution = substituteVariables(template, variables ?? {});
+  const skeleton = eventSkeleton(evidence);
+  const substitution = substituteVariables(
+    template, eventTemplateVariables(skeleton, variables ?? {}),
+  );
   const effectiveRow = runtimeEventRow(
     row, evidence, substitution, template,
   );

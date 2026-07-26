@@ -1,0 +1,172 @@
+import type { Db } from '../db/connection.js';
+import type { TraceOptions } from '../types.js';
+import {
+  operationNode,
+  symbolNode,
+  type TraceGraphEdgeRow,
+} from './trace-graph-lookups.js';
+import type { TraceGraphRow } from './evidence.js';
+import {
+  eventMissingVariableNames,
+  eventTemplateVariables,
+  parseEventSkeletonFact,
+} from '../utils/event-skeleton.js';
+
+const defaultEventShapeCandidateCap = 5;
+const maximumEventShapeCandidateCap = 50;
+
+function candidateCap(options: TraceOptions): number {
+  const value = options.maxDynamicCandidates
+    ?? defaultEventShapeCandidateCap;
+  if (!Number.isSafeInteger(value) || value < 1)
+    return defaultEventShapeCandidateCap;
+  return Math.min(value, maximumEventShapeCandidateCap);
+}
+
+function withCandidateCounts(
+  row: TraceGraphEdgeRow,
+  total: number,
+  shown: number,
+): TraceGraphEdgeRow {
+  let evidence: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(row.evidence_json);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      evidence = parsed as Record<string, unknown>;
+  } catch {
+    evidence = {};
+  }
+  return {
+    ...row,
+    evidence_json: JSON.stringify({
+      ...evidence,
+      eventShapeCandidateCount: total,
+      shownEventShapeCandidateCount: shown,
+      omittedEventShapeCandidateCount: Math.max(0, total - shown),
+    }),
+  };
+}
+
+export function visibleEventShapeRows(
+  rows: readonly TraceGraphEdgeRow[],
+  options: TraceOptions,
+): TraceGraphEdgeRow[] {
+  const regular = rows.filter((row) =>
+    row.edge_type !== 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER');
+  if ((options.dynamicMode ?? 'strict') !== 'candidates') return regular;
+  const candidates = rows.filter((row) =>
+    row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER');
+  const shown = candidates.slice(0, candidateCap(options));
+  return [
+    ...regular,
+    ...shown.map((row) =>
+      withCandidateCounts(row, candidates.length, shown.length)),
+  ];
+}
+
+export function outboundTraceEdgeType(
+  call: { call_type: string },
+  row: { edge_type: string; to_kind: string },
+): string {
+  if (row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER')
+    return 'event_shape_candidate_subscriber';
+  if (row.to_kind === 'operation'
+    && row.edge_type === 'REMOTE_CALL_RESOLVES_TO_OPERATION')
+    return 'remote_action';
+  if (row.to_kind === 'operation'
+    && row.edge_type === 'LOCAL_CALL_RESOLVES_TO_OPERATION')
+    return 'local_service_call';
+  return call.call_type;
+}
+
+export function outboundTraceTargetNode(
+  db: Db,
+  id: string,
+  row: TraceGraphRow,
+): Record<string, unknown> {
+  const operation = row.to_kind === 'operation'
+    ? operationNode(db, row.to_id) : undefined;
+  const candidate = row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
+    ? symbolNode(db, Number(row.to_id)) : undefined;
+  return operation ?? candidate ?? {
+    id,
+    kind: row.to_kind,
+    label: row.to_kind === 'db_entity'
+      ? `Entity: ${row.to_id || 'unknown'}` : row.to_id,
+  };
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function subscriberSkeletons(
+  db: Db,
+  workspaceId: number,
+  publishCallId: number,
+): unknown[] {
+  return db.prepare(`SELECT subscription.event_skeleton_json skeleton
+    FROM outbound_calls publication
+    JOIN repositories publication_repo ON publication_repo.id=publication.repo_id
+    JOIN outbound_calls subscription
+      ON subscription.call_type='async_subscribe'
+      AND subscription.event_skeleton_signature
+        =publication.event_skeleton_signature
+    JOIN repositories subscription_repo
+      ON subscription_repo.id=subscription.repo_id
+      AND subscription_repo.workspace_id=publication_repo.workspace_id
+    WHERE publication.id=? AND publication_repo.workspace_id=?
+      AND publication.event_skeleton_signature IS NOT NULL
+    ORDER BY subscription_repo.name COLLATE BINARY,
+      subscription.repo_id,subscription.source_file COLLATE BINARY,
+      subscription.call_site_start_offset,subscription.id`).all(
+    publishCallId, workspaceId,
+  ).map((row) => row.skeleton);
+}
+
+export function eventShapeMissingVariableEvidence(
+  db: Db,
+  workspaceId: number,
+  publishCallId: number,
+  evidence: Record<string, unknown>,
+  variables: Record<string, string> | undefined,
+): Record<string, unknown> {
+  const current = stringArray(evidence.missingRuntimeVariables);
+  if (current.length === 0) return evidence;
+  const names = new Set(current);
+  let matchingSubscriptions = 0;
+  for (const value of subscriberSkeletons(db, workspaceId, publishCallId)) {
+    const skeleton = parseEventSkeletonFact(value);
+    if (!skeleton?.candidateEligible) continue;
+    matchingSubscriptions += 1;
+    const expanded = eventTemplateVariables(skeleton, variables ?? {});
+    const missing = skeleton.sourceKeys.filter((key) =>
+      !Object.hasOwn(expanded, key));
+    for (const name of eventMissingVariableNames(skeleton, missing))
+      names.add(name);
+  }
+  const missing = [...names].sort((left, right) =>
+    left < right ? -1 : left > right ? 1 : 0);
+  return {
+    ...evidence,
+    missingRuntimeVariables: missing,
+    missingVariableCount: missing.length,
+    eventShapeMatchingSubscriptionCount: matchingSubscriptions,
+  };
+}
+
+export function eventShapeRuntimeEvidence(
+  db: Db,
+  workspaceId: number,
+  callId: number,
+  callType: string,
+  evidence: Record<string, unknown>,
+  variables: Record<string, string> | undefined,
+): Record<string, unknown> {
+  return callType === 'async_emit'
+    ? eventShapeMissingVariableEvidence(
+        db, workspaceId, callId, evidence, variables,
+      )
+    : evidence;
+}

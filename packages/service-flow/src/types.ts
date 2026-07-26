@@ -1,3 +1,5 @@
+import type { EventSkeletonFact } from './utils/event-skeleton.js';
+
 export type RepoKind =
   | 'cap-service'
   | 'cap-db-model'
@@ -36,6 +38,7 @@ export type EdgeType =
   | 'HANDLER_EMITS_EVENT'
   | 'EVENT_CONSUMED_BY_HANDLER'
   | 'EVENT_SUBSCRIPTION_HANDLED_BY'
+  | 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
   | 'REPO_IMPORTS_HELPER_PACKAGE'
   | 'HELPER_PACKAGE_PROVIDES_HANDLER'
   | 'DYNAMIC_EDGE_CANDIDATE'
@@ -229,6 +232,7 @@ export interface OutboundCallFact {
   operationPathExpr?: string;
   queryEntity?: string;
   eventNameExpr?: string;
+  eventSkeleton?: EventSkeletonFact;
   payloadSummary?: string;
   sourceFile: string;
   sourceLine: number;
@@ -272,9 +276,21 @@ export interface SymbolCallFact {
 }
 export interface GeneratedConstantFact {
   name: string;
-  value: string;
+  value?: string;
   sourceFile: string;
   sourceLine: number;
+  containerName?: string;
+  memberName?: string;
+  constantKind: 'const_identifier' | 'enum_member' | 'const_object_property';
+  exported: boolean;
+  stable: boolean;
+  resolutionStatus: 'resolved' | 'refused';
+  unresolvedReason?: 'event_name_constant_member_not_string'
+    | 'event_name_constant_container_mutable';
+  declarationStartOffset: number;
+  declarationEndOffset: number;
+  valueStartOffset: number;
+  valueEndOffset: number;
 }
 export interface TraceStart {
   repo?: string;

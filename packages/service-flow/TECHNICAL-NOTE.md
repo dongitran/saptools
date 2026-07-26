@@ -1,5 +1,18 @@
 # Service Flow Resolution Notes
 
+## 0.1.72 package publication notes
+
+- Package/CLI `0.1.72` publishes the schema-14 event-surface implementation without changing fact or compact compatibility. SQLite remains schema `14`, analyzer remains `0.1.71-facts.1`, and compact remains `service-flow/compact-graph@1`; repositories already force-indexed with analyzer `0.1.71-facts.1` do not churn solely for this package patch.
+
+## 0.1.71 event-surface proof and candidate notes
+
+- Package/CLI `0.1.71` introduced SQLite schema `14` and analyzer `0.1.71-facts.1`; compact remained `service-flow/compact-graph@1`. Schema 14 adds nullable legacy-safe event-skeleton columns, a nullable repository environment carrier, and the generated-constant table/indexes. Migration marks indexed repositories stale with `schema_v14_event_surface_requires_reindex`; it never reconstructs old event provenance.
+- Event receiver classification first proves a structurally imported `cds.connect.to(...)`/`messaging(...)` reaching assignment in lexical scope. Mixed, branch-dependent, parameter/property propagation, and known non-CAP bindings persist as bounded unproven facts; the historical receiver names are a lower-confidence, countable `name_fallback`, not CAP proof.
+- Event names fold only from stable string consts, enum members, and const-object properties in an exact local/relative module or uniquely proven package public entry. Generated constant facts retain declaration/value offsets, export/stability state, and refusal reasons. Computed access, mutable/non-string values, package duplicates, hidden exports, alias ambiguity, and incomplete surfaces remain non-traversable.
+- Template facts persist a name-independent literal/hole skeleton. Equal skeletons create `EVENT_SHAPE_CANDIDATE_SUBSCRIBER` only when at least one literal span is eight characters or longer; the edge is dynamic, capped, candidates-mode-only, and carries the proven subscriber handler. Canonical positional hole keys supplement the original source-expression keys without replacing them.
+- Repository environment facts currently admit only `SHARD_CODE` from `nodemon.json`, `.env`, `manifest.yml`, and `mta.yaml`. Values retain dev/deployment provenance and source offsets; only declarative case conversion is supported. Duplicate consumer values and within-repository conflicts fail closed, and non-allowlisted adjacent keys are never persisted.
+- Strict doctor now measures unresolved event names, dynamic/event-candidate edges, unmatched publications and subscriptions, receiver proof outcomes, skeleton candidates, and environment ambiguity. Static and runtime-exact bridges expose `workspace_event_name_only` plus their dispatch certainty in detailed/table and bounded compact evidence; this never claims broker, channel, tenant, or payload delivery.
+
 ## 0.1.70 source-layout notes
 
 - Package/CLI `0.1.70` removes numeric ordering prefixes from tracked source and test filenames. Runtime behavior and fact compatibility are unchanged, so SQLite remains schema `13`, analyzer `0.1.69-facts.1`, and compact contract `service-flow/compact-graph@1`; no reindex or relink is required solely for this package update.

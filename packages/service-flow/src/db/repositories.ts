@@ -7,6 +7,7 @@ import type {
   HandlerRegistrationFact,
   ServiceBindingFact,
   ExecutableSymbolFact,
+  GeneratedConstantFact,
 } from '../types.js';
 import {
   selectCallOwner,
@@ -16,6 +17,9 @@ import {
   PreparedRepositorySnapshotError,
   type PreparedSnapshotFailureCode,
 } from './index-publication-failure.js';
+import {
+  emptyEnvironmentDeclarations,
+} from '../parsers/environment-declarations.js';
 export interface RepoRow {
   id: number;
   name: string;
@@ -92,8 +96,8 @@ export function upsertRepository(
   db.prepare(
     `INSERT INTO repositories(workspace_id,name,absolute_path,relative_path,
       package_name,package_version,dependencies_json,
-      package_public_surface_json,kind,is_git_repo)
-    VALUES(?,?,?,?,?,?,?,?,?,?)
+      package_public_surface_json,environment_declarations_json,kind,is_git_repo)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(workspace_id,absolute_path) DO UPDATE SET
       name=excluded.name,relative_path=excluded.relative_path,
       package_name=excluded.package_name,
@@ -108,6 +112,7 @@ export function upsertRepository(
     r.packageVersion,
     JSON.stringify(r.dependencies ?? {}),
     initialPackagePublicSurface(r.packageName),
+    JSON.stringify(emptyEnvironmentDeclarations()),
     r.kind ?? 'unknown',
     r.isGitRepo ? 1 : 0,
   );
@@ -152,12 +157,33 @@ export function clearRepoFacts(db: Db, repoId: number): void {
     'symbol_calls',
     'handler_registrations',
     'service_bindings',
+    'generated_constants',
     'symbols',
     'diagnostics',
     'files',
   ])
     db.prepare(`DELETE FROM ${t} WHERE repo_id=?`).run(repoId);
   db.prepare('DELETE FROM search_index WHERE repo=?').run(String(repoId));
+}
+export function insertGeneratedConstants(
+  db: Db,
+  repoId: number,
+  rows: GeneratedConstantFact[],
+): void {
+  const stmt = db.prepare(`INSERT INTO generated_constants(
+    repo_id,source_file,source_line,name,container_name,member_name,value,
+    constant_kind,exported,stable,resolution_status,unresolved_reason,
+    declaration_start_offset,declaration_end_offset,
+    value_start_offset,value_end_offset
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  for (const row of rows) stmt.run(
+    repoId, row.sourceFile, row.sourceLine, row.name,
+    row.containerName ?? null, row.memberName ?? null, row.value ?? null,
+    row.constantKind, row.exported ? 1 : 0, row.stable ? 1 : 0,
+    row.resolutionStatus, row.unresolvedReason ?? null,
+    row.declarationStartOffset, row.declarationEndOffset,
+    row.valueStartOffset, row.valueEndOffset,
+  );
 }
 export function insertRequires(
   db: Db,

@@ -137,6 +137,9 @@ function insertSubscription(db: Db, repoId: number, input: SubscriptionInput): n
   const evidence = {
     handlerReferenceStatus: 'role_required',
     handlerReferenceShape: 'identifier',
+    receiverClassification: 'cap_evidence',
+    receiverProof: 'structural_cap_connect',
+    consideredBindingSites: [],
     sourceOwnerResolution: input.callerSymbolId === undefined
       ? 'ownerless_file_scope' : 'owned_exact',
     serviceBindingReference: {
@@ -168,6 +171,9 @@ function insertEmission(
   start: number,
 ): number {
   const evidence = {
+    receiverClassification: 'cap_evidence',
+    receiverProof: 'structural_cap_connect',
+    consideredBindingSites: [],
     sourceOwnerResolution: 'owned_exact',
     serviceBindingReference: {
       status: 'not_applicable',

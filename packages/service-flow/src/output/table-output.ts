@@ -23,12 +23,24 @@ function location(evidence: Record<string, unknown>): string {
 export function renderTraceTable(result: TraceResult): string {
   const lines = ['Step  Type                 From                                To                                  Evidence'];
   for (const e of result.edges) {
-    lines.push(`${String(e.step).padEnd(5)} ${e.type.padEnd(20)} ${e.from.slice(0, 34).padEnd(35)} ${e.to.slice(0, 35).padEnd(36)} ${location(e.evidence)}`);
+    lines.push(`${String(e.step).padEnd(5)} ${e.type.padEnd(20)} ${e.from.slice(0, 34).padEnd(35)} ${e.to.slice(0, 35).padEnd(36)} ${evidenceSummary(e.evidence)}`);
     if (e.unresolvedReason)
       lines.push(...hintLines(e.evidence).map((hint) => `      ${hint}`));
   }
   if (result.diagnostics.length > 0) lines.push('', 'Diagnostics:', ...result.diagnostics.flatMap(diagnosticLines));
   return `${lines.join('\n')}\n`;
+}
+
+function evidenceSummary(evidence: Record<string, unknown>): string {
+  const labels = [
+    typeof evidence.dispatchScope === 'string'
+      ? `scope=${evidence.dispatchScope}` : undefined,
+    typeof evidence.dispatchCertainty === 'string'
+      ? `certainty=${evidence.dispatchCertainty}` : undefined,
+  ].filter((value): value is string => Boolean(value));
+  return labels.length > 0
+    ? `${location(evidence)} [${labels.join(',')}]`
+    : location(evidence);
 }
 
 function diagnosticLines(diagnostic: Record<string, unknown>): string[] {

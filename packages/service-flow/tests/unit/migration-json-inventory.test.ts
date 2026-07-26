@@ -50,6 +50,11 @@ const jsonTargets: JsonTarget[] = [
     shape: 'object',
   },
   {
+    table: 'repositories',
+    column: 'environment_declarations_json',
+    shape: 'object',
+  },
+  {
     table: 'handler_methods',
     column: 'decorator_resolution_json',
     shape: 'object',
@@ -58,6 +63,11 @@ const jsonTargets: JsonTarget[] = [
   { table: 'symbol_calls', column: 'evidence_json', shape: 'object' },
   { table: 'outbound_calls', column: 'evidence_json', shape: 'object' },
   { table: 'outbound_calls', column: 'alias_chain_json', shape: 'array' },
+  {
+    table: 'outbound_calls',
+    column: 'event_skeleton_json',
+    shape: 'object',
+  },
   { table: 'service_bindings', column: 'placeholders_json', shape: 'array' },
   { table: 'service_bindings', column: 'helper_chain_json', shape: 'array' },
   { table: 'cds_requires', column: 'raw_json', shape: 'object' },
@@ -261,6 +271,13 @@ function assertBoundedConsumers(
 
 function downgradeToV12(db: Db): void {
   db.exec(`
+    DROP INDEX idx_outbound_event_skeleton;
+    DROP INDEX idx_generated_constant_name;
+    DROP INDEX uq_generated_constant_site;
+    DROP TABLE generated_constants;
+    ALTER TABLE outbound_calls DROP COLUMN event_skeleton_signature;
+    ALTER TABLE outbound_calls DROP COLUMN event_skeleton_json;
+    ALTER TABLE repositories DROP COLUMN environment_declarations_json;
     DROP INDEX idx_service_binding_site;
     DROP INDEX uq_service_binding_exact_site;
     ALTER TABLE service_bindings DROP COLUMN binding_site_start_offset;
@@ -278,6 +295,9 @@ function migrationSnapshot(db: Db): string {
     graph: db.prepare('SELECT * FROM graph_edges ORDER BY id').all(),
     bindingColumns: db.prepare("PRAGMA table_info('service_bindings')").all(),
     repositoryColumns: db.prepare("PRAGMA table_info('repositories')").all(),
+    outboundColumns: db.prepare("PRAGMA table_info('outbound_calls')").all(),
+    generatedConstantTable: db.prepare(`SELECT sql FROM sqlite_master
+      WHERE type='table' AND name='generated_constants'`).get(),
     bindingIndexes: db.prepare(
       "PRAGMA index_list('service_bindings')",
     ).all(),

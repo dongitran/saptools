@@ -217,25 +217,25 @@ function expectLifecycleWorkspaceState(state: LifecycleWorkspaceState): void {
       callType: 'async_emit',
       eventName: 'error',
       classifier: 'cap_service_event_emit',
-      receiverClassification: 'cap_evidence',
+      receiverClassification: 'name_fallback',
     },
     {
       callType: 'async_subscribe',
       eventName: 'OrderCreated',
       classifier: 'cap_service_event_subscription',
-      receiverClassification: 'cap_evidence',
+      receiverClassification: 'name_fallback',
     },
     {
       callType: 'async_emit',
       eventName: 'OrderCreated',
       classifier: 'cap_service_event_emit',
-      receiverClassification: 'cap_evidence',
+      receiverClassification: 'name_fallback',
     },
     {
       callType: 'async_emit',
       eventName: 'OrderShipped',
       classifier: 'cap_service_event_emit',
-      receiverClassification: 'cap_evidence',
+      receiverClassification: 'name_fallback',
     },
     {
       callType: 'async_subscribe',
@@ -247,7 +247,7 @@ function expectLifecycleWorkspaceState(state: LifecycleWorkspaceState): void {
       callType: 'async_subscribe',
       eventName: 'listening',
       classifier: 'cap_service_event_subscription',
-      receiverClassification: 'cap_evidence',
+      receiverClassification: 'name_fallback',
     },
   ]);
   expect(state.events.every((event) => event.evidenceValid === 1
@@ -346,8 +346,11 @@ describe('CAP lifecycle and error hook event filtering', () => {
       ['async_subscribe', 'FacadeCustom'],
       ['async_subscribe', 'listening'],
     ]);
-    expect(events.every((event) =>
-      event.evidence?.receiverClassification === 'cap_evidence')).toBe(true);
+    expect(events.map((event) =>
+      event.evidence?.receiverClassification)).toEqual([
+      'name_fallback', 'name_fallback', 'name_fallback',
+      'cap_evidence', 'name_fallback',
+    ]);
   });
 });
 

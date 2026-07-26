@@ -10,6 +10,13 @@ interface PackageCallRow {
   evidence: Record<string, unknown>;
 }
 
+interface PackageEventCallRow {
+  id: number;
+  repoId: number;
+  unresolvedReason?: string | null;
+  evidence: Record<string, unknown>;
+}
+
 export interface PackageInvalidationBatch {
   publishingRepoIds: ReadonlySet<number>;
   affectedCallerRepoIds: Set<number>;
@@ -42,6 +49,14 @@ function parsedEvidence(value: unknown): Record<string, unknown> | undefined {
 function packageName(evidence: Record<string, unknown>): string | undefined {
   return parsePackageImportReference(evidence.importBinding)
     ?.requestedPackageName ?? undefined;
+}
+
+function eventPackageName(
+  evidence: Record<string, unknown>,
+): string | undefined {
+  return parsePackageImportReference(
+    evidence.eventNameConstantImportBinding,
+  )?.requestedPackageName ?? undefined;
 }
 
 function packageCallEvidenceValid(
@@ -94,6 +109,67 @@ function pendingEvidence(evidence: Record<string, unknown>): string {
   });
 }
 
+function currentEventCalls(
+  db: Db,
+  workspaceId: number,
+  targetRepoId: number,
+): PackageEventCallRow[] {
+  const rows = db.prepare(`SELECT c.id,c.repo_id repoId,
+    c.unresolved_reason unresolvedReason,c.evidence_json evidenceJson
+    FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
+    WHERE r.workspace_id=? AND r.id<>? AND r.fact_analyzer_version=?
+      AND json_extract(c.evidence_json,
+        '$.eventNameConstantImportBinding.moduleKind')='package'
+    ORDER BY c.id`).all(workspaceId, targetRepoId, ANALYZER_VERSION);
+  return rows.flatMap((row) => {
+    const evidence = parsedEvidence(row.evidenceJson);
+    return evidence && eventPackageName(evidence)
+      && typeof row.id === 'number' && typeof row.repoId === 'number'
+      ? [{
+          id: row.id, repoId: row.repoId, evidence,
+          unresolvedReason: typeof row.unresolvedReason === 'string'
+            ? row.unresolvedReason : null,
+        }] : [];
+  });
+}
+
+function pendingEventEvidence(
+  evidence: Record<string, unknown>,
+): string {
+  const parser = { ...evidence };
+  delete parser.eventNameConstant;
+  delete parser.eventNamePackageConstantResolution;
+  parser.eventNameUnresolvedReason = 'event_name_constant_resolution_pending';
+  parser.eventNameStatus = 'dynamic';
+  parser.eventNameSourceKind = 'dynamic_expression';
+  parser.eventNamePlaceholderKeys = [];
+  return JSON.stringify(parser);
+}
+
+function resetPackageEventCalls(
+  db: Db,
+  workspaceId: number,
+  targetRepoId: number,
+  names: ReadonlySet<string>,
+  batch: PackageInvalidationBatch,
+): boolean {
+  const update = db.prepare(`UPDATE outbound_calls SET event_name_expr=?,
+    unresolved_reason=?,evidence_json=? WHERE id=?`);
+  let matched = false;
+  for (const call of currentEventCalls(db, workspaceId, targetRepoId)) {
+    if (!names.has(eventPackageName(call.evidence) ?? '')) continue;
+    const source = call.evidence.eventNameConstantSourceExpression;
+    if (typeof source !== 'string' || source.length === 0)
+      throw new Error('invalid_current_package_event_constant_evidence');
+    const reason = call.evidence.receiverClassification === 'unproven'
+      ? call.unresolvedReason : 'event_name_constant_resolution_pending';
+    update.run(source, reason, pendingEventEvidence(call.evidence), call.id);
+    batch.affectedCallerRepoIds.add(call.repoId);
+    matched = true;
+  }
+  return matched;
+}
+
 function targetWorkspace(
   db: Db,
   repoId: number,
@@ -142,6 +218,9 @@ export function invalidatePackageTargetFacts(
     batch.affectedCallerRepoIds.add(call.repoId);
     matched = true;
   }
+  matched = resetPackageEventCalls(
+    db, target.workspaceId, targetRepoId, names, batch,
+  ) || matched;
   if (matched || packageIdentityChanged(
     target.packageName, newPackageName,
   )) batch.affectedWorkspaceIds.add(target.workspaceId);

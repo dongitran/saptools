@@ -12,7 +12,8 @@ const requiredColumns = {
   repositories: [
     'id', 'workspace_id', 'name', 'absolute_path', 'relative_path',
     'package_name', 'package_version', 'dependencies_json',
-    'package_public_surface_json', 'kind', 'is_git_repo', 'last_indexed_at',
+    'package_public_surface_json', 'environment_declarations_json',
+    'kind', 'is_git_repo', 'last_indexed_at',
     'index_status', 'error_count', 'fingerprint', 'fact_generation',
     'graph_generation', 'graph_stale_reason', 'graph_stale_at',
     'fact_analyzer_version',
@@ -66,6 +67,7 @@ const requiredColumns = {
   outbound_calls: [
     'id', 'repo_id', 'source_symbol_id', 'service_binding_id', 'call_type',
     'method', 'operation_path_expr', 'query_entity', 'event_name_expr',
+    'event_skeleton_signature', 'event_skeleton_json',
     'payload_summary', 'source_file', 'source_line',
     'call_site_start_offset', 'call_site_end_offset', 'evidence_json',
     'confidence', 'unresolved_reason', 'local_service_name',
@@ -78,6 +80,13 @@ const requiredColumns = {
     'call_site_start_offset',
     'call_site_end_offset', 'call_role', 'status', 'evidence_json',
     'confidence', 'unresolved_reason',
+  ],
+  generated_constants: [
+    'id', 'repo_id', 'source_file', 'source_line', 'name',
+    'container_name', 'member_name', 'value', 'constant_kind', 'exported',
+    'stable', 'resolution_status', 'unresolved_reason',
+    'declaration_start_offset', 'declaration_end_offset',
+    'value_start_offset', 'value_end_offset',
   ],
   graph_edges: [
     'id', 'workspace_id', 'edge_type', 'status', 'from_kind', 'from_id',
@@ -167,6 +176,33 @@ function bindingIndexInvalid(
     && metadata?.unique === unique && metadata.partial === partial ? 0 : 1;
 }
 
+function tableIndexInvalid(
+  db: Db,
+  table: string,
+  name: string,
+  columns: readonly string[],
+  unique: number,
+): number {
+  const metadata = db.prepare(`PRAGMA index_list(${table})`)
+    .all().find((item) => item.name === name);
+  return metadata?.unique === unique
+    && indexColumns(db, name).join('\0') === columns.join('\0') ? 0 : 1;
+}
+
+function eventSurfaceIndexesInvalid(db: Db): number {
+  return tableIndexInvalid(
+    db, 'outbound_calls', 'idx_outbound_event_skeleton',
+    ['event_skeleton_signature', 'call_type', 'repo_id'], 0,
+  ) + tableIndexInvalid(
+    db, 'generated_constants', 'idx_generated_constant_name',
+    ['repo_id', 'source_file', 'name'], 0,
+  ) + tableIndexInvalid(
+    db, 'generated_constants', 'uq_generated_constant_site',
+    ['repo_id', 'source_file', 'name', 'declaration_start_offset',
+      'declaration_end_offset'], 1,
+  );
+}
+
 function exactBindingIndexInvalid(db: Db): number {
   const row = db.prepare(`SELECT sql FROM sqlite_master
     WHERE type='index' AND name='uq_service_binding_exact_site'`).get();
@@ -196,6 +232,10 @@ export function invalidSchemaStructureCategories(
       'schema_binding_exact_site_index_invalid',
       exactBindingIndexInvalid(db)
         + bindingIndexInvalid(db, 'idx_service_binding_site', 0, 0),
+    ),
+    ...category(
+      'schema_event_surface_index_invalid',
+      eventSurfaceIndexesInvalid(db),
     ),
   ];
 }

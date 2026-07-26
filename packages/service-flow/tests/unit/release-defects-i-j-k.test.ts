@@ -123,7 +123,7 @@ export async function run(
       from_id: '1',
       to_kind: String(emitted.toKind),
       to_id: String(emitted.toId),
-      confidence: 0.6,
+      confidence: 0.5,
       evidence_json: String(emitted.evidenceJson),
       status: 'dynamic',
     }, { ...emittedEvidence, callType: 'async_emit' }, {
@@ -227,7 +227,7 @@ messaging.emit(selectEvent());
 
     expect(facts[0]).toMatchObject({
       eventNameExpr: 'Order.${kind}',
-      confidence: 0.6,
+      confidence: 0.5,
       unresolvedReason: 'dynamic_event_name_identifier',
       evidence: {
         eventNameStatus: 'dynamic',

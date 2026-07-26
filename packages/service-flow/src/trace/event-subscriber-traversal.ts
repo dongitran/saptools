@@ -8,6 +8,10 @@ import {
   type TraversalScopeScheduler,
   type TraversalScopeState,
 } from './traversal-scope.js';
+import {
+  eventTemplateVariables,
+  parseEventSkeletonFact,
+} from '../utils/event-skeleton.js';
 
 export type EventSubscriberTransitionStatus =
   | 'resolved'
@@ -96,7 +100,8 @@ export function planEventSubscriberTransitions(
 ): PlannedEventSubscriberTransition[] {
   return loadEventSubscriberTransitions(db, query).map((transition) => {
     const handler = transition.handler;
-    if (!handler) return plannedTransition(transition, 'not_resolved');
+    if (transition.status !== 'resolved' || !handler)
+      return plannedTransition(transition, 'not_resolved');
     if (depth >= maxDepth)
       return plannedTransition(transition, 'depth_limited');
     const state = scheduler.schedule({
@@ -245,13 +250,15 @@ function eventRowForQuery(
   row: Record<string, unknown>,
   query: EventSubscriberTransitionQuery,
 ): Record<string, unknown> | undefined {
+  const exact = exactPersistedEventRow(row, query);
+  if (exact) return exact;
   const variables = query.vars;
-  if (variables === undefined) return exactPersistedEventRow(row, query);
+  if (variables === undefined) return undefined;
   const evidence = parseEvidence(row.evidenceJson);
   const resolution = isRecord(evidence.eventTemplateResolution)
     ? evidence.eventTemplateResolution : {};
   if (typeof resolution.original !== 'string')
-    return exactPersistedEventRow(row, query);
+    return undefined;
   return runtimeMatchedEventRow(
     row, query, evidence, resolution.original, variables,
   );
@@ -272,7 +279,10 @@ function runtimeMatchedEventRow(
   template: string,
   variables: Record<string, string>,
 ): Record<string, unknown> | undefined {
-  const substitution = substituteVariables(template, variables);
+  const skeleton = parseEventSkeletonFact(evidence.eventSkeleton);
+  const substitution = substituteVariables(
+    template, eventTemplateVariables(skeleton, variables),
+  );
   if (substitution.missing.length > 0
     || substitution.effective !== query.eventName) return undefined;
   const resolvedAssociation = evidence.associationStatus === 'resolved';
@@ -295,8 +305,7 @@ export function eventSubscriberMissingVariables(
   db: Db,
   query: EventSubscriberTransitionQuery,
 ): string[] {
-  if (query.vars === undefined) return [];
-  const variables = query.vars;
+  const variables = query.vars ?? {};
   const rows = db.prepare(`SELECT ge.from_id eventName,
     ge.evidence_json evidenceJson FROM graph_edges ge
     WHERE ge.workspace_id=? AND ge.generation=?
@@ -311,7 +320,10 @@ export function eventSubscriberMissingVariables(
     const template = typeof resolution.original === 'string'
       ? resolution.original : undefined;
     if (!template) return [];
-    const substitution = substituteVariables(template, variables);
+    const skeleton = parseEventSkeletonFact(evidence.eventSkeleton);
+    const substitution = substituteVariables(
+      template, eventTemplateVariables(skeleton, variables),
+    );
     if (substitution.missing.length === 0
       || matchRuntimeTemplate(
         substitution.effective, query.eventName,

@@ -239,7 +239,7 @@ describe('enum decorator implementation linking', () => {
   it('persists enum decorator values and links their implementation', async () => {
     const { db, workspaceId } = await prepareFixtureWorkspace();
     linkWorkspace(db, workspaceId);
-    expect(schemaVersion(db)).toBe(13);
+    expect(schemaVersion(db)).toBe(14);
     const decorator = db.prepare(`
       SELECT hm.decorator_value decoratorValue,
         hm.decorator_raw_expression decoratorRawExpression,

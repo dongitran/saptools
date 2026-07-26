@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.72
+
+- Published the completed event-surface provenance, constant-topic, candidate-subscriber, environment-declaration, and doctor-quality work as a package-only patch. SQLite remains schema `14`, analyzer compatibility remains `0.1.71-facts.1`, and compact remains `service-flow/compact-graph@1`; no additional reindex is required after applying the schema-14 fact release.
+
+## 0.1.71
+
+- Replaced event-receiver name gating with structural CAP-connect and lexical reaching-assignment proof for declarations, later assignments, destructuring, and formatter-split chains. Property and non-CAP receivers now persist bounded fail-closed facts instead of disappearing; compatibility names remain explicit `name_fallback` evidence.
+- Folded proven local, relative-module, and public package enum/const-object event topics without evaluating expressions. Mutable, non-string, unexposed, duplicate, computed, or incomplete containers retain typed unresolved reasons, and package constant facts are invalidated and re-resolved when their target surface changes.
+- Added schema 14 carriers for canonical event skeletons, allowlisted repository environment declarations, and generated string-constant provenance. Shape-equivalent subscriptions are opt-in dynamic candidates only when the identical hole layout has a literal span of at least eight characters; one canonical positional `--var` key can resolve both source-name variants.
+- Added per-repository `SHARD_CODE` declarations from bounded dev/deployment metadata, with explicit provenance, only `toUpperCase`/`toLowerCase` transforms, duplicate-value ambiguity, dependency-aware consumer expansion, fingerprint invalidation, and exclusion of every non-allowlisted neighbouring environment key.
+- Added strict doctor aggregates for unresolved names, dynamic candidates, unmatched publications/subscriptions, receiver proof outcomes, skeleton candidates, and environment ambiguities. Loop registrations retain enumerable multiplicity evidence, payload-routed sites remain non-authoritative candidates, and table/compact evidence exposes workspace-name-only delivery certainty.
+- Package/CLI was `0.1.71`, SQLite is schema `14`, analyzer compatibility is `0.1.71-facts.1`, and compact remains `service-flow/compact-graph@1`. The writer-only migration leaves legacy event skeleton/environment provenance null and marks old facts stale; existing workspaces require `index --force` followed by `link --force`.
+
 ## 0.1.70
 
 - Removed numeric ordering prefixes from every tracked source and test filename and updated all package-local imports. This is a source-layout-only release: SQLite remains schema `13`, analyzer compatibility remains `0.1.69-facts.1`, and the compact schema remains `service-flow/compact-graph@1`.

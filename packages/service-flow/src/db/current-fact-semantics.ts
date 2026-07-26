@@ -10,9 +10,8 @@ import {
 import {
   invalidBindingFactCategories,
 } from './binding-fact-semantics.js';
-import {
-  invalidSymbolFactCategories,
-} from './symbol-call-semantics.js';
+import { invalidSymbolFactCategories } from './symbol-call-semantics.js';
+import { invalidEventFactCategories } from './event-fact-semantics.js';
 
 export type PackageFactPhase = 'pre_package' | 'terminal';
 
@@ -262,7 +261,7 @@ function eventNameCategories(
   db: Db,
   workspaceId?: number,
 ): FactSemanticCategoryCount[] {
-  const invalid = count(db, `SELECT COUNT(*) count
+  const invalidName = count(db, `SELECT COUNT(*) count
     FROM outbound_calls fact JOIN repositories r ON r.id=fact.repo_id
     WHERE ${currentRepositoryPredicate()}
       AND fact.call_type IN ('async_emit','async_subscribe')
@@ -278,7 +277,7 @@ function eventNameCategories(
       fact.call_site_end_offset HAVING COUNT(*)<>1
   )`, workspaceId);
   return [
-    ...category('event_name_invalid', invalid),
+    ...category('event_name_invalid', invalidName),
     ...category('async_subscription_site_duplicate', duplicate),
   ];
 }
@@ -686,6 +685,7 @@ export function invalidFactSemanticCategories(
     ...callSpanCategories(db, workspaceId),
     ...duplicateSymbolCallCategories(db, workspaceId),
     ...eventNameCategories(db, workspaceId),
+    ...invalidEventFactCategories(db, workspaceId, phase),
     ...ownerCategories(db, workspaceId),
     ...bindingCategories(db, workspaceId),
     ...invalidBindingFactCategories(db, workspaceId),

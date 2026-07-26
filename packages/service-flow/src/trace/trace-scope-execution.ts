@@ -20,7 +20,6 @@ import {
 import type { PlannedEventSubscriberTransition } from './event-subscriber-traversal.js';
 import {
   graphForCalls,
-  operationNode,
   symbolNode,
   type TraceGraphEdgeRow,
 } from './trace-graph-lookups.js';
@@ -51,6 +50,12 @@ import type { ImplementationHintOptions } from './trace-implementation-scope.js'
 import { processOperationTarget } from './trace-operation-execution.js';
 import { runtimeEventResolution, runtimeEventSubscriberPlans } from './event-runtime-resolution.js';
 import { planLocalCallExpansion } from './local-call-expansion.js';
+import {
+  eventShapeRuntimeEvidence,
+  outboundTraceEdgeType,
+  outboundTraceTargetNode,
+  visibleEventShapeRows,
+} from './event-shape-candidate-trace.js';
 
 export interface CallRow extends Record<string, unknown> {
   id: number;
@@ -88,16 +93,6 @@ export interface TraceExecutionRuntime {
   diagnostics: Array<Record<string, unknown>>;
   nodes: Map<string, Record<string, unknown>>;
   recorder: TraceEdgeRecorder;
-}
-
-function traceEdgeType(call: CallRow, row: TraceGraphRow): string {
-  if (row.to_kind === 'operation'
-    && row.edge_type === 'REMOTE_CALL_RESOLVES_TO_OPERATION')
-    return 'remote_action';
-  if (row.to_kind === 'operation'
-    && row.edge_type === 'LOCAL_CALL_RESOLVES_TO_OPERATION')
-    return 'local_service_call';
-  return String(call.call_type);
 }
 
 function includeCall(type: string, options: TraceOptions): boolean {
@@ -339,7 +334,9 @@ function processOutboundCall(
   const contextual = contextualRuntimeResolution(
     runtime.db, call, bindings.get(receiver), call.workspaceId, persistedRows,
   );
-  const rows = contextual.row ? [contextual.row] : persistedRows;
+  const rows = contextual.row
+    ? [contextual.row]
+    : visibleEventShapeRows(persistedRows, runtime.options);
   for (const row of rows)
     processOutboundRow(runtime, current, call, { ...row }, contextual);
 }
@@ -385,16 +382,23 @@ function recordEffectiveOutbound(
 ): EffectiveOutbound {
   const persisted = parseTraceEvidence(row.evidence_json);
   const raw = baseTraceEvidence(row, call, persisted, contextual.evidence);
-  const effective = runtimeEventResolution(row, raw, runtime.options.vars)
+  const resolved = runtimeEventResolution(row, raw, runtime.options.vars)
     ?? runtimeResolution(runtime.db, row, raw, {
       vars: runtime.options.vars,
       dynamicMode: runtime.options.dynamicMode ?? 'strict',
       maxDynamicCandidates: runtime.options.maxDynamicCandidates,
     }, call.workspaceId, contextual.state);
+  const effective = {
+    ...resolved,
+    evidence: eventShapeRuntimeEvidence(
+      runtime.db, call.workspaceId, call.id, call.call_type,
+      resolved.evidence, runtime.options.vars,
+    ),
+  };
   const target = `${effective.row.to_kind}:${effective.row.to_id}`;
-  const operation = effective.row.to_kind === 'operation'
-    ? operationNode(runtime.db, effective.row.to_id) : undefined;
-  runtime.nodes.set(target, operation ?? targetNode(target, effective.row));
+  runtime.nodes.set(
+    target, outboundTraceTargetNode(runtime.db, target, effective.row),
+  );
   const to = edgeTarget(effective.row, effective.evidence);
   const edge = outboundTraceEdge(
     current.depth, call, effective.row, to,
@@ -418,18 +422,6 @@ function recordEffectiveOutbound(
   };
 }
 
-function targetNode(
-  id: string,
-  row: TraceGraphRow,
-): Record<string, unknown> {
-  return {
-    id,
-    kind: row.to_kind,
-    label: row.to_kind === 'db_entity'
-      ? `Entity: ${row.to_id || 'unknown'}` : row.to_id,
-  };
-}
-
 function outboundTraceEdge(
   depth: number,
   call: CallRow,
@@ -440,7 +432,7 @@ function outboundTraceEdge(
 ): TraceEdge {
   return {
     step: depth,
-    type: traceEdgeType(call, row),
+    type: outboundTraceEdgeType(call, row),
     from: `${call.repoName}:${call.source_file}:${call.source_line}`,
     to,
     evidence,

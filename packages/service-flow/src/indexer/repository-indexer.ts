@@ -7,6 +7,7 @@ import {
   insertCalls,
   insertExecutableSymbols,
   insertHandler,
+  insertGeneratedConstants,
   handlerMethodIsExecutable,
   insertRegistrations,
   insertSymbolCalls,
@@ -23,6 +24,9 @@ import {
   parseOutboundCalls,
 } from '../parsers/outbound-call-parser.js';
 import { parseExecutableSymbols } from '../parsers/symbol-parser.js';
+import {
+  generatedConstantFacts,
+} from '../parsers/generated-constants-parser.js';
 import {
   loadPackageJsonSnapshot,
 } from '../parsers/package-json-parser.js';
@@ -54,7 +58,19 @@ import {
   type RepositorySourceContext,
   type SourceContextInstrumentation,
 } from '../parsers/ts-project.js';
-import type { CdsServiceFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, PackageFacts, ServiceBindingFact, ExecutableSymbolFact, SymbolCallFact } from '../types.js';
+import {
+  createImportedEventNameResolver,
+} from '../parsers/event-name-import-resolution.js';
+import {
+  collectEnvironmentDeclarations,
+  type EnvironmentDeclarationsFact,
+} from '../parsers/environment-declarations.js';
+import {
+  createEventEnvironmentReferenceResolver,
+} from '../parsers/event-environment-reference.js';
+import { invalidateEventSurfaceFacts } from
+  '../db/event-surface-invalidation.js';
+import type { CdsServiceFact, GeneratedConstantFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, PackageFacts, ServiceBindingFact, ExecutableSymbolFact, SymbolCallFact } from '../types.js';
 export interface IndexRepoResult {
   fileCount: number;
   diagnosticCount: number;
@@ -68,6 +84,7 @@ interface ParsedFacts {
   calls: OutboundCallFact[];
   symbols: ExecutableSymbolFact[];
   symbolCalls: SymbolCallFact[];
+  generatedConstants: GeneratedConstantFact[];
   fileRecords: Array<{ relativePath: string; extension: string; sha256: string; sizeBytes: number }>;
 }
 export interface PreparedRepositoryIndex extends IndexRepoResult {
@@ -77,6 +94,7 @@ export interface PreparedRepositoryIndex extends IndexRepoResult {
   kind?: string;
   parsed?: ParsedFacts;
   packagePublicSurface?: PackagePublicSurfaceFact;
+  environmentDeclarations?: EnvironmentDeclarationsFact;
 }
 export async function indexRepository(
   db: Db,
@@ -139,6 +157,7 @@ export async function prepareRepositoryIndex(
     kind: await classifyRepository(repo.absolute_path, packageFacts),
     parsed,
     packagePublicSurface: packageSurface.surface,
+    environmentDeclarations: collectEnvironmentDeclarations(sources),
     fileCount: sourceFiles.length,
     diagnosticCount: parsed.handlers.filter((handler) =>
       handler.hasHandlerDecorator
@@ -154,20 +173,27 @@ export function publishPreparedRepositoryIndex(
 ): void {
   if (prepared.skipped) return;
   if (!prepared.packageFacts || !prepared.parsed || !prepared.fingerprint
-    || !prepared.kind || !prepared.packagePublicSurface)
+    || !prepared.kind || !prepared.packagePublicSurface
+    || !prepared.environmentDeclarations)
     throw new Error('Prepared repository index is missing publication facts');
   const now = new Date().toISOString();
   const repoId = prepared.repo.id;
+  const environmentJson = JSON.stringify(prepared.environmentDeclarations);
   invalidatePackageTargetFacts(
     db, repoId, prepared.packageFacts.packageName, invalidations,
   );
+  invalidateEventSurfaceFacts(
+    db, repoId, prepared.parsed.calls, environmentJson,
+  );
   db.prepare(`UPDATE repositories SET package_name=?, package_version=?,
-    dependencies_json=?,package_public_surface_json=?,kind=?,index_status=?
+    dependencies_json=?,package_public_surface_json=?,
+    environment_declarations_json=?,kind=?,index_status=?
     WHERE id=?`).run(
     prepared.packageFacts.packageName,
     prepared.packageFacts.packageVersion,
     JSON.stringify(prepared.packageFacts.dependencies),
     JSON.stringify(prepared.packagePublicSurface),
+    environmentJson,
     prepared.kind,
     'indexing',
     repoId,
@@ -183,6 +209,7 @@ export function publishPreparedRepositoryIndex(
   insertRegistrations(db, repoId, prepared.parsed.registrations);
   insertBindings(db, repoId, prepared.parsed.bindings);
   insertCalls(db, repoId, prepared.parsed.calls);
+  insertGeneratedConstants(db, repoId, prepared.parsed.generatedConstants);
   db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(now, prepared.fingerprint, now, ANALYZER_VERSION, repoId);
 }
 
@@ -243,14 +270,21 @@ async function parseAllSourceFacts(
   root: string,
   sources: RepositorySourceContext,
 ): Promise<ParsedFacts> {
-  const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], fileRecords: [] };
+  const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], generatedConstants: [], fileRecords: [] };
   for (const snapshot of sources.entries()) {
     const file = snapshot.filePath;
     facts.fileRecords.push({ relativePath: normalizePath(file), extension: path.extname(file), sha256: sha256Text(snapshot.text), sizeBytes: snapshot.sizeBytes });
     if (file.endsWith('.cds')) facts.services.push(...(await parseCdsFile(root, file, sources)));
     if (/\.[jt]s$/.test(file)) {
       const source = snapshot.sourceFile();
-      const classified = classifyOutboundCallsInSource(source, file);
+      facts.generatedConstants.push(...generatedConstantFacts(source, file));
+      const classified = classifyOutboundCallsInSource(source, file, {
+        importedEventNameResolver: createImportedEventNameResolver(
+          sources, source, file,
+        ),
+        eventEnvironmentReferenceResolver:
+          createEventEnvironmentReferenceResolver(sources, source, file),
+      });
       facts.handlers.push(...(await parseDecorators(root, file, sources)));
       facts.registrations.push(...(await parseHandlerRegistrations(root, file, sources)));
       const bindings = await parseServiceBindings(root, file, sources);
@@ -280,11 +314,16 @@ async function findSourceFiles(root: string): Promise<string[]> {
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) {
         if (!['node_modules', 'dist', 'gen', 'coverage', '.git'].includes(e.name)) await walk(path.join(dir, e.name), rel);
-      } else if (/\.(cds|ts|js)$/.test(e.name) && !isDefaultTestFile(rel)) out.push(rel);
+      } else if (isRepositoryFactInput(e.name)
+        && !isDefaultTestFile(rel)) out.push(rel);
     }
   }
   await walk(root);
   return out.sort();
+}
+function isRepositoryFactInput(name: string): boolean {
+  return /\.(cds|ts|js)$/.test(name)
+    || ['nodemon.json', '.env', 'mta.yaml', 'manifest.yml'].includes(name);
 }
 function isDefaultTestFile(relativeFile: string): boolean {
   const parts = relativeFile.split('/');

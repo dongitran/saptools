@@ -1,6 +1,6 @@
 import type { Db } from './connection.js';
 import { schemaIndexesSql, schemaTablesSql } from './schema.js';
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   handler_methods: [
     { name: 'decorator_resolution_json', ddl: "ALTER TABLE handler_methods ADD COLUMN decorator_resolution_json TEXT NOT NULL DEFAULT '{}'" },
@@ -20,6 +20,7 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'graph_stale_at', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_at TEXT' },
     { name: 'fact_analyzer_version', ddl: "ALTER TABLE repositories ADD COLUMN fact_analyzer_version TEXT DEFAULT 'legacy'" },
     { name: 'package_public_surface_json', ddl: 'ALTER TABLE repositories ADD COLUMN package_public_surface_json TEXT' },
+    { name: 'environment_declarations_json', ddl: 'ALTER TABLE repositories ADD COLUMN environment_declarations_json TEXT' },
   ],
   graph_edges: [
     { name: 'status', ddl: "ALTER TABLE graph_edges ADD COLUMN status TEXT NOT NULL DEFAULT 'unresolved'" },
@@ -60,6 +61,8 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'external_target_dynamic', ddl: 'ALTER TABLE outbound_calls ADD COLUMN external_target_dynamic INTEGER NOT NULL DEFAULT 0' },
     { name: 'call_site_start_offset', ddl: 'ALTER TABLE outbound_calls ADD COLUMN call_site_start_offset INTEGER' },
     { name: 'call_site_end_offset', ddl: 'ALTER TABLE outbound_calls ADD COLUMN call_site_end_offset INTEGER' },
+    { name: 'event_skeleton_signature', ddl: 'ALTER TABLE outbound_calls ADD COLUMN event_skeleton_signature TEXT' },
+    { name: 'event_skeleton_json', ddl: 'ALTER TABLE outbound_calls ADD COLUMN event_skeleton_json TEXT' },
   ],
   symbol_calls: [
     { name: 'call_site_start_offset', ddl: 'ALTER TABLE symbol_calls ADD COLUMN call_site_start_offset INTEGER' },
@@ -104,6 +107,13 @@ function markFactProvenanceMigrationStale(db: Db, priorVersion: number): void {
       graph_stale_at=COALESCE(graph_stale_at,datetime('now'))
     WHERE index_status='indexed' OR last_indexed_at IS NOT NULL`).run();
 }
+function markEventSurfaceMigrationStale(db: Db, priorVersion: number): void {
+  if (priorVersion >= 14) return;
+  db.prepare(`UPDATE repositories
+    SET graph_stale_reason='schema_v14_event_surface_requires_reindex',
+      graph_stale_at=COALESCE(graph_stale_at,datetime('now'))
+    WHERE index_status='indexed' OR last_indexed_at IS NOT NULL`).run();
+}
 export function migrate(db: Db): void {
   db.transaction(() => {
     const version = userVersion(db);
@@ -114,6 +124,7 @@ export function migrate(db: Db): void {
     normalizeLegacyStatus(db, version);
     markCallSiteMigrationStale(db, version);
     markFactProvenanceMigrationStale(db, version);
+    markEventSurfaceMigrationStale(db, version);
     const violations = db.pragma('foreign_key_check');
     if (violations.length > 0) throw new Error('SQLite foreign_key_check failed during migration');
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
