@@ -2,6 +2,108 @@
 
 <!-- cspell:words VARCHAR -->
 
+## 0.5.4 - 2026-07-26
+
+- **Security fix:** `0.5.3`'s routine/anonymous-block carve-out
+  (`isRoutineDefinition`/`isAnonymousBlock`) checked only that a top-level
+  `BEGIN` and `END` existed *somewhere* in the string, not that they were
+  correctly paired, ordered, or preceded only by plausible header content —
+  a bare keyword-existence check, not a structural one. Two independent
+  exploit families reopened the exact zero-flags bypass `0.5.3` exists to
+  close, in normal mode with no flags required at all:
+  1. A reordered/partial body, e.g. `CREATE PROCEDURE p AS DELETE FROM t
+     WHERE id=1; DROP TABLE other; END BEGIN` (and the `DO` equivalent).
+  2. **(Found by independent review, after this release's first cut
+     already shipped internally)** the search for a routine/block's first
+     `BEGIN` applied no validation to what it skipped over on the way
+     there — it would skip straight past an entire independent,
+     `;`-separated statement to reach a later, genuinely well-formed
+     `BEGIN ... END`, exempting the smuggled statement along with it, e.g.
+     `CREATE PROCEDURE p(x INT); DROP TABLE other; SELECT 1 BEGIN END`.
+  Fixed by depth-tracking `BEGIN`/`END` nesting the same way this file
+  already depth-tracks parentheses, *and* requiring the region between a
+  chunk's header keywords and its own first `BEGIN` to contain no top-level
+  `;` and no keyword that could lead an independent, dangerous statement
+  from a fixed set (`SELECT`/`CREATE`/`DROP`/`ALTER`/`TRUNCATE`/`RENAME`/
+  `COMMENT`/`WITH`/`CALL`/`MERGE`/`UPSERT`/`REPLACE`, plus `INSERT`/
+  `UPDATE`/`DELETE` for every header type except `TRIGGER`, since a trigger
+  header legitimately references those three as its own event keywords,
+  e.g. `BEFORE INSERT` — `MERGE`/`UPSERT`/`REPLACE` have no such legitimate
+  role in a trigger header and stay disqualifying for every type). The
+  region is also required to skip exactly the routine/trigger's own name
+  first (a bare or quoted identifier, optionally schema-qualified) before
+  that keyword check runs at all, since a legitimately-named routine can
+  coincide with one of those keywords (e.g. an unquoted `replace`) without
+  being a smuggled statement — a single identifier token can never itself
+  contain a real top-level `;` or a second keyword, so this cannot be used
+  to also skip real smuggled content. This closes the reordering bypass, a
+  stray `END` with no preceding `BEGIN`, both keywords appearing early with
+  real content trailing the close, and both exploit families above. As a
+  direct consequence, `0.5.3`'s own disclosed residual limitation — content
+  genuinely appended *after* a routine or anonymous block's own real `END`
+  — is also closed, for both `CREATE PROCEDURE`/`FUNCTION`/`TRIGGER` and
+  `DO` blocks. Chaining several independently-legitimate definitions back
+  to back (e.g. two `CREATE PROCEDURE` statements in one call) remains
+  allowed, since defining a routine is not itself destructive.
+  **Disclosed, narrow residual limitation:** because `TRIGGER` headers are
+  exempted from the `INSERT`/`UPDATE`/`DELETE` part of that keyword check
+  (to avoid rejecting ordinary trigger event clauses), a chunk that
+  specifically disguises itself as `CREATE TRIGGER` and references one of
+  those three verbs with no `;` and no `BEFORE`/`AFTER`/`INSTEAD OF` prefix
+  at all in its header (e.g. `CREATE TRIGGER t2 DELETE FROM customers
+  BEGIN END`, chained after a separate legitimate definition so a real `;`
+  exists for the check to matter at all — a fully standalone, semicolon-
+  free instance of this shape is already unaffected by this check either
+  way, since `hasMultipleStatements` never flags a string with no
+  top-level `;` regardless) is not rejected. Distinguishing a legitimate
+  trigger event keyword from a bare one requires validating it is actually
+  preceded by a trigger-timing keyword, which edges into full
+  SQLScript-header grammar parsing — out of scope for this fix, the same
+  way parsing a routine body's own contents is out of scope for the
+  carve-out itself. This is narrower than either exploit family above: it
+  requires specifically choosing `TRIGGER` (not `PROCEDURE`/`FUNCTION`/
+  `DO`) as the disguise, using specifically `INSERT`/`UPDATE`/`DELETE` (not
+  any other keyword), chained with a real `;` elsewhere in the input.
+- **Separately noticed while verifying the fix above, not fixed here:**
+  the header-disqualifying keyword set above is a fixed list derived from
+  this file's own existing DDL/DML/SELECT/WITH/CALL vocabulary, not every
+  keyword that could lead an independent dangerous statement in general —
+  `GRANT`/`REVOKE` are notable omissions. This is not unique to the
+  routine/block carve-out: a bare, semicolon-free single statement leading
+  with an unrecognized keyword (`GRANT`, `REVOKE`, or anything else
+  `classifyByKeyword` does not recognize) is *already* treated as
+  non-destructive by this guard's existing classifier, with or without any
+  routine/trigger wrapper around it, since only a statement's own leading
+  keyword and `WHERE`-scope are inspected. Extending the classifier's
+  keyword vocabulary to cover `GRANT`/`REVOKE` (and auditing for other
+  gaps of the same shape) is a separate, broader task than the
+  routine-header validation this release adds, and is not attempted here.
+- **Security fix, pre-existing since `0.5.1`/`0.5.2`, broader than
+  previously disclosed:** the `WITH`-CTE-list parser (`cteListEndIndex`)
+  did not fail closed once a CTE list was itself well-formed — if whatever
+  followed it was neither a comma nor a recognizable keyword (e.g. stray
+  punctuation), it returned a *defined* result with an empty `""` keyword
+  rather than `undefined`, which slipped past the guard's
+  unresolved-`WITH` fail-closed check. `0.5.3`'s changelog disclosed a
+  narrower version of this gap specific to a semicolon placed mid-CTE-list;
+  this follow-up review found the same defect is reachable with no
+  semicolon involved at all (`WITH a AS (SELECT 1 FROM DUMMY) !!! DELETE
+  FROM customers`). Fixed by requiring the character immediately after a
+  completed CTE list to be keyword-shaped (alphabetic) before treating the
+  resolution as successful; otherwise it now fails closed exactly like an
+  already-malformed CTE list. An unrecognized-but-alphabetic continuation
+  (e.g. `EXPLAIN`) is unaffected and continues to resolve and classify
+  exactly as before.
+- The hand-maintained zero-width/invisible-character allowlist (5 code
+  points, added in `0.5.3`) is replaced with a Unicode-property match
+  (`\p{Cf}`, the standard "Format" general category), closing several
+  realistic gaps it missed — including left-to-right/right-to-left marks,
+  soft hyphen, and several invisible math-layout characters — instead of
+  only the handful of code points a prior session happened to notice.
+  Verified empirically to match every previously-listed code point, match
+  none of A-Z/0-9/standard SQL punctuation, and not create any way to hide
+  real trailing content.
+
 ## 0.5.3 - 2026-07-26
 
 - **Security fix:** the safety guard and pre-write backup planner only ever

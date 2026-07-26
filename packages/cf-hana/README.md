@@ -349,10 +349,31 @@ mode `0600`.
   argument containing more than one genuine top-level statement (separated
   by a real, non-quoted, non-commented `;`) is refused unconditionally — not
   overridable by `--allow-destructive` or `--read-only`. `CREATE PROCEDURE`/
-  `FUNCTION`/`TRIGGER` bodies are exempted, since their `BEGIN`/`END` blocks
-  legitimately contain internal semicolons; content appended after such a
-  routine body's own `END` is a disclosed, out-of-scope exception to this
-  guarantee (see CHANGELOG).
+  `FUNCTION`/`TRIGGER` definitions and `DO` anonymous blocks are exempted
+  when chained back to back, since their `BEGIN`/`END` bodies legitimately
+  contain internal semicolons — but each chunk's own header (its name, then
+  everything up to its first `BEGIN`) must contain no top-level `;` and no
+  keyword, from a fixed disqualifying set, that could lead an independent
+  statement, and its body's `BEGIN`/`END` nesting must genuinely balance and
+  reach either the true end of the input or the start of another such
+  definition. A reordered or partial `BEGIN`/`END`, a statement skipped
+  over on the way to a later `BEGIN`, and content appended after a real
+  body's own `END` (whether trailing the last definition or sandwiched
+  between two), are all refused; only chaining several independently
+  well-formed definitions back to back is allowed.
+  **Known, narrow limitations** (see CHANGELOG for full detail): a
+  `TRIGGER` header may legitimately reference `INSERT`/`UPDATE`/`DELETE` as
+  its own event keywords (`BEFORE INSERT`, `AFTER UPDATE`, ...), so those
+  three are not disqualifying specifically for `TRIGGER`; a chunk disguised
+  as `CREATE TRIGGER`, chained after a separate legitimate definition,
+  referencing one of them with no `BEFORE`/`AFTER`/`INSTEAD OF` prefix at
+  all is not caught by this check. Separately, the disqualifying keyword
+  set is a fixed list (not every keyword that could lead a dangerous
+  statement in general — `GRANT`/`REVOKE` are notable omissions); this is
+  not specific to the carve-out, since a bare, semicolon-free statement
+  leading with any keyword this guard's classifier does not recognize is
+  already treated as non-destructive regardless of any routine/trigger
+  wrapper.
 - **Auto-limit** appends a `LIMIT` to bare `SELECT` statements (default 100);
   `QueryResult.truncated` reports when it clipped the result. Disable with
   `autoLimit: false` / `--no-auto-limit`.

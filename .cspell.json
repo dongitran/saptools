@@ -185,7 +185,10 @@
     "unrefs",
     "untunneled",
     "unreaped",
-    "fullwidth"
+    "fullwidth",
+    "SQLSCRIPT",
+    "FEFF",
+    "disqualifiers"
   ],
   "ignorePaths": [
     "**/node_modules/**",

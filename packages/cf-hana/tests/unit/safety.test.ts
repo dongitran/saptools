@@ -489,12 +489,22 @@ describe("evaluateGuard", () => {
       expect(decision.allowed).toBe(true);
     });
 
-    it("disclosed limitation: content appended after a routine body's own END is not caught by this check", () => {
+    it("blocks content appended after a routine body's own END (closed: was a disclosed limitation)", () => {
       const decision = evaluateGuard(
         "CREATE PROCEDURE p AS BEGIN DECLARE x INT; END; DROP TABLE other",
         { readOnly: false, allowDestructive: false },
       );
-      expect(decision.allowed).toBe(true);
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
+    });
+
+    it("blocks a statement skipped over on the way to a later BEGIN...END, with zero flags (independent-review finding)", () => {
+      const decision = evaluateGuard(
+        "CREATE PROCEDURE p(x INT); DROP TABLE other; SELECT 1 BEGIN END",
+        { readOnly: false, allowDestructive: false },
+      );
+      expect(decision.allowed).toBe(false);
+      expect(decision.violation).toBe("multi-statement");
     });
 
     it("the reason message is distinct from the WITH-refused/backup message and names the real cause", () => {

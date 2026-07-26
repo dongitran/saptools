@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { isAnonymousBlock, isRoutineDefinition } from "../../src/routine-carve-out.js";
 import {
   assertParamArity,
   classifyStatement,
   countPlaceholders,
   firstKeyword,
   hasMultipleStatements,
-  isAnonymousBlock,
-  isRoutineDefinition,
   qualifiedName,
   quoteIdentifier,
   resolveWithStatement,
@@ -615,16 +614,235 @@ describe("hasMultipleStatements", () => {
       ).toBe(true);
     });
 
-    it("disclosed residual limitation: content genuinely appended after a routine body's own END is not caught", () => {
-      // Accepted, intentional gap (see CHANGELOG): exempting the whole
-      // leading routine-creation statement means a smuggled statement after
-      // its real END is not detected either - a full SQLScript BEGIN/END-
-      // nesting-aware parser would be needed to find where the routine body
-      // truly ends, which is explicitly out of scope for this fix. This test
-      // documents that this is known and deliberate, not an oversight.
+    it("closed limitation: content genuinely appended after a routine body's own END is now caught", () => {
+      // Previously an accepted, disclosed gap (see CHANGELOG): exempting the
+      // whole leading routine-creation statement meant a smuggled statement
+      // after its real END was not detected either. Depth-tracked BEGIN/END
+      // pairing (added to close the ordering bypass below) finds where the
+      // body genuinely ends and requires nothing real to follow, closing
+      // this as a side effect - it is no longer a residual limitation.
       expect(
         hasMultipleStatements("CREATE PROCEDURE p AS BEGIN DECLARE x INT; END; DROP TABLE other"),
+      ).toBe(true);
+    });
+
+    it("blocks a reordered BEGIN/END that previously defeated the carve-out entirely", () => {
+      expect(
+        hasMultipleStatements("CREATE PROCEDURE p AS DELETE FROM t WHERE id=1; DROP TABLE other; END BEGIN"),
+      ).toBe(true);
+      expect(
+        hasMultipleStatements("DO DELETE FROM t WHERE id=1; DROP TABLE other; END BEGIN"),
+      ).toBe(true);
+    });
+
+    it("blocks both keywords appearing early with real content trailing the close", () => {
+      expect(
+        hasMultipleStatements("CREATE PROCEDURE p AS BEGIN END DELETE FROM t WHERE id=1; DROP TABLE other"),
+      ).toBe(true);
+    });
+
+    it("blocks arbitrary content skipped over on the way to a later, legitimate-looking BEGIN...END (independent-review finding)", () => {
+      // Depth-tracking BEGIN/END alone is not enough: without also
+      // validating the header region itself, the search for "the first
+      // top-level BEGIN" can skip straight over an entire independent
+      // statement (semicolons and all) on its way to a real BEGIN...END
+      // much later in the string, exempting the smuggled statement along
+      // with it. Each of these was confirmed live-reproduced against this
+      // package before the header-validation fix landed.
+      const exploits = [
+        "CREATE PROCEDURE p(x INT); DROP TABLE other; SELECT 1 BEGIN END",
+        "DO DROP TABLE other; SELECT 1 BEGIN END",
+        "CREATE PROCEDURE p AS DROP TABLE customers; SELECT 1; BEGIN DECLARE x INT; END;",
+        "CREATE FUNCTION f() DROP TABLE other; SELECT 1 BEGIN END",
+        "CREATE TRIGGER t DROP TABLE other; SELECT 1 BEGIN END",
+        "CREATE OR REPLACE PROCEDURE p DROP TABLE other; SELECT 1 BEGIN END",
+        "CREATE PROCEDURE p DELETE FROM customers; BEGIN END",
+        "CREATE PROCEDURE p UPDATE customers SET flag=1; BEGIN END",
+      ];
+      for (const sql of exploits) {
+        expect(hasMultipleStatements(sql)).toBe(true);
+      }
+    });
+
+    it("blocks a disqualifying keyword smuggled before a chunk's own BEGIN even with no semicolon at all (independent-review finding)", () => {
+      // A statement sandwiched between two chained chunks, where the
+      // second chunk's own header-to-BEGIN region contains no semicolon
+      // at all (so the semicolon check alone would miss it), is still
+      // caught because the disqualifying-keyword region check applies
+      // independently of whether a `;` is present.
+      const sql =
+        "CREATE PROCEDURE legit AS BEGIN SELECT 1 FROM DUMMY; END; " +
+        "CREATE PROCEDURE p2 DROP TABLE evil BEGIN END";
+      expect(hasMultipleStatements(sql)).toBe(true);
+    });
+
+    it("does not reject a legitimate TRIGGER header for referencing INSERT/UPDATE/DELETE as its own event keywords", () => {
+      // The keyword-disqualification check above must not confuse a
+      // TRIGGER's own event vocabulary (BEFORE/AFTER INSERT/UPDATE/
+      // DELETE) with a smuggled DML statement - regression coverage
+      // distinct from the pre-existing "recognizes/allows" TRIGGER tests,
+      // specifically for the new header-validation logic.
+      expect(hasMultipleStatements("CREATE TRIGGER t BEFORE INSERT ON tbl BEGIN DECLARE x INT; END;")).toBe(
+        false,
+      );
+      expect(hasMultipleStatements("CREATE TRIGGER t AFTER UPDATE ON tbl BEGIN DECLARE x INT; END;")).toBe(
+        false,
+      );
+      expect(
+        hasMultipleStatements("CREATE TRIGGER t INSTEAD OF DELETE ON tbl BEGIN DECLARE x INT; END;"),
       ).toBe(false);
+    });
+
+    it("MERGE/UPSERT/REPLACE stay disqualifying even for a TRIGGER header (independent-review finding: no legitimate trigger role)", () => {
+      // Only INSERT/UPDATE/DELETE are real HANA trigger event keywords;
+      // MERGE/UPSERT/REPLACE have no legitimate role in a trigger header
+      // at all, so - unlike those three - they are never exempted, for
+      // any header type including TRIGGER. This narrows the residual
+      // limitation below to exactly the three real event keywords instead
+      // of all six DML verbs. A bare, semicolon-free single statement can
+      // never trip hasMultipleStatements regardless of the carve-out
+      // (there is nothing for the fallback segment-count to find, with or
+      // without the exemption), so - to actually exercise this
+      // observably - each case chains the disguised trigger chunk after a
+      // separate legitimate definition, matching the main fix's own
+      // sandwiched-chunk regression tests.
+      const withMerge = "CREATE PROCEDURE legit AS BEGIN X; END; CREATE TRIGGER t2 MERGE customers BEGIN END";
+      const withUpsert =
+        "CREATE PROCEDURE legit AS BEGIN X; END; " +
+        "CREATE TRIGGER t2 UPSERT customers VALUES (1) BEGIN END";
+      const withReplace =
+        "CREATE PROCEDURE legit AS BEGIN X; END; CREATE TRIGGER t2 REPLACE customers BEGIN END";
+      expect(hasMultipleStatements(withMerge)).toBe(true);
+      expect(hasMultipleStatements(withUpsert)).toBe(true);
+      expect(hasMultipleStatements(withReplace)).toBe(true);
+    });
+
+    it("known, narrow residual limitation: a bare (unprefixed) INSERT/UPDATE/DELETE in a TRIGGER-typed chunk's header is not caught", () => {
+      // Excluding INSERT/UPDATE/DELETE from the TRIGGER header's
+      // disqualifying-keyword set (required so ordinary trigger event
+      // clauses keep working - see the regression test above) means a
+      // *specifically TRIGGER-typed* chunk whose header references one of
+      // those three real event keywords with no BEFORE/AFTER/INSTEAD OF
+      // prefix at all is not rejected by this check. This is deliberately
+      // not closed further: distinguishing a legitimate event-clause
+      // keyword from a bare one requires validating that it is actually
+      // preceded by a trigger-timing keyword, which edges into full
+      // SQLScript-header grammar parsing - explicitly out of scope for
+      // this fix, the same way body-internal parsing is out of scope for
+      // the routine-body carve-out itself. Narrower than the finding
+      // above (only 3 keywords, not 6) and narrower than the main fix's
+      // exploit family: it requires specifically choosing TRIGGER (not
+      // PROCEDURE/FUNCTION/DO) as the disguise. Chained after a separate
+      // legitimate definition (so a genuine `;` exists for the fallback
+      // segment-count to have found, had the chain-check correctly
+      // rejected this chunk) to make the gap concretely observable rather
+      // than a bare, semicolon-free string that would return `false`
+      // regardless of this check's precision. Documented here, not
+      // silently left unexamined.
+      const sql = "CREATE PROCEDURE legit AS BEGIN X; END; CREATE TRIGGER t2 DELETE FROM customers BEGIN END";
+      expect(hasMultipleStatements(sql)).toBe(false);
+    });
+
+    it("does not reject a routine/trigger named exactly after a disqualifying keyword (independent-review finding)", () => {
+      // The header-to-BEGIN scan must skip the routine's own name before
+      // applying the disqualifying-keyword check - otherwise a routine
+      // legitimately named e.g. `replace` would be mistaken for a
+      // smuggled REPLACE statement's leading verb. Skipping exactly one
+      // (optionally schema-qualified, optionally quoted) identifier is
+      // safe: a single identifier token can never itself contain a real
+      // top-level `;` or a second keyword, so this cannot be abused to
+      // also skip real smuggled content.
+      expect(hasMultipleStatements("CREATE PROCEDURE replace(x INT) AS BEGIN DECLARE y INT; END;")).toBe(
+        false,
+      );
+      expect(hasMultipleStatements("CREATE PROCEDURE merge AS BEGIN DECLARE y INT; END;")).toBe(false);
+      expect(hasMultipleStatements("CREATE PROCEDURE my_schema.upsert AS BEGIN DECLARE y INT; END;")).toBe(
+        false,
+      );
+      expect(
+        hasMultipleStatements('CREATE PROCEDURE "replace; DROP TABLE other" AS BEGIN DECLARE y INT; END;'),
+      ).toBe(false);
+    });
+
+    it("still blocks a genuinely smuggled statement placed right after a plausibly-named routine", () => {
+      // Regression guard for the fix above: skipping the routine's own
+      // name must not accidentally widen into skipping real smuggled
+      // content placed immediately after it.
+      expect(
+        hasMultipleStatements("CREATE PROCEDURE replace_data; DROP TABLE other; SELECT 1 BEGIN END"),
+      ).toBe(true);
+      expect(
+        hasMultipleStatements("CREATE PROCEDURE replace DROP TABLE other; SELECT 1 BEGIN END"),
+      ).toBe(true);
+    });
+
+    it("blocks a nested BEGIN whose depth never returns to 0, falling through to the real smuggled statement", () => {
+      // The outer BEGIN never finds its matching END (only the inner
+      // pair's END is present), so the carve-out itself fails to match
+      // regardless of what follows - this exercises that failure path
+      // directly, with a real trailing statement so the fallback
+      // segment-count check has something genuine to catch.
+      expect(hasMultipleStatements("CREATE PROCEDURE p AS BEGIN BEGIN END; DROP TABLE other")).toBe(true);
+    });
+
+    it("blocks a stray top-level END with no preceding BEGIN at all", () => {
+      expect(
+        hasMultipleStatements("CREATE PROCEDURE p AS END DELETE FROM t WHERE id=1; DROP TABLE other"),
+      ).toBe(true);
+    });
+
+    it("blocks a statement smuggled between two otherwise-legitimate chained routine definitions", () => {
+      const sql =
+        "CREATE PROCEDURE p1 AS BEGIN X; END; DELETE FROM t WHERE id=1; DROP TABLE other; " +
+        "CREATE PROCEDURE p2 AS BEGIN Y; END;";
+      expect(hasMultipleStatements(sql)).toBe(true);
+    });
+
+    it("still allows two independently-legitimate routine definitions chained back to back", () => {
+      const sql = "CREATE PROCEDURE p1 AS BEGIN X; END; CREATE PROCEDURE p2 AS BEGIN Y; END;";
+      expect(hasMultipleStatements(sql)).toBe(false);
+    });
+
+    it("allows a multi-clause header (parameter list, LANGUAGE clause) before BEGIN", () => {
+      const sql =
+        "CREATE PROCEDURE my_proc(IN x INT, OUT y INT)\n" +
+        "LANGUAGE SQLSCRIPT\n" +
+        "AS\n" +
+        "BEGIN\n" +
+        "  DECLARE z INT;\n" +
+        "END;";
+      expect(hasMultipleStatements(sql)).toBe(false);
+    });
+
+    it("allows a nested BEGIN/END block inside an otherwise-normal procedure body", () => {
+      const sql =
+        "CREATE PROCEDURE p AS\n" +
+        "BEGIN\n" +
+        "  DECLARE x INT;\n" +
+        "  BEGIN\n" +
+        "    x := 1;\n" +
+        "  END;\n" +
+        "  SELECT x FROM DUMMY;\n" +
+        "END;";
+      expect(hasMultipleStatements(sql)).toBe(false);
+    });
+
+    it("does not create a bypass when combined with OR REPLACE", () => {
+      expect(
+        hasMultipleStatements(
+          "CREATE OR REPLACE PROCEDURE p AS DELETE FROM t WHERE id=1; DROP TABLE other; END BEGIN",
+        ),
+      ).toBe(true);
+    });
+
+    it("is not confused by comments containing the literal words BEGIN/END", () => {
+      const sql =
+        "CREATE PROCEDURE p AS\n" +
+        "-- BEGIN a note about END behavior\n" +
+        "BEGIN\n" +
+        "  DECLARE x INT;\n" +
+        "END;";
+      expect(hasMultipleStatements(sql)).toBe(false);
     });
   });
 
@@ -668,6 +886,49 @@ describe("hasMultipleStatements", () => {
 
     it("does not flag a single statement with ordinary, fully-balanced parens", () => {
       expect(hasMultipleStatements("DELETE FROM t WHERE id IN (1, 2)")).toBe(false);
+    });
+  });
+
+  describe("category O - Unicode-property-based zero-width detection covers the whole Cf category", () => {
+    // Every character below is built from an explicit \u{...} escape (never
+    // a literal invisible character pasted into this file), so the exact
+    // code point under test stays legible in source rather than vanishing
+    // into whitespace. Each is a genuinely invisible Unicode "Format" (Cf)
+    // character that the previous hand-picked code-point list missed - a
+    // realistic artifact of copy-pasting SQL out of a chat app, word
+    // processor, or web page. Each must remain ALLOWED (not treated as a
+    // second statement) now that detection is Unicode-property-based.
+    const newlyCoveredFormatChars: readonly [string, string][] = [
+      ["U+200E LEFT-TO-RIGHT MARK", "\u{200E}"],
+      ["U+200F RIGHT-TO-LEFT MARK", "\u{200F}"],
+      ["U+061C ARABIC LETTER MARK", "\u{061C}"],
+      ["U+00AD SOFT HYPHEN", "\u{00AD}"],
+      ["U+2061 FUNCTION APPLICATION", "\u{2061}"],
+      ["U+2062 INVISIBLE TIMES", "\u{2062}"],
+      ["U+2063 INVISIBLE SEPARATOR", "\u{2063}"],
+      ["U+2064 INVISIBLE PLUS", "\u{2064}"],
+      ["U+202A LEFT-TO-RIGHT EMBEDDING", "\u{202A}"],
+      ["U+2066 LEFT-TO-RIGHT ISOLATE", "\u{2066}"],
+    ];
+
+    it.each(newlyCoveredFormatChars)("%s trailing the final semicolon is not a second statement", (_label, char) => {
+      expect(hasMultipleStatements(`SELECT * FROM t;${char}`)).toBe(false);
+    });
+
+    const originallyCoveredFormatChars: readonly [string, string][] = [
+      ["U+200B ZERO WIDTH SPACE", "\u{200B}"],
+      ["U+200C ZERO WIDTH NON-JOINER", "\u{200C}"],
+      ["U+200D ZERO WIDTH JOINER", "\u{200D}"],
+      ["U+2060 WORD JOINER", "\u{2060}"],
+      ["U+FEFF ZERO WIDTH NO-BREAK SPACE (BOM)", "\u{FEFF}"],
+    ];
+
+    it.each(originallyCoveredFormatChars)("regression: %s (originally hand-listed) still matches", (_label, char) => {
+      expect(hasMultipleStatements(`SELECT * FROM t;${char}`)).toBe(false);
+    });
+
+    it("a newly-covered format character does not hide real trailing content", () => {
+      expect(hasMultipleStatements("SELECT * FROM t;\u{200E}DROP TABLE other")).toBe(true);
     });
   });
 
@@ -748,6 +1009,12 @@ describe("hasMultipleStatements", () => {
     it("the multi-statement detection itself has no case-sensitivity assumptions", () => {
       expect(hasMultipleStatements("SeLeCt 1 FROM dummy; DeLeTe FROM t")).toBe(true);
     });
+
+    it("the reordered-BEGIN/END detection is also case-insensitive", () => {
+      expect(
+        hasMultipleStatements("create procedure p as delete from t where id=1; drop table other; end begin"),
+      ).toBe(true);
+    });
   });
 
   describe("category M - mid-CTE-list semicolon probe", () => {
@@ -766,23 +1033,51 @@ describe("hasMultipleStatements", () => {
       expect(hasMultipleStatements(sql)).toBe(true);
     });
 
-    it("documents the separate, pre-existing resolveWithStatement gap this probe surfaced", () => {
-      // resolveWithStatement returns a *defined* result (keyword: "") rather
-      // than undefined for this malformed input, because cteListEndIndex's
-      // final fallback returns the position right after the CTE list
-      // whenever the next character isn't a comma, without checking that a
-      // real keyword actually starts there. This predates this task and is
-      // not fixed here (out of scope per the prompt); it is flagged in the
-      // CHANGELOG as a known, separate finding. It is not a live guard
-      // bypass: any input that reaches this code path also has a genuine
-      // top-level semicolon, so the new hasMultipleStatements check (tested
-      // above) independently catches it regardless.
+    it("closed: resolveWithStatement now fails closed for this probe instead of returning an empty keyword", () => {
+      // Previously, cteListEndIndex's final fallback returned the position
+      // right after the CTE list whenever the next character wasn't a
+      // comma, without checking that a real keyword actually starts there -
+      // so this malformed input resolved to a *defined* result with an
+      // empty "" keyword instead of undefined. Fixed by requiring the
+      // character at that position to be keyword-shaped (alphabetic);
+      // otherwise the whole resolution now fails closed, exactly like an
+      // already-malformed CTE list does.
       const sql =
         "WITH a AS (SELECT 1 FROM DUMMY); DELETE FROM t, b AS (SELECT 2 FROM DUMMY) " +
         "SELECT * FROM a, b";
+      expect(resolveWithStatement(sql)).toBeUndefined();
+    });
+  });
+
+  describe("category N - WITH-continuation validation (closes a gap broader than the semicolon case above)", () => {
+    it("fails closed when nonsense punctuation follows a well-formed, semicolon-free CTE list", () => {
+      const sql = "WITH a AS (SELECT 1 FROM DUMMY) !!! DELETE FROM customers";
+      expect(resolveWithStatement(sql)).toBeUndefined();
+      expect(classifyStatement(sql)).toBe("unknown");
+    });
+
+    it("still resolves an alphabetic-looking but unrecognized trailing keyword (not swept into the fail-closed fix)", () => {
+      // The bug this task fixes is specifically the empty-string-keyword
+      // case slipping past the unresolvedWith check - an unrecognized but
+      // genuinely keyword-shaped continuation (already correctly handled
+      // today, matching a bare equivalent's classification) must keep
+      // resolving, not start failing closed too.
+      const sql = "WITH a AS (SELECT 1 FROM DUMMY) XYZ123 SELECT * FROM a";
       const result = resolveWithStatement(sql);
-      expect(result).not.toBeUndefined();
-      expect(result?.keyword).toBe("");
+      expect(result).toEqual({ keyword: "XYZ123", index: expect.any(Number) });
+      expect(classifyStatement(sql)).toBe("unknown");
+    });
+
+    it("regression: a comma-free single-CTE statement with a real trailing SELECT still resolves", () => {
+      expect(resolveWithStatement("WITH a AS (SELECT 1 FROM DUMMY) SELECT * FROM a")).toEqual({
+        keyword: "SELECT",
+        index: expect.any(Number),
+      });
+    });
+
+    it("regression: a well-formed multi-CTE list with a real trailing SELECT still resolves", () => {
+      const sql = "WITH a AS (SELECT 1 FROM DUMMY), b AS (SELECT 2 FROM DUMMY) SELECT * FROM a, b";
+      expect(resolveWithStatement(sql)).toEqual({ keyword: "SELECT", index: expect.any(Number) });
     });
   });
 });

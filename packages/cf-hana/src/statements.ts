@@ -1,116 +1,27 @@
 import { QueryError } from "./errors.js";
+import { isRoutineOrBlockChain } from "./routine-carve-out.js";
+import {
+  isIdentifierChar,
+  keywordAt,
+  maskIgnoredSqlText,
+  skipBlockComment,
+  skipLineComment,
+  skipQuotedText,
+  skipWhitespace,
+} from "./sql-scan.js";
 import type { SqlParam, StatementKind } from "./types.js";
+
+// Re-exported so existing callers importing these from "./statements.js"
+// (their historical home before the split into "./sql-scan.js") keep working.
+export { maskIgnoredSqlText, skipBlockComment, skipQuotedText };
 
 const SELECT_KEYWORDS = new Set(["SELECT"]);
 const DML_KEYWORDS = new Set(["INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT", "REPLACE"]);
 const DDL_KEYWORDS = new Set(["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "COMMENT"]);
 
-function skipLineComment(sql: string, start: number): number {
-  let index = start + 2;
-  while (index < sql.length && sql[index] !== "\n") {
-    index += 1;
-  }
-  return index;
-}
-
-/** Skip whitespace, line comments, and block comments starting at `start`. */
-function skipWhitespaceAndComments(sql: string, start: number): number {
-  let index = start;
-  while (index < sql.length) {
-    const char = sql.charAt(index);
-    if (char.trim().length === 0) {
-      index += 1;
-      continue;
-    }
-    if (char === "-" && sql.charAt(index + 1) === "-") {
-      index = skipLineComment(sql, index);
-      continue;
-    }
-    if (char === "/" && sql.charAt(index + 1) === "*") {
-      index = skipBlockComment(sql, index);
-      continue;
-    }
-    break;
-  }
-  return index;
-}
-
-/** The keyword (upper-cased) starting at or after `start`, skipping comments/whitespace first. */
-function keywordAt(sql: string, start: number): { readonly keyword: string; readonly end: number } {
-  const index = skipWhitespaceAndComments(sql, start);
-  let end = index;
-  while (end < sql.length) {
-    const code = sql.charCodeAt(end);
-    const isUpperCase = code >= 65 && code <= 90;
-    const isLowerCase = code >= 97 && code <= 122;
-    if (!isUpperCase && !isLowerCase) {
-      break;
-    }
-    end += 1;
-  }
-  return { keyword: sql.slice(index, end).toUpperCase(), end };
-}
-
 /** The leading SQL keyword, upper-cased, skipping comments and whitespace. */
 export function firstKeyword(sql: string): string {
   return keywordAt(sql, 0).keyword;
-}
-
-/** Skip a quoted string/identifier starting at `start`; returns the index just past its closing quote. */
-export function skipQuotedText(sql: string, start: number): number {
-  const quote = sql[start];
-  let index = start + 1;
-  while (index < sql.length) {
-    if (sql[index] === quote) {
-      if (sql[index + 1] === quote) {
-        index += 2;
-        continue;
-      }
-      index += 1;
-      break;
-    }
-    index += 1;
-  }
-  return index;
-}
-
-/** Skip a block comment starting at `start`; returns the index just past its closing `star-slash`. */
-export function skipBlockComment(sql: string, start: number): number {
-  let index = start + 2;
-  while (index < sql.length && !(sql[index] === "*" && sql[index + 1] === "/")) {
-    index += 1;
-  }
-  return Math.min(index + 2, sql.length);
-}
-
-/** Replace every quoted string/identifier and comment with spaces, preserving length and positions. */
-export function maskIgnoredSqlText(sql: string): string {
-  let masked = "";
-  let index = 0;
-  while (index < sql.length) {
-    const char = sql[index];
-    if (char === "'" || char === '"') {
-      const end = skipQuotedText(sql, index);
-      masked += " ".repeat(end - index);
-      index = end;
-      continue;
-    }
-    if (char === "-" && sql[index + 1] === "-") {
-      const end = skipLineComment(sql, index);
-      masked += " ".repeat(end - index);
-      index = end;
-      continue;
-    }
-    if (char === "/" && sql[index + 1] === "*") {
-      const end = skipBlockComment(sql, index);
-      masked += " ".repeat(end - index);
-      index = end;
-      continue;
-    }
-    masked += char ?? "";
-    index += 1;
-  }
-  return masked;
 }
 
 function topLevelKeywordIndex(sql: string, keyword: string): number | undefined {
@@ -148,49 +59,6 @@ export const MULTI_STATEMENT_MESSAGE =
   "cf-hana executes exactly one SQL statement per call; additional content was found " +
   "after a ';' separator - remove it, or run each statement as a separate call.";
 
-const ROUTINE_KEYWORDS = new Set(["PROCEDURE", "FUNCTION", "TRIGGER"]);
-
-/**
- * Whether `sql` is a `CREATE [OR REPLACE] PROCEDURE/FUNCTION/TRIGGER`
- * definition *with a real body*. Narrow on purpose: `CREATE TABLE`/`VIEW`/
- * `INDEX` etc. do not get this exemption, since - unlike a routine body -
- * they have no legitimate reason to contain a top-level-looking `;` before
- * their own end. A top-level `BEGIN` and `END` are required, not just the
- * leading keyword pair - without this, e.g. `"CREATE PROCEDURE p; DROP
- * TABLE other"` (no body at all) would skip the multi-statement check
- * entirely on the strength of two keywords alone.
- */
-export function isRoutineDefinition(sql: string): boolean {
-  const create = keywordAt(sql, 0);
-  if (create.keyword !== "CREATE") {
-    return false;
-  }
-  const second = keywordAt(sql, create.end);
-  if (!ROUTINE_KEYWORDS.has(second.keyword)) {
-    if (second.keyword !== "OR") {
-      return false;
-    }
-    const third = keywordAt(sql, second.end);
-    if (third.keyword !== "REPLACE" || !ROUTINE_KEYWORDS.has(keywordAt(sql, third.end).keyword)) {
-      return false;
-    }
-  }
-  return hasTopLevelKeyword(sql, "BEGIN") && hasTopLevelKeyword(sql, "END");
-}
-
-/**
- * Whether `sql` is a HANA SQLScript anonymous block (`DO [(...)] BEGIN ...
- * END`). Like a routine definition, its `BEGIN`/`END` body legitimately
- * contains internal, top-level-looking semicolons that are not additional
- * statements smuggled after this one.
- */
-export function isAnonymousBlock(sql: string): boolean {
-  if (keywordAt(sql, 0).keyword !== "DO") {
-    return false;
-  }
-  return hasTopLevelKeyword(sql, "BEGIN") && hasTopLevelKeyword(sql, "END");
-}
-
 /**
  * Split `sql` into top-level statements at genuine (unquoted, uncommented,
  * outside-parens) `;` separators, returning slices of the *original* `sql`
@@ -222,13 +90,18 @@ export function splitTopLevelStatements(sql: string): readonly string[] {
   return segments;
 }
 
-// Zero-width Unicode format characters: invisible, no glyph of their own,
-// and not part of ECMAScript's whitespace set, so a plain `.trim()` alone
-// does not strip them. A segment consisting only of these - e.g. a stray
-// zero-width space left over from pasting SQL out of a chat app or word
-// processor - has no real content, even though it isn't blank in the
-// strict `.trim()` sense.
-const ZERO_WIDTH_CHARS = /[\u200B-\u200D\u2060\uFEFF]/g;
+// Unicode "Format" characters (general category Cf): invisible, no glyph
+// of their own, and not part of ECMAScript's whitespace set, so a plain
+// `.trim()` alone does not strip them. A segment consisting only of these
+// - e.g. a stray zero-width space, bidi mark, or soft hyphen left over
+// from pasting SQL out of a chat app, word processor, or web page - has
+// no real content, even though it isn't blank in the strict `.trim()`
+// sense. Matched by Unicode property rather than a hand-picked code-point
+// list, so this covers the whole category instead of only whichever
+// characters were noticed when the list was last written (empirically
+// verified to match every previously-listed code point plus every other
+// Cf character, and to match none of A-Z/0-9/standard SQL punctuation).
+const ZERO_WIDTH_CHARS = /\p{Cf}/gu;
 
 function hasRealContent(segment: string): boolean {
   return maskIgnoredSqlText(segment).replace(ZERO_WIDTH_CHARS, "").trim().length > 0;
@@ -254,14 +127,17 @@ function hasUnbalancedParens(masked: string): boolean {
  * than an assumption resting entirely on HANA's own rejection of
  * multi-statement text (see CHANGELOG). A lone trailing `;` - with nothing
  * but whitespace/comments after it - is not a second statement; only a
- * segment with real content counts. `CREATE PROCEDURE`/`FUNCTION`/`TRIGGER`
- * definitions and `DO` anonymous blocks are exempted entirely (see
- * `isRoutineDefinition`/`isAnonymousBlock`) since their `BEGIN`/`END` bodies
- * legitimately contain many internal, top-level-looking semicolons that are
- * not additional statements smuggled after this one.
+ * segment with real content counts. One or more complete `CREATE
+ * PROCEDURE`/`FUNCTION`/`TRIGGER` definitions and/or `DO` anonymous
+ * blocks, chained back to back with nothing real between them, are
+ * exempted entirely (see `isRoutineOrBlockChain`) since their `BEGIN`/
+ * `END` bodies legitimately contain many internal, top-level-looking
+ * semicolons that are not additional statements smuggled after this one -
+ * but any real content that is not itself another such definition ends
+ * the exemption immediately.
  */
 export function hasMultipleStatements(sql: string): boolean {
-  if (isRoutineDefinition(sql) || isAnonymousBlock(sql)) {
+  if (isRoutineOrBlockChain(sql)) {
     return false;
   }
   // An unclosed top-level paren makes every ';' after it look "still
@@ -275,18 +151,6 @@ export function hasMultipleStatements(sql: string): boolean {
   }
   const realSegments = splitTopLevelStatements(sql).filter(hasRealContent);
   return realSegments.length > 1;
-}
-
-function isIdentifierChar(char: string): boolean {
-  return /[A-Za-z0-9_$#]/.test(char);
-}
-
-function skipWhitespace(masked: string, start: number): number {
-  let index = start;
-  while (index < masked.length && /\s/.test(masked.charAt(index))) {
-    index += 1;
-  }
-  return index;
 }
 
 function matchingCloseParenIndex(masked: string, openIndex: number): number | undefined {
@@ -354,15 +218,24 @@ function skipCteName(sql: string, masked: string, start: number): number {
   return end;
 }
 
+/** Whether `char` could start a real SQL keyword (every statement-leading keyword is alphabetic). */
+function isKeywordStartChar(char: string): boolean {
+  return /[A-Za-z]/u.test(char);
+}
+
 /**
  * The position where a `WITH` statement's real trailing statement begins —
  * just past its comma-separated CTE definitions (each `name [(cols)] AS
  * (body)`) — found by structurally walking that grammar rather than
  * searching for an expected keyword, so it correctly resolves *any*
  * trailing statement type (DML, DDL, `CALL`, or anything else), not just a
- * fixed candidate list. Returns `undefined` only when the CTE-list syntax
- * itself does not parse (malformed input, or an unrecognized variant) —
- * callers must fail closed on that, never default it to "select".
+ * fixed candidate list. Returns `undefined` when the CTE-list syntax
+ * itself does not parse (malformed input, or an unrecognized variant), or
+ * when the CTE list is well-formed but nothing keyword-shaped actually
+ * starts where the trailing statement should - e.g. a misplaced `;` or
+ * stray punctuation instead of a real next statement - so callers never
+ * mistake "no real content follows" for a resolved, safe result; either
+ * way, callers must fail closed, never default to "select".
  */
 function cteListEndIndex(sql: string, masked: string, afterWith: number): number | undefined {
   let index = afterWith;
@@ -393,7 +266,7 @@ function cteListEndIndex(sql: string, masked: string, afterWith: number): number
       index += 1;
       continue;
     }
-    return index;
+    return isKeywordStartChar(masked.charAt(index)) ? index : undefined;
   }
 }
 
