@@ -19,6 +19,9 @@ import type {
 } from './014-compact-contract.js';
 import {
   compactMissingRemediation,
+  isSafeCompactReferenceName,
+  isSafeCompactSelectorSuggestion,
+  projectCompactReferenceGroup,
   projectCompactMissingNames,
   type CompactMissingNameProjection,
 } from './021-compact-decision-normalization.js';
@@ -31,8 +34,19 @@ const compactDiagnosticMessages: Readonly<Record<string, string>> = {
   implementation_hint_mismatch: 'The implementation hint did not select one implementation.',
   selected_handler_provenance_mismatch: 'Selected handler provenance did not match its graph target.',
   selected_handler_target_not_found: 'The selected handler target is not indexed.',
+  trace_start_ambiguous: 'The trace start selector is ambiguous.',
+  trace_start_not_found: 'The trace start selector did not match an indexed start.',
   trace_start_implementation_unresolved: 'The trace start implementation is unresolved.',
 };
+const selectorDiagnosticCodes = new Set([
+  'handler_decorators_not_indexed',
+  'handler_methods_not_indexed',
+  'selector_repo_ambiguous',
+  'selector_repo_not_found',
+  'trace_start_ambiguous',
+  'trace_start_implementation_unresolved',
+  'trace_start_not_found',
+]);
 
 export function projectCompactDecision(
   input: CompactDecisionInput | undefined,
@@ -87,6 +101,8 @@ function addImplementationDecision(
     out.implementationGuided = input.implementationGuided;
   if (input.implementationContextual !== undefined)
     out.implementationContextual = input.implementationContextual;
+  if (input.tiedCandidateRepos)
+    out.tiedCandidateRepos = input.tiedCandidateRepos;
 }
 
 function addEventDecision(out: CompactDecisionV1, input: CompactDecisionInput): void {
@@ -243,6 +259,10 @@ function compactDiagnosticDetails(
   const out: CompactDiagnosticDetailsV1 = {};
   const reasonCode = compactSafeCode(value.reasonCode);
   if (reasonCode) out.reasonCode = reasonCode;
+  if (selectorDiagnosticCodes.has(code)) addDiagnosticSelector(out, value);
+  if (code === 'reindex_required') addInvalidFactCategories(out, value);
+  if (code === 'implementation_hint_mismatch')
+    addImplementationHintCandidates(out, value);
   if (code === 'trace_runtime_variables_missing') addDiagnosticNames(out, value);
   addDiagnosticCounts(out, value);
   const hint = compactDiagnosticRemediation(code, out);
@@ -253,6 +273,51 @@ function compactDiagnosticDetails(
     );
   }
   return out;
+}
+
+function addDiagnosticSelector(
+  out: CompactDiagnosticDetailsV1,
+  value: Record<string, unknown>,
+): void {
+  const selectorKind = compactSafeCode(value.selectorKind);
+  if (selectorKind) out.selectorKind = selectorKind;
+  const suggestions = projectCompactReferenceGroup(
+    compactStringArray(value.selectorSuggestions),
+    value.selectorSuggestionCount,
+    isSafeCompactSelectorSuggestion,
+  );
+  if (suggestions) out.selectorSuggestions = suggestions;
+}
+
+function addInvalidFactCategories(
+  out: CompactDiagnosticDetailsV1,
+  value: Record<string, unknown>,
+): void {
+  const categories = compactRecordArray(value.invalidFactCategories)
+    .flatMap((item) =>
+      typeof item.category === 'string' ? [item.category] : []);
+  const projection = projectCompactReferenceGroup(
+    categories, value.invalidFactCategoryCount,
+    (item) => compactSafeCode(item) === item,
+  );
+  if (projection) out.invalidFactCategories = projection;
+}
+
+function addImplementationHintCandidates(
+  out: CompactDiagnosticDetailsV1,
+  value: Record<string, unknown>,
+): void {
+  const repos = compactRecordArray(value.implementationHintSuggestions)
+    .flatMap((item) =>
+      typeof item.implementationRepo === 'string'
+        ? [item.implementationRepo] : []);
+  const uniqueCount = new Set(repos.map((repo) => repo.trim())).size;
+  if (uniqueCount < 2) return;
+  const projection = projectCompactReferenceGroup(
+    repos, value.implementationHintSuggestionCount,
+    isSafeCompactReferenceName,
+  );
+  if (projection) out.tiedCandidateRepos = projection;
 }
 
 function addDiagnosticNames(
@@ -345,7 +410,8 @@ function compactDiagnosticHintCount(
 
 function compactRemediationHint(code: string): string | undefined {
   if (code === 'provide_runtime_variables') return 'Provide the missing variable names listed in details.';
-  if (code === 'select_implementation') return 'Select one implementation with a scoped implementation hint.';
+  if (code === 'select_implementation')
+    return 'Use --implementation-hint with service, operation, package, repository, family, and repo keys; repo is required.';
   if (code === 'reindex_and_link') return 'Force reindex, then force relink the workspace.';
   if (code === 'inspect_detailed_edge') return 'Inspect the correlated detailed trace edge.';
   return undefined;
@@ -387,6 +453,13 @@ function compactPositiveInteger(value: unknown): number | undefined {
 function compactStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function compactRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && !Array.isArray(item)))
+    : [];
 }
 
 function compactArrayLength(value: unknown): number {

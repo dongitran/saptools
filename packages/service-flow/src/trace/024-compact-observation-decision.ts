@@ -10,6 +10,7 @@ import { normalizeCompactDecisionEquivalence } from
 export interface CompactDecisionNode {
   key?: string;
   decisionTarget?: string;
+  projectedIdentity?: boolean;
 }
 
 function resolvedNode(
@@ -40,7 +41,10 @@ function sameCanonicalNode(
   left: CompactDecisionNode | undefined,
   right: CompactDecisionNode,
 ): boolean {
-  return left?.key !== undefined && left.key === right.key;
+  if (left?.key === undefined) return false;
+  return left.projectedIdentity === true
+    ? left.key === right.decisionTarget
+    : left.key === right.key;
 }
 
 function persistedCanonical(
@@ -49,7 +53,7 @@ function persistedCanonical(
   target: CompactDecisionNode,
 ): boolean {
   if (!sameCanonicalNode(persisted, target)) return false;
-  return effective?.key === undefined || effective.key === target.key;
+  return effective?.key === undefined || sameCanonicalNode(effective, target);
 }
 
 export function projectObservationDecision(
@@ -71,6 +75,7 @@ export function projectObservationDecision(
     target.decisionTarget,
     sameCanonicalNode(effective, target),
     persistedCanonical(persisted, effective, target),
+    source?.persistedResolutionStatus,
   );
   return decision;
 }

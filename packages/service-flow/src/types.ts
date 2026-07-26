@@ -203,7 +203,8 @@ export interface ServiceBindingReference {
   bindingSiteEndOffset?: number;
   resolutionStrategy?: 'lexical_declaration'
     | 'lexical_alias_declaration'
-    | 'deterministic_reaching_assignment';
+    | 'deterministic_reaching_assignment'
+    | 'single_hop_helper_return';
   lexicalScopeChain?: LexicalScopeFact[];
   bindingScopeIndex?: number;
   scopeChainTotal: number;

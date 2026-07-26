@@ -62,8 +62,10 @@ async function writeConsumer(root: string): Promise<void> {
 const consumerSource = `
 import { compactTrace, trace, traceAndCompact } from '@saptools/service-flow';
 import type {
-  CallType, Db, EdgeType, ExecutableSymbolFact, OutboundCallFact,
-  SymbolCallFact, SymbolCallRole, TraceEdge, TraceOptions, TraceResult, TraceStart,
+  CallType, CompactDecisionV1, CompactDiagnosticDetailsV1,
+  CompactReferenceGroupV1, Db, EdgeType, ExecutableSymbolFact,
+  OutboundCallFact, SymbolCallFact, SymbolCallRole, TraceEdge, TraceOptions,
+  TraceResult, TraceStart,
 } from '@saptools/service-flow';
 
 declare const db: Db;
@@ -72,11 +74,20 @@ const options: TraceOptions = { depth: 1 };
 const detailed: TraceResult = trace(db, start, options);
 const compact = compactTrace(db, start, options);
 const paired = traceAndCompact(db, start, options);
+const group: CompactReferenceGroupV1 = {
+  values: ['repo-a'], total: 1, shown: 1, omitted: 0,
+};
+const decision: CompactDecisionV1 = { tiedCandidateRepos: group };
+const diagnostic: CompactDiagnosticDetailsV1 = {
+  selectorKind: 'operation',
+  selectorSuggestions: group,
+  invalidFactCategories: group,
+};
 const contracts: [
   CallType, EdgeType, ExecutableSymbolFact, OutboundCallFact,
   SymbolCallRole, SymbolCallFact, TraceEdge,
 ] | undefined = undefined;
-void [detailed, compact, paired, contracts];
+void [detailed, compact, paired, decision, diagnostic, contracts];
 `;
 
 describe('packed public TypeScript contract', () => {

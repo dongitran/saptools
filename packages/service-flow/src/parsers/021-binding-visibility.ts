@@ -72,6 +72,20 @@ function candidatesAtSite<T>(
     && candidate.bindingSiteEndOffset === site.endOffset);
 }
 
+function helperCallDeclaration(site: BindingLexicalSite): boolean {
+  if (!ts.isVariableDeclaration(site.node) || !site.node.initializer)
+    return false;
+  let expression = site.node.initializer;
+  while (ts.isAwaitExpression(expression)
+    || ts.isParenthesizedExpression(expression)
+    || ts.isAsExpression(expression)
+    || ts.isSatisfiesExpression(expression)
+    || ts.isTypeAssertionExpression(expression))
+    expression = expression.expression;
+  return ts.isCallExpression(expression)
+    && ts.isIdentifier(expression.expression);
+}
+
 function compatibleCaseClause(
   site: BindingLexicalSite,
   useNode: ts.Node,
@@ -108,7 +122,9 @@ function matchedBinding<T>(
     status: 'unresolved',
     reason: site.flow === 'assignment'
       ? 'unsupported_reaching_assignment'
-      : 'binding_not_found',
+      : helperCallDeclaration(site)
+        ? 'binding_flow_unsupported'
+        : 'binding_not_found',
   };
   if (matches.length > 1) return { status: 'ambiguous' };
   return matches[0] ? { status: 'resolved', candidate: matches[0] } : undefined;

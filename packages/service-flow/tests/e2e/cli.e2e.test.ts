@@ -258,10 +258,26 @@ describe('service-flow guided trace CLI', () => {
       '--include-db', '--include-external', '--include-async',
       '--var', 'domain=Product',
       '--var', 'shortName=prod',
-    ])) as { edges: Array<{ unresolvedReason?: string; to?: string }> };
+    ])) as { edges: Array<{
+      evidence?: { sourceFile?: string };
+      from?: string;
+      to?: string;
+      type?: string;
+      unresolvedReason?: string;
+    }> };
     expect(runtime.edges.some((edge) =>
       edge.to === '/ProductProcessService/runDeepCheck')).toBe(true);
-    expect(runtime.edges.filter((edge) => edge.unresolvedReason)).toEqual([]);
+    const gaps = runtime.edges.filter((edge) => edge.unresolvedReason);
+    expect(gaps.map((edge) =>
+      `${String(edge.evidence?.sourceFile)}:${edge.from}->${edge.to}`)
+      .sort()).toEqual([
+      'srv/GatewayHandler.ts:Action->unresolved:Action',
+      'srv/ProcessHandler.ts:Action->unresolved:Action',
+      'srv/SettingsHandler.ts:Action->unresolved:Action',
+    ]);
+    expect(gaps.every((edge) =>
+      edge.type === 'local_symbol_call'
+      && edge.unresolvedReason === 'package_repository_not_indexed')).toBe(true);
 
     const missing = JSON.parse(await run([
       'trace', '--workspace', traceFixture,

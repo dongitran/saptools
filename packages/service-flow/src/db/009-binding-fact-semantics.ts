@@ -9,6 +9,9 @@ import {
   validBindingLexicalScope,
   type BindingProofTarget,
 } from './012-binding-reference-proof.js';
+import {
+  hasSingleHopHelperReturn,
+} from './014-binding-helper-provenance.js';
 
 export interface BindingFactCategoryCount {
   category: string;
@@ -114,6 +117,7 @@ function bindingTargets(
     binding.binding_site_start_offset startOffset,
     binding.binding_site_end_offset endOffset,
     binding.owner_resolution ownerResolution,
+    binding.helper_chain_json helperChainJson,
     owner.start_offset ownerStartOffset,owner.end_offset ownerEndOffset
     FROM service_bindings binding
     JOIN repositories repo ON repo.id=binding.repo_id
@@ -140,6 +144,7 @@ function bindingTarget(
     ownerResolution: row.ownerResolution,
     ownerStartOffset: row.ownerStartOffset,
     ownerEndOffset: row.ownerEndOffset,
+    singleHopHelperReturn: hasSingleHopHelperReturn(row.helperChainJson),
   }];
 }
 

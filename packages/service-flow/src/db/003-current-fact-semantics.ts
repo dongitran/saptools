@@ -71,6 +71,7 @@ const symbolReasons = [
   'relative_import_type_only',
   'relative_import_module_resolution_ambiguous',
   'relative_import_requested_module_has_no_executable_body',
+  'relative_import_proxy_alias_targets_package_unsupported',
   'relative_import_requested_module_has_no_target',
   'multiple_relative_class_targets_in_requested_module',
   'multiple_namespace_targets_in_requested_module',

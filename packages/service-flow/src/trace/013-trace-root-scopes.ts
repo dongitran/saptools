@@ -253,12 +253,11 @@ function hasExactDispatch(db: Db, calls: RootCallRow[]): boolean {
           AND subscriber.generation=emitted.generation
           AND subscriber.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
           AND subscriber.from_kind='event'
-          AND subscriber.from_id COLLATE BINARY=? COLLATE BINARY)
+          AND subscriber.from_id COLLATE BINARY=emitted.to_id COLLATE BINARY)
     LIMIT 1`);
   return calls.some((call) => call.callType === 'async_emit'
-    && typeof call.eventName === 'string'
     && Boolean(match.get(call.workspaceId, call.graphGeneration,
-      String(call.id), call.eventName)));
+      String(call.id))));
 }
 
 function workspaceAmbiguityDiagnostic(db: Db): Record<string, unknown> {

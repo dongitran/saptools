@@ -2,6 +2,7 @@ import type { TraceEdge } from '../types.js';
 import type { CompactSemanticEndpoint, CompactStatus } from './014-compact-contract.js';
 import {
   compactDecisionFromEvidence,
+  compactEvidenceReasonCode,
   compactEventStatus,
   compactGraphStatus,
   compactRefs,
@@ -157,11 +158,11 @@ export function recordOutboundObservation(
     source, target,
     status: compactGraphStatus(input.row, input.evidence,
       input.unresolvedReason, input.dynamicMode),
-    decision: compactDecisionFromEvidence(input.evidence, {
-      reasonCode: input.unresolvedReason
-        ? safeReasonCode(input.evidence.reasonCode, 'outbound_target_unresolved')
-        : undefined,
-    }),
+    decision: compactDecisionFromEvidence(input.evidence,
+      input.unresolvedReason ? {
+        reasonCode: compactEvidenceReasonCode(input.evidence)
+          ?? 'outbound_target_unresolved',
+      } : {}),
     refs: compactRefs({
       graphEdgeId: positiveId(input.evidence.persistedGraphEdgeId),
       outboundCallId: input.call.id,
@@ -293,11 +294,6 @@ function eventSite(
     sourceLine: plan.transition.sourceLine,
     startOffset: plan.transition.callSiteStartOffset,
     endOffset: plan.transition.callSiteEndOffset });
-}
-
-function safeReasonCode(value: unknown, fallback: string): string {
-  return typeof value === 'string' && /^[a-z][a-z0-9_.-]{0,79}$/.test(value)
-    ? value : fallback;
 }
 
 function positiveId(value: unknown): number | string | undefined {

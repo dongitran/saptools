@@ -157,6 +157,16 @@ export function createPackageInvalidationBatch(
   };
 }
 
+export function mergePackageInvalidationEffects(
+  target: PackageInvalidationBatch,
+  source: PackageInvalidationBatch,
+): void {
+  for (const repoId of source.affectedCallerRepoIds)
+    target.affectedCallerRepoIds.add(repoId);
+  for (const workspaceId of source.affectedWorkspaceIds)
+    target.affectedWorkspaceIds.add(workspaceId);
+}
+
 export function finalizePackageTargetInvalidations(
   db: Db,
   batch: PackageInvalidationBatch,

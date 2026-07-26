@@ -1,5 +1,10 @@
 import type { Db } from '../db/connection.js';
 import {
+  matchRuntimeTemplate,
+  substituteVariables,
+} from '../linker/dynamic-edge-resolver.js';
+import {
+  compareBinary,
   type TraversalScopeScheduler,
   type TraversalScopeState,
 } from './010-traversal-scope.js';
@@ -53,6 +58,8 @@ export interface EventSubscriberTransition {
   candidateCount: number;
   symbolCallUnresolvedReason?: string;
   omittedSymbolCallUnresolvedReasonCharacterCount?: number;
+  matchStrategy?: string;
+  dispatchCertainty?: string;
   handler?: EventSubscriberSymbolTarget;
 }
 
@@ -60,6 +67,7 @@ export interface EventSubscriberTransitionQuery {
   workspaceId: number;
   graphGeneration: number;
   eventName: string;
+  vars?: Record<string, string>;
 }
 
 export type EventBodyExpansion =
@@ -156,8 +164,8 @@ export function eventTransitionEvidence(
     subscribeCallId: transition.subscribeCallId,
     symbolCallId: transition.symbolCallId,
     eventName: transition.eventName,
-    matchStrategy: 'workspace_exact_event_name',
-    dispatchCertainty: 'static_name_only',
+    matchStrategy: transition.matchStrategy ?? 'workspace_exact_event_name',
+    dispatchCertainty: transition.dispatchCertainty ?? 'static_name_only',
     associationBasis: transition.associationBasis,
     dispatchScope: transition.dispatchScope,
     roleSiteMatchCount: transition.roleSiteMatchCount,
@@ -194,7 +202,8 @@ export function loadEventSubscriberTransitions(
   query: EventSubscriberTransitionQuery,
 ): EventSubscriberTransition[] {
   const rows = db.prepare(`SELECT ge.id graphEdgeId,ge.generation graphGeneration,
-      ge.from_id eventName,ge.status,ge.to_kind targetKind,ge.to_id targetId,
+      ge.from_kind fromKind,ge.from_id eventName,ge.status,
+      ge.to_kind targetKind,ge.to_id targetId,
       ge.confidence,ge.unresolved_reason unresolvedReason,ge.evidence_json evidenceJson,
       subscribe.id subscribeCallId,subscribe.repo_id subscriptionRepoId,
       subscribe.source_file sourceFile,subscribe.source_line sourceLine,
@@ -218,17 +227,98 @@ export function loadEventSubscriberTransitions(
     LEFT JOIN repositories handler_repo
       ON handler_repo.id=handler.repo_id AND handler_repo.workspace_id=ge.workspace_id
     WHERE ge.workspace_id=? AND ge.generation=?
-      AND ge.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY' AND ge.from_kind='event'
-      AND ge.from_id COLLATE BINARY=? COLLATE BINARY
+      AND ge.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+      AND ge.from_kind IN ('event','event_candidate')
     ORDER BY COALESCE(subscription_repo.name,'') COLLATE BINARY,
       COALESCE(subscription_repo.id,0),COALESCE(subscribe.source_file,'') COLLATE BINARY,
       subscribe.call_site_start_offset,subscribe.call_site_end_offset,ge.id`).all(
-    query.workspaceId, query.graphGeneration, query.eventName,
+    query.workspaceId, query.graphGeneration,
   );
-  return rows.flatMap((row) => {
-    const transition = transitionFromRow(row);
+  return rows.flatMap((raw) => {
+    const row = eventRowForQuery(raw, query);
+    const transition = row ? transitionFromRow(row) : undefined;
     return transition ? [transition] : [];
   });
+}
+
+function eventRowForQuery(
+  row: Record<string, unknown>,
+  query: EventSubscriberTransitionQuery,
+): Record<string, unknown> | undefined {
+  const variables = query.vars;
+  if (variables === undefined) return exactPersistedEventRow(row, query);
+  const evidence = parseEvidence(row.evidenceJson);
+  const resolution = isRecord(evidence.eventTemplateResolution)
+    ? evidence.eventTemplateResolution : {};
+  if (typeof resolution.original !== 'string')
+    return exactPersistedEventRow(row, query);
+  return runtimeMatchedEventRow(
+    row, query, evidence, resolution.original, variables,
+  );
+}
+
+function exactPersistedEventRow(
+  row: Record<string, unknown>,
+  query: EventSubscriberTransitionQuery,
+): Record<string, unknown> | undefined {
+  return row.fromKind === 'event' && row.eventName === query.eventName
+    ? row : undefined;
+}
+
+function runtimeMatchedEventRow(
+  row: Record<string, unknown>,
+  query: EventSubscriberTransitionQuery,
+  evidence: Record<string, unknown>,
+  template: string,
+  variables: Record<string, string>,
+): Record<string, unknown> | undefined {
+  const substitution = substituteVariables(template, variables);
+  if (substitution.missing.length > 0
+    || substitution.effective !== query.eventName) return undefined;
+  const resolvedAssociation = evidence.associationStatus === 'resolved';
+  return {
+    ...row,
+    eventName: query.eventName,
+    status: typeof evidence.associationStatus === 'string'
+      ? evidence.associationStatus : row.status,
+    unresolvedReason: resolvedAssociation ? null : row.unresolvedReason,
+    evidenceJson: JSON.stringify({
+      ...evidence,
+      eventSubscriptionRuntimeSubstitution: substitution,
+      matchStrategy: 'workspace_exact_event_name_after_runtime_substitution',
+      dispatchCertainty: 'runtime_variables_exact',
+    }),
+  };
+}
+
+export function eventSubscriberMissingVariables(
+  db: Db,
+  query: EventSubscriberTransitionQuery,
+): string[] {
+  if (query.vars === undefined) return [];
+  const variables = query.vars;
+  const rows = db.prepare(`SELECT ge.from_id eventName,
+    ge.evidence_json evidenceJson FROM graph_edges ge
+    WHERE ge.workspace_id=? AND ge.generation=?
+      AND ge.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+      AND ge.from_kind='event_candidate'`).all(
+    query.workspaceId, query.graphGeneration,
+  );
+  const missing = rows.flatMap((row) => {
+    const evidence = parseEvidence(row.evidenceJson);
+    const resolution = isRecord(evidence.eventTemplateResolution)
+      ? evidence.eventTemplateResolution : {};
+    const template = typeof resolution.original === 'string'
+      ? resolution.original : undefined;
+    if (!template) return [];
+    const substitution = substituteVariables(template, variables);
+    if (substitution.missing.length === 0
+      || matchRuntimeTemplate(
+        substitution.effective, query.eventName,
+      ) === undefined) return [];
+    return substitution.missing;
+  });
+  return [...new Set(missing)].sort(compareBinary);
 }
 
 function transitionFromRow(
@@ -290,6 +380,8 @@ function associationEvidence(
     omittedSymbolCallUnresolvedReasonCharacterCount: symbolCallUnresolvedReason
       ? nonNegativeCount(evidence.omittedSymbolCallUnresolvedReasonCharacterCount)
       : undefined,
+    matchStrategy: stringValue(evidence.matchStrategy),
+    dispatchCertainty: stringValue(evidence.dispatchCertainty),
   };
 }
 

@@ -81,9 +81,12 @@ function derivedRelativeProvenance(
   targetName: string,
 ): boolean {
   if (!memberReference(binding)) return false;
-  if (evidence.relation === 'class_instance_method')
-    return targetName === binding.requestedPublicName
-      && evidence.methodName === binding.referencedMemberName;
+  if (evidence.relation === 'class_instance_method') {
+    if (evidence.methodName !== binding.referencedMemberName) return false;
+    return binding.bindingKind === 'esm_default'
+      ? targetName === `${binding.localName}.${binding.referencedMemberName}`
+      : targetName === binding.requestedPublicName;
+  }
   if (evidence.relation !== 'relative_import_proxy_member') return false;
   return targetName === binding.referencedMemberName
     && typeof evidence.proxyVariableName === 'string';

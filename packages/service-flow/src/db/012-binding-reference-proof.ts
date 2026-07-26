@@ -23,6 +23,7 @@ export interface BindingProofTarget {
   ownerResolution: string;
   ownerStartOffset: number | null;
   ownerEndOffset: number | null;
+  singleHopHelperReturn: boolean;
 }
 
 interface ResolvedBindingProof {
@@ -45,6 +46,7 @@ const strategies = new Set([
   'lexical_declaration',
   'lexical_alias_declaration',
   'deterministic_reaching_assignment',
+  'single_hop_helper_return',
 ]);
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -242,6 +244,8 @@ function targetMatches(
   target: BindingProofTarget | undefined,
 ): boolean {
   if (!target || call.bindingId !== target.id) return false;
+  if (reference.resolutionStrategy === 'single_hop_helper_return'
+    && !target.singleHopHelperReturn) return false;
   return all([
     target.repoId === call.repoId,
     target.sourceFile === call.sourceFile,

@@ -111,9 +111,8 @@ function decisionInputNode(
     return symbolNode(db, numeric) ?? {};
   if (target.kind === 'handler_method' && numeric !== undefined)
     return handlerNode(db, numeric) ?? {};
-  return {
-    decisionTarget: projectCompactDecisionTarget(target.kind, target.id),
-  };
+  const decisionTarget = projectCompactDecisionTarget(target.kind, target.id);
+  return { key: decisionTarget, decisionTarget, projectedIdentity: true };
 }
 
 function resolveEndpoint(

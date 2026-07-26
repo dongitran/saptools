@@ -278,9 +278,12 @@ function expectTraceDescent(snapshot: Record<string, string[]>): void {
     expect.stringContaining('expressionLeaf->'),
     expect.stringContaining('methodLeaf->'),
   ]));
-  expect(snapshot.PackageHandler?.some((edge) =>
-    edge.startsWith('StaticTools.instanceTask->'))).toBe(false);
-  expect(snapshot.BarrelHandler).toEqual([]);
+  expect(snapshot.PackageHandler).toContain(
+    'StaticTools.instanceTask->unresolved:StaticTools.instanceTask',
+  );
+  expect(snapshot.BarrelHandler).toEqual([
+    'BarrelTools.run->unresolved:BarrelTools.run',
+  ]);
   expect(snapshot.DirectHandler).toEqual(expect.arrayContaining([
     expect.stringContaining('DirectTools.run->'), expect.stringContaining('directLeaf->'),
   ]));

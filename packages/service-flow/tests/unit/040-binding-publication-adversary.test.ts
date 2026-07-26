@@ -6,6 +6,11 @@ import {
   createPackageInvalidationBatch,
   finalizePackageTargetInvalidations,
 } from '../../src/db/004-package-target-invalidation.js';
+import {
+  PreparedRepositorySnapshotError,
+  type PreparedRepositoryFactKind,
+  type PreparedSnapshotFailureCode,
+} from '../../src/db/013-index-publication-failure.js';
 import { repoByName } from '../../src/db/repositories.js';
 import {
   prepareRepositoryIndex,
@@ -98,6 +103,34 @@ function publishPrepared(
   });
 }
 
+function expectSnapshotFailure(
+  publish: () => void,
+  failureCode: PreparedSnapshotFailureCode,
+  factKind: PreparedRepositoryFactKind,
+  sourceLine: number,
+): void {
+  let caught: unknown;
+  try {
+    publish();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(PreparedRepositorySnapshotError);
+  if (!(caught instanceof PreparedRepositorySnapshotError))
+    throw new Error('Expected structured prepared snapshot failure');
+  expect(caught).toMatchObject({
+    message: `invalid_prepared_repository_snapshot:${failureCode}`,
+    failureCode,
+    site: {
+      factKind,
+      sourceFile: 'src/run.ts',
+      sourceLine,
+    },
+  });
+  expect(typeof caught.site.callSiteStartOffset).toBe('number');
+  expect(typeof caught.site.callSiteEndOffset).toBe('number');
+}
+
 function forgeScopeIndex(prepared: PreparedRepositoryIndex): void {
   const call = remoteCall(prepared);
   const current = reference(call);
@@ -164,8 +197,11 @@ describe('binding proof publication atomicity', () => {
     try {
       const before = snapshot(db);
       forge(prepared);
-      expect(() => publishPrepared(db, prepared)).toThrow(
-        'invalid_prepared_repository_snapshot:binding_lexical_proof_invalid',
+      expectSnapshotFailure(
+        () => publishPrepared(db, prepared),
+        'binding_lexical_proof_invalid',
+        'outbound_call',
+        5,
       );
       expect(snapshot(db)).toBe(before);
     } finally {
@@ -178,8 +214,11 @@ describe('binding proof publication atomicity', () => {
     try {
       const before = snapshot(db);
       forgeDuplicateSite(prepared);
-      expect(() => publishPrepared(db, prepared)).toThrow(
-        'invalid_prepared_repository_snapshot:duplicate_service_binding_site',
+      expectSnapshotFailure(
+        () => publishPrepared(db, prepared),
+        'duplicate_service_binding_site',
+        'service_binding',
+        4,
       );
       expect(snapshot(db)).toBe(before);
     } finally {

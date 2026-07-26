@@ -1,5 +1,7 @@
 import { posix } from 'node:path';
 import type { SymbolCallFact } from '../types.js';
+import { packageModuleRequest } from
+  '../parsers/002-symbol-import-bindings.js';
 import type { Db } from './connection.js';
 
 export interface RelativeSymbolCallResolution {
@@ -33,6 +35,7 @@ interface MappingTarget {
 interface MappedExecutableRows {
   rows: TargetRow[];
   ambiguous: boolean;
+  packageTargetUnsupported: boolean;
 }
 
 const stripExtension = (value: string): string =>
@@ -138,8 +141,12 @@ function handlerMemberPubliclyCarried(
 ): boolean {
   if (row.exported) return true;
   const evidence = parsedRecord(row.evidenceJson);
-  return evidence?.source === 'exported_class_instance_member'
-    && evidence.exportedClass === binding.importedName;
+  if (evidence?.source !== 'exported_class_instance_member') return false;
+  const exportKind = evidence.exportedClassExportKind;
+  if (exportKind !== 'default' && exportKind !== 'named') return false;
+  return binding.bindingKind === 'esm_default'
+    ? exportKind === 'default'
+    : evidence.exportedClass === binding.importedName;
 }
 
 function requiresPublicClassMember(
@@ -287,9 +294,12 @@ function mappingTargetScope(
 ): RelativeModuleScope | undefined {
   const target = mappingTarget(row);
   if (!target) return undefined;
-  return target.specifier
-    ? relativeModuleScope(db, repoId, row.sourceFile, target.specifier)
-    : { paths: new Set([stripExtension(row.sourceFile)]), ambiguous: false };
+  if (!target.specifier)
+    return {
+      paths: new Set([stripExtension(row.sourceFile)]), ambiguous: false,
+    };
+  if (packageModuleRequest(target.specifier)) return undefined;
+  return relativeModuleScope(db, repoId, row.sourceFile, target.specifier);
 }
 
 function mappedExecutableRows(
@@ -298,18 +308,24 @@ function mappedExecutableRows(
   rows: readonly TargetRow[],
   aliases: readonly TargetRow[],
 ): MappedExecutableRows {
+  const packageTargetUnsupported = aliases.some((alias) => {
+    const target = mappingTarget(alias);
+    return Boolean(target?.specifier && packageModuleRequest(target.specifier));
+  });
   const scopes = aliases.flatMap((alias) => {
     const scope = mappingTargetScope(db, repoId, alias);
     return scope ? [scope] : [];
   });
   if (scopes.some((scope) => scope.ambiguous))
-    return { rows: [], ambiguous: true };
+    return { rows: [], ambiguous: true, packageTargetUnsupported };
   const mapped = scopes.flatMap((scope) => {
     return rows.filter((row) =>
       row.kind !== 'object_alias' && bodyEligible(row)
       && scope.paths.has(stripExtension(row.sourceFile)));
   });
-  return { rows: uniqueRows(mapped), ambiguous: false };
+  return {
+    rows: uniqueRows(mapped), ambiguous: false, packageTargetUnsupported,
+  };
 }
 
 function proxyResolution(
@@ -325,6 +341,11 @@ function proxyResolution(
     'proxy_member_exported_object_map',
     'relative_import_module_resolution_ambiguous',
     rows.length, 0, false,
+  );
+  if (mapped.packageTargetUnsupported) return unresolved(
+    'proxy_member_exported_object_map',
+    'relative_import_proxy_alias_targets_package_unsupported',
+    rows.length,
   );
   const direct = scoped.filter((row) =>
     row.kind !== 'object_alias' && row.exported && bodyEligible(row));

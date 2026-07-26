@@ -7,7 +7,7 @@ import { schemaVersion } from '../../src/db/migrations.js';
 import { insertHandler, repoByName } from '../../src/db/repositories.js';
 import { linkWorkspace, parseDecorators, trace } from '../../src/index.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
-import type { HandlerMethodFact } from '../../src/types.js';
+import type { HandlerMethodFact, TraceEdge } from '../../src/types.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 
 type Row = Record<string, unknown>;
@@ -27,6 +27,21 @@ function arrayValue(value: unknown): Row[] {
     ? value.filter((item): item is Row =>
         Boolean(item && typeof item === 'object' && !Array.isArray(item)))
     : [];
+}
+
+function expectUnindexedPackageGaps(
+  edges: readonly TraceEdge[],
+  expected: readonly string[],
+): void {
+  const gaps = edges.filter((edge) => edge.unresolvedReason);
+  expect(gaps.map((edge) =>
+    `${String(edge.evidence.sourceFile)}:${edge.from}->${edge.to}`)
+    .sort()).toEqual([...expected].sort());
+  expect(gaps.every((edge) =>
+    edge.type === 'local_symbol_call'
+    && edge.unresolvedReason === 'package_repository_not_indexed'
+    && edge.evidence.candidateStrategy
+      === 'package_public_surface_unresolved')).toBe(true);
 }
 
 async function prepareFixtureWorkspace(): ReturnType<typeof prepareWorkspace> {
@@ -314,7 +329,9 @@ describe('scoped implementation hints', () => {
     expect(guided.edges.some((edge) =>
       edge.type === 'local_db_query'
       && edge.to === 'Entity: SharedResultsA')).toBe(true);
-    expect(guided.edges.filter((edge) => edge.unresolvedReason)).toEqual([]);
+    expectUnindexedPackageGaps(guided.edges, [
+      'src/SharedProcessHandler.ts:Action->unresolved:Action',
+    ]);
     db.close();
   });
 });
@@ -344,7 +361,11 @@ describe('implementation trace behavior', () => {
     expect(runtime.edges.some((edge) =>
       edge.type === 'local_db_query'
       && edge.to === 'Entity: QualityRecords')).toBe(true);
-    expect(runtime.edges.filter((edge) => edge.unresolvedReason)).toEqual([]);
+    expectUnindexedPackageGaps(runtime.edges, [
+      'srv/GatewayHandler.ts:Action->unresolved:Action',
+      'srv/RunQualityCheckHandler.ts:Func->unresolved:Func',
+      'src/ExactProcessHandler.ts:Action->unresolved:Action',
+    ]);
 
     const missing = trace(db, {
       repo: 'gateway-app',
@@ -740,7 +761,9 @@ describe('operation-only trace start remediation', () => {
     expect(explicit.diagnostics).toEqual([]);
     expect(explicit.edges.some((edge) =>
       edge.type === 'operation_implemented_by_handler')).toBe(true);
-    expect(explicit.edges.filter((edge) => edge.unresolvedReason)).toEqual([]);
+    expectUnindexedPackageGaps(explicit.edges, [
+      'srv/ScopeHandler.ts:Func->unresolved:Func',
+    ]);
     db.close();
   });
 });

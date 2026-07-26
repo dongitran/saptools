@@ -150,6 +150,7 @@ function unresolvedOperationStart(
       severity: 'warning',
       code: 'trace_start_implementation_unresolved',
       message: 'Indexed operation matched but no implementation candidate exists',
+      selectorKind: 'operation',
       resolutionStage: 'implementation',
       resolutionStatus: 'operation_without_implementation',
     }],

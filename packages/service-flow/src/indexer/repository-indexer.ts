@@ -46,6 +46,10 @@ import {
   type PackageInvalidationBatch,
 } from '../db/004-package-target-invalidation.js';
 import {
+  isPreparedRepositorySnapshotError,
+  recordPreparedSnapshotFailure,
+} from '../db/013-index-publication-failure.js';
+import {
   loadRepositorySourceContext,
   type RepositorySourceContext,
   type SourceContextInstrumentation,
@@ -82,12 +86,21 @@ export async function indexRepository(
 ): Promise<IndexRepoResult> {
   try {
     const prepared = await prepareRepositoryIndex(repo, force, instrumentation);
-    if (!prepared.skipped) db.transaction(() => {
+    if (prepared.skipped)
+      return { fileCount: 0, diagnosticCount: 0, skipped: true };
+    const outcome = db.transaction(() => {
       const batch = createPackageInvalidationBatch([prepared.repo.id]);
-      publishPreparedRepositoryIndex(db, prepared, batch);
-      finalizePackageTargetInvalidations(db, batch);
+      const published = publishOneRepository(db, prepared, batch);
+      if (published.ok) finalizePackageTargetInvalidations(db, batch);
+      return published;
     });
-    return { fileCount: prepared.fileCount, diagnosticCount: prepared.diagnosticCount, skipped: prepared.skipped };
+    return outcome.ok
+      ? {
+          fileCount: prepared.fileCount,
+          diagnosticCount: prepared.diagnosticCount,
+          skipped: false,
+        }
+      : { fileCount: 0, diagnosticCount: 1, skipped: false };
   } catch (error) {
     recordIndexFailure(db, repo.id, error);
     return { fileCount: 0, diagnosticCount: 1, skipped: false };
@@ -172,10 +185,58 @@ export function publishPreparedRepositoryIndex(
   insertCalls(db, repoId, prepared.parsed.calls);
   db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(now, prepared.fingerprint, now, ANALYZER_VERSION, repoId);
 }
+
+export type RepositoryPublicationOutcome =
+  | { ok: true }
+  | { ok: false; error: unknown };
+
+export function publishOneRepository(
+  db: Db,
+  prepared: PreparedRepositoryIndex,
+  invalidations: PackageInvalidationBatch,
+): RepositoryPublicationOutcome {
+  try {
+    db.transaction(() => withPublicationSavepoint(
+      db,
+      prepared.repo.id,
+      () => publishPreparedRepositoryIndex(db, prepared, invalidations),
+    ));
+    return { ok: true };
+  } catch (error) {
+    recordIndexFailure(db, prepared.repo.id, error);
+    return { ok: false, error };
+  }
+}
+
+function withPublicationSavepoint<T>(
+  db: Db,
+  repoId: number,
+  publish: () => T,
+): T {
+  const name = `service_flow_repository_${repoId}`;
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const result = publish();
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    return result;
+  } catch (error) {
+    db.exec(`ROLLBACK TO SAVEPOINT ${name}`);
+    db.exec(`RELEASE SAVEPOINT ${name}`);
+    throw error;
+  }
+}
+
 export function recordIndexFailure(db: Db, repoId: number, error: unknown): void {
+  if (isPreparedRepositorySnapshotError(error)) {
+    recordPreparedSnapshotFailure(db, repoId, error);
+    return;
+  }
   const message = errorMessage(error);
   db.prepare("UPDATE repositories SET index_status='failed', error_count=1 WHERE id=?").run(repoId);
-  db.prepare("DELETE FROM diagnostics WHERE repo_id=? AND code IN ('index_failed_snapshot_preserved','source_read_failed')").run(repoId);
+  db.prepare(`DELETE FROM diagnostics WHERE repo_id=? AND (
+    code IN ('index_failed_snapshot_preserved','source_read_failed')
+    OR code GLOB 'invalid_prepared_repository_snapshot:*'
+  )`).run(repoId);
   db.prepare('INSERT INTO diagnostics(repo_id,severity,code,message) VALUES(?,?,?,?)').run(repoId, 'error', 'source_read_failed', `Index failed before publication; previous facts and fingerprint were preserved. ${message}`);
 }
 async function parseAllSourceFacts(

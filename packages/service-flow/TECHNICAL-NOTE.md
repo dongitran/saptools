@@ -1,5 +1,14 @@
 # Service Flow Resolution Notes
 
+## 0.1.69 containment, dynamic event, and compact actionability notes
+
+- Package/CLI `0.1.69`, SQLite schema `13`, analyzer `0.1.69-facts.1`, and compact contract `service-flow/compact-graph@1` remain independent. No SQL migration is needed because `single_hop_helper_return` is carried in validated JSON evidence; all repositories still require `index --force` and `link --force` because generated facts changed.
+- Prepared-snapshot failures use a closed typed error and repository site. Workspace indexing contains those failures with one repository savepoint, commits healthy siblings, writes one bounded diagnostic for each failed repository, and finishes the run as `success`, `partial_failure`, or `failed`. Unexpected cross-repository materialization/invalidation failures still roll back the outer workspace transaction.
+- Relative default-class method resolution compares the caller's default binding to target-side default-export evidence, while current-fact proof uses the caller's local identifier. Package-derived members have no same-file fallback, package-backed relative proxy aliases carry an explicit unsupported reason, and unresolved/ambiguous symbol calls remain visible but non-traversable in traces.
+- Event template expressions are persisted without evaluation. Missing exact keys create dynamic event candidates; a trace traverses only after emit and subscription templates are both fully substituted and their concrete names match with binary case sensitivity.
+- CQL dispatch recognizes `cds.run` structurally across whitespace and records only the bounded `hasForUpdate: true` fact for a proven lock modifier. One direct helper-return hop may preserve connect-derived service bindings through a non-value-producing catch, with explicit helper-chain provenance and lifecycle validation.
+- Compact v1 rejects controls before trimming missing names, uses intra-edge canonical identity to remove complete tuple-equivalent persisted/effective decisions for every safe target kind, and retains genuinely different decisions. Rare ambiguous/start/lifecycle diagnostics gain bounded repository, selector, and invalid-category reference groups. A parser warning contributes its allowlisted `code`; the generic `parser_warning` sentinel instead uses an allowlisted `message` code, while arbitrary free text remains omitted.
+
 ## 0.1.68 exact provenance and structural runtime notes
 
 ### Fact identity and schema lifecycle

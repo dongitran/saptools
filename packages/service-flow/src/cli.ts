@@ -41,6 +41,7 @@ import type {
   TraceStart,
 } from './types.js';
 import { cleanWorkspaceState } from './cli/000-clean.js';
+import { indexCommandOutcome } from './cli/001-index-summary.js';
 
 const stdout = createStdoutWriter(process.stdout, fail);
 const TRACE_FORMATS = ['table', 'json', 'mermaid', 'compact-json'] as const;
@@ -245,14 +246,16 @@ function runGraphCommand(opts: GraphCommandOptions): Promise<void> {
   });
 }
 
-export function createProgram(): Command {
-  const program = new Command();
-  program
+function configuredProgram(): Command {
+  return new Command()
     .name('service-flow')
     .description(
       'Trace SAP CAP service-to-service flows across multi-repository workspaces',
     )
     .version(VERSION);
+}
+
+function registerInitCommand(program: Command): void {
   program
     .command('init')
     .argument('<workspace>')
@@ -262,6 +265,9 @@ export function createProgram(): Command {
       (workspace: string, opts: { db?: string; ignore?: string[] }) =>
         void init(workspace, opts).catch(fail),
     );
+}
+
+function registerIndexCommand(program: Command): void {
   program
     .command('index')
     .option('--workspace <path>')
@@ -274,11 +280,14 @@ export function createProgram(): Command {
             repo: opts.repo,
             force: Boolean(opts.force),
           });
-          writeStdout(
-            `Indexed ${r.indexedCount} repositories, skipped ${r.skippedCount}, ${r.fileCount} files, ${r.diagnosticCount} diagnostics\n`,
-          );
+          const outcome = indexCommandOutcome(r);
+          writeStdout(outcome.stdout);
+          if (outcome.exitCode !== 0) process.exitCode = outcome.exitCode;
         }).catch(fail),
     );
+}
+
+function registerLinkCommand(program: Command): void {
   program
     .command('link')
     .option('--workspace <path>')
@@ -293,6 +302,9 @@ export function createProgram(): Command {
           );
         }).catch(fail),
     );
+}
+
+function registerTraceCommand(program: Command): void {
   program
     .command('trace')
     .option('--workspace <path>')
@@ -312,23 +324,91 @@ export function createProgram(): Command {
     .option('--dynamic-mode <mode>', 'strict|candidates|infer', 'strict')
     .option('--max-dynamic-candidates <n>', 'maximum dynamic candidates to show', '5')
     .action((opts: TraceCommandOptions) => void runTraceCommand(opts).catch(fail));
+}
+
+function listRepositoriesCommand(
+  opts: { workspace?: string },
+): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) =>
+    writeStdout(
+      renderJson(
+        listRepositories(db, workspaceId).map((repo) => ({
+          name: repo.name,
+          kind: repo.kind,
+          packageName: repo.package_name,
+        })),
+      ),
+    ));
+}
+
+function listServicesCommand(
+  opts: { workspace?: string; repo?: string },
+): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const selection = opts.repo
+      ? selectRepository(db, opts.repo, workspaceId) : {};
+    if (selection.diagnostic) {
+      writeStdout(renderJson([selection.diagnostic]));
+      return;
+    }
+    const repo = selection.repo;
+    const rows = db.prepare(
+      'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
+    ).all(workspaceId, repo?.id, repo?.id);
+    writeStdout(renderJson(rows));
+  });
+}
+
+function listOperationsCommand(
+  opts: { workspace?: string; repo?: string; service?: string },
+): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const selection = opts.repo
+      ? selectRepository(db, opts.repo, workspaceId) : {};
+    if (selection.diagnostic) {
+      writeStdout(renderJson([selection.diagnostic]));
+      return;
+    }
+    const repo = selection.repo;
+    const rows = db.prepare(
+      'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
+    ).all(
+      workspaceId, repo?.id, repo?.id, opts.service, opts.service,
+    );
+    writeStdout(renderJson(rows));
+  });
+}
+
+function listCallsCommand(
+  opts: { workspace?: string; repo?: string; operation?: string },
+): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const selection = opts.repo
+      ? selectRepository(db, opts.repo, workspaceId) : {};
+    if (selection.diagnostic) {
+      writeStdout(renderJson([selection.diagnostic]));
+      return;
+    }
+    const repo = selection.repo;
+    const rows = db.prepare(
+      'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE r.workspace_id=? AND (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)',
+    ).all(
+      workspaceId, repo?.id, repo?.id, opts.operation, opts.operation,
+      opts.operation ? `/${opts.operation}` : undefined,
+      opts.operation ? `%${opts.operation}%` : undefined,
+    );
+    writeStdout(renderJson(rows));
+  });
+}
+
+function registerListCommands(program: Command): void {
   const list = program.command('list');
   list
     .command('repos')
     .option('--workspace <path>')
     .action(
       (opts: { workspace?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) =>
-          writeStdout(
-            renderJson(
-              listRepositories(db, workspaceId).map((r) => ({
-                name: r.name,
-                kind: r.kind,
-                packageName: r.package_name,
-              })),
-            ),
-          ),
-        ).catch(fail),
+        void listRepositoriesCommand(opts).catch(fail),
     );
   list
     .command('services')
@@ -336,22 +416,7 @@ export function createProgram(): Command {
     .option('--repo <name>')
     .action(
       (opts: { workspace?: string; repo?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const selection = opts.repo
-            ? selectRepository(db, opts.repo, workspaceId)
-            : {};
-          if (selection.diagnostic) {
-            writeStdout(renderJson([selection.diagnostic]));
-            return;
-          }
-          const repo = selection.repo;
-          const rows = db
-            .prepare(
-              'SELECT r.name repo,s.service_path servicePath,s.qualified_name qualifiedName FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) ORDER BY r.name,s.service_path',
-            )
-            .all(workspaceId, repo?.id, repo?.id);
-          writeStdout(renderJson(rows));
-        }).catch(fail),
+        void listServicesCommand(opts).catch(fail),
     );
   list
     .command('operations')
@@ -360,22 +425,7 @@ export function createProgram(): Command {
     .option('--service <path>')
     .action(
       (opts: { workspace?: string; repo?: string; service?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const selection = opts.repo
-            ? selectRepository(db, opts.repo, workspaceId)
-            : {};
-          if (selection.diagnostic) {
-            writeStdout(renderJson([selection.diagnostic]));
-            return;
-          }
-          const repo = selection.repo;
-          const rows = db
-            .prepare(
-              'SELECT r.name repo,s.service_path servicePath,o.operation_name operation,o.operation_path path FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (? IS NULL OR s.repo_id=?) AND (? IS NULL OR s.service_path=?)',
-            )
-            .all(workspaceId, repo?.id, repo?.id, opts.service, opts.service);
-          writeStdout(renderJson(rows));
-        }).catch(fail),
+        void listOperationsCommand(opts).catch(fail),
     );
   list
     .command('calls')
@@ -384,31 +434,11 @@ export function createProgram(): Command {
     .option('--operation <name>')
     .action(
       (opts: { workspace?: string; repo?: string; operation?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const selection = opts.repo
-            ? selectRepository(db, opts.repo, workspaceId)
-            : {};
-          if (selection.diagnostic) {
-            writeStdout(renderJson([selection.diagnostic]));
-            return;
-          }
-          const repo = selection.repo;
-          const rows = db
-            .prepare(
-              'SELECT r.name repo,c.call_type type,c.operation_path_expr path,c.source_file file,c.source_line line FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id WHERE r.workspace_id=? AND (? IS NULL OR c.repo_id=?) AND (? IS NULL OR c.operation_path_expr=? OR c.operation_path_expr=? OR c.payload_summary LIKE ?)',
-            )
-            .all(
-              workspaceId,
-              repo?.id,
-              repo?.id,
-              opts.operation,
-              opts.operation,
-              opts.operation ? `/${opts.operation}` : undefined,
-              opts.operation ? `%${opts.operation}%` : undefined,
-            );
-          writeStdout(renderJson(rows));
-        }).catch(fail),
+        void listCallsCommand(opts).catch(fail),
     );
+}
+
+function registerGraphCommand(program: Command): void {
   program
     .command('graph')
     .option('--workspace <path>')
@@ -423,6 +453,33 @@ export function createProgram(): Command {
     .option('--dynamic-mode <mode>', 'strict|candidates|infer', 'strict')
     .option('--max-dynamic-candidates <n>', 'maximum dynamic candidates to show', '5')
     .action((opts: GraphCommandOptions) => void runGraphCommand(opts).catch(fail));
+}
+
+function inspectRepositoryCommand(
+  name: string,
+  opts: { workspace?: string },
+): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const selection = selectRepository(db, name, workspaceId);
+    writeStdout(renderJson(
+      selection.repo ?? selection.diagnostic ?? { error: 'repo not found' },
+    ));
+  });
+}
+
+function inspectOperationCommand(
+  selector: string,
+  opts: { workspace?: string },
+): Promise<void> {
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const rows = db.prepare(
+      'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
+    ).all(workspaceId, selector, selector);
+    writeStdout(renderJson(rows));
+  });
+}
+
+function registerInspectCommands(program: Command): void {
   const inspect = program.command('inspect');
   inspect
     .command('repo')
@@ -430,12 +487,7 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (name: string, opts: { workspace?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const selection = selectRepository(db, name, workspaceId);
-          writeStdout(renderJson(
-            selection.repo ?? selection.diagnostic ?? { error: 'repo not found' },
-          ));
-        }).catch(fail),
+        void inspectRepositoryCommand(name, opts).catch(fail),
     );
   inspect
     .command('operation')
@@ -443,15 +495,11 @@ export function createProgram(): Command {
     .option('--workspace <path>')
     .action(
       (selector: string, opts: { workspace?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const rows = db
-            .prepare(
-              'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
-            )
-            .all(workspaceId, selector, selector);
-          writeStdout(renderJson(rows));
-        }).catch(fail),
+        void inspectOperationCommand(selector, opts).catch(fail),
     );
+}
+
+function registerDoctorCommand(program: Command): void {
   program
     .command('doctor')
     .option('--workspace <path>')
@@ -467,6 +515,9 @@ export function createProgram(): Command {
           writeStdout(renderDoctorDiagnostics(allDiagnostics, opts.format));
         }).catch(fail),
     );
+}
+
+function registerCleanCommand(program: Command): void {
   program
     .command('clean')
     .option('--workspace <path>')
@@ -479,6 +530,19 @@ export function createProgram(): Command {
           writeStdout('Cleaned service-flow state\n');
         })().catch(fail),
     );
+}
+
+export function createProgram(): Command {
+  const program = configuredProgram();
+  registerInitCommand(program);
+  registerIndexCommand(program);
+  registerLinkCommand(program);
+  registerTraceCommand(program);
+  registerListCommands(program);
+  registerGraphCommand(program);
+  registerInspectCommands(program);
+  registerDoctorCommand(program);
+  registerCleanCommand(program);
   return program;
 }
 function collect(value: string, previous: string[]): string[] {

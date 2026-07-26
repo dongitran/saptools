@@ -16,6 +16,12 @@ import {
   type BindingProofCall,
   type BindingProofTarget,
 } from './012-binding-reference-proof.js';
+import {
+  preparedCallSnapshotError,
+} from './013-index-publication-failure.js';
+import {
+  hasSingleHopHelperReturn,
+} from './014-binding-helper-provenance.js';
 
 export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]): void {
   const insertStmt = db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,call_site_start_offset,call_site_end_offset,call_role,status,confidence,evidence_json,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -58,8 +64,8 @@ function assertImportProvenance(call: SymbolCallFact): void {
   const direct = directPackageProvenanceValid(call);
   const derived = derivedPackageProvenanceValid(call);
   if (!direct && !derived)
-    throw new Error(
-      'invalid_prepared_repository_snapshot:package_import_provenance_missing',
+    throw preparedCallSnapshotError(
+      'package_import_provenance_missing', 'symbol_call', call,
     );
 }
 
@@ -156,7 +162,9 @@ function requiredSymbolCallOwnerId(
   );
   if (selected.status !== 'resolved'
     || selected.owner?.qualifiedName !== call.callerQualifiedName)
-    throw new Error('invalid_prepared_repository_snapshot:symbol_call_owner_mismatch');
+    throw preparedCallSnapshotError(
+      'symbol_call_owner_mismatch', 'symbol_call', call,
+    );
   return selected.owner.id;
 }
 
@@ -265,9 +273,11 @@ function exportedSymbolRows(db: Db, repoId: number, r: SymbolCallFact): SymbolTa
   ));
 }
 
-function isRelativeImportedSymbolCall(r: SymbolCallFact): boolean {
-  return Boolean(r.importSource?.startsWith('.'));
-}
+const sameFileEligibleRelations = new Set([
+  'indexed_local_symbol',
+  'indexed_local_symbol_unproven',
+  'indexed_this_method',
+]);
 
 function eligibleSymbolResolution(
   rows: SymbolTargetRow[],
@@ -292,8 +302,7 @@ function sameFileResolution(
   r: SymbolCallFact,
   relation: unknown,
 ): SymbolCallResolution | undefined {
-  if (isRelativeImportedSymbolCall(r) || relation === 'package_import')
-    return undefined;
+  if (!sameFileEligibleRelations.has(String(relation))) return undefined;
   if (relation === 'indexed_local_symbol_unproven')
     return unresolvedSymbol(
       'exact_symbol_match', 'no_local_symbol_target', 0,
@@ -452,6 +461,7 @@ interface PersistedBinding {
   ownerResolution: string;
   ownerStartOffset: number | null;
   ownerEndOffset: number | null;
+  singleHopHelperReturn: boolean;
 }
 
 function outboundOwnerId(
@@ -471,13 +481,18 @@ function outboundOwnerId(
   );
   const resolution = call.evidence?.sourceOwnerResolution;
   if (resolution === 'ownerless_file_scope')
-    return ownerlessOutboundOwner(selected.status);
+    return ownerlessOutboundOwner(call, selected.status);
   return ownedOutboundOwner(call, resolution, selected);
 }
 
-function ownerlessOutboundOwner(status: string): null {
+function ownerlessOutboundOwner(
+  call: OutboundCallFact,
+  status: string,
+): null {
   if (status !== 'none')
-    throw new Error('invalid_prepared_repository_snapshot:outbound_owner_mismatch');
+    throw preparedCallSnapshotError(
+      'outbound_owner_mismatch', 'outbound_call', call,
+    );
   return null;
 }
 
@@ -488,10 +503,14 @@ function ownedOutboundOwner(
 ): number {
   if (resolution !== 'owned_exact' || selected.status !== 'resolved'
     || selected.owner?.qualifiedName !== call.sourceSymbolQualifiedName)
-    throw new Error('invalid_prepared_repository_snapshot:outbound_owner_mismatch');
+    throw preparedCallSnapshotError(
+      'outbound_owner_mismatch', 'outbound_call', call,
+    );
   const owner = selected.owner;
   if (!owner)
-    throw new Error('invalid_prepared_repository_snapshot:outbound_owner_mismatch');
+    throw preparedCallSnapshotError(
+      'outbound_owner_mismatch', 'outbound_call', call,
+    );
   return owner.id;
 }
 
@@ -506,14 +525,18 @@ function resolvePersistedBinding(
 } {
   const reference = call.serviceBindingReference;
   if (!reference)
-    throw new Error('invalid_prepared_repository_snapshot:binding_reference_missing');
+    throw preparedCallSnapshotError(
+      'binding_reference_missing', 'outbound_call', call,
+    );
   if (reference.status !== 'resolved_exact')
     return unresolvedBinding(reference);
   const candidates = exactBindingRows(db, repoId, reference);
   const selected = candidates[0];
   if (candidates.length !== 1 || !selected
     || selected.variableName !== call.serviceVariableName)
-    throw new Error('invalid_prepared_repository_snapshot:binding_reference_mismatch');
+    throw preparedCallSnapshotError(
+      'binding_reference_mismatch', 'outbound_call', call,
+    );
   assertResolvedBindingProof(repoId, call, selected, reference);
   return {
     bindingId: selected.id,
@@ -533,8 +556,8 @@ function bindingProofCall(
 ): BindingProofCall {
   if (call.callSiteStartOffset === undefined
     || call.callSiteEndOffset === undefined)
-    throw new Error(
-      'invalid_prepared_repository_snapshot:binding_lexical_proof_invalid',
+    throw preparedCallSnapshotError(
+      'binding_lexical_proof_invalid', 'outbound_call', call,
     );
   return {
     repoId,
@@ -561,6 +584,7 @@ function bindingProofTarget(
     ownerResolution: binding.ownerResolution,
     ownerStartOffset: binding.ownerStartOffset,
     ownerEndOffset: binding.ownerEndOffset,
+    singleHopHelperReturn: binding.singleHopHelperReturn,
   };
 }
 
@@ -576,8 +600,8 @@ function assertResolvedBindingProof(
     bindingProofTarget(repoId, binding),
   );
   if (!valid)
-    throw new Error(
-      'invalid_prepared_repository_snapshot:binding_lexical_proof_invalid',
+    throw preparedCallSnapshotError(
+      'binding_lexical_proof_invalid', 'outbound_call', call,
     );
 }
 
@@ -608,6 +632,7 @@ function exactBindingRows(
     binding.binding_site_start_offset siteStart,
     binding.binding_site_end_offset siteEnd,
     binding.owner_resolution ownerResolution,
+    binding.helper_chain_json helperChainJson,
     owner.start_offset ownerStartOffset,owner.end_offset ownerEndOffset
     FROM service_bindings binding
     LEFT JOIN symbols owner ON owner.id=binding.symbol_id
@@ -642,6 +667,7 @@ function persistedBindingRow(
     ownerResolution: row.ownerResolution,
     ownerStartOffset,
     ownerEndOffset,
+    singleHopHelperReturn: hasSingleHopHelperReturn(row.helperChainJson),
   }];
 }
 
