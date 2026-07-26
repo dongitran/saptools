@@ -158,7 +158,9 @@ export async function scanForPackages(workspaceDirectory: string, prefix: string
       try {
         name = await readPackageName(path.join(directory, "package.json"));
       } catch (error) {
-        throw new Error(`Malformed package.json in ${directory}`, { cause: error });
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`Warning: Malformed package.json in ${JSON.stringify(directory)}; skipping this directory (still scanning nested subdirectories for packages). ${detail}\n`);
+        name = undefined;
       }
       if (name?.startsWith(normalizedPrefix) === true) {
         found.set(name, [...(found.get(name) ?? []), directory]);

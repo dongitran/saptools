@@ -5,6 +5,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// A plain {} literal lets a definition literally named "__proto__" hit the inherited
+// __proto__ setter on bracket assignment instead of becoming an own property.
+export function createDefinitionRecord(): Record<string, HanaLensDefinition> {
+  return Object.create(null) as Record<string, HanaLensDefinition>;
+}
+
 function asElement(value: unknown): HanaLensElement | undefined {
   if (!isRecord(value)) {
     return undefined;

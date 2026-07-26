@@ -33,11 +33,36 @@ describe("package scanning and linking", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("throws deterministic errors for malformed package JSON", async () => {
+  it("warns and continues past malformed package JSON instead of aborting the scan", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-malformed-"));
-    await fsMkdir(path.join(root, "bad"));
-    await writeFile(path.join(root, "bad", "package.json"), "{");
-    await expect(scanForPackages(root, "@demo/")).rejects.toThrow("Malformed package.json");
+    const bad = path.join(root, "bad");
+    await fsMkdir(bad);
+    await writeFile(path.join(bad, "package.json"), "{");
+    await fsMkdir(path.join(root, "good"));
+    await writeFile(path.join(root, "good", "package.json"), JSON.stringify({ name: "@demo/good" }));
+
+    const result = await scanWithStderr(root);
+
+    expect(result.packages).toEqual([{ name: "@demo/good", directory: path.join(root, "good") }]);
+    expect(result.stderr).toContain("Malformed package.json");
+    expect(result.stderr).toContain(bad);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("recurses into nested packages beneath a directory with malformed package.json", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-malformed-nested-"));
+    const malformed = path.join(root, "workspace");
+    const nested = path.join(malformed, "nested");
+    await fsMkdir(malformed);
+    await writeFile(path.join(malformed, "package.json"), "{ not valid json");
+    await fsMkdir(nested);
+    await writeFile(path.join(nested, "package.json"), JSON.stringify({ name: "@demo/nested" }));
+
+    const result = await scanWithStderr(root);
+
+    expect(result.packages).toEqual([{ name: "@demo/nested", directory: nested }]);
+    expect(result.stderr).toContain("Malformed package.json");
+    expect(result.stderr).toContain(malformed);
     await rm(root, { recursive: true, force: true });
   });
 

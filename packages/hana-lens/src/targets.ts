@@ -28,7 +28,9 @@ export function findTargetCandidates(csn: HanaLensCsn, targetName: string): read
 }
 
 export function findPreferredTargetCandidates(csn: HanaLensCsn, targetName: string): readonly ResolvedTarget[] {
-  const exact = csn.definitions[targetName];
+  // A bare bracket lookup would resolve inherited Object.prototype members (toString,
+  // constructor, hasOwnProperty, ...) as false-positive matches for names never defined.
+  const exact = Object.hasOwn(csn.definitions, targetName) ? csn.definitions[targetName] : undefined;
   return exact === undefined
     ? findTargetCandidates(csn, targetName)
     : [{ name: targetName, definition: exact }];

@@ -2,8 +2,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CACHE_FILE_NAME, PACKAGE_ANNOTATION } from "./types.js";
-import type { CompileResult, HanaLensCsn, HanaLensDefinition } from "./types.js";
-import { isRecord, parseCsn } from "./validation.js";
+import type { CompileResult, HanaLensCsn } from "./types.js";
+import { createDefinitionRecord, isRecord, parseCsn } from "./validation.js";
 
 interface DefinitionConflict {
   readonly name: string;
@@ -55,7 +55,7 @@ export async function readCache(workspaceDirectory = process.cwd()): Promise<Han
 }
 
 export function mergeCompileResults(results: readonly CompileResult[], strict = false): HanaLensCsn {
-  const definitions: Record<string, HanaLensDefinition> = {};
+  const definitions = createDefinitionRecord();
   const owners = new Map<string, string>();
   const conflicts: DefinitionConflict[] = [];
   for (const result of results) {

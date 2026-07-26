@@ -224,6 +224,12 @@ describe("describeEntity", () => {
     expect(() => describeEntity(ast, "Missing", false)).toThrow("Entity not found: Missing");
   });
 
+  it("reports missing entities instead of resolving inherited Object.prototype members", () => {
+    for (const neverDefined of ["toString", "constructor", "hasOwnProperty", "valueOf", "__proto__", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]) {
+      expect(() => describeEntity(ast, neverDefined, false)).toThrow(`Entity not found: ${neverDefined}`);
+    }
+  });
+
   it("describes a unique short name using its canonical definition", () => {
     const csn: HanaLensCsn = { definitions: {
       "acme.inventory.Stock": { elements: { ID: { key: true, type: "cds.UUID" } } },

@@ -109,6 +109,25 @@ describe("cache IO", () => {
       stderrWrite.mock.restore();
     }
   });
+
+  it("keeps a __proto__-named definition as a real enumerable entry instead of corrupting the container", () => {
+    // Computed-key syntax creates a genuine own "__proto__" property; a literal
+    // {"__proto__": ...} key instead sets the object's own prototype and cannot reproduce the bug.
+    const protoDefinition = { kind: "entity", "@hanaLens.packageName": "@acme/a", elements: { ID: { key: true, type: "cds.UUID" } } };
+    const results = [{ packageName: "@acme/a", definitions: { ["__proto__"]: protoDefinition }, via: "cds" }] as const;
+
+    const merged = mergeCompileResults(results);
+
+    expect(Object.getPrototypeOf(merged.definitions)).toBe(null);
+    expect(Object.keys(merged.definitions)).toEqual(["__proto__"]);
+    expect(merged.definitions["__proto__"]).toEqual(protoDefinition);
+
+    // JSON.parse always yields a normal Object.prototype-based object, so the round trip is
+    // checked by key/value rather than by deep-equal, which would fail on prototype identity alone.
+    const roundTripped = JSON.parse(JSON.stringify(merged)) as HanaLensCsn;
+    expect(Object.keys(roundTripped.definitions)).toEqual(["__proto__"]);
+    expect(roundTripped.definitions["__proto__"]).toEqual(protoDefinition);
+  });
 });
 
 describe("cache kind scope", () => {

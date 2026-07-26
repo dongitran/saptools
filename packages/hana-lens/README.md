@@ -335,6 +335,15 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 
 ## 🗒️ Changelog
 
+### `0.4.4` — Fallback parser correctness, cache safety, and flag validation
+
+- recognizes `Composition of` (real CDS syntax; the invalid `to` keyword is no longer required) and explicit `to one`/`of one` cardinality in the degraded regex fallback parser, for both `Association` and `Composition`
+- keeps `__proto__`-named entities intact through cache builds and stops `describe`/`references` from resolving inherited `Object.prototype` members as phantom entities
+- rejects `--kind` misspellings before compiling or writing a cache instead of silently falling back to the `db` default
+- engages `--allow-fallback` when a resolved `@sap/cds` install fails to load or exposes no `compile()` API, while keeping genuine CDS model errors fatal with a clarifying message
+- isolates a malformed `package.json` to its own directory during workspace scanning instead of aborting the entire scan
+- exports `findPreferredTargetCandidates` and `findReferenceTargetCandidates` from the typed API
+
 ### `0.4.3` — Cross-package scope and reference fixes
 
 - aggregates projection, external, and persistence-skip shape across every package copy of an FQN, preventing plain provider copies of service models from leaking into `db`

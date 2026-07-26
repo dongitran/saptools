@@ -4,6 +4,7 @@ import process from "node:process";
 import { buildCache } from "./build-cache.js";
 import { readCache } from "./cache.js";
 import { describeEntity } from "./describe.js";
+import { levenshtein } from "./levenshtein.js";
 import { parseCacheKind } from "./scope.js";
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "./search.js";
 import { findReferenceTargetCandidates } from "./targets.js";
@@ -11,6 +12,8 @@ import { findReferenceTargetCandidates } from "./targets.js";
 type BuildResult = Awaited<ReturnType<typeof buildCache>>;
 
 const SKIP_SUMMARY_LIMIT = 5;
+const KIND_FLAG = "--kind";
+const KIND_FLAG_TYPO_DISTANCE = 2;
 
 function requireOption(args: readonly string[], name: string): string {
   const index = args.indexOf(name);
@@ -70,7 +73,17 @@ function printBuildWarnings(result: BuildResult): void {
   }
 }
 
+function findKindFlagTypo(args: readonly string[]): string | undefined {
+  return args.find((argument) => argument.startsWith("--")
+    && argument !== KIND_FLAG
+    && levenshtein(argument.toLowerCase(), KIND_FLAG) <= KIND_FLAG_TYPO_DISTANCE);
+}
+
 async function runBuildCache(args: readonly string[]): Promise<void> {
+  const kindTypo = findKindFlagTypo(args);
+  if (kindTypo !== undefined) {
+    throw new Error(`Unknown flag ${JSON.stringify(kindTypo)}; did you mean ${KIND_FLAG}?`);
+  }
   const kind = parseCacheKind(readOption(args, "--kind"));
   const result = await buildCache(
     requireOption(args, "--dir"),

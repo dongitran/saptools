@@ -154,12 +154,51 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       const parsed = JSON.parse(rawCache) as HanaLensCsn;
       expect(parsed.definitions["acme.sales.BusinessRequest"]?.[PACKAGE_ANNOTATION]).toBe("@acme/sales");
       expect(parsed.definitions["acme.master.Customer"]?.[PACKAGE_ANNOTATION]).toBe("@acme/master");
+      expect(parsed.definitions["acme.sales.BusinessRequest"]?.elements?.["customer"]).toEqual({ type: "cds.Association", target: "acme.master.Customer" });
+      expect(parsed.definitions["acme.master.Customer"]?.elements?.["requests"]).toEqual({ type: "cds.Association", target: "acme.sales.BusinessRequest" });
       expect(parsed.definitions["stray.DependencyEntity"]).toBe(undefined);
       expect(parsed.definitions["built.BuildEntity"]).toBe(undefined);
 
       const salesToMaster = path.join(root, "packages", "sales", "node_modules", "@acme", "master");
       expect((await lstat(salesToMaster)).isSymbolicLink()).toBe(true);
       expect(await readlink(salesToMaster)).toBe(path.join(root, "packages", "master"));
+    });
+  }, 30_000);
+
+  it("fallback parser resolves 'Composition of many' targets used by real CDS syntax", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(
+        path.join(root, "packages", "db_orders"),
+        "@acme/db_orders",
+        "namespace acme.orders; entity OrderItem { key ID: UUID; } entity Order { key ID: UUID; toItems: Composition of many OrderItem on toItems.parent = $self; }",
+      );
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const build = runBuild(root, ["--allow-fallback"], isolatedCli);
+
+      expect(build.status).toBe(0);
+      expect(build.stderr).toContain("WARNING: DEGRADED regex fallback used for 1 package(s)");
+      const parsed = await readCache(root);
+      expect(parsed.definitions["acme.orders.Order"]?.elements?.["toItems"]).toEqual({ type: "cds.Composition", target: "OrderItem" });
+      expect(parsed.definitions["acme.orders.OrderItem"]?.elements?.["ID"]).toEqual({ key: true, type: "cds.UUID" });
+    });
+  }, 30_000);
+
+  it("fallback parser resolves explicit 'to one'/'of one' cardinality without capturing the keyword as the target", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(
+        path.join(root, "packages", "db_people"),
+        "@acme/db_people",
+        "namespace acme.people; entity Address { key ID: UUID; } entity Manager { key ID: UUID; } entity Employee { key ID: UUID; homeAddress: Composition of one Address; manager: Association to one Manager; }",
+      );
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const build = runBuild(root, ["--allow-fallback"], isolatedCli);
+
+      expect(build.status).toBe(0);
+      const parsed = await readCache(root);
+      expect(parsed.definitions["acme.people.Employee"]?.elements?.["homeAddress"]).toEqual({ type: "cds.Composition", target: "Address" });
+      expect(parsed.definitions["acme.people.Employee"]?.elements?.["manager"]).toEqual({ type: "cds.Association", target: "Manager" });
     });
   }, 30_000);
 
@@ -274,6 +313,28 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
     });
   }, 30_000);
 
+  it("rejects a --kind flag typo before compiling anything and still accepts the correctly spelled flag", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(path.join(root, "packages", "db_plain"), "@acme/db_plain", "namespace acme; entity Plain { key ID: UUID; }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const capitalTypo = runBuild(root, ["--Kind", "service"], isolatedCli);
+      expect(capitalTypo.status).toBe(1);
+      expect(capitalTypo.stderr).toContain('Unknown flag "--Kind"; did you mean --kind?');
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+
+      const misspelledTypo = runBuild(root, ["--knid", "service"], isolatedCli);
+      expect(misspelledTypo.status).toBe(1);
+      expect(misspelledTypo.stderr).toContain('Unknown flag "--knid"; did you mean --kind?');
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+
+      const correct = runBuild(root, ["--kind", "db", "--allow-fallback"], isolatedCli);
+      expect(correct.status).toBe(0);
+      expect(correct.stdout).toContain("kind=db");
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(true);
+    });
+  }, 30_000);
+
   it("resolves CDS beside an isolated CLI and still gives the analyzed workspace precedence", async () => {
     await withTempWorkspace(async (root) => {
       const isolatedCliRoot = path.join(root, "isolated-cli");
@@ -335,21 +396,65 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
     });
   }, 30_000);
 
-  it("does not fall back when resolved CDS has no compile API", async () => {
+  it("falls back when resolved CDS exposes no compile API and --allow-fallback is passed", async () => {
     await withTempWorkspace(async (root) => {
       await writeWorkspaceCds(root, "export default {};");
       await writeCapPackage(path.join(root, "packages", "db_invalid_api"), "@acme/db_invalid_api", "namespace acme; entity InvalidApi { key ID: UUID; }");
 
       const build = runBuild(root, ["--allow-fallback"]);
 
+      expect(build.status).toBe(0);
+      expect(build.stderr).toContain("WARNING: DEGRADED regex fallback used for 1 package(s)");
+      expect(build.stdout).toContain("compiled=1 skipped=0 via=fallback");
+      expect((await readCache(root)).definitions["acme.InvalidApi"]?.[PACKAGE_ANNOTATION]).toBe("@acme/db_invalid_api");
+    });
+  }, 30_000);
+
+  it("fails closed with a corrected reason when resolved CDS exposes no compile API and fallback is not allowed", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeWorkspaceCds(root, "export default {};");
+      await writeCapPackage(path.join(root, "packages", "db_invalid_api"), "@acme/db_invalid_api", "namespace acme; entity InvalidApi { key ID: UUID; }");
+
+      const build = runBuild(root);
+
       expect(build.status).toBe(1);
-      expect(build.stderr).toContain("@sap/cds resolved but exposes no compile() API");
-      expect(build.stderr.includes("DEGRADED regex fallback used")).toBe(false);
+      expect(build.stderr).toContain("@sap/cds is not resolvable");
+      expect(build.stderr).toContain("resolved but exposes no compile() API");
+      expect(build.stderr).toContain("Pass --allow-fallback to accept a DEGRADED cache");
       expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
     });
   }, 30_000);
 
-  it("propagates compiler errors that resemble the old module-resolution message", async () => {
+  it("falls back when the resolved CDS module itself fails to load and --allow-fallback is passed", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeWorkspaceCds(root, 'throw new Error("native binding failed to load");');
+      await writeCapPackage(path.join(root, "packages", "db_broken_install"), "@acme/db_broken_install", "namespace acme; entity BrokenInstall { key ID: UUID; }");
+
+      const build = runBuild(root, ["--allow-fallback"]);
+
+      expect(build.status).toBe(0);
+      expect(build.stderr).toContain("WARNING: DEGRADED regex fallback used for 1 package(s)");
+      expect(build.stdout).toContain("compiled=1 skipped=0 via=fallback");
+      expect((await readCache(root)).definitions["acme.BrokenInstall"]?.[PACKAGE_ANNOTATION]).toBe("@acme/db_broken_install");
+    });
+  }, 30_000);
+
+  it("fails closed with a corrected reason when the resolved CDS module fails to load and fallback is not allowed", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeWorkspaceCds(root, 'throw new Error("native binding failed to load");');
+      await writeCapPackage(path.join(root, "packages", "db_broken_install"), "@acme/db_broken_install", "namespace acme; entity BrokenInstall { key ID: UUID; }");
+
+      const build = runBuild(root);
+
+      expect(build.status).toBe(1);
+      expect(build.stderr).toContain("@sap/cds is not resolvable");
+      expect(build.stderr).toContain("native binding failed to load");
+      expect(build.stderr).toContain("Pass --allow-fallback to accept a DEGRADED cache");
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+    });
+  }, 30_000);
+
+  it("propagates compiler errors that resemble the old module-resolution message and never engages fallback for them", async () => {
     await withTempWorkspace(async (root) => {
       await writeWorkspaceCds(root, [
         'const cds = { compile: async () => {',
@@ -363,6 +468,8 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       expect(build.status).toBe(1);
       expect(build.stderr).toContain("Cannot find package '@sap/cds' from neutral compiler");
+      expect(build.stderr).toContain("this is a CDS model problem, not a missing or unusable @sap/cds install");
+      expect(build.stderr).toContain("--allow-fallback will not change this outcome");
       expect(build.stderr.includes("DEGRADED regex fallback used")).toBe(false);
       expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
     });
@@ -588,6 +695,37 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
       expect(expanded.stdout).toContain("- demo.master.Missing: missing");
 
       expect(runCli(["describe", "demo.empty.EmptyEntity"], root).stdout).toBe("(no elements)\n");
+    });
+  });
+
+  it("keeps an entity literally named __proto__ intact through build-cache and describe", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(path.join(root, "packages", "db_proto"), "@acme/db_proto", "entity __proto__ { key ID: UUID; label: String(10); }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const build = runBuild(root, ["--allow-fallback"], isolatedCli);
+      expect(build.status).toBe(0);
+
+      const parsed = await readCache(root);
+      expect(Object.keys(parsed.definitions)).toContain("__proto__");
+      expect(parsed.definitions["__proto__"]?.elements?.["ID"]).toEqual({ key: true, type: "cds.UUID" });
+
+      const described = runCli(["describe", "__proto__"], root, isolatedCli);
+      expect(described.status).toBe(0);
+      expect(described.stdout).toContain("[PK] ID: cds.UUID");
+      expect(described.stdout).toContain("label: cds.String(10)");
+    });
+  }, 30_000);
+
+  it("reports Entity not found for Object.prototype member names that were never defined", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCache(root, { definitions: { "acme.Widget": { kind: "entity", elements: { ID: { key: true, type: "cds.UUID" } } } } });
+
+      for (const neverDefined of ["toString", "constructor", "hasOwnProperty", "valueOf"]) {
+        const described = runCli(["describe", neverDefined], root);
+        expect(described.status).toBe(1);
+        expect(described.stderr).toContain(`Entity not found: ${neverDefined}`);
+      }
     });
   });
 
