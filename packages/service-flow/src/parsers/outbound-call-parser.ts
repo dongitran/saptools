@@ -6,12 +6,12 @@ import { normalizePath } from '../utils/path-utils.js';
 import {
   classifyOutboundCallsInSource,
   type ClassifiedOutboundCall,
-} from './023-outbound-call-classifier.js';
+} from './outbound-call-classifier.js';
 import {
   lineOf,
   literalText,
   parserEvidence,
-} from './022-outbound-expression-analysis.js';
+} from './outbound-expression-analysis.js';
 import { parseImportedWrapperCalls } from './imported-wrapper-parser.js';
 import { parseServiceBindings } from './service-binding-parser.js';
 import type { RepositorySourceContext } from './ts-project.js';

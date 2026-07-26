@@ -1,5 +1,9 @@
 # Service Flow Resolution Notes
 
+## 0.1.70 source-layout notes
+
+- Package/CLI `0.1.70` removes numeric ordering prefixes from tracked source and test filenames. Runtime behavior and fact compatibility are unchanged, so SQLite remains schema `13`, analyzer `0.1.69-facts.1`, and compact contract `service-flow/compact-graph@1`; no reindex or relink is required solely for this package update.
+
 ## 0.1.69 containment, dynamic event, and compact actionability notes
 
 - Package/CLI `0.1.69`, SQLite schema `13`, analyzer `0.1.69-facts.1`, and compact contract `service-flow/compact-graph@1` remain independent. No SQL migration is needed because `single_hop_helper_return` is carried in validated JSON evidence; all repositories still require `index --force` and `link --force` because generated facts changed.

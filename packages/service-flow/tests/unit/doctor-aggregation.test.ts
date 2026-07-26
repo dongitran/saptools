@@ -6,10 +6,10 @@ import { openDatabase } from '../../src/db/connection.js';
 import {
   insertCalls,
   insertSymbolCalls,
-} from '../../src/db/000-call-fact-repository.js';
+} from '../../src/db/call-fact-repository.js';
 import { upsertRepository, upsertWorkspace } from '../../src/db/repositories.js';
 import { doctorDiagnostics } from '../../src/cli/doctor.js';
-import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/000-bounded-projection.js';
+import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/bounded-projection.js';
 import {
   insertOwnerlessCall,
   markRepositoryCurrent,

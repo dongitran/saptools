@@ -2,8 +2,8 @@ import type { Db } from '../../src/db/connection.js';
 import {
   PACKAGE_PUBLIC_SURFACE_RECORD_CAP,
   PACKAGE_PUBLIC_SURFACE_SCHEMA,
-} from '../../src/parsers/003-package-public-surface.js';
-import { extractPlaceholderKeys } from '../../src/utils/001-placeholders.js';
+} from '../../src/parsers/package-public-surface.js';
+import { extractPlaceholderKeys } from '../../src/utils/placeholders.js';
 import { ANALYZER_VERSION } from '../../src/version.js';
 
 export function markRepositoryCurrent(

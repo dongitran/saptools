@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { projectBounded } from '../utils/000-bounded-projection.js';
+import { projectBounded } from '../utils/bounded-projection.js';
 
 export type ExternalTargetKind = 'destination' | 'static_url' | 'url_expression' | 'unknown';
 export interface ExternalHttpTarget { kind: ExternalTargetKind; toKind: 'external_destination' | 'external_endpoint'; toId: string; label: string; method?: string; dynamic: boolean; expression?: string; candidateLiteralCount?: number; shownCandidateLiteralCount?: number; omittedCandidateLiteralCount?: number; }

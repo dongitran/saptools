@@ -27,14 +27,14 @@ import {
   loadPackageJsonSnapshot,
 } from '../parsers/package-json-parser.js';
 import { parseServiceBindings } from '../parsers/service-binding-parser.js';
-import { reconcileSourceFacts } from '../parsers/007-source-fact-reconciliation.js';
+import { reconcileSourceFacts } from '../parsers/source-fact-reconciliation.js';
 import {
   analyzeRepositoryPackageSurface,
   mergePackageSymbolEvidence,
-} from '../parsers/008-package-surface-publication.js';
+} from '../parsers/package-surface-publication.js';
 import type {
   PackagePublicSurfaceFact,
-} from '../parsers/003-package-public-surface.js';
+} from '../parsers/package-public-surface.js';
 import { normalizePath } from '../utils/path-utils.js';
 import { errorMessage } from '../utils/diagnostics.js';
 import { sha256Text } from '../utils/hashing.js';
@@ -44,11 +44,11 @@ import {
   finalizePackageTargetInvalidations,
   invalidatePackageTargetFacts,
   type PackageInvalidationBatch,
-} from '../db/004-package-target-invalidation.js';
+} from '../db/package-target-invalidation.js';
 import {
   isPreparedRepositorySnapshotError,
   recordPreparedSnapshotFailure,
-} from '../db/013-index-publication-failure.js';
+} from '../db/index-publication-failure.js';
 import {
   loadRepositorySourceContext,
   type RepositorySourceContext,

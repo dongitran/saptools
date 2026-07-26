@@ -1,10 +1,10 @@
 import type { Db } from '../db/connection.js';
 import { linkHelperPackages } from './helper-package-linker.js';
-import { linkImplementations as linkCanonicalImplementations } from './000-implementation-candidates.js';
-import { linkPackageImportSymbolCalls } from './003-package-import-symbol-resolver.js';
-import { linkEventSubscriptionHandlers } from './004-event-subscription-handler-linker.js';
-import { insertCallEdge } from './007-call-edge-insertion.js';
-import { assertWorkspaceLinkable } from '../db/001-fact-lifecycle.js';
+import { linkImplementations as linkCanonicalImplementations } from './implementation-candidates.js';
+import { linkPackageImportSymbolCalls } from './package-import-symbol-resolver.js';
+import { linkEventSubscriptionHandlers } from './event-subscription-handler-linker.js';
+import { insertCallEdge } from './call-edge-insertion.js';
+import { assertWorkspaceLinkable } from '../db/fact-lifecycle.js';
 export interface LinkWorkspaceResult {
   edgeCount: number;
   unresolvedCount: number;

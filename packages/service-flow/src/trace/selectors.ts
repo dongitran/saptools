@@ -3,7 +3,7 @@ import type { TraceStart } from '../types.js';
 import {
   projectBounded,
   type BoundedProjection,
-} from '../utils/000-bounded-projection.js';
+} from '../utils/bounded-projection.js';
 
 export interface SelectorSourceScope {
   files?: Set<string>;

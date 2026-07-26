@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { externalHttpTarget } from '../../src/linker/external-http-target.js';
-import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/000-bounded-projection.js';
+import { DEFAULT_EVIDENCE_CANDIDATE_LIMIT } from '../../src/utils/bounded-projection.js';
 
 describe('external HTTP target normalization', () => {
   it('builds stable semantic labels without numeric call ids or secrets', () => {

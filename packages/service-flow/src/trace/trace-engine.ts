@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { schemaLifecycleDiagnostic } from '../db/001-fact-lifecycle.js';
+import { schemaLifecycleDiagnostic } from '../db/fact-lifecycle.js';
 import type {
   TraceEdge,
   TraceOptions,
@@ -13,21 +13,21 @@ import {
 import {
   loadTraceDiagnostics,
   prependTraceDiagnostic,
-} from './002-trace-diagnostics.js';
-import { TraversalScopeScheduler } from './010-traversal-scope.js';
-import { createTraceRootPlan } from './013-trace-root-scopes.js';
-import type { CompactTraceObserver } from './014-compact-contract.js';
-import { TraceEdgeRecorder } from './015-trace-edge-recorder.js';
-import type { ImplementationHintOptions } from './025-trace-implementation-scope.js';
+} from './trace-diagnostics.js';
+import { TraversalScopeScheduler } from './traversal-scope.js';
+import { createTraceRootPlan } from './trace-root-scopes.js';
+import type { CompactTraceObserver } from './compact-contract.js';
+import { TraceEdgeRecorder } from './trace-edge-recorder.js';
+import type { ImplementationHintOptions } from './trace-implementation-scope.js';
 import {
   resolveTraceStartScope,
   type TraceStartScope,
-} from './026-trace-start-scope.js';
+} from './trace-start-scope.js';
 import {
   executeTraceScopes,
   type TraceExecutionRuntime,
-} from './027-trace-scope-execution.js';
-import { recordTraceStartImplementation } from './029-trace-start-implementation.js';
+} from './trace-scope-execution.js';
+import { recordTraceStartImplementation } from './trace-start-implementation.js';
 import { selectorNotFoundDiagnostic } from './selectors.js';
 
 const compactObserverKey = Symbol('service-flow.compact-trace-observer');

@@ -13,8 +13,8 @@ export { trace } from './trace/trace-engine.js';
 export {
   compactTrace,
   traceAndCompact,
-} from './trace/018-compact-trace.js';
-export type { CompactTraceExecution } from './trace/018-compact-trace.js';
+} from './trace/compact-trace.js';
+export type { CompactTraceExecution } from './trace/compact-trace.js';
 export type {
   CompactDecisionV1,
   CompactDiagnosticDetailsV1,
@@ -31,7 +31,7 @@ export type {
   CompactStartV1,
   CompactStatus,
   CompactStatusCountsV1,
-} from './trace/014-compact-contract.js';
+} from './trace/compact-contract.js';
 export { parseImplementationHint } from './trace/implementation-hints.js';
 export type { DynamicMode, ImplementationHint, TraceOptions } from './types.js';
 export { redactValue, redactText } from './utils/redaction.js';

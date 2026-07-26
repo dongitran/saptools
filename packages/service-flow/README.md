@@ -90,7 +90,7 @@ npm install @saptools/service-flow
 - Repository public-surface evidence uses the versioned `service-flow/package-public-surface@1` carrier and retains at most 256 public exposure records with truthful total/shown/omitted metadata. A displayed prefix never proves uniqueness or absence; an omitted requested scope stays unresolved unless an authoritative exact-name count proves the decision.
 - OData entity paths are conservative terminal remote entity edges. Reads, mutations, deletes, navigation paths, media-stream paths such as `/Documents(ID)/content`, and uppercase unknown entity-set candidates do not inflate unresolved operation counts. Lowercase action/function-style paths remain eligible for indexed operation resolution.
 - External HTTP destinations are static only when a safe literal or local const literal proves the value. Identifier, property-read, function-call, and arbitrary destination expressions are dynamic with stable `destination:dynamic:<hash>` ids and neutral labels; conditional literal branches expose only safe candidate names.
-- Schema version 13 adds exact binding-site spans and ownership plus the repository public-surface carrier to the schema-12 call span/role facts. A writer-only v12→v13 migration leaves legacy binding spans/public surfaces null and ownership `legacy_unknown`; it never reconstructs provenance from line, names, or old relationships. Package `0.1.69` keeps schema 13 and uses analyzer `0.1.69-facts.1`; the new strategy remains JSON evidence rather than a SQL-enumerated column. Upgrading requires a forced index followed by a forced link. Read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until both passes succeed.
+- Schema version 13 adds exact binding-site spans and ownership plus the repository public-surface carrier to the schema-12 call span/role facts. A writer-only v12→v13 migration leaves legacy binding spans/public surfaces null and ownership `legacy_unknown`; it never reconstructs provenance from line, names, or old relationships. Package `0.1.70` keeps schema 13 and analyzer `0.1.69-facts.1`; the filename-only package update requires no new reindex or relink. Read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until both passes succeed.
 
 
 ## 🚀 Quick Start
@@ -118,7 +118,7 @@ service-flow doctor --workspace /path/to/workspace
 After `init`, the workspace configuration and SQLite database live below the selected workspace by default. Run `index` whenever source changes; unchanged repositories are skipped unless `--force` is supplied. Then run `link` to rebuild the graph edges used by `trace` and `graph`.
 
 > [!IMPORTANT]
-> Version 0.1.69 keeps database schema 13 and changes the fact analyzer to `0.1.69-facts.1`. Derived-import identity, dynamic event topics, structural CQL dispatch, and helper-return bindings therefore require fresh facts even though no SQL migration is needed. Refresh facts and graph edges before tracing:
+> Version 0.1.70 keeps database schema 13 and fact analyzer `0.1.69-facts.1`; removing filename ordering prefixes does not change persisted facts. Workspaces already refreshed for analyzer `0.1.69-facts.1` need no additional reindex or relink. Workspaces on an older analyzer still require:
 >
 > ```bash
 > service-flow index --workspace /path/to/workspace --force

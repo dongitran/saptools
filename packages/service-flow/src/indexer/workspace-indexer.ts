@@ -13,11 +13,11 @@ import {
   finalizePackageTargetInvalidations,
   mergePackageInvalidationEffects,
   type PackageInvalidationBatch,
-} from '../db/004-package-target-invalidation.js';
+} from '../db/package-target-invalidation.js';
 import {
   isPreparedRepositorySnapshotError,
-} from '../db/013-index-publication-failure.js';
-import { binaryCompare } from '../parsers/004-fact-identity.js';
+} from '../db/index-publication-failure.js';
+import { binaryCompare } from '../parsers/fact-identity.js';
 // Ownerless rows predate PID coordination; this matches doctor's stale-run threshold without taking over a recent legacy writer.
 const LEGACY_OWNER_RECOVERY_MS = 60 * 60 * 1_000;
 type RunningIndexRow = Record<string, unknown>;

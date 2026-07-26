@@ -21,7 +21,7 @@ import { indexWorkspace } from './indexer/workspace-indexer.js';
 import { linkWorkspace } from './linker/cross-repo-linker.js';
 import { doctorDiagnostics, linkUpgradeWarnings } from './cli/doctor.js';
 import { trace } from './trace/trace-engine.js';
-import { compactTrace } from './trace/018-compact-trace.js';
+import { compactTrace } from './trace/compact-trace.js';
 import {
   parseVars,
   selectorRepoAmbiguousDiagnostic,
@@ -31,8 +31,8 @@ import { renderTraceTable } from './output/table-output.js';
 import { renderTraceJson, renderJson } from './output/json-output.js';
 import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
-import { createStdoutWriter } from './output/000-stdout-policy.js';
-import { renderCompactJson } from './output/001-compact-json-output.js';
+import { createStdoutWriter } from './output/stdout-policy.js';
+import { renderCompactJson } from './output/compact-json-output.js';
 import { VERSION } from './version.js';
 import type {
   DynamicMode,
@@ -40,8 +40,8 @@ import type {
   TraceResult,
   TraceStart,
 } from './types.js';
-import { cleanWorkspaceState } from './cli/000-clean.js';
-import { indexCommandOutcome } from './cli/001-index-summary.js';
+import { cleanWorkspaceState } from './cli/clean.js';
+import { indexCommandOutcome } from './cli/index-summary.js';
 
 const stdout = createStdoutWriter(process.stdout, fail);
 const TRACE_FORMATS = ['table', 'json', 'mermaid', 'compact-json'] as const;

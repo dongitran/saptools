@@ -1,6 +1,6 @@
 import type { ImplementationHint } from '../types.js';
-import { projectBounded } from '../utils/000-bounded-projection.js';
-import { compareBinary } from './010-traversal-scope.js';
+import { projectBounded } from '../utils/bounded-projection.js';
+import { compareBinary } from './traversal-scope.js';
 
 interface Candidate {
   accepted?: boolean;

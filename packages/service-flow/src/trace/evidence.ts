@@ -4,12 +4,12 @@ import { normalizeODataOperationInvocationPath } from '../linker/odata-path-norm
 import { resolveOperation, type OperationTarget } from '../linker/service-resolver.js';
 import type { DynamicMode } from '../types.js';
 import { analyzeDynamicTargetCandidates, type DynamicTargetAnalysis, type DynamicTargetCandidate } from './dynamic-targets.js';
-import { boundCandidateLikeEvidence } from '../utils/000-bounded-projection.js';
+import { boundCandidateLikeEvidence } from '../utils/bounded-projection.js';
 import {
   dynamicMissingReason,
   isStructuralContextualBlocker,
   type ContextualRuntimeState,
-} from './008-contextual-runtime-state.js';
+} from './contextual-runtime-state.js';
 
 export interface TraceGraphRow extends Record<string, unknown> {
   id: number;

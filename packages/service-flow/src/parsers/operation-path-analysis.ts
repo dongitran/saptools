@@ -3,7 +3,7 @@ import {
   classifyODataPathIntent,
   normalizeODataOperationInvocationPath,
 } from '../linker/odata-path-normalizer.js';
-import { analyzeODataPathStructure } from '../linker/005-odata-path-structure.js';
+import { analyzeODataPathStructure } from '../linker/odata-path-structure.js';
 
 export type OperationPathStatus = 'static' | 'ambiguous' | 'dynamic' | 'unknown';
 

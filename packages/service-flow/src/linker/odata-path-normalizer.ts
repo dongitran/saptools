@@ -1,7 +1,7 @@
 import {
   analyzeODataPathStructure,
   type ODataPathStructure,
-} from './005-odata-path-structure.js';
+} from './odata-path-structure.js';
 
 export interface NormalizedODataOperationPath {
   rawOperationPath: string;

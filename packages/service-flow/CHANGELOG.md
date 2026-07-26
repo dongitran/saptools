@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.70
+
+- Removed numeric ordering prefixes from every tracked source and test filename and updated all package-local imports. This is a source-layout-only release: SQLite remains schema `13`, analyzer compatibility remains `0.1.69-facts.1`, and the compact schema remains `service-flow/compact-graph@1`.
+
 ## 0.1.69
 
 - Corrected one-hop derived import identity: conventional relative default-class instances use target-side default-export evidence, package-derived members cannot leak into same-file exact-name resolution, and package-backed proxy aliases fail closed with an honest unsupported reason. Unresolved and ambiguous local/package symbol-call facts now remain visible as non-traversable trace edges.

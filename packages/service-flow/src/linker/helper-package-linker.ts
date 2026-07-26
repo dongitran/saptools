@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.js';
-import { projectBounded } from '../utils/000-bounded-projection.js';
+import { projectBounded } from '../utils/bounded-projection.js';
 
 interface RepoDependencyRow {
   id: number;

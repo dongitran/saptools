@@ -15,8 +15,8 @@ import {
   directConnectFactFromFunctionLike,
   functionLikeInitializer,
   type LocalBindingFact,
-} from './014-service-binding-helper-flow.js';
-import { collectServiceBindings } from './015-service-binding-collector.js';
+} from './service-binding-helper-flow.js';
+import { collectServiceBindings } from './service-binding-collector.js';
 import type { RepositorySourceContext } from './ts-project.js';
 
 interface LocalHelperFact extends LocalBindingFact {

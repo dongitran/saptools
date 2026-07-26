@@ -1,17 +1,17 @@
 import type { Db } from '../db/connection.js';
 import { classifyODataPathIntent, normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import { implementationHintSuggestions } from '../trace/implementation-hints.js';
-import { boundDoctorDiagnostics } from './001-doctor-projection.js';
-import { factLifecycleDiagnostic } from '../db/001-fact-lifecycle.js';
+import { boundDoctorDiagnostics } from './doctor-projection.js';
+import { factLifecycleDiagnostic } from '../db/fact-lifecycle.js';
 import {
   analyzerVersionDiagnostics,
   schemaDriftDiagnostics,
-} from './002-doctor-lifecycle.js';
+} from './doctor-lifecycle.js';
 import {
   packagePendingDiagnostics,
   symbolCallQuality,
-} from './003-doctor-package-resolution.js';
-export { linkUpgradeWarnings } from './002-doctor-lifecycle.js';
+} from './doctor-package-resolution.js';
+export { linkUpgradeWarnings } from './doctor-lifecycle.js';
 
 type Diagnostic = Record<string, unknown>;
 interface DoctorOptions {

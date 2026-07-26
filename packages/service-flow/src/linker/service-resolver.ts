@@ -1,6 +1,6 @@
 import type { Db } from '../db/connection.js';
-import { extractPlaceholderKeys } from '../utils/001-placeholders.js';
-import { canonicalImplementationEvidence } from './000-implementation-candidates.js';
+import { extractPlaceholderKeys } from '../utils/placeholders.js';
+import { canonicalImplementationEvidence } from './implementation-candidates.js';
 export interface OperationTarget {
   operationId: number;
   repoName: string;

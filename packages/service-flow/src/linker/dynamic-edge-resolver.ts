@@ -1,4 +1,4 @@
-import { extractPlaceholderKeys, scanPlaceholders } from '../utils/001-placeholders.js';
+import { extractPlaceholderKeys, scanPlaceholders } from '../utils/placeholders.js';
 
 export interface RuntimeSubstitution {
   original?: string;

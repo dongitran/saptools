@@ -9,24 +9,24 @@ import {
 } from './outbound-call-parser.js';
 import type { RepositorySourceContext } from './ts-project.js';
 import { normalizePath } from '../utils/path-utils.js';
-import { reconcileEventSubscriptions } from './005-event-subscription-facts.js';
-import { reconcileSymbolCallOwners } from './007-source-fact-reconciliation.js';
+import { reconcileEventSubscriptions } from './event-subscription-facts.js';
+import { reconcileSymbolCallOwners } from './source-fact-reconciliation.js';
 import {
   collectSymbolImportBindings,
   type SymbolImportBinding,
-} from './002-symbol-import-bindings.js';
+} from './symbol-import-bindings.js';
 import {
   collectSymbolCallFacts,
   symbolCallName,
   type SymbolCallProxy,
   type SymbolClassInstance,
-} from './009-symbol-call-facts.js';
+} from './symbol-call-facts.js';
 import {
   executableBodyEligibility,
-} from './013-executable-body-eligibility.js';
+} from './executable-body-eligibility.js';
 import {
   collectDerivedSymbolContexts,
-} from './017-symbol-derived-contexts.js';
+} from './symbol-derived-contexts.js';
 
 function lineOf(source: ts.SourceFile, pos: number): number {
   return source.getLineAndCharacterOfPosition(pos).line + 1;

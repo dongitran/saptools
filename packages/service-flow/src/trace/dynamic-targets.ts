@@ -7,25 +7,25 @@ import {
 import { normalizeODataOperationInvocationPath } from '../linker/odata-path-normalizer.js';
 import type { OperationTarget } from '../linker/service-resolver.js';
 import type { DynamicMode } from '../types.js';
-import { dynamicCandidateTargets } from './004-dynamic-candidate-sources.js';
-import { projectBounded } from '../utils/000-bounded-projection.js';
-import { uniqueIdentityDerivations } from './001-dynamic-identity.js';
+import { dynamicCandidateTargets } from './dynamic-candidate-sources.js';
+import { projectBounded } from '../utils/bounded-projection.js';
+import { uniqueIdentityDerivations } from './dynamic-identity.js';
 import {
   dynamicReferenceProvenance,
   dynamicRoutingContext,
   type DynamicReferenceRow,
   type DynamicRoutingContext,
-} from './003-dynamic-references.js';
+} from './dynamic-references.js';
 import type {
   DynamicTargetAnalysis,
   DynamicTargetCandidate,
   DynamicTemplates,
   DynamicVariableProvenance,
-} from './000-dynamic-target-types.js';
+} from './dynamic-target-types.js';
 export type {
   DynamicTargetAnalysis,
   DynamicTargetCandidate,
-} from './000-dynamic-target-types.js';
+} from './dynamic-target-types.js';
 type Templates = DynamicTemplates;
 type VariableProvenance = DynamicVariableProvenance;
 interface AnalysisInputs {

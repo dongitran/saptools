@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
 import { normalizePath } from '../utils/path-utils.js';
-import { extractPlaceholderKeys } from '../utils/001-placeholders.js';
+import { extractPlaceholderKeys } from '../utils/placeholders.js';
 import type { RepositorySourceContext } from './ts-project.js';
 
 export interface HelperBinding {

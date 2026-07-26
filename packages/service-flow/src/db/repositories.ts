@@ -11,11 +11,11 @@ import type {
 import {
   selectCallOwner,
   type OwnerCandidate,
-} from '../parsers/004-fact-identity.js';
+} from '../parsers/fact-identity.js';
 import {
   PreparedRepositorySnapshotError,
   type PreparedSnapshotFailureCode,
-} from './013-index-publication-failure.js';
+} from './index-publication-failure.js';
 export interface RepoRow {
   id: number;
   name: string;
@@ -505,4 +505,4 @@ export function insertExecutableSymbols(db: Db, repoId: number, rows: Executable
   const stmt = db.prepare('INSERT INTO symbols(repo_id,file_id,kind,name,qualified_name,exported,start_line,end_line,start_offset,end_offset,source_file,exported_name,evidence_json) VALUES(?,(SELECT id FROM files WHERE repo_id=? AND relative_path=?),?,?,?,?,?,?,?,?,?,?,?)');
   for (const r of rows) stmt.run(repoId, repoId, r.sourceFile, r.kind, r.localName, r.qualifiedName, r.exported ? 1 : 0, r.startLine, r.endLine, r.startOffset, r.endOffset, r.sourceFile, r.exportedName, r.importExportEvidence ? JSON.stringify(r.importExportEvidence) : null);
 }
-export { insertCalls, insertSymbolCalls } from './000-call-fact-repository.js';
+export { insertCalls, insertSymbolCalls } from './call-fact-repository.js';
