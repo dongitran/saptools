@@ -42,6 +42,12 @@ function isFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
 function exported(node: ts.Node): boolean {
   return Boolean(ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Export);
 }
+function defaultExported(node: ts.Node): boolean {
+  return Boolean(
+    ts.getCombinedModifierFlags(node as ts.Declaration)
+      & ts.ModifierFlags.Default,
+  );
+}
 function isPublicClassMethod(node: ts.MethodDeclaration): boolean {
   const flags = ts.getCombinedModifierFlags(node);
   return (flags & ts.ModifierFlags.Private) === 0 && (flags & ts.ModifierFlags.Protected) === 0;
@@ -141,6 +147,7 @@ interface SymbolCollection {
   exportNames: Map<string, string>;
   objectExports: Set<string>;
   exportedClasses: Set<string>;
+  defaultExportedClasses: Set<string>;
   declaredClasses: Set<string>;
   proxies: Map<string, SymbolCallProxy[]>;
   instances: Map<string, SymbolClassInstance[]>;
@@ -153,7 +160,8 @@ function symbolSourceEvidence(
     parentRoot: string;
     qualifiedName: string;
     declaredExportName?: string;
-    classContainerExported: boolean; classMemberExported: boolean;
+    classContainerExported: boolean; classContainerDefaultExported: boolean;
+    classMemberExported: boolean;
     objectExported: boolean;
     evidence?: Record<string, unknown>;
   },
@@ -168,6 +176,8 @@ function symbolSourceEvidence(
   if (options.classContainerExported && ts.isMethodDeclaration(node)
     && isPublicClassMethod(node)) return {
     source: 'exported_class_instance_member', exportedClass: options.parentRoot,
+    exportedClassExportKind: options.classContainerDefaultExported
+      ? 'default' : 'named',
     memberKind: 'class_method',
   };
   if (options.declaredExportName) return {
@@ -201,6 +211,7 @@ interface SymbolNames {
   declaredExportName?: string;
   objectExported: boolean;
   classContainerExported: boolean;
+  classContainerDefaultExported: boolean;
   classMemberExported: boolean;
   effectiveName?: string;
 }
@@ -217,6 +228,24 @@ function exportedClassMember(
     || !ts.isMethodDeclaration(node)) return false;
   return Boolean(ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Static)
     && isPublicClassMethod(node);
+}
+
+function classExportState(
+  collection: SymbolCollection,
+  parentName: string | undefined,
+  parentRoot: string,
+): {
+  classContainerExported: boolean;
+  classContainerDefaultExported: boolean;
+} {
+  return {
+    classContainerExported: Boolean(
+      parentName && collection.exportedClasses.has(parentRoot),
+    ),
+    classContainerDefaultExported: Boolean(
+      parentName && collection.defaultExportedClasses.has(parentRoot),
+    ),
+  };
 }
 
 function symbolNames(
@@ -238,12 +267,11 @@ function symbolNames(
   const classMemberExported = exportedClassMember(
     collection, kind, parentName, parentRoot, node,
   );
-  const classContainerExported = Boolean(
-    parentName && collection.exportedClasses.has(parentRoot),
-  );
+  const classState = classExportState(collection, parentName, parentRoot);
   return {
     parentRoot, declaredExportName, qualifiedName,
-    objectExported, classContainerExported, classMemberExported,
+    objectExported, ...classState,
+    classMemberExported,
     effectiveName: classMemberExported || objectExported
       ? qualifiedName : declaredExportName,
   };
@@ -266,6 +294,7 @@ function addExecutableSymbol(
     qualifiedName: names.qualifiedName,
     declaredExportName: names.declaredExportName,
     classContainerExported: names.classContainerExported,
+    classContainerDefaultExported: names.classContainerDefaultExported,
     classMemberExported: names.classMemberExported,
     objectExported: names.objectExported,
     evidence,
@@ -457,6 +486,8 @@ function collectClassDeclaration(
   collection.declaredClasses.add(node.name.text);
   if (exported(node) || collection.exportNames.has(node.name.text))
     collection.exportedClasses.add(node.name.text);
+  if (defaultExported(node))
+    collection.defaultExportedClasses.add(node.name.text);
   for (const member of node.members)
     visitDeclaredSymbol(collection, member, node.name.text);
   return true;
@@ -553,6 +584,7 @@ function createCollection(
     importBindings: collectSymbolImportBindings(source),
     exportNames: exportDeclarations(source),
     objectExports: new Set(), exportedClasses: new Set(),
+    defaultExportedClasses: new Set(),
     declaredClasses: new Set(), proxies: new Map(), instances: new Map(),
   };
 }

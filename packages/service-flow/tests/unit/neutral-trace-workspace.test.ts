@@ -6,6 +6,7 @@ import { doctorDiagnostics } from '../../src/cli/doctor.js';
 import { linkWorkspace, trace } from '../../src/index.js';
 import { schemaVersion } from '../../src/db/migrations.js';
 import { prepareWorkspace } from './test-workspace.js';
+import type { TraceEdge } from '../../src/types.js';
 
 const fixture = path.resolve('tests/fixtures/trace-correctness-workspace');
 
@@ -14,6 +15,20 @@ async function prepareNeutralWorkspace(): ReturnType<typeof prepareWorkspace> {
   const workspace = path.join(tempRoot, 'workspace');
   await cp(fixture, workspace, { recursive: true });
   return prepareWorkspace(workspace);
+}
+
+function expectVisibleDecoratorGaps(edges: readonly TraceEdge[]): void {
+  const gaps = edges.filter((edge) => edge.unresolvedReason);
+  expect(gaps.map((edge) =>
+    `${String(edge.evidence.sourceFile)}:${edge.from}->${edge.to}`)
+    .sort()).toEqual([
+    'srv/GatewayHandler.ts:Action->unresolved:Action',
+    'srv/ProcessHandler.ts:Action->unresolved:Action',
+    'srv/SettingsHandler.ts:Action->unresolved:Action',
+  ]);
+  expect(gaps.every((edge) =>
+    edge.type === 'local_symbol_call'
+    && edge.unresolvedReason === 'package_repository_not_indexed')).toBe(true);
 }
 
 describe('neutral multi-repository trace workspace', () => {
@@ -43,7 +58,7 @@ describe('neutral multi-repository trace workspace', () => {
     expect(runtime.edges.some((edge) =>
       edge.type === 'remote_query'
       && String(edge.to).includes('DomainItems'))).toBe(true);
-    expect(runtime.edges.filter((edge) => edge.unresolvedReason)).toEqual([]);
+    expectVisibleDecoratorGaps(runtime.edges);
 
     const missing = trace(db, {
       repo: 'gateway-app',

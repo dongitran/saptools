@@ -1,4 +1,8 @@
 import type { Db } from '../db/connection.js';
+import {
+  linkEventTemplate,
+  type LinkedEventTemplate,
+} from './006-event-template-link.js';
 
 export interface SubscriptionHandlerLinkSummary {
   edgeCount: number;
@@ -20,6 +24,7 @@ interface SubscriptionRow {
   startOffset?: number | null;
   endOffset?: number | null;
   confidence: number;
+  unresolvedReason?: string | null;
 }
 
 interface HandlerCallRow {
@@ -58,7 +63,7 @@ function subscriptionRows(db: Db, workspaceId: number): SubscriptionRow[] {
     c.source_symbol_id sourceSymbolId,c.event_name_expr eventName,
     c.source_file sourceFile,c.source_line sourceLine,
     c.call_site_start_offset startOffset,c.call_site_end_offset endOffset,
-    c.confidence
+    c.confidence,c.unresolved_reason unresolvedReason
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE r.workspace_id=? AND c.call_type='async_subscribe'
       AND json_extract(c.evidence_json,'$.handlerReferenceStatus')
@@ -202,11 +207,16 @@ function missingAssociation(
 function evidenceFor(
   subscription: SubscriptionRow,
   association: HandlerAssociation,
+  event: LinkedEventTemplate,
 ): Record<string, unknown> {
   const call: Partial<HandlerCallRow> = association.call ?? {};
   const symbolCallReason = boundedSymbolCallReason(call.unresolvedReason);
   return {
     eventName: subscription.eventName,
+    ...(event.substitution.placeholders.length > 0 ? {
+      effectiveEventName: event.targetId,
+      eventTemplateResolution: event.substitution,
+    } : {}),
     associationBasis: 'exact_subscription_call_span',
     dispatchScope: 'workspace_event_name_only',
     subscribeCallId: subscription.id,
@@ -253,22 +263,27 @@ function insertAssociationEdge(
   generation: number,
   subscription: SubscriptionRow,
   association: HandlerAssociation,
+  event: LinkedEventTemplate,
 ): void {
+  const status = event.isDynamic ? 'unresolved' : association.status;
+  const reason = event.isDynamic
+    ? 'event_template_variables_missing'
+    : association.reasonCode ?? association.call?.unresolvedReason ?? null;
   db.prepare(`INSERT INTO graph_edges(
     workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
     confidence,evidence_json,is_dynamic,unresolved_reason,generation
   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     workspaceId,
     'EVENT_SUBSCRIPTION_HANDLED_BY',
-    association.status,
-    'event',
-    subscription.eventName,
+    status,
+    event.targetKind,
+    event.targetId,
     association.toKind,
     association.toId,
     association.call?.confidence ?? subscription.confidence,
-    JSON.stringify(evidenceFor(subscription, association)),
-    0,
-    association.reasonCode ?? association.call?.unresolvedReason ?? null,
+    JSON.stringify(evidenceFor(subscription, association, event)),
+    event.isDynamic ? 1 : 0,
+    reason,
     generation,
   );
 }
@@ -277,6 +292,7 @@ export function linkEventSubscriptionHandlers(
   db: Db,
   workspaceId: number,
   generation: number,
+  variables: Record<string, string> = {},
 ): SubscriptionHandlerLinkSummary {
   const summary: SubscriptionHandlerLinkSummary = {
     edgeCount: 0,
@@ -286,16 +302,21 @@ export function linkEventSubscriptionHandlers(
     missingAssociationCount: 0,
   };
   for (const subscription of subscriptionRows(db, workspaceId)) {
+    const event = linkEventTemplate(
+      subscription.eventName, variables,
+      subscription.unresolvedReason ?? undefined,
+    );
     const association = associationFor(
       subscription, roleSiteRows(db, subscription),
     );
     insertAssociationEdge(
-      db, workspaceId, generation, subscription, association,
+      db, workspaceId, generation, subscription, association, event,
     );
+    const status = event.isDynamic ? 'unresolved' : association.status;
     summary.edgeCount += 1;
-    summary.resolvedCount += association.status === 'resolved' ? 1 : 0;
-    summary.ambiguousCount += association.status === 'ambiguous' ? 1 : 0;
-    summary.unresolvedCount += association.status === 'unresolved' ? 1 : 0;
+    summary.resolvedCount += status === 'resolved' ? 1 : 0;
+    summary.ambiguousCount += status === 'ambiguous' ? 1 : 0;
+    summary.unresolvedCount += status === 'unresolved' ? 1 : 0;
     summary.missingAssociationCount += association.missing ? 1 : 0;
   }
   return summary;

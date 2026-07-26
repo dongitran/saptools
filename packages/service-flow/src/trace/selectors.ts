@@ -550,6 +550,7 @@ export function ambiguousStartDiagnostic(
     severity: 'warning',
     code: 'trace_start_ambiguous',
     message,
+    selectorKind: 'operation',
     normalizedSelectorValue: requested,
     resolutionStage: 'operation',
     resolutionStatus: 'ambiguous_operation',

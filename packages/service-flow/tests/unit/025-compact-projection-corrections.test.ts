@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { CompactDecisionV1 } from '../../src/trace/014-compact-contract.js';
+import {
+  CompactObservationCollector,
+  type CompactDecisionV1,
+} from '../../src/trace/014-compact-contract.js';
+import {
+  compactDecisionFromEvidence,
+  TraceEdgeRecorder,
+} from '../../src/trace/015-trace-edge-recorder.js';
+import { recordOutboundObservation } from
+  '../../src/trace/019-trace-edge-semantics.js';
 import {
   compactMissingRemediation,
   isSafeCompactMissingName,
@@ -72,6 +81,31 @@ describe('compact missing-name projection', () => {
 });
 
 describe('compact missing-name bounds and privacy', () => {
+  it('rejects controls before applying surrounding-space normalization', () => {
+    for (const value of [
+      'region\r', 'region\n', 'region\t', 'region\r\n', 'region\u0000',
+    ]) expect(isSafeCompactMissingName(value)).toBe(false);
+    expect(isSafeCompactMissingName('region')).toBe(true);
+    expect(isSafeCompactMissingName(' region ')).toBe(true);
+    expect(projectCompactMissingNames(['\nregion\t'], undefined)).toEqual({
+      names: [], total: 1, shown: 0, omitted: 1,
+    });
+    const diagnostic = projectCompactDiagnostics([{
+      severity: 'warning',
+      code: 'trace_runtime_variables_missing',
+      missingVariables: ['\nregion\t'],
+      missingVariableCount: 1,
+    }])[0];
+    expect(diagnostic?.details).toMatchObject({
+      missingVariableCount: 1,
+      shownMissingVariableCount: 0,
+      omittedMissingVariableCount: 1,
+      remediationHint:
+        'Inspect the correlated detailed diagnostic for missing variable names.',
+    });
+    expect(diagnostic?.details?.missingVariableNames).toBeUndefined();
+  });
+
   it('shows eight of ten safe names and counts every omitted name', () => {
     const values = Array.from({ length: 10 }, (_, index) => `scope.value${index}`);
     const projection = projectCompactMissingNames(values, 10);
@@ -218,6 +252,47 @@ describe('compact equal target identity', () => {
 });
 
 describe('compact persisted target identity', () => {
+  it('elides the complete persisted tuple when raw and canonical values agree', () => {
+    const label = 'db_entity:Orders';
+    const decision = projectObservationDecision({
+      ordinal: 0,
+      step: 1,
+      type: 'local_db_query',
+      source: {
+        kind: 'call_site',
+        workspaceId: 1,
+        repositoryId: 1,
+        repositoryName: 'repo',
+        sourceFile: 'src/handler.ts',
+        sourceLine: 10,
+        callId: 1,
+      },
+      target: {
+        kind: 'target',
+        workspaceId: 1,
+        targetKind: 'db_entity',
+        targetId: 'Orders',
+      },
+      status: 'terminal',
+      confidence: 1,
+      decision: {
+        effectiveResolutionStatus: 'terminal',
+        effectiveTarget: { kind: 'db_entity', id: 'Orders' },
+        persistedResolutionStatus: 'terminal',
+        persistedTarget: { kind: 'db_entity', id: 'Orders' },
+      },
+    }, {
+      key: '["target",1,"repo","db_entity","Orders"]',
+      decisionTarget: label,
+    }, () => ({
+      key: label,
+      decisionTarget: label,
+      projectedIdentity: true,
+    }));
+
+    expect(decision).toEqual({});
+  });
+
   it('retains same-label persisted and effective targets with different identities', () => {
     const label = 'symbol:repo:src/same.ts:10:20:Handler.run';
     const decision = projectObservationDecision({
@@ -248,6 +323,280 @@ describe('compact persisted target identity', () => {
     });
   });
 });
+
+describe('compact actionability projections', () => {
+  it('projects only multi-repository ambiguous implementation ties', () => {
+    const evidence = {
+      effectiveResolution: { status: 'ambiguous' },
+      candidateCount: 3,
+      candidates: [
+        { accepted: true, methodId: 1, handlerPackage: { name: 'repo-c' } },
+        { accepted: true, methodId: 2, handlerPackage: { name: 'repo-a' } },
+        { accepted: true, methodId: 3, handlerPackage: { name: 'repo-b' } },
+      ],
+    };
+    const input = compactDecisionFromEvidence(evidence);
+    expect(projectCompactDecision(input).tiedCandidateRepos).toEqual({
+      values: ['repo-a', 'repo-b', 'repo-c'],
+      total: 3,
+      shown: 3,
+      omitted: 0,
+    });
+    expect(compactDecisionFromEvidence({
+      ...evidence,
+      effectiveResolution: { status: 'resolved' },
+    }).tiedCandidateRepos).toBeUndefined();
+    expect(compactDecisionFromEvidence({
+      ...evidence,
+      candidateCount: 1,
+    }).tiedCandidateRepos).toBeUndefined();
+    expect(compactDecisionFromEvidence({
+      effectiveResolution: { status: 'ambiguous' },
+      candidateCount: 2,
+      candidates: [
+        { accepted: true, methodId: 1, handlerPackage: { name: 'repo-a' } },
+        { accepted: true, methodId: 2, handlerPackage: { name: 'repo-a' } },
+      ],
+    }).tiedCandidateRepos).toBeUndefined();
+  });
+
+  it('caps safe tied repositories and counts private omissions', () => {
+    const repos = [
+      'repo-f', 'repo-e', 'repo-d', 'repo-c', 'repo-b', 'repo-a',
+      'PRIVATE_DESTINATION_SENTINEL',
+    ];
+    const input = compactDecisionFromEvidence({
+      effectiveResolution: { status: 'ambiguous' },
+      candidateCount: repos.length,
+      candidates: repos.map((name, index) => ({
+        accepted: true,
+        methodId: index + 1,
+        handlerPackage: { name },
+      })),
+    });
+
+    expect(input.tiedCandidateRepos).toEqual({
+      values: ['repo-a', 'repo-b', 'repo-c', 'repo-d', 'repo-e'],
+      total: repos.length,
+      shown: 5,
+      omitted: 2,
+    });
+    expect(JSON.stringify(input)).not.toContain('PRIVATE_DESTINATION_SENTINEL');
+  });
+
+  it('projects bounded selector and invalid-fact summaries only for known codes', () => {
+    const diagnostics = projectCompactDiagnostics([
+      {
+        severity: 'warning',
+        code: 'trace_start_ambiguous',
+        selectorKind: 'operation',
+        selectorSuggestions: [
+          '--repo repo-b --service /Svc --path /run',
+          '--repo repo-a --service /Svc --path /run',
+          '--repo PRIVATE_DESTINATION_SENTINEL',
+        ],
+        selectorSuggestionCount: 3,
+      },
+      {
+        severity: 'error',
+        code: 'reindex_required',
+        invalidFactCategories: [
+          { category: 'symbol_call_owner_invalid', count: 2 },
+          { category: 'outbound_json_invalid', count: 1 },
+        ],
+        invalidFactCategoryCount: 2,
+      },
+      {
+        severity: 'warning',
+        code: 'trace_start_not_found',
+        selectorKind: 'handler',
+      },
+      {
+        severity: 'info',
+        code: 'unknown_shape',
+        selectorKind: 'handler',
+        selectorSuggestions: ['--handler SafeHandler'],
+        invalidFactCategories: [{ category: 'unsafe_injected', count: 1 }],
+      },
+    ]);
+    const ambiguous = diagnostics.find((item) =>
+      item.code === 'trace_start_ambiguous');
+    const invalid = diagnostics.find((item) => item.code === 'reindex_required');
+    const notFound = diagnostics.find((item) =>
+      item.code === 'trace_start_not_found');
+    const unknown = diagnostics.find((item) => item.code === 'unknown_shape');
+
+    expect(ambiguous).toMatchObject({
+      message: 'The trace start selector is ambiguous.',
+      details: {
+        selectorKind: 'operation',
+        selectorSuggestions: {
+          values: [
+            '--repo repo-a --service /Svc --path /run',
+            '--repo repo-b --service /Svc --path /run',
+          ],
+          total: 3,
+          shown: 2,
+          omitted: 1,
+        },
+      },
+    });
+    expect(invalid?.details?.invalidFactCategories).toEqual({
+      values: ['outbound_json_invalid', 'symbol_call_owner_invalid'],
+      total: 2,
+      shown: 2,
+      omitted: 0,
+    });
+    expect(notFound).toMatchObject({
+      message: 'The trace start selector did not match an indexed start.',
+      details: { selectorKind: 'handler' },
+    });
+    expect(unknown?.details).toBeUndefined();
+    expect(JSON.stringify(diagnostics))
+      .not.toContain('PRIVATE_DESTINATION_SENTINEL');
+  });
+
+  it('uses actionable implementation remediation with the accepted key names', () => {
+    const edge = projectCompactDecision({
+      remediationCode: 'select_implementation',
+    });
+    const diagnostic = projectCompactDiagnostics([{
+      severity: 'warning',
+      code: 'implementation_hint_mismatch',
+      implementationHintSuggestions: [
+        { implementationRepo: 'repo-b' },
+        { implementationRepo: 'repo-a' },
+      ],
+      implementationHintSuggestionCount: 2,
+    }])[0];
+    for (const value of [
+      'service', 'operation', 'package', 'repository', 'family', 'repo',
+    ]) {
+      expect(edge.remediationHint).toContain(value);
+      expect(diagnostic?.details?.remediationHint).toContain(value);
+    }
+    expect(edge.remediationHint).toContain('repo is required');
+    expect(diagnostic?.details?.tiedCandidateRepos).toEqual({
+      values: ['repo-a', 'repo-b'],
+      total: 2,
+      shown: 2,
+      omitted: 0,
+    });
+  });
+});
+
+describe('compact parser-warning reasons', () => {
+  it('uses a non-sentinel code and the sentinel message through safe projection', () => {
+    const explicit = projectCompactDecision(compactDecisionFromEvidence({
+      parserWarning: {
+        code: 'query_entity_unknown',
+        message: 'PRIVATE_DESTINATION_SENTINEL',
+      },
+    }));
+    const sentinel = projectCompactDecision(compactDecisionFromEvidence({
+      parserWarning: {
+        code: 'parser_warning',
+        message: 'dynamic_entity_expression',
+      },
+    }));
+    const unsafe = projectCompactDecision(compactDecisionFromEvidence({
+      parserWarning: {
+        code: 'parser_warning',
+        message: 'private warning with spaces',
+      },
+    }));
+
+    expect(explicit.reasonCode).toBe('query_entity_unknown');
+    expect(sentinel.reasonCode).toBe('dynamic_entity_expression');
+    expect(unsafe.reasonCode).toBeUndefined();
+    expect(JSON.stringify([explicit, sentinel, unsafe]))
+      .not.toContain('PRIVATE_DESTINATION_SENTINEL');
+  });
+
+  it('does not erase a parser-warning reason on terminal outbound rows', () => {
+    const observations = new CompactObservationCollector();
+    const recorder = new TraceEdgeRecorder([], observations);
+    recordOutboundObservation(recorder, {
+      step: 1,
+      type: 'remote_query',
+      from: 'source',
+      to: 'target',
+      evidence: {},
+      confidence: 0.5,
+    }, {
+      call: {
+        id: 1,
+        repo_id: 1,
+        repoName: 'repo',
+        source_file: 'src/handler.ts',
+        source_line: 1,
+      },
+      row: {
+        to_kind: 'remote_entity',
+        to_id: 'Records',
+        status: 'resolved',
+      },
+      evidence: {
+        parserWarning: {
+          code: 'parser_warning',
+          message: 'dynamic_entity_expression',
+        },
+      },
+      workspaceId: 1,
+    });
+
+    expect(observations.observations[0]?.status).toBe('terminal');
+    expect(projectCompactDecision(
+      observations.observations[0]?.decision,
+    ).reasonCode).toBe('dynamic_entity_expression');
+  });
+
+  it('uses safe parser warnings before the unresolved fallback', () => {
+    const safe = outboundReasonDecision({
+      code: 'parser_warning',
+      message: 'dynamic_entity_expression',
+    });
+    const unsafe = outboundReasonDecision({
+      code: 'parser_warning',
+      message: 'Dynamic entity expression could not be resolved.',
+    });
+
+    expect(safe.reasonCode).toBe('dynamic_entity_expression');
+    expect(unsafe.reasonCode).toBeUndefined();
+  });
+});
+
+function outboundReasonDecision(
+  parserWarning: Record<string, unknown>,
+): CompactDecisionV1 {
+  const observations = new CompactObservationCollector();
+  const recorder = new TraceEdgeRecorder([], observations);
+  recordOutboundObservation(recorder, {
+    step: 1,
+    type: 'remote_query',
+    from: 'source',
+    to: 'target',
+    evidence: {},
+    confidence: 0.5,
+  }, {
+    call: {
+      id: 1,
+      repo_id: 1,
+      repoName: 'repo',
+      source_file: 'src/handler.ts',
+      source_line: 1,
+    },
+    row: {
+      to_kind: 'operation_candidate',
+      to_id: 'dynamic',
+      status: 'unresolved',
+    },
+    evidence: { parserWarning },
+    unresolvedReason: 'dynamic_entity_expression',
+    workspaceId: 1,
+  });
+  return projectCompactDecision(observations.observations[0]?.decision);
+}
 
 describe('compact target projection safety', () => {
   it('never equates the same display label across canonical identities', () => {

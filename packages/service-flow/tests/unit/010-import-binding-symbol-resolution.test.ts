@@ -409,14 +409,30 @@ function localTraceEdges(db: Db, workspaceId: number, handler: string): string[]
 function assertPackageTrace(db: Db, workspaceId: number): void {
   const result = trace(db, { repo: 'app', handler: 'PackageHandler' }, { depth: 8, workspaceId });
   const localEdges = result.edges.filter((edge) => edge.type === 'local_symbol_call');
-  expect(localEdges.map((edge) => edge.from).sort()).toEqual([
+  expect(localEdges.filter((edge) => !edge.unresolvedReason)
+    .map((edge) => edge.from).sort()).toEqual([
     'Helper.doWork', 'doWork', 'publicName', 'sharedLeaf', 'sharedUtil', 'subpathUtil',
   ]);
+  expect(localEdges.filter((edge) => edge.unresolvedReason)
+    .map((edge) => edge.from).sort()).toEqual([
+    'Anything', 'OtherHelper.doWork', 'duplicateName', 'externalOnly',
+    'hiddenUtil', 'internalName', 'selfOnly',
+  ]);
+  expect(localEdges.filter((edge) => edge.unresolvedReason)
+    .every((edge) => /^(?:ambiguous|unresolved):/.test(edge.to))).toBe(true);
   expect(localEdges.find((edge) => edge.from === 'sharedUtil')?.evidence).toMatchObject({
     relation: 'package_import', candidateStrategy: 'package_public_surface_exact',
     candidateCount: 1, resolvedModulePath: 'src/index',
     resolutionStatus: 'resolved',
   });
+  expect(localEdges.find((edge) => edge.from === 'duplicateName'))
+    .toMatchObject({
+      to: 'ambiguous:duplicateName',
+      evidence: {
+        candidateStrategy: 'package_public_surface_ambiguous',
+        resolutionStatus: 'ambiguous',
+      },
+    });
   expect(result.nodes).toContainEqual(expect.objectContaining({
     kind: 'symbol', repoName: 'shared-helpers', sourceFile: 'src/shared-util.ts', qualifiedName: 'sharedUtil',
   }));
@@ -515,7 +531,9 @@ describe('import-binding-aware local symbol calls', () => {
     expect(firstTraces.ShadowHandler).toEqual(expect.arrayContaining([expect.stringContaining('loadRecord->'), expect.stringContaining('localStep->'), expect.stringContaining('helperLeaf->')]));
     expect(firstTraces.NamespaceHandler).toEqual(expect.arrayContaining([expect.stringContaining('utilityModule.buildHeaders->'), expect.stringContaining('namespaceLeaf->')]));
     expect(firstTraces.DirectFormatHandler).toEqual(expect.arrayContaining([expect.stringContaining('formatValue->')]));
-    expect(firstTraces.BarrelFormatHandler).toEqual([]);
+    expect(firstTraces.BarrelFormatHandler).toEqual([
+      'formatValue->unresolved:formatValue',
+    ]);
     expect(firstTraces.SingletonHandler).toEqual(expect.arrayContaining([expect.stringContaining('TaskService.getInstance().execute->'), expect.stringContaining('TaskService.instance().execute->'), expect.stringContaining('direct.execute->'), expect.stringContaining('serviceLeaf->')]));
 
     linkWorkspace(db, workspaceId);

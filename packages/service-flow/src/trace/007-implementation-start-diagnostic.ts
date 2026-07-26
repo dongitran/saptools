@@ -15,6 +15,7 @@ export function implementationStartDiagnostic(
     message: `Indexed operation matched but implementation edge is ${String(
       edge.status ?? 'unresolved',
     )}`,
+    selectorKind: 'operation',
     resolutionStage: 'implementation',
     resolutionStatus: edge.status === 'ambiguous'
       ? 'ambiguous_implementation'

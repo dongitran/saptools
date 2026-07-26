@@ -8,6 +8,12 @@ import type {
   CompactStatus,
   CompactTraceObserver,
 } from './014-compact-contract.js';
+import { implementationHintSuggestionProjection } from
+  './implementation-hints.js';
+import {
+  isSafeCompactReferenceName,
+  projectCompactReferenceGroup,
+} from './021-compact-decision-normalization.js';
 
 export interface TraceEdgeSemantics {
   source: CompactSemanticEndpoint;
@@ -111,8 +117,7 @@ export function semanticGraphTarget(
 ): CompactSemanticEndpoint {
   if (row.to_kind === 'event') return {
     kind: 'event', workspaceId,
-    eventName: typeof call.event_name_expr === 'string'
-      ? call.event_name_expr : row.to_id,
+    eventName: row.to_id,
   };
   const id = positiveNumber(row.to_id);
   if (row.to_kind === 'operation')
@@ -198,7 +203,7 @@ export function compactDecisionFromEvidence(
   const authoritativeMissingCount = finiteNumber(
     dynamic.missingVariableCount ?? evidence.missingVariableCount,
   );
-  return {
+  const decision: CompactDecisionInput = {
     effectiveResolutionStatus: stringValue(effective.status),
     effectiveTarget: targetSummary(effective),
     persistedResolutionStatus: stringValue(persisted.status),
@@ -221,7 +226,7 @@ export function compactDecisionFromEvidence(
     implementationGuided: booleanValue(implementation.guided),
     implementationContextual: booleanValue(
       evidence.contextualImplementationSelected),
-    reasonCode: stringValue(evidence.reasonCode ?? evidence.cycleReason),
+    reasonCode: compactEvidenceReasonCode(evidence),
     eventMatchStrategy: stringValue(evidence.matchStrategy),
     dispatchCertainty: stringValue(evidence.dispatchCertainty),
     associationStatus: stringValue(evidence.associationStatus),
@@ -233,6 +238,7 @@ export function compactDecisionFromEvidence(
     bodyExpansion: stringValue(evidence.bodyExpansion),
     ...overrides,
   };
+  return decisionWithTiedCandidates(evidence, decision);
 }
 
 export function compactRefs(
@@ -333,4 +339,55 @@ function firstNumber(...values: unknown[]): number | undefined {
     if (numeric !== undefined) return numeric;
   }
   return undefined;
+}
+
+export function compactEvidenceReasonCode(
+  evidence: Record<string, unknown>,
+): string | undefined {
+  return stringValue(evidence.reasonCode ?? evidence.cycleReason)
+    ?? parserWarningReason(evidence.parserWarning);
+}
+
+function parserWarningReason(value: unknown): string | undefined {
+  const warning = recordValue(value);
+  const code = stringValue(warning.code);
+  if (code && code !== 'parser_warning') return code;
+  return stringValue(warning.message);
+}
+
+function tiedCandidateRepositoryGroup(
+  evidence: Record<string, unknown>,
+  decision: CompactDecisionInput,
+): CompactDecisionInput['tiedCandidateRepos'] {
+  if (decision.effectiveResolutionStatus !== 'ambiguous'
+    || (decision.candidateCount ?? 0) <= 1) return undefined;
+  const persisted = Array.isArray(evidence.implementationHintSuggestions)
+    ? evidence.implementationHintSuggestions.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value && typeof value === 'object' && !Array.isArray(value)),
+      )
+    : [];
+  const projection = persisted.length > 0 ? {
+    suggestions: persisted,
+    suggestionCount: finiteNumber(
+      evidence.implementationHintSuggestionCount,
+    ) ?? persisted.length,
+  } : implementationHintSuggestionProjection(
+    evidence, Number.MAX_SAFE_INTEGER,
+  );
+  const repos = projection.suggestions.flatMap((suggestion) =>
+    typeof suggestion.implementationRepo === 'string'
+      ? [suggestion.implementationRepo] : []);
+  const group = projectCompactReferenceGroup(
+    repos, projection.suggestionCount, isSafeCompactReferenceName,
+  );
+  return group && group.total > 1 ? group : undefined;
+}
+
+function decisionWithTiedCandidates(
+  evidence: Record<string, unknown>,
+  decision: CompactDecisionInput,
+): CompactDecisionInput {
+  const tiedCandidateRepos = tiedCandidateRepositoryGroup(evidence, decision);
+  return tiedCandidateRepos ? { ...decision, tiedCandidateRepos } : decision;
 }

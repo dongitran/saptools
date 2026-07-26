@@ -34,11 +34,13 @@ export function start(): void {
   proxy.runHeavyCheck();
   proxy.ambiguousTarget();
   proxy.noBody();
+  proxy.packageTask();
   const packageWorker = new RenamedPackage();
   packageWorker.run();
   const packageProxy = RenamedPackage.instance();
   packageProxy.run();
 }
+export function run(): void {}
 `;
 
 const workerSource = `
@@ -59,7 +61,10 @@ const workMapSource = `
 import { runHeavyCheck } from './run-heavy-check';
 import { ambiguousTarget } from './ambiguous-target';
 import { noBody } from './declarations';
-export const workerFunctions = { runHeavyCheck, ambiguousTarget, noBody };
+import { packageTask } from '@neutral/workers';
+export const workerFunctions = {
+  runHeavyCheck, ambiguousTarget, noBody, packageTask,
+};
 export class DomainWorker {
   static instance(): unknown { return {}; }
 }
@@ -269,6 +274,13 @@ function expectBodylessRelativeCalls(rows: readonly PersistedCall[]): void {
     eligibleCount: 0,
     selectedCount: 0,
   });
+  expect(persistedCall(rows, 'proxy.packageTask')).toMatchObject({
+    status: 'unresolved',
+    reason: 'relative_import_proxy_alias_targets_package_unsupported',
+    candidateCount: 1,
+    eligibleCount: 0,
+    selectedCount: 0,
+  });
 }
 
 function expectMappedProxyCall(rows: readonly PersistedCall[]): void {
@@ -373,6 +385,70 @@ async function verifyAmbiguousModuleNormalization(): Promise<void> {
 }
 
 describe('derived relative import resolution', () => {
+  it('resolves only a method carried by the target module default export',
+    async () => {
+      const root = await mkdtemp(path.join(
+        os.tmpdir(), 'sf-derived-default-export-',
+      ));
+      await Promise.all([
+        writeFixtureFile(root, 'app/.git-fixture'),
+        writeFixtureFile(root, 'app/package.json', JSON.stringify({
+          name: '@neutral/default-export-app',
+        })),
+        writeFixtureFile(root, 'app/src/foo.ts', `
+          export default class Foo { method(): void {} }
+          export class Coincidental { method(): void {} }
+        `),
+        writeFixtureFile(root, 'app/src/positive.ts', `
+          import Foo from './foo';
+          export function start(): void {
+            const value = new Foo();
+            value.method();
+          }
+        `),
+        writeFixtureFile(root, 'app/src/negative.ts', `
+          import Coincidental from './foo';
+          export function start(): void {
+            const value = new Coincidental();
+            value.method();
+          }
+        `),
+      ]);
+      const { db, workspaceId } = await prepareWorkspace(root);
+      try {
+        const rows = db.prepare(`SELECT sc.source_file sourceFile,sc.status,
+          sc.unresolved_reason reason,target.qualified_name targetName,
+          target.evidence_json targetEvidence
+          FROM symbol_calls sc
+          LEFT JOIN symbols target ON target.id=sc.callee_symbol_id
+          WHERE sc.callee_expression='value.method'
+          ORDER BY sc.source_file COLLATE BINARY`).all();
+        expect(rows).toHaveLength(2);
+        expect(rows.find((row) => row.sourceFile === 'src/positive.ts'))
+          .toMatchObject({
+            status: 'resolved', reason: null, targetName: 'Foo.method',
+          });
+        expect(rows.find((row) => row.sourceFile === 'src/negative.ts'))
+          .toMatchObject({
+            status: 'unresolved',
+            reason: 'relative_import_requested_module_has_no_target',
+            targetName: null,
+          });
+        const evidence = record(JSON.parse(String(
+          rows.find((row) => row.sourceFile === 'src/positive.ts')
+            ?.targetEvidence,
+        )) as unknown);
+        expect(evidence).toMatchObject({
+          source: 'exported_class_instance_member',
+          exportedClass: 'Foo',
+          exportedClassExportKind: 'default',
+        });
+        expect(invalidRelativeFactCategories(db, workspaceId)).toEqual([]);
+      } finally {
+        db.close();
+      }
+    });
+
   it('preserves renamed class and proxy import provenance', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-derived-parser-'));
     await createFixture(root);
@@ -393,6 +469,13 @@ describe('derived relative import resolution', () => {
       expectMappedProxyCall(rows);
       expectAmbiguousMappedProxyCall(rows);
       expectUnsupportedPackageCalls(rows);
+      expect(factLifecycleDiagnostic(db)).toBeUndefined();
+      expect(db.prepare(`SELECT COUNT(*) count FROM symbol_calls
+        WHERE json_extract(evidence_json,'$.relation')
+          ='package_import_derived_member'
+          AND status='resolved'
+          AND json_extract(evidence_json,'$.candidateStrategy')
+            ='same_file_exact'`).get()).toEqual({ count: 0 });
     } finally {
       db.close();
     }

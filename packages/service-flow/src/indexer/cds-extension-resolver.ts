@@ -15,9 +15,12 @@ interface BaseRow { id: number; repoId: number }
 interface DesiredOperation { id: number; operationType: string; operationName: string; operationPath: string; paramsJson: string; returnType: string | null; sourceFile: string; sourceLine: number }
 interface ExistingOperation extends DesiredOperation { baseOperationId: number | null }
 
-export function materializeCdsExtensionOperations(db: Db, workspaceId: number): void {
-  const extensions = db.prepare(`SELECT s.id,r.id repoId,s.service_name serviceName,s.qualified_name qualifiedName,s.source_file sourceFile,s.extension_module_specifier moduleSpecifier,s.extension_imported_symbol importedSymbol,s.extension_import_kind importKind
-    FROM cds_services s JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND s.is_extend=1`).all(workspaceId) as unknown as ExtensionRow[];
+export function materializeCdsExtensionOperations(
+  db: Db,
+  workspaceId: number,
+  excludedRepoIds: ReadonlySet<number> = new Set(),
+): void {
+  const extensions = extensionRows(db, workspaceId, excludedRepoIds);
   db.transaction(() => {
     const changedRepos = new Set<number>();
     for (const extension of extensions) {
@@ -25,6 +28,27 @@ export function materializeCdsExtensionOperations(db: Db, workspaceId: number): 
     }
     for (const repoId of changedRepos) markRepositoryDerivedFactsChanged(db, repoId);
   });
+}
+
+function extensionRows(
+  db: Db,
+  workspaceId: number,
+  excludedRepoIds: ReadonlySet<number>,
+): ExtensionRow[] {
+  const excluded = [...excludedRepoIds].sort((left, right) => left - right);
+  const exclusion = excluded.length > 0
+    ? ` AND r.id NOT IN (${excluded.map(() => '?').join(',')})`
+    : '';
+  return db.prepare(`SELECT s.id,r.id repoId,s.service_name serviceName,
+    s.qualified_name qualifiedName,s.source_file sourceFile,
+    s.extension_module_specifier moduleSpecifier,
+    s.extension_imported_symbol importedSymbol,
+    s.extension_import_kind importKind
+    FROM cds_services s JOIN repositories r ON r.id=s.repo_id
+    WHERE r.workspace_id=? AND s.is_extend=1${exclusion}
+    ORDER BY r.id,s.id`).all(
+    workspaceId, ...excluded,
+  ) as unknown as ExtensionRow[];
 }
 
 function reconcileExtension(db: Db, workspaceId: number, extension: ExtensionRow): boolean {

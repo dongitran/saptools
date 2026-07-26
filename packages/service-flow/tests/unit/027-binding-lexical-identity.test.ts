@@ -593,6 +593,8 @@ describe('lexical service-binding fail-closed provenance', () => {
       arrayIndex: 0,
       scopeRule: 'exact_lexical_scope',
     });
-    expectUnresolved(fixture, '/ambiguous-helper', 'binding_not_found');
+    expectUnresolved(
+      fixture, '/ambiguous-helper', 'binding_flow_unsupported',
+    );
   });
 });

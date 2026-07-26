@@ -230,6 +230,9 @@ function resolvedReference(
   chain: LexicalScopeFact[],
   scopeIndex: number,
 ): ServiceBindingReference {
+  const helperReturn = selected.fact.helperChain?.some(
+    (step) => step.bindingOrigin === 'single_hop_helper_return',
+  ) ?? false;
   return {
     status: 'resolved_exact',
     variableName: call.serviceVariableName,
@@ -240,7 +243,9 @@ function resolvedReference(
       ? 'deterministic_reaching_assignment'
       : selected.site.aliasSource
         ? 'lexical_alias_declaration'
-        : 'lexical_declaration',
+        : helperReturn
+          ? 'single_hop_helper_return'
+          : 'lexical_declaration',
     lexicalScopeChain: chain,
     bindingScopeIndex: scopeIndex,
     scopeChainTotal: chain.length,

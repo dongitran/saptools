@@ -82,6 +82,7 @@ export interface CompactDecisionInput {
   implementationStrategy?: string;
   implementationGuided?: boolean;
   implementationContextual?: boolean;
+  tiedCandidateRepos?: CompactReferenceGroupV1;
   reasonCode?: string;
   eventMatchStrategy?: string;
   dispatchCertainty?: string;
@@ -225,6 +226,7 @@ export interface CompactDecisionV1 {
   implementationStrategy?: string;
   implementationGuided?: boolean;
   implementationContextual?: boolean;
+  tiedCandidateRepos?: CompactReferenceGroupV1;
   eventMatchStrategy?: string;
   dispatchCertainty?: string;
   eventSubscriptionCount?: number;
@@ -247,6 +249,10 @@ export interface CompactEdgeDetailsV1 {
 
 export interface CompactDiagnosticDetailsV1 {
   reasonCode?: string;
+  tiedCandidateRepos?: CompactReferenceGroupV1;
+  selectorKind?: string;
+  selectorSuggestions?: CompactReferenceGroupV1;
+  invalidFactCategories?: CompactReferenceGroupV1;
   missingVariableNames?: string[];
   missingVariableCount?: number;
   shownMissingVariableCount?: number;

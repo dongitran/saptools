@@ -17,10 +17,7 @@ import {
   TraversalScopeScheduler,
   type TraversalScopeState,
 } from './010-traversal-scope.js';
-import {
-  planEventSubscriberTransitions,
-  type PlannedEventSubscriberTransition,
-} from './011-event-subscriber-traversal.js';
+import type { PlannedEventSubscriberTransition } from './011-event-subscriber-traversal.js';
 import {
   graphForCalls,
   operationNode,
@@ -36,7 +33,6 @@ import {
 import type { CompactSemanticEndpoint } from './014-compact-contract.js';
 import { TraceEdgeRecorder } from './015-trace-edge-recorder.js';
 import {
-  contextForSymbolCall,
   knownBindingsForCalls,
   knownBindingsForScope,
   parseTraceEvidence,
@@ -53,6 +49,8 @@ import {
 import { outboundScopeSymbolIds } from './023-nested-event-scopes.js';
 import type { ImplementationHintOptions } from './025-trace-implementation-scope.js';
 import { processOperationTarget } from './028-trace-operation-execution.js';
+import { runtimeEventResolution, runtimeEventSubscriberPlans } from './030-event-runtime-resolution.js';
+import { planLocalCallExpansion } from './031-local-call-expansion.js';
 
 export interface CallRow extends Record<string, unknown> {
   id: number;
@@ -226,20 +224,10 @@ function processLocalCall(
   bindings: Map<string, ContextBinding>,
   row: Record<string, unknown>,
 ): void {
-  if (!row.callee_symbol_id) return;
-  const symbolId = Number(row.callee_symbol_id);
-  const symbols = new Set([symbolId]);
-  const files = new Set([String(row.calleeFile)]);
-  const repoId = Number(row.calleeRepoId);
-  const context = contextForSymbolCall(runtime.db, row, bindings);
-  const scheduling = runtime.scheduler.schedule({
-    workspaceId: runtime.workspaceId,
-    repoId,
-    files,
-    symbolIds: symbols,
-    context,
-  }, current.state);
-  const node = symbolNode(runtime.db, symbolId);
+  const symbolId = row.callee_symbol_id
+    ? Number(row.callee_symbol_id) : undefined;
+  const node = symbolId === undefined
+    ? undefined : symbolNode(runtime.db, symbolId);
   if (node) runtime.nodes.set(String(node.id), node);
   const evidence = localCallEvidence(row, node);
   const unresolvedReason = localCallUnresolvedReason(row);
@@ -247,6 +235,12 @@ function processLocalCall(
   const target = recordLocalCallObservation(runtime.recorder, edge, {
     symbolCall: row, evidence, unresolvedReason,
   });
+  if (symbolId === undefined || row.status !== 'resolved' || !node) return;
+  const { repoId, files, symbols, context, scheduling } =
+    planLocalCallExpansion(
+      runtime.db, runtime.scheduler, runtime.workspaceId, current.state,
+      row, bindings, symbolId,
+    );
   if (scheduling.kind === 'cycle')
     recordLocalCycle(runtime, current, row, target, scheduling.state,
       repoId, files, symbols);
@@ -291,7 +285,8 @@ function localTraceEdge(
     type: 'local_symbol_call',
     from: String(row.callee_expression),
     to: node?.label
-      ? String(node.label) : `symbol:${String(row.callee_symbol_id)}`,
+      ? String(node.label)
+      : `${String(row.status)}:${String(row.callee_expression)}`,
     evidence,
     confidence: Number(row.confidence ?? 0.8),
     unresolvedReason,
@@ -390,11 +385,12 @@ function recordEffectiveOutbound(
 ): EffectiveOutbound {
   const persisted = parseTraceEvidence(row.evidence_json);
   const raw = baseTraceEvidence(row, call, persisted, contextual.evidence);
-  const effective = runtimeResolution(runtime.db, row, raw, {
-    vars: runtime.options.vars,
-    dynamicMode: runtime.options.dynamicMode ?? 'strict',
-    maxDynamicCandidates: runtime.options.maxDynamicCandidates,
-  }, call.workspaceId, contextual.state);
+  const effective = runtimeEventResolution(row, raw, runtime.options.vars)
+    ?? runtimeResolution(runtime.db, row, raw, {
+      vars: runtime.options.vars,
+      dynamicMode: runtime.options.dynamicMode ?? 'strict',
+      maxDynamicCandidates: runtime.options.maxDynamicCandidates,
+    }, call.workspaceId, contextual.state);
   const target = `${effective.row.to_kind}:${effective.row.to_id}`;
   const operation = effective.row.to_kind === 'operation'
     ? operationNode(runtime.db, effective.row.to_id) : undefined;
@@ -461,15 +457,19 @@ function processEventTransitions(
 ): void {
   if (!runtime.options.includeAsync || call.call_type !== 'async_emit'
     || effective.row.edge_type !== 'HANDLER_EMITS_EVENT'
-    || typeof call.event_name_expr !== 'string') return;
-  const plans = planEventSubscriberTransitions(runtime.db, {
-    workspaceId: runtime.workspaceId ?? call.workspaceId,
-    graphGeneration: call.graphGeneration,
-    eventName: call.event_name_expr,
-  }, runtime.scheduler, current.state, current.depth, runtime.maxDepth);
-  for (const plan of plans)
+    || effective.row.to_kind !== 'event') return;
+  const planned = runtimeEventSubscriberPlans(
+    runtime.db, {
+      workspaceId: runtime.workspaceId ?? call.workspaceId,
+      graphGeneration: call.graphGeneration,
+      eventName: effective.row.to_id,
+      vars: runtime.options.vars ?? {},
+    }, runtime.scheduler, current.state, current.depth, runtime.maxDepth,
+  );
+  if (planned.diagnostic) runtime.diagnostics.push(planned.diagnostic);
+  for (const plan of planned.plans)
     recordEventTransition(runtime, current, plan,
-      effective.semanticWorkspaceId, plans.length);
+      effective.semanticWorkspaceId, planned.plans.length);
 }
 
 function recordEventTransition(

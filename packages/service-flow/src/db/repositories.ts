@@ -12,6 +12,10 @@ import {
   selectCallOwner,
   type OwnerCandidate,
 } from '../parsers/004-fact-identity.js';
+import {
+  PreparedRepositorySnapshotError,
+  type PreparedSnapshotFailureCode,
+} from './013-index-publication-failure.js';
 export interface RepoRow {
   id: number;
   name: string;
@@ -414,6 +418,19 @@ interface PersistedOwnerCandidate extends OwnerCandidate {
   id: number;
 }
 
+function bindingSnapshotError(
+  failureCode: PreparedSnapshotFailureCode,
+  fact: ServiceBindingFact,
+): PreparedRepositorySnapshotError {
+  return new PreparedRepositorySnapshotError(failureCode, {
+    factKind: 'service_binding',
+    sourceFile: fact.sourceFile,
+    sourceLine: fact.sourceLine,
+    callSiteStartOffset: fact.bindingSiteStartOffset,
+    callSiteEndOffset: fact.bindingSiteEndOffset,
+  });
+}
+
 function persistedOwnerCandidates(
   db: Db,
   repoId: number,
@@ -454,16 +471,16 @@ function bindingOwnerId(
   );
   if (fact.ownerResolution === 'ownerless_file_scope') {
     if (selected.status !== 'none')
-      throw new Error('invalid_prepared_repository_snapshot:binding_owner_mismatch');
+      throw bindingSnapshotError('binding_owner_mismatch', fact);
     return null;
   }
   if (fact.ownerResolution !== 'owned_exact'
     || selected.status !== 'resolved'
     || selected.owner?.qualifiedName !== fact.sourceSymbolQualifiedName)
-    throw new Error('invalid_prepared_repository_snapshot:binding_owner_mismatch');
+    throw bindingSnapshotError('binding_owner_mismatch', fact);
   const owner = selected.owner;
   if (!owner)
-    throw new Error('invalid_prepared_repository_snapshot:binding_owner_mismatch');
+    throw bindingSnapshotError('binding_owner_mismatch', fact);
   return owner.id;
 }
 
@@ -474,13 +491,13 @@ function assertUniquePreparedBindingSites(
   for (const row of rows) {
     if (row.bindingSiteStartOffset === undefined
       || row.bindingSiteEndOffset === undefined)
-      throw new Error('invalid_prepared_repository_snapshot:binding_site_missing');
+      throw bindingSnapshotError('binding_site_missing', row);
     const key = [
       row.sourceFile, row.variableName,
       row.bindingSiteStartOffset, row.bindingSiteEndOffset,
     ].join('\u0000');
     if (seen.has(key))
-      throw new Error('invalid_prepared_repository_snapshot:duplicate_service_binding_site');
+      throw bindingSnapshotError('duplicate_service_binding_site', row);
     seen.add(key);
   }
 }

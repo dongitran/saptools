@@ -157,12 +157,58 @@ function returnedProperty(
   return { propertyName, variableName: property.initializer.text };
 }
 
-function branchDependent(node: ts.Node, fn: ts.FunctionLikeDeclaration): boolean {
+function hazardousTryClause(
+  node: ts.Node | undefined,
+  fn: ts.FunctionLikeDeclaration,
+  anyReturn: boolean,
+): boolean {
+  if (!node) return false;
+  let found = false;
+  const visit = (current: ts.Node): void => {
+    if (found || current !== fn && ts.isFunctionLike(current)) return;
+    if (ts.isReturnStatement(current)
+      && (anyReturn || current.expression !== undefined)
+      || ts.isCallExpression(current) && connectFactFromCall(current)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function hasAncestor(node: ts.Node, ancestor: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (current === ancestor) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function unsupportedTryAncestor(
+  statement: ts.TryStatement,
+  returned: ts.Node,
+  fn: ts.FunctionLikeDeclaration,
+): boolean {
+  if (!hasAncestor(returned, statement.tryBlock)) return true;
+  if (hazardousTryClause(statement.catchClause?.block, fn, false))
+    return true;
+  return hazardousTryClause(statement.finallyBlock, fn, true);
+}
+
+function branchDependent(
+  node: ts.Node,
+  fn: ts.FunctionLikeDeclaration,
+): boolean {
   let current: ts.Node | undefined = node.parent;
   while (current && current !== fn) {
     if (ts.isIfStatement(current) || ts.isConditionalExpression(current)
-      || ts.isSwitchStatement(current) || ts.isIterationStatement(current, false)
-      || ts.isTryStatement(current)) return true;
+      || ts.isSwitchStatement(current)
+      || ts.isIterationStatement(current, false)) return true;
+    if (ts.isTryStatement(current)
+      && unsupportedTryAncestor(current, node, fn)) return true;
     current = current.parent;
   }
   return false;
@@ -231,10 +277,30 @@ function directReturnConnectFact(
   return directConnectFact(returned);
 }
 
+function hasTryAncestor(
+  returned: ts.ReturnStatement,
+  fn: ts.FunctionLikeDeclaration,
+): boolean {
+  let current: ts.Node | undefined = returned.parent;
+  while (current && current !== fn) {
+    if (ts.isTryStatement(current)) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 export function directConnectFactFromFunctionLike(
   fn: ts.FunctionLikeDeclaration,
 ): LocalBindingFact | undefined {
   if (ts.isArrowFunction(fn) && fn.body && !ts.isBlock(fn.body))
     return directConnectFact(fn.body);
-  return directReturnConnectFact(fn);
+  const returned = singleReturn(fn);
+  const fact = directReturnConnectFact(fn);
+  if (!fact || !returned || !hasTryAncestor(returned, fn)) return fact;
+  return {
+    ...fact,
+    helperChain: [...(fact.helperChain ?? []), {
+      bindingOrigin: 'single_hop_helper_return',
+    }],
+  };
 }

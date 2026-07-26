@@ -1,12 +1,23 @@
 import type { Db } from '../db/connection.js';
 import { listRepositories, reposByName } from '../db/repositories.js';
 import { errorMessage } from '../utils/diagnostics.js';
-import { prepareRepositoryIndex, publishPreparedRepositoryIndex, recordIndexFailure, type PreparedRepositoryIndex } from './repository-indexer.js';
+import {
+  prepareRepositoryIndex,
+  publishOneRepository,
+  recordIndexFailure,
+  type PreparedRepositoryIndex,
+} from './repository-indexer.js';
 import { materializeCdsExtensionOperations } from './cds-extension-resolver.js';
 import {
   createPackageInvalidationBatch,
   finalizePackageTargetInvalidations,
+  mergePackageInvalidationEffects,
+  type PackageInvalidationBatch,
 } from '../db/004-package-target-invalidation.js';
+import {
+  isPreparedRepositorySnapshotError,
+} from '../db/013-index-publication-failure.js';
+import { binaryCompare } from '../parsers/004-fact-identity.js';
 // Ownerless rows predate PID coordination; this matches doctor's stale-run threshold without taking over a recent legacy writer.
 const LEGACY_OWNER_RECOVERY_MS = 60 * 60 * 1_000;
 type RunningIndexRow = Record<string, unknown>;
@@ -80,11 +91,21 @@ export function claimIndexRun(
     throw error;
   }
 }
+export interface IndexWorkspaceSummary {
+  repoCount: number;
+  indexedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  failedRepos: Array<{ name: string; code: string }>;
+  fileCount: number;
+  diagnosticCount: number;
+}
+
 export async function indexWorkspace(
   db: Db,
   workspaceId: number,
   options: { repo?: string; force: boolean; injectDerivedMaterializationFailure?: boolean },
-): Promise<{ repoCount: number; indexedCount: number; skippedCount: number; fileCount: number; diagnosticCount: number }> {
+): Promise<IndexWorkspaceSummary> {
   const repos = selectedRepositories(db, workspaceId, options.repo);
   const runId = claimIndexRun(db, workspaceId, repos.length);
   const state: PreparationState = {
@@ -92,8 +113,9 @@ export async function indexWorkspace(
   };
   try {
     await prepareRepositories(repos, options.force, state);
-    publishPreparedRows(db, workspaceId, options, runId, state);
-    return indexSummary(repos.length, state);
+    return publishPreparedWorkspaceRows(
+      db, workspaceId, runId, state.rows, options,
+    );
   } catch (error) {
     finishFailedRun(db, runId, state, error);
     if (state.activeRepoId && state.rows.length < repos.length)
@@ -108,6 +130,18 @@ interface PreparationState {
   diagnosticCount: number;
   skippedCount: number;
   rows: PreparedRepositoryIndex[];
+  activeRepoId?: number;
+}
+
+interface PublicationState {
+  fileCount: number;
+  diagnosticCount: number;
+  skippedCount: number;
+  indexedCount: number;
+  publicationFailureCount: number;
+  failedRepoIds: Set<number>;
+  failedRepos: Array<{ name: string; code: string }>;
+  rows: readonly PreparedRepositoryIndex[];
   activeRepoId?: number;
 }
 
@@ -145,38 +179,118 @@ async function prepareRepositories(
   }
 }
 
-function publishPreparedRows(
+export function publishPreparedWorkspaceRows(
   db: Db,
   workspaceId: number,
-  options: { injectDerivedMaterializationFailure?: boolean },
   runId: number,
-  state: PreparationState,
-): void {
+  rows: readonly PreparedRepositoryIndex[],
+  options: { injectDerivedMaterializationFailure?: boolean } = {},
+): IndexWorkspaceSummary {
+  const state = publicationState(rows);
   db.transaction(() => {
-    const invalidations = createPackageInvalidationBatch(
-      state.rows.filter((row) => !row.skipped).map((row) => row.repo.id),
-    );
+    const effects = createPackageInvalidationBatch([]);
+    const publishedRepoIds: number[] = [];
     for (const row of state.rows) {
       state.activeRepoId = row.repo.id;
-      publishPreparedRepositoryIndex(db, row, invalidations);
+      if (row.skipped) continue;
+      const result = publishPreparedRow(db, row);
+      if (result.status === 'failed') {
+        recordPublicationFailure(db, state, row, result.error);
+        continue;
+      }
+      state.indexedCount += 1;
+      publishedRepoIds.push(row.repo.id);
+      mergePackageInvalidationEffects(effects, result.effects);
     }
     if (options.injectDerivedMaterializationFailure)
       throw new Error('Injected derived materialization failure');
-    materializeCdsExtensionOperations(db, workspaceId);
+    materializeCdsExtensionOperations(
+      db, workspaceId, state.failedRepoIds,
+    );
+    const invalidations = createPackageInvalidationBatch(publishedRepoIds);
+    mergePackageInvalidationEffects(invalidations, effects);
     finalizePackageTargetInvalidations(db, invalidations);
-    finishSuccessfulRun(db, runId, state);
+    finishCompletedRun(db, runId, state);
   });
+  return indexSummary(rows.length, state);
 }
 
-function finishSuccessfulRun(
+function publicationState(
+  rows: readonly PreparedRepositoryIndex[],
+): PublicationState {
+  return {
+    rows,
+    fileCount: rows.reduce((total, row) => total + row.fileCount, 0),
+    diagnosticCount: rows.reduce(
+      (total, row) => total + row.diagnosticCount, 0,
+    ),
+    skippedCount: rows.filter((row) => row.skipped).length,
+    indexedCount: 0,
+    publicationFailureCount: 0,
+    failedRepoIds: new Set(),
+    failedRepos: [],
+  };
+}
+
+type PublicationResult =
+  | { status: 'published'; effects: PackageInvalidationBatch }
+  | { status: 'failed'; error: unknown };
+
+function publishPreparedRow(
+  db: Db,
+  row: PreparedRepositoryIndex,
+): PublicationResult {
+  const effects = createPackageInvalidationBatch([row.repo.id]);
+  const outcome = publishOneRepository(db, row, effects);
+  if (!outcome.ok && !isPreparedRepositorySnapshotError(outcome.error))
+    throw outcome.error;
+  return outcome.ok
+    ? { status: 'published', effects }
+    : { status: 'failed', error: outcome.error };
+}
+
+function recordPublicationFailure(
+  db: Db,
+  state: PublicationState,
+  row: PreparedRepositoryIndex,
+  error: unknown,
+): void {
+  state.failedRepoIds.add(row.repo.id);
+  state.failedRepos.push({
+    name: row.repo.name,
+    code: isPreparedRepositorySnapshotError(error)
+      ? error.message : 'source_read_failed',
+  });
+  state.publicationFailureCount += 1;
+}
+
+function finishCompletedRun(
   db: Db,
   runId: number,
-  state: PreparationState,
+  state: PublicationState,
 ): void {
-  db.prepare(`UPDATE index_runs SET finished_at=?,status='success',
-    file_count=?,diagnostic_count=? WHERE id=?`).run(
-    new Date().toISOString(), state.fileCount, state.diagnosticCount, runId,
+  const status = completedRunStatus(
+    state.rows.length, state.publicationFailureCount,
   );
+  const error = status === 'success' ? null
+    : `${state.publicationFailureCount} repositories failed index publication.`;
+  db.prepare(`UPDATE index_runs SET finished_at=?,status=?,
+    file_count=?,diagnostic_count=?,error_message=? WHERE id=?`).run(
+    new Date().toISOString(), status, state.fileCount,
+    completedDiagnosticCount(state), error, runId,
+  );
+}
+
+function completedRunStatus(
+  repoCount: number,
+  failedCount: number,
+): 'success' | 'partial_failure' | 'failed' {
+  if (failedCount === 0) return 'success';
+  return failedCount === repoCount ? 'failed' : 'partial_failure';
+}
+
+function completedDiagnosticCount(state: PublicationState): number {
+  return state.diagnosticCount + state.publicationFailureCount;
 }
 
 function finishFailedRun(
@@ -194,19 +308,17 @@ function finishFailedRun(
 
 function indexSummary(
   repoCount: number,
-  state: PreparationState,
-): {
-  repoCount: number;
-  indexedCount: number;
-  skippedCount: number;
-  fileCount: number;
-  diagnosticCount: number;
-} {
+  state: PublicationState,
+): IndexWorkspaceSummary {
   return {
     repoCount,
-    indexedCount: repoCount - state.skippedCount,
+    indexedCount: state.indexedCount,
     skippedCount: state.skippedCount,
+    failedCount: state.publicationFailureCount,
+    failedRepos: [...state.failedRepos].sort((left, right) =>
+      binaryCompare(left.name, right.name)
+      || binaryCompare(left.code, right.code)),
     fileCount: state.fileCount,
-    diagnosticCount: state.diagnosticCount,
+    diagnosticCount: completedDiagnosticCount(state),
   };
 }

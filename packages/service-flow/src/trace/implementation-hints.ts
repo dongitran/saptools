@@ -1,5 +1,6 @@
 import type { ImplementationHint } from '../types.js';
 import { projectBounded } from '../utils/000-bounded-projection.js';
+import { compareBinary } from './010-traversal-scope.js';
 
 interface Candidate {
   accepted?: boolean;
@@ -106,6 +107,7 @@ export function implementationHintSuggestions(rawEvidence: Record<string, unknow
 
 export function implementationHintSuggestionProjection(
   rawEvidence: Record<string, unknown>,
+  limit?: number,
 ): ImplementationHintSuggestionProjection {
   const evidence = asEvidence(rawEvidence);
   const accepted = (evidence.candidates ?? []).filter((candidate) => candidate.accepted);
@@ -119,7 +121,7 @@ export function implementationHintSuggestionProjection(
   }
   const repos = selectableRepositories(accepted);
   const repositoryProjection = projectBounded(
-    repos, (left, right) => left.localeCompare(right),
+    repos, compareBinary, limit,
   );
   const suggestions = accepted
     .flatMap((candidate) => {
@@ -142,7 +144,7 @@ export function implementationHintSuggestionProjection(
         cli: `--implementation-hint ${hintString(hint)}`,
       }];
     });
-  const projection = projectBounded(suggestions, compareSuggestion);
+  const projection = projectBounded(suggestions, compareSuggestion, limit);
   return {
     suggestions: projection.items,
     suggestionCount: projection.totalCount,
@@ -170,15 +172,16 @@ function projectedSuggestions(value: unknown): ImplementationHintSuggestionProje
 }
 
 function compareHints(left: ImplementationHint, right: ImplementationHint): number {
-  return hintString(left).localeCompare(hintString(right));
+  return compareBinary(hintString(left), hintString(right));
 }
 
 function compareSuggestion(
   left: Record<string, unknown>,
   right: Record<string, unknown>,
 ): number {
-  return String(left.cli ?? '').localeCompare(String(right.cli ?? ''))
-    || String(left.implementationRepo ?? '').localeCompare(
+  return compareBinary(String(left.cli ?? ''), String(right.cli ?? ''))
+    || compareBinary(
+      String(left.implementationRepo ?? ''),
       String(right.implementationRepo ?? ''),
     );
 }
@@ -202,7 +205,7 @@ function selectableRepositories(candidates: Candidate[]): string[] {
   const repos = new Set(candidates.flatMap((candidate) => candidate.handlerPackage?.name ? [candidate.handlerPackage.name] : []));
   return [...repos]
     .filter((repo) => candidates.filter((candidate) => candidateMatchesRepo(candidate, repo)).length === 1)
-    .sort();
+    .sort(compareBinary);
 }
 
 function assignHintField(hint: Partial<ImplementationHint>, key: string, value: string): void {

@@ -243,10 +243,14 @@ function expectOperationAndLocalCoverage(
     item.type === 'operation_implemented_by_handler');
   expect(operation?.source.kind).toBe('operation');
   expect(operation?.target.kind).toBe('symbol');
-  const local = observations.find((item) => item.type === 'local_symbol_call');
+  const local = observations.find((item) =>
+    item.type === 'local_symbol_call' && item.target.kind === 'symbol');
   expect(local?.source.kind).toBe('symbol');
   expect(local?.target.kind).toBe('symbol');
   expect(local?.source).not.toEqual(local?.target);
+  const unresolved = observations.find((item) =>
+    item.type === 'local_symbol_call' && item.target.kind === 'unavailable');
+  expect(unresolved?.status).toBe('unresolved');
 }
 
 function expectOutboundAndEventCoverage(

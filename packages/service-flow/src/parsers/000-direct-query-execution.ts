@@ -43,6 +43,17 @@ export function queryBuilderRoot(
     : undefined;
 }
 
+export function chainIncludesForUpdate(node: ts.Expression): boolean {
+  let current = unwrapQueryExpression(node);
+  while (ts.isCallExpression(current)
+    && ts.isPropertyAccessExpression(current.expression)) {
+    if (isCapQueryBuilderRootName(expressionName(current.expression))) break;
+    if (current.expression.name.text === 'forUpdate') return true;
+    current = unwrapQueryExpression(current.expression.expression);
+  }
+  return false;
+}
+
 export function directQueryBuilderStatement(
   node: ts.CallExpression,
 ): DirectQueryBuilderStatement | undefined {

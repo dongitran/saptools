@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.69
+
+- Corrected one-hop derived import identity: conventional relative default-class instances use target-side default-export evidence, package-derived members cannot leak into same-file exact-name resolution, and package-backed proxy aliases fail closed with an honest unsupported reason. Unresolved and ambiguous local/package symbol-call facts now remain visible as non-traversable trace edges.
+- Contained invalid prepared-repository snapshots with typed, site-aware diagnostics and repository savepoints. Healthy repositories in the same index invocation publish normally; partial and total failures return bounded summaries and non-zero CLI status, while the final cross-repository invalidation/materialization phase remains atomic.
+- Persisted template-literal `.emit()`/`.on()` topics as runtime-dependent event facts. Missing exact keys produce dynamic candidates and compact-safe missing-variable diagnostics; supplying every emit/subscription key traverses only an exact case-sensitive substituted event-name match.
+- Recognized multi-line `cds.run(...)` structurally and recorded bounded `hasForUpdate: true` evidence on both wrapped and directly executed fluent CQL chains.
+- Added the fail-closed `single_hop_helper_return` binding strategy for a direct connect-derived helper return inside a try block whose catch has no value return or connect. Branching, value-returning/connect-producing catch/finally blocks, and second-hop helpers remain unresolved.
+- Kept `service-flow/compact-graph@1` while rejecting raw control characters before trimming, completing tuple-equivalent status/target elision for non-database-backed target kinds, exposing bounded tied implementation repositories and selector/lifecycle categories, and sourcing safe reason codes from parser warnings. Tuple columns, refs, redaction, and detailed JSON remain unchanged.
+- Package/CLI is `0.1.69`, SQLite remains schema `13`, analyzer compatibility is `0.1.69-facts.1`, and the compact schema remains `service-flow/compact-graph@1`. Existing workspaces require `index --force` followed by `link --force`; no schema migration is required.
+
 ## 0.1.68
 
 - Replaced line-based call and binding ownership with deterministic UTF-16 full-span containment, exact subscription-registration identity, durable handler-reference status, and parser-carried lexical binding-site provenance. Unsupported or ambiguous ownership and reaching assignments now fail closed instead of selecting a convenient same-line row.

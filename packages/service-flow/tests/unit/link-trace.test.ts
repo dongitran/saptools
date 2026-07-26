@@ -332,7 +332,20 @@ describe('0.1.12 local service and symbol trace regressions', () => {
     expect(result.edges.some((edge) => edge.type === 'local_db_query' && String(edge.to).includes('ConfigurationRules'))).toBe(true);
     expect(result.edges.some((edge) => edge.type === 'local_db_query' && String(edge.to).includes('TemplateRules'))).toBe(true);
     expect(result.nodes.some((node) => node.kind === 'symbol' && String(node.label).includes('cacheHelper.getConfiguration') && node.sourceFile === 'srv/helpers.ts')).toBe(true);
-    expect(result.edges.filter((edge) => edge.type === 'local_symbol_call').every((edge) => !edge.unresolvedReason)).toBe(true);
+    const unresolvedLocal = result.edges.filter((edge) =>
+      edge.type === 'local_symbol_call' && edge.unresolvedReason);
+    expect(unresolvedLocal).toEqual([
+      expect.objectContaining({
+        from: 'Action',
+        to: 'unresolved:Action',
+        unresolvedReason: 'package_repository_not_indexed',
+      }),
+      expect.objectContaining({
+        from: 'Func',
+        to: 'unresolved:Func',
+        unresolvedReason: 'package_repository_not_indexed',
+      }),
+    ]);
     db.close();
   });
 });
