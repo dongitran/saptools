@@ -1,15 +1,16 @@
-import { mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "node:test";
 
 import { autoLinkPackages, normalizePackagePrefix, packageScope, scanForPackages } from "../../src/packages.js";
-import type { SapPackage } from "../../src/types.js";
+import type { PackageScanWarning, SapPackage } from "../../src/types.js";
 import { expect } from "../helpers/expect.js";
 import { describe, it } from "../helpers/test.js";
 
 interface ScanCapture {
   readonly packages: readonly SapPackage[];
+  readonly warnings: readonly PackageScanWarning[];
   readonly stderr: string;
 }
 
@@ -29,7 +30,7 @@ describe("package scanning and linking", () => {
     await writeFile(path.join(root, "packages", "a", "package.json"), JSON.stringify({ name: "@demo/a" }));
     await fsMkdir(path.join(root, "gen", "b"));
     await writeFile(path.join(root, "gen", "b", "package.json"), JSON.stringify({ name: "@demo/b" }));
-    await expect(scanForPackages(root, "@demo/")).resolves.toEqual([{ name: "@demo/a", directory: path.join(root, "packages", "a") }]);
+    await expect(scanForPackages(root, "@demo/")).resolves.toEqual({ packages: [{ name: "@demo/a", directory: path.join(root, "packages", "a") }], warnings: [] });
     await rm(root, { recursive: true, force: true });
   });
 
@@ -44,6 +45,9 @@ describe("package scanning and linking", () => {
     const result = await scanWithStderr(root);
 
     expect(result.packages).toEqual([{ name: "@demo/good", directory: path.join(root, "good") }]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]?.directory).toBe(bad);
+    expect(result.warnings[0]?.reason).toContain("Malformed package.json");
     expect(result.stderr).toContain("Malformed package.json");
     expect(result.stderr).toContain(bad);
     await rm(root, { recursive: true, force: true });
@@ -61,9 +65,43 @@ describe("package scanning and linking", () => {
     const result = await scanWithStderr(root);
 
     expect(result.packages).toEqual([{ name: "@demo/nested", directory: nested }]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]?.directory).toBe(malformed);
+    expect(result.warnings[0]?.reason).toContain("Malformed package.json");
     expect(result.stderr).toContain("Malformed package.json");
     expect(result.stderr).toContain(malformed);
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("distinguishes an unreadable package.json from malformed JSON with a different reason and error code", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-unreadable-"));
+    const goodDirectory = path.join(root, "good");
+    const malformedDirectory = path.join(root, "malformed");
+    const unreadableDirectory = path.join(root, "unreadable");
+    await fsMkdir(goodDirectory);
+    await writeFile(path.join(goodDirectory, "package.json"), JSON.stringify({ name: "@demo/good" }));
+    await fsMkdir(malformedDirectory);
+    await writeFile(path.join(malformedDirectory, "package.json"), "{");
+    await fsMkdir(unreadableDirectory);
+    const unreadablePackageJson = path.join(unreadableDirectory, "package.json");
+    await writeFile(unreadablePackageJson, JSON.stringify({ name: "@demo/unreadable" }));
+    await chmod(unreadablePackageJson, 0o000);
+
+    try {
+      const result = await scanWithStderr(root);
+
+      expect(result.packages).toEqual([{ name: "@demo/good", directory: goodDirectory }]);
+      expect(result.warnings).toHaveLength(2);
+      const malformedWarning = result.warnings.find((warning) => warning.directory === malformedDirectory);
+      const unreadableWarning = result.warnings.find((warning) => warning.directory === unreadableDirectory);
+      expect(malformedWarning?.reason).toContain("Malformed package.json");
+      expect(unreadableWarning?.reason).toContain("Unable to read package.json");
+      expect(unreadableWarning?.reason).toContain("EACCES");
+      expect(unreadableWarning?.reason.includes("Malformed package.json")).toBe(false);
+    } finally {
+      await chmod(unreadablePackageJson, 0o644);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps the closest folder match and renames the colliding package", async () => {
@@ -235,7 +273,7 @@ describe("package scanning and linking", () => {
   });
 
   it("returns an empty package list for missing workspaces", async () => {
-    await expect(scanForPackages(path.join(os.tmpdir(), "hana-lens-does-not-exist"), "@demo/")).resolves.toEqual([]);
+    await expect(scanForPackages(path.join(os.tmpdir(), "hana-lens-does-not-exist"), "@demo/")).resolves.toEqual({ packages: [], warnings: [] });
   });
 
   it("rejects existing non-symlink paths instead of hiding auto-link conflicts", async () => {
@@ -277,7 +315,8 @@ async function scanWithStderr(root: string): Promise<ScanCapture> {
     return true;
   });
   try {
-    return { packages: await scanForPackages(root, "@demo/"), stderr: chunks.join("") };
+    const result = await scanForPackages(root, "@demo/");
+    return { packages: result.packages, warnings: result.warnings, stderr: chunks.join("") };
   } finally {
     stderrWrite.mock.restore();
   }

@@ -121,7 +121,7 @@ What it does:
 | `service` | The non-persistence layer: service-owned definitions, queries/projections, external or persistence-skipped definitions, operations, contexts/events/annotations, and free types/aspects. Physical persistence entities are excluded even when declared inside a service body. |
 | `all` | The complete compiled model, matching the pre-0.4 cache scope. |
 
-All matching packages are still compiled before scoping. Together, `db` and `service` account for every `all` definition; free top-level types/aspects intentionally appear in both for reference closure. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
+All matching packages are still compiled before scoping. Together, `db` and `service` account for every `all` definition; free top-level types/aspects intentionally appear in both for reference closure. The success summary preserves `cached=`, `packages=`, and `file=`, then reports `scan_warnings=`, `compiled=`, `skipped=`, `via=`, and `kind=`. `cached=` is the scoped definition count; `packages=` is the discovered total; `scan_warnings=` counts directories excluded during scanning because their `package.json` was malformed or unreadable (also reported on stderr); and `compiled=`/`skipped=` describe worker outcomes before filtering. `via=cds` means every successful package used CAP compilation; `via=fallback` means every successful package used the degraded parser; mixed builds report `via=cds+fallback(<count>)`.
 
 > [!WARNING]
 > `--allow-fallback` cannot reliably identify service ownership, queries/projections, or CAP persistence flags. Its `db` and `service` scopes are therefore incomplete in addition to the parser limitations described above; any fallback use prints a degraded-cache warning to stderr.
@@ -334,6 +334,14 @@ The e2e suite uses temporary mock CAP workspaces and the built `dist/cli.js`; it
 ---
 
 ## 🗒️ Changelog
+
+### `0.4.5` — Flag-typo coverage, scan-warning accounting, and atomic cache writes
+
+- rejects a one-edit typo of any known flag on every command (`build-cache`, `search`, `search-field`, `describe`), not only `--kind`
+- classifies scan-time `package.json` failures as malformed JSON or an unreadable file (with its error code when available) instead of one generic label, and surfaces the excluded-directory count via `scan_warnings=` in the build summary plus a dedicated stderr warning
+- writes the cache file through a temp-file-then-rename so a process killed mid-write can never leave a torn `.hana-lens-cache.json` behind
+- moves the `... showing N of M` truncation footer for `search`, `search-field`, and `references` to stderr so truncated `stdout` stays homogeneous result rows
+- **breaking:** `scanForPackages` now returns `{ packages, warnings }` instead of a bare package array; `formatSearchResults`, `formatFieldSearchResults`, and `formatIncomingReferences` no longer include the truncation footer in their return value; adds `PackageScanWarning`/`PackageScanResult`/`PackageSkip` to the typed API
 
 ### `0.4.4` — Fallback parser correctness, cache safety, and flag validation
 

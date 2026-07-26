@@ -47,6 +47,11 @@ export interface SapPackage {
   readonly directory: string;
 }
 
+export interface PackageScanWarning {
+  readonly directory: string;
+  readonly reason: string;
+}
+
 export interface FieldSearchResult {
   readonly entityName: string;
   readonly exact: boolean;

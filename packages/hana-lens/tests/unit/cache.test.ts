@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "node:test";
@@ -38,6 +38,54 @@ describe("cache IO", () => {
     await expect(readCache(root)).resolves.toEqual({ definitions: { Entity: { kind: "entity", "@hanaLens.packageName": "@acme/a" } } });
     await writeCache(root, results);
     expect(await readFile(cachePath(root), "utf8")).toBe(raw);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("leaves no .tmp-* artifacts in the workspace directory after a successful write", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-cache-clean-"));
+    const results = [{ packageName: "@acme/a", definitions: { Entity: { kind: "entity" } }, via: "cds" }] as const;
+    await writeCache(root, results);
+    const entries = await readdir(root);
+    expect(entries.some((entry) => entry.includes(".tmp-"))).toBe(false);
+    expect(entries).toEqual([path.basename(cachePath(root))]);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("leaves an existing cache untouched and removes the temp file when the write fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-cache-atomic-"));
+    const originalResults = [{ packageName: "@acme/a", definitions: { Original: { kind: "entity" } }, via: "cds" }] as const;
+    await writeCache(root, originalResults);
+    const originalContent = await readFile(cachePath(root), "utf8");
+
+    await chmod(root, 0o500);
+    try {
+      const nextResults = [{ packageName: "@acme/b", definitions: { Replacement: { kind: "entity" } }, via: "cds" }] as const;
+      await expect(writeCache(root, nextResults)).rejects.toThrow();
+    } finally {
+      await chmod(root, 0o700);
+    }
+
+    expect(await readFile(cachePath(root), "utf8")).toBe(originalContent);
+    const entries = await readdir(root);
+    expect(entries.some((entry) => entry.includes(".tmp-"))).toBe(false);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("removes the temp file when rename fails after the temp write already succeeded", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "hana-lens-cache-rename-fail-"));
+    const finalPath = cachePath(root);
+    // A directory (not a file) at the destination lets writeFile(tempPath, ...) succeed while
+    // rename(tempPath, finalPath) genuinely fails with EISDIR -- the other half of the atomic
+    // write's failure surface from the "writeFile itself fails" case covered above.
+    await mkdir(finalPath);
+    await writeFile(path.join(finalPath, "placeholder.txt"), "not empty", "utf8");
+
+    const results = [{ packageName: "@acme/a", definitions: { Entity: { kind: "entity" } }, via: "cds" }] as const;
+    await expect(writeCache(root, results)).rejects.toThrow();
+
+    const entries = await readdir(root);
+    expect(entries.some((entry) => entry.includes(".tmp-"))).toBe(false);
+    expect(entries).toEqual([path.basename(finalPath)]);
     await rm(root, { recursive: true, force: true });
   });
 

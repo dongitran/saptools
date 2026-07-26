@@ -335,6 +335,70 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
     });
   }, 30_000);
 
+  it("rejects flag typos for --strict and --allow-fallback before compiling or writing a cache", async () => {
+    await withTempWorkspace(async (root) => {
+      await writeCapPackage(path.join(root, "packages", "db_plain"), "@acme/db_plain", "namespace acme; entity Plain { key ID: UUID; }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const strictTypo = runBuild(root, ["--sctrict"], isolatedCli);
+      expect(strictTypo.status).toBe(1);
+      expect(strictTypo.stderr).toContain('Unknown flag "--sctrict"; did you mean --strict?');
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+
+      const allowFallbackTypo = runBuild(root, ["--alow-fallback"], isolatedCli);
+      expect(allowFallbackTypo.status).toBe(1);
+      expect(allowFallbackTypo.stderr).toContain('Unknown flag "--alow-fallback"; did you mean --allow-fallback?');
+      expect(await fileExists(path.join(root, CACHE_FILE_NAME))).toBe(false);
+    });
+  }, 30_000);
+
+  it("rejects flag typos for search, search-field, and describe before any cache read is attempted", async () => {
+    await withTempWorkspace(async (root) => {
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+      // No cache file exists anywhere in root -- a typo must still be rejected first, never
+      // surfacing a "Run hana-lens build-cache first" cache-read error instead.
+
+      const searchTypo = runCli(["search", "keyword", "--regax"], root, isolatedCli);
+      expect(searchTypo.status).toBe(1);
+      expect(searchTypo.stderr).toContain('Unknown flag "--regax"; did you mean --regex?');
+
+      const searchFieldTypo = runCli(["search-field", "keyword", "--regax"], root, isolatedCli);
+      expect(searchFieldTypo.status).toBe(1);
+      expect(searchFieldTypo.stderr).toContain('Unknown flag "--regax"; did you mean --regex?');
+
+      const describeExpandTypo = runCli(["describe", "SomeEntity", "--expend"], root, isolatedCli);
+      expect(describeExpandTypo.status).toBe(1);
+      expect(describeExpandTypo.stderr).toContain('Unknown flag "--expend"; did you mean --expand?');
+
+      const describeAnnotationsTypo = runCli(["describe", "SomeEntity", "--with-anotations"], root, isolatedCli);
+      expect(describeAnnotationsTypo.status).toBe(1);
+      expect(describeAnnotationsTypo.stderr).toContain('Unknown flag "--with-anotations"; did you mean --with-annotations?');
+
+      const referencesIgnoresUnknownFlag = runCli(["references", "SomeEntity", "--bogus"], root, isolatedCli);
+      expect(referencesIgnoresUnknownFlag.status).toBe(1);
+      expect(referencesIgnoresUnknownFlag.stderr.includes("Unknown flag")).toBe(false);
+      expect(referencesIgnoresUnknownFlag.stderr).toContain("Run hana-lens build-cache first");
+    });
+  }, 30_000);
+
+  it("reports excluded scan directories and a scan_warnings count while still caching the valid package", async () => {
+    await withTempWorkspace(async (root) => {
+      const malformed = path.join(root, "packages", "db_malformed");
+      await mkdir(malformed, { recursive: true });
+      await writeFile(path.join(malformed, "package.json"), "{ this is not valid json");
+      await writeCapPackage(path.join(root, "packages", "db_plain"), "@acme/db_plain", "namespace acme; entity Plain { key ID: UUID; }");
+      const isolatedCli = await copyCliTo(path.join(root, "isolated-cli"));
+
+      const build = runBuild(root, ["--allow-fallback"], isolatedCli);
+
+      expect(build.status).toBe(0);
+      expect(build.stdout).toContain("scan_warnings=1");
+      expect(build.stderr).toContain(`Excluded 1 director(ies) during scan: ${malformed}`);
+      expect(build.stderr).toContain("Malformed package.json");
+      expect((await readCache(root)).definitions["acme.Plain"]?.[PACKAGE_ANNOTATION]).toBe("@acme/db_plain");
+    });
+  }, 30_000);
+
   it("resolves CDS beside an isolated CLI and still gives the analyzed workspace precedence", async () => {
     await withTempWorkspace(async (root) => {
       const isolatedCliRoot = path.join(root, "isolated-cli");
@@ -583,13 +647,15 @@ async function withTempWorkspace<T>(callback: (root: string) => Promise<T>): Pro
 
       const limited = runCli(["search", "demo"], root);
       expect(limited.status).toBe(0);
-      expect(limited.stdout.trim().split("\n")).toHaveLength(11);
-      expect(limited.stdout).toContain("... showing 10 of 23 matches\n");
+      expect(limited.stdout.trim().split("\n")).toHaveLength(10);
+      expect(limited.stdout.includes("showing")).toBe(false);
+      expect(limited.stderr).toBe("... showing 10 of 23 matches\n");
 
       const regexLimited = runCli(["search", "^demo\\.generated\\.", "--regex"], root);
       expect(regexLimited.status).toBe(0);
       expect(regexLimited.stdout.split("\n")[0]).toBe("demo.generated.Entity00|@demo/generated");
-      expect(regexLimited.stdout).toContain("... showing 10 of 20 matches\n");
+      expect(regexLimited.stdout.includes("showing")).toBe(false);
+      expect(regexLimited.stderr).toBe("... showing 10 of 20 matches\n");
 
       const empty = runCli(["search", "NeverMatches$", "--regex"], root);
       expect(empty.status).toBe(0);

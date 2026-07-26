@@ -12,8 +12,15 @@ import { findReferenceTargetCandidates } from "./targets.js";
 type BuildResult = Awaited<ReturnType<typeof buildCache>>;
 
 const SKIP_SUMMARY_LIMIT = 5;
-const KIND_FLAG = "--kind";
-const KIND_FLAG_TYPO_DISTANCE = 2;
+const FLAG_TYPO_DISTANCE = 2;
+
+const KNOWN_FLAGS_BY_COMMAND: Readonly<Record<string, readonly string[]>> = {
+  "build-cache": ["--dir", "--prefix", "--kind", "--allow-fallback", "--strict"],
+  "search": ["--regex"],
+  "search-field": ["--regex"],
+  "references": [],
+  "describe": ["--expand", "--with-annotations"],
+};
 
 function requireOption(args: readonly string[], name: string): string {
   const index = args.indexOf(name);
@@ -57,6 +64,12 @@ function aggregateCompileVia(compiled: BuildResult["compiled"]): string {
 }
 
 function printBuildWarnings(result: BuildResult): void {
+  if (result.scanWarnings.length > 0) {
+    const names = result.scanWarnings.slice(0, SKIP_SUMMARY_LIMIT).map((warning) => warning.directory).join(", ");
+    const remaining = result.scanWarnings.length - SKIP_SUMMARY_LIMIT;
+    const suffix = remaining > 0 ? `, ... (+${remaining.toString()} more)` : "";
+    process.stderr.write(`Excluded ${result.scanWarnings.length.toString()} director(ies) during scan: ${names}${suffix}\n`);
+  }
   if (result.skipped.length > 0) {
     const names = result.skipped.slice(0, SKIP_SUMMARY_LIMIT).map((skip) => skip.package).join(", ");
     const remaining = result.skipped.length - SKIP_SUMMARY_LIMIT;
@@ -73,17 +86,37 @@ function printBuildWarnings(result: BuildResult): void {
   }
 }
 
-function findKindFlagTypo(args: readonly string[]): string | undefined {
-  return args.find((argument) => argument.startsWith("--")
-    && argument !== KIND_FLAG
-    && levenshtein(argument.toLowerCase(), KIND_FLAG) <= KIND_FLAG_TYPO_DISTANCE);
+function findFlagTypo(
+  args: readonly string[],
+  knownFlags: readonly string[],
+): { readonly typo: string; readonly suggestion: string } | undefined {
+  for (const argument of args) {
+    if (!argument.startsWith("--") || knownFlags.includes(argument)) {
+      continue;
+    }
+    const closest = knownFlags
+      .map((flag) => ({ flag, distance: levenshtein(argument.toLowerCase(), flag) }))
+      .filter((candidate) => candidate.distance <= FLAG_TYPO_DISTANCE)
+      .sort((left, right) => left.distance - right.distance)[0];
+    if (closest !== undefined) {
+      return { typo: argument, suggestion: closest.flag };
+    }
+  }
+  return undefined;
+}
+
+function rejectFlagTypos(command: string, args: readonly string[]): void {
+  const knownFlags = KNOWN_FLAGS_BY_COMMAND[command];
+  if (knownFlags === undefined) {
+    return;
+  }
+  const typo = findFlagTypo(args, knownFlags);
+  if (typo !== undefined) {
+    throw new Error(`Unknown flag ${JSON.stringify(typo.typo)}; did you mean ${typo.suggestion}?`);
+  }
 }
 
 async function runBuildCache(args: readonly string[]): Promise<void> {
-  const kindTypo = findKindFlagTypo(args);
-  if (kindTypo !== undefined) {
-    throw new Error(`Unknown flag ${JSON.stringify(kindTypo)}; did you mean ${KIND_FLAG}?`);
-  }
   const kind = parseCacheKind(readOption(args, "--kind"));
   const result = await buildCache(
     requireOption(args, "--dir"),
@@ -96,7 +129,8 @@ async function runBuildCache(args: readonly string[]): Promise<void> {
   );
   printBuildWarnings(result);
   process.stdout.write(
-    `cached=${Object.keys(result.ast.definitions).length.toString()} packages=${result.packages.length.toString()} file=${result.cacheFile}`
+    `cached=${Object.keys(result.ast.definitions).length.toString()} packages=${result.packages.length.toString()}`
+    + ` scan_warnings=${result.scanWarnings.length.toString()} file=${result.cacheFile}`
     + ` compiled=${result.compiled.length.toString()} skipped=${result.skipped.length.toString()} via=${aggregateCompileVia(result.compiled)}`
     + ` kind=${kind}\n`,
   );
@@ -112,6 +146,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     printHelp();
     return;
   }
+  rejectFlagTypos(command, args);
 
   if (command === "build-cache") {
     await runBuildCache(args);

@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CACHE_FILE_NAME, PACKAGE_ANNOTATION } from "./types.js";
@@ -97,6 +98,18 @@ export async function writeCache(
   strict = false,
 ): Promise<HanaLensCsn> {
   const csn = mergeCompileResults(results, strict);
-  await writeFile(cachePath(workspaceDirectory), JSON.stringify(csn), "utf8");
+  const finalPath = cachePath(workspaceDirectory);
+  const tempPath = `${finalPath}.tmp-${randomUUID()}`;
+  try {
+    await writeFile(tempPath, JSON.stringify(csn), "utf8");
+    await rename(tempPath, finalPath);
+  } catch (error) {
+    try {
+      await unlink(tempPath);
+    } catch {
+      // best-effort cleanup; a missing temp file (writeFile never ran) is not itself an error.
+    }
+    throw error;
+  }
   return csn;
 }

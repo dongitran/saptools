@@ -1,3 +1,5 @@
+import process from "node:process";
+
 import { matchRegexCandidates } from "./001-regex-search.js";
 import { levenshtein } from "./levenshtein.js";
 import { findReferenceTargetCandidates, isAssociationElement, resolveTarget } from "./targets.js";
@@ -184,7 +186,7 @@ export function formatSearchResults(results: readonly SearchResult[]): string {
   const shown = results.slice(0, DEFINITION_RESULT_LIMIT);
   const lines = shown.map((result) => `${result.name}|${result.packageName}`);
   if (results.length > shown.length) {
-    lines.push(`... showing ${shown.length.toString()} of ${results.length.toString()} matches`);
+    process.stderr.write(`... showing ${shown.length.toString()} of ${results.length.toString()} matches\n`);
   }
   return lines.join("\n");
 }
@@ -200,7 +202,7 @@ export function formatFieldSearchResults(keyword: string, results: readonly Fiel
     lines.push(`- ${result.entityName} (${suffix})`);
   }
   if (results.length > shown.length) {
-    lines.push(`... showing ${shown.length.toString()} of ${results.length.toString()} matches`);
+    process.stderr.write(`... showing ${shown.length.toString()} of ${results.length.toString()} matches\n`);
   }
   return lines.join("\n");
 }
@@ -226,7 +228,7 @@ export function formatIncomingReferences(
     ...shown.map((reference) => `- ${reference.entityName} (via field: ${reference.fieldName})`),
   ];
   if (references.length > shown.length) {
-    lines.push(`... showing ${shown.length.toString()} of ${references.length.toString()} references`);
+    process.stderr.write(`... showing ${shown.length.toString()} of ${references.length.toString()} references\n`);
   }
   return lines.join("\n");
 }

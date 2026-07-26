@@ -1,5 +1,6 @@
 // cspell:ignore businesrequest
 import { performance } from "node:perf_hooks";
+import { mock } from "node:test";
 
 import { findIncomingReferences, formatFieldSearchResults, formatIncomingReferences, formatSearchResults, searchDefinitions, searchFields } from "../../src/search.js";
 import { findReferenceTargetCandidates } from "../../src/targets.js";
@@ -13,6 +14,20 @@ const ast: HanaLensCsn = { definitions: {
   "srv.Order": { "@hanaLens.packageName": "@demo/sales" },
   ...Object.fromEntries(Array.from({ length: 20 }, (_value, index) => [`srv.Generated${index.toString().padStart(2, "0")}`, { "@hanaLens.packageName": "@demo/generated" }])),
 } };
+
+function captureStderr(callback: () => void): string {
+  const chunks: string[] = [];
+  const stderrWrite = mock.method(process.stderr, "write", (chunk: string | Uint8Array): boolean => {
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  });
+  try {
+    callback();
+    return chunks.join("");
+  } finally {
+    stderrWrite.mock.restore();
+  }
+}
 
 describe("searchDefinitions", () => {
   it("returns dense case-insensitive fuzzy matches", () => {
@@ -33,7 +48,12 @@ describe("searchDefinitions", () => {
     ]);
     const names = results.map((result) => result.name);
     expect(names).toEqual([...names].sort((left, right) => left.localeCompare(right)));
-    expect(formatSearchResults(results).split("\n").at(-1)).toBe("... showing 10 of 23 matches");
+    let output = "";
+    const stderr = captureStderr(() => {
+      output = formatSearchResults(results);
+    });
+    expect(output.split("\n")).toHaveLength(10);
+    expect(stderr).toBe("... showing 10 of 23 matches\n");
   });
 
   it("accepts safe grouped patterns and matches both full and short definition names", () => {
@@ -66,10 +86,17 @@ describe("searchDefinitions", () => {
     const results = searchDefinitions(ast, "srv", false);
 
     expect(results).toHaveLength(23);
-    expect(formatSearchResults(results).split("\n")).toHaveLength(11);
-    expect(formatSearchResults(results).split("\n").at(-1)).toBe("... showing 10 of 23 matches");
-    expect(formatSearchResults(results.slice(0, 10)).split("\n")).toHaveLength(10);
-    expect(formatSearchResults(results.slice(0, 10)).includes("showing")).toBe(false);
+    let output = "";
+    const stderr = captureStderr(() => {
+      output = formatSearchResults(results);
+    });
+    expect(output.split("\n")).toHaveLength(10);
+    expect(output).toBe(formatSearchResults(results.slice(0, 10)));
+    expect(stderr).toBe("... showing 10 of 23 matches\n");
+    const untruncatedStderr = captureStderr(() => {
+      formatSearchResults(results.slice(0, 10));
+    });
+    expect(untruncatedStderr).toBe("");
   });
 
   it("filters fuzzy results to relevant matches while preserving substring hits", () => {
@@ -161,13 +188,19 @@ describe("searchFields", () => {
       ])) },
     } };
     const results = searchFields(manyFields, "^match", true);
-    const output = formatFieldSearchResults("^match", results);
+    let output = "";
+    const stderr = captureStderr(() => {
+      output = formatFieldSearchResults("^match", results);
+    });
 
     expect(results).toHaveLength(30);
-    expect(output.split("\n")).toHaveLength(27);
-    expect(output.split("\n").at(-1)).toBe("... showing 25 of 30 matches");
-    expect(formatFieldSearchResults("^match", results.slice(0, 25)).split("\n")).toHaveLength(26);
-    expect(formatFieldSearchResults("^match", results.slice(0, 25)).includes("showing")).toBe(false);
+    expect(output.split("\n")).toHaveLength(26);
+    expect(output).toBe(formatFieldSearchResults("^match", results.slice(0, 25)));
+    expect(stderr).toBe("... showing 25 of 30 matches\n");
+    const untruncatedStderr = captureStderr(() => {
+      formatFieldSearchResults("^match", results.slice(0, 25));
+    });
+    expect(untruncatedStderr).toBe("");
   });
 
   it("returns an explicit empty result without crashing", () => {
@@ -286,11 +319,18 @@ describe("findIncomingReferences", () => {
       entityName: `acme.Source${index.toString().padStart(2, "0")}`,
       fieldName: "project",
     }));
-    const output = formatIncomingReferences("acme.Project", references);
+    let output = "";
+    const stderr = captureStderr(() => {
+      output = formatIncomingReferences("acme.Project", references);
+    });
 
-    expect(output.split("\n")).toHaveLength(27);
-    expect(output.split("\n").at(-1)).toBe("... showing 25 of 30 references");
-    expect(formatIncomingReferences("acme.Project", references.slice(0, 25)).includes("showing")).toBe(false);
+    expect(output.split("\n")).toHaveLength(26);
+    expect(output).toBe(formatIncomingReferences("acme.Project", references.slice(0, 25)));
+    expect(stderr).toBe("... showing 25 of 30 references\n");
+    const untruncatedStderr = captureStderr(() => {
+      formatIncomingReferences("acme.Project", references.slice(0, 25));
+    });
+    expect(untruncatedStderr).toBe("");
   });
 
   it("discloses ambiguous target unions with a bounded candidate list", () => {

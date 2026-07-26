@@ -3,7 +3,7 @@ import { lstat, mkdir, readlink, readdir, readFile, rm, symlink } from "node:fs/
 import path from "node:path";
 
 import { levenshtein } from "./levenshtein.js";
-import type { SapPackage } from "./types.js";
+import type { PackageScanWarning, SapPackage } from "./types.js";
 import { isRecord } from "./validation.js";
 
 const IGNORED_DIRECTORIES = new Set(["node_modules", ".git", "dist", "gen"]);
@@ -141,9 +141,24 @@ function excludeFallbackNameCollisions(candidates: readonly ResolvedPackageCandi
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export async function scanForPackages(workspaceDirectory: string, prefix: string): Promise<readonly SapPackage[]> {
+export interface PackageScanResult {
+  readonly packages: readonly SapPackage[];
+  readonly warnings: readonly PackageScanWarning[];
+}
+
+function describeScanFailure(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (error instanceof SyntaxError) {
+    return `Malformed package.json: ${detail}`;
+  }
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  return `Unable to read package.json${code === undefined ? "" : ` (${code})`}: ${detail}`;
+}
+
+export async function scanForPackages(workspaceDirectory: string, prefix: string): Promise<PackageScanResult> {
   const normalizedPrefix = normalizePackagePrefix(prefix);
   const found = new Map<string, readonly string[]>();
+  const warnings: PackageScanWarning[] = [];
 
   async function visit(directory: string): Promise<void> {
     let entries: readonly Dirent[];
@@ -158,8 +173,9 @@ export async function scanForPackages(workspaceDirectory: string, prefix: string
       try {
         name = await readPackageName(path.join(directory, "package.json"));
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`Warning: Malformed package.json in ${JSON.stringify(directory)}; skipping this directory (still scanning nested subdirectories for packages). ${detail}\n`);
+        const reason = describeScanFailure(error);
+        warnings.push({ directory, reason });
+        process.stderr.write(`Warning: ${reason} in ${JSON.stringify(directory)}; skipping this directory (still scanning nested subdirectories for packages).\n`);
         name = undefined;
       }
       if (name?.startsWith(normalizedPrefix) === true) {
@@ -177,7 +193,10 @@ export async function scanForPackages(workspaceDirectory: string, prefix: string
   }
 
   await visit(path.resolve(workspaceDirectory));
-  return excludeFallbackNameCollisions(resolveDeclaredNameCollisions(found, normalizedPrefix));
+  return {
+    packages: excludeFallbackNameCollisions(resolveDeclaredNameCollisions(found, normalizedPrefix)),
+    warnings,
+  };
 }
 
 async function prepareSymlinkDestination(linkPath: string, targetPath: string): Promise<void> {

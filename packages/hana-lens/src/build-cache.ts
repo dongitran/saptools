@@ -3,7 +3,7 @@ import { compilePackages } from "./compiler.js";
 import { autoLinkPackages, normalizePackagePrefix, scanForPackages } from "./packages.js";
 import { applyCacheKindFilter, parseCacheKind } from "./scope.js";
 import type { CacheKind } from "./scope.js";
-import type { CompileResult, HanaLensCsn, PackageSkip, SapPackage } from "./types.js";
+import type { CompileResult, HanaLensCsn, PackageScanWarning, PackageSkip, SapPackage } from "./types.js";
 
 const FAILURE_REASON_LIMIT = 2_000;
 
@@ -18,6 +18,7 @@ export interface BuildCacheResult {
   readonly packages: readonly SapPackage[];
   readonly compiled: readonly CompileResult[];
   readonly skipped: readonly PackageSkip[];
+  readonly scanWarnings: readonly PackageScanWarning[];
   readonly cacheFile: string;
 }
 
@@ -28,7 +29,7 @@ export async function buildCache(
 ): Promise<BuildCacheResult> {
   const kind = parseCacheKind(options.kind);
   const normalizedPrefix = normalizePackagePrefix(prefix);
-  const packages = await scanForPackages(workspaceDirectory, normalizedPrefix);
+  const { packages, warnings: scanWarnings } = await scanForPackages(workspaceDirectory, normalizedPrefix);
   if (packages.length === 0) {
     throw new Error(`No packages starting with ${normalizedPrefix} found in ${workspaceDirectory}`);
   }
@@ -53,6 +54,7 @@ export async function buildCache(
     packages,
     compiled: outcome.compiled,
     skipped: outcome.skipped,
+    scanWarnings,
     cacheFile: cachePath(workspaceDirectory),
   };
 }
