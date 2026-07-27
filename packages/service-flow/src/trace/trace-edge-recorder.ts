@@ -223,6 +223,7 @@ export function compactDecisionFromEvidence(
     rejectedCandidateCount: finiteNumber(dynamic.rejectedCandidateCount),
     omittedCandidateCount: finiteNumber(dynamic.omittedCandidateCount),
     implementationStrategy: stringValue(implementation.strategy),
+    selectionBasis: stringValue(evidence.selectionBasis),
     implementationGuided: booleanValue(implementation.guided),
     implementationContextual: booleanValue(
       evidence.contextualImplementationSelected),

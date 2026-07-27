@@ -203,7 +203,7 @@ function resolveDecoratorArgument(
     rawExpression,
     argumentExpression,
     imported.constant.value,
-    imported.constant.kind,
+    imported.resolutionKind,
   );
   if (imported?.status === 'refused')
     return unresolved(rawExpression, imported.reason, argumentExpression);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { renderTraceJson } from '../../src/output/json-output.js';
 import type { TraceEdge } from '../../src/types.js';
-import { closeTraceEdgeTargets } from
+import { closeTraceEdgeEndpoints } from
   '../../src/trace/trace-node-closure.js';
 
 function edge(type: string, to: string): TraceEdge {
@@ -36,19 +37,68 @@ describe('rendered trace target closure', () => {
         'repo-b:src/Subscriber.ts:Subscriber.handle'),
     ];
 
-    closeTraceEdgeTargets(nodes, edges);
+    closeTraceEdgeEndpoints(nodes, edges);
 
     const nodeIds = new Set([...nodes.values()].map((node) => node.id));
-    expect(edges.map((item) => item.to)).toEqual([
-      'repo-a:Handler.run',
-      '/TargetService/execute',
-      'Entity: Records',
-      'repo-b:src/Subscriber.ts:Subscriber.handle',
+    expect(edges.map((item) => item.toNodeId)).toEqual([
+      'symbol:17',
+      'operation:29',
+      'unresolved_to:repository_unavailable:2:Entity: Records',
+      'unresolved_to:repository_unavailable:3:repo-b:src/Subscriber.ts:Subscriber.handle',
     ]);
-    expect(edges.every((item) => nodeIds.has(item.to))).toBe(true);
-    expect(nodes.get('Entity: Records')).toMatchObject({
-      kind: 'unresolved_target',
+    expect(edges.every((item) => nodeIds.has(item.fromNodeId))).toBe(true);
+    expect(edges.every((item) => nodeIds.has(item.toNodeId))).toBe(true);
+    expect(nodes.get(
+      'unresolved_to:repository_unavailable:2:Entity: Records',
+    )).toMatchObject({
+      kind: 'unresolved_to',
+      repoName: 'repository_unavailable',
       unresolved: true,
+    });
+  });
+
+  it('renders every JSON endpoint as a registered node id', () => {
+    const nodes = new Map<string, Record<string, unknown>>([
+      ['source:1', { id: 'source:1', kind: 'symbol', label: 'source' }],
+      ['target:1', { id: 'target:1', kind: 'symbol', label: 'target' }],
+    ]);
+    const edges = [edge('local_symbol_call', 'target')];
+    closeTraceEdgeEndpoints(nodes, edges);
+    const rendered = JSON.parse(renderTraceJson({
+      start: {},
+      nodes: [...nodes.values()],
+      edges,
+      diagnostics: [],
+    })) as {
+      nodes: Array<{ id?: string }>;
+      edges: Array<{ from: string; to: string }>;
+    };
+    const ids = new Set(rendered.nodes.map((node) => node.id));
+    expect(rendered.edges.every((item) =>
+      ids.has(item.from) && ids.has(item.to))).toBe(true);
+  });
+
+  it('keeps equal unresolved labels distinct across repositories', () => {
+    const nodes = new Map<string, Record<string, unknown>>([
+      ['source:1', { id: 'source:1', kind: 'symbol', label: 'source' }],
+    ]);
+    const first = edge('event_shape_candidate_subscriber', 'Handler.run');
+    first.evidence = { subscriptionRepositoryName: 'repo-a' };
+    const second = edge('event_shape_candidate_subscriber', 'Handler.run');
+    second.evidence = { subscriptionRepositoryName: 'repo-b' };
+
+    closeTraceEdgeEndpoints(nodes, [first, second]);
+
+    expect(first.toNodeId).toBe('unresolved_to:repo-a:Handler.run');
+    expect(second.toNodeId).toBe('unresolved_to:repo-b:Handler.run');
+    expect(first.toNodeId).not.toBe(second.toNodeId);
+    expect(nodes.get(String(first.toNodeId))).toMatchObject({
+      label: 'repo-a:Handler.run',
+      repoName: 'repo-a',
+    });
+    expect(nodes.get(String(second.toNodeId))).toMatchObject({
+      label: 'repo-b:Handler.run',
+      repoName: 'repo-b',
     });
   });
 });

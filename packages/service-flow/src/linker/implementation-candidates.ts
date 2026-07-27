@@ -1,18 +1,22 @@
 import type { Db } from '../db/connection.js';
 import { implementationHintSuggestionProjection } from '../trace/implementation-hints.js';
-import { normalizeDecoratorOperationSignal, normalizedOperationName } from './operation-decorator-normalizer.js';
 import {
   boundedImplementationEvidence,
   boundedImplementationTargetIds,
   displayImplementationCandidates,
   selectedHandlerProvenance,
 } from './implementation-evidence-projection.js';
+import {
+  implementationMethodSignal,
+  type ImplementationSelectionBasis,
+} from './implementation-method-selection.js';
 
 interface ImplementationCandidate extends Record<string, unknown> {
   methodId: number;
   registrations?: Array<Record<string, unknown>>;
   score: number;
   accepted: boolean;
+  selectionBasis?: ImplementationSelectionBasis;
   acceptedReasons: string[];
   rejectedReasons: string[];
 }
@@ -66,6 +70,9 @@ function workspaceOperations(db: Db, workspaceId: number): Array<Record<string, 
       o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,
       s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,
       r.package_name modelPackage,r.kind modelKind
+      ,(SELECT json_group_array(peer.operation_name)
+        FROM cds_operations peer WHERE peer.service_id=o.service_id)
+        serviceOperationNames
     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id
     JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=?`).all(workspaceId);
   return rows;
@@ -79,6 +86,9 @@ function operationById(
       o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,
       s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,
       r.package_name modelPackage,r.kind modelKind,r.workspace_id workspaceId
+      ,(SELECT json_group_array(peer.operation_name)
+        FROM cds_operations peer WHERE peer.service_id=o.service_id)
+        serviceOperationNames
     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id
     JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operationId);
   return row;
@@ -179,6 +189,8 @@ function implementationEvidence(
   ambiguityReasons: string[],
   selected: ImplementationCandidate | undefined,
 ): Record<string, unknown> {
+  const rejectedCandidateCount = candidates.filter((candidate) =>
+    !candidate.accepted).length;
   return {
     servicePath: operation.servicePath,
     operationPath: operation.operationPath,
@@ -193,7 +205,12 @@ function implementationEvidence(
       : 'inherited_from_base_operation',
     baseOperationId: operation.baseOperationId,
     implementationOperationId: context.operationId,
-    ambiguityReasons,
+    ambiguityReasons: ambiguityReasons.length > 0
+      ? ambiguityReasons : undefined,
+    selectionBasis: selected?.selectionBasis,
+    rejectedCandidateCount,
+    selectionWarnings: selected && rejectedCandidateCount > 0
+      ? ['rejected_implementation_candidates_present'] : undefined,
     candidateFamilies: duplicateFamilies,
     selectedHandler: selected
       ? selectedHandlerProvenance(selectedHandlerSource(selected))
@@ -215,6 +232,9 @@ function implementationContextForOperation(
       o.operation_name operationName,o.provenance provenance,o.base_operation_id baseOperationId,
       s.service_path servicePath,s.repo_id modelRepoId,r.name modelRepo,
       r.package_name modelPackage,r.kind modelKind
+      ,(SELECT json_group_array(peer.operation_name)
+        FROM cds_operations peer WHERE peer.service_id=o.service_id)
+        serviceOperationNames
     FROM cds_operations o JOIN cds_services s ON s.id=o.service_id
     JOIN repositories r ON r.id=s.repo_id WHERE o.id=?`).get(operation.baseOperationId);
   return base ? {
@@ -460,6 +480,7 @@ function scoreImplementationCandidate(
     methodId: Number(row.methodId),
     score: signals.score,
     accepted,
+    selectionBasis: methodSignal.selectionBasis,
     acceptedReasons,
     rejectedReasons,
   };
@@ -539,6 +560,7 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
     rankKind: 'discovery_score',
     score: candidate.score,
     accepted: candidate.accepted,
+    selectionBasis: candidate.selectionBasis,
     acceptedReasons: candidate.acceptedReasons,
     rejectedReasons: candidate.rejectedReasons,
     methodId: candidate.methodId,
@@ -611,30 +633,6 @@ function selectedHandlerSource(candidate: ImplementationCandidate): {
     sourceFile: stringValue(candidate.sourceFile),
     sourceLine: numberValue(candidate.sourceLine),
   };
-}
-
-function implementationMethodSignal(
-  row: Record<string, unknown>,
-  operation: Record<string, unknown>,
-): { matches: boolean; contradicted: boolean; acceptedReasons: string[]; rejectedReasons: string[] } {
-  const resolution = objectJson(row.decoratorResolutionJson) ?? {};
-  if (resolution.handlerKind && resolution.handlerKind !== 'operation')
-    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['non_operation_handler_kind'] };
-  if (resolution.executable === false)
-    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['handler_method_not_executable'] };
-  const operationName = normalizedOperationName(String(
-    operation.operationPath ?? operation.operationName ?? '',
-  ));
-  const decorator = normalizeDecoratorOperationSignal(
-    stringValue(row.decoratorValue), stringValue(row.decoratorRawExpression), operationName,
-  );
-  if (decorator.status === 'resolved' && decorator.operationName === operationName)
-    return { matches: true, contradicted: false, acceptedReasons: ['decorator targets operation'], rejectedReasons: [] };
-  if (decorator.status === 'resolved')
-    return { matches: false, contradicted: true, acceptedReasons: [], rejectedReasons: ['method_name_matches_but_decorator_targets_different_operation'] };
-  return String(row.methodName ?? '') === operationName
-    ? { matches: true, contradicted: false, acceptedReasons: ['method name fallback matched operation'], rejectedReasons: [] }
-    : { matches: false, contradicted: false, acceptedReasons: [], rejectedReasons: ['method name does not match operation'] };
 }
 
 function objectJson(value: unknown): Record<string, unknown> | undefined {

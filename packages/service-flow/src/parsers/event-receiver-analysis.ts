@@ -309,16 +309,84 @@ function returnsObjectLiteral(
 function siteProvesNonCapClient(
   site: BindingLexicalSite,
   variableName: string,
+  index: EventReceiverIndex,
 ): boolean {
   const expression = siteExpression(site, variableName);
   if (!expression) return false;
   const value = unwrapExpression(expression);
   if (ts.isObjectLiteralExpression(value)) return true;
+  if (nodeNonCapFactory(value, index.imports)) return true;
   if (!ts.isCallExpression(value)
     || !ts.isIdentifier(value.expression)) return false;
   const declaration = lexicalIdentifierDeclaration(value.expression);
   const fn = declaration ? functionLikeValue(declaration) : undefined;
   return Boolean(fn && returnsObjectLiteral(fn));
+}
+
+const nodeEventModules = new Set([
+  'events', 'node:events', 'fs', 'node:fs', 'stream', 'node:stream',
+]);
+const nodeEventFactories = new Set([
+  'createReadStream', 'createWriteStream',
+]);
+const nodeEventConstructors = new Set([
+  'EventEmitter', 'Readable', 'Writable', 'Duplex', 'Transform',
+  'PassThrough',
+]);
+
+function importedBinding(
+  identifier: ts.Identifier,
+  bindings: readonly SymbolImportBinding[],
+): SymbolImportBinding | undefined {
+  const declaration = lexicalIdentifierDeclaration(identifier);
+  if (!declaration) return undefined;
+  const start = declaration.getStart(identifier.getSourceFile());
+  const end = declaration.getEnd();
+  const matches = bindings.filter((binding) =>
+    binding.localName === identifier.text
+    && binding.bindingSiteStartOffset === start
+    && binding.bindingSiteEndOffset === end);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function importModuleSpecifier(
+  identifier: ts.Identifier,
+  bindings: readonly SymbolImportBinding[],
+): string | undefined {
+  const binding = importedBinding(identifier, bindings);
+  if (binding) return binding.rawModuleSpecifier;
+  const declaration = lexicalIdentifierDeclaration(identifier);
+  let current: ts.Node | undefined = declaration;
+  while (current && !ts.isImportDeclaration(current))
+    current = current.parent;
+  return current && ts.isStringLiteralLike(current.moduleSpecifier)
+    ? current.moduleSpecifier.text
+    : undefined;
+}
+
+function nodeNonCapFactory(
+  expression: ts.Expression,
+  bindings: readonly SymbolImportBinding[],
+): boolean {
+  const callOrNew = ts.isCallExpression(expression)
+    || ts.isNewExpression(expression) ? expression : undefined;
+  if (!callOrNew) return false;
+  const callee = callOrNew.expression;
+  const name = ts.isIdentifier(callee)
+    ? callee.text
+    : ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
+  if (!name) return false;
+  const root = ts.isIdentifier(callee) ? callee
+    : ts.isPropertyAccessExpression(callee)
+      && ts.isIdentifier(callee.expression) ? callee.expression : undefined;
+  const moduleSpecifier = root
+    ? importModuleSpecifier(root, bindings)
+    : undefined;
+  if (!moduleSpecifier || !nodeEventModules.has(moduleSpecifier))
+    return false;
+  return ts.isNewExpression(expression)
+    ? nodeEventConstructors.has(name)
+    : nodeEventFactories.has(name);
 }
 
 function helperReturnProof(
@@ -365,7 +433,7 @@ function lexicalProof(
     };
   if (valueSites.length > 0
     && valueSites.every((site) =>
-      siteProvesNonCapClient(site, identifier.text)))
+      siteProvesNonCapClient(site, identifier.text, index)))
     return unproven(
       'event_receiver_not_cap_client', 'non_connect_binding', considered,
     );

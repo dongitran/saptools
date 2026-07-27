@@ -452,12 +452,24 @@ function environmentConfigurationQuality(
   );
   const keys = new Set<string>();
   const matches = new Map<string, number>();
+  let legacyCappedFactCount = 0;
   for (const row of rows) {
     const fact = environmentFact(row.value);
     if (Array.isArray(fact.allowedKeys))
       for (const key of fact.allowedKeys)
         if (typeof key === 'string') keys.add(key);
-    if (Array.isArray(fact.declarations))
+    if (Array.isArray(fact.declarationKeyCounts)) {
+      for (const item of fact.declarationKeyCounts) {
+        const countRow = item && typeof item === 'object'
+          ? item as Record<string, unknown> : {};
+        if (typeof countRow.key === 'string'
+          && Number.isInteger(countRow.count))
+          matches.set(
+            countRow.key,
+            (matches.get(countRow.key) ?? 0) + Number(countRow.count),
+          );
+      }
+    } else if (Array.isArray(fact.declarations))
       for (const item of fact.declarations) {
         const declaration = item && typeof item === 'object'
           ? item as Record<string, unknown> : {};
@@ -466,9 +478,13 @@ function environmentConfigurationQuality(
             declaration.key, (matches.get(declaration.key) ?? 0) + 1,
           );
       }
+    if (!Array.isArray(fact.declarationKeyCounts)
+      && Number(fact.omitted ?? 0) > 0) legacyCappedFactCount += 1;
   }
   const configured = [...keys].sort();
-  const unmatched = configured.filter((key) => !matches.has(key));
+  const potentiallyUnmatched = configured.filter((key) =>
+    (matches.get(key) ?? 0) === 0);
+  const unmatched = legacyCappedFactCount === 0 ? potentiallyUnmatched : [];
   return {
     severity: unmatched.length > 0 ? 'warning' : 'info',
     code: 'strict_event_environment_configuration_quality',
@@ -480,6 +496,10 @@ function environmentConfigurationQuality(
     })),
     unmatchedKeys: unmatched,
     unmatchedKeyCount: unmatched.length,
+    potentiallyUnmatchedKeys: potentiallyUnmatched,
+    declarationMatchCoverage: legacyCappedFactCount > 0
+      ? 'legacy_capped_unknown' : 'complete',
+    legacyCappedFactCount,
   };
 }
 

@@ -217,8 +217,13 @@ function renderDetailedTrace(
   return renderTraceTable(result);
 }
 
-function runTraceCommand(opts: TraceCommandOptions): Promise<void> {
-  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+async function runTraceCommand(opts: TraceCommandOptions): Promise<void> {
+  if (!opts.repo && !opts.operation && !opts.service
+    && !opts.path && !opts.handler)
+    throw new Error(
+      'trace_selector_required: provide --repo, --service, --operation, --path, or --handler',
+    );
+  await withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
     const start: TraceStart = {
       repo: opts.repo, servicePath: opts.service, operation: opts.operation,
       operationPath: opts.path, handler: opts.handler,
@@ -298,6 +303,12 @@ function registerIndexCommand(program: Command): void {
           const configuredKeys = opts.eventEnvironmentKey.length > 0
             ? normalizeEventEnvironmentKeys(opts.eventEnvironmentKey)
             : config.eventEnvironmentKeys;
+          if (opts.eventEnvironmentKey.length > 0)
+            await saveWorkspaceConfig({
+              ...config,
+              eventEnvironmentKeys: configuredKeys,
+              updatedAt: new Date().toISOString(),
+            });
           const r = await indexWorkspace(db, workspaceId, {
             repo: opts.repo,
             force: Boolean(opts.force),
@@ -505,7 +516,29 @@ function inspectOperationCommand(
     const rows = db.prepare(
       'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
     ).all(workspaceId, selector, selector);
-    writeStdout(renderJson(rows));
+    writeStdout(renderJson(rows.length > 0 ? rows : [{
+      severity: 'warning',
+      code: 'selector_operation_not_found',
+      message: `Operation selector not found: ${selector}`,
+      selectorKind: 'operation',
+      selector,
+    }]));
+  });
+}
+
+async function runDoctorCommand(opts: {
+  workspace?: string;
+  strict?: boolean;
+  detail?: boolean;
+  format?: string;
+}): Promise<void> {
+  if (opts.detail && !opts.strict)
+    throw new Error('doctor_detail_requires_strict');
+  await withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), {
+      detail: Boolean(opts.detail), workspaceId,
+    });
+    writeStdout(renderDoctorDiagnostics(allDiagnostics, opts.format));
   });
 }
 
@@ -546,12 +579,7 @@ function registerDoctorCommand(program: Command): void {
     .option('--format <format>', 'json|table')
     .action(
       (opts: { workspace?: string; strict?: boolean; detail?: boolean; format?: string }) =>
-        void withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
-          const allDiagnostics = doctorDiagnostics(db, Boolean(opts.strict), {
-            detail: Boolean(opts.detail), workspaceId,
-          });
-          writeStdout(renderDoctorDiagnostics(allDiagnostics, opts.format));
-        }).catch(fail),
+        void runDoctorCommand(opts).catch(fail),
     );
 }
 

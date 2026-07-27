@@ -39,6 +39,8 @@ const compactDiagnosticMessages: Readonly<Record<string, string>> = {
   trace_start_implementation_unresolved: 'The trace start implementation is unresolved.',
   event_shape_candidates_hidden:
     'Non-authoritative event-shape candidates were excluded from strict traversal.',
+  event_shape_candidates_omitted:
+    'Event-shape candidates exceeded the requested trace display cap.',
   external_package_calls_omitted:
     'Calls into packages without an indexed repository were omitted from trace edges.',
 };
@@ -101,6 +103,8 @@ function addImplementationDecision(
 ): void {
   const strategy = compactSafeCode(input.implementationStrategy);
   if (strategy) out.implementationStrategy = strategy;
+  const basis = compactSafeCode(input.selectionBasis);
+  if (basis) out.selectionBasis = basis;
   if (input.implementationGuided !== undefined)
     out.implementationGuided = input.implementationGuided;
   if (input.implementationContextual !== undefined)
@@ -245,11 +249,15 @@ function compactDiagnostic(
 ): CompactProjectedDiagnostic {
   const code = compactSafeCode(value.code) ?? 'unknown_diagnostic';
   const details = compactDiagnosticDetails(value, code);
+  const sourceMessage = typeof value.message === 'string'
+    ? redactText(value.message).slice(0, 240) : undefined;
   return {
     index,
     severity: compactDiagnosticSeverity(value.severity),
     code,
-    message: compactDiagnosticMessages[code] ?? `See detailed diagnostic at index ${index}.`,
+    message: compactDiagnosticMessages[code]
+      ?? sourceMessage
+      ?? `Unknown compact diagnostic ${index}.`,
     file: compactSafeSourceFile(value.sourceFile) ?? compactSafeSourceFile(value.file),
     line: compactPositiveInteger(value.sourceLine) ?? compactPositiveInteger(value.line),
     details: Object.keys(details).length > 0 ? details : undefined,
@@ -351,6 +359,12 @@ function addDiagnosticCounts(
 ): void {
   if (value.candidateCount !== undefined)
     out.candidateCount = compactCount(value.candidateCount);
+  if (value.shownCandidateCount !== undefined)
+    out.shownCandidateCount = compactCount(value.shownCandidateCount);
+  if (value.omittedCandidateCount !== undefined)
+    out.omittedCandidateCount = compactCount(value.omittedCandidateCount);
+  if (value.maxDynamicCandidates !== undefined)
+    out.maxDynamicCandidates = compactCount(value.maxDynamicCandidates);
   if (value.viableCandidateCount !== undefined)
     out.viableCandidateCount = compactCount(value.viableCandidateCount);
   if (value.rejectedCandidateCount !== undefined)
@@ -397,6 +411,8 @@ function compactDiagnosticRemediation(
     return compactRemediationHint('select_implementation');
   if (code === 'event_shape_candidates_hidden')
     return 'Use --dynamic-mode candidates to inspect bounded subscriber candidates.';
+  if (code === 'event_shape_candidates_omitted')
+    return 'Increase --max-dynamic-candidates to inspect more candidates.';
   return undefined;
 }
 

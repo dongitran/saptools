@@ -5,7 +5,13 @@ import { describe, expect, it } from 'vitest';
 import { doctorDiagnostics } from '../../src/cli/doctor.js';
 import { schemaVersion } from '../../src/db/migrations.js';
 import { insertHandler, repoByName } from '../../src/db/repositories.js';
-import { linkWorkspace, parseDecorators, trace } from '../../src/index.js';
+import {
+  compactTrace,
+  linkWorkspace,
+  parseDecorators,
+  trace,
+} from '../../src/index.js';
+import { renderMermaid } from '../../src/output/mermaid-output.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
 import type { HandlerMethodFact, TraceEdge } from '../../src/types.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
@@ -231,7 +237,7 @@ describe('enum decorator implementation linking', () => {
   it('persists enum decorator values and links their implementation', async () => {
     const { db, workspaceId } = await prepareFixtureWorkspace();
     linkWorkspace(db, workspaceId);
-    expect(schemaVersion(db)).toBe(14);
+    expect(schemaVersion(db)).toBe(15);
     const decorator = db.prepare(`
       SELECT hm.decorator_value decoratorValue,
         hm.decorator_raw_expression decoratorRawExpression,
@@ -254,6 +260,7 @@ describe('enum decorator implementation linking', () => {
 
     const qualityEdge = implementationEdge(db, 'runQualityCheck');
     expect(qualityEdge.status).toBe('resolved');
+    expect(qualityEdge.evidence.selectionBasis).toBe('decorator_constant');
     expect(JSON.stringify(qualityEdge.evidence)).not.toContain(
       'method_name_matches_but_decorator_targets_different_operation',
     );
@@ -327,6 +334,74 @@ describe('scoped implementation hints', () => {
 });
 
 describe('implementation trace behavior', () => {
+  it('refuses a method fallback whose decorator names a sibling operation', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-sibling-fallback-'),
+    );
+    await Promise.all([
+      writeFixtureFile(root, 'service/.git-fixture'),
+      writeFixtureFile(root, 'service/package.json', JSON.stringify({
+        name: '@neutral/sibling-fallback', version: '1.0.0',
+      })),
+      writeFixtureFile(root, 'service/srv/service.cds', `
+service CollisionService {
+  action first();
+  action second();
+}
+`),
+      writeFixtureFile(root, 'service/srv/CollisionHandler.ts', `
+import { Func, Handler } from 'cds-routing-handlers';
+@Handler()
+export class CollisionHandler {
+  @Func(GeneratedOperations.second)
+  async first(): Promise<void> {}
+}
+`),
+      writeFixtureFile(root, 'service/srv/server.ts', `
+import { createCombinedHandler } from 'cds-routing-handlers';
+import { CollisionHandler } from './CollisionHandler.js';
+createCombinedHandler({ handler: [CollisionHandler] });
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    linkWorkspace(db, workspaceId);
+    const edge = implementationEdge(db, 'first');
+    expect(edge.status).toBe('unresolved');
+    expect(arrayValue(edge.evidence.candidates)[0]).toMatchObject({
+      accepted: false,
+      selectionBasis: 'method_name_fallback',
+      rejectedReasons: [
+        'method_name_fallback_conflicts_with_sibling_operation',
+      ],
+    });
+    db.close();
+  });
+
+  it('marks method-name fallback selections in every output format', async () => {
+    const { db, workspaceId } = await prepareFixtureWorkspace();
+    linkWorkspace(db, workspaceId);
+    const result = trace(db, {
+      repo: 'quality-service',
+      servicePath: '/QualityService',
+      operation: 'runDynamicCheck',
+    }, { depth: 5 });
+    const edge = result.edges.find((candidate) =>
+      candidate.type === 'operation_implemented_by_handler');
+
+    expect(edge?.evidence.selectionBasis).toBe('method_name_fallback');
+    expect(renderTraceTable(result)).toContain(
+      'basis=method_name_fallback',
+    );
+    expect(renderMermaid(result)).toContain(
+      '[basis=method_name_fallback]',
+    );
+    expect(JSON.stringify(compactTrace(db, result.start, {
+      depth: 5,
+      workspaceId,
+    }))).toContain('"selectionBasis":"method_name_fallback"');
+    db.close();
+  });
+
   it('traces enum implementations and runtime-selected services end to end', async () => {
     const { db, workspaceId } = await prepareFixtureWorkspace();
     linkWorkspace(db, workspaceId);
@@ -361,11 +436,8 @@ describe('implementation trace behavior', () => {
     expect(missing.diagnostics).toContainEqual(expect.objectContaining({
       code: 'trace_runtime_variables_missing',
       missingVariables: ['entityShortName', 'entityType'],
-      suggestions: [
-        '--var entityShortName=<value>',
-        '--var entityType=<value>',
-      ],
     }));
+    expect(JSON.stringify(missing.diagnostics)).not.toContain('=<value>');
     db.close();
   });
 });

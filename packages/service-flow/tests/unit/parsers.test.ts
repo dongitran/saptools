@@ -268,7 +268,7 @@ describe('service-flow parsers', () => {
       resolvedValue: 'actualOperation',
     });
     expect(fn?.decoratorResolution).toMatchObject({
-      resolutionKind: 'enum_member',
+      resolutionKind: 'generated_constant_name',
       resolvedValue: 'actualFunction',
     });
     expect(fn?.decoratorValue).toBe('actualFunction');
@@ -421,10 +421,10 @@ describe('service-flow parsers', () => {
     await fs.writeFile(path.join(root, 'srv', 'events.ts'), `
       import cds from '@sap/cds';
       export async function run(userId: string) {
-        const realtime = getRealtimeServer();
+        const io = getRealtimeServer();
         const socket = getSocket();
-        realtime.emit("room-message", {});
-        realtime.to(userId).emit("direct-message", {});
+        io.emit("room-message", {});
+        io.to(userId).emit("direct-message", {});
         socket.broadcast.emit("typing", {});
         const messaging = await cds.connect.to("message-bus");
         await messaging.emit("DomainEvent", {});
@@ -912,8 +912,8 @@ describe('outbound AST parser hardening', () => {
       app.get('/health', (_req, res) => {
         res.status(200).send('OK');
       });
-      desktopApp.on('window-all-closed', () => undefined);
-      windowRef.on('close', () => undefined);
+      app.on('window-all-closed', () => undefined);
+      win.on('close', () => undefined);
     `);
     expect(calls).toEqual([]);
     expect(symbols.filter((symbol) =>

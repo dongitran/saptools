@@ -102,6 +102,7 @@ describe('Mermaid node identity', () => {
     const result = trace([
       edge(1, 'neutral-source', 'neutral-target'),
     ]);
+    const resultBefore = JSON.stringify(result);
     const tableBefore = renderTraceTable(result);
     const jsonBefore = renderTraceJson(result);
 
@@ -109,6 +110,14 @@ describe('Mermaid node identity', () => {
 
     expect(renderTraceTable(result)).toBe(tableBefore);
     expect(renderTraceJson(result)).toBe(jsonBefore);
-    expect(JSON.parse(jsonBefore) as unknown).toEqual(result);
+    expect(JSON.stringify(result)).toBe(resultBefore);
+    expect(JSON.parse(jsonBefore)).toMatchObject({
+      edges: [{
+        from: 'neutral-source',
+        to: 'neutral-target',
+        fromLabel: 'neutral-source',
+        toLabel: 'neutral-target',
+      }],
+    });
   });
 });

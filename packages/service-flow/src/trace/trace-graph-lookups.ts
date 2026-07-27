@@ -46,7 +46,8 @@ export function symbolNode(
   return {
     id: `symbol:${symbolId}`,
     kind: 'symbol',
-    label: `${fileName}:${String(row.qualifiedName ?? row.symbolName)}`,
+    label: `${String(row.repoName)}:${fileName}:${
+      String(row.qualifiedName ?? row.symbolName)}`,
     ...row,
   };
 }

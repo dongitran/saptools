@@ -34,6 +34,7 @@ export interface EnvironmentDeclarationsFact {
   shown: number;
   omitted: number;
   declarations: EnvironmentDeclaration[];
+  declarationKeyCounts?: Array<{ key: string; count: number }>;
 }
 
 const allowedProvenance = new Set<EnvironmentDeclarationProvenance>([
@@ -330,6 +331,26 @@ function parsedAllowedKeys(value: unknown): string[] | undefined {
   }
 }
 
+function declarationKeyCountsValid(
+  value: unknown,
+  allowedKeys: ReadonlySet<string>,
+  total: number,
+): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const seen = new Set<string>();
+  let sum = 0;
+  for (const entry of value) {
+    const item = record(entry);
+    if (!item || typeof item.key !== 'string'
+      || !allowedKeys.has(item.key) || seen.has(item.key)
+      || !Number.isInteger(item.count) || Number(item.count) < 0) return false;
+    seen.add(item.key);
+    sum += Number(item.count);
+  }
+  return sum === total;
+}
+
 export function parseEnvironmentDeclarationsFact(
   value: unknown,
 ): EnvironmentDeclarationsFact | undefined {
@@ -339,6 +360,9 @@ export function parseEnvironmentDeclarationsFact(
   const keys = parsedAllowedKeys(item.allowedKeys);
   if (!keys) return undefined;
   const allowedKeys = new Set(keys);
+  if (!declarationKeyCountsValid(
+    item.declarationKeyCounts, allowedKeys, Number(item.total),
+  )) return undefined;
   const declarations = item.declarations.flatMap((entry) => {
     const parsed = parsedDeclaration(entry, allowedKeys);
     return parsed ? [parsed] : [];
@@ -367,6 +391,10 @@ export function collectEnvironmentDeclarations(
   const ambiguous = keys.some((key) =>
     [...values].filter((value) => value.startsWith(`${key}\0`)).length > 1);
   const declarations = all.slice(0, ENVIRONMENT_DECLARATION_RECORD_CAP);
+  const declarationKeyCounts = keys.map((key) => ({
+    key,
+    count: all.filter((item) => item.key === key).length,
+  }));
   return {
     schema: ENVIRONMENT_DECLARATIONS_SCHEMA,
     allowedKeys: keys,
@@ -384,6 +412,7 @@ export function collectEnvironmentDeclarations(
     shown: declarations.length,
     omitted: Math.max(0, all.length - declarations.length),
     declarations,
+    declarationKeyCounts,
   };
 }
 
@@ -400,5 +429,7 @@ export function emptyEnvironmentDeclarations(
     shown: 0,
     omitted: 0,
     declarations: [],
+    declarationKeyCounts: normalizeEventEnvironmentKeys(configuredKeys)
+      .map((key) => ({ key, count: 0 })),
   };
 }

@@ -1,6 +1,10 @@
 import type { Db } from '../db/connection.js';
 import { parseEventSkeletonFact } from '../utils/event-skeleton.js';
-import { boundCandidateLikeEvidence } from '../utils/bounded-projection.js';
+import {
+  boundCandidateLikeEvidence,
+  projectBounded,
+  type BoundedProjection,
+} from '../utils/bounded-projection.js';
 import { resolveEventEnvironment } from './event-environment-link.js';
 import { linkEventTemplate } from './event-template-link.js';
 
@@ -105,43 +109,77 @@ function candidateEligible(
     && JSON.stringify(left.literalSpans) === JSON.stringify(right.literalSpans));
 }
 
-function deploymentCompatible(
+interface DeploymentAssessment {
+  compatible: boolean;
+  scope: string;
+}
+
+function hasDeploymentProvenance(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((item) => {
+    const provenance = parsedEvidence(item).declarationProvenance;
+    return provenance === 'env_declaration_mta'
+      || provenance === 'env_declaration_manifest';
+  });
+}
+
+function deploymentAssessment(
   emit: EventShapeRow,
   subscribe: EventShapeRow,
   association: SubscriberAssociation,
-): boolean {
+): DeploymentAssessment {
   const emitSkeleton = parseEventSkeletonFact(emit.skeletonJson);
   const subscribeSkeleton = parseEventSkeletonFact(subscribe.skeletonJson);
   const emitKeys = new Set(emitSkeleton?.environmentBindings
     .map((binding) => binding.environmentKey).filter(Boolean));
   const sharedKey = subscribeSkeleton?.environmentBindings.some((binding) =>
     binding.environmentKey && emitKeys.has(binding.environmentKey));
+  if (!sharedKey) return {
+    compatible: true, scope: 'environment_key_unshared',
+  };
   const evidence = parsedEvidence(association.evidenceJson);
   const subscriptionEnvironment = parsedEvidence(
     evidence.eventEnvironmentResolution,
   );
-  if (subscriptionEnvironment.status === 'unresolved') return false;
-  if (!sharedKey) return true;
   const environment = resolveEventEnvironment(
     emit.skeletonJson, emit.environmentJson, {},
   );
-  if (environment.status !== 'resolved') return false;
+  if (environment.status !== 'resolved') return {
+    compatible: true, scope: 'publisher_environment_unresolved',
+  };
+  if (subscriptionEnvironment.status !== 'resolved') return {
+    compatible: true, scope: 'subscription_environment_unresolved',
+  };
   const event = linkEventTemplate(
     emit.eventName, environment.variables, undefined, emitSkeleton,
   );
-  return subscriptionEnvironment.status === 'resolved'
-    && evidence.effectiveEventName === event.targetId;
+  if (evidence.effectiveEventName === event.targetId) return {
+    compatible: true, scope: 'shared_environment_value_equal',
+  };
+  const authoritative = hasDeploymentProvenance(environment.provenance)
+    && hasDeploymentProvenance(subscriptionEnvironment.provenance);
+  return authoritative
+    ? {
+        compatible: false,
+        scope: 'shared_deployment_environment_value_mismatch',
+      }
+    : {
+        compatible: true,
+        scope: 'shared_environment_value_mismatch_non_authoritative',
+      };
 }
 
 function candidateEvidence(
   emit: EventShapeRow,
-  subscribe: EventShapeRow,
-  association: SubscriberAssociation,
+  candidate: ShapeCandidate,
   total: number,
   shown: number,
 ): Record<string, unknown> {
-  const evidence = parsedEvidence(association.evidenceJson);
+  const { subscription: subscribe, association } = candidate;
   const parser = parsedEvidence(emit.evidenceJson);
+  const deployments = deploymentProjection(candidate.deployments);
+  const scopes = [...new Set(candidate.deployments.map((item) => item.scope))]
+    .sort();
   return {
     publishCallId: emit.id,
     subscribeCallId: subscribe.id,
@@ -150,13 +188,12 @@ function candidateEvidence(
     dispatchCertainty: 'skeleton_equivalent',
     subscriptionRepositoryId: subscribe.repoId,
     subscriptionRepositoryName: subscribe.repoName,
-    subscriptionConsumerRepositoryId:
-      evidence.subscriptionConsumerRepositoryId,
-    subscriptionConsumerRepositoryName:
-      evidence.subscriptionConsumerRepositoryName,
-    deploymentScope: evidence.subscriptionConsumerRepositoryId === undefined
-      ? 'subscription_repository'
-      : 'same_consumer_repository',
+    deploymentScope: scopes.length === 1
+      ? scopes[0] : 'mixed_environment_scope',
+    deploymentRepositories: deployments.items,
+    deploymentCount: deployments.totalCount,
+    shownDeploymentCount: deployments.shownCount,
+    omittedDeploymentCount: deployments.omittedCount,
     handlerSymbolId: Number(association.targetId),
     eventShapeCandidateTargetLabel: association.targetLabel,
     associationGraphEdgeId: association.graphEdgeId,
@@ -167,16 +204,64 @@ function candidateEvidence(
   };
 }
 
+interface ShapeDeployment {
+  repositoryId?: number;
+  repositoryName?: string;
+  effectiveEventName?: string;
+  environmentStatus?: string;
+  associationGraphEdgeId: number;
+  scope: string;
+}
+
+function deploymentProjection(
+  values: readonly ShapeDeployment[],
+): BoundedProjection<ShapeDeployment> {
+  const unique = new Map<string, ShapeDeployment>();
+  for (const value of values) {
+    const key = JSON.stringify([
+      value.repositoryId, value.repositoryName, value.effectiveEventName,
+      value.environmentStatus, value.scope,
+    ]);
+    if (!unique.has(key)) unique.set(key, value);
+  }
+  return projectBounded([...unique.values()], (left, right) => {
+    const a = JSON.stringify(left);
+    const b = JSON.stringify(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
+function shapeDeployment(
+  association: SubscriberAssociation,
+  scope: string,
+): ShapeDeployment {
+  const evidence = parsedEvidence(association.evidenceJson);
+  const environment = parsedEvidence(evidence.eventEnvironmentResolution);
+  return {
+    repositoryId: typeof evidence.subscriptionConsumerRepositoryId === 'number'
+      ? evidence.subscriptionConsumerRepositoryId : undefined,
+    repositoryName:
+      typeof evidence.subscriptionConsumerRepositoryName === 'string'
+        ? evidence.subscriptionConsumerRepositoryName : undefined,
+    effectiveEventName: typeof evidence.effectiveEventName === 'string'
+      ? evidence.effectiveEventName : undefined,
+    environmentStatus: typeof environment.status === 'string'
+      ? environment.status : undefined,
+    associationGraphEdgeId: association.graphEdgeId,
+    scope,
+  };
+}
+
 function insertCandidate(
   db: Db,
   workspaceId: number,
   generation: number,
   emit: EventShapeRow,
-  subscribe: EventShapeRow,
-  association: SubscriberAssociation,
+  candidate: ShapeCandidate,
   total: number,
   shown: number,
 ): void {
+  const { association } = candidate;
   db.prepare(`INSERT INTO graph_edges(
     workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
     confidence,evidence_json,is_dynamic,unresolved_reason,generation
@@ -190,7 +275,7 @@ function insertCandidate(
     association.targetId,
     0.3,
     JSON.stringify(candidateEvidence(
-      emit, subscribe, association, total, shown,
+      emit, candidate, total, shown,
     )),
     1,
     'event_skeleton_equivalent_non_authoritative',
@@ -201,6 +286,7 @@ function insertCandidate(
 interface ShapeCandidate {
   subscription: EventShapeRow;
   association: SubscriberAssociation;
+  deployments: ShapeDeployment[];
 }
 
 function candidatesForEmit(
@@ -208,12 +294,25 @@ function candidatesForEmit(
   subscriptions: readonly EventShapeRow[],
   bySubscription: ReadonlyMap<number, SubscriberAssociation[]>,
 ): ShapeCandidate[] {
-  return subscriptions.flatMap((subscription) =>
-    !candidateEligible(emit, subscription) ? []
-      : (bySubscription.get(subscription.id) ?? [])
-          .filter((association) =>
-            deploymentCompatible(emit, subscription, association))
-          .map((association) => ({ subscription, association })));
+  const grouped = new Map<string, ShapeCandidate>();
+  for (const subscription of subscriptions) {
+    if (!candidateEligible(emit, subscription)) continue;
+    for (const association of bySubscription.get(subscription.id) ?? []) {
+      const assessment = deploymentAssessment(
+        emit, subscription, association,
+      );
+      if (!assessment.compatible) continue;
+      const key = `${subscription.id}:${association.targetKind}:${
+        association.targetId}`;
+      const existing = grouped.get(key);
+      const deployment = shapeDeployment(association, assessment.scope);
+      if (existing) existing.deployments.push(deployment);
+      else grouped.set(key, {
+        subscription, association, deployments: [deployment],
+      });
+    }
+  }
+  return [...grouped.values()];
 }
 
 function recordExpansionRefusal(
@@ -263,8 +362,8 @@ export function linkEventShapeCandidates(
     }
     for (const candidate of candidates) {
       insertCandidate(
-        db, workspaceId, generation, emit, candidate.subscription,
-        candidate.association, candidates.length, candidates.length,
+        db, workspaceId, generation, emit, candidate,
+        candidates.length, candidates.length,
       );
       edgeCount += 1;
     }

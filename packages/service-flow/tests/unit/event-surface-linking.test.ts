@@ -41,7 +41,8 @@ interface GraphEventRow extends Record<string, unknown> {
 function expectEveryEdgeTargetRegistered(result: TraceResult): void {
   const nodeIds = new Set(result.nodes.flatMap((node) =>
     typeof node.id === 'string' ? [node.id] : []));
-  expect(result.edges.filter((edge) => !nodeIds.has(edge.to))).toEqual([]);
+  expect(result.edges.filter((edge) =>
+    !nodeIds.has(edge.toNodeId ?? edge.to))).toEqual([]);
 }
 
 function packageJson(
@@ -617,7 +618,7 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
       'subscriber:src/subscribe.ts:handleRecordStored',
     );
     expect(candidates.nodes.find((node) =>
-      node.id === shapeEdges[0]?.to)?.label).toMatch(
+      node.id === (shapeEdges[0]?.toNodeId ?? shapeEdges[0]?.to))?.label).toMatch(
       /^subscriber:subscribe\.ts:handleRecordStored$/,
     );
     expect(shapeEdges[0]?.evidence).toMatchObject({
@@ -775,6 +776,31 @@ ${registrations}
     expect(destinations).toEqual(['subscriber-x', 'subscriber-y']);
     expect(result.edges.some((edge) =>
       edge.type === 'event_name_matches_subscription_handler')).toBe(false);
+    const capped = trace(db, { repo: 'publisher' }, {
+      depth: 8, workspaceId, includeAsync: true,
+      dynamicMode: 'candidates', maxDynamicCandidates: 1,
+    });
+    expect(capped.edges.filter((edge) =>
+      edge.type === 'event_shape_candidate_subscriber')).toHaveLength(1);
+    expect(diagnostic(
+      capped.diagnostics, 'event_shape_candidates_omitted',
+    )).toMatchObject({
+      candidateCount: 2,
+      shownCandidateCount: 1,
+      omittedCandidateCount: 1,
+      maxDynamicCandidates: 1,
+    });
+    const compact = traceAndCompact(db, { repo: 'publisher' }, {
+      depth: 8, workspaceId, includeAsync: true,
+      dynamicMode: 'candidates', maxDynamicCandidates: 1,
+    }).compact;
+    expect(compact.diagnostics.find((row) =>
+      row[2] === 'event_shape_candidates_omitted')?.[6]).toMatchObject({
+      candidateCount: 2,
+      shownCandidateCount: 1,
+      omittedCandidateCount: 1,
+      maxDynamicCandidates: 1,
+    });
     db.close();
   });
 
@@ -887,11 +913,20 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
       depth: 8, workspaceId, includeAsync: true,
       dynamicMode: 'candidates', maxDynamicCandidates: 5,
     });
-    expect(candidateTrace.edges.filter((edge) =>
-      edge.type === 'event_shape_candidate_subscriber')
-      .map((edge) => String(
-        edge.evidence.subscriptionConsumerRepositoryName,
-      ))).toEqual(['consumer-a', 'consumer-b', 'consumer-c']);
+    const shapeCandidates = candidateTrace.edges.filter((edge) =>
+      edge.type === 'event_shape_candidate_subscriber');
+    expect(shapeCandidates).toHaveLength(1);
+    expect(shapeCandidates[0]?.evidence).toMatchObject({
+      deploymentScope: 'environment_key_unshared',
+      deploymentCount: 3,
+      shownDeploymentCount: 3,
+      omittedDeploymentCount: 0,
+      deploymentRepositories: [
+        expect.objectContaining({ repositoryName: 'consumer-a' }),
+        expect.objectContaining({ repositoryName: 'consumer-b' }),
+        expect.objectContaining({ repositoryName: 'consumer-c' }),
+      ],
+    });
 
     await writeFixtureFile(root, 'consumer-a/nodemon.json', JSON.stringify({
       env: {
@@ -920,7 +955,7 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
     db.close();
   });
 
-  it('pairs environment-derived shapes only within the same deployment value', async () => {
+  it('does not treat development declarations as deployment containment proof', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'sf-event-env-scope-'),
     );
@@ -944,13 +979,85 @@ export async function publish(): Promise<void> {
     expect(linked.eventShapeCandidateCount).toBe(1);
     const consumers = db.prepare(`SELECT
       json_extract(evidence_json,
-        '$.subscriptionConsumerRepositoryName') consumer
+        '$.deploymentRepositories[0].repositoryName') consumer,
+      json_extract(evidence_json,'$.deploymentScope') deploymentScope
       FROM graph_edges
       WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
       ORDER BY consumer COLLATE BINARY`).all();
-    expect(consumers).toEqual([{ consumer: 'consumer-a' }]);
+    expect(consumers).toEqual([
+      {
+        consumer: 'consumer-a',
+        deploymentScope: 'mixed_environment_scope',
+      },
+    ]);
+    const deployments = db.prepare(`SELECT
+      json_extract(json_each.value,'$.repositoryName') consumer,
+      json_extract(json_each.value,'$.scope') deploymentScope
+      FROM graph_edges,
+      json_each(graph_edges.evidence_json,'$.deploymentRepositories')
+      WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
+      ORDER BY consumer COLLATE BINARY`).all();
+    expect(deployments).toEqual([
+      {
+        consumer: 'consumer-a',
+        deploymentScope: 'shared_environment_value_equal',
+      },
+      {
+        consumer: 'consumer-b',
+        deploymentScope:
+          'shared_environment_value_mismatch_non_authoritative',
+      },
+      {
+        consumer: 'consumer-c',
+        deploymentScope:
+          'shared_environment_value_mismatch_non_authoritative',
+      },
+    ]);
     expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
       WHERE code='event_shape_candidate_expansion_refused'`).get())
+      .toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('rejects a mismatch proven by deployment descriptors on both sides', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'sf-event-env-deployment-scope-'),
+    );
+    await writeEnvironmentLibrary(root);
+    await writeEnvironmentConsumerWithoutDeclaration(root, 'consumer-a');
+    await Promise.all([
+      writeFixtureFile(root, 'consumer-a/manifest.yml', `
+applications:
+  - name: neutral-consumer
+    env:
+      SHARD_CODE: neutraltwo
+`),
+      writeFixtureFile(root, 'publisher/.git-fixture'),
+      writeFixtureFile(root, 'publisher/package.json',
+        packageJson('@neutral/environment-publisher')),
+      writeFixtureFile(root, 'publisher/manifest.yml', `
+applications:
+  - name: neutral-publisher
+    env:
+      SHARD_CODE: neutralone
+`),
+      writeFixtureFile(root, 'publisher/src/publish.ts', `
+import cds from '@sap/cds';
+const publishCode = process.env.SHARD_CODE;
+export async function publish(): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  await bus.emit(\`\${publishCode.toUpperCase()}RecordStored\`, {});
+}
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(
+      root, ['SHARD_CODE'],
+    );
+    const linked = linkWorkspace(db, workspaceId);
+
+    expect(linked.eventShapeCandidateCount).toBe(0);
+    expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
+      WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'`).get())
       .toEqual({ count: 0 });
     db.close();
   });
@@ -985,7 +1092,7 @@ export async function publish(code: string): Promise<void> {
     expect(linked).toMatchObject({
       subscriptionHandlerResolvedCount: 2,
       subscriptionHandlerUnresolvedCount: 1,
-      eventShapeCandidateCount: 2,
+      eventShapeCandidateCount: 1,
     });
     expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
       WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
@@ -996,12 +1103,13 @@ export async function publish(code: string): Promise<void> {
       WHERE code=
         'event_environment_consumer_expansion_incomplete'`).get())
       .toEqual({ count: 1 });
-    const consumers = db.prepare(`SELECT json_extract(evidence_json,
-      '$.subscriptionConsumerRepositoryName') consumer
-      FROM graph_edges
+    const consumers = db.prepare(`SELECT json_extract(json_each.value,
+      '$.repositoryName') consumer FROM graph_edges,
+      json_each(graph_edges.evidence_json,'$.deploymentRepositories')
       WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
       ORDER BY consumer COLLATE BINARY`).all();
     expect(consumers).toEqual([
+      { consumer: null },
       { consumer: 'consumer-a' },
       { consumer: 'consumer-b' },
     ]);

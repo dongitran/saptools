@@ -1,5 +1,14 @@
 # Service Flow Resolution Notes
 
+## 0.1.75 decorator identity and output-honesty notes
+
+- Package/CLI `0.1.75` uses SQLite schema `15`, analyzer `0.1.75-facts.1`, compact `service-flow/compact-graph@1`, and requires `index --force` followed by `link --force`.
+- Dotted `export namespace a.b.C` chains retain the outer export proof through compiler-generated `NestedNamespace` declarations. Ordinary block-nested namespaces still require their own export modifier, so private nested constants remain unavailable.
+- Every implementation decision records its selection basis. Decorator-backed selection stays authoritative; method-name fallback is labelled in every output and refuses a collision with a sibling operation named by the unresolved decorator.
+- Trace closure never changes a node's identity. Detailed JSON endpoints are canonical node references, table and Mermaid output use repository-qualified labels, and synthesized unresolved nodes are scoped so distinct repositories cannot merge.
+- Schema 15 restores the immutable historical schema-14 environment default and rebuilds the repository table with the current empty default. Explicit index-time environment keys are persisted in workspace configuration; grouped deployment evidence replaces duplicate shape-candidate edges.
+- Runtime diagnostics print concrete candidate-derived variable sets only. A missing value with no proven substitution remains a required variable, not a copyable flag that falsely promises resolution.
+
 ## 0.1.74 receiver recovery and blocker-chain notes
 
 - Package/CLI `0.1.74` keeps SQLite schema `14` and compact `service-flow/compact-graph@1`, while advancing analyzer compatibility to `0.1.74-facts.1`. Existing workspaces require `index --force` and `link --force`.
@@ -206,7 +215,7 @@ Schema version 6 adds queryable external target metadata columns to `outbound_ca
 
 ## 0.1.18 auditability notes
 
-- CAP async event parsing treats `.emit()`, `.publish()`, and `.on()` consistently. Current analysis first proves lexical CAP-connect assignments, retains explicitly labelled fallback/provenance evidence where supported, and excludes known realtime/socket/stream/desktop receivers and CAP CRUD handler registrations from EventMesh facts.
+- CAP async event parsing treats `.emit()`, `.publish()`, and `.on()` consistently. Current analysis first proves lexical CAP-connect assignments, retains explicitly labelled fallback/provenance evidence where supported, and excludes proven non-CAP bindings, observed socket/stream/desktop receiver names, and CAP CRUD handler registrations from EventMesh facts.
 - Local CAP service calls now carry TypeScript AST evidence with classifier, source offsets, service lookup/name, operation, and alias chain.
 - Call-derived graph evidence nests persisted outbound parser evidence as `outboundEvidence`, allowing JSON trace output to explain parser classification without colliding with linker fields.
 - `graph_edges.is_dynamic` means the edge itself requires runtime operation-target resolution. Terminal database, external HTTP, and async event edges keep `is_dynamic=0`; dynamic binding provenance remains in `evidence_json.bindingHasDynamicExpression`.

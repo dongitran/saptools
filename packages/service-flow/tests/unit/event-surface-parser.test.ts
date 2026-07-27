@@ -372,7 +372,11 @@ declare const socket: {
 };
 declare const writeStream: { on(name: string): void };
 declare const file: { on(name: string): void };
-declare const req: { pipe(value: unknown): { on(name: string): void } };
+declare const req: {
+  pipe(value: unknown): {
+    on(name: string): { on(nextName: string): void }
+  }
+};
 declare const sink: unknown;
 declare const win: { on(name: string): void };
 declare const app: { on(name: string): void };
@@ -382,6 +386,7 @@ socket.on('event');
 writeStream.on('finish');
 file.on('end');
 req.pipe(sink).on('finish');
+req.pipe(sink).on('error').on('finish');
 win.on('close');
 app.on('window-all-closed');
 class Service {
@@ -398,6 +403,27 @@ async function subscribe(): Promise<void> {
         callType: 'async_subscribe',
         eventNameExpr: 'READ',
         unresolvedReason: undefined,
+      }),
+    ]);
+  });
+
+  it('uses imported Node stream provenance consistently for every event name', () => {
+    const facts = eventFacts(`
+import cds from '@sap/cds';
+import { createReadStream } from 'node:fs';
+const stream = createReadStream('neutral-input.txt');
+stream.on('data', (): void => {});
+stream.on('end', (): void => {});
+stream.on('error', (): void => {});
+async function subscribe(): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  bus.on('data', (): void => {});
+}
+`);
+    expect(facts).toEqual([
+      expect.objectContaining({
+        callType: 'async_subscribe',
+        eventNameExpr: 'data',
       }),
     ]);
   });

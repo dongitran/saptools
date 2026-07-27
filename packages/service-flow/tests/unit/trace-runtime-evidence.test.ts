@@ -45,8 +45,9 @@ describe('trace runtime evidence clarity', () => {
     const unresolved = trace(db, { repo: 'facade-service', operation: 'runFlow' }, { depth: 5 });
     expect(unresolved.diagnostics).toContainEqual(expect.objectContaining({
       code: 'trace_runtime_variables_missing',
-      suggestions: ['--var operationName=<value>', '--var tenant=<value>'],
+      missingVariables: ['operationName', 'tenant'],
     }));
+    expect(JSON.stringify(unresolved.diagnostics)).not.toContain('=<value>');
 
     const result = trace(db, { repo: 'facade-service', operation: 'runFlow' }, {
       depth: 5,

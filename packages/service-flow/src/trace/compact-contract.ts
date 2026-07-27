@@ -80,6 +80,7 @@ export interface CompactDecisionInput {
   rejectedCandidateCount?: number;
   omittedCandidateCount?: number;
   implementationStrategy?: string;
+  selectionBasis?: string;
   implementationGuided?: boolean;
   implementationContextual?: boolean;
   tiedCandidateRepos?: CompactReferenceGroupV1;
@@ -224,6 +225,7 @@ export interface CompactDecisionV1 {
   rejectedCandidateCount?: number;
   omittedCandidateCount?: number;
   implementationStrategy?: string;
+  selectionBasis?: string;
   implementationGuided?: boolean;
   implementationContextual?: boolean;
   tiedCandidateRepos?: CompactReferenceGroupV1;
@@ -258,6 +260,9 @@ export interface CompactDiagnosticDetailsV1 {
   shownMissingVariableCount?: number;
   omittedMissingVariableCount?: number;
   candidateCount?: number;
+  shownCandidateCount?: number;
+  omittedCandidateCount?: number;
+  maxDynamicCandidates?: number;
   viableCandidateCount?: number;
   rejectedCandidateCount?: number;
   remediationHint?: string;

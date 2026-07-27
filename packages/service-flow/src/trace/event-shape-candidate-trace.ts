@@ -27,6 +27,7 @@ function withCandidateCounts(
   row: TraceGraphEdgeRow,
   total: number,
   shown: number,
+  cap: number,
 ): TraceGraphEdgeRow {
   let evidence: Record<string, unknown> = {};
   try {
@@ -43,6 +44,7 @@ function withCandidateCounts(
       eventShapeCandidateCount: total,
       shownEventShapeCandidateCount: shown,
       omittedEventShapeCandidateCount: Math.max(0, total - shown),
+      maxDynamicCandidates: cap,
     }),
   };
 }
@@ -56,12 +58,44 @@ export function visibleEventShapeRows(
   if ((options.dynamicMode ?? 'strict') !== 'candidates') return regular;
   const candidates = rows.filter((row) =>
     row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER');
-  const shown = candidates.slice(0, candidateCap(options));
+  const cap = candidateCap(options);
+  const shown = candidates.slice(0, cap);
   return [
     ...regular,
     ...shown.map((row) =>
-      withCandidateCounts(row, candidates.length, shown.length)),
+      withCandidateCounts(row, candidates.length, shown.length, cap)),
   ];
+}
+
+function recordCandidateOmission(
+  diagnostics: Array<Record<string, unknown>>,
+  count: number,
+  shown: number,
+  cap: number,
+): void {
+  const omitted = Math.max(0, count - shown);
+  if (omitted === 0) return;
+  const existing = diagnostics.find((item) =>
+    item.code === 'event_shape_candidates_omitted');
+  if (existing) {
+    existing.candidateCount = Number(existing.candidateCount ?? 0) + count;
+    existing.shownCandidateCount =
+      Number(existing.shownCandidateCount ?? 0) + shown;
+    existing.omittedCandidateCount =
+      Number(existing.omittedCandidateCount ?? 0) + omitted;
+    return;
+  }
+  diagnostics.push({
+    severity: 'info',
+    code: 'event_shape_candidates_omitted',
+    message: 'Event-shape candidates exceeded the requested trace display cap.',
+    candidateCount: count,
+    shownCandidateCount: shown,
+    omittedCandidateCount: omitted,
+    maxDynamicCandidates: cap,
+    remediation:
+      'Increase --max-dynamic-candidates to inspect more candidates.',
+  });
 }
 
 export function recordHiddenEventShapeCandidates(
@@ -69,11 +103,17 @@ export function recordHiddenEventShapeCandidates(
   rows: readonly TraceGraphEdgeRow[],
   options: TraceOptions,
 ): void {
-  if (!options.includeAsync
-    || (options.dynamicMode ?? 'strict') === 'candidates') return;
+  if (!options.includeAsync) return;
   const count = rows.filter((row) =>
     row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER').length;
   if (count === 0) return;
+  if ((options.dynamicMode ?? 'strict') === 'candidates') {
+    const cap = candidateCap(options);
+    recordCandidateOmission(
+      diagnostics, count, Math.min(count, cap), cap,
+    );
+    return;
+  }
   const existing = diagnostics.find((item) =>
     item.code === 'event_shape_candidates_hidden');
   if (existing) {
@@ -109,9 +149,9 @@ export function outboundTraceEdgeType(
 
 export function outboundTraceTargetNode(
   db: Db,
-  id: string,
   row: TraceGraphRow,
   displayTarget = row.to_id,
+  repository?: { id?: number; name?: string },
 ): Record<string, unknown> {
   const operation = row.to_kind === 'operation'
     ? operationNode(db, row.to_id) : undefined;
@@ -119,8 +159,35 @@ export function outboundTraceTargetNode(
     ? repositoryQualifiedCandidateNode(db, Number(row.to_id)) : undefined;
   const resolved = operation ?? candidate;
   return resolved
-    ? { ...resolved, id }
-    : { id, kind: row.to_kind, label: displayTarget };
+    ? { ...resolved, aliases: [displayTarget] }
+    : {
+        id: targetNodeId(row, repository),
+        kind: row.to_kind,
+        label: displayTarget,
+        qualifiedLabel: qualifiedTargetLabel(
+          displayTarget, repository?.name,
+        ),
+        repoId: repository?.id,
+        repoName: repository?.name,
+      };
+}
+
+function targetNodeId(
+  row: TraceGraphRow,
+  repository: { id?: number; name?: string } | undefined,
+): string {
+  const scope = repository?.id ?? repository?.name ?? 'workspace';
+  return row.to_kind === 'event'
+    ? `event:${row.to_id}`
+    : `target:${scope}:${row.to_kind}:${row.to_id}`;
+}
+
+function qualifiedTargetLabel(
+  label: string,
+  repository: string | undefined,
+): string {
+  return repository && !label.startsWith(`${repository}:`)
+    ? `${repository}:${label}` : label;
 }
 
 function repositoryQualifiedCandidateNode(

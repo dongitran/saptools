@@ -3,7 +3,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { openDatabase } from '../../src/db/connection.js';
 const execFileAsync = promisify(execFile);
@@ -163,8 +163,14 @@ describe('service-flow CLI', () => {
       'json'
     ]);
     expect(traceResult.stderr).toBe('');
-    const parsed = JSON.parse(traceResult.stdout) as { edges: unknown[] };
+    const parsed = JSON.parse(traceResult.stdout) as {
+      nodes: Array<{ id: string }>;
+      edges: Array<{ from: string; to: string }>;
+    };
     expect(parsed.edges.length).toBeGreaterThan(0);
+    const traceNodeIds = new Set(parsed.nodes.map((node) => node.id));
+    expect(parsed.edges.every((edge) =>
+      traceNodeIds.has(edge.from) && traceNodeIds.has(edge.to))).toBe(true);
     const warningHook = path.join(dir, 'stderr-warning.cjs');
     await writeFile(
       warningHook,
@@ -205,11 +211,28 @@ describe('service-flow CLI', () => {
     ]);
     expect(graphResult.stderr).toBe('');
     expect(graphResult.stdout).toContain('flowchart TD');
+    const graphJson = JSON.parse(await run([
+      'graph', '--workspace', fixture, '--repo', 'facade-service',
+      '--operation', 'doWork', '--format', 'json',
+    ])) as {
+      nodes: Array<{ id: string }>;
+      edges: Array<{ from: string; to: string }>;
+    };
+    const graphNodeIds = new Set(graphJson.nodes.map((node) => node.id));
+    expect(graphJson.edges.every((edge) =>
+      graphNodeIds.has(edge.from) && graphNodeIds.has(edge.to))).toBe(true);
     const listResult = await runResult(['list', 'operations', '--workspace', fixture, '--repo', 'facade-service']);
     expect(listResult.stderr).toBe('');
     expect(JSON.parse(listResult.stdout)).toEqual(expect.arrayContaining([
       expect.objectContaining({ repo: 'facade-service' }),
     ]));
+    const unknownOperation = JSON.parse(await run([
+      'inspect', 'operation', 'neutralMissingOperation',
+      '--workspace', fixture,
+    ])) as Array<{ code?: string }>;
+    expect(unknownOperation).toEqual([
+      expect.objectContaining({ code: 'selector_operation_not_found' }),
+    ]);
     const doctorResult = await runResult(['doctor', '--workspace', fixture]);
     expect(doctorResult.stderr).toBe('');
     expect(doctorResult.stdout).toMatch(/No diagnostics|\[/);
@@ -241,6 +264,18 @@ describe('service-flow CLI link wording', () => {
 });
 
 describe('service-flow CLI lifecycle guards', () => {
+  it('rejects unbounded traces and unsupported doctor detail mode', async () => {
+    for (const args of [
+      ['trace', '--workspace', path.join(os.tmpdir(), 'unused-workspace')],
+      ['doctor', '--workspace', path.join(os.tmpdir(), 'unused-workspace'),
+        '--detail'],
+    ]) {
+      const result = await runWithExit(args);
+      expect(result.exit).toEqual({ code: 1, signal: null });
+      expect(result.stdout).toBe('');
+    }
+  });
+
   it('blocks list and inspect commands when indexed facts are stale', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'service-flow-read-guard-'),
@@ -304,6 +339,32 @@ describe('service-flow guided trace CLI', () => {
     expect(help).toContain('repeatable');
   });
 
+  it('persists explicit event environment keys for later index runs', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-environment-key-'),
+    );
+    await writeFile(path.join(root, '.git-fixture'), '');
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({
+      name: '@neutral/environment-key', version: '1.0.0',
+    }));
+    await writeFile(
+      path.join(root, 'events.ts'),
+      'export const topic = process.env.NEUTRAL_EVENT_KEY;\n',
+    );
+    await run(['init', root]);
+    await run([
+      'index', '--workspace', root, '--force',
+      '--event-environment-key', 'NEUTRAL_EVENT_KEY',
+    ]);
+    const config = JSON.parse(await readFile(
+      path.join(root, '.service-flow', 'config.json'), 'utf8',
+    )) as { eventEnvironmentKeys?: string[] };
+    expect(config.eventEnvironmentKeys).toEqual(['NEUTRAL_EVENT_KEY']);
+    await expect(run([
+      'index', '--workspace', root,
+    ])).resolves.toContain('Indexed 0 repositories, skipped 1');
+  });
+
   it('runs runtime substitution, ambiguity, hints, doctor, and SQLite checks', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'service-flow-guided-e2e-'));
     const dbPath = path.join(dir, 'service-flow.db');
@@ -322,12 +383,14 @@ describe('service-flow guided trace CLI', () => {
     ])) as { edges: Array<{
       evidence?: { sourceFile?: string };
       from?: string;
+      fromLabel?: string;
       to?: string;
+      toLabel?: string;
       type?: string;
       unresolvedReason?: string;
     }> };
     expect(runtime.edges.some((edge) =>
-      edge.to === '/ProductProcessService/runDeepCheck')).toBe(true);
+      edge.toLabel === '/ProductProcessService/runDeepCheck')).toBe(true);
     const gaps = runtime.edges.filter((edge) => edge.unresolvedReason);
     expect(gaps).toEqual([]);
 
@@ -386,10 +449,13 @@ describe('service-flow guided trace CLI', () => {
       '--include-db', '--include-external', '--include-async',
       '--implementation-hint',
       'service=/ProductProcessService,operation=/activate,repo=process-helper-a',
-    ])) as { edges: Array<{ type?: string; to?: string }> };
+    ])) as {
+      edges: Array<{ type?: string; to?: string; toLabel?: string }>;
+    };
     const guidedImplementation = guided.edges.find((edge) =>
       edge.type === 'operation_implemented_by_handler');
-    expect(guidedImplementation?.to).toContain('ActivateHandlerA.activate');
+    expect(guidedImplementation?.toLabel)
+      .toContain('ActivateHandlerA.activate');
 
     const doctorJson = JSON.parse(await run([
       'doctor', '--workspace', traceFixture, '--strict', '--format', 'json',

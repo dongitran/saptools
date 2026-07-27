@@ -1,7 +1,18 @@
 import type { TraceResult } from '../types.js';
-function label(trace: TraceResult, idOrLabel: string): string {
-  const node = trace.nodes.find((item) => item.id === idOrLabel || item.label === idOrLabel);
-  return String(node?.label ?? idOrLabel);
+function label(
+  trace: TraceResult,
+  idOrLabel: string,
+  nodeId?: string,
+): string {
+  const node = trace.nodes.find((item) =>
+    item.id === nodeId || item.id === idOrLabel || item.label === idOrLabel);
+  return String(node?.qualifiedLabel ?? node?.label ?? idOrLabel);
+}
+function edgeLabel(edge: TraceResult['edges'][number]): string {
+  const basis = edge.evidence.selectionBasis;
+  return typeof basis === 'string'
+    ? `${edge.type} [basis=${basis}]`
+    : edge.type;
 }
 export function renderMermaid(trace: TraceResult): string {
   const ids = new Map<string, string>();
@@ -15,7 +26,7 @@ export function renderMermaid(trace: TraceResult): string {
   const lines = ['flowchart TD'];
   for (const e of trace.edges)
     lines.push(
-      `  ${nodeId(e.from)}["${label(trace, e.from)}"] -->|${e.type}| ${nodeId(e.to)}["${label(trace, e.to)}"]`
+      `  ${nodeId(e.fromNodeId ?? e.from)}["${label(trace, e.from, e.fromNodeId)}"] -->|${edgeLabel(e)}| ${nodeId(e.toNodeId ?? e.to)}["${label(trace, e.to, e.toNodeId)}"]`
     );
   return `${lines.join('\n')}\n`;
 }

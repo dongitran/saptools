@@ -61,8 +61,7 @@ interface EventNameState {
 
 const CAP_CRUD_EVENTS = new Set(['READ', 'CREATE', 'UPDATE', 'DELETE']);
 const KNOWN_NON_CAP_EVENT_RECEIVERS = new Set([
-  'io', 'socket', 'realtime', 'writeStream', 'file', 'win', 'app',
-  'desktopApp', 'windowRef',
+  'io', 'socket', 'writeStream', 'file', 'win', 'app',
 ]);
 
 function eventNameReason(
@@ -240,9 +239,13 @@ function receiverRootName(expression: ts.Expression): string | undefined {
 }
 
 function pipeReceiver(expression: ts.Expression): boolean {
-  return ts.isCallExpression(expression)
-    && ts.isPropertyAccessExpression(expression.expression)
-    && expression.expression.name.text === 'pipe';
+  if (ts.isPropertyAccessExpression(expression)
+    || ts.isElementAccessExpression(expression))
+    return pipeReceiver(expression.expression);
+  if (!ts.isCallExpression(expression)) return false;
+  const callee = expression.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return false;
+  return callee.name.text === 'pipe' || pipeReceiver(callee.expression);
 }
 
 function knownNonCapReceiver(

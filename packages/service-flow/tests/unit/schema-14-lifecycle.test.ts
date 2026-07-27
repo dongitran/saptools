@@ -164,7 +164,7 @@ async function verifyReadOnlyV12(): Promise<void> {
   expect(factLifecycleDiagnostic(reader)).toMatchObject({
     code: 'schema_upgrade_required',
     currentSchemaVersion: 12,
-    requiredSchemaVersion: 14,
+    requiredSchemaVersion: 15,
   });
   expect(doctorDiagnostics(reader, true, { workspaceId: 1 })[0])
     .toMatchObject({ code: 'schema_upgrade_required' });
@@ -188,7 +188,7 @@ async function verifyReadOnlyV13(): Promise<void> {
   expect(factLifecycleDiagnostic(reader)).toMatchObject({
     code: 'schema_upgrade_required',
     currentSchemaVersion: 13,
-    requiredSchemaVersion: 14,
+    requiredSchemaVersion: 15,
   });
   expect(schemaVersion(reader)).toBe(13);
   expect(column(reader, 'repositories', 'environment_declarations_json'))
@@ -206,8 +206,8 @@ async function verifyV13Migration(): Promise<void> {
   const graphBefore = graphSnapshot(before);
   before.close();
   const migrated = openDatabase(dbPath);
-  const fresh = openDatabase(await databasePath('fresh-v14-default'));
-  expect(schemaVersion(migrated)).toBe(14);
+  const fresh = openDatabase(await databasePath('fresh-v15-default'));
+  expect(schemaVersion(migrated)).toBe(15);
   expect(column(migrated, 'repositories', 'environment_declarations_json'))
     .toMatchObject({
       name: 'environment_declarations_json',
@@ -246,7 +246,7 @@ async function verifyV12Migration(): Promise<void> {
   const graphBefore = graphSnapshot(before);
   before.close();
   const migrated = openDatabase(dbPath);
-  expect(schemaVersion(migrated)).toBe(14);
+  expect(schemaVersion(migrated)).toBe(15);
   expect(column(migrated, 'repositories', 'package_public_surface_json'))
     .toMatchObject({ name: 'package_public_surface_json', type: 'TEXT' });
   expect(column(migrated, 'service_bindings', 'owner_resolution'))
@@ -309,7 +309,7 @@ async function verifyIdempotentIndexMigration(): Promise<void> {
   const stateBefore = migrationState(migrated);
   verifyExactSiteIndex(migrated);
   migrate(migrated);
-  expect(schemaVersion(migrated)).toBe(14);
+  expect(schemaVersion(migrated)).toBe(15);
   expect(migrated.prepare(
     "PRAGMA index_list('service_bindings')",
   ).all().filter(
@@ -322,7 +322,7 @@ async function verifyIdempotentIndexMigration(): Promise<void> {
 async function verifyV11Migration(): Promise<void> {
   const dbPath = await createLegacyDatabase(11);
   const migrated = openDatabase(dbPath);
-  expect(schemaVersion(migrated)).toBe(14);
+  expect(schemaVersion(migrated)).toBe(15);
   expect(migrated.prepare(`SELECT call_site_start_offset siteStart,
     call_site_end_offset siteEnd FROM outbound_calls WHERE id=1`).get())
     .toEqual({ siteStart: null, siteEnd: null });
@@ -421,21 +421,21 @@ async function verifyMalformedSchema({
 }
 
 async function verifyFutureSchema(): Promise<void> {
-  const dbPath = await databasePath('future-v15');
+  const dbPath = await databasePath('future-v16');
   const future = openDatabase(dbPath, { migrate: false });
-  future.exec('PRAGMA user_version = 15');
+  future.exec('PRAGMA user_version = 16');
   expect(factLifecycleDiagnostic(future)).toMatchObject({
     code: 'unsupported_future_schema',
-    currentSchemaVersion: 15,
-    supportedSchemaVersion: 14,
+    currentSchemaVersion: 16,
+    supportedSchemaVersion: 15,
   });
   expect(() => migrate(future))
-    .toThrow('Unsupported future service-flow schema version 15');
-  expect(schemaVersion(future)).toBe(15);
+    .toThrow('Unsupported future service-flow schema version 16');
+  expect(schemaVersion(future)).toBe(16);
   future.close();
 }
 
-describe('schema 14 event-surface lifecycle and provenance migration', () => {
+describe('schema 15 environment-default lifecycle and provenance migration', () => {
   it('reports schema-v13 read-only without changing bytes or columns', verifyReadOnlyV13);
   it('reports schema-v12 read-only without changing bytes or columns', verifyReadOnlyV12);
   it('migrates v13 event facts without inventing provenance or replacing the graph', verifyV13Migration);
@@ -446,5 +446,5 @@ describe('schema 14 event-surface lifecycle and provenance migration', () => {
     'bounds malformed current schema with a missing $label',
     verifyMalformedSchema,
   );
-  it('rejects schema version 15 before current-table inspection or migration', verifyFutureSchema);
+  it('rejects schema version 16 before current-table inspection or migration', verifyFutureSchema);
 });

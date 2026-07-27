@@ -64,7 +64,6 @@ function missingSubscriberDiagnostic(
     message: `Runtime variables are required to resolve dynamic event subscribers: ${
       missing.join(', ')}`,
     missingVariables: missing,
-    suggestions: missing.map((key) => `--var ${key}=<value>`),
     source: 'event_subscription',
   };
 }

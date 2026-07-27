@@ -186,7 +186,9 @@ function collectNestedNamespaceEnums(
   if (module.body && ts.isModuleDeclaration(module.body)) {
     collectNestedNamespaceEnums(
       source, module.body, qualified,
-      exported && hasExportModifier(module.body), lookups,
+      exported && (hasExportModifier(module.body)
+        || (module.body.flags & ts.NodeFlags.NestedNamespace) !== 0),
+      lookups,
     );
     return;
   }

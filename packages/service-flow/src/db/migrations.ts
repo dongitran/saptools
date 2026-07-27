@@ -1,6 +1,10 @@
 import type { Db } from './connection.js';
-import { schemaIndexesSql, schemaTablesSql } from './schema.js';
-export const CURRENT_SCHEMA_VERSION = 14;
+import {
+  repositoriesTableSql,
+  schemaIndexesSql,
+  schemaTablesSql,
+} from './schema.js';
+export const CURRENT_SCHEMA_VERSION = 15;
 const columns: Record<string, Array<{ name: string; ddl: string }>> = {
   handler_methods: [
     { name: 'decorator_resolution_json', ddl: "ALTER TABLE handler_methods ADD COLUMN decorator_resolution_json TEXT NOT NULL DEFAULT '{}'" },
@@ -20,7 +24,7 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'graph_stale_at', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_at TEXT' },
     { name: 'fact_analyzer_version', ddl: "ALTER TABLE repositories ADD COLUMN fact_analyzer_version TEXT DEFAULT 'legacy'" },
     { name: 'package_public_surface_json', ddl: 'ALTER TABLE repositories ADD COLUMN package_public_surface_json TEXT' },
-    { name: 'environment_declarations_json', ddl: `ALTER TABLE repositories ADD COLUMN environment_declarations_json TEXT DEFAULT '{"schema":"service-flow/environment-declarations@1","allowedKeys":[],"status":"not_applicable","reason":null,"recordCap":32,"total":0,"shown":0,"omitted":0,"declarations":[]}'` },
+    { name: 'environment_declarations_json', ddl: `ALTER TABLE repositories ADD COLUMN environment_declarations_json TEXT DEFAULT '{"schema":"service-flow/environment-declarations@1","allowedKeys":["SHARD_CODE"],"status":"not_applicable","reason":null,"recordCap":32,"total":0,"shown":0,"omitted":0,"declarations":[]}'` },
   ],
   graph_edges: [
     { name: 'status', ddl: "ALTER TABLE graph_edges ADD COLUMN status TEXT NOT NULL DEFAULT 'unresolved'" },
@@ -117,21 +121,53 @@ function markEventSurfaceMigrationStale(db: Db, priorVersion: number): void {
       graph_stale_at=COALESCE(graph_stale_at,datetime('now'))
     WHERE index_status='indexed' OR last_indexed_at IS NOT NULL`).run();
 }
+
+const repositoryColumns = [
+  'id', 'workspace_id', 'name', 'absolute_path', 'relative_path',
+  'package_name', 'package_version', 'dependencies_json',
+  'package_public_surface_json', 'environment_declarations_json', 'kind',
+  'is_git_repo', 'last_indexed_at', 'index_status', 'error_count',
+  'fingerprint', 'fact_generation', 'graph_generation',
+  'graph_stale_reason', 'graph_stale_at', 'fact_analyzer_version',
+].join(',');
+
+function normalizeEnvironmentDefault(db: Db, priorVersion: number): void {
+  if (priorVersion >= 15 || priorVersion === 0) return;
+  db.exec('ALTER TABLE repositories RENAME TO repositories_schema_v14');
+  db.exec(repositoriesTableSql);
+  db.exec(`INSERT INTO repositories(${repositoryColumns})
+    SELECT ${repositoryColumns} FROM repositories_schema_v14`);
+  db.exec('DROP TABLE repositories_schema_v14');
+}
+
 export function migrate(db: Db): void {
-  db.transaction(() => {
-    const version = userVersion(db);
+  const version = userVersion(db);
+  const rebuildRepositories = version > 0 && version < 15;
+  if (rebuildRepositories) {
+    db.pragma('foreign_keys = OFF');
+    db.pragma('legacy_alter_table = ON');
+  }
+  try {
+    db.transaction(() => {
     if (version > CURRENT_SCHEMA_VERSION) throw new Error(`Unsupported future service-flow schema version ${version}`);
     db.exec(schemaTablesSql);
     addMissingColumns(db);
-    db.exec(schemaIndexesSql);
     normalizeLegacyStatus(db, version);
     markCallSiteMigrationStale(db, version);
     markFactProvenanceMigrationStale(db, version);
     markEventSurfaceMigrationStale(db, version);
+    normalizeEnvironmentDefault(db, version);
+    db.exec(schemaIndexesSql);
     const violations = db.pragma('foreign_key_check');
     if (violations.length > 0) throw new Error('SQLite foreign_key_check failed during migration');
     db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
-  });
+    });
+  } finally {
+    if (rebuildRepositories) {
+      db.pragma('legacy_alter_table = OFF');
+      db.pragma('foreign_keys = ON');
+    }
+  }
 }
 export function schemaVersion(db: Db): number {
   return userVersion(db);

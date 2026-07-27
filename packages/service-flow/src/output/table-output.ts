@@ -21,14 +21,40 @@ function location(evidence: Record<string, unknown>): string {
   return ':';
 }
 export function renderTraceTable(result: TraceResult): string {
-  const lines = ['Step  Type                 From                                To                                  Evidence'];
-  for (const e of result.edges) {
-    lines.push(`${String(e.step).padEnd(5)} ${e.type.padEnd(20)} ${e.from.slice(0, 34).padEnd(35)} ${e.to.slice(0, 35).padEnd(36)} ${evidenceSummary(e.evidence)}`);
-    if (e.unresolvedReason)
-      lines.push(...hintLines(e.evidence).map((hint) => `      ${hint}`));
+  const rows = result.edges.map((edge) => ({
+    edge,
+    from: nodeLabel(result, edge.from, edge.fromNodeId),
+    to: nodeLabel(result, edge.to, edge.toNodeId),
+  }));
+  const widths = {
+    step: Math.max(4, ...rows.map(({ edge }) => String(edge.step).length)),
+    type: Math.max(4, ...rows.map(({ edge }) => edge.type.length)),
+    from: Math.max(4, ...rows.map((row) => row.from.length)),
+    to: Math.max(2, ...rows.map((row) => row.to.length)),
+  };
+  const lines = [
+    `${'Step'.padEnd(widths.step)}  ${'Type'.padEnd(widths.type)}  ${
+      'From'.padEnd(widths.from)}  ${'To'.padEnd(widths.to)}  Evidence`,
+  ];
+  for (const { edge, from, to } of rows) {
+    lines.push(`${String(edge.step).padEnd(widths.step)}  ${
+      edge.type.padEnd(widths.type)}  ${from.padEnd(widths.from)}  ${
+      to.padEnd(widths.to)}  ${evidenceSummary(edge.evidence)}`);
+    if (edge.unresolvedReason)
+      lines.push(...hintLines(edge.evidence).map((hint) => `      ${hint}`));
   }
   if (result.diagnostics.length > 0) lines.push('', 'Diagnostics:', ...result.diagnostics.flatMap(diagnosticLines));
   return `${lines.join('\n')}\n`;
+}
+
+function nodeLabel(
+  result: TraceResult,
+  label: string,
+  nodeId: string | undefined,
+): string {
+  const node = result.nodes.find((candidate) =>
+    candidate.id === nodeId || candidate.id === label);
+  return String(node?.qualifiedLabel ?? node?.label ?? label);
 }
 
 function evidenceSummary(evidence: Record<string, unknown>): string {
@@ -37,6 +63,11 @@ function evidenceSummary(evidence: Record<string, unknown>): string {
       ? `scope=${evidence.dispatchScope}` : undefined,
     typeof evidence.dispatchCertainty === 'string'
       ? `certainty=${evidence.dispatchCertainty}` : undefined,
+    typeof evidence.selectionBasis === 'string'
+      ? `basis=${evidence.selectionBasis}` : undefined,
+    numberValue(evidence.rejectedCandidateCount) > 0
+      ? `rejected=${numberValue(evidence.rejectedCandidateCount)}`
+      : undefined,
   ].filter((value): value is string => Boolean(value));
   return labels.length > 0
     ? `${location(evidence)} [${labels.join(',')}]`
@@ -62,6 +93,17 @@ function diagnosticDetailLines(diagnostic: Record<string, unknown>): string[] {
     lines.push(`observed decorators: ${observed.join(', ')}`);
   if (typeof diagnostic.remediation === 'string')
     lines.push(`hint: ${diagnostic.remediation}`);
+  const candidateCount = numberValue(diagnostic.candidateCount);
+  const shownCandidateCount = numberValue(diagnostic.shownCandidateCount);
+  const omittedCandidateCount = numberValue(diagnostic.omittedCandidateCount);
+  if (candidateCount > 0)
+    lines.push(
+      `candidates: ${shownCandidateCount} shown, ${
+        omittedCandidateCount} omitted, ${candidateCount} total${
+        numberValue(diagnostic.maxDynamicCandidates) > 0
+          ? `; effective cap ${numberValue(diagnostic.maxDynamicCandidates)}`
+          : ''}`,
+    );
   return lines;
 }
 

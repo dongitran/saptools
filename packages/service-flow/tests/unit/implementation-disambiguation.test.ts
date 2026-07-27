@@ -161,6 +161,28 @@ describe('implementation duplicate package disambiguation', () => {
       implementationHintSuggestions: evidence.implementationHintSuggestions,
     }));
     expect(renderTraceTable(result)).toContain('try --implementation-hint service=/SharedService,operation=/syncData');
+    const printedHint = evidence.implementationHintSuggestions?.[0]?.cli;
+    expect(printedHint).toBeTruthy();
+    const guidedByPrintedHint = trace(
+      db,
+      { servicePath: '/SharedService', operation: 'syncData' },
+      {
+        depth: 5,
+        includeDb: true,
+        implementationHints: [
+          parseImplementationHint(String(printedHint).replace(
+            /^--implementation-hint /, '',
+          )),
+        ],
+      },
+    );
+    expect(guidedByPrintedHint.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: 'trace_start_ambiguous' }),
+    );
+    expect(guidedByPrintedHint.edges).toContainEqual(expect.objectContaining({
+      type: 'operation_implemented_by_handler',
+      unresolvedReason: undefined,
+    }));
     db.close();
   });
 

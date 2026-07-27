@@ -41,9 +41,13 @@ export function renderDoctorTable(diagnostics: Diagnostic[]): string {
 }
 
 function diagnosticLocation(diagnostic: Diagnostic): string {
+  const repository = diagnostic.repositoryName ?? diagnostic.repository;
   const file = diagnostic.sourceFile ?? diagnostic.file;
   const line = diagnostic.sourceLine ?? diagnostic.line;
-  if (file || line) return `${String(file ?? '')}:${String(line ?? '')}`;
+  if (file || line) return `${
+    repository ? `${String(repository)}:` : ''
+  }${String(file ?? '')}:${String(line ?? '')}`;
+  if (repository) return String(repository);
   return '-';
 }
 

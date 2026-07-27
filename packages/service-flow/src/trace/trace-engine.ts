@@ -29,7 +29,7 @@ import {
 } from './trace-scope-execution.js';
 import { recordTraceStartImplementation } from './trace-start-implementation.js';
 import { selectorNotFoundDiagnostic } from './selectors.js';
-import { closeTraceEdgeTargets } from './trace-node-closure.js';
+import { closeTraceEdgeEndpoints } from './trace-node-closure.js';
 
 const compactObserverKey = Symbol('service-flow.compact-trace-observer');
 
@@ -165,7 +165,7 @@ export function trace(
   if (scope.startOperationId && scope.selectorMatched)
     recordTraceStartImplementation(runtime, scope.startOperationId);
   executeTraceScopes(runtime);
-  closeTraceEdgeTargets(runtime.nodes, edges);
+  closeTraceEdgeEndpoints(runtime.nodes, edges);
   finalizeDiagnostics(diagnostics, edges);
   return { start, nodes: [...runtime.nodes.values()], edges, diagnostics };
 }

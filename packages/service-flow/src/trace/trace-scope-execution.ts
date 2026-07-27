@@ -197,8 +197,11 @@ function localCallRows(
 ): Array<Record<string, unknown>> {
   const ids = [...symbolIds];
   return db.prepare(`SELECT sc.*,s.repo_id calleeRepoId,
-      s.source_file calleeFile FROM symbol_calls sc
+      s.source_file calleeFile,caller_repo.name callerRepoName
+    FROM symbol_calls sc
     LEFT JOIN symbols s ON s.id=sc.callee_symbol_id
+    JOIN symbols caller ON caller.id=sc.caller_symbol_id
+    JOIN repositories caller_repo ON caller_repo.id=caller.repo_id
     WHERE sc.call_role='ordinary_call'
       AND sc.caller_symbol_id IN (${ids.map(() => '?').join(',')})
     ORDER BY sc.source_file COLLATE BINARY,sc.call_site_start_offset,
@@ -231,8 +234,14 @@ function processLocalCall(
     ? Number(row.callee_symbol_id) : undefined;
   const node = symbolId === undefined
     ? undefined : symbolNode(runtime.db, symbolId);
+  const sourceNode = symbolNode(
+    runtime.db, Number(row.caller_symbol_id),
+  );
   if (node) runtime.nodes.set(String(node.id), node);
-  const observation = localCallTrace(current.depth, row, node);
+  if (sourceNode) runtime.nodes.set(String(sourceNode.id), sourceNode);
+  const observation = localCallTrace(
+    current.depth, row, node, sourceNode,
+  );
   const target = recordLocalCallObservation(runtime.recorder, observation.edge, {
     symbolCall: row,
     evidence: observation.evidence,
@@ -319,6 +328,8 @@ function recordCallNode(
     id,
     kind: 'outbound_call',
     repo: call.repoName,
+    repoName: call.repoName,
+    label: `${call.repoName}:${call.source_file}:${call.source_line}`,
     file: call.source_file,
     line: call.source_line,
     callType: call.call_type,
@@ -365,12 +376,13 @@ function recordEffectiveOutbound(
     ),
   };
   const target = edgeTarget(effective.row, effective.evidence);
-  runtime.nodes.set(
-    target,
-    outboundTraceTargetNode(
-      runtime.db, target, effective.row, target,
-    ),
+  const targetNode = outboundTraceTargetNode(
+    runtime.db, effective.row, target, {
+      id: call.repo_id,
+      name: call.repoName,
+    },
   );
+  runtime.nodes.set(String(targetNode.id), targetNode);
   const edge = outboundTraceEdge(
     current.depth, call, effective.row, target,
     effective.evidence, effective.unresolvedReason,
@@ -443,13 +455,12 @@ function recordEventTransition(
   subscriptionCount: number,
 ): void {
   const nodeId = String(plan.node.id);
-  const targetLabel = String(plan.node.label ?? nodeId);
   runtime.nodes.set(nodeId, plan.node);
   const bridge: TraceEdge = {
     step: current.depth,
     type: 'event_name_matches_subscription_handler',
     from: plan.transition.eventName,
-    to: targetLabel,
+    to: String(plan.node.label ?? nodeId),
     evidence: plan.evidence,
     confidence: plan.transition.confidence,
     unresolvedReason: plan.transition.unresolvedReason,
@@ -458,7 +469,10 @@ function recordEventTransition(
     runtime.recorder, bridge, plan, workspaceId, subscriptionCount,
   );
   if (plan.bodyExpansion === 'cycle_blocked' && plan.state)
-    recordEventCycle(runtime, current, plan, target, targetLabel, workspaceId);
+    recordEventCycle(
+      runtime, current, plan, target,
+      String(plan.node.label ?? nodeId), workspaceId,
+    );
   if (plan.bodyExpansion === 'scheduled' && plan.state
     && plan.transition.handler)
     enqueueEventHandler(runtime, current, plan);

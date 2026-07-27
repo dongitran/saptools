@@ -55,6 +55,7 @@ export function baseTraceEvidence(
     callSite: { sourceFile: call.source_file, sourceLine: call.source_line },
     callType: call.call_type,
     repoId: call.repo_id,
+    repoName: call.repoName,
     sourceFile: call.source_file,
     sourceLine: call.source_line,
     file: call.source_file,
@@ -220,12 +221,17 @@ export function runtimeVariableDiagnostic(edges: Array<{ evidence: Record<string
   const shownSuggestions = totals.candidateSuggestions.slice(0, totals.maxCandidates);
   const shownRejected = totals.rejectedCandidates.slice(0, totals.maxCandidates);
   const shownCandidateCount = shownSuggestions.length;
+  const suggestedVarSets = uniqueCliRows(
+    totals.suggestedVarSets,
+  ).slice(0, totals.maxCandidates);
+  const suggestions = suggestedVarSets.flatMap((row) =>
+    typeof row.cli === 'string' ? [row.cli] : []);
   return {
     severity: 'warning',
     code: 'trace_runtime_variables_missing',
     message: `Runtime variables are required to resolve dynamic trace targets: ${missingVariables.join(', ')}`,
     missingVariables,
-    suggestions: missingVariables.map((key) => `--var ${key}=<value>`),
+    ...(suggestions.length > 0 ? { suggestions } : {}),
     candidateCount: totals.candidateCount,
     viableCandidateCount: totals.viableCandidateCount,
     rejectedCandidateCount: totals.rejectedCandidateCount,
@@ -236,7 +242,7 @@ export function runtimeVariableDiagnostic(edges: Array<{ evidence: Record<string
     omittedRejectedCandidateCount: Math.max(0, totals.rejectedCandidateCount - shownRejected.length),
     candidateSuggestions: shownSuggestions,
     rejectedCandidates: shownRejected,
-    suggestedVarSets: uniqueCliRows(totals.suggestedVarSets).slice(0, totals.maxCandidates),
+    suggestedVarSets,
     copyableExamples: copyableExamples(totals.suggestedVarSets, totals.candidateCount, totals.maxCandidates),
   };
 }

@@ -87,6 +87,7 @@ export function localCallTrace(
   depth: number,
   row: Record<string, unknown>,
   node: Record<string, unknown> | undefined,
+  sourceNode: Record<string, unknown> | undefined,
 ): LocalCallTrace {
   const evidence = {
     ...parseTraceEvidence(row.evidence_json),
@@ -96,6 +97,7 @@ export function localCallTrace(
     calleeSymbolName: node?.symbolName,
     calleeSymbolFile: node?.sourceFile,
     resolutionStatus: row.status,
+    repositoryName: row.callerRepoName,
   };
   const unresolvedReason = String(row.status) === 'resolved'
     ? undefined
@@ -107,6 +109,8 @@ export function localCallTrace(
       step: depth,
       type: 'local_symbol_call',
       from: String(row.callee_expression),
+      fromNodeId: typeof sourceNode?.id === 'string'
+        ? sourceNode.id : undefined,
       to: node?.label
         ? String(node.label)
         : `${String(row.status)}:${String(row.callee_expression)}`,

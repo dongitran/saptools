@@ -64,7 +64,9 @@ export class TargetHandler {
 interface DetailedEdge {
   type: string;
   from: string;
+  fromLabel: string;
   to: string;
+  toLabel: string;
   evidence: Record<string, unknown>;
   unresolvedReason?: string;
 }
@@ -306,14 +308,14 @@ async function assertDetailedCliFlow(): Promise<void> {
   const resolved = JSON.parse(await runCli(exactArgs)) as DetailedTrace;
   expect(resolved.edges.some((edge) =>
     edge.type === 'remote_action'
-    && edge.to.includes('/TargetService/lookup'))).toBe(true);
+    && edge.toLabel.includes('/TargetService/lookup'))).toBe(true);
   expect(resolved.edges.some((edge) =>
     edge.type === 'local_symbol_call'
-    && `${edge.from}:${edge.to}`.includes('lookupLeaf'))).toBe(true);
+    && `${edge.fromLabel}:${edge.toLabel}`.includes('lookupLeaf'))).toBe(true);
   expect(resolved.edges.some((edge) =>
-    `${edge.from}:${edge.to}`.includes('firstDuplicateLeaf'))).toBe(true);
+    `${edge.fromLabel}:${edge.toLabel}`.includes('firstDuplicateLeaf'))).toBe(true);
   expect(resolved.edges.some((edge) =>
-    `${edge.from}:${edge.to}`.includes('secondDuplicateLeaf'))).toBe(true);
+    `${edge.fromLabel}:${edge.toLabel}`.includes('secondDuplicateLeaf'))).toBe(true);
 }
 
 async function assertCompactCliFlow(): Promise<void> {

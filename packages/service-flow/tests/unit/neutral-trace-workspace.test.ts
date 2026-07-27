@@ -64,8 +64,8 @@ describe('neutral multi-repository trace workspace', () => {
     expect(missing.diagnostics).toContainEqual(expect.objectContaining({
       code: 'trace_runtime_variables_missing',
       missingVariables: ['domain', 'shortName'],
-      suggestions: ['--var domain=<value>', '--var shortName=<value>'],
     }));
+    expect(JSON.stringify(missing.diagnostics)).not.toContain('=<value>');
 
     const ambiguous = trace(db, {
       repo: 'process-service',

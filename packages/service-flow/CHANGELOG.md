@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.75
+
+- Restored exported enum-member identity through dotted TypeScript namespaces. Generated decorator constants now use their declared string value across files, while private nested namespaces remain refused.
+- Added an explicit implementation `selectionBasis` to detailed, table, Mermaid, and compact output. Method-name fallback refuses a handler whose unresolved decorator names a sibling operation, and rejected alternatives are disclosed instead of rendering as an unexplained bare resolution.
+- Preserved canonical node identity throughout trace closure, added explicit detailed-JSON endpoint references, repository-qualified synthesized targets, and full-width table identifiers. Every rendered detailed JSON edge now references nodes present in the same document.
+- Collapsed duplicate environment-derived shape candidates into bounded deployment groups, removed the false same-repository scope assertion, and made dynamic display caps report effective, shown, and omitted counts.
+- Excluded imported Node stream/event receivers structurally and followed chained pipe receivers to their root. Unknown receiver bindings remain visible and proven CAP helper-return receivers remain unchanged.
+- Persisted explicit event-environment keys, removed non-actionable placeholder `--var` suggestions, rejected unbounded trace invocations, and made missing operation/detail-mode CLI requests diagnostic.
+- Package/CLI is `0.1.75`, SQLite schema is `15`, analyzer compatibility is `0.1.75-facts.1`, and compact remains `service-flow/compact-graph@1`. Schema 15 restores the historical schema-14 default and normalizes repository defaults without editing the applied migration. Parser facts changed, so existing workspaces require `index --force` followed by `link --force`.
+
 ## 0.1.74
 
 - Recovered CAP event publications reached through a later assignment from a single-hop helper-return binding. Missing receiver bindings remain visible as explicitly unproven facts, while proven socket, stream, pipe, desktop, realtime, and CAP CRUD receivers remain excluded.

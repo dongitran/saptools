@@ -42,17 +42,17 @@ function indexRunCount(db: Awaited<ReturnType<typeof prepareWorkspace>>['db'], s
 }
 
 describe('incremental indexing publication atomicity', () => {
-  it('rejects a future schema read-only before querying v14 tables', async () => {
+  it('rejects a future schema read-only before querying v15 tables', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-future-schema-'));
     const dbPath = path.join(root, 'graph.db');
     const future = openDatabase(dbPath, { migrate: false });
-    future.exec('PRAGMA user_version = 15');
+    future.exec('PRAGMA user_version = 16');
     future.close();
 
     const reader = openReadOnlyDatabase(dbPath);
     expect(factLifecycleDiagnostic(reader)).toMatchObject({
-      code: 'unsupported_future_schema', currentSchemaVersion: 15,
-      supportedSchemaVersion: 14,
+      code: 'unsupported_future_schema', currentSchemaVersion: 16,
+      supportedSchemaVersion: 15,
     });
     reader.close();
   });
@@ -70,7 +70,7 @@ describe('incremental indexing publication atomicity', () => {
     const ownerColumn = migrated.prepare('PRAGMA table_info(index_runs)').all().find((column) => column.name === 'owner_pid');
     const preserved = migrated.prepare('SELECT status,repo_count repoCount,owner_pid ownerPid FROM index_runs').get();
 
-    expect(schemaVersion(migrated)).toBe(14);
+    expect(schemaVersion(migrated)).toBe(15);
     expect(ownerColumn).toMatchObject({ name: 'owner_pid', type: 'INTEGER' });
     expect(preserved).toEqual({ status: 'success', repoCount: 2, ownerPid: null });
     migrated.close();
@@ -187,7 +187,7 @@ export function register(): void {
     );
     expect(factLifecycleDiagnostic(legacy, 1)).toMatchObject({
       code: 'schema_upgrade_required', currentSchemaVersion: 11,
-      requiredSchemaVersion: 14,
+      requiredSchemaVersion: 15,
     });
     legacy.close();
 
@@ -219,7 +219,7 @@ export function register(): void {
     const roleColumn = symbolColumns.find((column) => column.name === 'call_role');
     const outboundIndexes = migrated.prepare('PRAGMA index_list(outbound_calls)').all();
     const symbolIndexes = migrated.prepare('PRAGMA index_list(symbol_calls)').all();
-    expect(schemaVersion(migrated)).toBe(14);
+    expect(schemaVersion(migrated)).toBe(15);
     expect(outboundColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'call_site_start_offset', 'call_site_end_offset',
     ]));

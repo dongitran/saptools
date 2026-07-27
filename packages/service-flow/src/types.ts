@@ -327,6 +327,8 @@ export interface TraceEdge {
   type: string;
   from: string;
   to: string;
+  fromNodeId?: string;
+  toNodeId?: string;
   evidence: Record<string, unknown>;
   confidence: number;
   unresolvedReason?: string;

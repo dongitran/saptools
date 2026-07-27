@@ -21,12 +21,14 @@ interface DoctorOptions {
   detail?: boolean;
   workspaceId?: number;
 }
-
 export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOptions = {}): Diagnostic[] {
   const lifecycle = factLifecycleDiagnostic(db, options.workspaceId);
   if (lifecycle && lifecycle.code !== 'reindex_required')
     return boundDoctorDiagnostics([lifecycle]);
-  const diagnostics = db.prepare('SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id').all() as Diagnostic[];
+  const diagnostics = db.prepare(`SELECT r.name repositoryName,d.severity,
+    d.code,d.message,d.source_file sourceFile,d.source_line sourceLine
+    FROM diagnostics d LEFT JOIN repositories r ON r.id=d.repo_id
+    ORDER BY d.id`).all() as Diagnostic[];
   if (lifecycle && Number(lifecycle.invalidCallFactCount ?? 0) > 0)
     return boundDoctorDiagnostics([
       lifecycle,

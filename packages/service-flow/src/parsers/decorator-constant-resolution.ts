@@ -3,6 +3,7 @@ import ts from 'typescript';
 import { normalizePath } from '../utils/path-utils.js';
 import {
   collectStringConstantLookups,
+  type StaticStringConstant,
   type StaticStringLookupResult,
 } from './string-constant-lookups.js';
 import {
@@ -12,9 +13,18 @@ import {
 } from './symbol-import-bindings.js';
 import type { RepositorySourceContext } from './ts-project.js';
 
+type DecoratorConstantLookupResult =
+  | {
+      status: 'resolved';
+      constant: StaticStringConstant;
+      resolutionKind: StaticStringConstant['kind']
+        | 'generated_constant_name';
+    }
+  | Exclude<StaticStringLookupResult, { status: 'resolved' }>;
+
 export type DecoratorConstantResolver = (
   expression: ts.Expression,
-) => StaticStringLookupResult;
+) => DecoratorConstantLookupResult;
 
 type ConstantImportBinding = Pick<
   SymbolImportBinding,
@@ -146,7 +156,8 @@ function resolveTarget(
   context: RepositorySourceContext,
   filePath: string,
   key: string,
-): StaticStringLookupResult {
+  generatedModel: boolean,
+): DecoratorConstantLookupResult {
   const snapshot = context.get(filePath);
   if (!snapshot) return { status: 'not_found' };
   const lookups = collectStringConstantLookups(snapshot.sourceFile());
@@ -154,7 +165,12 @@ function resolveTarget(
     ?? lookups.enumMembers.get(key)
     ?? lookups.objectProperties.get(key);
   if (constant?.exported && constant.stable)
-    return { status: 'resolved', constant };
+    return {
+      status: 'resolved',
+      constant,
+      resolutionKind: generatedModel
+        ? 'generated_constant_name' : constant.kind,
+    };
   const refusal = lookups.refusedMembers.get(key);
   return {
     status: 'refused',
@@ -183,7 +199,10 @@ export function createDecoratorConstantResolver(
     if (!binding || !key) return { status: 'not_found' };
     const files = targetFiles(context, sourceFile, binding);
     return files.length === 1 && files[0]
-      ? resolveTarget(context, files[0], key)
+      ? resolveTarget(
+          context, files[0], key,
+          binding.rawModuleSpecifier.startsWith('#cds-models'),
+        )
       : {
           status: 'refused',
           reason: 'decorator_constant_target_ambiguous',

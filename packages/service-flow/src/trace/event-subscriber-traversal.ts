@@ -161,7 +161,7 @@ export function eventSubscriberNode(
   return {
     id: `symbol:${handler.symbolId}`,
     kind: 'symbol',
-    label: `${fileName}:${handler.qualifiedName}`,
+    label: `${handler.repoName}:${fileName}:${handler.qualifiedName}`,
     symbolId: handler.symbolId,
     symbolName: handler.qualifiedName,
     qualifiedName: handler.qualifiedName,

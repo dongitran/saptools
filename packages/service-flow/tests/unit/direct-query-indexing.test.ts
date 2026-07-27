@@ -397,7 +397,8 @@ describe('direct CAP query-builder indexing and trace integration', () => {
       'Entity: AggregateReadRows',
     ]);
     expect(renderTraceTable(withDatabase)).toContain('Entity: LifecycleReturnedRows');
-    expect(renderTraceJson(withDatabase)).toContain('"to": "Entity: ReturnedOperationRows"');
+    expect(renderTraceJson(withDatabase))
+      .toContain('"toLabel": "Entity: ReturnedOperationRows"');
     expect(renderMermaid(withDatabase)).toContain('Entity: AggregateReadRows');
 
     const firstCallCount = calls.length;

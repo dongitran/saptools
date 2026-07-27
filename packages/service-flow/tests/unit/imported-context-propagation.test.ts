@@ -84,8 +84,8 @@ describe('imported contextual service-client propagation', () => {
     expect(result.diagnostics).toContainEqual(expect.objectContaining({
       code: 'trace_runtime_variables_missing',
       missingVariables: ['req.path'],
-      suggestions: ['--var req.path=<value>'],
     }));
+    expect(JSON.stringify(result.diagnostics)).not.toContain('=<value>');
     const runtimeResult = trace(db, { repo: 'gateway-service', handler: 'EntryHandler' }, {
       depth: 8,
       vars: { 'req.path': '/directTask()' },
