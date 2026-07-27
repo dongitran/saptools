@@ -30,7 +30,7 @@ describe('workspace event environment configuration', () => {
     };
     await writeConfig(root, legacy);
     expect((await loadWorkspaceConfig(root)).eventEnvironmentKeys)
-      .toEqual(['SHARD_CODE']);
+      .toEqual([]);
 
     await writeConfig(root, {
       ...base,
@@ -40,7 +40,7 @@ describe('workspace event environment configuration', () => {
       .toEqual(['REGION_CODE', 'TENANT_CODE']);
   });
 
-  it('rejects unsafe or empty configured key lists', async () => {
+  it('rejects unsafe keys and accepts an explicitly empty list', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-env-config-'));
     const base = createWorkspaceConfig(root);
     await writeConfig(root, {
@@ -50,6 +50,7 @@ describe('workspace event environment configuration', () => {
     await expect(loadWorkspaceConfig(root)).rejects.toThrow();
 
     await writeConfig(root, { ...base, eventEnvironmentKeys: [] });
-    await expect(loadWorkspaceConfig(root)).rejects.toThrow();
+    expect((await loadWorkspaceConfig(root)).eventEnvironmentKeys)
+      .toEqual([]);
   });
 });

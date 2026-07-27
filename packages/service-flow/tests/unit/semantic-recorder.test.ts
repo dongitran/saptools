@@ -248,9 +248,11 @@ function expectOperationAndLocalCoverage(
   expect(local?.source.kind).toBe('symbol');
   expect(local?.target.kind).toBe('symbol');
   expect(local?.source).not.toEqual(local?.target);
-  const unresolved = observations.find((item) =>
-    item.type === 'local_symbol_call' && item.target.kind === 'unavailable');
-  expect(unresolved?.status).toBe('unresolved');
+  expect(observations.some((item) =>
+    item.type === 'local_symbol_call'
+    && item.target.kind === 'unavailable'
+    && item.decision?.reasonCode
+      === 'package_repository_not_indexed')).toBe(false);
 }
 
 function expectOutboundAndEventCoverage(

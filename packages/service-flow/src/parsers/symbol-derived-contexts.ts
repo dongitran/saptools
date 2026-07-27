@@ -5,7 +5,7 @@ import {
   type SymbolClassInstance,
 } from './symbol-call-facts.js';
 import {
-  identifierMatchesDeclaration,
+  lexicalIdentifierDeclaration,
   symbolImportReference,
   type SymbolImportBinding,
 } from './symbol-import-bindings.js';
@@ -73,22 +73,24 @@ function nodeWritesMember(
   return ts.isDeleteExpression(node) && matches(node.expression);
 }
 
-function memberWrite(
+function declarationKey(
   source: ts.SourceFile,
   declaration: ts.Identifier,
-): boolean {
-  const start = declaration.getStart(source);
-  const end = declaration.getEnd();
-  const matches = (expression: ts.Expression): boolean => {
-    const receiver = receiverIdentifier(expression);
-    return Boolean(receiver && receiver !== expression
-      && identifierMatchesDeclaration(receiver, start, end));
-  };
-  let written = false;
+): string {
+  return `${declaration.getStart(source)}:${declaration.getEnd()}`;
+}
+
+function memberWriteDeclarations(source: ts.SourceFile): Set<string> {
+  const written = new Set<string>();
   const visit = (node: ts.Node): void => {
-    if (written) return;
-    written = nodeWritesMember(node, matches);
-    if (!written) ts.forEachChild(node, visit);
+    nodeWritesMember(node, (expression) => {
+      const receiver = receiverIdentifier(expression);
+      if (!receiver || receiver === expression) return false;
+      const declaration = lexicalIdentifierDeclaration(receiver);
+      if (declaration) written.add(declarationKey(source, declaration));
+      return false;
+    });
+    ts.forEachChild(node, visit);
   };
   visit(source);
   return written;
@@ -97,18 +99,21 @@ function memberWrite(
 function stableVariable(
   collection: DerivedContextCollection,
   node: ts.VariableDeclaration,
+  memberWrites: ReadonlySet<string>,
 ): node is ts.VariableDeclaration & { name: ts.Identifier } {
   return ts.isIdentifier(node.name)
     && ts.isVariableDeclarationList(node.parent)
     && (node.parent.flags & ts.NodeFlags.Const) !== 0
-    && !memberWrite(collection.source, node.name);
+    && !memberWrites.has(declarationKey(collection.source, node.name));
 }
 
 function collectProxy(
   collection: DerivedContextCollection,
   node: ts.Node,
+  memberWrites: ReadonlySet<string>,
 ): void {
-  if (!ts.isVariableDeclaration(node) || !stableVariable(collection, node)
+  if (!ts.isVariableDeclaration(node)
+    || !stableVariable(collection, node, memberWrites)
     || !node.initializer || !ts.isCallExpression(node.initializer)
     || !ts.isPropertyAccessExpression(node.initializer.expression)) return;
   const callee = symbolCallName(node.initializer.expression);
@@ -183,8 +188,10 @@ function rememberInstance(
 function collectVariableInstance(
   collection: DerivedContextCollection,
   node: ts.Node,
+  memberWrites: ReadonlySet<string>,
 ): void {
-  if (!ts.isVariableDeclaration(node) || !stableVariable(collection, node))
+  if (!ts.isVariableDeclaration(node)
+    || !stableVariable(collection, node, memberWrites))
     return;
   const initializer = node.initializer;
   if (initializer && ts.isNewExpression(initializer)
@@ -258,9 +265,10 @@ function collectPropertyInstance(
 export function collectDerivedSymbolContexts(
   collection: DerivedContextCollection,
 ): void {
+  const memberWrites = memberWriteDeclarations(collection.source);
   const visit = (node: ts.Node): void => {
-    collectProxy(collection, node);
-    collectVariableInstance(collection, node);
+    collectProxy(collection, node, memberWrites);
+    collectVariableInstance(collection, node, memberWrites);
     collectPropertyInstance(collection, node);
     ts.forEachChild(node, visit);
   };

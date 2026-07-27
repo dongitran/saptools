@@ -62,6 +62,8 @@ function eventPackageName(
 function packageCallEvidenceValid(
   evidence: Record<string, unknown>,
 ): boolean {
+  if (evidence.candidateStrategy === 'package_import_provenance_missing')
+    return evidence.unresolvedReason === 'package_import_provenance_missing';
   const binding = record(evidence.importBinding);
   const classified = evidence.relation === 'package_import'
     || binding?.moduleKind === 'package';
@@ -85,7 +87,9 @@ function currentCalls(
       throw new Error('invalid_current_package_import_evidence');
     if (!packageCallEvidenceValid(evidence))
       throw new Error('invalid_current_package_import_evidence');
-    return evidence.relation === 'package_import'
+    return evidence.candidateStrategy === 'package_import_provenance_missing'
+      ? []
+      : evidence.relation === 'package_import'
       || record(evidence.importBinding)?.moduleKind === 'package'
       ? [{ id: row.id, repoId: row.repoId, evidence }]
       : [];

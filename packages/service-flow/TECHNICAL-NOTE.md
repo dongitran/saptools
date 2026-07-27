@@ -1,5 +1,14 @@
 # Service Flow Resolution Notes
 
+## 0.1.74 receiver recovery and blocker-chain notes
+
+- Package/CLI `0.1.74` keeps SQLite schema `14` and compact `service-flow/compact-graph@1`, while advancing analyzer compatibility to `0.1.74-facts.1`. Existing workspaces require `index --force` and `link --force`.
+- Receiver proof follows one direct helper-return binding through both initializer and later-assignment sites. A missing binding remains an explicitly unproven event fact; proven socket, stream, pipe, desktop, realtime, and CAP CRUD receivers remain excluded.
+- Normal index publication contains a structured prepared-snapshot error at the individual fact, records a site-aware diagnostic, and continues publishing valid sibling facts. Low-level repository publication remains atomic and throws the same structured errors for callers that do not opt into containment; unexpected repository failures still preserve the previous repository snapshot.
+- Identifier-dense TypeScript analyses reuse once-per-source declaration summaries. Decorator operation names resolve only from exact exported constants in relative modules or `#cds-models`, including nested namespaces; source-text naming guesses are not used.
+- Traces omit calls into packages that have no indexed repository and decorator-application noise, with bounded omission diagnostics. Every rendered edge references a registered canonical node, shape-candidate labels include the repository, and strict table/JSON/compact output discloses hidden candidates.
+- Event environment keys are opt-in and default to an empty list. They can be configured with `eventEnvironmentKeys` or supplied repeatedly to `index --event-environment-key`; doctor reports unmatched configured keys. Shape candidates sharing an environment key require an equal resolved deployment value, while missing values and excessive expansion are refused explicitly rather than multiplied or truncated.
+
 ## 0.1.73 event fact-contract repair notes
 
 - Package/CLI `0.1.73` keeps SQLite schema `14` and compact `service-flow/compact-graph@1`, while advancing analyzer compatibility to `0.1.73-facts.1`. Receiver/name facts, alias skeletons, constant safety, loop materialization, and environment-key configuration changed; existing workspaces require `index --force` and `link --force`.
@@ -19,7 +28,7 @@
 - Event receiver classification first proves a structurally imported `cds.connect.to(...)`/`messaging(...)` reaching assignment in lexical scope. Mixed, branch-dependent, parameter/property propagation, and known non-CAP bindings persist as bounded unproven facts; the historical receiver names are a lower-confidence, countable `name_fallback`, not CAP proof.
 - Event names fold only from stable string consts, enum members, and const-object properties in an exact local/relative module or uniquely proven package public entry. Generated constant facts retain declaration/value offsets, export/stability state, and refusal reasons. Computed access, mutable/non-string values, package duplicates, hidden exports, alias ambiguity, and incomplete surfaces remain non-traversable.
 - Template facts persist a name-independent literal/hole skeleton. Equal skeletons create `EVENT_SHAPE_CANDIDATE_SUBSCRIBER` only when at least one literal span is eight characters or longer; the edge is dynamic, capped, candidates-mode-only, and carries the proven subscriber handler. Canonical positional hole keys supplement the original source-expression keys without replacing them.
-- Repository environment facts currently admit only `SHARD_CODE` from `nodemon.json`, `.env`, `manifest.yml`, and `mta.yaml`. Values retain dev/deployment provenance and source offsets; only declarative case conversion is supported. Duplicate consumer values and within-repository conflicts fail closed, and non-allowlisted adjacent keys are never persisted.
+- Repository environment facts in 0.1.71 admitted the then-default `SHARD_CODE` from `nodemon.json`, `.env`, `manifest.yml`, and `mta.yaml`. Values retain dev/deployment provenance and source offsets; only declarative case conversion is supported. Duplicate consumer values and within-repository conflicts fail closed, and non-allowlisted adjacent keys are never persisted. Version 0.1.74 replaces that historical placeholder default with an empty opt-in list.
 - Strict doctor now measures unresolved event names, dynamic/event-candidate edges, unmatched publications and subscriptions, receiver proof outcomes, skeleton candidates, and environment ambiguity. Static and runtime-exact bridges expose `workspace_event_name_only` plus their dispatch certainty in detailed/table and bounded compact evidence; this never claims broker, channel, tenant, or payload delivery.
 
 ## 0.1.70 source-layout notes

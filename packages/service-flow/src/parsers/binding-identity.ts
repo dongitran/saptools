@@ -239,12 +239,12 @@ function resolvedReference(
     bindingSourceFile: selected.fact.sourceFile,
     bindingSiteStartOffset: selected.site.startOffset,
     bindingSiteEndOffset: selected.site.endOffset,
-    resolutionStrategy: selected.site.flow === 'assignment'
-      ? 'deterministic_reaching_assignment'
-      : selected.site.aliasSource
+    resolutionStrategy: helperReturn
+      ? 'single_hop_helper_return'
+      : selected.site.flow === 'assignment'
+        ? 'deterministic_reaching_assignment'
+        : selected.site.aliasSource
         ? 'lexical_alias_declaration'
-        : helperReturn
-          ? 'single_hop_helper_return'
           : 'lexical_declaration',
     lexicalScopeChain: chain,
     bindingScopeIndex: scopeIndex,

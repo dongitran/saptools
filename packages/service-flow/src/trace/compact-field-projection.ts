@@ -37,6 +37,10 @@ const compactDiagnosticMessages: Readonly<Record<string, string>> = {
   trace_start_ambiguous: 'The trace start selector is ambiguous.',
   trace_start_not_found: 'The trace start selector did not match an indexed start.',
   trace_start_implementation_unresolved: 'The trace start implementation is unresolved.',
+  event_shape_candidates_hidden:
+    'Non-authoritative event-shape candidates were excluded from strict traversal.',
+  external_package_calls_omitted:
+    'Calls into packages without an indexed repository were omitted from trace edges.',
 };
 const selectorDiagnosticCodes = new Set([
   'handler_decorators_not_indexed',
@@ -391,6 +395,8 @@ function compactDiagnosticRemediation(
     }, 'detailed diagnostic');
   if (code === 'implementation_hint_mismatch')
     return compactRemediationHint('select_implementation');
+  if (code === 'event_shape_candidates_hidden')
+    return 'Use --dynamic-mode candidates to inspect bounded subscriber candidates.';
   return undefined;
 }
 

@@ -18,17 +18,8 @@ async function prepareNeutralWorkspace(): ReturnType<typeof prepareWorkspace> {
 }
 
 function expectVisibleDecoratorGaps(edges: readonly TraceEdge[]): void {
-  const gaps = edges.filter((edge) => edge.unresolvedReason);
-  expect(gaps.map((edge) =>
-    `${String(edge.evidence.sourceFile)}:${edge.from}->${edge.to}`)
-    .sort()).toEqual([
-    'srv/GatewayHandler.ts:Action->unresolved:Action',
-    'srv/ProcessHandler.ts:Action->unresolved:Action',
-    'srv/SettingsHandler.ts:Action->unresolved:Action',
-  ]);
-  expect(gaps.every((edge) =>
-    edge.type === 'local_symbol_call'
-    && edge.unresolvedReason === 'package_repository_not_indexed')).toBe(true);
+  expect(edges.filter((edge) =>
+    edge.unresolvedReason === 'package_repository_not_indexed')).toEqual([]);
 }
 
 describe('neutral multi-repository trace workspace', () => {

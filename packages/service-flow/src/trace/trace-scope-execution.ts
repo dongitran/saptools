@@ -51,9 +51,14 @@ import { processOperationTarget } from './trace-operation-execution.js';
 import { runtimeEventResolution, runtimeEventSubscriberPlans } from './event-runtime-resolution.js';
 import { planLocalCallExpansion } from './local-call-expansion.js';
 import {
+  localCallTrace,
+  visibleLocalCallRows,
+} from './local-call-visibility.js';
+import {
   eventShapeRuntimeEvidence,
   outboundTraceEdgeType,
   outboundTraceTargetNode,
+  recordHiddenEventShapeCandidates,
   visibleEventShapeRows,
 } from './event-shape-candidate-trace.js';
 
@@ -209,7 +214,10 @@ function processLocalCalls(
 ): void {
   if (current.rootObservationOnly || !current.symbolIds
     || current.symbolIds.size === 0 || current.depth >= runtime.maxDepth) return;
-  for (const row of localCallRows(runtime.db, current.symbolIds))
+  for (const row of visibleLocalCallRows(
+    runtime.db, runtime.workspaceId,
+    localCallRows(runtime.db, current.symbolIds), runtime.diagnostics,
+  ))
     processLocalCall(runtime, current, bindings, row);
 }
 
@@ -224,11 +232,11 @@ function processLocalCall(
   const node = symbolId === undefined
     ? undefined : symbolNode(runtime.db, symbolId);
   if (node) runtime.nodes.set(String(node.id), node);
-  const evidence = localCallEvidence(row, node);
-  const unresolvedReason = localCallUnresolvedReason(row);
-  const edge = localTraceEdge(current.depth, row, node, evidence, unresolvedReason);
-  const target = recordLocalCallObservation(runtime.recorder, edge, {
-    symbolCall: row, evidence, unresolvedReason,
+  const observation = localCallTrace(current.depth, row, node);
+  const target = recordLocalCallObservation(runtime.recorder, observation.edge, {
+    symbolCall: row,
+    evidence: observation.evidence,
+    unresolvedReason: observation.unresolvedReason,
   });
   if (symbolId === undefined || row.status !== 'resolved' || !node) return;
   const { repoId, files, symbols, context, scheduling } =
@@ -244,48 +252,6 @@ function processLocalCall(
       repoId, files, symbolIds: symbols, depth: current.depth + 1,
       context, state: scheduling.state,
     });
-}
-
-function localCallEvidence(
-  row: Record<string, unknown>,
-  node: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  return {
-    ...parseTraceEvidence(row.evidence_json),
-    sourceFile: row.source_file,
-    sourceLine: row.source_line,
-    calleeSymbolId: row.callee_symbol_id,
-    calleeSymbolName: node?.symbolName,
-    calleeSymbolFile: node?.sourceFile,
-    resolutionStatus: row.status,
-  };
-}
-
-function localCallUnresolvedReason(
-  row: Record<string, unknown>,
-): string | undefined {
-  if (String(row.status) === 'resolved') return undefined;
-  return row.unresolved_reason ? String(row.unresolved_reason) : undefined;
-}
-
-function localTraceEdge(
-  depth: number,
-  row: Record<string, unknown>,
-  node: Record<string, unknown> | undefined,
-  evidence: Record<string, unknown>,
-  unresolvedReason: string | undefined,
-): TraceEdge {
-  return {
-    step: depth,
-    type: 'local_symbol_call',
-    from: String(row.callee_expression),
-    to: node?.label
-      ? String(node.label)
-      : `${String(row.status)}:${String(row.callee_expression)}`,
-    evidence,
-    confidence: Number(row.confidence ?? 0.8),
-    unresolvedReason,
-  };
 }
 
 function recordLocalCycle(
@@ -330,6 +296,9 @@ function processOutboundCall(
   persistedRows: TraceGraphEdgeRow[],
 ): void {
   recordCallNode(runtime.nodes, call);
+  recordHiddenEventShapeCandidates(
+    runtime.diagnostics, persistedRows, runtime.options,
+  );
   const receiver = receiverFromTraceEvidence(call.evidence_json) ?? '';
   const contextual = contextualRuntimeResolution(
     runtime.db, call, bindings.get(receiver), call.workspaceId, persistedRows,
@@ -395,13 +364,15 @@ function recordEffectiveOutbound(
       resolved.evidence, runtime.options.vars,
     ),
   };
-  const target = `${effective.row.to_kind}:${effective.row.to_id}`;
+  const target = edgeTarget(effective.row, effective.evidence);
   runtime.nodes.set(
-    target, outboundTraceTargetNode(runtime.db, target, effective.row),
+    target,
+    outboundTraceTargetNode(
+      runtime.db, target, effective.row, target,
+    ),
   );
-  const to = edgeTarget(effective.row, effective.evidence);
   const edge = outboundTraceEdge(
-    current.depth, call, effective.row, to,
+    current.depth, call, effective.row, target,
     effective.evidence, effective.unresolvedReason,
   );
   const semanticWorkspaceId = runtime.workspaceId ?? call.workspaceId;
@@ -416,7 +387,7 @@ function recordEffectiveOutbound(
   return {
     evidence: effective.evidence,
     row: effective.row,
-    to,
+    to: target,
     semanticWorkspaceId,
     semantic,
   };

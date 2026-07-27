@@ -24,6 +24,7 @@ import {
   reconcileEventSubscriptions,
 } from '../../src/parsers/event-subscription-facts.js';
 import type { OutboundCallFact } from '../../src/types.js';
+import { parseServiceBindings } from '../../src/parsers/service-binding-parser.js';
 
 function source(text: string): ts.SourceFile {
   return ts.createSourceFile(
@@ -152,6 +153,55 @@ async function run(flag: boolean): Promise<void> {
       });
   });
 
+  it('proves helper-return clients for initializers and later assignments', async () => {
+    const files = {
+      'helper.ts': `
+import cds from '@sap/cds';
+interface Service {
+  emit(name: string, payload: unknown): void;
+}
+export async function connectBus(name: string): Promise<Service> {
+  let client: Service;
+  try {
+    client = await cds.connect.to(name);
+  } catch (error) {
+    throw error;
+  }
+  return client;
+}
+`,
+      'events.ts': `
+import { connectBus } from './helper';
+async function run(name: string): Promise<void> {
+  const initialized = await connectBus(name);
+  initialized.emit('InitializedHelperClient', {});
+  let assigned;
+  assigned = await connectBus(name);
+  assigned.emit('AssignedHelperClient', {});
+}
+`,
+    };
+    const context = repositoryContext(files);
+    const eventSource = context.get('events.ts')?.sourceFile();
+    if (!eventSource) throw new Error('event_source_missing');
+    const bindings = await parseServiceBindings(
+      '/neutral', 'events.ts', context,
+    );
+    const facts = classifyOutboundCallsInSource(
+      eventSource, 'events.ts', { serviceBindings: bindings },
+    ).map((item) => item.fact).filter((fact) =>
+      fact.callType === 'async_emit');
+
+    expect(facts.map((fact) => fact.eventNameExpr)).toEqual([
+      'InitializedHelperClient', 'AssignedHelperClient',
+    ]);
+    for (const fact of facts)
+      expect(fact.evidence).toMatchObject({
+        receiverClassification: 'cap_evidence',
+        receiverProof: 'single_hop_helper_return',
+      });
+  });
+
   it('keeps mixed reaching assignments unproven', () => {
     const [fact] = eventFacts(`
 import cds from '@sap/cds';
@@ -277,6 +327,20 @@ messaging.emit('Fallback', {});
         consideredBindingSites: [
           expect.objectContaining({ flow: 'reference', connect: false }),
         ],
+      },
+    });
+  });
+
+  it('retains an unknown receiver as unproven instead of excluding it', () => {
+    const [fact] = eventFacts(`
+bus.emit('UnknownBinding', {});
+`);
+    expect(fact).toMatchObject({
+      eventNameExpr: 'UnknownBinding',
+      evidence: {
+        receiverClassification: 'unproven',
+        receiverProof: 'binding_not_found',
+        receiverUnresolvedReason: 'event_receiver_unproven_binding',
       },
     });
   });
@@ -631,7 +695,7 @@ applications:
       'manifest.yml': manifest,
       '.env': dotenv,
     });
-    const facts = collectEnvironmentDeclarations(sources);
+    const facts = collectEnvironmentDeclarations(sources, ['SHARD_CODE']);
 
     expect(facts).toMatchObject({
       status: 'ambiguous',
@@ -654,7 +718,7 @@ applications:
       'nodemon.json': JSON.stringify({
         env: { SHARD_CODE: '${RUNTIME_SHARD}' },
       }),
-    }));
+    }), ['SHARD_CODE']);
     expect(dynamic).toMatchObject({
       status: 'not_applicable',
       total: 0,
@@ -708,7 +772,7 @@ async function run(handler: () => void): Promise<void> {
       ),
       eventEnvironmentReferenceResolver:
         createEventEnvironmentReferenceResolver(
-          context, eventSource, 'events.ts',
+          context, eventSource, 'events.ts', ['SHARD_CODE'],
         ),
     }).map((item) => item.fact).filter((fact) =>
       fact.callType === 'async_subscribe');

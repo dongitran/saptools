@@ -260,11 +260,14 @@ function assertBoundedConsumers(
   expect(traced.diagnostics).toEqual([
     expect.objectContaining({ code: 'reindex_required' }),
   ]);
-  expect(doctorDiagnostics(db, true, {
+  const doctor = doctorDiagnostics(db, true, {
     detail: true, workspaceId: 1,
-  })).toEqual([
-    expect.objectContaining({ code: 'reindex_required' }),
-  ]);
+  });
+  expect(doctor[0]).toMatchObject({ code: 'reindex_required' });
+  expect(doctor).toEqual(expect.arrayContaining([
+    expect.objectContaining({ code: 'workspace_json_checks_deferred' }),
+  ]));
+  expect(doctor.length).toBeGreaterThan(1);
   expect(() => linkWorkspace(db, 1)).toThrow(/reindex_required/);
   expect(graphSnapshot(db)).toBe(graphBefore);
 }

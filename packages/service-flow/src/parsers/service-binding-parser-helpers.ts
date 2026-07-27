@@ -211,23 +211,37 @@ export async function readSource(
   }
 }
 
-async function resolveImport(repoPath: string, fromFile: string, spec: string): Promise<string | undefined> {
+async function resolveImport(
+  repoPath: string,
+  fromFile: string,
+  spec: string,
+  context?: RepositorySourceContext,
+): Promise<string | undefined> {
   if (!spec.startsWith('.')) return undefined;
   const rawBase = path.resolve(repoPath, path.dirname(fromFile), spec);
   const parsed = path.parse(rawBase);
   const base = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts'].includes(parsed.ext) ? path.join(parsed.dir, parsed.name) : rawBase;
   for (const candidate of [base, `${base}.ts`, `${base}.js`, path.join(base, 'index.ts'), path.join(base, 'index.js')]) {
+    const relative = normalizePath(path.relative(repoPath, candidate));
+    if (context?.get(relative)) return relative;
     const stat = await fs.stat(candidate).catch(() => undefined);
-    if (stat?.isFile()) return normalizePath(path.relative(repoPath, candidate));
+    if (stat?.isFile()) return relative;
   }
   return undefined;
 }
 
-export async function importsFor(repoPath: string, filePath: string, sf: ts.SourceFile): Promise<ImportBinding[]> {
+export async function importsFor(
+  repoPath: string,
+  filePath: string,
+  sf: ts.SourceFile,
+  context?: RepositorySourceContext,
+): Promise<ImportBinding[]> {
   const imports: ImportBinding[] = [];
   for (const stmt of sf.statements) {
     if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteralLike(stmt.moduleSpecifier)) continue;
-    const sourceFile = await resolveImport(repoPath, filePath, stmt.moduleSpecifier.text);
+    const sourceFile = await resolveImport(
+      repoPath, filePath, stmt.moduleSpecifier.text, context,
+    );
     const clause = stmt.importClause;
     if (!clause) continue;
     if (clause.name) imports.push({ localName: clause.name.text, exportedName: 'default', sourceFile });

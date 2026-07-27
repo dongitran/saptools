@@ -574,7 +574,7 @@ describe('event zero-role and reader ordering lifecycle', () => {
     },
   );
 
-  it('short-circuits handler trace and strict doctor before selector JSON', () => {
+  it('blocks handler trace while doctor keeps safe diagnostics before selector JSON', () => {
     const value = fixture();
     const before = graphSnapshot(value.db);
     updateEvidence(
@@ -590,12 +590,15 @@ describe('event zero-role and reader ordering lifecycle', () => {
     expect(traced.diagnostics).toEqual([
       expect.objectContaining({ code: 'reindex_required' }),
     ]);
-    expect(doctorDiagnostics(guarded, true, {
+    const doctor = doctorDiagnostics(guarded, true, {
       detail: true,
       workspaceId: 1,
-    })).toEqual([
-      expect.objectContaining({ code: 'reindex_required' }),
-    ]);
+    });
+    expect(doctor[0]).toMatchObject({ code: 'reindex_required' });
+    expect(doctor).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'workspace_json_checks_deferred' }),
+    ]));
+    expect(doctor.length).toBeGreaterThan(1);
     expect(graphSnapshot(value.db)).toBe(before);
     value.db.close();
   });

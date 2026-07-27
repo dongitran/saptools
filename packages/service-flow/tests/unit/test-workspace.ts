@@ -13,7 +13,13 @@ export async function writeFixtureFile(root: string, relative: string, content =
   await writeFile(target, content);
 }
 
-export async function prepareWorkspace(root: string): Promise<{ db: ReturnType<typeof openDatabase>; workspaceId: number }> {
+export async function prepareWorkspace(
+  root: string,
+  eventEnvironmentKeys?: readonly string[],
+): Promise<{
+  db: ReturnType<typeof openDatabase>;
+  workspaceId: number;
+}> {
   const dbPath = path.join(root, 'graph.db');
   const db = openDatabase(dbPath);
   const workspaceId = upsertWorkspace(db, root, dbPath);
@@ -27,6 +33,9 @@ export async function prepareWorkspace(root: string): Promise<{ db: ReturnType<t
       kind: await classifyRepository(repo.absolutePath, pkg),
     });
   }
-  await indexWorkspace(db, workspaceId, { force: true });
+  await indexWorkspace(db, workspaceId, {
+    force: true,
+    eventEnvironmentKeys,
+  });
   return { db, workspaceId };
 }

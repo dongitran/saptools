@@ -58,6 +58,7 @@ const symbolStrategies = [
   'proxy_member_no_global_name_fallback',
   'package_import_pending',
   'package_import_derived_member_unsupported',
+  'package_import_provenance_missing',
   'package_public_surface_exact',
   'package_public_surface_ambiguous',
   'package_public_surface_unresolved',
@@ -80,6 +81,7 @@ const symbolReasons = [
   'multiple_proxy_targets_in_requested_module',
   'package_resolution_pending',
   'package_derived_member_provenance_insufficient',
+  'package_import_provenance_missing',
   'package_repository_scope_ambiguous',
   'package_repository_not_indexed',
   'package_public_surface_unsupported',
@@ -117,6 +119,9 @@ const simpleStrategies = [
   'same_file_exact',
   'exported_exact',
   'exact_symbol_match',
+] as const;
+const provenanceFailureStrategies = [
+  'package_import_provenance_missing',
 ] as const;
 
 function sqlTextList(values: readonly string[]): string {
@@ -635,6 +640,12 @@ const symbolResolutionSql = `SELECT COUNT(*) count FROM symbol_calls fact
               '$.importBinding.moduleKind'),'') IN ('relative','package')
             OR COALESCE(json_extract(fact.evidence_json,'$.relation'),'')
               IN ('package_import','package_import_derived_member')))
+        OR (json_extract(fact.evidence_json,'$.candidateStrategy')
+            IN (${sqlTextList(provenanceFailureStrategies)})
+          AND (COALESCE(fact.import_source,'') LIKE '.%'
+            OR length(COALESCE(fact.import_source,''))=0
+            OR fact.status<>'unresolved'
+            OR fact.unresolved_reason<>'package_import_provenance_missing'))
         __PACKAGE_PENDING_TERMINAL_CHECK__)`;
 
 function symbolResolutionCount(

@@ -8,7 +8,6 @@ import type {
   HandlerMethodFact,
   HandlerMethodKind,
 } from '../types.js';
-import { generatedOperationNameFromConstant } from '../linker/operation-decorator-normalizer.js';
 import {
   createSourceFile,
   type RepositorySourceContext,
@@ -18,6 +17,10 @@ import {
   collectStringConstantLookups,
   type StringConstantLookups,
 } from './string-constant-lookups.js';
+import {
+  createDecoratorConstantResolver,
+  type DecoratorConstantResolver,
+} from './decorator-constant-resolution.js';
 
 type DecoratorResolution = HandlerMethodFact['decoratorResolution'];
 type ResolvedArgumentKind = Exclude<
@@ -28,6 +31,7 @@ interface StringLookups {
   strings: StringConstantLookups;
   capDecoratorNames: Map<string, string>;
   capDecoratorNamespaces: Set<string>;
+  importedConstant?: DecoratorConstantResolver;
 }
 interface LifecycleMetadata {
   phase: HandlerLifecyclePhase;
@@ -96,11 +100,15 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   ) current = current.expression;
   return current;
 }
-function collectStringLookups(source: ts.SourceFile): StringLookups {
+function collectStringLookups(
+  source: ts.SourceFile,
+  importedConstant?: DecoratorConstantResolver,
+): StringLookups {
   const lookups: StringLookups = {
     strings: collectStringConstantLookups(source),
     capDecoratorNames: new Map(),
     capDecoratorNamespaces: new Set(),
+    importedConstant,
   };
   for (const statement of source.statements) {
     collectCapDecoratorImports(statement, lookups);
@@ -164,13 +172,6 @@ function resolved(
 ): DecoratorResolution {
   return { rawExpression, argumentExpression, resolvedValue, resolutionKind };
 }
-function generatedConstant(rawExpression: string): string | undefined {
-  const match = /(?:^|\.)(Action[A-Z][\w$]*|Func[A-Z][\w$]*)\.name$/
-    .exec(rawExpression.trim());
-  return match?.[1]
-    ? generatedOperationNameFromConstant(match[1])
-    : undefined;
-}
 function resolveDecoratorArgument(
   argument: ts.Expression | undefined,
   lookups: StringLookups,
@@ -197,14 +198,15 @@ function resolveDecoratorArgument(
     if (objectValue !== undefined)
       return resolved(rawExpression, argumentExpression, objectValue, 'const_object_property');
   }
-  const generatedValue = generatedConstant(argumentExpression);
-  if (generatedValue !== undefined)
-    return resolved(
-      rawExpression,
-      argumentExpression,
-      generatedValue,
-      'generated_constant_name',
-    );
+  const imported = lookups.importedConstant?.(expression);
+  if (imported?.status === 'resolved') return resolved(
+    rawExpression,
+    argumentExpression,
+    imported.constant.value,
+    imported.constant.kind,
+  );
+  if (imported?.status === 'refused')
+    return unresolved(rawExpression, imported.reason, argumentExpression);
   if (ts.isPropertyAccessExpression(expression))
     return unresolved(
       rawExpression,
@@ -458,7 +460,12 @@ export async function parseDecorators(
   const text = snapshot?.text
     ?? await fs.readFile(path.join(repoPath, filePath), 'utf8');
   const sf = snapshot?.sourceFile() ?? createSourceFile(filePath, text);
-  const lookups = collectStringLookups(sf);
+  const lookups = collectStringLookups(
+    sf,
+    context
+      ? createDecoratorConstantResolver(context, sf, filePath)
+      : undefined,
+  );
   const handlers: HandlerClassFact[] = [];
   function visit(node: ts.Node): void {
     if (ts.isClassDeclaration(node)) {

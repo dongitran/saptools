@@ -1,6 +1,6 @@
 import ts from 'typescript';
 import {
-  identifierMatchesDeclaration,
+  lexicalIdentifierDeclaration,
 } from './symbol-import-bindings.js';
 import {
   isUnshadowedCommonJsExportExpression,
@@ -231,19 +231,36 @@ export function stableLocalValueReference(
   source: ts.SourceFile,
   declaration: ts.Identifier,
 ): boolean {
-  const start = declaration.getStart(source);
-  const end = declaration.getEnd();
-  let stable = true;
+  return !unsafeLocalValueDeclarations(source).has(
+    declarationKey(source, declaration),
+  );
+}
+
+const unsafeDeclarationCache = new WeakMap<ts.SourceFile, Set<string>>();
+
+function declarationKey(
+  source: ts.SourceFile,
+  declaration: ts.Identifier,
+): string {
+  return `${declaration.getStart(source)}:${declaration.getEnd()}`;
+}
+
+function unsafeLocalValueDeclarations(
+  source: ts.SourceFile,
+): ReadonlySet<string> {
+  const cached = unsafeDeclarationCache.get(source);
+  if (cached) return cached;
+  const unsafe = new Set<string>();
   const visit = (node: ts.Node): void => {
-    if (!stable) return;
-    if (ts.isIdentifier(node) && node !== declaration
-      && identifierMatchesDeclaration(node, start, end)
-      && !safeReferenceUse(node, declaration)) {
-      stable = false;
-      return;
+    if (ts.isIdentifier(node)) {
+      const declaration = lexicalIdentifierDeclaration(node);
+      if (declaration && node !== declaration
+        && !safeReferenceUse(node, declaration))
+        unsafe.add(declarationKey(source, declaration));
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return stable;
+  unsafeDeclarationCache.set(source, unsafe);
+  return unsafe;
 }

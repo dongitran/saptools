@@ -186,7 +186,7 @@ export async function parseServiceBindings(
   return collectServiceBindings({
     source,
     filePath,
-    imports: await importsFor(repoPath, filePath, source),
+    imports: await importsFor(repoPath, filePath, source, context),
     classHelpers: collectClassHelpers(source),
     loadHelperBindings: async (helperFile) =>
       helperBindings(repoPath, helperFile, context),

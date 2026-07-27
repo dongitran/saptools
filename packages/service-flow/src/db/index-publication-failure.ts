@@ -24,6 +24,10 @@ export interface PreparedSnapshotFailureSite {
   callSiteEndOffset?: number;
 }
 
+export interface PreparedFactInsertionOptions {
+  containPreparedFailures?: boolean;
+}
+
 export class PreparedRepositorySnapshotError extends Error {
   readonly failureCode: PreparedSnapshotFailureCode;
   readonly site: PreparedSnapshotFailureSite;
@@ -64,6 +68,27 @@ export function isPreparedRepositorySnapshotError(
   error: unknown,
 ): error is PreparedRepositorySnapshotError {
   return error instanceof PreparedRepositorySnapshotError;
+}
+
+export function containPreparedFactFailure(
+  db: Db,
+  repoId: number,
+  error: unknown,
+  options: PreparedFactInsertionOptions,
+): boolean {
+  if (!options.containPreparedFailures
+    || !isPreparedRepositorySnapshotError(error)) return false;
+  db.prepare(`INSERT INTO diagnostics(
+    repo_id,severity,code,message,source_file,source_line
+  ) VALUES(?,?,?,?,?,?)`).run(
+    repoId,
+    'warning',
+    error.message,
+    `Prepared ${error.site.factKind} was omitted because its fail-closed publication proof failed.`,
+    error.site.sourceFile,
+    error.site.sourceLine,
+  );
+  return true;
 }
 
 export function recordPreparedSnapshotFailure(

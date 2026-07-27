@@ -259,4 +259,41 @@ describe('repository-scoped source parsing context', () => {
       .toEqual({ servicePath: '/ChangedService' });
     db.close();
   });
+
+  it('indexes a large identifier-dense source with one analysis pass', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-large-source-'),
+    );
+    await writeFixtureFile(root, 'large-ui/.git-fixture');
+    await writeFixtureFile(root, 'large-ui/package.json', JSON.stringify({
+      name: '@neutral/large-ui',
+      version: '1.0.0',
+    }));
+    const expression = Array.from(
+      { length: 250 }, () => 'seed',
+    ).join(' + ');
+    const declarations = Array.from(
+      { length: 400 },
+      (_, index) => `const value${index} = ${expression};`,
+    ).join('\n');
+    await writeFixtureFile(root, 'large-ui/src/generated.ts', `
+const seed = 1;
+${declarations}
+export const total = value399;
+`);
+
+    const { db } = await prepareWorkspace(root);
+    const repo = repoByName(db, 'large-ui');
+    if (!repo) throw new Error('Expected large-ui repository fixture');
+
+    expect(db.prepare(`SELECT index_status status FROM repositories
+      WHERE id=?`).get(repo.id)).toEqual({ status: 'indexed' });
+    expect(db.prepare(`SELECT COUNT(*) count FROM files
+      WHERE repo_id=? AND relative_path='src/generated.ts'
+        AND size_bytes > 100000`).get(repo.id)).toEqual({ count: 1 });
+    expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
+      WHERE repo_id=? AND source_file='src/generated.ts'`).get(repo.id))
+      .toEqual({ count: 0 });
+    db.close();
+  }, 60_000);
 });

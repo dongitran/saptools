@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import { externalHttpTarget } from '../linker/external-http-target.js';
 import { classifyODataPathIntent } from '../linker/odata-path-normalizer.js';
-import type { OutboundCallFact } from '../types.js';
+import type { OutboundCallFact, ServiceBindingFact } from '../types.js';
 import { normalizePath, stripQuotes } from '../utils/path-utils.js';
 import { summarizeExpression } from '../utils/redaction.js';
 import { directQueryBuilderStatement } from './direct-query-execution.js';
@@ -59,6 +59,7 @@ export interface ClassifiedOutboundCall {
 export interface OutboundClassificationOptions {
   importedEventNameResolver?: ImportedEventNameResolver;
   eventEnvironmentReferenceResolver?: EventEnvironmentReferenceResolver;
+  serviceBindings?: readonly ServiceBindingFact[];
 }
 
 function namedFunctionLike(
@@ -568,6 +569,7 @@ export function classifyOutboundCallsInSource(
   const eventAnalysis = createEventCallAnalysisContext(
     source, options.importedEventNameResolver,
     options.eventEnvironmentReferenceResolver,
+    options.serviceBindings,
   );
   const wrapperSpecs = collectWrapperSpecs(source);
   const internalRanges = [...wrapperSpecs.values()].map((spec) => ({

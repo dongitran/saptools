@@ -149,11 +149,14 @@ function expectBoundedReaders(fixture: Fixture, before: string): void {
     expect.objectContaining({ code: 'reindex_required' }),
   ]);
   expect(graphGenerationSnapshot(fixture.db)).toBe(before);
-  expect(doctorDiagnostics(fixture.db, true, {
+  const doctor = doctorDiagnostics(fixture.db, true, {
     detail: true, workspaceId: fixture.workspaceId,
-  })).toEqual([
-    expect.objectContaining({ code: 'reindex_required' }),
-  ]);
+  });
+  expect(doctor[0]).toMatchObject({ code: 'reindex_required' });
+  expect(doctor).toEqual(expect.arrayContaining([
+    expect.objectContaining({ code: 'workspace_json_checks_deferred' }),
+  ]));
+  expect(doctor.length).toBeGreaterThan(1);
   expect(graphGenerationSnapshot(fixture.db)).toBe(before);
 }
 

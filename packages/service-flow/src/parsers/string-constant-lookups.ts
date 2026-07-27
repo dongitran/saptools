@@ -133,25 +133,28 @@ function collectEnum(
   statement: ts.EnumDeclaration,
   exports: Set<string>,
   lookups: StringConstantLookups,
+  qualifiedName = statement.name.text,
+  qualifiedExported?: boolean,
 ): void {
   const stable = stableLocalValueReference(source, statement.name);
-  const exported = hasExportModifier(statement)
-    || exports.has(statement.name.text);
+  const exported = qualifiedExported ?? (
+    hasExportModifier(statement) || exports.has(statement.name.text)
+  );
   for (const member of statement.members) {
     const memberName = propertyName(member.name);
     if (!memberName) continue;
-    const key = `${statement.name.text}.${memberName}`;
+    const key = `${qualifiedName}.${memberName}`;
     const value = stringValue(member.initializer);
     if (!stable) lookups.refusedMembers.set(key, refusalFact(
       source, key, member, {
-        kind: 'enum_member', containerName: statement.name.text,
+        kind: 'enum_member', containerName: qualifiedName,
         memberName, exported, stable,
         reason: 'event_name_constant_container_unsafe_reference',
       },
     ));
     else if (!value) lookups.refusedMembers.set(key, refusalFact(
       source, key, member, {
-        kind: 'enum_member', containerName: statement.name.text,
+        kind: 'enum_member', containerName: qualifiedName,
         memberName, exported, stable,
         reason: 'event_name_constant_member_not_string',
       },
@@ -159,12 +162,48 @@ function collectEnum(
     else lookups.enumMembers.set(key, staticFact(
       source, key, value, member, {
         kind: 'enum_member',
-        containerName: statement.name.text,
+        containerName: qualifiedName,
         memberName,
         exported,
         stable,
       },
     ));
+  }
+}
+
+function collectNestedNamespaceEnums(
+  source: ts.SourceFile,
+  module: ts.ModuleDeclaration,
+  prefix: string,
+  parentExported: boolean,
+  lookups: StringConstantLookups,
+): void {
+  const currentName = ts.isIdentifier(module.name)
+    || ts.isStringLiteral(module.name) ? module.name.text : undefined;
+  if (!currentName) return;
+  const qualified = prefix ? `${prefix}.${currentName}` : currentName;
+  const exported = parentExported;
+  if (module.body && ts.isModuleDeclaration(module.body)) {
+    collectNestedNamespaceEnums(
+      source, module.body, qualified,
+      exported && hasExportModifier(module.body), lookups,
+    );
+    return;
+  }
+  const statements = module.body && ts.isModuleBlock(module.body)
+    ? module.body.statements : [];
+  for (const statement of statements) {
+    if (ts.isEnumDeclaration(statement))
+      collectEnum(
+        source, statement, new Set(), lookups,
+        `${qualified}.${statement.name.text}`,
+        exported && hasExportModifier(statement),
+      );
+    if (ts.isModuleDeclaration(statement))
+      collectNestedNamespaceEnums(
+        source, statement, qualified,
+        exported && hasExportModifier(statement), lookups,
+      );
   }
 }
 
@@ -293,6 +332,8 @@ function collectIdentifier(
 export function collectStringConstantLookups(
   source: ts.SourceFile,
 ): StringConstantLookups {
+  const cached = stringLookupCache.get(source);
+  if (cached) return cached;
   const lookups: StringConstantLookups = {
     identifiers: new Map(),
     enumMembers: new Map(),
@@ -303,6 +344,12 @@ export function collectStringConstantLookups(
   for (const statement of source.statements) {
     if (ts.isEnumDeclaration(statement))
       collectEnum(source, statement, exports, lookups);
+    if (ts.isModuleDeclaration(statement))
+      collectNestedNamespaceEnums(
+        source, statement, '', hasExportModifier(statement)
+          || exports.has(statement.name.getText(source)),
+        lookups,
+      );
     if (!ts.isVariableStatement(statement)
       || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
     for (const declaration of statement.declarationList.declarations) {
@@ -310,8 +357,12 @@ export function collectStringConstantLookups(
       collectObject(source, statement, declaration, exports, lookups);
     }
   }
+  stringLookupCache.set(source, lookups);
   return lookups;
 }
+
+const stringLookupCache =
+  new WeakMap<ts.SourceFile, StringConstantLookups>();
 
 export function resolveStringConstant(
   expression: ts.Expression,

@@ -259,6 +259,8 @@ function collectNestedCjsBindings(
 export function collectSymbolImportBindings(
   source: ts.SourceFile,
 ): SymbolImportBinding[] {
+  const cached = importBindingCache.get(source);
+  if (cached) return cached;
   const bindings = collectNestedCjsBindings(source);
   for (const statement of source.statements) {
     if (ts.isImportDeclaration(statement))
@@ -266,9 +268,14 @@ export function collectSymbolImportBindings(
     if (ts.isImportEqualsDeclaration(statement))
       bindings.push(...importEqualsBinding(statement));
   }
-  return bindings.sort((left, right) =>
+  const sorted = bindings.sort((left, right) =>
     compareBinary(bindingKey(left), bindingKey(right)));
+  importBindingCache.set(source, sorted);
+  return sorted;
 }
+
+const importBindingCache =
+  new WeakMap<ts.SourceFile, SymbolImportBinding[]>();
 
 function matchingBinding(
   bindings: readonly SymbolImportBinding[],

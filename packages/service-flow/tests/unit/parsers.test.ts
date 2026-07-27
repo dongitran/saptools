@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { parseExecutableSymbols } from '../../src/parsers/symbol-parser.js';
+import { loadRepositorySourceContext } from '../../src/parsers/ts-project.js';
 import {
   discoverRepositories,
   parseCdsFile,
@@ -201,6 +202,76 @@ describe('service-flow parsers', () => {
       lifecyclePhase: 'before',
       decoratorResolution: { resolvedDecoratorKind: 'BeforeCreate' },
     });
+  });
+
+  it('resolves a nested imported operation constant without guessing its name', async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-decorator-constant-'),
+    );
+    await fs.writeFile(path.join(root, 'generated.ts'), `
+      export namespace GeneratedService {
+        export namespace Routing {
+          export enum ActionMisleadingAction {
+            name = 'actualOperation',
+          }
+        }
+      }
+    `);
+    await fs.mkdir(path.join(root, '@cds-models'), { recursive: true });
+    await fs.writeFile(path.join(root, '@cds-models', 'generated.ts'), `
+      export namespace ModelService {
+        export namespace Operations {
+          export enum FuncMisleadingFunction {
+            name = 'actualFunction',
+          }
+        }
+      }
+    `);
+    await fs.writeFile(path.join(root, 'handler.ts'), `
+      import { Action, Func, Handler } from 'cds-routing-handlers';
+      import { GeneratedService } from './generated.js';
+      import { ModelService } from '#cds-models/generated';
+      @Handler()
+      export class ActualHandler {
+        @Action(GeneratedService.Routing.ActionMisleadingAction.name)
+        actualOperation(): void {}
+      }
+      @Handler()
+      export class FunctionHandler {
+        @Func(ModelService.Operations.FuncMisleadingFunction.name)
+        actualFunction(): void {}
+      }
+    `);
+    const context = await loadRepositorySourceContext(
+      root, [
+        '@cds-models/generated.ts',
+        'generated.ts',
+        'handler.ts',
+      ],
+    );
+
+    const methods = (await parseDecorators(
+      root, 'handler.ts', context,
+    )).flatMap((handler) => handler.methods);
+    expect(methods.map((method) => method.methodName)).toEqual([
+      'actualOperation',
+      'actualFunction',
+    ]);
+
+    const operation = methods.find((method) =>
+      method.methodName === 'actualOperation');
+    const fn = methods.find((method) =>
+      method.methodName === 'actualFunction');
+    expect(operation?.decoratorValue).toBe('actualOperation');
+    expect(operation?.decoratorResolution).toMatchObject({
+      resolutionKind: 'enum_member',
+      resolvedValue: 'actualOperation',
+    });
+    expect(fn?.decoratorResolution).toMatchObject({
+      resolutionKind: 'enum_member',
+      resolvedValue: 'actualFunction',
+    });
+    expect(fn?.decoratorValue).toBe('actualFunction');
   });
 
   it('keeps declaration-only handlers non-executable and normalizes literal method names', async () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.74
+
+- Recovered CAP event publications reached through a later assignment from a single-hop helper-return binding. Missing receiver bindings remain visible as explicitly unproven facts, while proven socket, stream, pipe, desktop, realtime, and CAP CRUD receivers remain excluded.
+- Contained every structured prepared-snapshot validation failure at the individual fact boundary during normal indexing. Package factory-return and package-instance calls persist as unresolved provenance gaps; other unrepresentable facts are omitted with one site-aware diagnostic each, without discarding valid sibling facts or their repository.
+- Reused repository-scoped TypeScript analysis for member-write, stable-value, import-binding, and string-constant lookups so identifier-dense frontend sources terminate without changing parser facts. Decorator operation names now come from exact relative or `#cds-models` exported nested constants rather than source-text naming guesses.
+- Removed unregistered third-party package calls and decorator applications from trace edges while retaining bounded omission diagnostics. Every rendered edge target now has a canonical node, shape-candidate nodes are repository-qualified, and strict output discloses hidden event-shape candidates with a copyable mode hint.
+- Scoped environment-derived shape pairings to equal values of a shared deployment key, collapsed missing consumer declarations into one bounded refusal, and refuses excessive expansion with a diagnostic instead of truncating it. The environment-key default is empty, `index --event-environment-key` is repeatable, and doctor reports configured and unmatched keys.
+- Package/CLI is `0.1.74`, SQLite remains schema `14` because all new state uses existing evidence and diagnostic carriers, analyzer compatibility is `0.1.74-facts.1`, and compact remains `service-flow/compact-graph@1`. Parser facts changed, so existing workspaces require `index --force` followed by `link --force`.
+
 ## 0.1.73
 
 - Repaired the schema-14 writer/validator contract: resolved empty string constants remain legal facts, empty event topics fail closed at use, and const-alias templates retain complete signed skeletons. Lifecycle failures now use the actual workspace path and expose bounded repository/file/line/predicate examples without replacing the last good graph.

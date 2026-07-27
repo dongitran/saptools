@@ -24,8 +24,23 @@ interface DoctorOptions {
 
 export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOptions = {}): Diagnostic[] {
   const lifecycle = factLifecycleDiagnostic(db, options.workspaceId);
-  if (lifecycle) return boundDoctorDiagnostics([lifecycle]);
-  const globalLifecycle = options.workspaceId === undefined
+  if (lifecycle && lifecycle.code !== 'reindex_required')
+    return boundDoctorDiagnostics([lifecycle]);
+  const diagnostics = db.prepare('SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id').all() as Diagnostic[];
+  if (lifecycle && Number(lifecycle.invalidCallFactCount ?? 0) > 0)
+    return boundDoctorDiagnostics([
+      lifecycle,
+      ...diagnostics,
+      ...healthDiagnostics(db, strict),
+      ...schemaDriftDiagnostics(db, strict, options.workspaceId),
+      ...analyzerVersionDiagnostics(db, strict, options.workspaceId),
+      {
+        severity: 'warning',
+        code: 'workspace_json_checks_deferred',
+        message: 'JSON-dependent quality checks were deferred until invalid fact rows are repaired.',
+      },
+    ]);
+  const globalLifecycle = lifecycle || options.workspaceId === undefined
     ? undefined : factLifecycleDiagnostic(db);
   if (globalLifecycle) return boundDoctorDiagnostics([
     ...schemaDriftDiagnostics(db, strict, options.workspaceId),
@@ -37,8 +52,8 @@ export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOption
       remediation: 'Run doctor for the affected workspace after force index and link.',
     },
   ]);
-  const diagnostics = db.prepare('SELECT severity,code,message,source_file sourceFile,source_line sourceLine FROM diagnostics ORDER BY id').all() as Diagnostic[];
   return boundDoctorDiagnostics([
+    ...(lifecycle ? [lifecycle] : []),
     ...diagnostics,
     ...packagePendingDiagnostics(db),
     ...healthDiagnostics(db, strict),

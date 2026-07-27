@@ -277,6 +277,7 @@ class ServiceBindingCollector {
       sourceFile: this.sourceFile,
       sourceLine: lineOf(this.input.source, node),
       helperChain: [...(resolved.helper.helperChain ?? []), {
+        bindingOrigin: 'single_hop_helper_return',
         callerVariable: targetName,
         ...assignment,
         importedHelper: call.expression.getText(this.input.source),

@@ -270,6 +270,9 @@ function eventDispatchEvidence(
         reason: environment?.resolution.reason,
         provenance: environment?.resolution.provenance,
         collisionCount: environment?.collisionCount,
+        consumerCandidateCount: environment?.consumerCandidateCount,
+        refusedConsumerCount: environment?.refusedConsumerCount,
+        refusedConsumerExamples: environment?.refusedConsumerExamples,
       },
     }),
   };
@@ -386,14 +389,36 @@ function associationEdgeReason(
   environment: SubscriptionEnvironmentTarget | undefined,
   environmentAmbiguous: boolean,
 ): string | null {
-  if (event.isDynamic)
+  if (event.isDynamic) {
+    if (environment?.resolution.status === 'unresolved'
+      && environment.resolution.reason)
+      return environment.resolution.reason;
     return event.substitution.missing.length > 0
       ? 'event_template_variables_missing'
       : event.unresolvedReason ?? 'event_name_unsupported_constant_expression';
+  }
   if (environmentAmbiguous)
     return environment?.resolution.reason
       ?? 'event_environment_value_collision';
   return association.reasonCode ?? association.call?.unresolvedReason ?? null;
+}
+
+function recordEnvironmentExpansionRefusal(
+  db: Db,
+  subscription: SubscriptionRow,
+  target: SubscriptionEnvironmentTarget,
+): void {
+  if (!target.refusedConsumerCount) return;
+  db.prepare(`INSERT INTO diagnostics(
+    repo_id,severity,code,message,source_file,source_line
+  ) VALUES(?,?,?,?,?,?)`).run(
+    subscription.repoId,
+    'warning',
+    'event_environment_consumer_expansion_incomplete',
+    `${target.refusedConsumerCount} of ${target.consumerCandidateCount ?? 0} consumer repositories lacked a provable event environment binding; one aggregate unresolved edge was retained.`,
+    subscription.sourceFile,
+    subscription.sourceLine,
+  );
 }
 
 function parsedEvidenceRecord(
@@ -489,6 +514,10 @@ export function linkEventSubscriptionHandlers(
   generation: number,
   variables: Record<string, string> = {},
 ): SubscriptionHandlerLinkSummary {
+  db.prepare(`DELETE FROM diagnostics WHERE code=
+    'event_environment_consumer_expansion_incomplete' AND repo_id IN (
+      SELECT id FROM repositories WHERE workspace_id=?
+    )`).run(workspaceId);
   const summary: SubscriptionHandlerLinkSummary = {
     edgeCount: 0,
     resolvedCount: 0,
@@ -503,6 +532,7 @@ export function linkEventSubscriptionHandlers(
     for (const target of linkedSubscriptionEvents(
       db, workspaceId, subscription, variables,
     )) {
+      recordEnvironmentExpansionRefusal(db, subscription, target.environment);
       insertAssociationEdge(
         db, workspaceId, generation, subscription, association,
         target.event, target.environment, target.loopValue,

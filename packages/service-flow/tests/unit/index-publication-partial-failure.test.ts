@@ -7,7 +7,6 @@ import { indexCommandOutcome } from
 import type { Db } from '../../src/db/connection.js';
 import {
   listRepositories,
-  repoByName,
 } from '../../src/db/repositories.js';
 import {
   claimIndexRun,
@@ -70,37 +69,6 @@ async function repositoryFiles(
     })),
     writeFixtureFile(root, `${name}/src/run.ts`, source),
   ]);
-}
-
-async function createPackageFixture(): Promise<{
-  db: Db;
-  workspaceId: number;
-}> {
-  const root = await mkdtemp(path.join(
-    os.tmpdir(), 'sf-index-failed-package-target-',
-  ));
-  await Promise.all([
-    repositoryFiles(root, 'consumer', `
-      import { work } from '@neutral/provider';
-      export function start(): void { work(); }
-    `),
-    writeFixtureFile(root, 'provider/.git-fixture'),
-    writeFixtureFile(root, 'provider/package.json', JSON.stringify({
-      name: '@neutral/provider',
-      version: '1.0.0',
-      exports: './src/run.ts',
-    })),
-    writeFixtureFile(root, 'provider/src/run.ts', `
-      export function work(): void {}
-      export async function probe(): Promise<void> {
-        const remote = await cds.connect.to('target-api');
-        await remote.send({ method: 'POST', path: '/probe' });
-      }
-    `),
-  ]);
-  const fixture = await prepareWorkspace(root);
-  linkWorkspace(fixture.db, fixture.workspaceId);
-  return fixture;
 }
 
 async function preparedRows(
@@ -182,17 +150,6 @@ interface SnapshotFailureCase {
 }
 
 const snapshotFailureCases: SnapshotFailureCase[] = [
-  {
-    label: 'missing package provenance',
-    code: 'package_import_provenance_missing',
-    factKind: 'symbol_call',
-    forge: (prepared) => {
-      const call = symbolCall(prepared);
-      call.importSource = '@neutral/external';
-      call.evidence = { ...call.evidence, relation: 'package_import' };
-      return call.sourceLine;
-    },
-  },
   {
     label: 'symbol-call owner mismatch',
     code: 'symbol_call_owner_mismatch',
@@ -320,15 +277,6 @@ function graphSnapshot(db: Db): string {
   ).all());
 }
 
-function consumerPackageState(db: Db): string {
-  const call = db.prepare(`SELECT sc.status,sc.callee_symbol_id calleeId,
-    sc.unresolved_reason reason,sc.evidence_json evidenceJson,
-    r.fact_generation factGeneration
-    FROM symbol_calls sc JOIN repositories r ON r.id=sc.repo_id
-    WHERE r.name='consumer' AND sc.callee_expression='work'`).get();
-  return JSON.stringify(call);
-}
-
 function rowByName(
   rows: readonly Record<string, unknown>[],
   name: string,
@@ -340,7 +288,7 @@ function rowByName(
 
 describe('workspace prepared-repository publication containment', () => {
   it.each(snapshotFailureCases)(
-    'contains $label to its repository',
+    'contains $label to its fact',
     async ({ code, factKind, forge }) => {
       const { db, workspaceId } = await createFixture();
       try {
@@ -355,13 +303,16 @@ describe('workspace prepared-repository publication containment', () => {
           db, workspaceId, runId, rows,
         );
 
-        expect(summary.failedRepos).toEqual([{
-          name: 'broken',
-          code: `invalid_prepared_repository_snapshot:${code}`,
-        }]);
-        expectPartialRepositoryStates(db, before);
-        expectFailureDiagnostic(
+        expect(summary).toMatchObject({
+          repoCount: 3,
+          indexedCount: 3,
+          failedCount: 0,
+          failedRepos: [],
+        });
+        expectSuccessfulRepositoryStates(db, before);
+        expectContainedDiagnostics(
           db, 'broken', code, factKind, sourceLine,
+          code === 'duplicate_service_binding_site' ? 2 : 1,
         );
         expect(graphSnapshot(db)).toBe(graph);
       } finally {
@@ -370,11 +321,103 @@ describe('workspace prepared-repository publication containment', () => {
     },
   );
 
-  it('commits valid repositories and preserves one failed snapshot', async () => {
+  it('retains every package-provenance failure as an unresolved fact', async () => {
+    const { db, workspaceId } = await createFixture();
+    try {
+      const rows = await preparedRows(db, workspaceId);
+      const prepared = preparedByName(rows);
+      const call = symbolCall(prepared);
+      call.importSource = '@neutral/external';
+      call.evidence = { ...call.evidence, relation: 'package_import' };
+      const runId = claimIndexRun(db, workspaceId, rows.length);
+
+      const summary = publishPreparedWorkspaceRows(
+        db, workspaceId, runId, rows,
+      );
+
+      expect(summary).toMatchObject({
+        indexedCount: 3,
+        failedCount: 0,
+      });
+      expect(db.prepare(`SELECT status,unresolved_reason reason,
+        json_extract(evidence_json,'$.candidateStrategy') strategy
+        FROM symbol_calls WHERE import_source='@neutral/external'`).get())
+        .toEqual({
+          status: 'unresolved',
+          reason: 'package_import_provenance_missing',
+          strategy: 'package_import_provenance_missing',
+        });
+      expect(db.prepare(`SELECT code,source_file sourceFile,
+        source_line sourceLine FROM diagnostics
+        WHERE code='package_import_provenance_missing'`).all())
+        .toEqual([{
+          code: 'package_import_provenance_missing',
+          sourceFile: call.sourceFile,
+          sourceLine: call.sourceLine,
+        }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('publishes package factory-return and package-instance calls fail-closed', async () => {
+    const root = await mkdtemp(path.join(
+      os.tmpdir(), 'sf-package-provenance-shapes-',
+    ));
+    await repositoryFiles(root, 'package-shapes', `
+import lodash from 'lodash';
+import NodeCache from 'node-cache';
+function work(): void {}
+export function run(): void {
+  const throttled = lodash.throttle(work, 1);
+  throttled();
+  const cache = new NodeCache();
+  cache.flushAll();
+}
+`);
+
+    const { db, workspaceId } = await prepareWorkspace(root);
+    try {
+      expect(db.prepare(`SELECT index_status status,error_count errorCount
+        FROM repositories WHERE name='package-shapes'`).get()).toEqual({
+        status: 'indexed',
+        errorCount: 0,
+      });
+      const rows = db.prepare(`SELECT callee_expression expression,status,
+        unresolved_reason reason
+        FROM symbol_calls
+        WHERE import_source IN ('lodash','node-cache')
+        ORDER BY source_line,call_site_start_offset`).all();
+      expect(rows).toEqual([
+        {
+          expression: 'lodash.throttle',
+          status: 'unresolved',
+          reason: 'package_resolution_pending',
+        },
+        {
+          expression: 'throttled',
+          status: 'unresolved',
+          reason: 'package_import_provenance_missing',
+        },
+        {
+          expression: 'cache.flushAll',
+          status: 'unresolved',
+          reason: 'package_import_provenance_missing',
+        },
+      ]);
+      expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
+        WHERE code='package_import_provenance_missing'`).get())
+        .toEqual({ count: 2 });
+      expect(() => linkWorkspace(db, workspaceId)).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('commits a repository while omitting only invalid prepared facts', async () => {
     const { db, workspaceId } = await createFixture();
     try {
       const before = repositoryState(db);
-      const brokenFacts = factsForRepo(db, 'broken');
       const graph = graphSnapshot(db);
       const rows = await preparedRows(db, workspaceId);
       forgeDuplicateBinding(rows);
@@ -386,31 +429,28 @@ describe('workspace prepared-repository publication containment', () => {
 
       expect(summary).toMatchObject({
         repoCount: 3,
-        indexedCount: 2,
+        indexedCount: 3,
         skippedCount: 0,
-        failedCount: 1,
-        failedRepos: [{
-          name: 'broken',
-          code: 'invalid_prepared_repository_snapshot:duplicate_service_binding_site',
-        }],
-        diagnosticCount: 1,
+        failedCount: 0,
+        failedRepos: [],
+        diagnosticCount: 3,
       });
       const command = indexCommandOutcome(summary);
       expect(command).toEqual({
-        stdout: 'Indexed 2 repositories, skipped 0, failed 1 (broken: invalid_prepared_repository_snapshot:duplicate_service_binding_site), 3 files, 1 diagnostics\n',
-        exitCode: 1,
+        stdout: 'Indexed 3 repositories, skipped 0, 3 files, 3 diagnostics\n',
+        exitCode: 0,
       });
       expect(command.stdout).not.toContain('PreparedRepositorySnapshotError');
       expect(command.stdout).not.toMatch(/\n\s+at /);
-      expectPartialRepositoryStates(db, before);
-      expect(factsForRepo(db, 'broken')).toBe(brokenFacts);
+      expectSuccessfulRepositoryStates(db, before);
       expect(graphSnapshot(db)).toBe(graph);
-      expectFailureDiagnostic(
+      expectContainedDiagnostics(
         db,
         'broken',
         'duplicate_service_binding_site',
         'service_binding',
         4,
+        2,
       );
       expect(db.pragma('integrity_check')).toEqual([
         { integrity_check: 'ok' },
@@ -421,72 +461,8 @@ describe('workspace prepared-repository publication containment', () => {
     }
   });
 
-  it('marks the run failed when every selected repository fails', async () => {
-    const { db, workspaceId } = await createFixture();
-    try {
-      const rows = await preparedRows(db, workspaceId);
-      const broken = forgeDuplicateBinding(rows);
-      const runId = claimIndexRun(db, workspaceId, 1);
-      const summary = publishPreparedWorkspaceRows(
-        db, workspaceId, runId, [broken],
-      );
-      expect(summary).toMatchObject({
-        repoCount: 1, indexedCount: 0, failedCount: 1,
-        failedRepos: [{
-          name: 'broken',
-          code: 'invalid_prepared_repository_snapshot:duplicate_service_binding_site',
-        }], diagnosticCount: 1,
-      });
-      expect(db.prepare(`SELECT status,error_message errorMessage
-        FROM index_runs WHERE id=?`).get(runId)).toEqual({
-        status: 'failed',
-        errorMessage: '1 repositories failed index publication.',
-      });
-      expectFailureDiagnostic(
-        db,
-        'broken',
-        'duplicate_service_binding_site',
-        'service_binding',
-        4,
-      );
-    } finally {
-      db.close();
-    }
-  });
-
-  it('discards package invalidation effects from a failed target', async () => {
-    const { db, workspaceId } = await createPackageFixture();
-    try {
-      const provider = repoByName(db, 'provider', workspaceId);
-      if (!provider) throw new Error('Expected provider repository');
-      const prepared = await prepareRepositoryIndex(provider, true);
-      forgeDuplicateBinding([prepared], 'provider');
-      const consumer = consumerPackageState(db);
-      const graph = graphSnapshot(db);
-      expect(consumer).toContain('"status":"resolved"');
-      const runId = claimIndexRun(db, workspaceId, 1);
-
-      const summary = publishPreparedWorkspaceRows(
-        db, workspaceId, runId, [prepared],
-      );
-
-      expect(summary).toMatchObject({
-        repoCount: 1, indexedCount: 0, failedCount: 1,
-        failedRepos: [{
-          name: 'provider',
-          code: 'invalid_prepared_repository_snapshot:duplicate_service_binding_site',
-        }],
-      });
-      expect(consumerPackageState(db)).toBe(consumer);
-      expect(graphSnapshot(db)).toBe(graph);
-      expect(db.pragma('foreign_key_check')).toEqual([]);
-    } finally {
-      db.close();
-    }
-  });
-
   it.each(['first', 'last'] as const)(
-    'contains a failed repository published %s',
+    'contains invalid facts independently when their repository is %s',
     async (position) => {
       const { db, workspaceId } = await createFixture();
       try {
@@ -503,16 +479,17 @@ describe('workspace prepared-repository publication containment', () => {
         );
 
         expect(summary).toMatchObject({
-          indexedCount: 2,
-          failedCount: 1,
+          indexedCount: 3,
+          failedCount: 0,
         });
-        expectPartialRepositoryStates(db, before);
-        expectFailureDiagnostic(
+        expectSuccessfulRepositoryStates(db, before);
+        expectContainedDiagnostics(
           db,
           'broken',
           'duplicate_service_binding_site',
           'service_binding',
           4,
+          2,
         );
       } finally {
         db.close();
@@ -557,7 +534,7 @@ describe('workspace prepared-repository publication containment', () => {
     }
   });
 
-  it('marks a run failed when every repository publication fails', async () => {
+  it('contains invalid facts independently in every repository', async () => {
     const { db, workspaceId } = await createFixture();
     try {
       const rows = await preparedRows(db, workspaceId);
@@ -570,18 +547,19 @@ describe('workspace prepared-repository publication containment', () => {
 
       expect(summary).toMatchObject({
         repoCount: 3,
-        indexedCount: 0,
-        failedCount: 3,
+        indexedCount: 3,
+        failedCount: 0,
       });
       expect(db.prepare('SELECT status FROM index_runs WHERE id=?')
-        .get(runId)).toEqual({ status: 'failed' });
+        .get(runId)).toEqual({ status: 'success' });
       for (const name of ['alpha', 'broken', 'zeta'])
-        expectFailureDiagnostic(
+        expectContainedDiagnostics(
           db,
           name,
           'duplicate_service_binding_site',
           'service_binding',
           4,
+          2,
         );
     } finally {
       db.close();
@@ -589,49 +567,43 @@ describe('workspace prepared-repository publication containment', () => {
   });
 });
 
-function expectPartialRepositoryStates(
+function expectSuccessfulRepositoryStates(
   db: Db,
   before: readonly Record<string, unknown>[],
 ): void {
   const after = repositoryState(db);
-  for (const name of ['alpha', 'zeta']) {
+  for (const name of ['alpha', 'broken', 'zeta']) {
     expect(Number(rowByName(after, name).factGeneration)).toBe(
       Number(rowByName(before, name).factGeneration) + 1,
     );
     expect(rowByName(after, name).indexStatus).toBe('indexed');
+    expect(rowByName(after, name).errorCount).toBe(0);
   }
-  expect(rowByName(after, 'broken')).toMatchObject({
-    fingerprint: rowByName(before, 'broken').fingerprint,
-    factGeneration: rowByName(before, 'broken').factGeneration,
-    graphGeneration: rowByName(before, 'broken').graphGeneration,
-    indexStatus: 'failed',
-    errorCount: 1,
-  });
-  expect(db.prepare(`SELECT status,diagnostic_count diagnosticCount
-    FROM index_runs ORDER BY id DESC LIMIT 1`).get()).toEqual({
-    status: 'partial_failure', diagnosticCount: 1,
-  });
+  expect(db.prepare('SELECT status FROM index_runs ORDER BY id DESC LIMIT 1')
+    .get()).toEqual({ status: 'success' });
 }
 
-function expectFailureDiagnostic(
+function expectContainedDiagnostics(
   db: Db,
   repoName: string,
   code: PreparedSnapshotFailureCode,
   factKind: PreparedRepositoryFactKind,
   sourceLine: number,
+  count: number,
 ): void {
   const rows = db.prepare(`SELECT d.code,d.message,
     d.source_file sourceFile,d.source_line sourceLine
     FROM diagnostics d JOIN repositories r ON r.id=d.repo_id
-    WHERE r.name=? AND d.code GLOB ?
+    WHERE r.name=? AND d.code=?
     ORDER BY d.id`).all(
-    repoName, 'invalid_prepared_repository_snapshot:*',
+    repoName, `invalid_prepared_repository_snapshot:${code}`,
   );
-  expect(rows).toEqual([{
-    code: `invalid_prepared_repository_snapshot:${code}`,
-    message: 'Index publication failed before commit for this repository; '
-      + `previous facts and fingerprint were preserved. factKind=${factKind}`,
-    sourceFile: 'src/run.ts',
-    sourceLine,
-  }]);
+  expect(rows).toHaveLength(count);
+  for (const row of rows)
+    expect(row).toEqual({
+      code: `invalid_prepared_repository_snapshot:${code}`,
+      message: `Prepared ${factKind} was omitted because its fail-closed publication proof failed.`,
+      sourceFile: 'src/run.ts',
+      sourceLine,
+    });
 }

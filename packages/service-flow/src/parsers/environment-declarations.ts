@@ -4,7 +4,7 @@ export const ENVIRONMENT_DECLARATIONS_SCHEMA =
   'service-flow/environment-declarations@1';
 export const ENVIRONMENT_DECLARATION_RECORD_CAP = 32;
 export const EVENT_ENVIRONMENT_KEY_CAP = 16;
-export const DEFAULT_EVENT_ENVIRONMENT_KEYS = ['SHARD_CODE'] as const;
+export const DEFAULT_EVENT_ENVIRONMENT_KEYS = [] as const;
 export const EVENT_ENVIRONMENT_KEY_ALLOWLIST =
   DEFAULT_EVENT_ENVIRONMENT_KEYS;
 
@@ -55,7 +55,7 @@ export function normalizeEventEnvironmentKeys(
 ): string[] {
   const unique = [...new Set(values)].sort((left, right) =>
     left < right ? -1 : left > right ? 1 : 0);
-  if (unique.length === 0 || unique.length > EVENT_ENVIRONMENT_KEY_CAP
+  if (unique.length > EVENT_ENVIRONMENT_KEY_CAP
     || !unique.every(validEventEnvironmentKey))
     throw new Error('invalid_event_environment_keys');
   return unique;

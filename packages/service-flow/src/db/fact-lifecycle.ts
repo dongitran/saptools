@@ -30,6 +30,7 @@ export interface FactLifecycleDiagnostic extends Record<string, unknown> {
 
 const CATEGORY_LIMIT = 24;
 const EXAMPLE_LIMIT = 5;
+const STALE_REPOSITORY_LIMIT = 8;
 
 function count(db: Db, sql: string, ...params: unknown[]): number {
   const row = db.prepare(sql).get(...params);
@@ -42,6 +43,22 @@ function oldAnalyzerCount(db: Db, workspaceId?: number): number {
       AND (COALESCE(index_status,'pending')<>'indexed'
         OR COALESCE(fact_analyzer_version,'legacy')<>?)`,
   workspaceId, workspaceId, ANALYZER_VERSION);
+}
+
+function staleRepositoryExamples(
+  db: Db,
+  workspaceId?: number,
+): Array<Record<string, unknown>> {
+  return db.prepare(`SELECT id repositoryId,name repositoryName,
+    index_status indexStatus,fact_analyzer_version factAnalyzerVersion,
+    graph_stale_reason graphStaleReason
+    FROM repositories
+    WHERE (? IS NULL OR workspace_id=?)
+      AND (COALESCE(index_status,'pending')<>'indexed'
+        OR COALESCE(fact_analyzer_version,'legacy')<>?)
+    ORDER BY name COLLATE BINARY,id LIMIT ?`).all(
+    workspaceId, workspaceId, ANALYZER_VERSION, STALE_REPOSITORY_LIMIT,
+  );
 }
 
 export function factLifecycleDiagnostic(
@@ -121,6 +138,10 @@ function reindexDiagnostic(
     ? invalidEventFactExamples(db, workspaceId, phase, EXAMPLE_LIMIT)
     : { total: 0, affectedRepositoryCount: 0, examples: [] };
   const examples = invalidFacts > 0 ? eventExamples.examples : [];
+  const staleExamples = staleRepositories > 0
+    ? staleRepositoryExamples(db, workspaceId) : [];
+  const affectedRepositories = staleRepositories > 0
+    ? staleRepositories : eventExamples.affectedRepositoryCount;
   return {
     severity: 'error',
     code: 'reindex_required',
@@ -136,7 +157,12 @@ function reindexDiagnostic(
     invalidFactCategoryCount: categories.length,
     shownInvalidFactCategoryCount: shown.length,
     omittedInvalidFactCategoryCount: categories.length - shown.length,
-    affectedRepositoryCount: eventExamples.affectedRepositoryCount,
+    affectedRepositoryCount: affectedRepositories,
+    staleRepositories: staleExamples,
+    staleRepositoryExampleCount: staleRepositories,
+    shownStaleRepositoryCount: staleExamples.length,
+    omittedStaleRepositoryCount:
+      Math.max(0, staleRepositories - staleExamples.length),
     workspaceRepositoryCount: repositoryCount(db, workspaceId),
     invalidFactExamples: examples,
     invalidFactExampleCount: eventExamples.total,

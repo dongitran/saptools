@@ -1,5 +1,5 @@
 import ts from 'typescript';
-import type { OutboundCallFact } from '../types.js';
+import type { OutboundCallFact, ServiceBindingFact } from '../types.js';
 import {
   CDS_LIFECYCLE_EVENTS,
   resolveExpression,
@@ -61,7 +61,8 @@ interface EventNameState {
 
 const CAP_CRUD_EVENTS = new Set(['READ', 'CREATE', 'UPDATE', 'DELETE']);
 const KNOWN_NON_CAP_EVENT_RECEIVERS = new Set([
-  'io', 'socket', 'writeStream', 'file', 'win', 'app',
+  'io', 'socket', 'realtime', 'writeStream', 'file', 'win', 'app',
+  'desktopApp', 'windowRef',
 ]);
 
 function eventNameReason(
@@ -303,10 +304,11 @@ export function createEventCallAnalysisContext(
   source: ts.SourceFile,
   importedConstant?: ImportedEventNameResolver,
   environmentReference?: EventEnvironmentReferenceResolver,
+  serviceBindings: readonly ServiceBindingFact[] = [],
 ): EventCallAnalysisContext {
   return {
     source,
-    receivers: createEventReceiverIndex(source),
+    receivers: createEventReceiverIndex(source, serviceBindings),
     constants: collectStringConstantLookups(source),
     importedConstant,
     environmentReference,
@@ -349,7 +351,6 @@ export function analyzeEventCall(
     expression.expression, node, context.receivers,
   );
   if (receiver.unresolvedReason === 'event_receiver_not_cap_client'
-    || receiver.receiverProof === 'binding_not_found'
     || knownNonCapReceiver(expression.expression, receiver))
     return { status: 'excluded' };
   if (excludedEvent(method, receiver, state)) return { status: 'excluded' };

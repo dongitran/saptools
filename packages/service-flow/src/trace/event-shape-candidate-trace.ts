@@ -64,6 +64,34 @@ export function visibleEventShapeRows(
   ];
 }
 
+export function recordHiddenEventShapeCandidates(
+  diagnostics: Array<Record<string, unknown>>,
+  rows: readonly TraceGraphEdgeRow[],
+  options: TraceOptions,
+): void {
+  if (!options.includeAsync
+    || (options.dynamicMode ?? 'strict') === 'candidates') return;
+  const count = rows.filter((row) =>
+    row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER').length;
+  if (count === 0) return;
+  const existing = diagnostics.find((item) =>
+    item.code === 'event_shape_candidates_hidden');
+  if (existing) {
+    existing.candidateCount = Number(existing.candidateCount ?? 0) + count;
+    return;
+  }
+  diagnostics.push({
+    severity: 'info',
+    code: 'event_shape_candidates_hidden',
+    message:
+      'Non-authoritative event-shape candidates were excluded from strict traversal.',
+    candidateCount: count,
+    dynamicMode: options.dynamicMode ?? 'strict',
+    remediation:
+      'Use --dynamic-mode candidates to inspect bounded subscriber candidates.',
+  });
+}
+
 export function outboundTraceEdgeType(
   call: { call_type: string },
   row: { edge_type: string; to_kind: string },
@@ -83,16 +111,31 @@ export function outboundTraceTargetNode(
   db: Db,
   id: string,
   row: TraceGraphRow,
+  displayTarget = row.to_id,
 ): Record<string, unknown> {
   const operation = row.to_kind === 'operation'
     ? operationNode(db, row.to_id) : undefined;
   const candidate = row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
-    ? symbolNode(db, Number(row.to_id)) : undefined;
-  return operation ?? candidate ?? {
-    id,
-    kind: row.to_kind,
-    label: row.to_kind === 'db_entity'
-      ? `Entity: ${row.to_id || 'unknown'}` : row.to_id,
+    ? repositoryQualifiedCandidateNode(db, Number(row.to_id)) : undefined;
+  const resolved = operation ?? candidate;
+  return resolved
+    ? { ...resolved, id }
+    : { id, kind: row.to_kind, label: displayTarget };
+}
+
+function repositoryQualifiedCandidateNode(
+  db: Db,
+  symbolId: number,
+): Record<string, unknown> | undefined {
+  const node = symbolNode(db, symbolId);
+  if (!node) return undefined;
+  const sourceFile = String(node.sourceFile ?? '');
+  const fileName = sourceFile.split('/').at(-1) ?? sourceFile;
+  return {
+    ...node,
+    label: `${String(node.repoName)}:${fileName}:${String(
+      node.qualifiedName ?? node.symbolName,
+    )}`,
   };
 }
 

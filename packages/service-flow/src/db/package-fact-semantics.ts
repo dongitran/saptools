@@ -35,6 +35,13 @@ interface PackageCallRow {
   evidence: Record<string, unknown>;
 }
 
+interface ProvenanceMissingRow {
+  importSource?: unknown;
+  status?: unknown;
+  unresolvedReason?: unknown;
+  calleeSymbolId?: unknown;
+}
+
 const unresolvedReasons = new Set([
   'package_repository_scope_ambiguous',
   'package_repository_not_indexed',
@@ -145,6 +152,8 @@ function nonRelativeImportValid(
 ): boolean {
   const evidence = parseRecord(row.evidenceJson);
   if (!evidence) return false;
+  if (evidence.candidateStrategy === 'package_import_provenance_missing')
+    return provenanceMissingRowValid(row, evidence);
   const direct = parsePackageImportReference(evidence.importBinding);
   if (direct) return all([
     evidence.relation === 'package_import',
@@ -153,6 +162,25 @@ function nonRelativeImportValid(
     evidence.targetName === direct.requestedPublicName,
   ]);
   return !derivedPackageRowInvalid(row);
+}
+
+function provenanceMissingRowValid(
+  row: ProvenanceMissingRow,
+  evidence: Record<string, unknown>,
+): boolean {
+  return all([
+    typeof row.importSource === 'string',
+    !String(row.importSource).startsWith('.'),
+    row.status === 'unresolved',
+    row.calleeSymbolId === null,
+    row.unresolvedReason === 'package_import_provenance_missing',
+    evidence.candidateStrategy === 'package_import_provenance_missing',
+    integerField(evidence, 'candidateCount') === 0,
+    integerField(evidence, 'eligibleCandidateCount') === 0,
+    integerField(evidence, 'selectedCandidateCount') === 0,
+    evidence.candidateSetComplete === true,
+    evidence.unresolvedReason === row.unresolvedReason,
+  ]);
 }
 
 function integerField(
@@ -469,6 +497,8 @@ function packageCallInvalid(
   expected: PackageCallResolution | undefined,
   phase: PackageFactPhase,
 ): boolean {
+  if (row.evidence.candidateStrategy === 'package_import_provenance_missing')
+    return !provenanceMissingRowValid(row, row.evidence);
   if (!binding || !packageProvenanceValid(row, binding)) return true;
   if (row.evidence.candidateStrategy === 'package_import_pending')
     return phase === 'terminal' || !pendingValid(row);
@@ -510,6 +540,8 @@ function derivedPackageInvalidCount(
 
 function derivedPackageRowInvalid(row: Record<string, unknown>): boolean {
   const evidence = parseRecord(row.evidenceJson);
+  if (evidence?.candidateStrategy === 'package_import_provenance_missing')
+    return !provenanceMissingRowValid(row, evidence);
   const binding = evidence
     ? parsePackageImportReference(evidence.derivedImportBinding)
     : undefined;

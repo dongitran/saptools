@@ -9,87 +9,70 @@ import {
   resolveRelativeSymbolCall,
 } from './relative-symbol-resolution.js';
 import {
-  parsePackageImportReference,
-} from '../parsers/package-fact-contract.js';
-import {
   resolvedBindingReferenceProofValid,
   type BindingProofCall,
   type BindingProofTarget,
 } from './binding-reference-proof.js';
 import {
+  containPreparedFactFailure,
   preparedCallSnapshotError,
+  type PreparedFactInsertionOptions,
 } from './index-publication-failure.js';
 import {
   hasSingleHopHelperReturn,
 } from './binding-helper-provenance.js';
+import {
+  insertPackageProvenanceDiagnostic,
+  packageImportProvenanceMissing,
+} from './package-import-provenance.js';
 
-export function insertSymbolCalls(db: Db, repoId: number, rows: SymbolCallFact[]): void {
+export function insertSymbolCalls(
+  db: Db,
+  repoId: number,
+  rows: SymbolCallFact[],
+  options: PreparedFactInsertionOptions = {},
+): number {
   const insertStmt = db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,call_site_start_offset,call_site_end_offset,call_role,status,confidence,evidence_json,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  let diagnosticCount = 0;
   for (const r of rows) {
-    assertImportProvenance(r);
-    const callerId = requiredSymbolCallOwnerId(db, repoId, r);
-    const target = resolveSymbolCallTarget(db, repoId, r);
-    const cardinality = resolutionCardinality(target);
-    insertStmt.run(
-      repoId,
-      callerId,
-      target.id,
-      r.calleeExpression,
-      r.importSource,
-      r.sourceFile,
-      r.sourceLine,
-      r.callSiteStartOffset,
-      r.callSiteEndOffset,
-      r.callRole,
-      target.status,
-      0.8,
-      JSON.stringify({
-        ...r.evidence,
-        candidateStrategy: target.strategy,
-        candidateCount: target.candidateCount,
-        eligibleCandidateCount: cardinality.eligibleCandidateCount,
-        selectedCandidateCount: cardinality.selectedCandidateCount,
-        candidateSetComplete: cardinality.candidateSetComplete,
-        unresolvedReason: target.reason,
-        resolvedModulePath: target.resolvedModulePath,
-      }),
-      target.reason,
-    );
+    try {
+      diagnosticCount += insertSymbolCall(db, insertStmt, repoId, r);
+    } catch (error) {
+      if (!containPreparedFactFailure(db, repoId, error, options)) throw error;
+      diagnosticCount += 1;
+    }
   }
+  return diagnosticCount;
 }
 
-function assertImportProvenance(call: SymbolCallFact): void {
-  if (call.importSource === undefined || call.importSource.startsWith('.'))
-    return;
-  const direct = directPackageProvenanceValid(call);
-  const derived = derivedPackageProvenanceValid(call);
-  if (!direct && !derived)
-    throw preparedCallSnapshotError(
-      'package_import_provenance_missing', 'symbol_call', call,
-    );
-}
-
-function directPackageProvenanceValid(call: SymbolCallFact): boolean {
-  const binding = parsePackageImportReference(call.evidence.importBinding);
-  return Boolean(binding
-    && call.evidence.relation === 'package_import'
-    && call.evidence.derivedImportBinding === undefined
-    && call.importSource === binding.rawModuleSpecifier
-    && call.evidence.targetName === binding.requestedPublicName);
-}
-
-function derivedPackageProvenanceValid(call: SymbolCallFact): boolean {
-  const binding = parsePackageImportReference(
-    call.evidence.derivedImportBinding,
+function insertSymbolCall(
+  db: Db,
+  insertStmt: Statement,
+  repoId: number,
+  call: SymbolCallFact,
+): number {
+  const callerId = requiredSymbolCallOwnerId(db, repoId, call);
+  const target = resolveSymbolCallTarget(db, repoId, call);
+  const cardinality = resolutionCardinality(target);
+  insertStmt.run(
+    repoId, callerId, target.id, call.calleeExpression, call.importSource,
+    call.sourceFile, call.sourceLine, call.callSiteStartOffset,
+    call.callSiteEndOffset, call.callRole, target.status, 0.8,
+    JSON.stringify({
+      ...call.evidence,
+      candidateStrategy: target.strategy,
+      candidateCount: target.candidateCount,
+      eligibleCandidateCount: cardinality.eligibleCandidateCount,
+      selectedCandidateCount: cardinality.selectedCandidateCount,
+      candidateSetComplete: cardinality.candidateSetComplete,
+      unresolvedReason: target.reason,
+      resolvedModulePath: target.resolvedModulePath,
+    }),
+    target.reason,
   );
-  if (!binding || typeof binding.referencedMemberName !== 'string')
-    return false;
-  const expected = typeof call.evidence.proxyVariableName === 'string'
-    ? binding.referencedMemberName : binding.requestedPublicName;
-  return call.evidence.relation === 'package_import_derived_member'
-    && call.evidence.importBinding === undefined
-    && call.importSource === binding.rawModuleSpecifier
-    && call.evidence.targetName === expected;
+  if (target.reason !== 'package_import_provenance_missing') return 0;
+  insertPackageProvenanceDiagnostic(db, repoId, call);
+  return 1;
 }
 
 interface SymbolTargetRow {
@@ -362,6 +345,11 @@ export function resolveSymbolCallTarget(
   repoId: number,
   r: SymbolCallFact,
 ): SymbolCallResolution {
+  if (packageImportProvenanceMissing(r)) return unresolvedSymbol(
+    'package_import_provenance_missing',
+    'package_import_provenance_missing',
+    0,
+  );
   const relation = r.evidence.relation;
   const relative = resolveRelativeSymbolCall(db, repoId, r, relation);
   if (relative) return relative;
@@ -392,9 +380,19 @@ export function insertCalls(
   db: Db,
   repoId: number,
   rows: OutboundCallFact[],
-): void {
+  options: PreparedFactInsertionOptions = {},
+): number {
   const stmt = outboundCallInsertStatement(db);
-  for (const row of rows) insertOutboundCall(db, stmt, repoId, row);
+  let diagnosticCount = 0;
+  for (const row of rows) {
+    try {
+      insertOutboundCall(db, stmt, repoId, row);
+    } catch (error) {
+      if (!containPreparedFactFailure(db, repoId, error, options)) throw error;
+      diagnosticCount += 1;
+    }
+  }
+  return diagnosticCount;
 }
 
 function outboundCallInsertStatement(db: Db): Statement {

@@ -296,11 +296,23 @@ async function createLocalServiceTraceFixture(root: string): Promise<void> {
   await writeFixtureFile(root, 'runtime-service/.git-fixture');
   await writeFixtureFile(root, 'runtime-service/package.json', JSON.stringify({ name: '@neutral/runtime-service', version: '1.0.0' }));
   await writeFixtureFile(root, 'runtime-service/srv/runtime-service.cds', 'namespace fixture.runtime; service RuntimeService { function getConfiguration() returns String; action rejectConfiguration(); }');
+  await writeFixtureFile(root, 'runtime-service/srv/generated-operation-names.ts', `
+    export namespace RuntimeService {
+      export namespace Operations {
+        export enum Functions {
+          GetConfiguration = 'getConfiguration',
+        }
+        export enum Actions {
+          RejectConfiguration = 'rejectConfiguration',
+        }
+      }
+    }
+  `);
   await writeFixtureFile(root, 'runtime-service/srv/server.ts', "import { createCombinedHandler } from 'cds-routing-handlers';\nimport { FacadeEntryHandler } from './FacadeEntryHandler.js';\nimport { ActionHandlerA } from './ActionHandlerA.js';\nimport { ActionHandlerB } from './ActionHandlerB.js';\ncreateCombinedHandler({ handler: [FacadeEntryHandler, ActionHandlerA, ActionHandlerB] });\n");
   await writeFixtureFile(root, 'runtime-service/srv/helpers.ts', "import cds from '@sap/cds';\nconst loadTemplate = async (): Promise<void> => { await cds.run(SELECT.from(TemplateRules)); };\nconst cacheHelper = {\n  getConfiguration: async (): Promise<void> => { await cds.run(SELECT.from(ConfigurationRules)); },\n  getRules: async (): Promise<void> => { await cds.run(SELECT.from(ValidationRules)); }\n};\nexport { loadTemplate, cacheHelper };\n");
   await writeFixtureFile(root, 'runtime-service/srv/FacadeEntryHandler.ts', "import cds from '@sap/cds';\nimport { Handler, Action } from 'cds-routing-handlers';\nimport { loadTemplate, cacheHelper } from './helpers.js';\n@Handler()\nexport class FacadeEntryHandler {\n  @Action('start')\n  public async start(): Promise<void> {\n    const root = cds.services[\"fixture.runtime.RuntimeService\"];\n    const svc = root;\n    await svc.getConfiguration({});\n    await cds.services.RuntimeService.getConfiguration({});\n    cds.services.db.entities('Books');\n    await loadTemplate();\n    await cacheHelper.getConfiguration();\n  }\n}\n");
-  await writeFixtureFile(root, 'runtime-service/srv/ActionHandlerA.ts', "import cds from '@sap/cds';\nimport { Handler, Func } from 'cds-routing-handlers';\n@Handler()\nexport class ActionHandlerA {\n  @Func(RuntimeService.FuncGetConfiguration.name)\n  public async getConfiguration(): Promise<void> { await cds.run(SELECT.from(ConfigurationRules)); }\n}\n");
-  await writeFixtureFile(root, 'runtime-service/srv/ActionHandlerB.ts', "import { Handler, Action } from 'cds-routing-handlers';\n@Handler()\nexport class ActionHandlerB {\n  @Action(RuntimeService.ActionRejectConfiguration.name)\n  public async getConfiguration(): Promise<void> {}\n}\n");
+  await writeFixtureFile(root, 'runtime-service/srv/ActionHandlerA.ts', "import cds from '@sap/cds';\nimport { Handler, Func } from 'cds-routing-handlers';\nimport { RuntimeService } from './generated-operation-names.js';\n@Handler()\nexport class ActionHandlerA {\n  @Func(RuntimeService.Operations.Functions.GetConfiguration)\n  public async getConfiguration(): Promise<void> { await cds.run(SELECT.from(ConfigurationRules)); }\n}\n");
+  await writeFixtureFile(root, 'runtime-service/srv/ActionHandlerB.ts', "import { Handler, Action } from 'cds-routing-handlers';\nimport { RuntimeService } from './generated-operation-names.js';\n@Handler()\nexport class ActionHandlerB {\n  @Action(RuntimeService.Operations.Actions.RejectConfiguration)\n  public async getConfiguration(): Promise<void> {}\n}\n");
   await writeFixtureFile(root, 'facade-service/.git-fixture');
   await writeFixtureFile(root, 'facade-service/package.json', JSON.stringify({ name: '@neutral/facade-service', version: '1.0.0' }));
   await writeFixtureFile(root, 'facade-service/srv/facade-service.cds', 'service RuntimeService { function getConfiguration() returns String; }');
@@ -334,18 +346,7 @@ describe('0.1.12 local service and symbol trace regressions', () => {
     expect(result.nodes.some((node) => node.kind === 'symbol' && String(node.label).includes('cacheHelper.getConfiguration') && node.sourceFile === 'srv/helpers.ts')).toBe(true);
     const unresolvedLocal = result.edges.filter((edge) =>
       edge.type === 'local_symbol_call' && edge.unresolvedReason);
-    expect(unresolvedLocal).toEqual([
-      expect.objectContaining({
-        from: 'Action',
-        to: 'unresolved:Action',
-        unresolvedReason: 'package_repository_not_indexed',
-      }),
-      expect.objectContaining({
-        from: 'Func',
-        to: 'unresolved:Func',
-        unresolvedReason: 'package_repository_not_indexed',
-      }),
-    ]);
+    expect(unresolvedLocal).toEqual([]);
     db.close();
   });
 });

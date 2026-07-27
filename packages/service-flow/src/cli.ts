@@ -47,6 +47,8 @@ import type {
 } from './types.js';
 import { cleanWorkspaceState } from './cli/clean.js';
 import { indexCommandOutcome } from './cli/index-summary.js';
+import { normalizeEventEnvironmentKeys } from
+  './parsers/environment-declarations.js';
 
 const stdout = createStdoutWriter(process.stdout, fail);
 const TRACE_FORMATS = ['table', 'json', 'mermaid', 'compact-json'] as const;
@@ -279,13 +281,27 @@ function registerIndexCommand(program: Command): void {
     .option('--workspace <path>')
     .option('--repo <name>')
     .option('--force')
+    .option(
+      '--event-environment-key <key>',
+      'allowlisted event environment key (repeatable)',
+      collect,
+      [],
+    )
     .action(
-      (opts: { workspace?: string; repo?: string; force?: boolean }) =>
+      (opts: {
+        workspace?: string;
+        repo?: string;
+        force?: boolean;
+        eventEnvironmentKey: string[];
+      }) =>
         void withWorkspace(opts.workspace, async (db, workspaceId, _root, config) => {
+          const configuredKeys = opts.eventEnvironmentKey.length > 0
+            ? normalizeEventEnvironmentKeys(opts.eventEnvironmentKey)
+            : config.eventEnvironmentKeys;
           const r = await indexWorkspace(db, workspaceId, {
             repo: opts.repo,
             force: Boolean(opts.force),
-            eventEnvironmentKeys: config.eventEnvironmentKeys,
+            eventEnvironmentKeys: configuredKeys,
           });
           const outcome = indexCommandOutcome(r);
           writeStdout(outcome.stdout);
@@ -305,7 +321,7 @@ function registerLinkCommand(program: Command): void {
           const r = linkWorkspace(db, workspaceId);
           const upgradeWarnings = linkUpgradeWarnings(db, workspaceId);
           writeStdout(
-            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved, ${r.subscriptionHandlerResolvedCount} subscription handlers resolved, ${r.subscriptionHandlerAmbiguousCount} subscription handlers ambiguous, ${r.subscriptionHandlerUnresolvedCount} subscription handlers unresolved, ${r.subscriptionHandlerMissingAssociationCount} subscription handler associations missing, ${r.eventShapeCandidateCount} event shape candidates, ${r.eventShapeCandidateOmittedCount} event shape candidates omitted by the link cap\n`,
+            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved, ${r.subscriptionHandlerResolvedCount} subscription handlers resolved, ${r.subscriptionHandlerAmbiguousCount} subscription handlers ambiguous, ${r.subscriptionHandlerUnresolvedCount} subscription handlers unresolved, ${r.subscriptionHandlerMissingAssociationCount} subscription handler associations missing, ${r.eventShapeCandidateCount} event shape candidates, ${r.eventShapeCandidateOmittedCount} event shape candidates refused by the diagnosed safety cap\n`,
           );
         }).catch(fail),
     );

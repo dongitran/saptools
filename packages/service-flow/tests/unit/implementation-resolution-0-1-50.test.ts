@@ -31,17 +31,9 @@ function arrayValue(value: unknown): Row[] {
 
 function expectUnindexedPackageGaps(
   edges: readonly TraceEdge[],
-  expected: readonly string[],
 ): void {
-  const gaps = edges.filter((edge) => edge.unresolvedReason);
-  expect(gaps.map((edge) =>
-    `${String(edge.evidence.sourceFile)}:${edge.from}->${edge.to}`)
-    .sort()).toEqual([...expected].sort());
-  expect(gaps.every((edge) =>
-    edge.type === 'local_symbol_call'
-    && edge.unresolvedReason === 'package_repository_not_indexed'
-    && edge.evidence.candidateStrategy
-      === 'package_public_surface_unresolved')).toBe(true);
+  expect(edges.filter((edge) =>
+    edge.unresolvedReason === 'package_repository_not_indexed')).toEqual([]);
 }
 
 async function prepareFixtureWorkspace(): ReturnType<typeof prepareWorkspace> {
@@ -218,19 +210,19 @@ describe('decorator local operation resolution', () => {
 });
 
 describe('decorator generated operation constants', () => {
-  it('records generated action and function constants as resolved evidence', async () => {
+  it('refuses unresolved generated names instead of guessing their value', async () => {
     const byMethod = await parseDecoratorMethods();
     expect(byMethod.get('generatedCheck')).toMatchObject({
-      decoratorValue: 'generatedCheck',
+      decoratorValue: undefined,
       decoratorRawExpression: 'FuncGeneratedCheck.name',
       decoratorResolution: {
-        resolutionKind: 'generated_constant_name',
-        resolvedValue: 'generatedCheck',
+        resolutionKind: 'unresolved',
+        unresolvedReason: 'property_access_not_resolved_to_local_string',
       },
     });
     expect(byMethod.get('deepCheck')?.decoratorResolution).toMatchObject({
-      resolutionKind: 'generated_constant_name',
-      resolvedValue: 'deepCheck',
+      resolutionKind: 'unresolved',
+      unresolvedReason: 'property_access_not_resolved_to_local_string',
     });
   });
 });
@@ -329,9 +321,7 @@ describe('scoped implementation hints', () => {
     expect(guided.edges.some((edge) =>
       edge.type === 'local_db_query'
       && edge.to === 'Entity: SharedResultsA')).toBe(true);
-    expectUnindexedPackageGaps(guided.edges, [
-      'src/SharedProcessHandler.ts:Action->unresolved:Action',
-    ]);
+    expectUnindexedPackageGaps(guided.edges);
     db.close();
   });
 });
@@ -361,11 +351,7 @@ describe('implementation trace behavior', () => {
     expect(runtime.edges.some((edge) =>
       edge.type === 'local_db_query'
       && edge.to === 'Entity: QualityRecords')).toBe(true);
-    expectUnindexedPackageGaps(runtime.edges, [
-      'srv/GatewayHandler.ts:Action->unresolved:Action',
-      'srv/RunQualityCheckHandler.ts:Func->unresolved:Func',
-      'src/ExactProcessHandler.ts:Action->unresolved:Action',
-    ]);
+    expectUnindexedPackageGaps(runtime.edges);
 
     const missing = trace(db, {
       repo: 'gateway-app',
@@ -761,9 +747,7 @@ describe('operation-only trace start remediation', () => {
     expect(explicit.diagnostics).toEqual([]);
     expect(explicit.edges.some((edge) =>
       edge.type === 'operation_implemented_by_handler')).toBe(true);
-    expectUnindexedPackageGaps(explicit.edges, [
-      'srv/ScopeHandler.ts:Func->unresolved:Func',
-    ]);
+    expectUnindexedPackageGaps(explicit.edges);
     db.close();
   });
 });

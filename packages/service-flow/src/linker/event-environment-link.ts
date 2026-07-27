@@ -24,6 +24,9 @@ export interface SubscriptionEnvironmentTarget {
   consumerRepoName?: string;
   resolution: EventEnvironmentResolution;
   collisionCount: number;
+  consumerCandidateCount?: number;
+  refusedConsumerCount?: number;
+  refusedConsumerExamples?: string[];
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -171,6 +174,28 @@ function collisionCounts(
   return counts;
 }
 
+function refusedConsumerTarget(
+  targets: readonly SubscriptionEnvironmentTarget[],
+  variables: Record<string, string>,
+): SubscriptionEnvironmentTarget | undefined {
+  const refused = targets.filter((target) =>
+    target.resolution.status === 'unresolved');
+  if (refused.length === 0) return undefined;
+  return {
+    resolution: {
+      status: 'unresolved',
+      variables,
+      reason: 'event_environment_consumer_expansion_incomplete',
+      provenance: [],
+    },
+    collisionCount: 1,
+    consumerCandidateCount: targets.length,
+    refusedConsumerCount: refused.length,
+    refusedConsumerExamples: refused.flatMap((target) =>
+      target.consumerRepoName ? [target.consumerRepoName] : []).slice(0, 5),
+  };
+}
+
 export function subscriptionEnvironmentTargets(
   db: Db,
   workspaceId: number,
@@ -203,9 +228,12 @@ export function subscriptionEnvironmentTargets(
     collisionCount: 1,
   }];
   const counts = collisionCounts(provisional);
-  return provisional.map((target) => {
-    const key = JSON.stringify(Object.entries(target.resolution.variables)
-      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
-    return { ...target, collisionCount: counts.get(key) ?? 1 };
-  });
+  const concrete = provisional.filter((target) =>
+    target.resolution.status !== 'unresolved').map((target) => {
+      const key = JSON.stringify(Object.entries(target.resolution.variables)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
+      return { ...target, collisionCount: counts.get(key) ?? 1 };
+    });
+  const refused = refusedConsumerTarget(provisional, variables);
+  return refused ? [...concrete, refused] : concrete;
 }

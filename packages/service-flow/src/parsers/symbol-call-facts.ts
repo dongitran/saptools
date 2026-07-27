@@ -239,6 +239,7 @@ function callFact(
   collection: CallCollection,
   node: ts.CallExpression,
 ): SymbolCallFact | undefined {
+  if (insideDecorator(node)) return undefined;
   const caller = exactCaller(collection, node);
   if (!caller) return undefined;
   const callee = symbolCallName(node.expression);
@@ -253,6 +254,16 @@ function callFact(
   return retainedCallFact(collection, node, caller, callee, {
     proxy, instance, reference, localTarget,
   });
+}
+
+function insideDecorator(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+  while (current && !ts.isStatement(current)
+    && !ts.isSourceFile(current)) {
+    if (ts.isDecorator(current)) return true;
+    current = current.parent;
+  }
+  return false;
 }
 
 function expressionRoot(

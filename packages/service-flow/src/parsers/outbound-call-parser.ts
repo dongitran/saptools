@@ -89,6 +89,7 @@ export async function parseOutboundCalls(
       ),
       eventEnvironmentReferenceResolver:
         createEventEnvironmentReferenceResolver(context, source, filePath),
+      serviceBindings: bindings,
     } : undefined);
   return [
     ...nativeCalls.map((call) => call.fact),

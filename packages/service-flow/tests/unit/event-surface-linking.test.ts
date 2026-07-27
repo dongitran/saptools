@@ -10,6 +10,7 @@ import { linkWorkspace } from '../../src/linker/cross-repo-linker.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
 import { traceAndCompact } from '../../src/trace/compact-trace.js';
 import { trace } from '../../src/trace/trace-engine.js';
+import type { TraceResult } from '../../src/types.js';
 import {
   parseEventSkeletonFact,
 } from '../../src/utils/event-skeleton.js';
@@ -35,6 +36,12 @@ interface GraphEventRow extends Record<string, unknown> {
   toId: string;
   reason?: string | null;
   evidenceJson: string;
+}
+
+function expectEveryEdgeTargetRegistered(result: TraceResult): void {
+  const nodeIds = new Set(result.nodes.flatMap((node) =>
+    typeof node.id === 'string' ? [node.id] : []));
+  expect(result.edges.filter((edge) => !nodeIds.has(edge.to))).toEqual([]);
 }
 
 function packageJson(
@@ -273,6 +280,21 @@ async function writeEnvironmentConsumer(
         PRIVATE_TOKEN: `must-not-persist-${name}`,
       },
     })),
+    writeFixtureFile(root, `${name}/src/index.ts`,
+      'export const consumer = true;\n'),
+  ]);
+}
+
+async function writeEnvironmentConsumerWithoutDeclaration(
+  root: string,
+  name: string,
+): Promise<void> {
+  await Promise.all([
+    writeFixtureFile(root, `${name}/.git-fixture`),
+    writeFixtureFile(root, `${name}/package.json`, packageJson(
+      `@neutral/${name}`,
+      { dependencies: { '@neutral/environment-subscriber': '1.0.0' } },
+    )),
     writeFixtureFile(root, `${name}/src/index.ts`,
       'export const consumer = true;\n'),
   ]);
@@ -564,8 +586,19 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
     const strict = trace(db, { repo: 'publisher' }, {
       depth: 8, workspaceId, includeAsync: true,
     });
+    expectEveryEdgeTargetRegistered(strict);
     expect(strict.edges.some((edge) =>
       edge.type === 'event_shape_candidate_subscriber')).toBe(false);
+    expect(diagnostic(
+      strict.diagnostics, 'event_shape_candidates_hidden',
+    )).toMatchObject({
+      candidateCount: 1,
+      remediation:
+        'Use --dynamic-mode candidates to inspect bounded subscriber candidates.',
+    });
+    expect(renderTraceTable(strict)).toContain(
+      '--dynamic-mode candidates',
+    );
     expect(diagnostic(
       strict.diagnostics, 'trace_runtime_variables_missing',
     ).missingVariables).toEqual(expect.arrayContaining([
@@ -576,10 +609,17 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
       depth: 8, workspaceId, includeAsync: true,
       dynamicMode: 'candidates', maxDynamicCandidates: 5,
     });
+    expectEveryEdgeTargetRegistered(candidates);
     const shapeEdges = candidates.edges.filter((edge) =>
       edge.type === 'event_shape_candidate_subscriber');
     expect(shapeEdges).toHaveLength(1);
-    expect(shapeEdges[0]?.to).toBe('src/subscribe.ts:handleRecordStored');
+    expect(shapeEdges[0]?.to).toBe(
+      'subscriber:src/subscribe.ts:handleRecordStored',
+    );
+    expect(candidates.nodes.find((node) =>
+      node.id === shapeEdges[0]?.to)?.label).toMatch(
+      /^subscriber:subscribe\.ts:handleRecordStored$/,
+    );
     expect(shapeEdges[0]?.evidence).toMatchObject({
       dispatchCertainty: 'skeleton_equivalent',
       subscriptionRepositoryName: 'subscriber',
@@ -591,6 +631,8 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
       depth: 8, workspaceId, includeAsync: true,
       dynamicMode: 'candidates', maxDynamicCandidates: 5,
     }).compact;
+    expect(strictProjected.diagnostics.some((row) =>
+      row[2] === 'event_shape_candidates_hidden')).toBe(true);
     expect(projected.edges.filter((edge) =>
       edge[3] === 'event_shape_candidate_subscriber')).toHaveLength(1);
     const { dynamic: strictDynamic, ...strictCounts } =
@@ -604,6 +646,7 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
       depth: 8, workspaceId, includeAsync: true,
       vars: { [canonicalKey]: 'NEUTRAL' },
     });
+    expectEveryEdgeTargetRegistered(canonical);
     expect(canonical.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'event_name_matches_subscription_handler',
@@ -667,7 +710,7 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
     db.close();
   });
 
-  it('caps link-time shape fan-out and reports the omitted total', async () => {
+  it('refuses excessive link-time shape fan-out without truncating', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-shape-cap-'));
     const registrations = Array.from({ length: 101 }, () =>
       "  bus.on(`${code}RecordStored`, handleRecordStored);").join('\n');
@@ -697,19 +740,17 @@ ${registrations}
     const { db, workspaceId } = await prepareWorkspace(root);
     const linked = linkWorkspace(db, workspaceId);
     expect(linked).toMatchObject({
-      eventShapeCandidateCount: 100,
-      eventShapeCandidateOmittedCount: 1,
+      eventShapeCandidateCount: 0,
+      eventShapeCandidateOmittedCount: 101,
     });
     const candidates = db.prepare(`SELECT evidence_json evidence
       FROM graph_edges
       WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
       ORDER BY id`).all();
-    expect(candidates).toHaveLength(100);
-    expect(parsedRecord(String(candidates[0]?.evidence))).toMatchObject({
-      eventShapeLinkCandidateCount: 101,
-      shownEventShapeLinkCandidateCount: 100,
-      omittedEventShapeLinkCandidateCount: 1,
-    });
+    expect(candidates).toHaveLength(0);
+    expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
+      WHERE code='event_shape_candidate_expansion_refused'`).get())
+      .toEqual({ count: 1 });
     db.close();
   });
 
@@ -794,7 +835,9 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
   it('binds allowlisted environment values per consumer and rejects collisions', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-env-'));
     await writeEnvironmentFixture(root);
-    const { db, workspaceId } = await prepareWorkspace(root);
+    const { db, workspaceId } = await prepareWorkspace(
+      root, ['SHARD_CODE'],
+    );
     linkWorkspace(db, workspaceId);
     const edges = subscriptionEdges(db);
     expect(edges.filter((edge) =>
@@ -858,6 +901,7 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
     }));
     const indexed = await indexWorkspace(db, workspaceId, {
       repo: 'consumer-a', force: false,
+      eventEnvironmentKeys: ['SHARD_CODE'],
     });
     expect(indexed.skippedCount).toBe(0);
     expect(db.prepare(`SELECT graph_stale_reason reason FROM repositories
@@ -876,6 +920,94 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
     db.close();
   });
 
+  it('pairs environment-derived shapes only within the same deployment value', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'sf-event-env-scope-'),
+    );
+    await writeEnvironmentFixture(root);
+    await writeFixtureFile(root, 'publisher/nodemon.json', JSON.stringify({
+      env: { SHARD_CODE: 'neutralone' },
+    }));
+    await writeFixtureFile(root, 'publisher/src/publish.ts', `
+import cds from '@sap/cds';
+const publishCode = process.env.SHARD_CODE;
+export async function publish(): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  await bus.emit(\`\${publishCode.toUpperCase()}RecordStored\`, {});
+}
+`);
+    const { db, workspaceId } = await prepareWorkspace(
+      root, ['SHARD_CODE'],
+    );
+    const linked = linkWorkspace(db, workspaceId);
+
+    expect(linked.eventShapeCandidateCount).toBe(1);
+    const consumers = db.prepare(`SELECT
+      json_extract(evidence_json,
+        '$.subscriptionConsumerRepositoryName') consumer
+      FROM graph_edges
+      WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
+      ORDER BY consumer COLLATE BINARY`).all();
+    expect(consumers).toEqual([{ consumer: 'consumer-a' }]);
+    expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
+      WHERE code='event_shape_candidate_expansion_refused'`).get())
+      .toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('collapses missing deployment bindings instead of multiplying unresolved handlers', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'sf-event-env-refusal-'),
+    );
+    await writeEnvironmentLibrary(root);
+    await Promise.all([
+      writeEnvironmentConsumer(root, 'consumer-a', 'neutralone'),
+      writeEnvironmentConsumer(root, 'consumer-b', 'neutraltwo'),
+      writeEnvironmentConsumerWithoutDeclaration(root, 'consumer-missing-a'),
+      writeEnvironmentConsumerWithoutDeclaration(root, 'consumer-missing-b'),
+      writeEnvironmentConsumerWithoutDeclaration(root, 'consumer-missing-c'),
+      writeFixtureFile(root, 'publisher/.git-fixture'),
+      writeFixtureFile(root, 'publisher/package.json',
+        packageJson('@neutral/environment-publisher')),
+      writeFixtureFile(root, 'publisher/src/publish.ts', `
+import cds from '@sap/cds';
+export async function publish(code: string): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  await bus.emit(\`\${code}RecordStored\`, {});
+}
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(
+      root, ['SHARD_CODE'],
+    );
+    const linked = linkWorkspace(db, workspaceId);
+
+    expect(linked).toMatchObject({
+      subscriptionHandlerResolvedCount: 2,
+      subscriptionHandlerUnresolvedCount: 1,
+      eventShapeCandidateCount: 2,
+    });
+    expect(db.prepare(`SELECT COUNT(*) count FROM graph_edges
+      WHERE edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+        AND unresolved_reason=
+          'event_environment_consumer_expansion_incomplete'`).get())
+      .toEqual({ count: 1 });
+    expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
+      WHERE code=
+        'event_environment_consumer_expansion_incomplete'`).get())
+      .toEqual({ count: 1 });
+    const consumers = db.prepare(`SELECT json_extract(evidence_json,
+      '$.subscriptionConsumerRepositoryName') consumer
+      FROM graph_edges
+      WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
+      ORDER BY consumer COLLATE BINARY`).all();
+    expect(consumers).toEqual([
+      { consumer: 'consumer-a' },
+      { consumer: 'consumer-b' },
+    ]);
+    db.close();
+  });
+
   it('reindexes environment facts with a workspace-configured key', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-env-key-'));
     await writeEnvironmentLibrary(root, 'TENANT_CODE');
@@ -889,7 +1021,7 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
 
     const indexed = await indexWorkspace(db, workspaceId, {
       force: false,
-      eventEnvironmentKeys: ['TENANT_CODE'],
+      eventEnvironmentKeys: ['TENANT_CODE', 'UNUSED_CODE'],
     });
     expect(indexed.failedCount).toBe(0);
     expect(indexed.skippedCount).toBe(0);
@@ -915,6 +1047,19 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
       FROM files f JOIN repositories r ON r.id=f.repo_id
       WHERE r.name='consumer-a' AND f.relative_path='nodemon.json'`).get();
     expect(storedFile?.sha256).not.toBe(rawHash);
+    expect(diagnostic(
+      doctorDiagnostics(db, true, { workspaceId }),
+      'strict_event_environment_configuration_quality',
+    )).toMatchObject({
+      severity: 'warning',
+      configuredKeys: ['TENANT_CODE', 'UNUSED_CODE'],
+      unmatchedKeys: ['UNUSED_CODE'],
+      unmatchedKeyCount: 1,
+      matches: [
+        { key: 'TENANT_CODE', declarationCount: 1 },
+        { key: 'UNUSED_CODE', declarationCount: 0 },
+      ],
+    });
     db.close();
   });
 });

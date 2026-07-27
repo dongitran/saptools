@@ -209,6 +209,7 @@ export function publishPreparedWorkspaceRows(
         continue;
       }
       state.indexedCount += 1;
+      state.diagnosticCount += result.diagnosticCount;
       publishedRepoIds.push(row.repo.id);
       mergePackageInvalidationEffects(effects, result.effects);
     }
@@ -243,7 +244,11 @@ function publicationState(
 }
 
 type PublicationResult =
-  | { status: 'published'; effects: PackageInvalidationBatch }
+  | {
+      status: 'published';
+      effects: PackageInvalidationBatch;
+      diagnosticCount: number;
+    }
   | { status: 'failed'; error: unknown };
 
 function publishPreparedRow(
@@ -255,7 +260,11 @@ function publishPreparedRow(
   if (!outcome.ok && !isPreparedRepositorySnapshotError(outcome.error))
     throw outcome.error;
   return outcome.ok
-    ? { status: 'published', effects }
+    ? {
+        status: 'published',
+        effects,
+        diagnosticCount: outcome.diagnosticCount,
+      }
     : { status: 'failed', error: outcome.error };
 }
 

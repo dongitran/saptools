@@ -415,7 +415,7 @@ function assertPackageTrace(db: Db, workspaceId: number): void {
   ]);
   expect(localEdges.filter((edge) => edge.unresolvedReason)
     .map((edge) => edge.from).sort()).toEqual([
-    'Anything', 'OtherHelper.doWork', 'duplicateName', 'externalOnly',
+    'Anything', 'OtherHelper.doWork', 'duplicateName',
     'hiddenUtil', 'internalName', 'selfOnly',
   ]);
   expect(localEdges.filter((edge) => edge.unresolvedReason)
@@ -435,6 +435,12 @@ function assertPackageTrace(db: Db, workspaceId: number): void {
     });
   expect(result.nodes).toContainEqual(expect.objectContaining({
     kind: 'symbol', repoName: 'shared-helpers', sourceFile: 'src/shared-util.ts', qualifiedName: 'sharedUtil',
+  }));
+  expect(result.diagnostics).toContainEqual(expect.objectContaining({
+    code: 'external_package_calls_omitted',
+    omittedCallCount: 1,
+    packageNames: ['@neutral/external-only'],
+    packageNameExamplesTruncated: false,
   }));
 }
 

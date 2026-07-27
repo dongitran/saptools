@@ -1,4 +1,4 @@
-import type { Db } from './connection.js';
+import type { Db, Statement } from './connection.js';
 import type {
   CdsRequire,
   CdsServiceFact,
@@ -14,7 +14,9 @@ import {
   type OwnerCandidate,
 } from '../parsers/fact-identity.js';
 import {
+  containPreparedFactFailure,
   PreparedRepositorySnapshotError,
+  type PreparedFactInsertionOptions,
   type PreparedSnapshotFailureCode,
 } from './index-publication-failure.js';
 import {
@@ -415,29 +417,43 @@ export function insertBindings(
   db: Db,
   repoId: number,
   rows: ServiceBindingFact[],
-): void {
-  assertUniquePreparedBindingSites(rows);
+  options: PreparedFactInsertionOptions = {},
+): number {
+  const siteFailures = options.containPreparedFailures
+    ? preparedBindingSiteFailures(rows)
+    : strictBindingSiteFailures(rows);
   const stmt = db.prepare(
     'INSERT INTO service_bindings(repo_id,symbol_id,variable_name,alias,alias_expr,destination_expr,service_path_expr,is_dynamic,placeholders_json,source_file,source_line,binding_site_start_offset,binding_site_end_offset,owner_resolution,helper_chain_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
   );
-  for (const r of rows)
-    stmt.run(
-      repoId,
-      bindingOwnerId(db, repoId, r),
-      r.variableName,
-      r.alias,
-      r.aliasExpr,
-      r.destinationExpr,
-      r.servicePathExpr,
-      r.isDynamic ? 1 : 0,
-      JSON.stringify(r.placeholders),
-      r.sourceFile,
-      r.sourceLine,
-      r.bindingSiteStartOffset,
-      r.bindingSiteEndOffset,
-      r.ownerResolution,
-      r.helperChain ? JSON.stringify(r.helperChain) : null,
-    );
+  let diagnosticCount = 0;
+  for (const row of rows) {
+    try {
+      const failure = siteFailures.get(row);
+      if (failure) throw failure;
+      insertBinding(db, stmt, repoId, row);
+    } catch (error) {
+      if (!containPreparedFactFailure(db, repoId, error, options)) throw error;
+      diagnosticCount += 1;
+    }
+  }
+  return diagnosticCount;
+}
+
+function insertBinding(
+  db: Db,
+  stmt: Statement,
+  repoId: number,
+  fact: ServiceBindingFact,
+): void {
+  stmt.run(
+    repoId, bindingOwnerId(db, repoId, fact),
+    fact.variableName, fact.alias, fact.aliasExpr, fact.destinationExpr,
+    fact.servicePathExpr, fact.isDynamic ? 1 : 0,
+    JSON.stringify(fact.placeholders), fact.sourceFile, fact.sourceLine,
+    fact.bindingSiteStartOffset, fact.bindingSiteEndOffset,
+    fact.ownerResolution,
+    fact.helperChain ? JSON.stringify(fact.helperChain) : null,
+  );
 }
 
 interface PersistedOwnerCandidate extends OwnerCandidate {
@@ -526,6 +542,48 @@ function assertUniquePreparedBindingSites(
       throw bindingSnapshotError('duplicate_service_binding_site', row);
     seen.add(key);
   }
+}
+
+function strictBindingSiteFailures(
+  rows: readonly ServiceBindingFact[],
+): Map<ServiceBindingFact, PreparedRepositorySnapshotError> {
+  assertUniquePreparedBindingSites(rows);
+  return new Map();
+}
+
+function preparedBindingSiteFailures(
+  rows: readonly ServiceBindingFact[],
+): Map<ServiceBindingFact, PreparedRepositorySnapshotError> {
+  const failures = new Map<
+    ServiceBindingFact, PreparedRepositorySnapshotError
+  >();
+  const sites = new Map<string, ServiceBindingFact[]>();
+  for (const row of rows) {
+    if (row.bindingSiteStartOffset === undefined
+      || row.bindingSiteEndOffset === undefined) {
+      failures.set(row, bindingSnapshotError('binding_site_missing', row));
+      continue;
+    }
+    const key = bindingSiteKey(row);
+    const grouped = sites.get(key) ?? [];
+    grouped.push(row);
+    sites.set(key, grouped);
+  }
+  for (const grouped of sites.values()) {
+    if (grouped.length < 2) continue;
+    for (const row of grouped)
+      failures.set(
+        row, bindingSnapshotError('duplicate_service_binding_site', row),
+      );
+  }
+  return failures;
+}
+
+function bindingSiteKey(row: ServiceBindingFact): string {
+  return [
+    row.sourceFile, row.variableName,
+    row.bindingSiteStartOffset, row.bindingSiteEndOffset,
+  ].join('\u0000');
 }
 export function insertExecutableSymbols(db: Db, repoId: number, rows: ExecutableSymbolFact[]): void {
   const stmt = db.prepare('INSERT INTO symbols(repo_id,file_id,kind,name,qualified_name,exported,start_line,end_line,start_offset,end_offset,source_file,exported_name,evidence_json) VALUES(?,(SELECT id FROM files WHERE repo_id=? AND relative_path=?),?,?,?,?,?,?,?,?,?,?,?)');

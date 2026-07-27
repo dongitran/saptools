@@ -1,5 +1,8 @@
 import ts from 'typescript';
-import type { LexicalScopeFact } from '../types.js';
+import type {
+  LexicalScopeFact,
+  ServiceBindingFact,
+} from '../types.js';
 import {
   createBindingLexicalIndex,
   declarationAt,
@@ -42,6 +45,7 @@ export interface EventReceiverIndex {
   source: ts.SourceFile;
   lexical: BindingLexicalIndex;
   imports: SymbolImportBinding[];
+  serviceBindings: readonly ServiceBindingFact[];
 }
 
 const eventReceiverNames = new Set([
@@ -233,14 +237,99 @@ function reachingSites(
 function evidenceSites(
   sites: readonly BindingLexicalSite[],
   variableName: string,
-  bindings: readonly SymbolImportBinding[],
+  index: EventReceiverIndex,
 ): EventReceiverEvidenceSite[] {
   return sites.slice(0, 8).map((site) => ({
     startOffset: site.startOffset,
     endOffset: site.endOffset,
     flow: site.flow,
-    connect: isCapConnect(siteExpression(site, variableName), bindings),
+    connect: siteProvesCapClient(site, variableName, index),
   }));
+}
+
+function bindingMatchesSite(
+  binding: ServiceBindingFact,
+  site: BindingLexicalSite,
+  variableName: string,
+): boolean {
+  return binding.variableName === variableName
+    && binding.bindingSiteStartOffset === site.startOffset
+    && binding.bindingSiteEndOffset === site.endOffset;
+}
+
+function siteServiceBinding(
+  site: BindingLexicalSite,
+  variableName: string,
+  index: EventReceiverIndex,
+): ServiceBindingFact | undefined {
+  const matches = index.serviceBindings.filter((binding) =>
+    bindingMatchesSite(binding, site, variableName));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function siteProvesCapClient(
+  site: BindingLexicalSite,
+  variableName: string,
+  index: EventReceiverIndex,
+): boolean {
+  return isCapConnect(siteExpression(site, variableName), index.imports)
+    || siteServiceBinding(site, variableName, index) !== undefined;
+}
+
+function functionLikeValue(
+  declaration: ts.Identifier,
+): ts.FunctionLikeDeclaration | undefined {
+  const parent = declaration.parent;
+  if (ts.isFunctionDeclaration(parent)) return parent;
+  if (!ts.isVariableDeclaration(parent) || !parent.initializer)
+    return undefined;
+  return ts.isArrowFunction(parent.initializer)
+    || ts.isFunctionExpression(parent.initializer)
+    ? parent.initializer : undefined;
+}
+
+function returnsObjectLiteral(
+  fn: ts.FunctionLikeDeclaration,
+): boolean {
+  if (ts.isArrowFunction(fn) && !ts.isBlock(fn.body))
+    return ts.isObjectLiteralExpression(unwrapExpression(fn.body));
+  const returns: ts.ReturnStatement[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node !== fn && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node)) returns.push(node);
+    else ts.forEachChild(node, visit);
+  };
+  visit(fn);
+  const expression = returns[0]?.expression;
+  return returns.length === 1 && Boolean(
+    expression && ts.isObjectLiteralExpression(unwrapExpression(expression)),
+  );
+}
+
+function siteProvesNonCapClient(
+  site: BindingLexicalSite,
+  variableName: string,
+): boolean {
+  const expression = siteExpression(site, variableName);
+  if (!expression) return false;
+  const value = unwrapExpression(expression);
+  if (ts.isObjectLiteralExpression(value)) return true;
+  if (!ts.isCallExpression(value)
+    || !ts.isIdentifier(value.expression)) return false;
+  const declaration = lexicalIdentifierDeclaration(value.expression);
+  const fn = declaration ? functionLikeValue(declaration) : undefined;
+  return Boolean(fn && returnsObjectLiteral(fn));
+}
+
+function helperReturnProof(
+  sites: readonly BindingLexicalSite[],
+  variableName: string,
+  index: EventReceiverIndex,
+): boolean {
+  return sites.some((site) => siteServiceBinding(
+    site, variableName, index,
+  )?.helperChain?.some((step) =>
+    step.bindingOrigin === 'single_hop_helper_return'));
 }
 
 function lexicalProof(
@@ -259,20 +348,24 @@ function lexicalProof(
   if (declaration.declarationKind === 'parameter')
     return unproven('event_receiver_unproven_propagation', 'parameter_flow');
   const sites = reachingSites(index, declaration, useStart);
-  const expressions = sites.flatMap((site) => {
+  const valueSites = sites.filter((site) => {
     const value = siteExpression(site, identifier.text);
-    return value ? [value] : [];
+    return value !== undefined;
   });
-  const considered = evidenceSites(sites, identifier.text, index.imports);
-  if (expressions.length > 0
-    && expressions.every((value) => isCapConnect(value, index.imports)))
+  const considered = evidenceSites(sites, identifier.text, index);
+  if (valueSites.length > 0
+    && valueSites.every((site) =>
+      siteProvesCapClient(site, identifier.text, index)))
     return {
       receiverClassification: 'cap_evidence',
-      receiverProof: 'lexical_connect_assignment',
+      receiverProof: helperReturnProof(
+        valueSites, identifier.text, index,
+      ) ? 'single_hop_helper_return' : 'lexical_connect_assignment',
       consideredBindingSites: considered,
     };
-  if (expressions.some(Boolean)
-    && expressions.every((value) => !isCapConnect(value, index.imports)))
+  if (valueSites.length > 0
+    && valueSites.every((site) =>
+      siteProvesNonCapClient(site, identifier.text)))
     return unproven(
       'event_receiver_not_cap_client', 'non_connect_binding', considered,
     );
@@ -356,11 +449,13 @@ function rootIdentifier(
 
 export function createEventReceiverIndex(
   source: ts.SourceFile,
+  serviceBindings: readonly ServiceBindingFact[] = [],
 ): EventReceiverIndex {
   return {
     source,
     lexical: createBindingLexicalIndex(source),
     imports: collectSymbolImportBindings(source),
+    serviceBindings,
   };
 }
 

@@ -747,10 +747,24 @@ describe('event subscription handler linker', () => {
       expect(linkUpgradeWarnings(db, staleWorkspace)).toEqual([
         expect.objectContaining({ code: 'reindex_required', staleRepositoryCount: 1 }),
       ]);
-      expect(doctorDiagnostics(db, true, { workspaceId: staleWorkspace }))
-        .toEqual(expect.arrayContaining([
-          expect.objectContaining({ code: 'reindex_required' }),
-        ]));
+      const staleDiagnostics = doctorDiagnostics(
+        db, true, { workspaceId: staleWorkspace },
+      );
+      expect(staleDiagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'reindex_required',
+          staleRepositoryCount: 1,
+          affectedRepositoryCount: 1,
+          staleRepositories: [
+            expect.objectContaining({
+              repositoryId: staleRepo,
+              repositoryName: 'stale-events',
+            }),
+          ],
+        }),
+        expect.objectContaining({ code: 'search_index_empty' }),
+      ]));
+      expect(staleDiagnostics.length).toBeGreaterThan(1);
     } finally {
       db.close();
     }

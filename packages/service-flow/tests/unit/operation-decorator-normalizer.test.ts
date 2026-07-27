@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { normalizeDecoratorOperation, normalizeDecoratorOperationSignal } from '../../src/linker/operation-decorator-normalizer.js';
 
 describe('operation decorator normalization', () => {
-  it('normalizes literal and generated action/function decorator names conservatively', () => {
+  it('normalizes only resolved values and never guesses from identifier text', () => {
     expect(normalizeDecoratorOperation('publishRecord', undefined)).toBe('publishRecord');
-    expect(normalizeDecoratorOperation('ActionPublishRecord', undefined)).toBe('publishRecord');
-    expect(normalizeDecoratorOperation('FuncLookupRecord', undefined)).toBe('lookupRecord');
-    expect(normalizeDecoratorOperation(undefined, 'api.service.CatalogService.ActionPublishRecord.name')).toBe('publishRecord');
+    expect(normalizeDecoratorOperation('ActionPublishRecord', undefined))
+      .toBe('ActionPublishRecord');
+    expect(normalizeDecoratorOperation('FuncLookupRecord', undefined))
+      .toBe('FuncLookupRecord');
+    expect(normalizeDecoratorOperation(
+      undefined,
+      'api.service.CatalogService.ActionPublishRecord.name',
+    )).toBeUndefined();
     expect(normalizeDecoratorOperation('ActionableThing', undefined)).toBe('ActionableThing');
   });
 

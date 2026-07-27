@@ -298,6 +298,12 @@ describe('service-flow CLI pipe safety', () => {
 });
 
 describe('service-flow guided trace CLI', () => {
+  it('documents repeatable event environment keys on index help', async () => {
+    const help = await run(['index', '--help']);
+    expect(help).toContain('--event-environment-key <key>');
+    expect(help).toContain('repeatable');
+  });
+
   it('runs runtime substitution, ambiguity, hints, doctor, and SQLite checks', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'service-flow-guided-e2e-'));
     const dbPath = path.join(dir, 'service-flow.db');
@@ -323,16 +329,7 @@ describe('service-flow guided trace CLI', () => {
     expect(runtime.edges.some((edge) =>
       edge.to === '/ProductProcessService/runDeepCheck')).toBe(true);
     const gaps = runtime.edges.filter((edge) => edge.unresolvedReason);
-    expect(gaps.map((edge) =>
-      `${String(edge.evidence?.sourceFile)}:${edge.from}->${edge.to}`)
-      .sort()).toEqual([
-      'srv/GatewayHandler.ts:Action->unresolved:Action',
-      'srv/ProcessHandler.ts:Action->unresolved:Action',
-      'srv/SettingsHandler.ts:Action->unresolved:Action',
-    ]);
-    expect(gaps.every((edge) =>
-      edge.type === 'local_symbol_call'
-      && edge.unresolvedReason === 'package_repository_not_indexed')).toBe(true);
+    expect(gaps).toEqual([]);
 
     const missing = JSON.parse(await run([
       'trace', '--workspace', traceFixture,

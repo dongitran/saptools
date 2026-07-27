@@ -15,7 +15,7 @@ import {
 } from '../parsers/environment-declarations.js';
 const environmentKeys = z.array(
   z.string().refine(validEventEnvironmentKey),
-).min(1).max(EVENT_ENVIRONMENT_KEY_CAP).transform(
+).max(EVENT_ENVIRONMENT_KEY_CAP).transform(
   normalizeEventEnvironmentKeys,
 );
 const schema = z.object({

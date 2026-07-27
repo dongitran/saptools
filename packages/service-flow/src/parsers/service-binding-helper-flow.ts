@@ -12,6 +12,8 @@ import {
   type BindingSiteCandidate,
   type VisibleBinding,
 } from './binding-lexical-scope.js';
+import { bindingAssignmentEntries } from
+  './binding-assignment-targets.js';
 import { selectVisibleBinding } from './binding-visibility.js';
 
 export type LocalBindingFact = Omit<
@@ -110,15 +112,25 @@ function localFactCandidate(
   index: BindingLexicalIndex,
   bindings: readonly BindingSiteCandidate<LocalBindingFact>[],
 ): BindingSiteCandidate<LocalBindingFact> | undefined {
-  if (!ts.isVariableDeclaration(node)
-    || !ts.isIdentifier(node.name) || !node.initializer) return undefined;
-  const fact = directConnectFact(node.initializer);
-  if (fact) return bindingValueAtSite(node.name.text, node, source, fact);
-  const alias = localAliasSource(node.initializer);
-  return alias.sourceName
-    ? aliasLocalFact(
-        alias.sourceName, node.name.text, node, index,
-        bindings, alias.transaction,
+  if (ts.isVariableDeclaration(node)
+    && ts.isIdentifier(node.name) && node.initializer) {
+    const fact = directConnectFact(node.initializer);
+    if (fact) return bindingValueAtSite(node.name.text, node, source, fact);
+    const alias = localAliasSource(node.initializer);
+    return alias.sourceName
+      ? aliasLocalFact(
+          alias.sourceName, node.name.text, node, index,
+          bindings, alias.transaction,
+        )
+      : undefined;
+  }
+  if (!ts.isBinaryExpression(node)
+    || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return undefined;
+  const entries = bindingAssignmentEntries(node.left);
+  const fact = directConnectFact(node.right);
+  return entries.length === 1 && entries[0] && !entries[0].unsupported && fact
+    ? bindingValueAtSite(
+        entries[0].variableName, node, source, fact,
       )
     : undefined;
 }
@@ -269,12 +281,42 @@ function directReturnConnectFact(
     const selected = selectVisibleBinding(
       index, bindings, returned.text, returned,
     );
-    return selected.site?.deterministic
-      && selected.declarationSite?.declarationKind !== 'var'
+    return selected.declarationSite?.declarationKind !== 'var'
+      && (selected.site?.deterministic
+        || safeTryConnectAssignment(index, selected, returned, fn))
       ? selected.candidate?.value
       : undefined;
   }
   return directConnectFact(returned);
+}
+
+function safeTryConnectAssignment(
+  index: BindingLexicalIndex,
+  selected: VisibleBinding<LocalBindingFact>,
+  returned: ts.Identifier,
+  fn: ts.FunctionLikeDeclaration,
+): boolean {
+  const site = selected.site;
+  const declaration = selected.declarationSite;
+  if (!site || !declaration || site.flow !== 'assignment'
+    || !ts.isBinaryExpression(site.node)) return false;
+  const writes = index.sites.filter((candidate) =>
+    candidate.flow === 'assignment'
+    && candidate.declarationKey === declaration.declarationKey
+    && candidate.startOffset < returned.getStart(index.source));
+  if (writes.length !== 1) return false;
+  let current: ts.Node | undefined = site.node.parent;
+  while (current && current !== fn && !ts.isTryStatement(current))
+    current = current.parent;
+  if (!current || !ts.isTryStatement(current)
+    || !hasAncestor(site.node, current.tryBlock)) return false;
+  const caught = current.catchClause?.block;
+  if (caught) {
+    const finalStatement = caught.statements.at(-1);
+    if (!finalStatement || !ts.isThrowStatement(finalStatement)
+      || hazardousTryClause(caught, fn, false)) return false;
+  }
+  return !hazardousTryClause(current.finallyBlock, fn, true);
 }
 
 function hasTryAncestor(

@@ -431,6 +431,58 @@ function shapeEnvironmentQuality(
   };
 }
 
+function environmentFact(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function environmentConfigurationQuality(
+  db: Db,
+  workspaceId?: number,
+): Diagnostic {
+  const rows = db.prepare(`SELECT environment_declarations_json value
+    FROM repositories r WHERE ${workspacePredicate('r')}`).all(
+    workspaceId, workspaceId,
+  );
+  const keys = new Set<string>();
+  const matches = new Map<string, number>();
+  for (const row of rows) {
+    const fact = environmentFact(row.value);
+    if (Array.isArray(fact.allowedKeys))
+      for (const key of fact.allowedKeys)
+        if (typeof key === 'string') keys.add(key);
+    if (Array.isArray(fact.declarations))
+      for (const item of fact.declarations) {
+        const declaration = item && typeof item === 'object'
+          ? item as Record<string, unknown> : {};
+        if (typeof declaration.key === 'string')
+          matches.set(
+            declaration.key, (matches.get(declaration.key) ?? 0) + 1,
+          );
+      }
+  }
+  const configured = [...keys].sort();
+  const unmatched = configured.filter((key) => !matches.has(key));
+  return {
+    severity: unmatched.length > 0 ? 'warning' : 'info',
+    code: 'strict_event_environment_configuration_quality',
+    message: 'Configured event environment-key coverage aggregate',
+    configuredKeys: configured,
+    configuredKeyCount: configured.length,
+    matches: configured.map((key) => ({
+      key, declarationCount: matches.get(key) ?? 0,
+    })),
+    unmatchedKeys: unmatched,
+    unmatchedKeyCount: unmatched.length,
+  };
+}
+
 export function eventSurfaceQualityDiagnostics(
   db: Db,
   workspaceId?: number,
@@ -442,5 +494,6 @@ export function eventSurfaceQualityDiagnostics(
     unmatchedSubscriptionQuality(db, workspaceId),
     receiverProofQuality(db, workspaceId),
     shapeEnvironmentQuality(db, workspaceId),
+    environmentConfigurationQuality(db, workspaceId),
   ];
 }

@@ -116,7 +116,7 @@ export async function indexRepository(
     return outcome.ok
       ? {
           fileCount: prepared.fileCount,
-          diagnosticCount: prepared.diagnosticCount,
+          diagnosticCount: prepared.diagnosticCount + outcome.diagnosticCount,
           skipped: false,
         }
       : { fileCount: 0, diagnosticCount: 1, skipped: false };
@@ -178,8 +178,9 @@ export function publishPreparedRepositoryIndex(
   db: Db,
   prepared: PreparedRepositoryIndex,
   invalidations: PackageInvalidationBatch,
-): void {
-  if (prepared.skipped) return;
+  options: { containPreparedFailures?: boolean } = {},
+): number {
+  if (prepared.skipped) return 0;
   if (!prepared.packageFacts || !prepared.parsed || !prepared.fingerprint
     || !prepared.kind || !prepared.packagePublicSurface
     || !prepared.environmentDeclarations)
@@ -213,16 +214,29 @@ export function publishPreparedRepositoryIndex(
   for (const service of prepared.parsed.services) insertService(db, repoId, service);
   for (const handler of prepared.parsed.handlers) insertHandler(db, repoId, handler);
   insertExecutableSymbols(db, repoId, prepared.parsed.symbols);
-  insertSymbolCalls(db, repoId, prepared.parsed.symbolCalls);
-  insertRegistrations(db, repoId, prepared.parsed.registrations);
-  insertBindings(db, repoId, prepared.parsed.bindings);
-  insertCalls(db, repoId, prepared.parsed.calls);
-  insertGeneratedConstants(db, repoId, prepared.parsed.generatedConstants);
+  const publicationDiagnosticCount = insertPreparedCallFacts(
+    db, repoId, prepared.parsed, options,
+  );
   db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(now, prepared.fingerprint, now, ANALYZER_VERSION, repoId);
+  return publicationDiagnosticCount;
+}
+
+function insertPreparedCallFacts(
+  db: Db,
+  repoId: number,
+  parsed: ParsedFacts,
+  options: { containPreparedFailures?: boolean },
+): number {
+  let count = insertSymbolCalls(db, repoId, parsed.symbolCalls, options);
+  insertRegistrations(db, repoId, parsed.registrations);
+  count += insertBindings(db, repoId, parsed.bindings, options);
+  count += insertCalls(db, repoId, parsed.calls, options);
+  insertGeneratedConstants(db, repoId, parsed.generatedConstants);
+  return count;
 }
 
 export type RepositoryPublicationOutcome =
-  | { ok: true }
+  | { ok: true; diagnosticCount: number }
   | { ok: false; error: unknown };
 
 export function publishOneRepository(
@@ -231,12 +245,14 @@ export function publishOneRepository(
   invalidations: PackageInvalidationBatch,
 ): RepositoryPublicationOutcome {
   try {
-    db.transaction(() => withPublicationSavepoint(
+    const diagnosticCount = db.transaction(() => withPublicationSavepoint(
       db,
       prepared.repo.id,
-      () => publishPreparedRepositoryIndex(db, prepared, invalidations),
+      () => publishPreparedRepositoryIndex(
+        db, prepared, invalidations, { containPreparedFailures: true },
+      ),
     ));
-    return { ok: true };
+    return { ok: true, diagnosticCount };
   } catch (error) {
     recordIndexFailure(db, prepared.repo.id, error);
     return { ok: false, error };
@@ -293,6 +309,7 @@ async function parseAllSourceFacts(
     if (/\.[jt]s$/.test(file)) {
       const source = snapshot.sourceFile();
       facts.generatedConstants.push(...generatedConstantFacts(source, file));
+      const bindings = await parseServiceBindings(root, file, sources);
       const classified = classifyOutboundCallsInSource(source, file, {
         importedEventNameResolver: createImportedEventNameResolver(
           sources, source, file,
@@ -301,10 +318,10 @@ async function parseAllSourceFacts(
           createEventEnvironmentReferenceResolver(
             sources, source, file, eventEnvironmentKeys,
           ),
+        serviceBindings: bindings,
       });
       facts.handlers.push(...(await parseDecorators(root, file, sources)));
       facts.registrations.push(...(await parseHandlerRegistrations(root, file, sources)));
-      const bindings = await parseServiceBindings(root, file, sources);
       const symbolFacts = await parseExecutableSymbols(
         root, file, sources, classified,
       );
