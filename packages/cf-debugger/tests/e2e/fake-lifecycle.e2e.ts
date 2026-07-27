@@ -140,6 +140,17 @@ async function writeState(homeDir: string, state: DebuggerStateForTest): Promise
   );
 }
 
+test("CLI reports the package version", async () => {
+  const homeDir = await createIsolatedHome();
+  try {
+    const result = await runCliCommand(createFakeEnv(homeDir), ["--version"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("0.2.0");
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
 test("User can start, inspect, and stop a fake-backed session", async () => {
   expect(existsSync(CLI_PATH)).toBe(true);
   expect(existsSync(FAKE_CF_PATH)).toBe(true);
@@ -164,7 +175,8 @@ test("User can start, inspect, and stop a fake-backed session", async () => {
 
     const stop = await runCliCommand(env, ["stop", ...TARGET_ARGS]);
     expect(stop.code, stop.stderr).toBe(0);
-    await waitForCliExit(session.child);
+    const ownerExit = await waitForCliExit(session.child);
+    expect(ownerExit.code).toBe(0);
 
     const state = (await readState(homeDir)) as { sessions?: readonly unknown[] } | undefined;
     expect(state?.sessions ?? []).toEqual([]);
@@ -188,6 +200,35 @@ test("User can choose a preferred local port for a fake-backed session", async (
     session = await startCli(env, ["start", ...TARGET_ARGS, "--port", "20555"], 10_000);
     expect(session.localPort).toBe(20_555);
     await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
+  } finally {
+    if (session !== undefined) {
+      await stopCli(session.child);
+    }
+    await cleanupHome(homeDir);
+  }
+});
+
+test("User can target a non-default remote inspector port end to end", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir);
+  let session: StartedSession | undefined;
+
+  try {
+    session = await startCli(env, [
+      "start",
+      ...TARGET_ARGS,
+      "--remote-port",
+      "9230",
+    ], 10_000);
+    const state = await readState(homeDir) as DebuggerStateForTest;
+    expect(state.sessions).toContainEqual(expect.objectContaining({
+      remotePort: 9230,
+    }));
+    const commands = await readFakeCommands(homeDir);
+    expect(commands.some((command) =>
+      command.includes(`-L ${session?.localPort.toString() ?? ""}:localhost:9230`)
+    )).toBe(true);
+    expect(commands.some((command) => command.includes("inspector_port_hex=240E"))).toBe(true);
   } finally {
     if (session !== undefined) {
       await stopCli(session.child);
@@ -318,7 +359,7 @@ test("User can stop a fake-backed session by session id", async () => {
   }
 });
 
-test("User list and status retain state when tunnel ownership becomes unverifiable", async () => {
+test("User can force-forget an unverifiable tunnel without signalling its port owner", async () => {
   expect(existsSync(CLI_PATH)).toBe(true);
   expect(existsSync(FAKE_CF_PATH)).toBe(true);
 
@@ -343,15 +384,23 @@ test("User list and status retain state when tunnel ownership becomes unverifiab
       sessions: [{ ...storedSession, pid: stalePid, tunnelPid: stalePid }],
     });
 
-    const list = await runCliCommand(env, ["list"]);
-    expect(list.code, list.stderr).toBe(0);
-    expect(JSON.parse(list.stdout)).toEqual([
-      expect.objectContaining({ sessionId: storedSession.sessionId }),
-    ]);
+    const stop = await runCliCommand(env, ["stop", "--session-id", storedSession.sessionId]);
+    expect(stop.code).not.toBe(0);
+    expect(stop.stderr).toContain("TUNNEL_OWNERSHIP_UNVERIFIED");
+    await expect(canConnect(session.localPort, 500)).resolves.toBe(true);
 
-    const status = await runCliCommand(env, ["status", ...TARGET_ARGS]);
-    expect(status.code, status.stderr).toBe(0);
-    expect(JSON.parse(status.stdout)).toMatchObject({ sessionId: storedSession.sessionId });
+    const forced = await runCliCommand(env, [
+      "stop",
+      "--session-id",
+      storedSession.sessionId,
+      "--force",
+    ]);
+    expect(forced.code, forced.stderr).toBe(0);
+    expect(forced.stderr).toContain("No unverified process was signalled");
+    expect(forced.stdout).toContain(`Removed forced stale session ${storedSession.sessionId}`);
+    await expect(canConnect(session.localPort, 500)).resolves.toBe(true);
+    const finalState = (await readState(homeDir)) as { sessions?: readonly unknown[] } | undefined;
+    expect(finalState?.sessions ?? []).toEqual([]);
   } finally {
     if (session !== undefined) {
       await stopCli(session.child);
@@ -425,8 +474,11 @@ test("User can clear multiple fake-backed sessions with stop all", async () => {
 
     const stop = await runCliCommand(env, ["stop", "--all"]);
     expect(stop.code, stop.stderr).toBe(0);
-    expect(stop.stdout).toContain("Stop requested for 2 session(s).");
-    await Promise.all(sessions.map(async (started) => await waitForCliExit(started.child)));
+    expect(stop.stdout).toContain("Stop summary: 2 stopped, 0 stale, 0 pending, 0 failed.");
+    const ownerExits = await Promise.all(
+      sessions.map(async (started) => await waitForCliExit(started.child)),
+    );
+    expect(ownerExits.map((result) => result.code)).toEqual([0, 0]);
 
     const finalState = (await readState(homeDir)) as { sessions?: readonly unknown[] } | undefined;
     expect(finalState?.sessions ?? []).toEqual([]);
@@ -452,7 +504,28 @@ test("User can see empty status and missing stop results", async () => {
 
     const stop = await runCliCommand(env, ["stop", ...TARGET_ARGS]);
     expect(stop.code).toBe(1);
-    expect(stop.stderr).toContain("pass --session-id or region/org/space/app");
+    expect(stop.stderr).toContain("pass --session-id or an exact key");
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
+test("User cannot widen a scoped stop into stop --all", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir);
+
+  try {
+    for (const args of [
+      ["stop", "demo-app", "--all"],
+      ["stop", "--session-id", "session-a", "--all"],
+      ["stop", "--process", "web", "--all"],
+    ]) {
+      const result = await runCliCommand(env, args);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("UNSAFE_INPUT");
+      expect(result.stderr).toContain("--all cannot be combined");
+      expect(result.stdout).not.toContain("Stop summary");
+    }
   } finally {
     await cleanupHome(homeDir);
   }
@@ -488,7 +561,12 @@ test("User can exercise the SSH enable and restart retry path with a fake CF CLI
   let session: StartedSession | undefined;
 
   try {
-    session = await startCli(env, ["start", ...TARGET_ARGS, "--verbose"], 10_000);
+    session = await startCli(env, [
+      "start",
+      ...TARGET_ARGS,
+      "--allow-ssh-enable-restart",
+      "--verbose",
+    ], 10_000);
     await expect(canConnect(session.localPort, 1_000)).resolves.toBe(true);
     const commands = await readFakeCommands(homeDir);
     expect(commands).toContain("enable-ssh demo-app");
@@ -500,6 +578,56 @@ test("User can exercise the SSH enable and restart retry path with a fake CF CLI
     await cleanupHome(homeDir);
   }
 });
+
+test("User must explicitly permit SSH enable and restart", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir, { CF_DEBUGGER_FAKE_SSH_DISABLED_ONCE: "1" });
+
+  try {
+    const result = await runCliCommand(env, ["start", ...TARGET_ARGS]);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("SSH_NOT_ENABLED");
+    expect(result.stderr).toContain("--allow-ssh-enable-restart");
+    expect(result.stderr).toContain("cf enable-ssh demo-app && cf restart demo-app");
+    const commands = await readFakeCommands(homeDir);
+    expect(commands).not.toContain("enable-ssh demo-app");
+    expect(commands).not.toContain("restart demo-app");
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
+for (const guard of [
+  {
+    name: "CF_DEBUGGER_ALLOW_RESTART=0 overrides the positive restart flag",
+    env: { CF_DEBUGGER_ALLOW_RESTART: "0" },
+    args: ["--allow-ssh-enable-restart"],
+  },
+  {
+    name: "--no-ssh-enable-restart overrides CF_DEBUGGER_ALLOW_RESTART=1",
+    env: { CF_DEBUGGER_ALLOW_RESTART: "1" },
+    args: ["--no-ssh-enable-restart"],
+  },
+] as const) {
+  test(guard.name, async () => {
+    const homeDir = await createIsolatedHome();
+    const env = createFakeEnv(homeDir, {
+      CF_DEBUGGER_FAKE_SSH_DISABLED_ONCE: "1",
+      ...guard.env,
+    });
+
+    try {
+      const result = await runCliCommand(env, ["start", ...TARGET_ARGS, ...guard.args]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("SSH_NOT_ENABLED");
+      const commands = await readFakeCommands(homeDir);
+      expect(commands).not.toContain("enable-ssh demo-app");
+      expect(commands).not.toContain("restart demo-app");
+    } finally {
+      await cleanupHome(homeDir);
+    }
+  });
+}
 
 test("User can start a default web tunnel with a CF CLI v6-compatible argument set", async () => {
   expect(existsSync(CLI_PATH)).toBe(true);
@@ -537,6 +665,7 @@ test("User can see an explicit Node PID restart rejected before app mutation", a
       ...TARGET_ARGS,
       "--node-pid",
       "9876",
+      "--allow-ssh-enable-restart",
     ]);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("NODE_PID_RESTART_UNSAFE");
@@ -607,7 +736,7 @@ test("User can see validation and startup errors from the CLI", async () => {
       "70000",
     ]);
     expect(invalidPort.code).toBe(1);
-    expect(invalidPort.stderr).toContain("Invalid port: 70000");
+    expect(invalidPort.stderr).toContain("port must be from 1 to 65535");
 
     const invalidInstance = await runCliCommand(missingCredsEnv, [
       "start",
@@ -646,7 +775,7 @@ test("User can see validation and startup errors from the CLI", async () => {
       ["start", ...TARGET_ARGS],
     );
     expect(authFailure.code).toBe(1);
-    expect(authFailure.stderr).toContain("CF_LOGIN_FAILED");
+    expect(authFailure.stderr).toContain("CF_AUTH_FAILED");
 
     const signalFailure = await runCliCommand(
       createFakeEnv(homeDir, { CF_DEBUGGER_FAKE_SIGNAL_FAIL: "1" }),
@@ -654,6 +783,65 @@ test("User can see validation and startup errors from the CLI", async () => {
     );
     expect(signalFailure.code).toBe(1);
     expect(signalFailure.stderr).toContain("USR1_SIGNAL_FAILED");
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
+test("Overall startup deadline bounds a hanging CF command", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir, { CF_DEBUGGER_FAKE_HANG_COMMAND: "api" });
+  const startedAt = Date.now();
+
+  try {
+    const result = await runCliCommand(env, [
+      "start",
+      ...TARGET_ARGS,
+      "--startup-timeout",
+      "1",
+    ]);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("STARTUP_TIMEOUT");
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    const state = (await readState(homeDir)) as { sessions?: readonly unknown[] } | undefined;
+    expect(state?.sessions ?? []).toEqual([]);
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
+test("Overall startup deadline includes ambient CF target discovery", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir, { CF_DEBUGGER_FAKE_HANG_COMMAND: "target" });
+  const startedAt = Date.now();
+
+  try {
+    const result = await runCliCommand(env, [
+      "start",
+      "--app",
+      "demo-app",
+      "--startup-timeout",
+      "1",
+    ]);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("STARTUP_TIMEOUT");
+    expect(result.stderr).toContain("current CF target discovery");
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
+test("Rejected credentials are attempted exactly once", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir, { CF_DEBUGGER_FAKE_AUTH_FAIL: "1" });
+
+  try {
+    const result = await runCliCommand(env, ["start", ...TARGET_ARGS]);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("CF_AUTH_FAILED");
+    const commands = await readFakeCommands(homeDir);
+    expect(commands.filter((command) => command === "auth")).toHaveLength(1);
   } finally {
     await cleanupHome(homeDir);
   }

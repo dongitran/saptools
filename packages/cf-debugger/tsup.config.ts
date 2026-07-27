@@ -10,7 +10,6 @@ export default defineConfig({
   clean: true,
   dts: true,
   sourcemap: true,
-  splitting: false,
+  splitting: true,
   shims: false,
-  banner: ({ format }) => (format === "esm" ? { js: "#!/usr/bin/env node" } : {}),
 });

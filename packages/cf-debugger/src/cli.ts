@@ -1,55 +1,57 @@
-import process from "node:process";
+#!/usr/bin/env node
+
+import nodeProcess from "node:process";
 
 import { Command } from "commander";
 
+import packageMetadata from "../package.json" with { type: "json" };
+
 import { readCurrentCfTarget, requireCurrentCfRegion } from "./cf.js";
-import { resolveNodeTarget } from "./cloud-foundry/node-process.js";
+import type { CurrentCfTargetReadOptions } from "./cf.js";
+import {
+  CLEANUP_FAILURE_EXIT_CODE,
+  cliErrorExitCode,
+  hasTunnelTerminationFailure,
+} from "./cli-errors.js";
+import {
+  DEFAULT_NODE_INSPECTOR_PORT,
+  resolveNodeTarget,
+} from "./cloud-foundry/node-process.js";
+import { runDoctor } from "./debug-session/doctor.js";
+import { getDebuggerHandleTunnelError } from "./debug-session/lifecycle.js";
+import { startDebuggerWithinDeadline } from "./debug-session/start.js";
+import {
+  createStartupDeadline,
+  remainingStartupMs,
+  resolveStartupTimeoutMs,
+  startupTimeoutError,
+} from "./debug-session/startup-deadline.js";
 import {
   getSession,
   listSessions,
-  startDebugger,
   stopAllDebuggers,
   stopDebugger,
 } from "./debugger.js";
-import type { ResolvedSessionKey, SessionStatus } from "./types.js";
+import type {
+  DebuggerHandle,
+  ResolvedSessionKey,
+  SessionStatus,
+  StartDebuggerOptions,
+} from "./types.js";
 import { CfDebuggerError } from "./types.js";
 
 function readRequiredOption(value: string | undefined, flag: string): string {
-  if (value === undefined || value === "") {
-    process.stderr.write(`Missing required option ${flag}\n`);
-    process.exit(1);
+  if (value === undefined || value.trim().length === 0) {
+    throw new CfDebuggerError("UNSAFE_INPUT", `Missing required option ${flag}.`);
   }
   return value;
-}
-
-function parseOptionalPort(raw: string | undefined): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const port = Number.parseInt(raw, 10);
-  if (Number.isNaN(port) || port <= 0 || port > 65_535) {
-    process.stderr.write(`Invalid port: ${raw}\n`);
-    process.exit(1);
-  }
-  return port;
-}
-
-function parseOptionalTimeout(raw: string | undefined): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const seconds = Number.parseInt(raw, 10);
-  if (Number.isNaN(seconds) || seconds <= 0) {
-    process.stderr.write(`Invalid timeout: ${raw}\n`);
-    process.exit(1);
-  }
-  return seconds * 1000;
 }
 
 function parseOptionalInteger(
   raw: string | undefined,
   label: string,
   minimum: number,
+  maximum = Number.MAX_SAFE_INTEGER,
 ): number | undefined {
   if (raw === undefined) {
     return undefined;
@@ -58,18 +60,25 @@ function parseOptionalInteger(
     throw new CfDebuggerError("UNSAFE_INPUT", `${label} must be an integer.`);
   }
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < minimum) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw new CfDebuggerError(
       "UNSAFE_INPUT",
-      `${label} must be at least ${minimum.toString()} and within the safe integer range.`,
+      `${label} must be from ${minimum.toString()} to ${maximum.toString()}.`,
     );
   }
   return value;
 }
 
+function parseSeconds(raw: string | undefined, label: string): number | undefined {
+  const seconds = parseOptionalInteger(raw, label, 1);
+  return seconds === undefined ? undefined : seconds * 1000;
+}
+
 interface TargetCommandOptions {
   readonly process?: string;
   readonly instance?: string;
+  readonly nodePid?: string;
+  readonly apiEndpoint?: string;
 }
 
 interface StartCommandOptions extends TargetCommandOptions {
@@ -78,8 +87,11 @@ interface StartCommandOptions extends TargetCommandOptions {
   readonly space?: string;
   readonly app?: string;
   readonly port?: string;
+  readonly remotePort?: string;
   readonly timeout?: string;
-  readonly nodePid?: string;
+  readonly startupTimeout?: string;
+  readonly allowSshEnableRestart?: boolean;
+  readonly sshEnableRestart?: boolean;
   readonly verbose?: boolean;
 }
 
@@ -90,57 +102,79 @@ interface StopCommandOptions extends TargetCommandOptions {
   readonly app?: string;
   readonly sessionId?: string;
   readonly all?: boolean;
+  readonly force?: boolean;
 }
 
-interface StatusCommandOptions extends TargetCommandOptions {
-  readonly region?: string;
-  readonly org?: string;
-  readonly space?: string;
-  readonly app?: string;
-}
+type StatusCommandOptions = Omit<StopCommandOptions, "all" | "force">;
+const STOP_SCOPE_OPTION_NAMES = [
+  "apiEndpoint",
+  "app",
+  "instance",
+  "nodePid",
+  "org",
+  "process",
+  "region",
+  "sessionId",
+  "space",
+] as const;
 
 function logStatus(verbose: boolean, status: SessionStatus, message?: string): void {
-  if (verbose) {
-    const suffix = message === undefined ? "" : `: ${message}`;
-    process.stdout.write(`[cf-debugger] ${status}${suffix}\n`);
+  if (!verbose) {
+    return;
   }
+  const suffix = message === undefined ? "" : `: ${message}`;
+  nodeProcess.stdout.write(`[cf-debugger] ${status}${suffix}\n`);
 }
 
-function mergeSelector<T extends { region?: string; org?: string; space?: string; app?: string }>(selector: string | undefined, opts: T): T {
+function mergeSelector<
+  T extends { region?: string; org?: string; space?: string; app?: string },
+>(selector: string | undefined, options: T): T {
   if (selector === undefined) {
-    return opts;
+    return options;
   }
   const parts = selector.split("/");
-  if (parts.length === 4) {
-    return { ...opts, region: opts.region ?? parts[0], org: opts.org ?? parts[1], space: opts.space ?? parts[2], app: opts.app ?? parts[3] };
+  if (parts.length === 1 && parts[0]?.length !== 0) {
+    return { ...options, app: options.app ?? parts[0] };
   }
-  if (parts.length === 1) {
-    return { ...opts, app: opts.app ?? parts[0] };
+  if (parts.length === 4 && parts.every((part) => part.length > 0)) {
+    return {
+      ...options,
+      region: options.region ?? parts[0],
+      org: options.org ?? parts[1],
+      space: options.space ?? parts[2],
+      app: options.app ?? parts[3],
+    };
   }
-  throw new CfDebuggerError("UNSAFE_INPUT", "Invalid app selector format. Expected <app> or <region>/<org>/<space>/<app>.");
+  throw new CfDebuggerError(
+    "UNSAFE_INPUT",
+    "Invalid app selector. Expected <app> or non-empty <region>/<org>/<space>/<app> segments.",
+  );
 }
 
 interface StartupAbort {
   readonly signal: AbortSignal;
+  requestedExitCode(): number | undefined;
   dispose(): void;
 }
 
 function startupAbort(app: string): StartupAbort {
   const controller = new AbortController();
+  let requestedExitCode: number | undefined;
   const handler = (exitCode: number) => (): void => {
+    requestedExitCode ??= exitCode;
     controller.abort();
-    process.stderr.write(`\nAborting startup for ${app}...\n`);
-    setTimeout(() => { process.exit(exitCode); }, 5_000).unref();
+    nodeProcess.stderr.write(`\nAborting startup for ${app}...\n`);
   };
   const onSigint = handler(130);
   const onSigterm = handler(143);
-  process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigterm);
+  nodeProcess.on("SIGINT", onSigint);
+  nodeProcess.on("SIGTERM", onSigterm);
   return {
     signal: controller.signal,
+    requestedExitCode: (): number | undefined => requestedExitCode,
     dispose: (): void => {
-      process.off("SIGINT", onSigint);
-      process.off("SIGTERM", onSigterm);
+      nodeProcess.off("SIGINT", onSigint);
+      nodeProcess.off("SIGTERM", onSigterm);
     },
   };
 }
@@ -148,9 +182,9 @@ function startupAbort(app: string): StartupAbort {
 function writeReady(
   app: string,
   key: ResolvedSessionKey,
-  handle: Awaited<ReturnType<typeof startDebugger>>,
+  handle: DebuggerHandle,
 ): void {
-  process.stdout.write(
+  nodeProcess.stdout.write(
     `Debugger ready for ${app} (${key.region}/${key.org}/${key.space}).\n` +
       `  Process:     ${key.process}\n` +
       `  Instance:    ${key.instance.toString()}\n` +
@@ -163,79 +197,160 @@ function writeReady(
   );
 }
 
-function handleDisposer(
-  app: string,
-  handle: Awaited<ReturnType<typeof startDebugger>>,
-): () => Promise<void> {
-  let pending: Promise<void> | undefined;
-  return async (): Promise<void> => {
-    pending ??= (async (): Promise<void> => {
-      process.stdout.write(`\nStopping debugger for ${app}...\n`);
-      try {
-        await handle.dispose();
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`Error during stop: ${message}\n`);
-      }
-    })();
-    await pending;
-  };
+function writeCleanupError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  nodeProcess.stderr.write(`Error during stop: ${message}\n`);
 }
 
 async function waitForHandle(
   app: string,
-  handle: Awaited<ReturnType<typeof startDebugger>>,
+  handle: DebuggerHandle,
 ): Promise<void> {
-  const dispose = handleDisposer(app, handle);
-  const stop = (exitCode: number) => (): void => {
-    void dispose().then(() => { process.exit(exitCode); });
+  let pendingDispose: Promise<void> | undefined;
+  let requestedExitCode: number | undefined;
+  const dispose = (): Promise<void> => {
+    pendingDispose ??= (async (): Promise<void> => {
+      nodeProcess.stdout.write(`\nStopping debugger for ${app}...\n`);
+      await handle.dispose();
+    })();
+    return pendingDispose;
   };
-  process.on("SIGINT", stop(130));
-  process.on("SIGTERM", stop(143));
+  const stop = (exitCode: number) => (): void => {
+    requestedExitCode = exitCode;
+    void dispose()
+      .catch((error: unknown) => {
+        writeCleanupError(error);
+        nodeProcess.exit(CLEANUP_FAILURE_EXIT_CODE);
+      });
+  };
+  nodeProcess.on("SIGINT", stop(130));
+  nodeProcess.on("SIGTERM", stop(143));
   const code = await handle.waitForExit();
-  await dispose();
-  process.exit(code ?? 0);
+  const tunnelError = getDebuggerHandleTunnelError(handle);
+  if (tunnelError !== undefined) {
+    nodeProcess.stderr.write(
+      `Error [${tunnelError.code}]: ${tunnelError.message}\n`,
+    );
+    if (tunnelError.stderr !== undefined && tunnelError.stderr.trim().length > 0) {
+      nodeProcess.stderr.write(`[cf-debugger transport]\n${tunnelError.stderr.trim()}\n`);
+    }
+  }
+  try {
+    await dispose();
+  } catch (error: unknown) {
+    writeCleanupError(error);
+    nodeProcess.exit(CLEANUP_FAILURE_EXIT_CODE);
+  }
+  nodeProcess.exit(requestedExitCode ?? code ?? 0);
 }
 
-async function handleStart(selector: string | undefined, rawOpts: StartCommandOptions): Promise<void> {
-  const opts = mergeSelector(selector, rawOpts);
-  const app = readRequiredOption(opts.app, "--app or selector");
-  const key = await resolveSessionKey({ ...opts, app });
-  const verbose = opts.verbose ?? false;
+type RestartEnvironment = "allow" | "forbid" | "unset";
 
-  const preferredPort = parseOptionalPort(opts.port);
-  const tunnelReadyTimeoutMs = parseOptionalTimeout(opts.timeout);
-  const nodePid = parseOptionalInteger(opts.nodePid, "nodePid", 1);
+function parseRestartEnvironment(): RestartEnvironment {
+  const value = nodeProcess.env["CF_DEBUGGER_ALLOW_RESTART"];
+  if (value === undefined) {
+    return "unset";
+  }
+  if (value === "0") {
+    return "forbid";
+  }
+  if (value === "1") {
+    return "allow";
+  }
+  throw new CfDebuggerError(
+    "UNSAFE_INPUT",
+    "CF_DEBUGGER_ALLOW_RESTART must be 0 or 1.",
+  );
+}
 
+function buildStartOptions(
+  options: StartCommandOptions,
+  key: ResolvedSessionKey,
+  app: string,
+  signal: AbortSignal,
+  startupTimeoutMs: number,
+): StartDebuggerOptions {
+  const preferredPort = parseOptionalInteger(options.port, "port", 1, 65_535);
+  const remotePort = parseOptionalInteger(options.remotePort, "remotePort", 1, 65_535);
+  const nodePid = parseOptionalInteger(options.nodePid, "nodePid", 1);
+  const tunnelReadyTimeoutMs = parseSeconds(options.timeout, "timeout");
+  const restartEnvironment = parseRestartEnvironment();
+  const allowSshEnableRestart =
+    options.sshEnableRestart !== false &&
+    restartEnvironment !== "forbid" &&
+    (options.allowSshEnableRestart === true || restartEnvironment === "allow");
+  return {
+    region: key.region,
+    org: key.org,
+    space: key.space,
+    app,
+    process: key.process,
+    instance: key.instance,
+    signal,
+    allowSshEnableRestart,
+    ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
+    ...(preferredPort === undefined ? {} : { preferredPort }),
+    ...(remotePort === undefined ? {} : { remotePort }),
+    ...(nodePid === undefined ? {} : { nodePid }),
+    ...(tunnelReadyTimeoutMs === undefined ? {} : { tunnelReadyTimeoutMs }),
+    startupTimeoutMs,
+  };
+}
+
+function deadlineTimedOut(
+  deadline: ReturnType<typeof createStartupDeadline>,
+): boolean {
+  return remainingStartupMs(deadline.expiresAt) === 0 ||
+    (
+      deadline.signal.reason instanceof CfDebuggerError &&
+      deadline.signal.reason.code === "STARTUP_TIMEOUT"
+    );
+}
+
+async function handleStart(
+  selector: string | undefined,
+  rawOptions: StartCommandOptions,
+): Promise<void> {
+  const options = mergeSelector(selector, rawOptions);
+  const app = readRequiredOption(options.app, "--app or selector");
+  const verbose = options.verbose ?? false;
+  const startupTimeoutMs = resolveStartupTimeoutMs(
+    parseSeconds(options.startupTimeout, "startupTimeout"),
+  );
   const abort = startupAbort(app);
-
+  const deadline = createStartupDeadline(startupTimeoutMs, abort.signal);
   let handle;
+  let phase = "current CF target discovery";
+  let key: ResolvedSessionKey;
   try {
-    handle = await startDebugger({
-      region: key.region,
-      org: key.org,
-      space: key.space,
-      app,
-      process: key.process,
-      instance: key.instance,
+    key = await resolveSessionKey({ ...options, app }, deadline.signal);
+    if (deadlineTimedOut(deadline)) {
+      throw startupTimeoutError(startupTimeoutMs, phase);
+    }
+    phase = "startup";
+    handle = await startDebuggerWithinDeadline({
+      ...buildStartOptions(options, key, app, deadline.signal, startupTimeoutMs),
       verbose,
-      signal: abort.signal,
-      ...(preferredPort === undefined ? {} : { preferredPort }),
-      ...(tunnelReadyTimeoutMs === undefined ? {} : { tunnelReadyTimeoutMs }),
-      ...(nodePid === undefined ? {} : { nodePid }),
-      onStatus: (status, message) => {
+      onStatus: (status, message): void => {
         logStatus(verbose, status, message);
       },
-    });
+    }, deadline);
+  } catch (error: unknown) {
+    const normalized = deadlineTimedOut(deadline) &&
+      !(error instanceof CfDebuggerError && error.code === "STARTUP_TIMEOUT")
+      ? startupTimeoutError(startupTimeoutMs, phase)
+      : error;
+    const exitCode = abort.requestedExitCode();
+    if (exitCode !== undefined && typeof normalized === "object" && normalized !== null) {
+      Reflect.set(normalized, "cliExitCode", exitCode);
+    }
+    throw normalized;
   } finally {
+    deadline.dispose();
     abort.dispose();
   }
   writeReady(app, key, handle);
   await waitForHandle(app, handle);
-}
-
-function hasText(value: string | undefined): boolean {
-  return optionalText(value) !== undefined;
 }
 
 function optionalText(value: string | undefined): string | undefined {
@@ -243,21 +358,31 @@ function optionalText(value: string | undefined): string | undefined {
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
-function currentCfOptions(): { readonly command?: string } | undefined {
-  const command = process.env["CF_DEBUGGER_CF_BIN"];
-  return command === undefined ? undefined : { command };
+function currentCfOptions(signal?: AbortSignal): CurrentCfTargetReadOptions | undefined {
+  const command = nodeProcess.env["CF_DEBUGGER_CF_BIN"];
+  if (command === undefined && signal === undefined) {
+    return undefined;
+  }
+  return {
+    ...(command === undefined ? {} : { command }),
+    ...(signal === undefined ? {} : { signal }),
+  };
 }
 
-async function resolveSessionKey(opts: StopCommandOptions): Promise<ResolvedSessionKey> {
-  const app = readRequiredOption(opts.app, "--app or selector");
-  const region = optionalText(opts.region);
-  const org = optionalText(opts.org);
-  const space = optionalText(opts.space);
-  const processName = opts.process;
-  const instance = parseOptionalInteger(opts.instance, "instance", 0);
+async function resolveSessionKey(
+  options: StopCommandOptions,
+  signal?: AbortSignal,
+): Promise<ResolvedSessionKey> {
+  const app = readRequiredOption(options.app, "--app or selector");
+  const region = optionalText(options.region);
+  const org = optionalText(options.org);
+  const space = optionalText(options.space);
+  const nodePid = parseOptionalInteger(options.nodePid, "nodePid", 1);
+  const instance = parseOptionalInteger(options.instance, "instance", 0);
   const target = resolveNodeTarget({
-    ...(processName === undefined ? {} : { process: processName }),
+    ...(options.process === undefined ? {} : { process: options.process }),
     ...(instance === undefined ? {} : { instance }),
+    ...(nodePid === undefined ? {} : { nodePid }),
   });
   if (region !== undefined && org !== undefined && space !== undefined) {
     return {
@@ -267,23 +392,29 @@ async function resolveSessionKey(opts: StopCommandOptions): Promise<ResolvedSess
       app,
       process: target.process,
       instance: target.instance,
+      ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
+      ...(target.nodePid === undefined ? {} : { nodePid: target.nodePid }),
     };
   }
-
-  const current = await readCurrentCfTarget(currentCfOptions()).catch((error: unknown) => {
+  const current = await readCurrentCfTarget(currentCfOptions(signal)).catch((error: unknown) => {
+    if (
+      error instanceof CfDebuggerError &&
+      (error.code === "ABORTED" || error.code === "STARTUP_TIMEOUT")
+    ) {
+      throw error;
+    }
     throw new CfDebuggerError(
       "CF_TARGET_FAILED",
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+      "No current CF target. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
       error instanceof Error ? error.message : String(error),
     );
   });
   if (current === undefined) {
     throw new CfDebuggerError(
       "CF_TARGET_FAILED",
-      "No current CF target found. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
+      "No current CF target. Run `cf target -o <org> -s <space>` or pass --region/--org/--space.",
     );
   }
-
   return {
     region: region ?? requireCurrentCfRegion(current),
     org: org ?? current.org,
@@ -291,105 +422,197 @@ async function resolveSessionKey(opts: StopCommandOptions): Promise<ResolvedSess
     app,
     process: target.process,
     instance: target.instance,
+    ...(options.apiEndpoint === undefined ? {} : { apiEndpoint: options.apiEndpoint }),
+    ...(target.nodePid === undefined ? {} : { nodePid: target.nodePid }),
   };
 }
 
 async function resolveOptionalSessionKey(
-  opts: StopCommandOptions,
+  options: StopCommandOptions,
 ): Promise<ResolvedSessionKey | undefined> {
-  if (!hasText(opts.app)) {
-    if (hasText(opts.region) || hasText(opts.org) || hasText(opts.space)) {
-      readRequiredOption(opts.app, "--app");
+  if (optionalText(options.app) === undefined) {
+    if (
+      optionalText(options.region) !== undefined ||
+      optionalText(options.org) !== undefined ||
+      optionalText(options.space) !== undefined
+    ) {
+      readRequiredOption(options.app, "--app");
     }
     return undefined;
   }
-  return await resolveSessionKey(opts);
+  return await resolveSessionKey(options);
 }
 
-async function handleStop(selector: string | undefined, rawOpts: StopCommandOptions): Promise<void> {
-  const opts = mergeSelector(selector, rawOpts);
-  if (opts.all === true) {
-    const count = await stopAllDebuggers();
-    process.stdout.write(`Stop requested for ${count.toString()} session(s).\n`);
+function writeStopResult(result: Awaited<ReturnType<typeof stopDebugger>>): void {
+  if (result === undefined) {
     return;
   }
-  const key = await resolveOptionalSessionKey(opts);
-  const result = await stopDebugger({
-    ...(opts.sessionId === undefined ? {} : { sessionId: opts.sessionId }),
-    ...(key === undefined ? {} : { key }),
-  });
-  if (result === undefined) {
-    process.stderr.write(
-      "No matching session found. Use `cf-debugger list` and pass --session-id or " +
-        "region/org/space/app if the current CF target differs.\n",
-    );
-    process.exit(1);
+  if (result.warning !== undefined) {
+    nodeProcess.stderr.write(`[cf-debugger] warning: ${result.warning}\n`);
   }
   if (result.pending) {
-    process.stdout.write(
-      `Stop requested for session ${result.sessionId} ` +
-        `(${result.app}, startup phase ${result.status}).\n`,
+    nodeProcess.stdout.write(
+      `Stop requested for session ${result.sessionId} (${result.app}, phase ${result.status}).\n`,
     );
+  } else if (result.stale) {
+    nodeProcess.stdout.write(
+      `Removed ${result.forced ? "forced " : ""}stale session ${result.sessionId} ` +
+        `(${result.app}, port ${result.localPort.toString()}).\n`,
+    );
+  } else {
+    nodeProcess.stdout.write(
+      `Stopped session ${result.sessionId} (${result.app}, port ${result.localPort.toString()}).\n`,
+    );
+  }
+}
+
+async function handleStop(
+  selector: string | undefined,
+  rawOptions: StopCommandOptions,
+  command: Command,
+): Promise<void> {
+  if (
+    rawOptions.all === true &&
+    (
+      selector !== undefined ||
+      STOP_SCOPE_OPTION_NAMES.some((name) => command.getOptionValueSource(name) === "cli")
+    )
+  ) {
+    throw new CfDebuggerError(
+      "UNSAFE_INPUT",
+      "--all cannot be combined with a selector, --session-id, or target selector options.",
+    );
+  }
+  const options = mergeSelector(selector, rawOptions);
+  if (options.all === true) {
+    const summary = await stopAllDebuggers(options.force === true);
+    for (const outcome of summary.outcomes) {
+      if (outcome.error === undefined) {
+        writeStopResult(outcome.result);
+      } else {
+        nodeProcess.stderr.write(
+          `Failed ${outcome.sessionId} (${outcome.app}): ${outcome.error.message}\n`,
+        );
+      }
+    }
+    nodeProcess.stdout.write(
+      `Stop summary: ${summary.stopped.toString()} stopped, ${summary.stale.toString()} stale, ` +
+        `${summary.pending.toString()} pending, ${summary.failed.toString()} failed.\n`,
+    );
+    if (summary.failed > 0) {
+      nodeProcess.exitCode = 1;
+    }
     return;
   }
-  if (result.stale) {
-    process.stdout.write(
-      `Removed stale session ${result.sessionId} (${result.app}, port ${result.localPort.toString()}).\n`,
+  const key = await resolveOptionalSessionKey(options);
+  const result = await stopDebugger({
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+    ...(key === undefined ? {} : { key }),
+    force: options.force === true,
+  });
+  if (result === undefined) {
+    throw new CfDebuggerError(
+      "SESSION_NOT_FOUND",
+      "No matching session. Use `cf-debugger list` and pass --session-id or an exact key.",
     );
-    return;
   }
-  process.stdout.write(
-    `Stopped session ${result.sessionId} (${result.app}, port ${result.localPort.toString()}).\n`,
-  );
+  writeStopResult(result);
 }
 
 async function handleList(): Promise<void> {
-  const sessions = await listSessions();
-  process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
+  nodeProcess.stdout.write(`${JSON.stringify(await listSessions(), null, 2)}\n`);
 }
 
-async function handleStatus(selector: string | undefined, rawOpts: StatusCommandOptions): Promise<void> {
-  const opts = mergeSelector(selector, rawOpts);
-  const session = await getSession(await resolveSessionKey(opts));
-  process.stdout.write(`${JSON.stringify(session ?? null, null, 2)}\n`);
+async function handleStatus(
+  selector: string | undefined,
+  rawOptions: StatusCommandOptions,
+): Promise<void> {
+  const options = mergeSelector(selector, rawOptions);
+  const session = options.sessionId === undefined
+    ? await getSession(await resolveSessionKey(options))
+    : (await listSessions()).find((candidate) => candidate.sessionId === options.sessionId);
+  nodeProcess.stdout.write(`${JSON.stringify(session ?? null, null, 2)}\n`);
+}
+
+async function handleDoctor(cleanup: boolean): Promise<void> {
+  const report = await runDoctor({ cleanup });
+  nodeProcess.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
 function registerStartCommand(program: Command): void {
   program
     .command("start")
     .description("Open a debug tunnel for one app")
-    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
+    .argument("[selector]", "Optional <app> or <region>/<org>/<space>/<app>")
     .option("--region <key>", "CF region key (default: current cf target)")
-    .option("--org <name>", "CF org name (default: current cf target)")
-    .option("--space <name>", "CF space name (default: current cf target)")
+    .option("--api-endpoint <url>", "Explicit CF API endpoint override")
+    .option("--org <name>", "CF org (default: current cf target)")
+    .option("--space <name>", "CF space (default: current cf target)")
     .option("--app <name>", "CF app name")
     .option("--process <name>", "CF process name", "web")
-    .option("-i, --instance <index>", "CF process instance index", "0")
+    .option("-i, --instance <index>", "CF process instance", "0")
     .option("--node-pid <pid>", "Explicit remote Node.js PID")
-    .option("--port <number>", "Preferred local port (auto-assigned if omitted)")
-    .option("--timeout <seconds>", "Tunnel-ready timeout in seconds (default: 180)")
-    .option("--verbose", "Print status transitions", false)
-    .action(async (selector: string | undefined, opts: StartCommandOptions): Promise<void> => {
-      await handleStart(selector, opts);
+    .option("--port <number>", "Preferred local port")
+    .option(
+      "--remote-port <number>",
+      "Remote inspector port",
+      DEFAULT_NODE_INSPECTOR_PORT.toString(),
+    )
+    .option("--timeout <seconds>", "Tunnel/inspector readiness timeout", "180")
+    .option("--startup-timeout <seconds>", "Overall startup deadline", "300")
+    .option(
+      "--allow-ssh-enable-restart",
+      "Allow app-level SSH enablement and an app restart (opt-in)",
+    )
+    .option(
+      "--no-ssh-enable-restart",
+      "Forbid app-level SSH enablement and restart, overriding flag/environment",
+    )
+    .option("--verbose", "Print status transitions and tunnel diagnostics", false)
+    .action(async (selector: string | undefined, options: StartCommandOptions): Promise<void> => {
+      await handleStart(selector, options);
     });
 }
 
-function registerStopCommand(program: Command): void {
-  program
-    .command("stop")
-    .description("Stop one session (by key or id) or all sessions with --all")
-    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
+function addKeyOptions(command: Command): Command {
+  return command
     .option("--region <key>")
+    .option("--api-endpoint <url>", "Exact API endpoint selector")
     .option("--org <name>")
     .option("--space <name>")
     .option("--app <name>")
     .option("--process <name>", "CF process name", "web")
-    .option("-i, --instance <index>", "CF process instance index", "0")
+    .option("-i, --instance <index>", "CF process instance", "0")
+    .option("--node-pid <pid>", "Exact remote Node PID selector");
+}
+
+function registerStopCommand(program: Command): void {
+  addKeyOptions(
+    program
+      .command("stop")
+      .description("Stop one session by exact key/id, or every session with --all")
+      .argument("[selector]", "Optional <app> or <region>/<org>/<space>/<app>"),
+  )
     .option("--session-id <id>")
-    .option("--all", "Stop every active session", false)
-    .action(async (selector: string | undefined, opts: StopCommandOptions): Promise<void> => {
-      await handleStop(selector, opts);
-    });
+    .option(
+      "--all",
+      "Attempt every active session; cannot be combined with session selectors",
+      false,
+    )
+    .option(
+      "--force",
+      "Forget unverifiable state and its owned CF home; never signal an unverified process",
+      false,
+    )
+    .action(
+      async (
+        selector: string | undefined,
+        options: StopCommandOptions,
+        command: Command,
+      ): Promise<void> => {
+        await handleStop(selector, options, command);
+      },
+    );
 }
 
 function registerReadCommands(program: Command): void {
@@ -399,45 +622,60 @@ function registerReadCommands(program: Command): void {
     .action(async (): Promise<void> => {
       await handleList();
     });
-
+  addKeyOptions(
+    program
+      .command("status")
+      .description("Print one exact session as JSON; null only when no session matches")
+      .argument("[selector]", "Optional <app> or <region>/<org>/<space>/<app>"),
+  )
+    .option("--session-id <id>", "Exact session ID selector")
+    .action(async (selector: string | undefined, options: StatusCommandOptions): Promise<void> => {
+    await handleStatus(selector, options);
+  });
   program
-    .command("status")
-    .description("Print one session by key as JSON (null if not active)")
-    .argument("[selector]", "Optional app selector: `<app>` or `region/org/space/app`")
-    .option("--region <key>")
-    .option("--org <name>")
-    .option("--space <name>")
-    .option("--app <name>")
-    .option("--process <name>", "CF process name", "web")
-    .option("-i, --instance <index>", "CF process instance index", "0")
-    .action(async (selector: string | undefined, opts: StatusCommandOptions): Promise<void> => {
-      await handleStatus(selector, opts);
+    .command("doctor")
+    .description("Report session health, orphan homes/ports, temp files, and legacy credentials")
+    .option("--cleanup", "Remove only safe orphan v2 homes and stale v2 temp/lock files", false)
+    .action(async (options: { readonly cleanup?: boolean }): Promise<void> => {
+      await handleDoctor(options.cleanup === true);
     });
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command()
     .name("cf-debugger")
-    .description("Open an SSH debug tunnel to a SAP BTP Cloud Foundry app's Node.js inspector");
+    .description("Open an SSH debug tunnel to a SAP BTP Cloud Foundry Node.js inspector")
+    .version(packageMetadata.version);
   registerStartCommand(program);
   registerStopCommand(program);
   registerReadCommands(program);
-
   await program.parseAsync([...argv]);
 }
 
-try {
-  await main(process.argv);
-} catch (err: unknown) {
-  if (err instanceof CfDebuggerError) {
-    if (err.code === "ABORTED") {
-      process.stderr.write(`Aborted: ${err.message}\n`);
-      process.exit(130);
+function writeTopLevelError(error: unknown): void {
+  if (error instanceof CfDebuggerError) {
+    if (error.code === "ABORTED") {
+      nodeProcess.stderr.write(`Aborted: ${error.message}\n`);
+      nodeProcess.exit(cliErrorExitCode(error));
     }
-    process.stderr.write(`Error [${err.code}]: ${err.message}\n`);
-  } else {
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`Error: ${msg}\n`);
+    nodeProcess.stderr.write(`Error [${error.code}]: ${error.message}\n`);
+    if (error.stderr !== undefined && error.stderr.trim().length > 0) {
+      nodeProcess.stderr.write(`[cf-debugger transport]\n${error.stderr.trim()}\n`);
+    }
+    nodeProcess.exit(cliErrorExitCode(error));
   }
-  process.exit(1);
+  if (hasTunnelTerminationFailure(error)) {
+    const message = error instanceof Error ? error.message : String(error);
+    nodeProcess.stderr.write(`Error during cleanup: ${message}\n`);
+    nodeProcess.exit(CLEANUP_FAILURE_EXIT_CODE);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  nodeProcess.stderr.write(`Error: ${message}\n`);
+  nodeProcess.exit(cliErrorExitCode(error));
+}
+
+try {
+  await main(nodeProcess.argv);
+} catch (error: unknown) {
+  writeTopLevelError(error);
 }
