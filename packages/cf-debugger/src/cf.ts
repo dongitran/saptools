@@ -1,26 +1,38 @@
 export {
   cfApi,
   cfAppExists,
-  cfApps,
   cfAuth,
   cfEnableSsh,
   cfLogin,
-  cfOrgs,
   parseCurrentCfTarget,
   cfRestartApp,
   readCurrentCfTarget,
   requireCurrentCfRegion,
-  cfSpaces,
   cfSshEnabled,
   cfTarget,
+  regionKeyForApiEndpoint,
+  regionKeyFromSapApiEndpoint,
 } from "./cloud-foundry/commands.js";
-export type { CurrentCfTarget, CurrentCfTargetReadOptions } from "./cloud-foundry/commands.js";
-export type { CfExecContext } from "./cloud-foundry/execute.js";
-export { parseAppNames, parseNameTable } from "./cloud-foundry/parsers.js";
+export type {
+  CurrentCfTarget,
+  CurrentCfTargetReadOptions,
+  SshEnablementState,
+} from "./cloud-foundry/commands.js";
+export type {
+  CfExecContext,
+  CfRetryStatus,
+} from "./cloud-foundry/execute.js";
 export {
   buildCfSshArgs,
   cfSshOneShot,
+  formatTunnelDiagnostics,
+  getTunnelDiagnostics,
   isSshDisabledError,
+  isSshPermissionError,
   spawnSshTunnel,
 } from "./cloud-foundry/ssh.js";
-export type { CfSshOptions, CfSshSignalResult } from "./cloud-foundry/ssh.js";
+export type {
+  CfSshOptions,
+  CfSshSignalResult,
+  TunnelDiagnostics,
+} from "./cloud-foundry/ssh.js";

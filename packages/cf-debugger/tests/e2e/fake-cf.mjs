@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-return, @typescript-eslint/restrict-template-expressions, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/restrict-plus-operands, @typescript-eslint/switch-exhaustiveness-check, @typescript-eslint/prefer-nullish-coalescing -- This is an executable Node.js fixture; keeping it as plain JS avoids a runtime transpiler in CLI E2E tests. */
+import { Buffer } from "node:buffer";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { setInterval, setTimeout } from "node:timers";
@@ -59,8 +60,20 @@ function handleTunnel(tunnelArg) {
     exitWithError(`invalid tunnel argument: ${tunnelArg}`);
   }
 
-  const server = createServer((socket) => {
-    socket.end();
+  const server = createServer((request, response) => {
+    if (request.url !== "/json/list") {
+      response.writeHead(404).end();
+      return;
+    }
+    const body = JSON.stringify([{
+      id: "fake-inspector",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9229/fake-inspector",
+    }]);
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(body),
+    });
+    response.end(body);
   });
   const close = () => {
     server.close(() => {
@@ -130,6 +143,12 @@ function handleSsh() {
 
 function handleCommand() {
   const command = args[0];
+  if (process.env["CF_DEBUGGER_FAKE_HANG_COMMAND"] === command) {
+    setInterval(() => {
+      void process.uptime();
+    }, 60_000);
+    return;
+  }
   switch (command) {
     case "api": {
       writeState({ ...readState(), apiEndpoint: args[1] ?? "" });
@@ -170,6 +189,13 @@ function handleCommand() {
       if (process.env["CF_DEBUGGER_FAKE_AUTH_FAIL"] === "1") {
         exitWithError("authentication failed");
       }
+      return;
+    }
+    case "app": {
+      if (process.env["CF_DEBUGGER_FAKE_APP_MISSING"] === "1") {
+        exitWithError(`App '${args[1] ?? ""}' not found`);
+      }
+      process.stdout.write(`name: ${args[1] ?? ""}\nstate: started\n`);
       return;
     }
     case "ssh-enabled": {

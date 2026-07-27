@@ -1,43 +1,27 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
 import { listKnownRegionKeys, resolveApiEndpoint } from "../regions.js";
 import { CfDebuggerError } from "../types.js";
 
-import { type CfExecContext, runCf } from "./execute.js";
-import { parseAppNames, parseNameTable } from "./parsers.js";
+import {
+  type CfExecContext,
+  executeFileBounded,
+  runCf,
+} from "./execute.js";
 
-const execFileAsync = promisify(execFile);
-
-const CF_AUTH_MAX_ATTEMPTS = 3;
 const CURRENT_TARGET_TIMEOUT_MS = 30_000;
 
-function rethrowCallerAbort(error: unknown): void {
-  if (error instanceof CfDebuggerError && error.code === "ABORTED") {
+function rethrowControlFlowError(error: unknown): void {
+  if (
+    error instanceof CfDebuggerError &&
+    (error.code === "ABORTED" || error.code === "STARTUP_TIMEOUT")
+  ) {
     throw error;
   }
-}
-
-function waitForAuthRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
-  }
-  return new Promise<void>((resolve, reject) => {
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export interface CurrentCfTargetReadOptions {
   readonly command?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
 }
 
@@ -57,28 +41,22 @@ export async function cfAuth(
   password: string,
   context: CfExecContext,
 ): Promise<void> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CF_AUTH_MAX_ATTEMPTS; attempt++) {
-    try {
-      await runCf(["auth"], context, {
-        env: { CF_PASSWORD: password, CF_USERNAME: email },
-        sensitiveValues: [email, password],
-      });
-      return;
-    } catch (err: unknown) {
-      lastError = err;
-      if (err instanceof CfDebuggerError && err.code === "ABORTED") {
-        throw err;
-      }
-      if (attempt < CF_AUTH_MAX_ATTEMPTS - 1) {
-        await waitForAuthRetry(1000 * (attempt + 1), context.signal);
-      }
+  try {
+    await runCf(["auth"], context, {
+      env: { CF_PASSWORD: password, CF_USERNAME: email },
+      sensitiveValues: [email, password],
+    });
+  } catch (error: unknown) {
+    rethrowControlFlowError(error);
+    if (error instanceof CfDebuggerError) {
+      throw new CfDebuggerError(
+        "CF_AUTH_FAILED",
+        `${error.message}. Check SAP_EMAIL and SAP_PASSWORD before retrying.`,
+        error.stderr,
+      );
     }
+    throw error;
   }
-  if (lastError instanceof Error) {
-    throw lastError;
-  }
-  throw new CfDebuggerError("CF_AUTH_FAILED", `cf auth failed: ${String(lastError)}`);
 }
 
 export async function cfLogin(
@@ -89,14 +67,14 @@ export async function cfLogin(
 ): Promise<void> {
   try {
     await cfApi(apiEndpoint, context);
-    await cfAuth(email, password, context);
-  } catch (err: unknown) {
-    rethrowCallerAbort(err);
-    if (err instanceof CfDebuggerError) {
-      throw new CfDebuggerError("CF_LOGIN_FAILED", err.message, err.stderr);
+  } catch (error: unknown) {
+    rethrowControlFlowError(error);
+    if (error instanceof CfDebuggerError) {
+      throw new CfDebuggerError("CF_LOGIN_FAILED", error.message, error.stderr);
     }
-    throw err;
+    throw error;
   }
+  await cfAuth(email, password, context);
 }
 
 export async function cfTarget(
@@ -107,7 +85,7 @@ export async function cfTarget(
   try {
     await runCf(["target", "-o", org, "-s", space], context);
   } catch (err: unknown) {
-    rethrowCallerAbort(err);
+    rethrowControlFlowError(err);
     if (err instanceof CfDebuggerError) {
       throw new CfDebuggerError("CF_TARGET_FAILED", err.message, err.stderr);
     }
@@ -120,7 +98,8 @@ export async function cfAppExists(appName: string, context: CfExecContext): Prom
     await runCf(["app", appName], context);
     return true;
   } catch (err: unknown) {
-    const stderr = (err as CfDebuggerError).stderr ?? "";
+    rethrowControlFlowError(err);
+    const stderr = err instanceof CfDebuggerError ? err.stderr ?? "" : "";
     if (stderr.toLowerCase().includes("not found")) {
       return false;
     }
@@ -128,13 +107,25 @@ export async function cfAppExists(appName: string, context: CfExecContext): Prom
   }
 }
 
-export async function cfSshEnabled(appName: string, context: CfExecContext): Promise<boolean> {
+export type SshEnablementState = "disabled" | "enabled" | "unknown";
+
+export async function cfSshEnabled(
+  appName: string,
+  context: CfExecContext,
+): Promise<SshEnablementState> {
   try {
     const stdout = await runCf(["ssh-enabled", appName], context);
-    return stdout.toLowerCase().includes("ssh support is enabled");
+    const normalized = stdout.toLowerCase();
+    if (normalized.includes("ssh support is enabled")) {
+      return "enabled";
+    }
+    if (normalized.includes("ssh support is disabled")) {
+      return "disabled";
+    }
+    return "unknown";
   } catch (err: unknown) {
-    rethrowCallerAbort(err);
-    return false;
+    rethrowControlFlowError(err);
+    return "unknown";
   }
 }
 
@@ -142,7 +133,7 @@ export async function cfEnableSsh(appName: string, context: CfExecContext): Prom
   try {
     await runCf(["enable-ssh", appName], context);
   } catch (err: unknown) {
-    rethrowCallerAbort(err);
+    rethrowControlFlowError(err);
     if (err instanceof CfDebuggerError) {
       throw new CfDebuggerError("SSH_NOT_ENABLED", err.message, err.stderr);
     }
@@ -154,32 +145,28 @@ export async function cfRestartApp(appName: string, context: CfExecContext): Pro
   await runCf(["restart", appName], context);
 }
 
-export async function cfApps(context: CfExecContext): Promise<readonly string[]> {
-  const stdout = await runCf(["apps"], context);
-  return parseAppNames(stdout);
-}
-
-export async function cfOrgs(context: CfExecContext): Promise<readonly string[]> {
-  const stdout = await runCf(["orgs"], context);
-  return parseNameTable(stdout);
-}
-
-export async function cfSpaces(context: CfExecContext): Promise<readonly string[]> {
-  const stdout = await runCf(["spaces"], context);
-  return parseNameTable(stdout);
-}
-
 export async function readCurrentCfTarget(
   options: CurrentCfTargetReadOptions = {},
 ): Promise<CurrentCfTarget | undefined> {
   try {
-    const { stdout } = await execFileAsync(options.command ?? process.env["CF_DEBUGGER_CF_BIN"] ?? "cf", ["target"], {
-      env: options.env ?? process.env,
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: options.timeoutMs ?? CURRENT_TARGET_TIMEOUT_MS,
-    });
+    const { stdout } = await executeFileBounded(
+      options.command ?? process.env["CF_DEBUGGER_CF_BIN"] ?? "cf",
+      ["target"],
+      {
+        env: { ...process.env, ...options.env, CF_COLOR: "false" },
+        maxBuffer: 16 * 1024 * 1024,
+        timeoutMs: options.timeoutMs ?? CURRENT_TARGET_TIMEOUT_MS,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      },
+    );
     return parseCurrentCfTarget(stdout);
   } catch (error: unknown) {
+    if (
+      options.signal?.aborted === true ||
+      (typeof error === "object" && error !== null && Reflect.get(error, "code") === "ABORT_ERR")
+    ) {
+      throw new CfDebuggerError("ABORTED", "Current CF target discovery was aborted.");
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new CfDebuggerError("CF_TARGET_FAILED", `cf target failed: ${message}`);
   }
@@ -234,7 +221,7 @@ function parseTargetFields(stdout: string): Map<string, string> {
   );
 }
 
-function regionKeyForApiEndpoint(apiEndpoint: string): string | undefined {
+export function regionKeyForApiEndpoint(apiEndpoint: string): string | undefined {
   const normalized = normalizeApiEndpoint(apiEndpoint);
   const known = listKnownRegionKeys().find((key) => normalizeApiEndpoint(resolveApiEndpoint(key)) === normalized);
   if (known !== undefined) {
@@ -247,9 +234,17 @@ function normalizeApiEndpoint(apiEndpoint: string): string {
   return apiEndpoint.trim().replace(/\/+$/, "").toLowerCase();
 }
 
-function regionKeyFromSapApiEndpoint(apiEndpoint: string): string | undefined {
-  const match = /^https:\/\/api\.cf\.([a-z]{2}\d{2}(?:-\d{3})?)\.(?:hana\.ondemand\.com|platform\.sapcloud\.cn)$/.exec(apiEndpoint);
-  return match?.[1];
+export function regionKeyFromSapApiEndpoint(apiEndpoint: string): string | undefined {
+  const match = /^https:\/\/api\.cf\.([a-z]{2}\d{2}(?:-\d{3})?)\.(hana\.ondemand\.com|platform\.sapcloud\.cn)$/.exec(apiEndpoint);
+  const regionKey = match?.[1];
+  const domain = match?.[2];
+  if (regionKey === undefined || domain === undefined) {
+    return undefined;
+  }
+  const expectedDomain = regionKey.startsWith("cn")
+    ? "platform.sapcloud.cn"
+    : "hana.ondemand.com";
+  return domain === expectedDomain ? regionKey : undefined;
 }
 
 function isPresent(value: string | undefined): value is string {

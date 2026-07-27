@@ -16,17 +16,20 @@ import {
 import type { CfExecContext } from "../../src/cloud-foundry/execute.js";
 import {
   DEFAULT_CF_COMMAND_TIMEOUT_MS,
+  DEFAULT_CF_OPERATION_TIMEOUT_MS,
   runCf,
 } from "../../src/cloud-foundry/execute.js";
 
 interface LoggedCommand {
   readonly args: readonly string[];
+  readonly cfColor: string;
   readonly cfHome: string;
   readonly hasAuthPassword: boolean;
   readonly hasAuthUsername: boolean;
 }
 
 const FAKE_CF_SOURCE = `#!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -34,10 +37,15 @@ const args = process.argv.slice(2);
 const cfHome = process.env.CF_HOME ?? "";
 const logPath = process.env.CF_DEBUGGER_TEST_FAKE_LOG;
 
+if (process.env.CF_DEBUGGER_TEST_IGNORE_SIGTERM === "1") {
+  process.on("SIGTERM", () => {});
+}
+
 if (logPath !== undefined && logPath !== "") {
   mkdirSync(dirname(logPath), { recursive: true });
   appendFileSync(logPath, JSON.stringify({
     args,
+    cfColor: process.env.CF_COLOR ?? "",
     cfHome,
     hasAuthPassword: (process.env.CF_PASSWORD ?? "") !== "",
     hasAuthUsername: (process.env.CF_USERNAME ?? "") !== "",
@@ -67,7 +75,7 @@ switch (args[0]) {
     writeFileSync(counterPath, String(next), "utf8");
     const failures = Number.parseInt(process.env.CF_DEBUGGER_TEST_AUTH_FAILURES ?? "0", 10);
     if (next <= failures) {
-      fail("authentication failed");
+      fail("error performing request: authentication failed");
     }
     process.stdout.write("auth ok\\n");
     break;
@@ -107,12 +115,28 @@ switch (args[0]) {
   }
   case "sleep-test": {
     if (process.env.CF_DEBUGGER_TEST_TIMEOUT === "1") {
-      const waitTime = Date.now() + 2000;
-      while (Date.now() < waitTime) {
-        // busy wait
-      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     process.stdout.write("sleep ok\\n");
+    break;
+  }
+  case "descendant-holds-output": {
+    const descendant = spawn(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 2000)"],
+      { stdio: ["ignore", "inherit", "inherit"] },
+    );
+    descendant.unref();
+    process.exit(1);
+    break;
+  }
+  case "stdout-noise": {
+    process.stdout.write("app-502 says gateway timeout\\n");
+    fail("permanent failure");
+    break;
+  }
+  case "stderr-noise": {
+    fail("application timeout for job 502");
     break;
   }
   default: {
@@ -140,6 +164,7 @@ describe("cloud-foundry command wrappers", () => {
   let originalFailApi: string | undefined;
   let originalNetworkFailures: string | undefined;
   let originalTimeout: string | undefined;
+  let originalIgnoreSigterm: string | undefined;
 
   beforeEach(async () => {
     originalLog = process.env["CF_DEBUGGER_TEST_FAKE_LOG"];
@@ -147,6 +172,7 @@ describe("cloud-foundry command wrappers", () => {
     originalFailApi = process.env["CF_DEBUGGER_TEST_FAIL_API"];
     originalNetworkFailures = process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"];
     originalTimeout = process.env["CF_DEBUGGER_TEST_TIMEOUT"];
+    originalIgnoreSigterm = process.env["CF_DEBUGGER_TEST_IGNORE_SIGTERM"];
     tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-cf-unit-"));
     fakeCfPath = join(tempDir, "fake-cf.mjs");
     logPath = join(tempDir, "commands.log");
@@ -157,6 +183,7 @@ describe("cloud-foundry command wrappers", () => {
     delete process.env["CF_DEBUGGER_TEST_FAIL_API"];
     delete process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"];
     delete process.env["CF_DEBUGGER_TEST_TIMEOUT"];
+    delete process.env["CF_DEBUGGER_TEST_IGNORE_SIGTERM"];
     context = { cfHome: join(tempDir, "cf-home"), command: fakeCfPath };
   });
 
@@ -186,59 +213,133 @@ describe("cloud-foundry command wrappers", () => {
     } else {
       process.env["CF_DEBUGGER_TEST_TIMEOUT"] = originalTimeout;
     }
+    if (originalIgnoreSigterm === undefined) {
+      delete process.env["CF_DEBUGGER_TEST_IGNORE_SIGTERM"];
+    } else {
+      process.env["CF_DEBUGGER_TEST_IGNORE_SIGTERM"] = originalIgnoreSigterm;
+    }
     await rm(tempDir, { recursive: true, force: true });
   });
 
   it("runs CF commands with the isolated CF home", async () => {
-    await expect(runCf(["apps"], context)).resolves.toBe("name\ndemo-app\n");
+    await expect(runCf(["apps"], context, {
+      env: { CF_COLOR: "true", CF_HOME: join(tempDir, "attacker-home") },
+    })).resolves.toBe("name\ndemo-app\n");
 
     const commands = await readLog(logPath);
     expect(commands).toEqual([{
       args: ["apps"],
+      cfColor: "false",
       cfHome: context.cfHome,
       hasAuthPassword: false,
       hasAuthUsername: false,
     }]);
   });
 
-  it("allows five minutes for Cloud Foundry commands by default", () => {
-    expect(DEFAULT_CF_COMMAND_TIMEOUT_MS).toBe(300_000);
+  it("bounds individual commands and the overall retry operation", () => {
+    expect(DEFAULT_CF_COMMAND_TIMEOUT_MS).toBe(60_000);
+    expect(DEFAULT_CF_OPERATION_TIMEOUT_MS).toBe(300_000);
   });
 
-  it("retries transient network errors in runCf", async () => {
-    process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "2";
-    await runCf(["network-test"], context);
-
-    const commands = await readLog(logPath);
-    // Should have retried and succeeded on the 3rd attempt
-    expect(commands.map((entry) => entry.args[0])).toEqual(["network-test", "network-test", "network-test"]);
-  });
-
-  it("throws after exhausting max retries for network errors", async () => {
-    process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "4";
-    await expect(runCf(["network-test"], context)).rejects.toMatchObject({
-      code: "CF_CLI_FAILED",
-      stderr: expect.stringContaining("dial tcp: i/o timeout"),
+  it("retries transient network errors and reports the shared budget", async () => {
+    process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "1";
+    const retries: {
+      readonly attempt: number;
+      readonly command: string;
+      readonly delayMs: number;
+      readonly remainingMs: number;
+    }[] = [];
+    await runCf(["network-test", "sensitive-target"], {
+      ...context,
+      sensitiveValues: ["sensitive-target"],
+      onRetry: (status): void => {
+        retries.push(status);
+      },
     });
 
     const commands = await readLog(logPath);
-    // Should have attempted 4 times (1 initial + 3 retries) and failed
-    expect(commands.map((entry) => entry.args[0])).toEqual(["network-test", "network-test", "network-test", "network-test"]);
-  }, 15_000);
+    expect(commands.map((entry) => entry.args[0])).toEqual(["network-test", "network-test"]);
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({
+      attempt: 1,
+      command: "cf network-test <redacted>",
+      delayMs: 1000,
+    });
+    expect(retries[0]?.remainingMs).toBeGreaterThan(1000);
+    expect(retries[0]?.remainingMs).toBeLessThanOrEqual(DEFAULT_CF_OPERATION_TIMEOUT_MS);
+  });
 
-  it("retries when the process is killed due to timeout", async () => {
+  it("stops retrying when the overall operation budget cannot fit another attempt", async () => {
+    process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "100";
+    const startedAt = Date.now();
+    await expect(runCf(["network-test"], context, {
+      retryBudgetMs: 800,
+    })).rejects.toMatchObject({
+      code: "CF_CLI_TIMEOUT",
+    });
+
+    const commands = await readLog(logPath);
+    expect(commands.map((entry) => entry.args[0])).toEqual(["network-test"]);
+    expect(Date.now() - startedAt).toBeLessThan(1500);
+  });
+
+  it("clamps a hanging child attempt to the remaining overall budget", async () => {
     process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
-    // Using a 500ms timeout, and the script waits 2000ms, so it gets killed
-    await expect(runCf(["sleep-test"], context, 500)).rejects.toMatchObject({
+    process.env["CF_DEBUGGER_TEST_IGNORE_SIGTERM"] = "1";
+    const startedAt = Date.now();
+    await expect(runCf(["sleep-test"], context, {
+      retryBudgetMs: 250,
+      timeoutMs: 60_000,
+    })).rejects.toMatchObject({
+      code: "CF_CLI_TIMEOUT",
+    });
+
+    const commands = await readLog(logPath);
+    expect(commands.length).toBeLessThanOrEqual(1);
+    expect(Date.now() - startedAt).toBeLessThan(1200);
+  });
+
+  it("does not wait for a wrapper descendant that inherits command output", async () => {
+    const startedAt = Date.now();
+    await expect(runCf(["descendant-holds-output"], context, {
+      retryBudgetMs: 250,
+      timeoutMs: 250,
+    })).rejects.toMatchObject({
+      code: "CF_CLI_TIMEOUT",
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(1200);
+  });
+
+  it("reports a shared startup deadline with the active phase", async () => {
+    process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
+    const startedAt = Date.now();
+    await expect(runCf(["sleep-test"], {
+      ...context,
+      deadlineAt: Date.now() + 250,
+      phase: "authentication",
+      startupTimeoutMs: 250,
+    }, {
+      timeoutMs: 60_000,
+    })).rejects.toMatchObject({
+      code: "STARTUP_TIMEOUT",
+      message: expect.stringContaining("authentication"),
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1200);
+    expect((await readLog(logPath)).length).toBeLessThanOrEqual(1);
+  });
+
+  it("does not retry arbitrary timeout or 502 text from command output", async () => {
+    await expect(runCf(["stdout-noise"], context)).rejects.toMatchObject({
+      code: "CF_CLI_FAILED",
+    });
+    await expect(runCf(["stderr-noise"], context)).rejects.toMatchObject({
       code: "CF_CLI_FAILED",
     });
 
     const commands = await readLog(logPath);
-    // Should retry multiple times for timeout (killed = true)
-    const executedCommands = commands.map((entry) => entry.args[0]);
-    expect(executedCommands.length).toBeGreaterThanOrEqual(3);
-    expect(executedCommands[0]).toBe("sleep-test");
-  }, 15_000);
+    expect(commands.map((entry) => entry.args[0])).toEqual(["stdout-noise", "stderr-noise"]);
+  });
 
   it("does not start a CF command when the caller already aborted", async () => {
     const controller = new AbortController();
@@ -286,13 +387,15 @@ describe("cloud-foundry command wrappers", () => {
     ]);
   });
 
-  it("retries transient auth failures before succeeding", async () => {
+  it("does not retry rejected credentials even when the message has a transport prefix", async () => {
     process.env["CF_DEBUGGER_TEST_AUTH_FAILURES"] = "2";
 
-    await cfAuth("user@example.com", "opaque-value", context);
+    await expect(
+      cfAuth("user@example.com", "opaque-value", context),
+    ).rejects.toMatchObject({ code: "CF_AUTH_FAILED" });
 
     const commands = await readLog(logPath);
-    expect(commands.map((entry) => entry.args[0])).toEqual(["auth", "auth", "auth"]);
+    expect(commands.map((entry) => entry.args[0])).toEqual(["auth"]);
   });
 
   it("passes auth credentials only through the child environment", async () => {
@@ -301,6 +404,7 @@ describe("cloud-foundry command wrappers", () => {
     const commands = await readLog(logPath);
     expect(commands).toEqual([{
       args: ["auth"],
+      cfColor: "false",
       cfHome: context.cfHome,
       hasAuthPassword: true,
       hasAuthUsername: true,
@@ -350,7 +454,7 @@ describe("cloud-foundry command wrappers", () => {
     const password = "phase2-sensitive-value";
 
     await expect(cfAuth("user@example.com", password, context)).rejects.toMatchObject({
-      code: "CF_CLI_FAILED",
+      code: "CF_AUTH_FAILED",
       message: expect.not.stringContaining(password),
       stderr: expect.not.stringContaining(password),
     });
@@ -361,6 +465,7 @@ describe("cloud-foundry command wrappers", () => {
       sensitiveValues: ["", "abc", "abcdef", "abc"],
     })).rejects.toMatchObject({
       code: "CF_CLI_FAILED",
+      message: expect.not.stringContaining("abcdef"),
       stderr: "unsupported command: <redacted>",
     });
   });

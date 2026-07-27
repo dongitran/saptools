@@ -2,6 +2,7 @@ import { CfDebuggerError } from "../types.js";
 
 export const DEFAULT_CF_PROCESS = "web";
 export const DEFAULT_CF_INSTANCE = 0;
+export const DEFAULT_NODE_INSPECTOR_PORT = 9229;
 
 const MAX_MARKER_BYTES = 65_536;
 const PID_LIST_PATTERN = /^\d+(?:,\d+)*$/;
@@ -44,6 +45,12 @@ function validateNodePid(nodePid: number | undefined): void {
   }
 }
 
+function validateRemotePort(remotePort: number): void {
+  if (!Number.isSafeInteger(remotePort) || remotePort < 1 || remotePort > 65_535) {
+    throw new CfDebuggerError("UNSAFE_INPUT", "remotePort must be an integer between 1 and 65535.");
+  }
+}
+
 export function resolveNodeTarget(input: NodeTargetSelectors): ResolvedNodeTarget {
   const processName = (input.process ?? DEFAULT_CF_PROCESS).trim();
   const instance = input.instance ?? DEFAULT_CF_INSTANCE;
@@ -65,19 +72,28 @@ function hasControlCharacter(value: string): boolean {
   return false;
 }
 
-export function buildNodeInspectorCommand(nodePid?: number): string {
-  if (nodePid !== undefined && (!Number.isSafeInteger(nodePid) || nodePid <= 0)) {
-    throw new CfDebuggerError("UNSAFE_INPUT", "nodePid must be a positive safe integer.");
-  }
-  return NODE_INSPECTOR_SCRIPT.replace("__REQUESTED_NODE_PID__", nodePid?.toString() ?? "");
+export function buildNodeInspectorCommand(
+  nodePid?: number,
+  remotePort = DEFAULT_NODE_INSPECTOR_PORT,
+): string {
+  validateNodePid(nodePid);
+  validateRemotePort(remotePort);
+  const remotePortHex = remotePort.toString(16).toUpperCase().padStart(4, "0");
+  return NODE_INSPECTOR_SCRIPT
+    .replace("__REQUESTED_NODE_PID__", nodePid?.toString() ?? "")
+    .replaceAll("__INSPECTOR_PORT_HEX__", remotePortHex);
 }
 
-export function parseNodeInspectorMarkers(stdout: string): NodeProcessSelection {
+export function parseNodeInspectorMarkers(
+  stdout: string,
+  remotePort = DEFAULT_NODE_INSPECTOR_PORT,
+): NodeProcessSelection {
+  validateRemotePort(remotePort);
   if (Buffer.byteLength(stdout, "utf8") > MAX_MARKER_BYTES) {
     throw new CfDebuggerError("INSPECTOR_OUTPUT_TOO_LARGE", "Inspector startup output exceeded 65536 bytes.");
   }
   const markers = parseMarkers(stdout);
-  throwForFailureMarker(markers);
+  throwForFailureMarker(markers, remotePort);
   const remoteNodePid = readMarkerPid(markers, "saptools-inspector-node-pid");
   const ownerPid = readMarkerPid(markers, "saptools-inspector-owner-pid");
   if (!markers.has("saptools-inspector-ready") || remoteNodePid === undefined || ownerPid !== remoteNodePid) {
@@ -99,7 +115,7 @@ function parseMarkers(stdout: string): ReadonlyMap<string, string> {
   return markers;
 }
 
-function throwForFailureMarker(markers: ReadonlyMap<string, string>): void {
+function throwForFailureMarker(markers: ReadonlyMap<string, string>, remotePort: number): void {
   if (markers.has("saptools-inspector-node-not-found")) {
     throw new CfDebuggerError("NODE_PROCESS_NOT_FOUND", "No Node.js process was found in the selected CF instance.");
   }
@@ -112,21 +128,27 @@ function throwForFailureMarker(markers: ReadonlyMap<string, string>): void {
   if (invalid !== undefined) {
     throw new CfDebuggerError("NODE_PID_INVALID", `Remote PID ${safePidText(invalid)} is not a Node.js process.`);
   }
-  throwForRuntimeFailure(markers);
+  throwForRuntimeFailure(markers, remotePort);
 }
 
-function throwForRuntimeFailure(markers: ReadonlyMap<string, string>): void {
+function throwForRuntimeFailure(markers: ReadonlyMap<string, string>, remotePort: number): void {
   const mismatch = markers.get("saptools-inspector-owner-mismatch");
   if (mismatch !== undefined) {
     const [selected = "unknown", owner = "unknown"] = mismatch.split(":", 2).map(safePidText);
-    throw new CfDebuggerError("INSPECTOR_OWNER_MISMATCH", `Selected Node PID ${selected}, but inspector port 9229 is owned by PID ${owner}.`);
+    throw new CfDebuggerError(
+      "INSPECTOR_OWNER_MISMATCH",
+      `Selected Node PID ${selected}, but inspector port ${remotePort.toString()} is owned by PID ${owner}.`,
+    );
   }
   const signalFailed = markers.get("saptools-inspector-signal-failed");
   if (signalFailed !== undefined) {
     throw new CfDebuggerError("USR1_SIGNAL_FAILED", `Failed to signal remote Node PID ${safePidText(signalFailed)}.`);
   }
   if (markers.has("saptools-inspector-not-ready")) {
-    throw new CfDebuggerError("INSPECTOR_NOT_READY", "Remote Node inspector did not become ready on port 9229.");
+    throw new CfDebuggerError(
+      "INSPECTOR_NOT_READY",
+      `Remote Node inspector did not become ready on port ${remotePort.toString()}.`,
+    );
   }
 }
 
@@ -145,15 +167,19 @@ function safePidText(raw: string): string {
 
 const NODE_INSPECTOR_SCRIPT = [
   "requested_node_pid=__REQUESTED_NODE_PID__",
+  "inspector_port_hex=__INSPECTOR_PORT_HEX__",
   "is_node_pid() {",
   "  candidate_pid=\"$1\"",
   "  candidate_exe=\"$(readlink \"/proc/$candidate_pid/exe\" 2>/dev/null || true)\"",
   "  [ \"${candidate_exe##*/}\" = node ] || [ \"${candidate_exe##*/}\" = nodejs ]",
   "}",
-  "find_listener_pid() {",
+  "find_listener_inode() {",
   "  listener_hex=\"$1\"",
   "  [ -n \"$listener_hex\" ] || return 0",
-  "  socket_inode=\"$(awk -v ph=\":$listener_hex\" '$4 == \"0A\" && $2 ~ (ph \"$\") { print $10; exit }' /proc/net/tcp /proc/net/tcp6 2>/dev/null)\"",
+  "  awk -v ph=\":$listener_hex\" '$4 == \"0A\" && $2 ~ (ph \"$\") { print $10; exit }' /proc/net/tcp /proc/net/tcp6 2>/dev/null",
+  "}",
+  "find_inode_owner_fallback() {",
+  "  socket_inode=\"$1\"",
   "  [ -n \"$socket_inode\" ] || return 0",
   "  for pid_dir in /proc/[0-9]*; do",
   "    [ -d \"$pid_dir/fd\" ] || continue",
@@ -166,14 +192,59 @@ const NODE_INSPECTOR_SCRIPT = [
   "    done",
   "  done",
   "}",
+  "find_inode_owner() {",
+  "  socket_inode=\"$1\"",
+  "  [ -n \"$socket_inode\" ] || return 0",
+  "  if [ \"$find_supports_lname\" = true ]; then",
+  "    fd_path=\"$(find /proc/[0-9]*/fd -lname \"socket:\\[$socket_inode\\]\" -print -quit 2>/dev/null || true)\"",
+  "    [ -n \"$fd_path\" ] || return 0",
+  "    pid_path=\"${fd_path#/proc/}\"",
+  "    printf '%s' \"${pid_path%%/*}\"",
+  "    return 0",
+  "  fi",
+  "  find_inode_owner_fallback \"$socket_inode\"",
+  "}",
+  "pid_owns_inode() {",
+  "  candidate_pid=\"$1\"",
+  "  socket_inode=\"$2\"",
+  "  [ -d \"/proc/$candidate_pid/fd\" ] || return 1",
+  "  if [ \"$find_supports_lname\" = true ]; then",
+  "    fd_path=\"$(find \"/proc/$candidate_pid/fd\" -lname \"socket:\\[$socket_inode\\]\" -print -quit 2>/dev/null || true)\"",
+  "    [ -n \"$fd_path\" ]",
+  "    return",
+  "  fi",
+  "  for fd_path in \"/proc/$candidate_pid/fd\"/*; do",
+  "    fd_target=\"$(readlink \"$fd_path\" 2>/dev/null || true)\"",
+  "    [ \"$fd_target\" = \"socket:[$socket_inode]\" ] && return 0",
+  "  done",
+  "  return 1",
+  "}",
+  "find_listener_pid() {",
+  "  socket_inode=\"$(find_listener_inode \"$1\")\"",
+  "  find_inode_owner \"$socket_inode\"",
+  "}",
   "find_inspector_owner() {",
-  "  find_listener_pid 240D",
+  "  find_listener_pid \"$inspector_port_hex\"",
+  "}",
+  "find_selected_inspector_owner() {",
+  "  candidate_pid=\"$1\"",
+  "  socket_inode=\"$(find_listener_inode \"$inspector_port_hex\")\"",
+  "  [ -n \"$socket_inode\" ] || return 0",
+  "  if pid_owns_inode \"$candidate_pid\" \"$socket_inode\"; then",
+  "    printf '%s' \"$candidate_pid\"",
+  "    return 0",
+  "  fi",
+  "  find_inode_owner \"$socket_inode\"",
   "}",
   "find_app_port_listener() {",
   "  [ -n \"${PORT:-}\" ] || return 0",
   "  app_port_hex=\"$(printf '%04X' \"$PORT\" 2>/dev/null || true)\"",
   "  find_listener_pid \"$app_port_hex\"",
   "}",
+  "find_supports_lname=false",
+  "if find /proc/self/fd -lname __saptools_no_match__ -print -quit >/dev/null 2>&1; then",
+  "  find_supports_lname=true",
+  "fi",
   "owner_pid=\"$(find_inspector_owner)\"",
   "selected_pid=\"\"",
   "if [ -n \"$requested_node_pid\" ]; then",
@@ -214,7 +285,7 @@ const NODE_INSPECTOR_SCRIPT = [
   "if ! kill -USR1 \"$selected_pid\" 2>/dev/null; then echo \"saptools-inspector-signal-failed=$selected_pid\"; exit 0; fi",
   "attempt=0",
   "while [ \"$attempt\" -lt 20 ]; do",
-  "  owner_pid=\"$(find_inspector_owner)\"",
+  "  owner_pid=\"$(find_selected_inspector_owner \"$selected_pid\")\"",
   "  if [ -n \"$owner_pid\" ]; then",
   "    if [ \"$owner_pid\" != \"$selected_pid\" ]; then echo \"saptools-inspector-owner-mismatch=$selected_pid:$owner_pid\"; exit 0; fi",
   "    echo \"saptools-inspector-node-pid=$selected_pid\"",
@@ -223,7 +294,8 @@ const NODE_INSPECTOR_SCRIPT = [
   "    exit 0",
   "  fi",
   "  attempt=$((attempt + 1))",
-  "  sleep 0.25",
+  // CF Linux stacks accept fractional sleep; retain a one-second POSIX fallback.
+  "  sleep 0.25 2>/dev/null || sleep 1",
   "done",
   "echo \"saptools-inspector-not-ready=$selected_pid\"",
 ].join("\n");
