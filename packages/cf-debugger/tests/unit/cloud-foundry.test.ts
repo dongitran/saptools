@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   cfApi,
@@ -66,6 +66,9 @@ switch (args[0]) {
     break;
   }
   case "auth": {
+    if (process.env.CF_DEBUGGER_TEST_TIMEOUT === "1") {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
     const counterPath = join(cfHome, "auth-count.txt");
     const previous = existsSync(counterPath)
       ? Number.parseInt(readFileSync(counterPath, "utf8"), 10)
@@ -411,20 +414,25 @@ describe("cloud-foundry command wrappers", () => {
     }]);
   });
 
-  it("does not continue auth retries after the caller aborts", async () => {
-    process.env["CF_DEBUGGER_TEST_AUTH_FAILURES"] = "3";
+  it("preserves a caller abort while authentication is in flight", async () => {
+    process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
     const controller = new AbortController();
     const running = cfAuth("user@example.com", "opaque-value", {
       ...context,
       signal: controller.signal,
     });
-    setTimeout(() => {
-      controller.abort();
-    }, 25);
 
-    await expect(running).rejects.toMatchObject({ code: "ABORTED" });
-    expect((await readLog(logPath)).length).toBeLessThanOrEqual(1);
-  }, 500);
+    try {
+      await vi.waitFor(async () => {
+        expect(await readLog(logPath)).toHaveLength(1);
+      });
+    } finally {
+      controller.abort();
+      await expect(running).rejects.toMatchObject({ code: "ABORTED" });
+    }
+
+    expect(await readLog(logPath)).toHaveLength(1);
+  });
 
   it("wraps API failures as login failures", async () => {
     process.env["CF_DEBUGGER_TEST_FAIL_API"] = "1";
