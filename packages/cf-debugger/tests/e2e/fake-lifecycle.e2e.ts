@@ -146,7 +146,7 @@ test("CLI reports the package version", async () => {
   try {
     const result = await runCliCommand(createFakeEnv(homeDir), ["--version"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe("0.2.0");
+    expect(result.stdout.trim()).toBe("0.2.1");
   } finally {
     await cleanupHome(homeDir);
   }

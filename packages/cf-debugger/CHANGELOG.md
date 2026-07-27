@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — 2026-07-27
+
+- Re-verify the spawned one-shot SSH process identity immediately before both
+  graceful termination and forced escalation. If Unix process ownership can no
+  longer be proved, cf-debugger now refuses to signal the PID, releases its
+  local stream handles, and preserves the existing timeout/abort result.
+
 ## 0.2.0 — 2026-07-27
 
 This minor release intentionally changes observable safety behavior. Startup can
