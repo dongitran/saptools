@@ -89,7 +89,10 @@ describe("withFileLock", () => {
         async (): Promise<number> => 1,
         { timeoutMs: 50, pollMs: 5 },
       ),
-    ).rejects.toThrow(/Timed out acquiring file lock/);
+    ).rejects.toMatchObject({
+      code: "STATE_LOCK_TIMEOUT",
+      message: expect.stringContaining("local filesystem"),
+    });
 
     releaseLock();
     await holding;
@@ -146,7 +149,25 @@ describe("withFileLock", () => {
     })).resolves.toBe("recovered");
   });
 
-  it("does not reclaim an old lock owned by another host", async () => {
+  it("recovers a very old same-host lock whose legacy PID was reused", async () => {
+    const lockPath = join(tempDir, "reused-legacy-owner.lock");
+    await writeFile(lockPath, JSON.stringify({
+      hostname: hostname(),
+      pid: process.pid,
+      token: "legacy-owner",
+      version: "1",
+    }), "utf8");
+    const oldTime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, oldTime, oldTime);
+
+    await expect(withFileLock(lockPath, async (): Promise<string> => "recovered", {
+      pollMs: 5,
+      staleMs: 10,
+      timeoutMs: 100,
+    })).resolves.toBe("recovered");
+  });
+
+  it("reclaims a sufficiently old lock owned by another host", async () => {
     const lockPath = join(tempDir, "remote-owner.lock");
     await writeFile(lockPath, JSON.stringify({
       hostname: "another-host",
@@ -158,11 +179,28 @@ describe("withFileLock", () => {
     const oldTime = new Date(Date.now() - 60_000);
     await utimes(lockPath, oldTime, oldTime);
 
-    await expect(withFileLock(lockPath, async (): Promise<void> => undefined, {
+    await expect(withFileLock(lockPath, async (): Promise<string> => "recovered", {
       pollMs: 5,
       staleMs: 10,
+      timeoutMs: 100,
+    })).resolves.toBe("recovered");
+  });
+
+  it("does not reclaim a recent lock owned by another host", async () => {
+    const lockPath = join(tempDir, "recent-remote-owner.lock");
+    await writeFile(lockPath, JSON.stringify({
+      hostname: "another-host",
+      pid: 999_999,
+      token: "remote-owner",
+      version: "1",
+    }), "utf8");
+    await chmod(lockPath, 0o644);
+
+    await expect(withFileLock(lockPath, async (): Promise<void> => undefined, {
+      pollMs: 5,
+      staleMs: 1_000,
       timeoutMs: 30,
-    })).rejects.toThrow(/Timed out acquiring file lock/);
+    })).rejects.toMatchObject({ code: "STATE_LOCK_TIMEOUT" });
     expect((await stat(lockPath)).mode & 0o777).toBe(0o600);
   });
 });

@@ -10,12 +10,14 @@ import {
 } from "./constants.js";
 
 type TerminationTargetKind = "group" | "pid";
-export type TerminationOutcome = "still-alive" | "terminated";
+export type TerminationOutcome = "ownership-lost" | "still-alive" | "terminated";
+export type TerminationVerifier = (signal: "SIGKILL" | "SIGTERM") => Promise<boolean>;
 
 export async function terminatePidOrGroup(
   pid: number,
   timeoutMs: number = CHILD_SIGTERM_GRACE_MS,
   pinnedTarget?: TerminationTargetKind,
+  verifyBeforeSignal?: TerminationVerifier,
 ): Promise<TerminationOutcome> {
   const targetKind = pinnedTarget ?? (isProcessGroupAlive(pid) ? "group" : "pid");
   const targetAlive = (): boolean => targetKind === "group"
@@ -23,6 +25,12 @@ export async function terminatePidOrGroup(
     : isPidAlive(pid);
   if (!targetAlive()) {
     return "terminated";
+  }
+  if (
+    verifyBeforeSignal !== undefined &&
+    !(await verifyBeforeSignal("SIGTERM"))
+  ) {
+    return "ownership-lost";
   }
 
   try {
@@ -40,6 +48,12 @@ export async function terminatePidOrGroup(
     });
   }
 
+  if (
+    verifyBeforeSignal !== undefined &&
+    !(await verifyBeforeSignal("SIGKILL"))
+  ) {
+    return "ownership-lost";
+  }
   try {
     process.kill(targetKind === "group" ? -pid : pid, "SIGKILL");
   } catch {
@@ -59,6 +73,7 @@ export async function terminatePidOrGroup(
 
 export async function killProcessGroupOrProc(
   child: ChildProcess,
+  verifyBeforeSignal?: TerminationVerifier,
   timeoutMs: number = CHILD_SIGTERM_GRACE_MS,
 ): Promise<TerminationOutcome> {
   if (child.pid === undefined) {
@@ -68,5 +83,10 @@ export async function killProcessGroupOrProc(
   if (childClosed && process.platform === "win32") {
     return "terminated";
   }
-  return await terminatePidOrGroup(child.pid, timeoutMs, childClosed ? "group" : undefined);
+  return await terminatePidOrGroup(
+    child.pid,
+    timeoutMs,
+    childClosed ? "group" : undefined,
+    verifyBeforeSignal,
+  );
 }

@@ -60,4 +60,41 @@ describe("tunnel process termination", () => {
       expect(killSpy).not.toHaveBeenCalledWith(44_001, "SIGKILL");
     },
   );
+
+  it.runIf(process.platform !== "win32")(
+    "does not send SIGTERM when ownership cannot be reverified",
+    async (): Promise<void> => {
+      mocks.isProcessGroupAlive.mockReturnValue(true);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      await expect(terminatePidOrGroup(
+        44_001,
+        200,
+        undefined,
+        async (): Promise<boolean> => false,
+      )).resolves.toBe("ownership-lost");
+
+      expect(killSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "reverifies ownership before SIGKILL and never signals a reused target",
+    async (): Promise<void> => {
+      mocks.isProcessGroupAlive.mockReturnValue(true);
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+      const verify = vi.fn(async (signal: "SIGKILL" | "SIGTERM"): Promise<boolean> =>
+        signal === "SIGTERM"
+      );
+      const termination = terminatePidOrGroup(44_001, 200, undefined, verify);
+
+      await vi.runAllTimersAsync();
+
+      await expect(termination).resolves.toBe("ownership-lost");
+      expect(killSpy).toHaveBeenCalledWith(-44_001, "SIGTERM");
+      expect(killSpy).not.toHaveBeenCalledWith(-44_001, "SIGKILL");
+      expect(verify).toHaveBeenCalledWith("SIGTERM");
+      expect(verify).toHaveBeenCalledWith("SIGKILL");
+    },
+  );
 });

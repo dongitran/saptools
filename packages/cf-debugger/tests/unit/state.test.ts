@@ -1,11 +1,28 @@
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  stopAllDebuggers,
+  stopDebugger,
+} from "../../src/debug-session/sessions.js";
 import * as paths from "../../src/paths.js";
+import { decodeSession } from "../../src/session-state/decoder.js";
 import {
   isPidOrGroupAlive,
   matchesKey,
@@ -44,6 +61,72 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
+interface ListeningChild {
+  readonly child: ChildProcess;
+  readonly port: number;
+}
+
+async function spawnListeningChild(): Promise<ListeningChild> {
+  const script = [
+    'const net = require("node:net");',
+    "const server = net.createServer((socket) => socket.end());",
+    'server.listen(0, "127.0.0.1", () => {',
+    "  const address = server.address();",
+    '  process.stdout.write(String(address.port) + "\\n");',
+    "});",
+  ].join("\n");
+  const child = spawn(process.execPath, ["-e", script], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const stdout = child.stdout;
+  const port = await new Promise<number>((resolve, reject) => {
+    let output = "";
+    stdout.setEncoding("utf8");
+    stdout.on("data", (chunk: string) => {
+      output += chunk;
+      const lineEnd = output.indexOf("\n");
+      if (lineEnd < 0) {
+        return;
+      }
+      const parsed = Number.parseInt(output.slice(0, lineEnd), 10);
+      if (Number.isSafeInteger(parsed) && parsed > 0) {
+        resolve(parsed);
+        return;
+      }
+      reject(new Error("listener child returned an invalid port"));
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      reject(new Error(`listener child exited before readiness (${String(code)})`));
+    });
+  });
+  return { child, port };
+}
+
+async function spawnSleeperChild(): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+    stdio: "ignore",
+  });
+  await once(child, "spawn");
+  return child;
+}
+
+async function stopTestChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  const closed = once(child, "close");
+  child.kill();
+  await closed;
+}
+
+function requireChildPid(child: ChildProcess): number {
+  if (child.pid === undefined) {
+    throw new Error("expected child PID");
+  }
+  return child.pid;
+}
+
 function persistedSession(
   tempDir: string,
   overrides: Readonly<Record<string, unknown>> = {},
@@ -63,7 +146,7 @@ function persistedSession(
     localPort: 20_111,
     remotePort: 9229,
     cfHomeDir: join(tempDir, "session-a"),
-    startedAt: "2026-01-01T00:00:00.000Z",
+    startedAt: new Date().toISOString(),
     status: "starting",
     ...overrides,
   };
@@ -77,6 +160,10 @@ describe("state management", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-state-"));
+    vi.spyOn(paths, "saptoolsDir").mockReturnValue(tempDir);
+    vi.spyOn(paths, "sessionStopIntentPath").mockImplementation(
+      (sessionId: string): string => join(tempDir, `${sessionId}.stop`),
+    );
     vi.spyOn(paths, "stateFilePath").mockReturnValue(join(tempDir, "state.json"));
     vi.spyOn(paths, "stateLockPath").mockReturnValue(join(tempDir, "state.lock"));
   });
@@ -121,12 +208,26 @@ describe("state management", () => {
 
   it("matchesKey returns true only for identical keys", () => {
     const key = { region: "eu10", org: "org-a", space: "dev", app: "demo-app" };
+    const sessionWithRemotePid = decodeSession(
+      persistedSession(tempDir, { remoteNodePid: 4312 }),
+    );
+    if (sessionWithRemotePid === undefined) {
+      throw new Error("expected valid active session fixture");
+    }
     expect(matchesKey(key, key)).toBe(true);
     expect(matchesKey(key, { ...key, app: "other-app" })).toBe(false);
     expect(matchesKey(key, { ...key, process: "web", instance: 0 })).toBe(true);
     expect(matchesKey(
       { ...key, process: "worker", instance: 0 },
       { ...key, process: "web", instance: 0 },
+    )).toBe(false);
+    expect(matchesKey(
+      sessionWithRemotePid,
+      { ...key, nodePid: 4312 },
+    )).toBe(true);
+    expect(matchesKey(
+      sessionWithRemotePid,
+      { ...key, nodePid: 9876 },
     )).toBe(false);
   });
 
@@ -168,7 +269,6 @@ describe("state management", () => {
     ["invalid optional Node pid", { remoteNodePid: -1 }],
     ["missing process identity", { process: undefined }],
     ["missing instance identity", { instance: undefined }],
-    ["missing controller pid", { controllerPid: undefined }],
     ["inconsistent tunnel pid", { status: "ready", tunnelPid: 1234 }],
   ])("rejects a persisted session with %s", async (_label, overrides): Promise<void> => {
     await writeFile(
@@ -181,6 +281,43 @@ describe("state management", () => {
     );
 
     await expect(readSessionSnapshot()).resolves.toEqual([]);
+  });
+
+  it("decodes additive identity fields and old records without controllerPid", () => {
+    const decoded = decodeSession(persistedSession(tempDir, {
+      controllerPid: undefined,
+      controllerProcessIdentity: "darwin:controller-start",
+      tunnelProcessIdentity: "darwin:tunnel-start",
+      startupTimeoutMs: 12_345,
+    }));
+
+    expect(decoded).toEqual(expect.objectContaining({
+      controllerPid: process.pid,
+      controllerProcessIdentity: "darwin:controller-start",
+      tunnelProcessIdentity: "darwin:tunnel-start",
+      startupTimeoutMs: 12_345,
+    }));
+  });
+
+  it("continues to decode an empty optional status message", () => {
+    expect(decodeSession(persistedSession(tempDir, { message: "" }))).toEqual(
+      expect.objectContaining({ message: "" }),
+    );
+  });
+
+  it("preserves the pid alias invariant while decoding additive records", () => {
+    expect(decodeSession(persistedSession(tempDir, {
+      status: "ready",
+      pid: 41_001,
+      tunnelPid: 41_002,
+    }))).toBeUndefined();
+
+    expect(decodeSession(persistedSession(tempDir, {
+      controllerPid: undefined,
+    }))).toEqual(expect.objectContaining({
+      pid: process.pid,
+      controllerPid: process.pid,
+    }));
   });
 
   it("rejects duplicate persisted session ids", async () => {
@@ -197,6 +334,42 @@ describe("state management", () => {
     );
 
     await expect(readSessionSnapshot()).resolves.toEqual([]);
+  });
+
+  it("retains valid entries and preserves evidence when one entry is malformed", async () => {
+    const statePath = join(tempDir, "state.json");
+    const original = {
+      version: "2",
+      sessions: [
+        persistedSession(tempDir),
+        persistedSession(tempDir, { sessionId: "broken", pid: "not-a-pid" }),
+        persistedSession(tempDir, {
+          sessionId: "session-c",
+          app: "other-app",
+          cfHomeDir: join(tempDir, "session-c"),
+        }),
+      ],
+    };
+    await writeFile(statePath, JSON.stringify(original), "utf8");
+
+    const sessions = await readSessionSnapshot();
+
+    expect(sessions.map((session) => session.sessionId)).toEqual(["session-a", "session-c"]);
+    const files = await readdir(tempDir);
+    const backups = files.filter((name) => name.startsWith("state.json.corrupt-"));
+    expect(backups).toHaveLength(1);
+    const backup = backups[0];
+    if (backup === undefined) {
+      throw new Error("expected corrupt-state backup");
+    }
+    expect(JSON.parse(await readFile(join(tempDir, backup), "utf8"))).toEqual(original);
+    const repaired = JSON.parse(await readFile(statePath, "utf8")) as {
+      readonly sessions: readonly { readonly sessionId?: unknown }[];
+    };
+    expect(repaired.sessions.map((session) => session.sessionId)).toEqual([
+      "session-a",
+      "session-c",
+    ]);
   });
 
   it("registers a new session and makes it listable", async () => {
@@ -547,6 +720,27 @@ describe("state management", () => {
     expect(sessions[0]?.pid).toBe(process.pid);
   });
 
+  it("clears an old tunnel identity when the replacement PID has no token", async () => {
+    const statePath = join(tempDir, "state.json");
+    await writeFile(statePath, JSON.stringify({
+      version: "2",
+      sessions: [persistedSession(tempDir, {
+        status: "tunneling",
+        tunnelPid: process.pid,
+        tunnelProcessIdentity: "old-process-token",
+      })],
+    }), "utf8");
+    const definitelyDead = 2_147_483_600;
+
+    await updateSessionPid("session-a", definitelyDead);
+
+    expect((await readSessionSnapshot())[0]).toEqual(expect.objectContaining({
+      pid: definitelyDead,
+      tunnelPid: definitelyDead,
+    }));
+    expect((await readSessionSnapshot())[0]?.tunnelProcessIdentity).toBeUndefined();
+  });
+
   it("updateSessionPid returns undefined for a missing session", async () => {
     await expect(updateSessionPid("missing", process.pid)).resolves.toBeUndefined();
   });
@@ -595,10 +789,22 @@ describe("state management", () => {
     await expect(removeSession("missing")).resolves.toBeUndefined();
   });
 
-  it("resets invalid state files to an empty state", async () => {
-    await writeFile(join(tempDir, "state.json"), "{not json", "utf8");
+  it("moves invalid JSON aside before replacing it with empty state", async () => {
+    const statePath = join(tempDir, "state.json");
+    await writeFile(statePath, "{not json", "utf8");
 
     await expect(readActiveSessions()).resolves.toEqual([]);
+    const files = await readdir(tempDir);
+    const backup = files.find((name) => name.startsWith("state.json.corrupt-"));
+    expect(backup).toEqual(expect.any(String));
+    if (backup === undefined) {
+      throw new Error("expected corrupt-state backup");
+    }
+    expect(await readFile(join(tempDir, backup), "utf8")).toBe("{not json");
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual({
+      version: "2",
+      sessions: [],
+    });
   });
 
   it("prunes sessions whose pid is dead on the current host", async () => {
@@ -622,6 +828,94 @@ describe("state management", () => {
 
     const sessions = await readActiveSessions();
     expect(sessions).toEqual([]);
+  });
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "prunes a live controller PID whose persisted identity token does not match",
+    async () => {
+      await writeFile(
+        join(tempDir, "state.json"),
+        JSON.stringify({
+          version: "2",
+          sessions: [persistedSession(tempDir, {
+            sessionId: "reused-controller",
+            controllerProcessIdentity: `${process.platform}:definitely-not-this-process`,
+          })],
+        }),
+        "utf8",
+      );
+
+      const replacement = await registerNewSession({
+        region: "eu10",
+        org: "org-a",
+        space: "dev",
+        app: "demo-app",
+        apiEndpoint: "https://example.com",
+        portProbe: async () => true,
+        sessionIdFactory: () => "replacement",
+        cfHomeForSession: (id) => join(tempDir, id),
+      });
+
+      expect(replacement.existing).toBeUndefined();
+      expect(replacement.session.sessionId).toBe("replacement");
+    },
+  );
+
+  it("prunes an over-age starting entry even while its controller PID is alive", async () => {
+    await writeFile(
+      join(tempDir, "state.json"),
+      JSON.stringify({
+        version: "2",
+        sessions: [persistedSession(tempDir, {
+          sessionId: "over-age",
+          startedAt: "1970-01-01T00:00:00.000Z",
+          startupTimeoutMs: 1,
+        })],
+      }),
+      "utf8",
+    );
+
+    const replacement = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      portProbe: async () => true,
+      sessionIdFactory: () => "replacement",
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+
+    expect(replacement.existing).toBeUndefined();
+    expect(replacement.session.sessionId).toBe("replacement");
+  });
+
+  it("retains an over-age startup record when its verified tunnel still owns the port", async () => {
+    const { server, port } = await listenOnEphemeralPort();
+    try {
+      await writeFile(
+        join(tempDir, "state.json"),
+        JSON.stringify({
+          version: "2",
+          sessions: [persistedSession(tempDir, {
+            sessionId: "over-age-with-tunnel",
+            pid: process.pid,
+            tunnelPid: process.pid,
+            localPort: port,
+            startedAt: "1970-01-01T00:00:00.000Z",
+            startupTimeoutMs: 1,
+            status: "tunneling",
+          })],
+        }),
+        "utf8",
+      );
+
+      await expect(readActiveSessions()).resolves.toEqual([
+        expect.objectContaining({ sessionId: "over-age-with-tunnel" }),
+      ]);
+    } finally {
+      await closeServer(server);
+    }
   });
 
   it("reads a snapshot without pruning sessions whose pid is dead on the current host", async () => {
@@ -696,7 +990,7 @@ describe("state management", () => {
     ]);
   });
 
-  it("retains an unverifiable ready session while its tunnel pid is alive", async () => {
+  it("retains a live ready session whose tunnel port is no longer listening", async () => {
     const stateFile = join(tempDir, "state.json");
     const { server, port } = await listenOnEphemeralPort();
     await closeServer(server);
@@ -743,7 +1037,7 @@ describe("state management", () => {
     }
   });
 
-  it("retains ready state when a port owner mismatch requires explicit recovery", async () => {
+  it("retains ready state when a live recorded process no longer owns its port", async () => {
     const { server, port } = await listenOnEphemeralPort();
     try {
       await writeFile(
@@ -832,7 +1126,7 @@ describe("state management", () => {
     expect(result.session.localPort).toBe(30_124);
   });
 
-  it("does not replace an unverifiable same-key session whose tunnel pid is alive", async () => {
+  it("retains a same-key live session that no longer owns its recorded port", async () => {
     await writeFile(
       join(tempDir, "state.json"),
       JSON.stringify({
@@ -863,4 +1157,233 @@ describe("state management", () => {
     expect(result.session.localPort).toBe(30_123);
   });
 
+});
+
+describe("session recovery", () => {
+  let tempDir: string;
+  let previousHome: string | undefined;
+  const children: ChildProcess[] = [];
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-recovery-"));
+    previousHome = process.env["HOME"];
+    process.env["HOME"] = tempDir;
+    vi.spyOn(paths, "stateFilePath").mockReturnValue(join(tempDir, "state.json"));
+    vi.spyOn(paths, "stateLockPath").mockReturnValue(join(tempDir, "state.lock"));
+  });
+
+  afterEach(async () => {
+    for (const child of children.splice(0).reverse()) {
+      await stopTestChild(child);
+    }
+    if (previousHome === undefined) {
+      delete process.env["HOME"];
+    } else {
+      process.env["HOME"] = previousHome;
+    }
+    vi.restoreAllMocks();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("resolves an old stop request after its startup controller exits", async () => {
+    const exited = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    const exitedPid = requireChildPid(exited);
+    await once(exited, "close");
+    const { server, port } = await listenOnEphemeralPort();
+    await closeServer(server);
+    const sessionId = "old-stop-request";
+    const cfHomeDir = paths.sessionCfHomeDir(sessionId);
+    await mkdir(cfHomeDir, { recursive: true });
+    await writeFile(join(tempDir, "state.json"), JSON.stringify({
+      version: "2",
+      sessions: [persistedSession(tempDir, {
+        sessionId,
+        pid: exitedPid,
+        controllerPid: exitedPid,
+        localPort: port,
+        cfHomeDir,
+        startedAt: "1970-01-01T00:00:00.000Z",
+        stopRequestedAt: "1970-01-01T00:00:01.000Z",
+      })],
+    }), "utf8");
+
+    const result = await stopDebugger({ sessionId });
+
+    expect(result).toEqual(expect.objectContaining({
+      sessionId,
+      pending: false,
+      stale: true,
+    }));
+    await expect(readSessionSnapshot()).resolves.toEqual([]);
+    await expect(access(cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("force-forgets a live starting controller instead of leaving a permanent pending record", async () => {
+    const { server, port } = await listenOnEphemeralPort();
+    await closeServer(server);
+    const sessionId = "wedged-live-controller";
+    const cfHomeDir = paths.sessionCfHomeDir(sessionId);
+    await mkdir(cfHomeDir, { recursive: true });
+    await writeFile(join(tempDir, "state.json"), JSON.stringify({
+      version: "2",
+      sessions: [persistedSession(tempDir, {
+        sessionId,
+        pid: process.pid,
+        controllerPid: process.pid,
+        localPort: port,
+        cfHomeDir,
+        status: "starting",
+      })],
+    }), "utf8");
+
+    await expect(stopDebugger({ sessionId })).resolves.toMatchObject({
+      pending: true,
+      stale: false,
+    });
+    const forced = await stopDebugger({ sessionId, force: true });
+
+    expect(forced).toEqual(expect.objectContaining({
+      forced: true,
+      pending: false,
+      stale: true,
+      warning: expect.stringContaining(`PID ${process.pid.toString()}`),
+    }));
+    await expect(readSessionSnapshot()).resolves.toEqual([]);
+    await expect(access(cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("force-forgets a stranger-owned port without signalling either child", async () => {
+    const listener = await spawnListeningChild();
+    const sleeper = await spawnSleeperChild();
+    children.push(listener.child, sleeper);
+    const sessionId = "stranger-owned-port";
+    const cfHomeDir = paths.sessionCfHomeDir(sessionId);
+    await mkdir(cfHomeDir, { recursive: true });
+    const tunnelPid = requireChildPid(sleeper);
+    await writeFile(join(tempDir, "state.json"), JSON.stringify({
+      version: "2",
+      sessions: [persistedSession(tempDir, {
+        sessionId,
+        pid: tunnelPid,
+        controllerPid: process.pid,
+        tunnelPid,
+        localPort: listener.port,
+        cfHomeDir,
+        status: "ready",
+      })],
+    }), "utf8");
+
+    await expect(stopDebugger({ sessionId })).rejects.toMatchObject({
+      code: "TUNNEL_OWNERSHIP_UNVERIFIED",
+    });
+    expect(sleeper.exitCode).toBeNull();
+    expect(listener.child.exitCode).toBeNull();
+    await expect(readSessionSnapshot()).resolves.toHaveLength(1);
+
+    const forced = await stopDebugger({ sessionId, force: true });
+
+    expect(forced).toEqual(expect.objectContaining({
+      forced: true,
+      pending: false,
+      stale: true,
+      warning: expect.stringContaining("No unverified process was signalled"),
+    }));
+    expect(sleeper.exitCode).toBeNull();
+    expect(listener.child.exitCode).toBeNull();
+    await expect(readSessionSnapshot()).resolves.toEqual([]);
+    await expect(access(cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("force-forgets a corrupt record without deleting its unowned CF home path", async () => {
+    const listener = await spawnListeningChild();
+    const sleeper = await spawnSleeperChild();
+    children.push(listener.child, sleeper);
+    const sessionId = "unowned-home-record";
+    const unownedHome = join(tempDir, "user-controlled-directory");
+    await mkdir(unownedHome, { recursive: true });
+    const tunnelPid = requireChildPid(sleeper);
+    await writeFile(join(tempDir, "state.json"), JSON.stringify({
+      version: "2",
+      sessions: [persistedSession(tempDir, {
+        sessionId,
+        pid: tunnelPid,
+        tunnelPid,
+        localPort: listener.port,
+        cfHomeDir: unownedHome,
+        status: "ready",
+      })],
+    }), "utf8");
+
+    const forced = await stopDebugger({ sessionId, force: true });
+
+    expect(forced?.warning).toContain("referenced unowned CF home");
+    expect(sleeper.exitCode).toBeNull();
+    expect(listener.child.exitCode).toBeNull();
+    await expect(readSessionSnapshot()).resolves.toEqual([]);
+    await expect(access(unownedHome)).resolves.toBeUndefined();
+  });
+
+  it("stop-all continues after an ownership failure and reports every outcome", async () => {
+    const listener = await spawnListeningChild();
+    const sleeper = await spawnSleeperChild();
+    children.push(listener.child, sleeper);
+    const exited = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    const exitedPid = requireChildPid(exited);
+    await once(exited, "close");
+    const { server, port: closedPort } = await listenOnEphemeralPort();
+    await closeServer(server);
+    const failedId = "batch-owner-mismatch";
+    const staleId = "batch-stale";
+    const failedHome = paths.sessionCfHomeDir(failedId);
+    const staleHome = paths.sessionCfHomeDir(staleId);
+    await mkdir(failedHome, { recursive: true });
+    await mkdir(staleHome, { recursive: true });
+    const tunnelPid = requireChildPid(sleeper);
+    await writeFile(join(tempDir, "state.json"), JSON.stringify({
+      version: "2",
+      sessions: [
+        persistedSession(tempDir, {
+          sessionId: failedId,
+          pid: tunnelPid,
+          tunnelPid,
+          localPort: listener.port,
+          cfHomeDir: failedHome,
+          status: "ready",
+        }),
+        persistedSession(tempDir, {
+          sessionId: staleId,
+          pid: exitedPid,
+          controllerPid: exitedPid,
+          localPort: closedPort,
+          cfHomeDir: staleHome,
+          startedAt: "1970-01-01T00:00:00.000Z",
+          app: "second-app",
+        }),
+      ],
+    }), "utf8");
+
+    const result = await stopAllDebuggers();
+
+    expect(result).toMatchObject({
+      failed: 1,
+      pending: 0,
+      stale: 1,
+      stopped: 0,
+    });
+    expect(result.outcomes.map((outcome) => ({
+      sessionId: outcome.sessionId,
+      status: outcome.status,
+    }))).toEqual([
+      { sessionId: failedId, status: "failed" },
+      { sessionId: staleId, status: "stale" },
+    ]);
+    expect(result.outcomes[0]?.error?.code).toBe("TUNNEL_OWNERSHIP_UNVERIFIED");
+    expect(sleeper.exitCode).toBeNull();
+    expect(listener.child.exitCode).toBeNull();
+    expect((await readSessionSnapshot()).map((session) => session.sessionId)).toEqual([
+      failedId,
+    ]);
+    await expect(access(staleHome)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(failedHome)).resolves.toBeUndefined();
+  });
 });

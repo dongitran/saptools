@@ -5,9 +5,17 @@ import { hostname } from "node:os";
 import { dirname } from "node:path";
 import process from "node:process";
 
+import {
+  inspectProcessIdentity,
+  readProcessIdentity,
+} from "./debug-session/process-identity.js";
+import { CfDebuggerError } from "./types.js";
+
 const DEFAULT_POLL_MS = 50;
 const DEFAULT_STALE_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const FOREIGN_HOST_STALE_MULTIPLIER = 10;
+const LEGACY_SAME_HOST_STALE_MULTIPLIER = 24 * 60;
 
 interface FileLock {
   readonly handle: FileHandle;
@@ -17,13 +25,25 @@ interface FileLock {
 interface LockOwner {
   readonly hostname: string;
   readonly pid: number;
+  readonly processIdentity?: string;
   readonly token: string;
   readonly version: "1";
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new CfDebuggerError("ABORTED", "State lock acquisition was aborted."));
+  }
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new CfDebuggerError("ABORTED", "State lock acquisition was aborted."));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -53,13 +73,26 @@ function parseLockOwner(raw: string): LockOwner | undefined {
   const pid = field(value, "pid");
   const token = field(value, "token");
   const version = field(value, "version");
+  const processIdentity = field(value, "processIdentity");
   if (typeof lockHostname !== "string" || typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
     return undefined;
   }
   if (typeof token !== "string" || version !== "1") {
     return undefined;
   }
-  return { hostname: lockHostname, pid, token, version };
+  if (
+    processIdentity !== undefined &&
+    (typeof processIdentity !== "string" || processIdentity.length === 0)
+  ) {
+    return undefined;
+  }
+  return {
+    hostname: lockHostname,
+    pid,
+    ...(processIdentity === undefined ? {} : { processIdentity }),
+    token,
+    version,
+  };
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -94,10 +127,28 @@ async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> 
     throw error;
   }
   const owner = await readLockOwner(lockPath);
+  const ageMs = Date.now() - modifiedAt;
   if (owner?.hostname === hostname()) {
-    return !isProcessAlive(owner.pid);
+    if (!isProcessAlive(owner.pid)) {
+      return true;
+    }
+    if (owner.processIdentity !== undefined) {
+      const identity = await inspectProcessIdentity(owner.pid, owner.processIdentity);
+      if (identity === "mismatch") {
+        return true;
+      }
+      if (identity === "match") {
+        return false;
+      }
+    }
+    // Locks pre-dating the identity field retain PID-only compatibility, but
+    // cannot deadlock a shared home forever after PID reuse.
+    return ageMs > staleMs * LEGACY_SAME_HOST_STALE_MULTIPLIER;
   }
-  return owner === undefined && Date.now() - modifiedAt > staleMs;
+  if (owner === undefined) {
+    return ageMs > staleMs;
+  }
+  return ageMs > staleMs * FOREIGN_HOST_STALE_MULTIPLIER;
 }
 
 async function reclaimAbandonedRecoveryLock(
@@ -109,6 +160,7 @@ async function reclaimAbandonedRecoveryLock(
   }
   const owner = await readLockOwner(recoveryPath);
   if (owner !== undefined) {
+    // removeOwnedLock reads again, so a replacement lock with a new token survives this race.
     await removeOwnedLock(recoveryPath, owner.token);
     return;
   }
@@ -161,10 +213,17 @@ async function removeOwnedLock(lockPath: string, token: string): Promise<void> {
 }
 
 async function createFileLock(lockPath: string): Promise<FileLock> {
+  const processIdentity = await readProcessIdentity(process.pid);
   const handle = await open(lockPath, "wx", 0o600);
   const token = randomUUID();
   try {
-    await handle.writeFile(`${JSON.stringify({ hostname: hostname(), pid: process.pid, token, version: "1" })}\n`, "utf8");
+    await handle.writeFile(`${JSON.stringify({
+      hostname: hostname(),
+      pid: process.pid,
+      ...(processIdentity === undefined ? {} : { processIdentity }),
+      token,
+      version: "1",
+    })}\n`, "utf8");
     return { handle, token };
   } catch (error: unknown) {
     await handle.close();
@@ -178,6 +237,7 @@ async function acquireFileLock(
   timeoutMs: number,
   pollMs: number,
   staleMs: number,
+  signal: AbortSignal | undefined,
 ): Promise<FileLock> {
   const deadline = Date.now() + timeoutMs;
   const parentDir = dirname(lockPath);
@@ -185,6 +245,9 @@ async function acquireFileLock(
   await chmod(parentDir, 0o700);
 
   for (;;) {
+    if (signal?.aborted) {
+      throw new CfDebuggerError("ABORTED", "State lock acquisition was aborted.");
+    }
     try {
       return await createFileLock(lockPath);
     } catch (error: unknown) {
@@ -196,9 +259,13 @@ async function acquireFileLock(
       continue;
     }
     if (Date.now() > deadline) {
-      throw new Error(`Timed out acquiring file lock at ${lockPath}`);
+      throw new CfDebuggerError(
+        "STATE_LOCK_TIMEOUT",
+        `Timed out acquiring debugger state lock at ${lockPath}. ` +
+          "Keep ~/.saptools on a local filesystem and retry.",
+      );
     }
-    await sleep(pollMs);
+    await sleep(pollMs, signal);
   }
 }
 
@@ -209,6 +276,7 @@ async function releaseFileLock(lockPath: string, lock: FileLock): Promise<void> 
 
 export interface WithLockOptions {
   readonly pollMs?: number;
+  readonly signal?: AbortSignal;
   readonly staleMs?: number;
   readonly timeoutMs?: number;
 }
@@ -221,7 +289,13 @@ export async function withFileLock<T>(
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pollMs = options?.pollMs ?? DEFAULT_POLL_MS;
   const staleMs = options?.staleMs ?? DEFAULT_STALE_MS;
-  const lock = await acquireFileLock(lockPath, timeoutMs, pollMs, staleMs);
+  const lock = await acquireFileLock(
+    lockPath,
+    timeoutMs,
+    pollMs,
+    staleMs,
+    options?.signal,
+  );
   try {
     return await work();
   } finally {

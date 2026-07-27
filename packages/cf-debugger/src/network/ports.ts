@@ -1,85 +1,164 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
+import { get as httpGet, type IncomingMessage } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 
 import { CfDebuggerError } from "../types.js";
 
 const execFileAsync = promisify(execFile);
+const PROBE_INTERVAL_MS = 250;
+const INSPECTOR_ATTEMPT_TIMEOUT_MS = 2_500;
+const MAX_INSPECTOR_RESPONSE_BYTES = 64 * 1_024;
+const OWNER_COMMAND_TIMEOUT_MS = 5_000;
 
-async function findListeningPidsWithNetstat(port: number): Promise<readonly number[]> {
-  try {
-    const { stdout } = await execFileAsync("netstat", ["-ano"]);
-    const pids = new Set<number>();
-    for (const line of stdout.split("\n")) {
-      if (!line.includes(`:${port.toString()}`) || !line.includes("LISTENING")) {
-        continue;
-      }
-      const parts = line.trim().split(/\s+/);
-      const last = parts[parts.length - 1];
-      if (last === undefined) {
-        continue;
-      }
-      const pid = Number.parseInt(last, 10);
-      if (!Number.isNaN(pid)) {
-        pids.add(pid);
-      }
+interface PidCommandResult {
+  readonly available: boolean;
+  readonly pids: readonly number[];
+  readonly reason?: string;
+}
+
+interface ProcSocketResult extends PidCommandResult {
+  readonly listenerFound: boolean;
+}
+
+export type ListeningProcessInspection =
+  | { readonly status: "found"; readonly pids: readonly number[] }
+  | { readonly status: "not-listening"; readonly pids: readonly number[] }
+  | { readonly status: "unverified"; readonly reason: string };
+
+export type PortOwnershipInspection =
+  | { readonly status: "owned"; readonly pids: readonly number[] }
+  | { readonly status: "not-owned"; readonly pids: readonly number[] }
+  | { readonly status: "not-listening"; readonly pids: readonly number[] }
+  | { readonly status: "unverified"; readonly reason: string };
+
+export type InspectorReadinessResult =
+  | { readonly status: "ready" }
+  | { readonly status: "unreachable" };
+
+function sortedUniquePids(pids: Iterable<number>): readonly number[] {
+  return [...new Set(pids)].sort((left, right) => left - right);
+}
+
+function parseAddressPort(address: string): number | undefined {
+  const separator = address.lastIndexOf(":");
+  const portText = separator >= 0 ? address.slice(separator + 1) : "";
+  if (!/^\d+$/.test(portText)) {
+    return undefined;
+  }
+  return Number.parseInt(portText, 10);
+}
+
+export function parseWindowsNetstatListeningPids(
+  output: string,
+  port: number,
+): readonly number[] {
+  const pids = new Set<number>();
+  for (const line of output.split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    const protocol = fields[0]?.toUpperCase();
+    const localAddress = fields[1];
+    const state = fields[3]?.toUpperCase();
+    const pidText = fields[4];
+    if (
+      protocol !== "TCP"
+      || localAddress === undefined
+      || state !== "LISTENING"
+      || pidText === undefined
+      || parseAddressPort(localAddress) !== port
+    ) {
+      continue;
     }
-    return [...pids];
-  } catch {
-    return [];
+    const pid = Number.parseInt(pidText, 10);
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      pids.add(pid);
+    }
+  }
+  return sortedUniquePids(pids);
+}
+
+function errorCode(error: unknown): string | number | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = error.code;
+  return typeof code === "string" || typeof code === "number" ? code : undefined;
+}
+
+function errorStderr(error: unknown): string {
+  if (typeof error !== "object" || error === null || !("stderr" in error)) {
+    return "";
+  }
+  return typeof error.stderr === "string" ? error.stderr.trim() : "";
+}
+
+async function findListeningPidsWithNetstat(
+  port: number,
+  signal?: AbortSignal,
+): Promise<PidCommandResult> {
+  try {
+    const { stdout } = await execFileAsync("netstat", ["-ano"], {
+      ...(signal === undefined ? {} : { signal }),
+      timeout: OWNER_COMMAND_TIMEOUT_MS,
+    });
+    return {
+      available: true,
+      pids: parseWindowsNetstatListeningPids(stdout, port),
+    };
+  } catch (error: unknown) {
+    throwIfAborted(signal);
+    return {
+      available: false,
+      pids: [],
+      reason: `Unable to inspect listening ports with netstat (${String(errorCode(error) ?? "unknown error")}).`,
+    };
   }
 }
 
-async function findListeningPidsWithLsof(port: number): Promise<readonly number[]> {
+async function findListeningPidsWithLsof(
+  port: number,
+  signal?: AbortSignal,
+): Promise<PidCommandResult> {
   try {
-    const { stdout } = await execFileAsync("lsof", ["-nP", "-t", "-i", `tcp:${port.toString()}`, "-sTCP:LISTEN"]);
-    return stdout
+    const { stdout } = await execFileAsync("lsof", [
+      "-nP",
+      "-t",
+      "-i",
+      `tcp:${port.toString()}`,
+      "-sTCP:LISTEN",
+    ], {
+      ...(signal === undefined ? {} : { signal }),
+      timeout: OWNER_COMMAND_TIMEOUT_MS,
+    });
+    const pids = stdout
       .trim()
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line) => Number.parseInt(line, 10))
-      .filter((pid) => !Number.isNaN(pid));
-  } catch {
-    return [];
-  }
-}
-
-async function findListeningPidsWithProc(port: number): Promise<readonly number[]> {
-  const inodes = await findListeningSocketInodesWithProc(port);
-  if (inodes.size === 0) {
-    return [];
-  }
-
-  try {
-    const entries = await readdir("/proc", { withFileTypes: true });
-    const pids = new Set<number>();
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) {
-        continue;
-      }
-      if (await processHasSocketInode(entry.name, inodes)) {
-        pids.add(Number.parseInt(entry.name, 10));
-      }
+      .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+    return { available: true, pids: sortedUniquePids(pids) };
+  } catch (error: unknown) {
+    throwIfAborted(signal);
+    if (errorCode(error) === 1 && errorStderr(error).length === 0) {
+      return { available: true, pids: [] };
     }
-    return [...pids];
-  } catch {
-    return [];
+    const missing = errorCode(error) === "ENOENT";
+    return {
+      available: false,
+      pids: [],
+      reason: missing
+        ? "The lsof command is required to verify tunnel ownership on this platform."
+        : `lsof could not inspect the listening port (${String(errorCode(error) ?? "unknown error")}).`,
+    };
   }
-}
-
-async function findListeningSocketInodesWithProc(port: number): Promise<ReadonlySet<string>> {
-  const inodes = new Set<string>();
-  await collectListeningSocketInodes("/proc/net/tcp", port, inodes);
-  await collectListeningSocketInodes("/proc/net/tcp6", port, inodes);
-  return inodes;
 }
 
 async function collectListeningSocketInodes(
   path: string,
   port: number,
   inodes: Set<string>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const content = await readFile(path, "utf8");
     for (const line of content.split("\n").slice(1)) {
@@ -95,9 +174,19 @@ async function collectListeningSocketInodes(
         inodes.add(inode);
       }
     }
+    return true;
   } catch {
-    // /proc/net/tcp* is Linux-specific; callers fall back to other strategies.
+    return false;
   }
+}
+
+async function findListeningSocketInodesWithProc(
+  port: number,
+): Promise<{ readonly available: boolean; readonly inodes: ReadonlySet<string> }> {
+  const inodes = new Set<string>();
+  const tcpAvailable = await collectListeningSocketInodes("/proc/net/tcp", port, inodes);
+  const tcp6Available = await collectListeningSocketInodes("/proc/net/tcp6", port, inodes);
+  return { available: tcpAvailable || tcp6Available, inodes };
 }
 
 async function processHasSocketInode(pid: string, inodes: ReadonlySet<string>): Promise<boolean> {
@@ -120,25 +209,165 @@ async function processHasSocketInode(pid: string, inodes: ReadonlySet<string>): 
   return false;
 }
 
-async function findListeningPids(port: number): Promise<readonly number[]> {
-  if (process.platform === "win32") {
-    return await findListeningPidsWithNetstat(port);
+async function findListeningPidsWithProc(
+  port: number,
+  signal?: AbortSignal,
+): Promise<ProcSocketResult> {
+  throwIfAborted(signal);
+  const socketResult = await findListeningSocketInodesWithProc(port);
+  if (!socketResult.available) {
+    return {
+      available: false,
+      listenerFound: false,
+      pids: [],
+      reason: "The /proc socket tables are unavailable.",
+    };
   }
-  const lsofPids = await findListeningPidsWithLsof(port);
-  return lsofPids.length > 0 ? lsofPids : await findListeningPidsWithProc(port);
+  if (socketResult.inodes.size === 0) {
+    return { available: true, listenerFound: false, pids: [] };
+  }
+  try {
+    const entries = await readdir("/proc", { withFileTypes: true });
+    const pids = new Set<number>();
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (
+        entry.isDirectory()
+        && /^\d+$/.test(entry.name)
+        && await processHasSocketInode(entry.name, socketResult.inodes)
+      ) {
+        pids.add(Number.parseInt(entry.name, 10));
+      }
+    }
+    return {
+      available: true,
+      listenerFound: true,
+      pids: sortedUniquePids(pids),
+    };
+  } catch {
+    throwIfAborted(signal);
+    return {
+      available: false,
+      listenerFound: true,
+      pids: [],
+      reason: "A listener exists, but its owner could not be inspected through /proc.",
+    };
+  }
 }
 
-export async function isPortFree(port: number): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
+function inspectionFromPids(pids: readonly number[]): ListeningProcessInspection {
+  return pids.length > 0
+    ? { status: "found", pids }
+    : { status: "not-listening", pids };
+}
+
+export async function inspectListeningProcesses(
+  port: number,
+  signal?: AbortSignal,
+): Promise<ListeningProcessInspection> {
+  throwIfAborted(signal);
+  if (process.platform === "win32") {
+    const netstat = await findListeningPidsWithNetstat(port, signal);
+    return netstat.available
+      ? inspectionFromPids(netstat.pids)
+      : { status: "unverified", reason: netstat.reason ?? "netstat is unavailable." };
+  }
+
+  const lsof = await findListeningPidsWithLsof(port, signal);
+  if (lsof.pids.length > 0) {
+    return { status: "found", pids: lsof.pids };
+  }
+  if (process.platform === "darwin") {
+    return lsof.available
+      ? { status: "not-listening", pids: [] }
+      : { status: "unverified", reason: lsof.reason ?? "lsof is unavailable." };
+  }
+
+  const proc = await findListeningPidsWithProc(port, signal);
+  if (proc.pids.length > 0) {
+    return { status: "found", pids: proc.pids };
+  }
+  if (proc.listenerFound || (!proc.available && !lsof.available)) {
+    return {
+      status: "unverified",
+      reason: proc.reason ?? lsof.reason ?? "The listener owner could not be verified.",
+    };
+  }
+  return { status: "not-listening", pids: [] };
+}
+
+export async function findListeningProcessIds(
+  port: number,
+  signal?: AbortSignal,
+): Promise<readonly number[]> {
+  const inspection = await inspectListeningProcesses(port, signal);
+  return inspection.status === "found" ? inspection.pids : [];
+}
+
+export function classifyPortOwnership(
+  pids: readonly number[],
+  expectedPid: number,
+): PortOwnershipInspection {
+  return pids.includes(expectedPid)
+    ? { status: "owned", pids }
+    : { status: "not-owned", pids };
+}
+
+export async function inspectPortOwnership(
+  port: number,
+  expectedPid: number,
+  signal?: AbortSignal,
+): Promise<PortOwnershipInspection> {
+  const inspection = await inspectListeningProcesses(port, signal);
+  if (inspection.status === "unverified") {
+    return inspection;
+  }
+  if (inspection.status === "not-listening") {
+    return inspection;
+  }
+  return classifyPortOwnership(inspection.pids, expectedPid);
+}
+
+export async function isPortFree(
+  port: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  throwIfAborted(signal);
+  return await new Promise<boolean>((resolve, reject) => {
     const server = createServer();
+    let settled = false;
+    const finish = (available: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(available);
+    };
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (server.listening) {
+        server.close();
+      }
+      signal?.removeEventListener("abort", onAbort);
+      reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
+    };
     server.once("error", () => {
-      resolve(false);
+      finish(false);
     });
     server.once("listening", () => {
       server.close(() => {
-        resolve(true);
+        finish(true);
       });
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
     server.listen(port, "127.0.0.1");
   });
 }
@@ -180,6 +409,9 @@ function waitForNextProbe(delayMs: number, signal: AbortSignal | undefined): Pro
       resolve();
     }, delayMs);
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
   });
 }
 
@@ -188,24 +420,172 @@ export async function probeTunnelReady(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const pollIntervalMs = 250;
-  const started = Date.now();
+  const deadline = Date.now() + timeoutMs;
   throwIfAborted(signal);
 
-  while (Date.now() - started < timeoutMs) {
-    const connected = await isPortListening(port);
-    if (connected) {
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (await isPortListening(port, Math.min(200, remainingMs))) {
       return true;
     }
-    const remainingMs = timeoutMs - (Date.now() - started);
-    await waitForNextProbe(Math.min(pollIntervalMs, Math.max(0, remainingMs)), signal);
+    const waitMs = Math.min(PROBE_INTERVAL_MS, Math.max(0, deadline - Date.now()));
+    if (waitMs > 0) {
+      await waitForNextProbe(waitMs, signal);
+    }
   }
 
   throwIfAborted(signal);
   return false;
 }
 
+function parseJson(body: string): unknown {
+  return JSON.parse(body) as unknown;
+}
+
+function isUnknownRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null;
+}
+
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function hasAttachableInspectorTarget(body: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = parseJson(body);
+  } catch {
+    return false;
+  }
+  if (!isUnknownArray(parsed) || parsed.length === 0) {
+    return false;
+  }
+  const first = parsed[0];
+  if (!isUnknownRecord(first)) {
+    return false;
+  }
+  const candidate = first["webSocketDebuggerUrl"];
+  if (typeof candidate !== "string") {
+    return false;
+  }
+  try {
+    const url = new URL(candidate);
+    return (url.protocol === "ws:" || url.protocol === "wss:") && url.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function readInspectorResponse(
+  response: IncomingMessage,
+  finish: (ready: boolean) => void,
+): void {
+  if (response.statusCode !== 200) {
+    response.destroy();
+    finish(false);
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  response.on("data", (chunk: Buffer) => {
+    totalBytes += chunk.length;
+    if (totalBytes > MAX_INSPECTOR_RESPONSE_BYTES) {
+      response.destroy();
+      finish(false);
+      return;
+    }
+    chunks.push(chunk);
+  });
+  response.once("end", () => {
+    finish(hasAttachableInspectorTarget(Buffer.concat(chunks).toString("utf8")));
+  });
+  response.once("error", () => {
+    finish(false);
+  });
+}
+
+function probeInspectorAttempt(
+  port: number,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  throwIfAborted(signal);
+  return new Promise<boolean>((resolve, reject) => {
+    const state: {
+      settled: boolean;
+      removeAbortListener?: () => void;
+      timer?: NodeJS.Timeout;
+    } = { settled: false };
+    const finish = (ready: boolean): void => {
+      if (!state.settled) {
+        state.settled = true;
+        clearTimeout(state.timer);
+        state.removeAbortListener?.();
+        resolve(ready);
+      }
+    };
+    const request = httpGet({ host: "127.0.0.1", port, path: "/json/list" }, (response) => {
+      readInspectorResponse(response, finish);
+    });
+    const onAbort = (): void => {
+      request.destroy();
+      if (!state.settled) {
+        state.settled = true;
+        clearTimeout(state.timer);
+        state.removeAbortListener?.();
+        reject(new CfDebuggerError("ABORTED", "Operation aborted by caller"));
+      }
+    };
+    state.removeAbortListener = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    state.timer = setTimeout(() => {
+      request.destroy();
+      finish(false);
+    }, timeoutMs);
+    request.once("error", () => {
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      finish(false);
+    });
+  });
+}
+
+export async function probeInspectorReady(
+  port: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<InspectorReadinessResult> {
+  const deadline = Date.now() + timeoutMs;
+  throwIfAborted(signal);
+
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    const attemptTimeoutMs = Math.max(
+      1,
+      Math.min(INSPECTOR_ATTEMPT_TIMEOUT_MS, remainingMs),
+    );
+    if (await probeInspectorAttempt(port, attemptTimeoutMs, signal)) {
+      return { status: "ready" };
+    }
+    const waitMs = Math.min(PROBE_INTERVAL_MS, Math.max(0, deadline - Date.now()));
+    if (waitMs > 0) {
+      await waitForNextProbe(waitMs, signal);
+    }
+  }
+
+  throwIfAborted(signal);
+  return { status: "unreachable" };
+}
+
 export async function findListeningProcessId(port: number): Promise<number | undefined> {
-  const pids = await findListeningPids(port);
+  const pids = await findListeningProcessIds(port);
   return pids[0];
 }

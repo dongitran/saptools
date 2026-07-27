@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 
 import { resolveNodeTarget } from "../cloud-foundry/node-process.js";
+import { MAX_STARTUP_TIMEOUT_MS } from "../debug-session/constants.js";
 import { isSafeSessionId } from "../paths.js";
 import type { ActiveSession, SessionStatus, StateFile } from "../types.js";
 
@@ -18,6 +19,19 @@ const VALID_STATUSES: ReadonlySet<string> = new Set<SessionStatus>([
   "stopped",
   "error",
 ]);
+
+export interface StateDecodeSuccess {
+  readonly kind: "decoded";
+  readonly state: StateFile;
+  readonly dropped: readonly string[];
+}
+
+export interface StateDecodeFailure {
+  readonly kind: "invalid-file";
+  readonly reason: string;
+}
+
+export type StateDecodeResult = StateDecodeFailure | StateDecodeSuccess;
 
 function field(value: object, key: string): unknown {
   return Reflect.get(value, key);
@@ -42,23 +56,48 @@ function optionalString(value: object, key: string): string | undefined {
   return candidate;
 }
 
-function requireInteger(value: object, key: string, minimum: number, maximum: number): number {
-  const candidate = field(value, key);
-  if (!Number.isSafeInteger(candidate) || typeof candidate !== "number") {
-    throw INVALID_SESSION;
-  }
-  if (candidate < minimum || candidate > maximum) {
+function optionalNonEmptyString(value: object, key: string): string | undefined {
+  const candidate = optionalString(value, key);
+  if (candidate?.length === 0) {
     throw INVALID_SESSION;
   }
   return candidate;
 }
 
-function optionalInteger(value: object, key: string, minimum: number): number | undefined {
+function requireInteger(
+  value: object,
+  key: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const candidate = field(value, key);
+  if (
+    typeof candidate !== "number" ||
+    !Number.isSafeInteger(candidate) ||
+    candidate < minimum ||
+    candidate > maximum
+  ) {
+    throw INVALID_SESSION;
+  }
+  return candidate;
+}
+
+function optionalInteger(
+  value: object,
+  key: string,
+  minimum: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number | undefined {
   const candidate = field(value, key);
   if (candidate === undefined) {
     return undefined;
   }
-  if (!Number.isSafeInteger(candidate) || typeof candidate !== "number" || candidate < minimum) {
+  if (
+    typeof candidate !== "number" ||
+    !Number.isSafeInteger(candidate) ||
+    candidate < minimum ||
+    candidate > maximum
+  ) {
     throw INVALID_SESSION;
   }
   return candidate;
@@ -108,22 +147,38 @@ function requireStatus(value: object): SessionStatus {
   return status;
 }
 
-function decodeSession(value: unknown): ActiveSession | undefined {
+function optionalFields(value: object): Pick<
+  ActiveSession,
+  "controllerProcessIdentity" | "startupTimeoutMs" | "tunnelProcessIdentity"
+> {
+  const controllerProcessIdentity = optionalNonEmptyString(value, "controllerProcessIdentity");
+  const tunnelProcessIdentity = optionalNonEmptyString(value, "tunnelProcessIdentity");
+  const startupTimeoutMs = optionalInteger(value, "startupTimeoutMs", 1, MAX_STARTUP_TIMEOUT_MS);
+  return {
+    ...(controllerProcessIdentity === undefined ? {} : { controllerProcessIdentity }),
+    ...(tunnelProcessIdentity === undefined ? {} : { tunnelProcessIdentity }),
+    ...(startupTimeoutMs === undefined ? {} : { startupTimeoutMs }),
+  };
+}
+
+function decodeTarget(value: object): ReturnType<typeof resolveNodeTarget> {
+  const nodePid = optionalInteger(value, "nodePid", 1);
+  return resolveNodeTarget({
+    process: requireString(value, "process"),
+    instance: requireInteger(value, "instance", 0, Number.MAX_SAFE_INTEGER),
+    ...(nodePid === undefined ? {} : { nodePid }),
+  });
+}
+
+export function decodeSession(value: unknown): ActiveSession | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
   }
   try {
-    const processName = requireString(value, "process");
-    const instance = requireInteger(value, "instance", 0, Number.MAX_SAFE_INTEGER);
-    const nodePid = optionalInteger(value, "nodePid", 1);
-    const target = resolveNodeTarget({
-      process: processName,
-      instance,
-      ...(nodePid === undefined ? {} : { nodePid }),
-    });
+    const target = decodeTarget(value);
     const pid = requireInteger(value, "pid", 1, Number.MAX_SAFE_INTEGER);
-    const controllerPid = requireInteger(value, "controllerPid", 1, Number.MAX_SAFE_INTEGER);
     const tunnelPid = optionalInteger(value, "tunnelPid", 1);
+    const controllerPid = optionalInteger(value, "controllerPid", 1) ?? pid;
     const remoteNodePid = optionalInteger(value, "remoteNodePid", 1);
     const stopRequestedAt = optionalTimestamp(value, "stopRequestedAt");
     const message = optionalString(value, "message");
@@ -135,6 +190,7 @@ function decodeSession(value: unknown): ActiveSession | undefined {
       sessionId: requireSessionId(value),
       pid,
       controllerPid,
+      ...optionalFields(value),
       ...(tunnelPid === undefined ? {} : { tunnelPid }),
       hostname: requireString(value, "hostname"),
       region: requireString(value, "region"),
@@ -143,7 +199,7 @@ function decodeSession(value: unknown): ActiveSession | undefined {
       app: requireString(value, "app"),
       process: target.process,
       instance: target.instance,
-      ...(nodePid === undefined ? {} : { nodePid }),
+      ...(target.nodePid === undefined ? {} : { nodePid: target.nodePid }),
       apiEndpoint: requireString(value, "apiEndpoint"),
       localPort: requireInteger(value, "localPort", 1, 65_535),
       remotePort: requireInteger(value, "remotePort", 1, 65_535),
@@ -159,23 +215,49 @@ function decodeSession(value: unknown): ActiveSession | undefined {
   }
 }
 
-export function decodeStateFile(value: unknown): StateFile | undefined {
-  if (typeof value !== "object" || value === null || field(value, "version") !== "2") {
-    return undefined;
+function duplicateSessionIds(sessions: readonly ActiveSession[]): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const session of sessions) {
+    if (seen.has(session.sessionId)) {
+      duplicates.add(session.sessionId);
+    }
+    seen.add(session.sessionId);
+  }
+  return duplicates;
+}
+
+export function decodeStateFileDetailed(value: unknown): StateDecodeResult {
+  if (typeof value !== "object" || value === null) {
+    return { kind: "invalid-file", reason: "root is not an object" };
+  }
+  if (field(value, "version") !== "2") {
+    return { kind: "invalid-file", reason: "unsupported or missing version" };
   }
   const rawSessions = field(value, "sessions");
   if (!Array.isArray(rawSessions)) {
-    return undefined;
+    return { kind: "invalid-file", reason: "sessions is not an array" };
   }
-  const sessionIds = new Set<string>();
-  const sessions: ActiveSession[] = [];
-  for (const rawSession of rawSessions) {
-    const session = decodeSession(rawSession);
-    if (session === undefined || sessionIds.has(session.sessionId)) {
-      return undefined;
+  const decoded = rawSessions.map((raw) => decodeSession(raw));
+  const valid = decoded.filter((session): session is ActiveSession => session !== undefined);
+  const duplicates = duplicateSessionIds(valid);
+  const sessions = valid.filter((session) => !duplicates.has(session.sessionId));
+  const dropped = decoded.flatMap((session, index): readonly string[] => {
+    if (session === undefined) {
+      return [`session[${index.toString()}]: invalid entry`];
     }
-    sessionIds.add(session.sessionId);
-    sessions.push(session);
-  }
-  return { version: "2", sessions };
+    return duplicates.has(session.sessionId)
+      ? [`session[${index.toString()}]: duplicate sessionId ${session.sessionId}`]
+      : [];
+  });
+  return {
+    kind: "decoded",
+    state: { version: "2", sessions },
+    dropped,
+  };
+}
+
+export function decodeStateFile(value: unknown): StateFile | undefined {
+  const result = decodeStateFileDetailed(value);
+  return result.kind === "decoded" ? result.state : undefined;
 }

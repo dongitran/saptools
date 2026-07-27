@@ -2,6 +2,7 @@ export {
   isPidAlive,
   isPidOrGroupAlive,
   isProcessGroupAlive,
+  inspectSessionHealth,
   matchesKey,
   readActiveSessions,
   readAndPruneActiveSessions,
@@ -18,5 +19,13 @@ export type {
   RegisterSessionInput,
   RegisterSessionResult,
   SessionStopClaim,
+  StateAccessOptions,
   StateReaderResult,
+  SessionHealthStatus,
+  SessionHealthVerdict,
 } from "./session-state/store.js";
+export {
+  clearSessionStopIntent,
+  hasSessionStopIntent,
+  writeSessionStopIntent,
+} from "./session-state/stop-intent.js";

@@ -1,4 +1,11 @@
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,10 +16,13 @@ import type { ActiveSession } from "../../src/types.js";
 const mocks = vi.hoisted(() => ({
   isOwnedSessionCfHomeDir: vi.fn(),
   readAndPruneActiveSessions: vi.fn(),
+  saptoolsDir: vi.fn(),
 }));
 
 vi.mock("../../src/paths.js", () => ({
+  CF_DEBUGGER_STATE_FILENAME: "cf-debugger-state-v2.json",
   isOwnedSessionCfHomeDir: mocks.isOwnedSessionCfHomeDir,
+  saptoolsDir: mocks.saptoolsDir,
 }));
 
 vi.mock("../../src/state.js", () => ({
@@ -49,6 +59,7 @@ describe("orphan CF home cleanup", () => {
 
   beforeEach(async (): Promise<void> => {
     tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-orphans-"));
+    mocks.saptoolsDir.mockReturnValue(tempDir);
   });
 
   afterEach(async (): Promise<void> => {
@@ -96,5 +107,25 @@ describe("orphan CF home cleanup", () => {
     mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [removed] });
 
     await expect(pruneAndCleanupOrphans()).resolves.toEqual({ sessions: [], removed: [removed] });
+  });
+
+  it("opportunistically removes only stale state temp files", async (): Promise<void> => {
+    const stale = join(tempDir, "cf-debugger-state-v2.json.dead.tmp");
+    const recent = join(tempDir, "cf-debugger-state-v2.json.active.tmp");
+    const unrelated = join(tempDir, "unrelated.tmp");
+    await Promise.all([
+      writeFile(stale, "stale", "utf8"),
+      writeFile(recent, "recent", "utf8"),
+      writeFile(unrelated, "unrelated", "utf8"),
+    ]);
+    const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1_000);
+    await utimes(stale, oldTime, oldTime);
+    mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [], removed: [] });
+
+    await pruneAndCleanupOrphans();
+
+    await expect(access(stale)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(recent)).resolves.toBeUndefined();
+    await expect(access(unrelated)).resolves.toBeUndefined();
   });
 });

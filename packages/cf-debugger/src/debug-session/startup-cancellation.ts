@@ -1,19 +1,10 @@
-import { readSessionSnapshot } from "../state.js";
-import type { ActiveSession } from "../types.js";
+import { hasSessionStopIntent } from "../state.js";
 
-const STOP_REQUEST_POLL_MS = 50;
+const STOP_REQUEST_POLL_MS = 500;
 
 export interface StartupCancellation {
   readonly signal: AbortSignal;
   dispose(): void;
-}
-
-function cancellationRequested(
-  sessions: readonly ActiveSession[],
-  sessionId: string,
-): boolean {
-  const session = sessions.find((candidate) => candidate.sessionId === sessionId);
-  return session === undefined || session.stopRequestedAt !== undefined;
 }
 
 export function createStartupCancellation(
@@ -24,7 +15,7 @@ export function createStartupCancellation(
   let active = true;
   let timer: NodeJS.Timeout | undefined;
   const onCallerAbort = (): void => {
-    controller.abort();
+    controller.abort(callerSignal?.reason);
   };
   const schedule = (): void => {
     timer = setTimeout(() => { void poll(); }, STOP_REQUEST_POLL_MS);
@@ -32,8 +23,7 @@ export function createStartupCancellation(
   };
   const poll = async (): Promise<void> => {
     try {
-      const sessions = await readSessionSnapshot();
-      if (active && cancellationRequested(sessions, sessionId)) {
+      if (active && await hasSessionStopIntent(sessionId)) {
         controller.abort();
       }
     } catch {
@@ -46,7 +36,7 @@ export function createStartupCancellation(
 
   callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
   if (callerSignal?.aborted === true) {
-    controller.abort();
+    controller.abort(callerSignal.reason);
   } else {
     void poll();
   }
@@ -56,6 +46,7 @@ export function createStartupCancellation(
       active = false;
       clearTimeout(timer);
       callerSignal?.removeEventListener("abort", onCallerAbort);
+      controller.abort();
     },
   };
 }
