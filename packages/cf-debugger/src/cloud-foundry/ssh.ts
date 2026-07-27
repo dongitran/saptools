@@ -3,6 +3,10 @@ import nodeProcess from "node:process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
+import {
+  inspectProcessIdentity,
+  readProcessIdentity,
+} from "../debug-session/process-identity.js";
 import { CfDebuggerError } from "../types.js";
 
 import {
@@ -75,6 +79,7 @@ interface SshExecutionState {
   settled: boolean;
   aborted: boolean;
   timedOut: boolean;
+  terminationStarted: boolean;
   timeoutTimer?: NodeJS.Timeout;
   forceKillTimer?: NodeJS.Timeout;
 }
@@ -282,14 +287,95 @@ function createSshExecutionState(
     settled: false,
     aborted: false,
     timedOut: false,
+    terminationStarted: false,
   };
 }
 
-function terminateSshExecution(child: ReturnType<typeof spawn>, state: SshExecutionState): void {
-  signalChild(child, "SIGTERM");
-  state.forceKillTimer ??= setTimeout(() => {
-    signalChild(child, "SIGKILL");
-  }, 1000);
+function childIsOpen(child: ReturnType<typeof spawn>): boolean {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+async function captureSshChildIdentity(child: ReturnType<typeof spawn>): Promise<string | undefined> {
+  if (nodeProcess.platform === "win32" || child.pid === undefined) {
+    return;
+  }
+  try {
+    return await readProcessIdentity(child.pid);
+  } catch {
+    return;
+  }
+}
+
+async function canSignalSshChild(
+  child: ReturnType<typeof spawn>,
+  childIdentity: Promise<string | undefined>,
+): Promise<boolean> {
+  if (!childIsOpen(child) || child.pid === undefined) {
+    return false;
+  }
+  if (nodeProcess.platform === "win32") {
+    // Windows retains PID-only ChildProcess ownership because this package has
+    // no dependency-free process-birth token on that platform.
+    return true;
+  }
+  const expectedIdentity = await childIdentity;
+  if (expectedIdentity === undefined) {
+    return false;
+  }
+  return await inspectProcessIdentity(child.pid, expectedIdentity) === "match" &&
+    childIsOpen(child);
+}
+
+function abandonUnverifiedSshChild(child: ReturnType<typeof spawn>): void {
+  try {
+    child.stdout?.destroy();
+  } catch {
+    // The stream may already have closed while identity verification was pending.
+  }
+  try {
+    child.stderr?.destroy();
+  } catch {
+    // The stream may already have closed while identity verification was pending.
+  }
+  try {
+    child.unref();
+  } catch {
+    // A failed spawn may not have initialized a process handle to unref.
+  }
+}
+
+function terminateSshExecution(
+  child: ReturnType<typeof spawn>,
+  childIdentity: Promise<string | undefined>,
+  state: SshExecutionState,
+  settle: (result: CfSshSignalResult) => void,
+): void {
+  if (state.settled || state.terminationStarted) {
+    return;
+  }
+  state.terminationStarted = true;
+  const settleUnverified = (): void => {
+    if (!state.settled) {
+      abandonUnverifiedSshChild(child);
+      settle(createResult(null, state));
+    }
+  };
+  void (async (): Promise<void> => {
+    if (!(await canSignalSshChild(child, childIdentity)) || state.settled) {
+      settleUnverified();
+      return;
+    }
+    signalChild(child, "SIGTERM");
+    state.forceKillTimer = setTimeout(() => {
+      void (async (): Promise<void> => {
+        if (!(await canSignalSshChild(child, childIdentity)) || state.settled) {
+          settleUnverified();
+          return;
+        }
+        signalChild(child, "SIGKILL");
+      })().catch(settleUnverified);
+    }, 1000);
+  })().catch(settleUnverified);
 }
 
 function sshAbortError(context: CfExecContext): CfDebuggerError {
@@ -332,6 +418,7 @@ function createSshSettler(
 
 function attachSshExecution(
   child: ChildProcessByStdio<null, Readable, Readable>,
+  childIdentity: Promise<string | undefined>,
   context: CfExecContext,
   options: ResolvedSshOptions,
   resolve: (result: CfSshSignalResult) => void,
@@ -340,12 +427,12 @@ function attachSshExecution(
   const state = createSshExecutionState(context, options.maxOutputBytes);
   const onAbort = (): void => {
     state.aborted = true;
-    terminateSshExecution(child, state);
+    terminateSshExecution(child, childIdentity, state, settle);
   };
   const settle = createSshSettler(state, options, context, onAbort, resolve, reject);
   state.timeoutTimer = setTimeout(() => {
     state.timedOut = true;
-    terminateSshExecution(child, state);
+    terminateSshExecution(child, childIdentity, state, settle);
   }, options.timeoutMs);
   if (context.signal?.aborted) {
     onAbort();
@@ -382,7 +469,8 @@ function runSshOneShot(
       detached: nodeProcess.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    attachSshExecution(child, context, options, resolve, reject);
+    const childIdentity = captureSshChildIdentity(child);
+    attachSshExecution(child, childIdentity, context, options, resolve, reject);
   });
 }
 

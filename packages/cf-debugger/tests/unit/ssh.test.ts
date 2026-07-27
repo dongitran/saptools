@@ -1,15 +1,22 @@
 import { EventEmitter } from "node:events";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   execFile: vi.fn(),
+  inspectProcessIdentity: vi.fn(),
+  readProcessIdentity: vi.fn(),
   spawn: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
   execFile: mocks.execFile,
   spawn: mocks.spawn,
+}));
+
+vi.mock("../../src/debug-session/process-identity.js", () => ({
+  inspectProcessIdentity: mocks.inspectProcessIdentity,
+  readProcessIdentity: mocks.readProcessIdentity,
 }));
 
 const {
@@ -23,22 +30,45 @@ const {
 );
 
 function createChild(): EventEmitter & {
-  readonly stdout: EventEmitter & { readonly resume: ReturnType<typeof vi.fn> };
-  readonly stderr: EventEmitter & { readonly resume: ReturnType<typeof vi.fn> };
+  readonly stdout: EventEmitter & {
+    readonly destroy: ReturnType<typeof vi.fn>;
+    readonly resume: ReturnType<typeof vi.fn>;
+  };
+  readonly stderr: EventEmitter & {
+    readonly destroy: ReturnType<typeof vi.fn>;
+    readonly resume: ReturnType<typeof vi.fn>;
+  };
   readonly kill: ReturnType<typeof vi.fn>;
+  readonly unref: ReturnType<typeof vi.fn>;
 } {
   const child = new EventEmitter() as EventEmitter & {
-    readonly stdout: EventEmitter & { readonly resume: ReturnType<typeof vi.fn> };
-    readonly stderr: EventEmitter & { readonly resume: ReturnType<typeof vi.fn> };
+    readonly stdout: EventEmitter & {
+      readonly destroy: ReturnType<typeof vi.fn>;
+      readonly resume: ReturnType<typeof vi.fn>;
+    };
+    readonly stderr: EventEmitter & {
+      readonly destroy: ReturnType<typeof vi.fn>;
+      readonly resume: ReturnType<typeof vi.fn>;
+    };
     readonly kill: ReturnType<typeof vi.fn>;
+    readonly unref: ReturnType<typeof vi.fn>;
   };
   Object.assign(child, {
-    stdout: Object.assign(new EventEmitter(), { resume: vi.fn() }),
-    stderr: Object.assign(new EventEmitter(), { resume: vi.fn() }),
+    exitCode: null,
+    pid: 2_147_483_600,
+    signalCode: null,
+    stdout: Object.assign(new EventEmitter(), { destroy: vi.fn(), resume: vi.fn() }),
+    stderr: Object.assign(new EventEmitter(), { destroy: vi.fn(), resume: vi.fn() }),
     kill: vi.fn(() => true),
+    unref: vi.fn(),
   });
   return child;
 }
+
+beforeEach(() => {
+  mocks.readProcessIdentity.mockResolvedValue("test-child-identity");
+  mocks.inspectProcessIdentity.mockResolvedValue("match");
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -113,7 +143,9 @@ describe("cfSshOneShot", () => {
       60_000,
     );
     controller.abort();
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    await vi.waitFor(() => {
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    });
     child.emit("close", null, "SIGTERM");
 
     await expect(resultPromise).rejects.toMatchObject({ code: "ABORTED" });
@@ -134,10 +166,48 @@ describe("cfSshOneShot", () => {
       60_000,
     );
 
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    await vi.waitFor(() => {
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    });
     child.emit("close", null, "SIGTERM");
     await expect(resultPromise).rejects.toMatchObject({ code: "ABORTED" });
   });
+
+  it.runIf(process.platform !== "win32")(
+    "does not send SIGKILL when the one-shot child identity changes after SIGTERM",
+    async () => {
+      vi.useFakeTimers();
+      const child = createChild();
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+      mocks.spawn.mockReturnValue(child);
+      mocks.inspectProcessIdentity
+        .mockResolvedValueOnce("match")
+        .mockResolvedValueOnce("mismatch");
+
+      try {
+        const resultPromise = cfSshOneShot(
+          "demo-app",
+          "printf markers",
+          { cfHome: "/tmp/cf-home", command: "cf" },
+          25,
+        );
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(killSpy).toHaveBeenCalledWith(-2_147_483_600, "SIGTERM");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        await expect(resultPromise).resolves.toMatchObject({ timedOutAfterMs: 25 });
+        expect(killSpy).not.toHaveBeenCalledWith(-2_147_483_600, "SIGKILL");
+        expect(mocks.inspectProcessIdentity).toHaveBeenCalledTimes(2);
+        expect(child.stdout.destroy).toHaveBeenCalledOnce();
+        expect(child.stderr.destroy).toHaveBeenCalledOnce();
+        expect(child.unref).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        killSpy.mockRestore();
+      }
+    },
+  );
 
   it("does not spawn after an abort or startup deadline has already elapsed", async () => {
     const controller = new AbortController();
