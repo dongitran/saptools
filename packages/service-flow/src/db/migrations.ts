@@ -20,7 +20,7 @@ const columns: Record<string, Array<{ name: string; ddl: string }>> = {
     { name: 'graph_stale_at', ddl: 'ALTER TABLE repositories ADD COLUMN graph_stale_at TEXT' },
     { name: 'fact_analyzer_version', ddl: "ALTER TABLE repositories ADD COLUMN fact_analyzer_version TEXT DEFAULT 'legacy'" },
     { name: 'package_public_surface_json', ddl: 'ALTER TABLE repositories ADD COLUMN package_public_surface_json TEXT' },
-    { name: 'environment_declarations_json', ddl: 'ALTER TABLE repositories ADD COLUMN environment_declarations_json TEXT' },
+    { name: 'environment_declarations_json', ddl: `ALTER TABLE repositories ADD COLUMN environment_declarations_json TEXT DEFAULT '{"schema":"service-flow/environment-declarations@1","allowedKeys":["SHARD_CODE"],"status":"not_applicable","reason":null,"recordCap":32,"total":0,"shown":0,"omitted":0,"declarations":[]}'` },
   ],
   graph_edges: [
     { name: 'status', ddl: "ALTER TABLE graph_edges ADD COLUMN status TEXT NOT NULL DEFAULT 'unresolved'" },
@@ -109,6 +109,9 @@ function markFactProvenanceMigrationStale(db: Db, priorVersion: number): void {
 }
 function markEventSurfaceMigrationStale(db: Db, priorVersion: number): void {
   if (priorVersion >= 14) return;
+  db.prepare(
+    'UPDATE repositories SET environment_declarations_json=NULL',
+  ).run();
   db.prepare(`UPDATE repositories
     SET graph_stale_reason='schema_v14_event_surface_requires_reindex',
       graph_stale_at=COALESCE(graph_stale_at,datetime('now'))

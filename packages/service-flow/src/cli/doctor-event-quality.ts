@@ -8,6 +8,16 @@ const eventNameReason = `COALESCE(
     OR c.unresolved_reason GLOB 'event_name_*'
     THEN c.unresolved_reason END
 )`;
+const receiverReason = `CASE
+  WHEN json_extract(c.evidence_json,
+    '$.receiverClassification')='name_fallback'
+    THEN COALESCE(json_extract(c.evidence_json,
+      '$.receiverFallbackRefusedReason'),'name_fallback')
+  WHEN json_extract(c.evidence_json,
+    '$.receiverClassification')='unproven'
+    THEN COALESCE(json_extract(c.evidence_json,
+      '$.receiverUnresolvedReason'),'unproven')
+  ELSE 'missing' END`;
 
 function workspacePredicate(alias: string): string {
   return `(? IS NULL OR ${alias}.workspace_id=?)`;
@@ -52,6 +62,13 @@ function eventNameResolutionQuality(
     workspaceId, workspaceId,
   );
   const unresolved = count(aggregate?.unresolved);
+  const reasonCount = count(db.prepare(`SELECT COUNT(DISTINCT reason) count
+    FROM (SELECT ${eventNameReason} reason
+      FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
+      WHERE c.call_type='async_emit' AND ${workspacePredicate('r')}
+        AND ${eventNameReason} IS NOT NULL)`).get(
+    workspaceId, workspaceId,
+  )?.count);
   return {
     severity: unresolved > 0 ? 'warning' : 'info',
     code: 'strict_event_name_resolution_quality',
@@ -59,6 +76,9 @@ function eventNameResolutionQuality(
     publicationTotal: count(aggregate?.total),
     unresolvedPublicationCount: unresolved,
     reasonBuckets: reasons,
+    reasonBucketCount: reasonCount,
+    shownReasonBucketCount: reasons.length,
+    omittedReasonBucketCount: Math.max(0, reasonCount - reasons.length),
     examples: unresolvedEventNameExamples(db, workspaceId),
     exampleCount: unresolved,
   };
@@ -204,8 +224,12 @@ function unmatchedSubscriptionQuality(
   db: Db,
   workspaceId?: number,
 ): Diagnostic {
-  const row = db.prepare(`SELECT COUNT(*) siteCount,
+  const row = db.prepare(`SELECT
+    COUNT(DISTINCT json_extract(e.evidence_json,'$.subscribeCallId'))
+      siteCount,
     SUM(CASE
+      WHEN json_extract(e.evidence_json,'$.materializedLoopEventName')
+        IS NOT NULL THEN 1
       WHEN json_extract(c.evidence_json,
         '$.subscriptionLoopRegistrationStatus')='enumerated'
         THEN CAST(json_extract(c.evidence_json,
@@ -215,7 +239,7 @@ function unmatchedSubscriptionQuality(
       ELSE 1 END) count,
     SUM(CASE WHEN json_extract(c.evidence_json,
       '$.subscriptionLoopRegistrationStatus')='unresolved'
-      THEN 1 ELSE 0 END) unknownMultiplicitySiteCount
+      THEN 1 ELSE 0 END) unknownMultiplicityEdgeCount
     FROM graph_edges e LEFT JOIN outbound_calls c
       ON c.id=CAST(json_extract(e.evidence_json,'$.subscribeCallId') AS INTEGER)
     WHERE e.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
@@ -228,23 +252,45 @@ function unmatchedSubscriptionQuality(
           AND publication.to_id=e.from_id)`).get(workspaceId, workspaceId);
   const total = count(row?.count);
   const siteCount = count(row?.siteCount);
+  const unknownSites = unknownMultiplicitySiteCount(db, workspaceId);
   return {
     severity: siteCount > 0 ? 'warning' : 'info',
     code: 'strict_event_subscription_without_publication_quality',
     message: 'Event subscriptions without a matching publication',
     unmatchedSubscriptionCount: total,
     unmatchedSubscriptionSiteCount: siteCount,
-    unknownMultiplicitySiteCount: count(row?.unknownMultiplicitySiteCount),
+    unknownMultiplicitySiteCount: unknownSites,
     examples: unmatchedSubscriptionRows(db, workspaceId),
     exampleCount: siteCount,
   };
 }
 
-function receiverProofQuality(
+function unknownMultiplicitySiteCount(
   db: Db,
   workspaceId?: number,
-): Diagnostic {
-  const row = db.prepare(`SELECT COUNT(*) eventTotal,
+): number {
+  const row = db.prepare(`SELECT COUNT(DISTINCT
+    json_extract(e.evidence_json,'$.subscribeCallId')) count
+    FROM graph_edges e LEFT JOIN outbound_calls c
+      ON c.id=CAST(json_extract(e.evidence_json,'$.subscribeCallId') AS INTEGER)
+    WHERE e.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+      AND ${workspacePredicate('e')}
+      AND json_extract(c.evidence_json,
+        '$.subscriptionLoopRegistrationStatus')='unresolved'
+      AND NOT EXISTS (SELECT 1 FROM graph_edges publication
+        WHERE publication.workspace_id=e.workspace_id
+          AND publication.generation=e.generation
+          AND publication.edge_type='HANDLER_EMITS_EVENT'
+          AND publication.to_kind='event'
+          AND publication.to_id=e.from_id)`).get(workspaceId, workspaceId);
+  return count(row?.count);
+}
+
+function receiverProofAggregate(
+  db: Db,
+  workspaceId?: number,
+): Record<string, unknown> | undefined {
+  return db.prepare(`SELECT COUNT(*) eventTotal,
     SUM(CASE WHEN json_extract(c.evidence_json,
       '$.receiverClassification')='cap_evidence' THEN 1 ELSE 0 END) proven,
     SUM(CASE WHEN json_extract(c.evidence_json,
@@ -255,13 +301,13 @@ function receiverProofQuality(
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE c.call_type IN ('async_emit','async_subscribe')
       AND ${workspacePredicate('r')}`).get(workspaceId, workspaceId);
-  const buckets = db.prepare(`SELECT CASE
-      WHEN json_extract(c.evidence_json,
-        '$.receiverClassification')='name_fallback' THEN 'name_fallback'
-      WHEN json_extract(c.evidence_json,
-        '$.receiverClassification')='unproven'
-        THEN COALESCE(c.unresolved_reason,'unproven')
-      ELSE 'missing' END reason,COUNT(*) count
+}
+
+function receiverReasonBuckets(
+  db: Db,
+  workspaceId?: number,
+): Array<Record<string, unknown>> {
+  return db.prepare(`SELECT ${receiverReason} reason,COUNT(*) count
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE c.call_type IN ('async_emit','async_subscribe')
       AND ${workspacePredicate('r')}
@@ -270,6 +316,29 @@ function receiverProofQuality(
     GROUP BY reason ORDER BY count DESC,reason COLLATE BINARY LIMIT 16`).all(
     workspaceId, workspaceId,
   );
+}
+
+function receiverReasonBucketCount(
+  db: Db,
+  workspaceId?: number,
+): number {
+  const row = db.prepare(`SELECT COUNT(DISTINCT reason) count
+    FROM (SELECT ${receiverReason} reason
+      FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
+      WHERE c.call_type IN ('async_emit','async_subscribe')
+        AND ${workspacePredicate('r')}
+        AND json_extract(c.evidence_json,'$.receiverClassification')
+          <>'cap_evidence')`).get(workspaceId, workspaceId);
+  return count(row?.count);
+}
+
+function receiverProofQuality(
+  db: Db,
+  workspaceId?: number,
+): Diagnostic {
+  const row = receiverProofAggregate(db, workspaceId);
+  const buckets = receiverReasonBuckets(db, workspaceId);
+  const bucketCount = receiverReasonBucketCount(db, workspaceId);
   const questionable = count(row?.nameFallback) + count(row?.unproven);
   return {
     severity: questionable > 0 ? 'warning' : 'info',
@@ -281,6 +350,9 @@ function receiverProofQuality(
     unproven: count(row?.unproven),
     questionable,
     reasonBuckets: buckets,
+    reasonBucketCount: bucketCount,
+    shownReasonBucketCount: buckets.length,
+    omittedReasonBucketCount: Math.max(0, bucketCount - buckets.length),
     examples: receiverProofExamples(db, workspaceId),
     exampleCount: questionable,
   };
@@ -293,8 +365,11 @@ function receiverProofExamples(
   return db.prepare(`SELECT r.name repositoryName,c.call_type callType,
     c.source_file sourceFile,c.source_line sourceLine,
     json_extract(c.evidence_json,'$.receiverClassification')
-      receiverClassification,
-    c.unresolved_reason reason
+    receiverClassification,
+    COALESCE(json_extract(c.evidence_json,'$.receiverUnresolvedReason'),
+      json_extract(c.evidence_json,'$.receiverFallbackRefusedReason')) reason,
+    json_array_length(json_extract(c.evidence_json,
+      '$.consideredBindingSites')) consideredBindingSiteCount
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE c.call_type IN ('async_emit','async_subscribe')
       AND ${workspacePredicate('r')}

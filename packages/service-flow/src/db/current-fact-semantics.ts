@@ -12,6 +12,7 @@ import {
 } from './binding-fact-semantics.js';
 import { invalidSymbolFactCategories } from './symbol-call-semantics.js';
 import { invalidEventFactCategories } from './event-fact-semantics.js';
+import { eventSiteCategories } from './event-site-semantics.js';
 
 export type PackageFactPhase = 'pre_package' | 'terminal';
 
@@ -255,31 +256,6 @@ function duplicateSymbolCallCategories(
     HAVING COUNT(*)<>1
   )`, workspaceId);
   return category('symbol_call_site_duplicate', duplicate);
-}
-
-function eventNameCategories(
-  db: Db,
-  workspaceId?: number,
-): FactSemanticCategoryCount[] {
-  const invalidName = count(db, `SELECT COUNT(*) count
-    FROM outbound_calls fact JOIN repositories r ON r.id=fact.repo_id
-    WHERE ${currentRepositoryPredicate()}
-      AND fact.call_type IN ('async_emit','async_subscribe')
-      AND (typeof(fact.event_name_expr)<>'text'
-        OR length(fact.event_name_expr)=0)`, workspaceId);
-  const duplicate = count(db, `SELECT COUNT(*) count FROM (
-    SELECT fact.repo_id,fact.source_file,fact.call_site_start_offset,
-      fact.call_site_end_offset,COUNT(*) duplicate_count
-    FROM outbound_calls fact JOIN repositories r ON r.id=fact.repo_id
-    WHERE ${currentRepositoryPredicate()}
-      AND fact.call_type='async_subscribe'
-    GROUP BY fact.repo_id,fact.source_file,fact.call_site_start_offset,
-      fact.call_site_end_offset HAVING COUNT(*)<>1
-  )`, workspaceId);
-  return [
-    ...category('event_name_invalid', invalidName),
-    ...category('async_subscription_site_duplicate', duplicate),
-  ];
 }
 
 function outboundOwnerCount(db: Db, workspaceId?: number): number {
@@ -684,7 +660,7 @@ export function invalidFactSemanticCategories(
     ...operationCategories(db, workspaceId),
     ...callSpanCategories(db, workspaceId),
     ...duplicateSymbolCallCategories(db, workspaceId),
-    ...eventNameCategories(db, workspaceId),
+    ...eventSiteCategories(db, workspaceId),
     ...invalidEventFactCategories(db, workspaceId, phase),
     ...ownerCategories(db, workspaceId),
     ...bindingCategories(db, workspaceId),

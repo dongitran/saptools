@@ -197,8 +197,9 @@ function expectRejected(
   });
   if (!diagnostic) throw new Error('Expected lifecycle diagnostic');
   expect(diagnosticCategories(diagnostic)).toContain(expectedCategory);
-  expect(diagnostic.remediation)
-    .toContain('index --workspace /workspace --force');
+  expect(diagnostic.remediation).toContain('service-flow doctor');
+  expect(diagnostic.remediation).toContain('--strict --detail');
+  expect(diagnostic.remediation).not.toContain('index');
   expect(typeof diagnostic.invalidFactCategoryCount).toBe('number');
   expect(typeof diagnostic.shownInvalidFactCategoryCount).toBe('number');
   expect(typeof diagnostic.omittedInvalidFactCategoryCount).toBe('number');

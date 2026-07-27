@@ -14,6 +14,7 @@ import {
   type SchemaStructureCategoryCount,
 } from './schema-structure.js';
 import { ANALYZER_VERSION } from '../version.js';
+import { invalidEventFactExamples } from './event-fact-semantics.js';
 
 export type FactLifecycleCode =
   | 'schema_upgrade_required'
@@ -27,11 +28,8 @@ export interface FactLifecycleDiagnostic extends Record<string, unknown> {
   remediation: string;
 }
 
-const remediation = [
-  'service-flow index --workspace /workspace --force',
-  'service-flow link --workspace /workspace --force',
-].join('\n');
 const CATEGORY_LIMIT = 24;
+const EXAMPLE_LIMIT = 5;
 
 function count(db: Db, sql: string, ...params: unknown[]): number {
   const row = db.prepare(sql).get(...params);
@@ -51,12 +49,13 @@ export function factLifecycleDiagnostic(
   workspaceId?: number,
   phase: PackageFactPhase = 'pre_package',
 ): FactLifecycleDiagnostic | undefined {
-  return schemaLifecycleDiagnostic(db)
+  return schemaLifecycleDiagnostic(db, workspaceId)
     ?? currentFactLifecycleDiagnostic(db, workspaceId, phase);
 }
 
 export function schemaLifecycleDiagnostic(
   db: Db,
+  workspaceId?: number,
 ): FactLifecycleDiagnostic | undefined {
   const currentSchema = schemaVersion(db);
   if (currentSchema > CURRENT_SCHEMA_VERSION) return {
@@ -71,13 +70,15 @@ export function schemaLifecycleDiagnostic(
     severity: 'error',
     code: 'schema_upgrade_required',
     message: `Database schema ${currentSchema} must be upgraded to ${CURRENT_SCHEMA_VERSION} before this command can read current call-site facts.`,
-    remediation,
+    remediation: staleRemediation(db, workspaceId),
     currentSchemaVersion: currentSchema,
     requiredSchemaVersion: CURRENT_SCHEMA_VERSION,
   };
   const structureCategories = invalidSchemaStructureCategories(db);
   if (structureCategories.length > 0)
-    return reindexDiagnostic(0, structureCategories);
+    return reindexDiagnostic(
+      db, workspaceId, 0, structureCategories, 'pre_package', false,
+    );
   return undefined;
 }
 
@@ -88,15 +89,17 @@ export function currentFactLifecycleDiagnostic(
 ): FactLifecycleDiagnostic | undefined {
   const staleRepositories = oldAnalyzerCount(db, workspaceId);
   if (staleRepositories > 0)
-    return reindexDiagnostic(staleRepositories, []);
+    return reindexDiagnostic(
+      db, workspaceId, staleRepositories, [], phase,
+    );
   const jsonCategories = invalidFactJsonCategories(db, workspaceId);
   if (jsonCategories.length > 0)
-    return reindexDiagnostic(0, jsonCategories);
+    return reindexDiagnostic(db, workspaceId, 0, jsonCategories, phase);
   const semanticCategories = invalidFactSemanticCategories(
     db, workspaceId, phase,
   );
   if (semanticCategories.length === 0) return undefined;
-  return reindexDiagnostic(0, semanticCategories);
+  return reindexDiagnostic(db, workspaceId, 0, semanticCategories, phase);
 }
 
 type InvalidFactCategory =
@@ -105,24 +108,79 @@ type InvalidFactCategory =
   | SchemaStructureCategoryCount;
 
 function reindexDiagnostic(
+  db: Db,
+  workspaceId: number | undefined,
   staleRepositories: number,
   categories: InvalidFactCategory[],
+  phase: PackageFactPhase,
+  examplesAllowed = true,
 ): FactLifecycleDiagnostic {
   const invalidFacts = categories.reduce((sum, item) => sum + item.count, 0);
   const shown = categories.slice(0, CATEGORY_LIMIT);
+  const eventExamples = examplesAllowed
+    ? invalidEventFactExamples(db, workspaceId, phase, EXAMPLE_LIMIT)
+    : { total: 0, affectedRepositoryCount: 0, examples: [] };
+  const examples = invalidFacts > 0 ? eventExamples.examples : [];
   return {
     severity: 'error',
     code: 'reindex_required',
-    message: 'Current facts are stale or fail bounded semantic integrity checks; force index and link before tracing or rebuilding graph edges.',
-    remediation,
+    message: invalidFacts > 0
+      ? 'Current facts fail bounded semantic integrity checks; inspect the offending rows before rebuilding graph edges.'
+      : 'Current facts are stale; force index and link before tracing or rebuilding graph edges.',
+    remediation: invalidFacts > 0
+      ? invalidFactRemediation(db, workspaceId)
+      : staleRemediation(db, workspaceId),
     staleRepositoryCount: staleRepositories,
     invalidCallFactCount: invalidFacts,
     invalidFactCategories: shown,
     invalidFactCategoryCount: categories.length,
     shownInvalidFactCategoryCount: shown.length,
     omittedInvalidFactCategoryCount: categories.length - shown.length,
+    affectedRepositoryCount: eventExamples.affectedRepositoryCount,
+    workspaceRepositoryCount: repositoryCount(db, workspaceId),
+    invalidFactExamples: examples,
+    invalidFactExampleCount: eventExamples.total,
+    shownInvalidFactExampleCount: examples.length,
+    omittedInvalidFactExampleCount:
+      Math.max(0, eventExamples.total - examples.length),
     requiredAnalyzerVersion: ANALYZER_VERSION,
   };
+}
+
+function workspacePath(db: Db, workspaceId?: number): string | undefined {
+  if (workspaceId === undefined) return undefined;
+  const row = db.prepare(
+    'SELECT root_path rootPath FROM workspaces WHERE id=?',
+  ).get(workspaceId);
+  return typeof row?.rootPath === 'string' ? row.rootPath : undefined;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function workspaceArgument(db: Db, workspaceId?: number): string {
+  const root = workspacePath(db, workspaceId);
+  return root ? ` --workspace ${shellQuote(root)}` : '';
+}
+
+function staleRemediation(db: Db, workspaceId?: number): string {
+  const workspace = workspaceArgument(db, workspaceId);
+  return [
+    `service-flow index${workspace} --force`,
+    `service-flow link${workspace} --force`,
+  ].join('\n');
+}
+
+function invalidFactRemediation(db: Db, workspaceId?: number): string {
+  return `service-flow doctor${workspaceArgument(
+    db, workspaceId,
+  )} --strict --detail`;
+}
+
+function repositoryCount(db: Db, workspaceId?: number): number {
+  return count(db, `SELECT COUNT(*) count FROM repositories
+    WHERE (? IS NULL OR workspace_id=?)`, workspaceId, workspaceId);
 }
 
 export function assertWorkspaceLinkable(

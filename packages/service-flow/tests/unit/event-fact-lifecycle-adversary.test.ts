@@ -291,6 +291,40 @@ function insertInvalidGeneratedConstant(db: Db): void {
   );
 }
 
+function insertDuplicateEmit(db: Db): void {
+  const evidence = JSON.stringify({
+    receiverClassification: 'cap_evidence',
+    receiverProof: 'lexical_connect_assignment',
+    consideredBindingSites: [],
+    sourceOwnerResolution: 'owned_exact',
+    serviceBindingReference: {
+      status: 'not_applicable',
+      scopeChainTotal: 0,
+      scopeChainShown: 0,
+      scopeChainOmitted: 0,
+    },
+    serviceBindingResolution: {
+      status: 'not_applicable',
+      candidateCount: 0,
+    },
+  });
+  const row = db.prepare(`INSERT INTO outbound_calls(
+    repo_id,source_symbol_id,call_type,event_name_expr,source_file,
+    source_line,call_site_start_offset,call_site_end_offset,confidence,
+    evidence_json
+  ) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
+    1, 2, 'async_emit', 'Duplicated', sourceFile, 12,
+    320, 340, 1, evidence,
+  );
+  db.prepare(`INSERT INTO outbound_calls(
+    repo_id,source_symbol_id,call_type,event_name_expr,source_file,
+    source_line,call_site_start_offset,call_site_end_offset,confidence,
+    evidence_json
+  ) SELECT repo_id,source_symbol_id,call_type,event_name_expr,source_file,
+    source_line,call_site_start_offset,call_site_end_offset,confidence,
+    evidence_json FROM outbound_calls WHERE id=?`).run(row?.id);
+}
+
 function graphSnapshot(db: Db): string {
   return JSON.stringify({
     graph: db.prepare('SELECT * FROM graph_edges ORDER BY id').all(),
@@ -349,6 +383,11 @@ const mutations: EventMutation[] = [
     label: 'invalid generated constant resolution matrix',
     categories: ['generated_constant_fact_invalid'],
     mutate: ({ db }) => insertInvalidGeneratedConstant(db),
+  },
+  {
+    label: 'duplicate event publication site',
+    categories: ['async_emit_site_duplicate'],
+    mutate: ({ db }) => insertDuplicateEmit(db),
   },
   {
     label: 'missing handler-reference status',
@@ -471,7 +510,22 @@ function assertMutationRejected(testCase: EventMutation): void {
   expect(categories(diagnostic)).toEqual(
     expect.arrayContaining(testCase.categories),
   );
-  expect(JSON.stringify(diagnostic)).not.toContain(sourceFile);
+  const workspace = value.db.prepare(
+    'SELECT root_path rootPath FROM workspaces WHERE id=1',
+  ).get();
+  expect(diagnostic.remediation).toContain(String(workspace?.rootPath));
+  expect(diagnostic.remediation).toContain('doctor');
+  expect(diagnostic.remediation).not.toContain('index');
+  if (testCase.categories.some((item) =>
+    item === 'event_fact_semantics_invalid'
+      || item === 'generated_constant_fact_invalid')) {
+    expect(diagnostic.invalidFactExamples).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        repositoryName: 'events',
+        sourceFile,
+      }),
+    ]));
+  }
   expect(() => linkWorkspace(value.db, 1)).toThrow(/reindex_required/);
   expect(graphSnapshot(value.db)).toBe(before);
   value.db.close();

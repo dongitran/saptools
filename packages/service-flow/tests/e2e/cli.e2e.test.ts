@@ -53,6 +53,24 @@ function readText(stream: Readable | null): Promise<string> {
   });
 }
 
+async function runWithExit(args: string[]): Promise<{
+  exit: ProcessExit;
+  stdout: string;
+  stderr: string;
+}> {
+  const child = spawn(process.execPath, [cli, ...args], {
+    cwd: path.resolve('.'),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdout = readText(child.stdout);
+  const stderr = readText(child.stderr);
+  return {
+    exit: await waitForExit(child),
+    stdout: await stdout,
+    stderr: await stderr,
+  };
+}
+
 async function runWithShortReader(args: string[]): Promise<{
   producer: ProcessExit;
   stderr: string;
@@ -219,6 +237,43 @@ describe('service-flow CLI link wording', () => {
     expect(linkResult.stdout).toContain('remote operation calls resolved');
     expect(linkResult.stdout).toContain('local operation calls resolved');
     expect(linkResult.stdout).not.toContain('remote resolved');
+  });
+});
+
+describe('service-flow CLI lifecycle guards', () => {
+  it('blocks list and inspect commands when indexed facts are stale', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-read-guard-'),
+    );
+    const dbPath = path.join(root, 'service-flow.db');
+    await writeFile(path.join(root, '.git-fixture'), '');
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({
+      name: '@neutral/read-guard', version: '1.0.0',
+    }));
+    await writeFile(
+      path.join(root, 'index.ts'),
+      'export const currentFact = true;\n',
+    );
+    await run(['init', root, '--db', dbPath]);
+    await run(['index', '--workspace', root, '--force']);
+    const db = openDatabase(dbPath);
+    db.prepare(
+      "UPDATE repositories SET fact_analyzer_version='stale-facts'",
+    ).run();
+    db.close();
+
+    const commands = [
+      ['list', 'repos', '--workspace', root],
+      ['inspect', 'repo', '@neutral/read-guard', '--workspace', root],
+    ];
+    for (const args of commands) {
+      const result = await runWithExit(args);
+      expect(result.exit).toEqual({ code: 1, signal: null });
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(result.stdout)).toEqual([
+        expect.objectContaining({ code: 'reindex_required' }),
+      ]);
+    }
   });
 });
 

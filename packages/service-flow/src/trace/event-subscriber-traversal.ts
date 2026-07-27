@@ -64,7 +64,21 @@ export interface EventSubscriberTransition {
   omittedSymbolCallUnresolvedReasonCharacterCount?: number;
   matchStrategy?: string;
   dispatchCertainty?: string;
+  subscriptionConsumerRepoId?: number;
+  subscriptionConsumerRepoName?: string;
+  dispatchProvenances?: EventDispatchProvenance[];
+  dispatchProvenanceCount?: number;
+  shownDispatchProvenanceCount?: number;
+  omittedDispatchProvenanceCount?: number;
   handler?: EventSubscriberSymbolTarget;
+}
+
+export interface EventDispatchProvenance {
+  graphEdgeId: number;
+  matchStrategy: string;
+  dispatchCertainty: string;
+  consumerRepoId?: number;
+  consumerRepoName?: string;
 }
 
 export interface EventSubscriberTransitionQuery {
@@ -171,6 +185,10 @@ export function eventTransitionEvidence(
     eventName: transition.eventName,
     matchStrategy: transition.matchStrategy ?? 'workspace_exact_event_name',
     dispatchCertainty: transition.dispatchCertainty ?? 'static_name_only',
+    dispatchProvenances: transition.dispatchProvenances,
+    dispatchProvenanceCount: transition.dispatchProvenanceCount,
+    shownDispatchProvenanceCount: transition.shownDispatchProvenanceCount,
+    omittedDispatchProvenanceCount: transition.omittedDispatchProvenanceCount,
     associationBasis: transition.associationBasis,
     dispatchScope: transition.dispatchScope,
     roleSiteMatchCount: transition.roleSiteMatchCount,
@@ -239,11 +257,57 @@ export function loadEventSubscriberTransitions(
       subscribe.call_site_start_offset,subscribe.call_site_end_offset,ge.id`).all(
     query.workspaceId, query.graphGeneration,
   );
-  return rows.flatMap((raw) => {
+  const transitions = rows.flatMap((raw) => {
     const row = eventRowForQuery(raw, query);
     const transition = row ? transitionFromRow(row) : undefined;
     return transition ? [transition] : [];
   });
+  return deduplicateDispatchProvenance(transitions);
+}
+
+const dispatchProvenanceLimit = 5;
+
+function transitionIdentity(value: EventSubscriberTransition): string {
+  const subscription = value.subscribeCallId ?? `edge:${value.graphEdgeId}`;
+  return `${value.eventName}\0${subscription}\0${value.targetKind}\0${
+    value.targetId}\0${value.status}`;
+}
+
+function dispatchProvenance(
+  value: EventSubscriberTransition,
+): EventDispatchProvenance {
+  return {
+    graphEdgeId: value.graphEdgeId,
+    matchStrategy: value.matchStrategy ?? 'workspace_exact_event_name',
+    dispatchCertainty: value.dispatchCertainty ?? 'static_name_only',
+    consumerRepoId: value.subscriptionConsumerRepoId,
+    consumerRepoName: value.subscriptionConsumerRepoName,
+  };
+}
+
+function deduplicateDispatchProvenance(
+  values: EventSubscriberTransition[],
+): EventSubscriberTransition[] {
+  const groups = new Map<string, EventSubscriberTransition[]>();
+  for (const value of values) {
+    const key = transitionIdentity(value);
+    groups.set(key, [...(groups.get(key) ?? []), value]);
+  }
+  return [...groups.values()].map((group) => {
+    const first = group[0];
+    if (!first || group.length === 1) return first;
+    const provenances = group.map(dispatchProvenance).slice(
+      0, dispatchProvenanceLimit,
+    );
+    return {
+      ...first,
+      dispatchProvenances: provenances,
+      dispatchProvenanceCount: group.length,
+      shownDispatchProvenanceCount: provenances.length,
+      omittedDispatchProvenanceCount: group.length - provenances.length,
+    };
+  }).filter((value): value is EventSubscriberTransition =>
+    value !== undefined);
 }
 
 function eventRowForQuery(
@@ -394,6 +458,12 @@ function associationEvidence(
       : undefined,
     matchStrategy: stringValue(evidence.matchStrategy),
     dispatchCertainty: stringValue(evidence.dispatchCertainty),
+    subscriptionConsumerRepoId: numberValue(
+      evidence.subscriptionConsumerRepositoryId,
+    ),
+    subscriptionConsumerRepoName: stringValue(
+      evidence.subscriptionConsumerRepositoryName,
+    ),
   };
 }
 

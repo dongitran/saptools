@@ -7,10 +7,24 @@ import {
   DEFAULT_DB_FILE,
   DEFAULT_IGNORES,
 } from './defaults.js';
+import {
+  DEFAULT_EVENT_ENVIRONMENT_KEYS,
+  EVENT_ENVIRONMENT_KEY_CAP,
+  normalizeEventEnvironmentKeys,
+  validEventEnvironmentKey,
+} from '../parsers/environment-declarations.js';
+const environmentKeys = z.array(
+  z.string().refine(validEventEnvironmentKey),
+).min(1).max(EVENT_ENVIRONMENT_KEY_CAP).transform(
+  normalizeEventEnvironmentKeys,
+);
 const schema = z.object({
   rootPath: z.string(),
   dbPath: z.string(),
   ignore: z.array(z.string()),
+  eventEnvironmentKeys: environmentKeys.default(
+    [...DEFAULT_EVENT_ENVIRONMENT_KEYS],
+  ),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -55,6 +69,7 @@ export function createWorkspaceConfig(
     rootPath: root,
     dbPath: path.resolve(dbPath ?? defaultDbPath(root)),
     ignore,
+    eventEnvironmentKeys: [...DEFAULT_EVENT_ENVIRONMENT_KEYS],
     createdAt: now,
     updatedAt: now,
   };

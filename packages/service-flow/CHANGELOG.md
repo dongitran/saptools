@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.73
+
+- Repaired the schema-14 writer/validator contract: resolved empty string constants remain legal facts, empty event topics fail closed at use, and const-alias templates retain complete signed skeletons. Lifecycle failures now use the actual workspace path and expose bounded repository/file/line/predicate examples without replacing the last good graph.
+- Separated event-name resolution from receiver proof. Static names retain canonical event identity while receiver confidence remains disclosed; single proven CAP-connect assignments inside branches are accepted, affirmative non-CAP proof wins over name compatibility, and comments or string contents cannot seed receiver evidence. Known socket, stream, desktop, and CAP CRUD handler calls stay outside EventMesh aggregates.
+- Refused partial folding for spread/computed/getter/shorthand constant containers, accepted type-position references as immutable uses, materialized complete loop registrations, bounded link-time skeleton fan-out, deduplicated equal dispatch decisions, and completed bounded doctor reason-bucket counts.
+- Made event environment keys configurable through `eventEnvironmentKeys` in `.service-flow/config.json`, while preserving the default, grammar/cap, provenance, transform, ambiguity, fingerprint, and neighbouring-key exclusion guarantees. Repository inspection omits stored declaration values and environment-file fingerprints hash only allowlisted derived facts.
+- Package/CLI is `0.1.73`, SQLite remains schema `14`, analyzer compatibility is `0.1.73-facts.1`, and compact remains `service-flow/compact-graph@1`. Parser facts changed, so existing workspaces require `index --force` followed by `link --force`.
+
 ## 0.1.72
 
 - Published the completed event-surface provenance, constant-topic, candidate-subscriber, environment-declaration, and doctor-quality work as a package-only patch. SQLite remains schema `14`, analyzer compatibility remains `0.1.71-facts.1`, and compact remains `service-flow/compact-graph@1`; no additional reindex is required after applying the schema-14 fact release.

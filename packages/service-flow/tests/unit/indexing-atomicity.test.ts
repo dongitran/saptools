@@ -255,7 +255,9 @@ export function register(): void {
       code: 'reindex_required', staleRepositoryCount: 1,
     });
     const graphBefore = migrated.prepare('SELECT * FROM graph_edges WHERE workspace_id=1').all();
-    expect(() => linkWorkspace(migrated, 1)).toThrow(/reindex_required[\s\S]*index --workspace \/workspace --force[\s\S]*link --workspace \/workspace --force/);
+    expect(() => linkWorkspace(migrated, 1)).toThrow(
+      /reindex_required[\s\S]*index --workspace '[^']+' --force[\s\S]*link --workspace '[^']+' --force/,
+    );
     expect(migrated.prepare('SELECT * FROM graph_edges WHERE workspace_id=1').all())
       .toEqual(graphBefore);
     expect(migrated.prepare('SELECT graph_stale_reason reason FROM repositories WHERE id=1')

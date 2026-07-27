@@ -2,10 +2,10 @@ import type { Db } from '../db/connection.js';
 import type { TraceEdge, TraceOptions } from '../types.js';
 import {
   baseTraceEvidence,
-  edgeTarget,
   runtimeResolution,
   type TraceGraphRow,
 } from './evidence.js';
+import { edgeTarget } from './edge-target.js';
 import { dynamicCandidateBranches } from './dynamic-branches.js';
 import {
   contextualRuntimeResolution,

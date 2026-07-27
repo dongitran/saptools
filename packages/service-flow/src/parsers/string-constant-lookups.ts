@@ -33,7 +33,9 @@ export interface StaticStringRefusal {
   exported: boolean;
   stable: boolean;
   reason: 'event_name_constant_member_not_string'
-    | 'event_name_constant_container_mutable';
+    | 'event_name_constant_container_mutable'
+    | 'event_name_constant_container_unsafe_reference'
+    | 'event_name_constant_container_unsupported_shape';
 }
 
 export interface StringConstantLookups {
@@ -144,7 +146,7 @@ function collectEnum(
       source, key, member, {
         kind: 'enum_member', containerName: statement.name.text,
         memberName, exported, stable,
-        reason: 'event_name_constant_container_mutable',
+        reason: 'event_name_constant_container_unsafe_reference',
       },
     ));
     else if (!value) lookups.refusedMembers.set(key, refusalFact(
@@ -173,6 +175,44 @@ function objectLiteral(
   return ts.isObjectLiteralExpression(value) ? value : undefined;
 }
 
+function objectMemberName(
+  property: ts.ObjectLiteralElementLike,
+): string | undefined {
+  if (ts.isSpreadAssignment(property)) return undefined;
+  return property.name ? propertyName(property.name) : undefined;
+}
+
+function supportedObjectShape(object: ts.ObjectLiteralExpression): boolean {
+  return object.properties.every((property) =>
+    ts.isPropertyAssignment(property)
+    && propertyName(property.name) !== undefined);
+}
+
+function refuseObjectShape(
+  source: ts.SourceFile,
+  object: ts.ObjectLiteralExpression,
+  declaration: ts.VariableDeclaration,
+  exported: boolean,
+  lookups: StringConstantLookups,
+): void {
+  if (!ts.isIdentifier(declaration.name)) return;
+  for (const property of object.properties) {
+    const memberName = objectMemberName(property);
+    if (!memberName) continue;
+    const key = `${declaration.name.text}.${memberName}`;
+    lookups.refusedMembers.set(key, refusalFact(
+      source, key, property, {
+        kind: 'const_object_property',
+        containerName: declaration.name.text,
+        memberName,
+        exported,
+        stable: false,
+        reason: 'event_name_constant_container_unsupported_shape',
+      },
+    ));
+  }
+}
+
 function collectObject(
   source: ts.SourceFile,
   statement: ts.VariableStatement,
@@ -186,38 +226,48 @@ function collectObject(
   const stable = stableLocalValueReference(source, declaration.name);
   const exported = hasExportModifier(statement)
     || exports.has(declaration.name.text);
-  for (const property of object.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
-    const memberName = propertyName(property.name);
-    if (!memberName) continue;
-    const key = `${declaration.name.text}.${memberName}`;
-    const value = stringValue(property.initializer);
-    if (!stable) lookups.refusedMembers.set(key, refusalFact(
-      source, key, property, {
-        kind: 'const_object_property',
-        containerName: declaration.name.text, memberName,
-        exported, stable,
-        reason: 'event_name_constant_container_mutable',
-      },
-    ));
-    else if (!value) lookups.refusedMembers.set(key, refusalFact(
-      source, key, property, {
-        kind: 'const_object_property',
-        containerName: declaration.name.text, memberName,
-        exported, stable,
-        reason: 'event_name_constant_member_not_string',
-      },
-    ));
-    else lookups.objectProperties.set(key, staticFact(
-      source, key, value, property, {
-        kind: 'const_object_property',
-        containerName: declaration.name.text,
-        memberName,
-        exported,
-        stable,
-      },
-    ));
+  if (!supportedObjectShape(object)) {
+    refuseObjectShape(source, object, declaration, exported, lookups);
+    return;
   }
+  for (const property of object.properties) {
+    if (ts.isPropertyAssignment(property))
+      collectObjectProperty(
+        source, property, declaration.name.text, exported, stable, lookups,
+      );
+  }
+}
+
+function collectObjectProperty(
+  source: ts.SourceFile,
+  property: ts.PropertyAssignment,
+  containerName: string,
+  exported: boolean,
+  stable: boolean,
+  lookups: StringConstantLookups,
+): void {
+  const memberName = propertyName(property.name);
+  if (!memberName) return;
+  const key = `${containerName}.${memberName}`;
+  const value = stringValue(property.initializer);
+  if (!stable || !value) {
+    lookups.refusedMembers.set(key, refusalFact(
+      source, key, property, {
+        kind: 'const_object_property', containerName, memberName,
+        exported, stable,
+        reason: stable
+          ? 'event_name_constant_member_not_string'
+          : 'event_name_constant_container_unsafe_reference',
+      },
+    ));
+    return;
+  }
+  lookups.objectProperties.set(key, staticFact(
+    source, key, value, property, {
+      kind: 'const_object_property', containerName, memberName,
+      exported, stable,
+    },
+  ));
 }
 
 function collectIdentifier(

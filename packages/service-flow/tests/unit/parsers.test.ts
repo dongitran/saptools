@@ -344,7 +344,7 @@ describe('service-flow parsers', () => {
     expect(local.find((call) => call.operationPathExpr === '/loadSummary')?.localServiceName).toBe('acme.catalog.CatalogService');
   });
 
-  it('keeps CAP event emits proven and records generic emitters as unproven', async () => {
+  it('keeps CAP event emits proven and excludes non-CAP emitters', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-events-'));
     await fs.mkdir(path.join(root, 'srv'), { recursive: true });
     await fs.writeFile(path.join(root, 'srv', 'events.ts'), `
@@ -366,14 +366,7 @@ describe('service-flow parsers', () => {
     const events = calls.filter((call) => call.callType === 'async_emit' || call.callType === 'async_subscribe');
     expect(events.map((call) => call.eventNameExpr).sort()).toEqual([
       'CdsEvent', 'DomainEvent', 'PublishedEvent', 'SubscribedEvent',
-      'direct-message', 'room-message', 'typing',
     ]);
-    expect(events.filter((call) =>
-      ['direct-message', 'room-message', 'typing']
-        .includes(call.eventNameExpr ?? ''))
-      .every((call) =>
-        call.unresolvedReason === 'event_receiver_not_cap_client'
-        && call.evidence?.receiverClassification === 'unproven')).toBe(true);
     expect(events.filter((call) =>
       ['CdsEvent', 'DomainEvent', 'PublishedEvent', 'SubscribedEvent']
         .includes(call.eventNameExpr ?? ''))
@@ -843,7 +836,7 @@ describe('outbound AST parser hardening', () => {
     expect(calls.every((call) => call.evidence?.parser === 'typescript_ast')).toBe(true);
   });
 
-  it('keeps Express sends out while retaining generic event calls as unproven', async () => {
+  it('keeps Express sends and unrelated desktop events out', async () => {
     const { calls, symbols } = await parseSource(`
       app.get('/health', (_req, res) => {
         res.status(200).send('OK');
@@ -851,20 +844,9 @@ describe('outbound AST parser hardening', () => {
       desktopApp.on('window-all-closed', () => undefined);
       windowRef.on('close', () => undefined);
     `);
-    expect(calls).toEqual([
-      expect.objectContaining({
-        callType: 'async_subscribe',
-        eventNameExpr: 'window-all-closed',
-        unresolvedReason: 'event_receiver_unproven_binding',
-      }),
-      expect.objectContaining({
-        callType: 'async_subscribe',
-        eventNameExpr: 'close',
-        unresolvedReason: 'event_receiver_unproven_binding',
-      }),
-    ]);
+    expect(calls).toEqual([]);
     expect(symbols.filter((symbol) =>
-      symbol.kind === 'event_registration')).toHaveLength(2);
+      symbol.kind === 'event_registration')).toHaveLength(0);
   });
 
   it('does not create a registration owner for filtered CAP lifecycle hooks', async () => {

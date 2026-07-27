@@ -55,8 +55,14 @@ interface EventNameState {
   resolved: ExpressionResolution;
   unresolvedReason?: string;
   constant?: StaticStringConstant;
+  foldedConstants?: StaticStringConstant[];
   packageImportReference?: SymbolImportReference;
 }
+
+const CAP_CRUD_EVENTS = new Set(['READ', 'CREATE', 'UPDATE', 'DELETE']);
+const KNOWN_NON_CAP_EVENT_RECEIVERS = new Set([
+  'io', 'socket', 'writeStream', 'file', 'win', 'app',
+]);
 
 function eventNameReason(
   resolved: ExpressionResolution,
@@ -67,40 +73,111 @@ function eventNameReason(
     : 'dynamic_event_name_unsupported_expression';
 }
 
+function stringConstantLookup(
+  expression: ts.Expression,
+  context: EventCallAnalysisContext,
+): ImportedEventNameResult | StaticStringLookupResult {
+  const local = resolveStringConstant(expression, context.constants);
+  return local.status === 'not_found'
+    ? context.importedConstant?.(expression) ?? local : local;
+}
+
+function foldedTemplateState(
+  expression: ts.TemplateExpression,
+  context: EventCallAnalysisContext,
+): EventNameState | undefined {
+  let eventName = expression.head.text;
+  const placeholderKeys: string[] = [];
+  const constants: StaticStringConstant[] = [];
+  for (const span of expression.templateSpans) {
+    const key = span.expression.getText(expression.getSourceFile()).trim();
+    const lookup = stringConstantLookup(span.expression, context);
+    if (lookup.status === 'resolved') {
+      eventName += lookup.constant.value;
+      constants.push(lookup.constant);
+    } else {
+      eventName += `\${${key}}`;
+      placeholderKeys.push(key);
+    }
+    eventName += span.literal.text;
+  }
+  if (constants.length === 0) return undefined;
+  const empty = eventName.length === 0;
+  return {
+    eventName: empty ? expression.getText(expression.getSourceFile()) : eventName,
+    resolved: {
+      status: empty ? 'dynamic'
+        : placeholderKeys.length > 0 ? 'dynamic' : 'static',
+      sourceKind: 'template_with_substitutions',
+      value: empty ? undefined : eventName,
+      rawExpression: expression.getText(expression.getSourceFile()),
+      placeholderKeys,
+      evidence: ['event_name_template_static_holes_folded'],
+    },
+    unresolvedReason: empty
+      ? 'event_name_constant_value_empty'
+      : placeholderKeys.length > 0
+        ? 'dynamic_event_name_identifier' : undefined,
+    foldedConstants: constants,
+  };
+}
+
+function resolvedConstantState(
+  expression: ts.Expression,
+  constant: StaticStringConstant,
+): EventNameState {
+  const empty = constant.value.length === 0;
+  return {
+    eventName: empty ? expression.getText(expression.getSourceFile())
+      : constant.value,
+    resolved: {
+      status: empty ? 'dynamic' : 'static',
+      sourceKind: constant.kind,
+      value: empty ? undefined : constant.value,
+      rawExpression: expression.getText(expression.getSourceFile()),
+      placeholderKeys: [],
+      evidence: [`event_name_${constant.kind}`],
+    },
+    unresolvedReason: empty ? 'event_name_constant_value_empty' : undefined,
+    constant,
+  };
+}
+
+function refusedConstantState(
+  expression: ts.Expression,
+  lookup: ImportedEventNameResult | StaticStringLookupResult,
+): EventNameState | undefined {
+  if (lookup.status !== 'refused') return undefined;
+  const raw = expression.getText(expression.getSourceFile());
+  return {
+    eventName: raw,
+    resolved: {
+      status: 'dynamic',
+      sourceKind: 'dynamic_expression',
+      rawExpression: raw,
+      placeholderKeys: [],
+      evidence: [lookup.reason],
+    },
+    unresolvedReason: lookup.reason,
+    packageImportReference: packageReference(lookup),
+  };
+}
+
 function eventNameState(
   node: ts.CallExpression,
   context: EventCallAnalysisContext,
 ): EventNameState | undefined {
   const expression = node.arguments[0];
   if (expression) {
-    const local = resolveStringConstant(expression, context.constants);
-    const lookup = local.status === 'not_found'
-      ? context.importedConstant?.(expression) ?? local
-      : local;
-    if (lookup.status === 'resolved') return {
-      eventName: lookup.constant.value,
-      resolved: {
-        status: 'static',
-        sourceKind: lookup.constant.kind,
-        value: lookup.constant.value,
-        rawExpression: expression.getText(node.getSourceFile()),
-        placeholderKeys: [],
-        evidence: [`event_name_${lookup.constant.kind}`],
-      },
-      constant: lookup.constant,
-    };
-    if (lookup.status === 'refused') return {
-      eventName: expression.getText(node.getSourceFile()),
-      resolved: {
-        status: 'dynamic',
-        sourceKind: 'dynamic_expression',
-        rawExpression: expression.getText(node.getSourceFile()),
-        placeholderKeys: [],
-        evidence: [lookup.reason],
-      },
-      unresolvedReason: lookup.reason,
-      packageImportReference: packageReference(lookup),
-    };
+    if (ts.isTemplateExpression(expression)) {
+      const folded = foldedTemplateState(expression, context);
+      if (folded) return folded;
+    }
+    const lookup = stringConstantLookup(expression, context);
+    if (lookup.status === 'resolved')
+      return resolvedConstantState(expression, lookup.constant);
+    const refused = refusedConstantState(expression, lookup);
+    if (refused) return refused;
   }
   const resolved = resolveExpression(expression, node, 'operation_path');
   const eventName = resolved.value
@@ -139,7 +216,42 @@ function excludedEvent(
   if (state.resolved.status !== 'static') return false;
   if (receiver.effectiveReceiver === 'cds'
     && CDS_LIFECYCLE_EVENTS.has(state.eventName)) return true;
-  return method === 'on' && state.eventName === 'error';
+  return method === 'on'
+    && (state.eventName === 'error'
+      || (CAP_CRUD_EVENTS.has(state.eventName)
+        && capCrudReceiver(receiver)));
+}
+
+function capCrudReceiver(receiver: EventReceiverProof): boolean {
+  const name = receiver.rootReceiver ?? receiver.effectiveReceiver;
+  return name === 'this'
+    || ['cds', 'srv', 'service', 'serviceClient'].includes(name);
+}
+
+function receiverRootName(expression: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression)
+    || ts.isElementAccessExpression(expression))
+    return receiverRootName(expression.expression);
+  if (ts.isCallExpression(expression))
+    return receiverRootName(expression.expression);
+  return undefined;
+}
+
+function pipeReceiver(expression: ts.Expression): boolean {
+  return ts.isCallExpression(expression)
+    && ts.isPropertyAccessExpression(expression.expression)
+    && expression.expression.name.text === 'pipe';
+}
+
+function knownNonCapReceiver(
+  expression: ts.Expression,
+  receiver: EventReceiverProof,
+): boolean {
+  if (receiver.receiverClassification !== 'unproven') return false;
+  const root = receiverRootName(expression);
+  return Boolean(root && KNOWN_NON_CAP_EVENT_RECEIVERS.has(root))
+    || pipeReceiver(expression);
 }
 
 function eventEvidence(
@@ -154,6 +266,8 @@ function eventEvidence(
       ? 'cap_service_event_subscription' : 'cap_service_event_emit',
     receiverClassification: receiver.receiverClassification,
     receiverProof: receiver.receiverProof,
+    receiverUnresolvedReason: receiver.unresolvedReason,
+    receiverFallbackRefusedReason: receiver.fallbackRefusedReason,
     consideredBindingSites: receiver.consideredBindingSites,
     eventNameUnresolvedReason: state.unresolvedReason,
     eventNameConstantImportBinding: state.packageImportReference,
@@ -167,6 +281,16 @@ function eventEvidence(
         declarationEndOffset: state.constant.declarationEndOffset,
       },
     } : {}),
+    ...(state.foldedConstants ? {
+      eventNameTemplateFoldedConstants: state.foldedConstants.slice(0, 8)
+        .map((constant) => ({
+          sourceKind: constant.kind,
+          sourceFile: constant.sourceFile,
+          declarationStartOffset: constant.declarationStartOffset,
+          declarationEndOffset: constant.declarationEndOffset,
+        })),
+      eventNameTemplateFoldedConstantCount: state.foldedConstants.length,
+    } : {}),
     ...(state.resolved.status === 'static' ? {} : {
       eventNameStatus: state.resolved.status,
       eventNameSourceKind: state.resolved.sourceKind,
@@ -177,13 +301,12 @@ function eventEvidence(
 
 export function createEventCallAnalysisContext(
   source: ts.SourceFile,
-  compatibilityNames: Set<string>,
   importedConstant?: ImportedEventNameResolver,
   environmentReference?: EventEnvironmentReferenceResolver,
 ): EventCallAnalysisContext {
   return {
     source,
-    receivers: createEventReceiverIndex(source, compatibilityNames),
+    receivers: createEventReceiverIndex(source),
     constants: collectStringConstantLookups(source),
     importedConstant,
     environmentReference,
@@ -196,7 +319,10 @@ function eventSkeleton(
   resolver: EventEnvironmentReferenceResolver | undefined,
 ): EventSkeletonFact | undefined {
   const expression = node.arguments[0];
-  if (!expression || !ts.isTemplateExpression(expression)) return undefined;
+  if (!expression) return undefined;
+  if (!ts.isTemplateExpression(expression))
+    return eventName.includes('${')
+      ? deriveEventSkeleton(eventName) : undefined;
   const skeleton = deriveEventSkeleton(eventName);
   if (!skeleton || !resolver) return skeleton;
   return {
@@ -222,9 +348,11 @@ export function analyzeEventCall(
   const receiver = proveEventReceiver(
     expression.expression, node, context.receivers,
   );
+  if (receiver.unresolvedReason === 'event_receiver_not_cap_client'
+    || receiver.receiverProof === 'binding_not_found'
+    || knownNonCapReceiver(expression.expression, receiver))
+    return { status: 'excluded' };
   if (excludedEvent(method, receiver, state)) return { status: 'excluded' };
-  const unresolvedReason = receiver.unresolvedReason
-    ?? state.unresolvedReason;
   return {
     status: 'classified',
     fact: {
@@ -235,7 +363,7 @@ export function analyzeEventCall(
         node, state.eventName, context.environmentReference,
       ),
       confidence: eventConfidence(receiver, state.unresolvedReason),
-      unresolvedReason,
+      unresolvedReason: state.unresolvedReason,
     },
     evidence: eventEvidence(method, receiver, state),
   };

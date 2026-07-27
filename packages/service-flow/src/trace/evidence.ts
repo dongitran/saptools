@@ -23,13 +23,6 @@ export interface TraceGraphRow extends Record<string, unknown> {
   status?: string;
 }
 
-interface Candidate {
-  servicePath?: string;
-  operationPath?: string;
-  repoName?: string;
-  operationName?: string;
-  score?: number;
-}
 interface RuntimeDiagnosticTotals {
   missing: Set<string>;
   candidateCount: number;
@@ -340,27 +333,6 @@ export function runtimeNoCandidateDiagnostics(
       callSite,
     }];
   });
-}
-
-export function edgeTarget(row: TraceGraphRow, evidence: Record<string, unknown>): string {
-  const effective = parseObject(evidence.effectiveResolution);
-  const targetServicePath = stringValue(effective.targetServicePath ?? evidence.targetServicePath);
-  const targetOperationPath = stringValue(effective.targetOperationPath ?? evidence.targetOperationPath);
-  if (targetServicePath && targetOperationPath) return `${targetServicePath}${targetOperationPath}`;
-  const runtimeCandidate = evidence.runtimeResolvedCandidate as Candidate | undefined;
-  if (runtimeCandidate?.servicePath && runtimeCandidate.operationPath) return `${runtimeCandidate.servicePath}${runtimeCandidate.operationPath}`;
-  const servicePath = stringValue(evidence.servicePath);
-  const operationPath = stringValue(evidence.operationPath);
-  const targetOperation = stringValue(evidence.targetOperation);
-  const targetRepo = stringValue(evidence.targetRepo) ?? '';
-  if (row.edge_type === 'HANDLER_RUNS_DB_QUERY') return `Entity: ${row.to_id || 'unknown'}`;
-  if (row.edge_type === 'HANDLER_RUNS_REMOTE_QUERY') return stringValue(evidence.remoteQueryTarget) ?? `Remote query: ${row.to_id || 'unknown'}`;
-  if (row.edge_type === 'HANDLER_CALLS_EXTERNAL_HTTP') {
-    const target = parseObject(evidence.externalTarget);
-    return stringValue(target.label) ?? `External endpoint: ${row.to_id || 'unknown'}`;
-  }
-  if (servicePath && operationPath) return `${servicePath}${operationPath}`;
-  return targetOperation ? `${targetRepo}:${targetOperation}` : row.to_id;
 }
 
 function persistedResolution(row: TraceGraphRow): Record<string, unknown> {

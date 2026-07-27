@@ -924,7 +924,7 @@ describe('event subscriber trace traversal', () => {
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
       table: 'c0dbece613bcca565f30deb3c039d442425973d856af0f18449143c954b8a7e9',
-      json: '8f77fa4d40e7ec9e31a1961acde1317f07be97ed5fb501344911404bdc1645a5',
+      json: 'c67b6507f9763b1e4e401c101501f3ab449eda44e6158332bfb2457a86ead7d0',
       mermaid: '1398ee49d986e4fdcff73185950cfc58ec7744711ebd37434bdb8d3829e79933',
     });
   });

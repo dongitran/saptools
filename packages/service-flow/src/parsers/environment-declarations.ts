@@ -3,10 +3,12 @@ import type { RepositorySourceContext } from './ts-project.js';
 export const ENVIRONMENT_DECLARATIONS_SCHEMA =
   'service-flow/environment-declarations@1';
 export const ENVIRONMENT_DECLARATION_RECORD_CAP = 32;
-export const EVENT_ENVIRONMENT_KEY_ALLOWLIST = ['SHARD_CODE'] as const;
+export const EVENT_ENVIRONMENT_KEY_CAP = 16;
+export const DEFAULT_EVENT_ENVIRONMENT_KEYS = ['SHARD_CODE'] as const;
+export const EVENT_ENVIRONMENT_KEY_ALLOWLIST =
+  DEFAULT_EVENT_ENVIRONMENT_KEYS;
 
-export type EventEnvironmentKey =
-  typeof EVENT_ENVIRONMENT_KEY_ALLOWLIST[number];
+export type EventEnvironmentKey = string;
 export type EnvironmentDeclarationProvenance =
   | 'env_declaration_manifest'
   | 'env_declaration_mta'
@@ -24,6 +26,7 @@ export interface EnvironmentDeclaration {
 
 export interface EnvironmentDeclarationsFact {
   schema: typeof ENVIRONMENT_DECLARATIONS_SCHEMA;
+  allowedKeys: string[];
   status: 'complete' | 'ambiguous' | 'not_applicable' | 'incomplete';
   reason: string | null;
   recordCap: typeof ENVIRONMENT_DECLARATION_RECORD_CAP;
@@ -33,7 +36,6 @@ export interface EnvironmentDeclarationsFact {
   declarations: EnvironmentDeclaration[];
 }
 
-const allowedKeys = new Set<string>(EVENT_ENVIRONMENT_KEY_ALLOWLIST);
 const allowedProvenance = new Set<EnvironmentDeclarationProvenance>([
   'env_declaration_manifest',
   'env_declaration_mta',
@@ -42,6 +44,22 @@ const allowedProvenance = new Set<EnvironmentDeclarationProvenance>([
 ]);
 const environmentValueLimit = 512;
 const dynamicEnvironmentValue = /\$\{|\$\(|~\{|\(\(/;
+const environmentKeyGrammar = /^[A-Z_][A-Z0-9_]{0,63}$/;
+
+export function validEventEnvironmentKey(value: string): boolean {
+  return environmentKeyGrammar.test(value);
+}
+
+export function normalizeEventEnvironmentKeys(
+  values: readonly string[] = DEFAULT_EVENT_ENVIRONMENT_KEYS,
+): string[] {
+  const unique = [...new Set(values)].sort((left, right) =>
+    left < right ? -1 : left > right ? 1 : 0);
+  if (unique.length === 0 || unique.length > EVENT_ENVIRONMENT_KEY_CAP
+    || !unique.every(validEventEnvironmentKey))
+    throw new Error('invalid_event_environment_keys');
+  return unique;
+}
 
 function hasControlCharacter(value: string): boolean {
   for (const character of value) {
@@ -80,6 +98,7 @@ function declaration(
   provenance: EnvironmentDeclarationProvenance,
   sourceFile: string,
   startOffset: number,
+  allowedKeys: ReadonlySet<string>,
 ): EnvironmentDeclaration[] {
   if (!allowedKeys.has(key) || typeof value !== 'string'
     || !value || value.length > environmentValueLimit
@@ -107,6 +126,8 @@ function valueOffset(
 function jsonDeclarations(
   filePath: string,
   text: string,
+  keys: readonly string[],
+  allowedKeys: ReadonlySet<string>,
 ): EnvironmentDeclaration[] {
   let parsed: unknown;
   try {
@@ -118,13 +139,14 @@ function jsonDeclarations(
     return [];
   const env = (parsed as Record<string, unknown>).env;
   if (!env || typeof env !== 'object' || Array.isArray(env)) return [];
-  return EVENT_ENVIRONMENT_KEY_ALLOWLIST.flatMap((key) => {
+  return keys.flatMap((key) => {
     const value = (env as Record<string, unknown>)[key];
     const keyOffset = text.indexOf(`"${key}"`);
     const offset = typeof value === 'string'
       ? valueOffset(text, value, keyOffset + key.length + 2) : keyOffset;
     return declaration(
       key, value, 'env_declaration_dev', filePath, Math.max(0, offset),
+      allowedKeys,
     );
   });
 }
@@ -132,6 +154,7 @@ function jsonDeclarations(
 function dotenvDeclarations(
   filePath: string,
   text: string,
+  allowedKeys: ReadonlySet<string>,
 ): EnvironmentDeclaration[] {
   const values: EnvironmentDeclaration[] = [];
   let offset = 0;
@@ -144,6 +167,7 @@ function dotenvDeclarations(
       values.push(...declaration(
         match[1], value, 'env_declaration_dotenv', filePath,
         offset + valueOffset(line, value, line.indexOf('=') + 1),
+        allowedKeys,
       ));
     offset += line.length + 1;
   }
@@ -158,6 +182,7 @@ function yamlDeclarations(
   filePath: string,
   text: string,
   provenance: EnvironmentDeclarationProvenance,
+  allowedKeys: ReadonlySet<string>,
 ): EnvironmentDeclaration[] {
   const values: EnvironmentDeclaration[] = [];
   let envIndent: number | undefined;
@@ -177,6 +202,7 @@ function yamlDeclarations(
           values.push(...declaration(
             match[1], value, provenance, filePath,
             offset + valueOffset(line, value, line.indexOf(':') + 1),
+            allowedKeys,
           ));
       }
     }
@@ -188,14 +214,20 @@ function yamlDeclarations(
 function snapshotDeclarations(
   filePath: string,
   text: string,
+  keys: readonly string[],
+  allowedKeys: ReadonlySet<string>,
 ): EnvironmentDeclaration[] {
   const name = filePath.split('/').at(-1);
-  if (name === 'nodemon.json') return jsonDeclarations(filePath, text);
-  if (name === '.env') return dotenvDeclarations(filePath, text);
+  if (name === 'nodemon.json')
+    return jsonDeclarations(filePath, text, keys, allowedKeys);
+  if (name === '.env')
+    return dotenvDeclarations(filePath, text, allowedKeys);
   if (name === 'manifest.yml')
-    return yamlDeclarations(filePath, text, 'env_declaration_manifest');
+    return yamlDeclarations(
+      filePath, text, 'env_declaration_manifest', allowedKeys,
+    );
   return name === 'mta.yaml'
-    ? yamlDeclarations(filePath, text, 'env_declaration_mta') : [];
+    ? yamlDeclarations(filePath, text, 'env_declaration_mta', allowedKeys) : [];
 }
 
 function compareDeclaration(
@@ -207,24 +239,43 @@ function compareDeclaration(
   return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 
+function declarationIdentityValid(
+  item: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>,
+): boolean {
+  return typeof item.key === 'string'
+    && allowedKeys.has(item.key)
+    && typeof item.provenance === 'string'
+    && allowedProvenance.has(
+      item.provenance as EnvironmentDeclarationProvenance,
+    );
+}
+
+function declarationValueValid(item: Record<string, unknown>): boolean {
+  return typeof item.value === 'string'
+    && item.value.length > 0
+    && item.value.length <= environmentValueLimit
+    && !hasControlCharacter(item.value)
+    && !dynamicEnvironmentValue.test(item.value);
+}
+
+function declarationLocationValid(item: Record<string, unknown>): boolean {
+  return typeof item.sourceFile === 'string'
+    && item.sourceFile.length > 0
+    && Number.isInteger(item.startOffset)
+    && Number(item.startOffset) >= 0
+    && Number.isInteger(item.endOffset)
+    && Number(item.endOffset) > Number(item.startOffset);
+}
+
 function parsedDeclaration(
   value: unknown,
+  allowedKeys: ReadonlySet<string>,
 ): EnvironmentDeclaration | undefined {
   const item = record(value);
-  if (!item || typeof item.key !== 'string'
-    || !allowedKeys.has(item.key)
-    || typeof item.value !== 'string' || item.value.length === 0
-    || item.value.length > environmentValueLimit
-    || hasControlCharacter(item.value)
-    || dynamicEnvironmentValue.test(item.value)
-    || typeof item.provenance !== 'string'
-    || !allowedProvenance.has(
-      item.provenance as EnvironmentDeclarationProvenance,
-    )
-    || typeof item.sourceFile !== 'string' || item.sourceFile.length === 0
-    || !Number.isInteger(item.startOffset) || Number(item.startOffset) < 0
-    || !Number.isInteger(item.endOffset)
-    || Number(item.endOffset) <= Number(item.startOffset)) return undefined;
+  if (!item || !declarationIdentityValid(item, allowedKeys)
+    || !declarationValueValid(item)
+    || !declarationLocationValid(item)) return undefined;
   return item as unknown as EnvironmentDeclaration;
 }
 
@@ -265,14 +316,31 @@ function statusValid(
     && Number(item.omitted) > 0;
 }
 
+function parsedAllowedKeys(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)
+    || !value.every((item): item is string => typeof item === 'string'))
+    return undefined;
+  try {
+    const normalized = normalizeEventEnvironmentKeys(value);
+    return normalized.length === value.length
+      && normalized.every((item, index) => item === value[index])
+      ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function parseEnvironmentDeclarationsFact(
   value: unknown,
 ): EnvironmentDeclarationsFact | undefined {
   const item = record(parseJson(value));
   if (!item || item.schema !== ENVIRONMENT_DECLARATIONS_SCHEMA
     || !Array.isArray(item.declarations)) return undefined;
+  const keys = parsedAllowedKeys(item.allowedKeys);
+  if (!keys) return undefined;
+  const allowedKeys = new Set(keys);
   const declarations = item.declarations.flatMap((entry) => {
-    const parsed = parsedDeclaration(entry);
+    const parsed = parsedDeclaration(entry, allowedKeys);
     return parsed ? [parsed] : [];
   });
   if (declarations.length !== item.declarations.length
@@ -286,16 +354,22 @@ export function parseEnvironmentDeclarationsFact(
 
 export function collectEnvironmentDeclarations(
   sources: RepositorySourceContext,
+  configuredKeys: readonly string[] = DEFAULT_EVENT_ENVIRONMENT_KEYS,
 ): EnvironmentDeclarationsFact {
+  const keys = normalizeEventEnvironmentKeys(configuredKeys);
+  const allowedKeys = new Set(keys);
   const all = sources.entries().flatMap((snapshot) =>
-    snapshotDeclarations(snapshot.filePath, snapshot.text))
+    snapshotDeclarations(
+      snapshot.filePath, snapshot.text, keys, allowedKeys,
+    ))
     .sort(compareDeclaration);
   const values = new Set(all.map((item) => `${item.key}\0${item.value}`));
-  const ambiguous = EVENT_ENVIRONMENT_KEY_ALLOWLIST.some((key) =>
+  const ambiguous = keys.some((key) =>
     [...values].filter((value) => value.startsWith(`${key}\0`)).length > 1);
   const declarations = all.slice(0, ENVIRONMENT_DECLARATION_RECORD_CAP);
   return {
     schema: ENVIRONMENT_DECLARATIONS_SCHEMA,
+    allowedKeys: keys,
     status: ambiguous
       ? 'ambiguous'
       : all.length > ENVIRONMENT_DECLARATION_RECORD_CAP
@@ -313,9 +387,12 @@ export function collectEnvironmentDeclarations(
   };
 }
 
-export function emptyEnvironmentDeclarations(): EnvironmentDeclarationsFact {
+export function emptyEnvironmentDeclarations(
+  configuredKeys: readonly string[] = DEFAULT_EVENT_ENVIRONMENT_KEYS,
+): EnvironmentDeclarationsFact {
   return {
     schema: ENVIRONMENT_DECLARATIONS_SCHEMA,
+    allowedKeys: normalizeEventEnvironmentKeys(configuredKeys),
     status: 'not_applicable',
     reason: null,
     recordCap: ENVIRONMENT_DECLARATION_RECORD_CAP,

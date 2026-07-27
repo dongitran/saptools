@@ -27,6 +27,7 @@ export interface LinkWorkspaceResult {
   subscriptionHandlerUnresolvedCount: number;
   subscriptionHandlerMissingAssociationCount: number;
   eventShapeCandidateCount: number;
+  eventShapeCandidateOmittedCount: number;
 }
 export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, string> = {}): LinkWorkspaceResult {
   return db.transaction(() => {
@@ -46,7 +47,7 @@ export function linkWorkspace(db: Db, workspaceId: number, vars: Record<string, 
     const impl = linkCanonicalImplementations(db, workspaceId, generation);
     const callSummary = linkCalls(db, workspaceId, vars, generation);
     db.prepare("UPDATE repositories SET graph_generation=?, graph_stale_reason=NULL, graph_stale_at=NULL WHERE workspace_id=?").run(generation, workspaceId);
-    return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount + subscriptions.edgeCount + eventShapes.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount, implementationUnresolvedCount: impl.unresolvedCount, subscriptionHandlerResolvedCount: subscriptions.resolvedCount, subscriptionHandlerAmbiguousCount: subscriptions.ambiguousCount, subscriptionHandlerUnresolvedCount: subscriptions.unresolvedCount, subscriptionHandlerMissingAssociationCount: subscriptions.missingAssociationCount, eventShapeCandidateCount: eventShapes.edgeCount };
+    return { ...callSummary, edgeCount: deps.edgeCount + callSummary.edgeCount + impl.edgeCount + subscriptions.edgeCount + eventShapes.edgeCount, dependencyResolvedCount: deps.resolvedCount, dependencyAmbiguousCount: deps.ambiguousCount, implementationResolvedCount: impl.resolvedCount, implementationAmbiguousCount: impl.ambiguousCount, implementationUnresolvedCount: impl.unresolvedCount, subscriptionHandlerResolvedCount: subscriptions.resolvedCount, subscriptionHandlerAmbiguousCount: subscriptions.ambiguousCount, subscriptionHandlerUnresolvedCount: subscriptions.unresolvedCount, subscriptionHandlerMissingAssociationCount: subscriptions.missingAssociationCount, eventShapeCandidateCount: eventShapes.edgeCount, eventShapeCandidateOmittedCount: eventShapes.omittedCount };
   });
 }
 function nextGraphGeneration(db: Db, workspaceId: number): number {
@@ -63,7 +64,8 @@ type CallLinkSummary = Omit<LinkWorkspaceResult,
   | 'subscriptionHandlerAmbiguousCount'
   | 'subscriptionHandlerUnresolvedCount'
   | 'subscriptionHandlerMissingAssociationCount'
-  | 'eventShapeCandidateCount'>;
+  | 'eventShapeCandidateCount'
+  | 'eventShapeCandidateOmittedCount'>;
 
 function linkCalls(db: Db, workspaceId: number, vars: Record<string, string>, generation: number): CallLinkSummary {
   let edgeCount = 0;

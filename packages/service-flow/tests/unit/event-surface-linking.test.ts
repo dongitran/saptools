@@ -1,4 +1,5 @@
-import { mkdtemp } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -52,13 +53,14 @@ async function writePackageConstantFixture(root: string): Promise<void> {
     )),
     writeFixtureFile(root, 'publisher/src/publish.ts', `
 import cds from '@sap/cds';
-import { TOPICS } from '@neutral/event-topics';
+import { TOPICS, UNSAFE_TOPICS } from '@neutral/event-topics';
 function buildThing(): { emit(name: string, payload: unknown): void } {
   return { emit(): void {} };
 }
 export async function publishJob(): Promise<void> {
   const bus = await cds.connect.messaging('primary');
   await bus.emit(TOPICS.FLOW_READY, {});
+  await bus.emit(UNSAFE_TOPICS.UNSAFE, {});
   const notAClient = buildThing();
   notAClient.emit('NotCap', {});
 }
@@ -70,6 +72,8 @@ export async function publishJob(): Promise<void> {
     )),
     writeFixtureFile(root, 'topics/src/index.ts', `
 export const TOPICS = { FLOW_READY: 'NeutralFlowReady' } as const;
+const BASE = { OVERRIDE: 'NeutralOverride' } as const;
+export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
 `),
     writeFixtureFile(root, 'subscriber/.git-fixture'),
     writeFixtureFile(root, 'subscriber/package.json', packageJson(
@@ -228,13 +232,16 @@ function shapeCall(
   return value;
 }
 
-async function writeEnvironmentLibrary(root: string): Promise<void> {
+async function writeEnvironmentLibrary(
+  root: string,
+  key = 'SHARD_CODE',
+): Promise<void> {
   await Promise.all([
     writeFixtureFile(root, 'subscriber-lib/.git-fixture'),
     writeFixtureFile(root, 'subscriber-lib/package.json',
       packageJson('@neutral/environment-subscriber')),
     writeFixtureFile(root, 'subscriber-lib/src/env.ts',
-      'export const envCode = process.env.SHARD_CODE;\n'),
+      `export const envCode = process.env.${key};\n`),
     writeFixtureFile(root, 'subscriber-lib/src/subscribe.ts', `
 import cds from '@sap/cds';
 import { envCode } from './env';
@@ -252,6 +259,7 @@ async function writeEnvironmentConsumer(
   root: string,
   name: string,
   value: string,
+  key = 'SHARD_CODE',
 ): Promise<void> {
   await Promise.all([
     writeFixtureFile(root, `${name}/.git-fixture`),
@@ -261,7 +269,7 @@ async function writeEnvironmentConsumer(
     )),
     writeFixtureFile(root, `${name}/nodemon.json`, JSON.stringify({
       env: {
-        SHARD_CODE: value,
+        [key]: value,
         PRIVATE_TOKEN: `must-not-persist-${name}`,
       },
     })),
@@ -319,6 +327,115 @@ function semanticEventEdges(db: Db): Record<string, unknown>[] {
 }
 
 describe('event surface linking', () => {
+  it('accepts empty constants but refuses an empty value as an event name', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-empty-'));
+    await Promise.all([
+      writeFixtureFile(root, 'publisher/.git-fixture'),
+      writeFixtureFile(root, 'publisher/package.json',
+        packageJson('@neutral/empty-publisher')),
+      writeFixtureFile(root, 'publisher/src/publish.ts', `
+import cds from '@sap/cds';
+export const UNUSED_EMPTY = '';
+const EMPTY_TOPIC = '';
+export async function publish(): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  await bus.emit(EMPTY_TOPIC, {});
+}
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    expect(db.prepare(`SELECT name,value,resolution_status status,
+      unresolved_reason reason FROM generated_constants
+      WHERE value='' ORDER BY name COLLATE BINARY`).all()).toEqual([
+      {
+        name: 'EMPTY_TOPIC', value: '', status: 'resolved', reason: null,
+      },
+      {
+        name: 'UNUSED_EMPTY', value: '', status: 'resolved', reason: null,
+      },
+    ]);
+
+    expect(() => linkWorkspace(db, workspaceId)).not.toThrow();
+    expect(eventCalls(db)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventName: 'EMPTY_TOPIC',
+        reason: 'event_name_constant_value_empty',
+      }),
+    ]));
+    expect(eventEdges(db)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        edgeType: 'DYNAMIC_EDGE_CANDIDATE',
+        toKind: 'event_candidate',
+        reason: 'event_name_constant_value_empty',
+      }),
+    ]));
+    db.close();
+  });
+
+  it('keeps a static event name canonical across an unproven receiver', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-axes-'));
+    await Promise.all([
+      writeFixtureFile(root, 'publisher/.git-fixture'),
+      writeFixtureFile(root, 'publisher/package.json',
+        packageJson('@neutral/axis-publisher')),
+      writeFixtureFile(root, 'publisher/src/publish.ts', `
+interface Params {
+  messaging: { emit(name: string, payload: unknown): Promise<void> };
+}
+export async function publish(params: Params): Promise<void> {
+  await params.messaging.emit('StaticThroughProperty', {});
+}
+`),
+      writeFixtureFile(root, 'subscriber/.git-fixture'),
+      writeFixtureFile(root, 'subscriber/package.json',
+        packageJson('@neutral/axis-subscriber')),
+      writeFixtureFile(root, 'subscriber/src/subscribe.ts', `
+import cds from '@sap/cds';
+export function handleStatic(): void {}
+export async function subscribe(): Promise<void> {
+  const messaging = await cds.connect.messaging('primary');
+  messaging.on('StaticThroughProperty', handleStatic);
+}
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const publication = eventCalls(db).find((call) =>
+      call.eventName === 'StaticThroughProperty'
+      && parsedRecord(call.evidenceJson).classifier
+        === 'cap_service_event_emit');
+    expect(publication).toMatchObject({ reason: null });
+    expect(parsedRecord(publication?.evidenceJson ?? '')).toMatchObject({
+      receiverClassification: 'unproven',
+      receiverUnresolvedReason: 'event_receiver_unproven_propagation',
+    });
+    expect(parsedRecord(publication?.evidenceJson ?? ''))
+      .not.toHaveProperty('eventNameUnresolvedReason');
+
+    linkWorkspace(db, workspaceId);
+    expect(eventEdges(db)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        edgeType: 'HANDLER_EMITS_EVENT',
+        status: 'terminal',
+        toKind: 'event',
+        toId: 'StaticThroughProperty',
+      }),
+      expect.objectContaining({
+        edgeType: 'EVENT_SUBSCRIPTION_HANDLED_BY',
+        status: 'resolved',
+        fromId: 'StaticThroughProperty',
+      }),
+    ]));
+    expect(trace(db, { repo: 'publisher' }, {
+      depth: 8, workspaceId, includeAsync: true,
+    }).edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'event_name_matches_subscription_handler',
+        from: 'StaticThroughProperty',
+      }),
+    ]));
+    db.close();
+  });
+
   it('resolves a uniquely public package constant and traverses its subscriber', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-constant-'));
     await writePackageConstantFixture(root);
@@ -373,15 +490,14 @@ describe('event surface linking', () => {
     ]));
     expect(eventEdges(db).some((edge) =>
       edge.reason === 'event_template_variables_missing')).toBe(false);
-    expect(eventEdges(db)).toEqual(expect.arrayContaining([
+    expect(eventCalls(db)).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        edgeType: 'DYNAMIC_EDGE_CANDIDATE',
-        status: 'dynamic',
-        toKind: 'event_candidate',
-        toId: 'Event: NotCap',
-        reason: 'event_receiver_not_cap_client',
+        eventName: 'UNSAFE_TOPICS.UNSAFE',
+        reason: 'event_name_constant_container_unsupported_shape',
       }),
     ]));
+    expect(eventEdges(db).some((edge) =>
+      edge.toId === 'Event: NotCap')).toBe(false);
     const execution = traceAndCompact(db, { repo: 'publisher' }, {
       depth: 8, workspaceId, includeAsync: true,
     });
@@ -399,13 +515,15 @@ describe('event surface linking', () => {
       'strict_event_receiver_classification_quality',
     )).toMatchObject({
       eventTotal: 3,
-      proven: 2,
+      proven: 3,
       nameFallback: 0,
-      unproven: 1,
-      questionable: 1,
+      unproven: 0,
+      questionable: 0,
     });
     await writeFixtureFile(root, 'topics/src/index.ts', `
 export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
+const BASE = { OVERRIDE: 'NeutralOverride' } as const;
+export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
 `);
     const indexed = await indexWorkspace(db, workspaceId, {
       repo: 'topics', force: false,
@@ -461,6 +579,7 @@ export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
     const shapeEdges = candidates.edges.filter((edge) =>
       edge.type === 'event_shape_candidate_subscriber');
     expect(shapeEdges).toHaveLength(1);
+    expect(shapeEdges[0]?.to).toBe('src/subscribe.ts:handleRecordStored');
     expect(shapeEdges[0]?.evidence).toMatchObject({
       dispatchCertainty: 'skeleton_equivalent',
       subscriptionRepositoryName: 'subscriber',
@@ -500,10 +619,16 @@ export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
       && edge.from === 'NEUTRALRecordStored')).toBe(true);
     const quality = doctorDiagnostics(db, true, { workspaceId });
     expect(diagnostic(
+      quality, 'strict_graph_evidence_quality',
+    )).toMatchObject({ severity: 'info' });
+    expect(diagnostic(
       quality, 'strict_event_name_resolution_quality',
     )).toMatchObject({
       publicationTotal: 2,
       unresolvedPublicationCount: 2,
+      reasonBucketCount: 1,
+      shownReasonBucketCount: 1,
+      omittedReasonBucketCount: 0,
     });
     expect(diagnostic(
       quality, 'strict_event_dynamic_candidate_quality',
@@ -525,6 +650,9 @@ export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
       eventTotal: 4,
       proven: 4,
       questionable: 0,
+      reasonBucketCount: 0,
+      shownReasonBucketCount: 0,
+      omittedReasonBucketCount: 0,
     });
     expect(diagnostic(
       quality, 'strict_event_shape_environment_quality',
@@ -536,6 +664,52 @@ export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
     await indexWorkspace(db, workspaceId, { force: true });
     linkWorkspace(db, workspaceId);
     expect(semanticEventEdges(db)).toEqual(before);
+    db.close();
+  });
+
+  it('caps link-time shape fan-out and reports the omitted total', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-shape-cap-'));
+    const registrations = Array.from({ length: 101 }, () =>
+      "  bus.on(`${code}RecordStored`, handleRecordStored);").join('\n');
+    await Promise.all([
+      writeFixtureFile(root, 'publisher/.git-fixture'),
+      writeFixtureFile(root, 'publisher/package.json',
+        packageJson('@neutral/shape-cap-publisher')),
+      writeFixtureFile(root, 'publisher/src/publish.ts', `
+import cds from '@sap/cds';
+export async function publish(code: string): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  await bus.emit(\`\${code}RecordStored\`, {});
+}
+`),
+      writeFixtureFile(root, 'subscriber/.git-fixture'),
+      writeFixtureFile(root, 'subscriber/package.json',
+        packageJson('@neutral/shape-cap-subscriber')),
+      writeFixtureFile(root, 'subscriber/src/subscribe.ts', `
+import cds from '@sap/cds';
+export function handleRecordStored(): void {}
+export async function subscribe(code: string): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+${registrations}
+}
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const linked = linkWorkspace(db, workspaceId);
+    expect(linked).toMatchObject({
+      eventShapeCandidateCount: 100,
+      eventShapeCandidateOmittedCount: 1,
+    });
+    const candidates = db.prepare(`SELECT evidence_json evidence
+      FROM graph_edges
+      WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
+      ORDER BY id`).all();
+    expect(candidates).toHaveLength(100);
+    expect(parsedRecord(String(candidates[0]?.evidence))).toMatchObject({
+      eventShapeLinkCandidateCount: 101,
+      shownEventShapeLinkCandidateCount: 100,
+      omittedEventShapeLinkCandidateCount: 1,
+    });
     db.close();
   });
 
@@ -579,7 +753,7 @@ export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
     });
 
     linkWorkspace(db, workspaceId);
-    expect(subscriptionEdges(db)).toHaveLength(2);
+    expect(subscriptionEdges(db)).toHaveLength(4);
     expect(diagnostic(
       doctorDiagnostics(db, true, { workspaceId }),
       'strict_event_subscription_without_publication_quality',
@@ -657,11 +831,14 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
     const ambiguousTransitions = collisionTrace.edges.filter((edge) =>
       edge.type === 'event_name_matches_subscription_handler'
       && edge.from === 'NEUTRALTWORecordStored');
-    expect(ambiguousTransitions).toHaveLength(2);
+    expect(ambiguousTransitions).toHaveLength(1);
     for (const edge of ambiguousTransitions)
       expect(edge.evidence).toMatchObject({
         resolutionStatus: 'ambiguous',
         bodyExpansion: 'not_resolved',
+        dispatchProvenanceCount: 2,
+        shownDispatchProvenanceCount: 2,
+        omittedDispatchProvenanceCount: 0,
       });
     const candidateTrace = trace(db, { repo: 'publisher' }, {
       depth: 8, workspaceId, includeAsync: true,
@@ -696,6 +873,48 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
       edge.fromId === 'NEUTRALTHREERecordStored'
       && edge.status === 'resolved'))
       .toBe(true);
+    db.close();
+  });
+
+  it('reindexes environment facts with a workspace-configured key', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-env-key-'));
+    await writeEnvironmentLibrary(root, 'TENANT_CODE');
+    await writeEnvironmentConsumer(
+      root, 'consumer-a', 'neutralcustom', 'TENANT_CODE',
+    );
+    const { db, workspaceId } = await prepareWorkspace(root);
+    expect(eventCalls(db).find((call) =>
+      call.eventName.includes('RecordStored'))?.skeletonJson)
+      .not.toContain('TENANT_CODE');
+
+    const indexed = await indexWorkspace(db, workspaceId, {
+      force: false,
+      eventEnvironmentKeys: ['TENANT_CODE'],
+    });
+    expect(indexed.failedCount).toBe(0);
+    expect(indexed.skippedCount).toBe(0);
+    linkWorkspace(db, workspaceId);
+    expect(subscriptionEdges(db)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromId: 'NEUTRALCUSTOMRecordStored',
+        status: 'resolved',
+      }),
+    ]));
+    const environmentRows = db.prepare(`SELECT
+      environment_declarations_json value FROM repositories
+      ORDER BY name COLLATE BINARY`).all();
+    expect(JSON.stringify(environmentRows)).toContain('TENANT_CODE');
+    expect(JSON.stringify(environmentRows)).not.toContain('PRIVATE_TOKEN');
+    expect(JSON.stringify(environmentRows))
+      .not.toContain('must-not-persist-consumer-a');
+    const rawEnvironment = await readFile(
+      path.join(root, 'consumer-a/nodemon.json'), 'utf8',
+    );
+    const rawHash = createHash('sha256').update(rawEnvironment).digest('hex');
+    const storedFile = db.prepare(`SELECT f.sha256
+      FROM files f JOIN repositories r ON r.id=f.repo_id
+      WHERE r.name='consumer-a' AND f.relative_path='nodemon.json'`).get();
+    expect(storedFile?.sha256).not.toBe(rawHash);
     db.close();
   });
 });

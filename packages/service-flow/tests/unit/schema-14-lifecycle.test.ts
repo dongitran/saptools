@@ -206,9 +206,17 @@ async function verifyV13Migration(): Promise<void> {
   const graphBefore = graphSnapshot(before);
   before.close();
   const migrated = openDatabase(dbPath);
+  const fresh = openDatabase(await databasePath('fresh-v14-default'));
   expect(schemaVersion(migrated)).toBe(14);
   expect(column(migrated, 'repositories', 'environment_declarations_json'))
-    .toMatchObject({ name: 'environment_declarations_json', type: 'TEXT' });
+    .toMatchObject({
+      name: 'environment_declarations_json',
+      type: 'TEXT',
+      dflt_value: column(
+        fresh, 'repositories', 'environment_declarations_json',
+      )?.dflt_value,
+    });
+  fresh.close();
   expect(column(migrated, 'outbound_calls', 'event_skeleton_signature'))
     .toMatchObject({ name: 'event_skeleton_signature', type: 'TEXT' });
   expect(column(migrated, 'generated_constants', 'resolution_status'))

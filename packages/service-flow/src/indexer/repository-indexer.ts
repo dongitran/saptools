@@ -56,6 +56,7 @@ import {
 import {
   loadRepositorySourceContext,
   type RepositorySourceContext,
+  type SourceFileSnapshot,
   type SourceContextInstrumentation,
 } from '../parsers/ts-project.js';
 import {
@@ -128,6 +129,7 @@ export async function prepareRepositoryIndex(
   repo: RepoRow,
   force: boolean,
   instrumentation?: SourceContextInstrumentation,
+  eventEnvironmentKeys?: readonly string[],
 ): Promise<PreparedRepositoryIndex> {
   const sourceFiles = await findSourceFiles(repo.absolute_path);
   const packageSnapshot = await loadPackageJsonSnapshot(repo.absolute_path, {
@@ -138,11 +140,17 @@ export async function prepareRepositoryIndex(
   const sources = await loadRepositorySourceContext(
     repo.absolute_path, sourceFiles, instrumentation,
   );
+  const environmentDeclarations = collectEnvironmentDeclarations(
+    sources, eventEnvironmentKeys,
+  );
   const fingerprint = repositoryFingerprint(
-    sources, packageFacts, packageSnapshot.rawText,
+    sources, packageFacts, packageSnapshot.rawText, environmentDeclarations,
   );
   if (!force && repo.fingerprint === fingerprint) return { repo, fileCount: 0, diagnosticCount: 0, skipped: true };
-  const parsedFacts = await parseAllSourceFacts(repo.absolute_path, sources);
+  const parsedFacts = await parseAllSourceFacts(
+    repo.absolute_path, sources, environmentDeclarations,
+    eventEnvironmentKeys,
+  );
   const packageSurface = analyzeRepositoryPackageSurface(
     packageFacts, packageSnapshot.manifest, sources,
   );
@@ -157,7 +165,7 @@ export async function prepareRepositoryIndex(
     kind: await classifyRepository(repo.absolute_path, packageFacts),
     parsed,
     packagePublicSurface: packageSurface.surface,
-    environmentDeclarations: collectEnvironmentDeclarations(sources),
+    environmentDeclarations,
     fileCount: sourceFiles.length,
     diagnosticCount: parsed.handlers.filter((handler) =>
       handler.hasHandlerDecorator
@@ -269,11 +277,18 @@ export function recordIndexFailure(db: Db, repoId: number, error: unknown): void
 async function parseAllSourceFacts(
   root: string,
   sources: RepositorySourceContext,
+  environmentDeclarations: EnvironmentDeclarationsFact,
+  eventEnvironmentKeys?: readonly string[],
 ): Promise<ParsedFacts> {
   const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], generatedConstants: [], fileRecords: [] };
   for (const snapshot of sources.entries()) {
     const file = snapshot.filePath;
-    facts.fileRecords.push({ relativePath: normalizePath(file), extension: path.extname(file), sha256: sha256Text(snapshot.text), sizeBytes: snapshot.sizeBytes });
+    facts.fileRecords.push({
+      relativePath: normalizePath(file),
+      extension: path.extname(file),
+      sha256: sourceFactHash(snapshot, environmentDeclarations),
+      sizeBytes: snapshot.sizeBytes,
+    });
     if (file.endsWith('.cds')) facts.services.push(...(await parseCdsFile(root, file, sources)));
     if (/\.[jt]s$/.test(file)) {
       const source = snapshot.sourceFile();
@@ -283,7 +298,9 @@ async function parseAllSourceFacts(
           sources, source, file,
         ),
         eventEnvironmentReferenceResolver:
-          createEventEnvironmentReferenceResolver(sources, source, file),
+          createEventEnvironmentReferenceResolver(
+            sources, source, file, eventEnvironmentKeys,
+          ),
       });
       facts.handlers.push(...(await parseDecorators(root, file, sources)));
       facts.registrations.push(...(await parseHandlerRegistrations(root, file, sources)));
@@ -334,6 +351,7 @@ function repositoryFingerprint(
   sources: RepositorySourceContext,
   facts: PackageFacts,
   packageJsonText: string,
+  environmentDeclarations: EnvironmentDeclarationsFact,
 ): string {
   const normalizedFacts = {
     analyzerVersion: ANALYZER_VERSION,
@@ -343,10 +361,36 @@ function repositoryFingerprint(
     cdsRequires: [...facts.cdsRequires].sort((a, b) => a.alias.localeCompare(b.alias)),
     scripts: Object.fromEntries(Object.entries(facts.scripts).sort()),
     includeTests: false,
+    eventEnvironmentKeys: environmentDeclarations.allowedKeys,
     packageJsonHash: sha256Text(packageJsonText),
   };
   const entries: string[] = [`facts:${JSON.stringify(normalizedFacts)}`];
   for (const snapshot of sources.entries())
-    entries.push(`${snapshot.filePath}:${sha256Text(snapshot.text)}`);
+    entries.push(
+      `${snapshot.filePath}:${
+        sourceFactHash(snapshot, environmentDeclarations)}`,
+    );
   return sha256Text(entries.join('\n'));
+}
+
+function sourceFactHash(
+  snapshot: SourceFileSnapshot,
+  environmentDeclarations: EnvironmentDeclarationsFact,
+): string {
+  if (!isEnvironmentFactInput(snapshot.filePath))
+    return sha256Text(snapshot.text);
+  const declarations = environmentDeclarations.declarations.filter(
+    (item) => item.sourceFile === snapshot.filePath,
+  );
+  return sha256Text(JSON.stringify({
+    allowedKeys: environmentDeclarations.allowedKeys,
+    declarations,
+  }));
+}
+
+function isEnvironmentFactInput(filePath: string): boolean {
+  const name = filePath.split('/').at(-1);
+  return ['nodemon.json', '.env', 'mta.yaml', 'manifest.yml'].includes(
+    name ?? '',
+  );
 }

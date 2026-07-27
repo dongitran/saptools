@@ -8,7 +8,10 @@ import {
   type SymbolImportBinding,
 } from './symbol-import-bindings.js';
 import type { RepositorySourceContext } from './ts-project.js';
-import { EVENT_ENVIRONMENT_KEY_ALLOWLIST } from
+import {
+  DEFAULT_EVENT_ENVIRONMENT_KEYS,
+  normalizeEventEnvironmentKeys,
+} from
   './environment-declarations.js';
 
 export type EventEnvironmentTransform = 'toUpperCase' | 'toLowerCase';
@@ -34,13 +37,10 @@ interface ResolutionContext {
   sourceFile: string;
   depth: number;
   seen: Set<string>;
+  allowedKeys: ReadonlySet<string>;
 }
 
 const maxEnvironmentReferenceDepth = 6;
-const allowedEnvironmentKeys = new Set<string>(
-  EVENT_ENVIRONMENT_KEY_ALLOWLIST,
-);
-
 function unwrapExpression(expression: ts.Expression): ts.Expression {
   if (ts.isParenthesizedExpression(expression)
     || ts.isAsExpression(expression)
@@ -173,6 +173,15 @@ function identifierReference(
   const local = resolveBinding(identifier, identifier);
   if (local.declaration && local.initializer && local.immutable)
     return resolveEnvironmentReference(local.initializer, context);
+  const binding = bindingFor(
+    identifier, collectSymbolImportBindings(context.source),
+  );
+  if (binding?.moduleKind === 'package') return {
+    status: 'refused',
+    sourceKey: identifier.getText(context.source),
+    transforms: [],
+    reason: 'event_environment_package_import_unsupported',
+  };
   const imported = importedIdentifier(identifier, context);
   if (!imported) return undefined;
   return resolveEnvironmentReference(imported.initializer, {
@@ -199,7 +208,7 @@ function resolveEnvironmentReference(
   const next = { ...context, depth: context.depth + 1, seen };
   const value = unwrapExpression(expression);
   const key = processEnvironmentKey(value);
-  if (key && allowedEnvironmentKeys.has(key)) return {
+  if (key && context.allowedKeys.has(key)) return {
     status: 'resolved', sourceKey, environmentKey: key, transforms: [],
     sourceFile: context.sourceFile,
     startOffset: value.getStart(context.source), endOffset: value.getEnd(),
@@ -215,9 +224,11 @@ export function createEventEnvironmentReferenceResolver(
   sources: RepositorySourceContext,
   source: ts.SourceFile,
   sourceFile: string,
+  configuredKeys: readonly string[] = DEFAULT_EVENT_ENVIRONMENT_KEYS,
 ): EventEnvironmentReferenceResolver {
+  const allowedKeys = new Set(normalizeEventEnvironmentKeys(configuredKeys));
   return (expression) => resolveEnvironmentReference(expression, {
-    sources, source, sourceFile, depth: 0, seen: new Set(),
+    sources, source, sourceFile, depth: 0, seen: new Set(), allowedKeys,
   });
 }
 

@@ -116,6 +116,63 @@ async function run(clientName: string): Promise<void> {
       });
   });
 
+  it('proves a single connect binding consistently across control flow', () => {
+    const facts = eventFacts(`
+import cds from '@sap/cds';
+async function run(flag: boolean): Promise<void> {
+  if (flag) {
+    const inIf = await cds.connect.to('primary');
+    inIf.emit('InsideIf', {});
+  }
+  for (const item of [1]) {
+    const inFor = await cds.connect.messaging(String(item));
+    inFor.emit('InsideFor', {});
+  }
+  switch (flag) {
+    case true: {
+      const inSwitch = await cds.connect.to('primary');
+      inSwitch.emit('InsideSwitch', {});
+      break;
+    }
+  }
+  try {
+    const inTry = await cds.connect.to('primary');
+    inTry.emit('InsideTry', {});
+  } catch {}
+}
+`);
+
+    expect(facts.map((fact) => fact.eventNameExpr)).toEqual([
+      'InsideIf', 'InsideFor', 'InsideSwitch', 'InsideTry',
+    ]);
+    for (const fact of facts)
+      expect(fact.evidence).toMatchObject({
+        receiverClassification: 'cap_evidence',
+        receiverProof: 'lexical_connect_assignment',
+      });
+  });
+
+  it('keeps mixed reaching assignments unproven', () => {
+    const [fact] = eventFacts(`
+import cds from '@sap/cds';
+async function run(flag: boolean, other: unknown): Promise<void> {
+  let bus = await cds.connect.to('primary');
+  if (flag) bus = other;
+  bus.emit('MixedReceiver', {});
+}
+`);
+
+    expect(fact).toMatchObject({
+      eventNameExpr: 'MixedReceiver',
+      unresolvedReason: undefined,
+      evidence: {
+        receiverClassification: 'unproven',
+        receiverUnresolvedReason: 'event_receiver_unproven_binding',
+        receiverProof: 'mixed_or_missing_assignment',
+      },
+    });
+  });
+
   it('records statically enumerable and unknown loop registrations honestly', () => {
     const file = source(`
 declare const messaging: { on(name: string, handler: unknown): void };
@@ -158,7 +215,7 @@ runtimeTopics.forEach((topic) => {
       .not.toHaveProperty('subscriptionLoopRegistrationCount');
   });
 
-  it('records property receivers and a proven non-CAP receiver honestly', () => {
+  it('records property receivers and excludes a proven non-CAP receiver', () => {
     const facts = eventFacts(`
 interface Params { messaging: { emit(name: string, payload: unknown): void } }
 class Publisher {
@@ -175,25 +232,24 @@ const notAClient = buildThing();
 notAClient.emit('NotCap', {});
 `);
 
-    expect(facts).toHaveLength(3);
-    expect(facts.slice(0, 2)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        eventNameExpr: 'PropertyParameter',
-        unresolvedReason: 'event_receiver_unproven_propagation',
-      }),
-      expect.objectContaining({
-        eventNameExpr: 'PropertyThis',
-        unresolvedReason: 'event_receiver_unproven_propagation',
-      }),
-    ]));
-    expect(facts[2]).toMatchObject({
-      eventNameExpr: 'NotCap',
-      unresolvedReason: 'event_receiver_not_cap_client',
-      evidence: { receiverClassification: 'unproven' },
-    });
+    expect(facts).toHaveLength(2);
+    expect(facts.find((fact) => fact.eventNameExpr === 'PropertyParameter'))
+      .toMatchObject({
+        unresolvedReason: undefined,
+        evidence: {
+          receiverUnresolvedReason: 'event_receiver_unproven_propagation',
+        },
+      });
+    expect(facts.find((fact) => fact.eventNameExpr === 'PropertyThis'))
+      .toMatchObject({
+        unresolvedReason: undefined,
+        evidence: {
+          receiverUnresolvedReason: 'event_receiver_unproven_propagation',
+        },
+      });
   });
 
-  it('keeps the compatibility receiver names as explicit fallbacks', () => {
+  it('does not let compatibility names override a visible declaration', () => {
     const [fact] = eventFacts(`
 declare const messaging: { emit(name: string, payload: unknown): void };
 messaging.emit('Fallback', {});
@@ -201,10 +257,85 @@ messaging.emit('Fallback', {});
     expect(fact).toMatchObject({
       eventNameExpr: 'Fallback',
       evidence: {
-        receiverClassification: 'name_fallback',
-        receiverProof: 'compatibility_name_fallback',
+        receiverClassification: 'unproven',
+        receiverProof: 'mixed_or_missing_assignment',
+        receiverUnresolvedReason: 'event_receiver_unproven_binding',
       },
     });
+  });
+
+  it('uses compatibility names only when no declaration can be resolved', () => {
+    const [fact] = eventFacts(`
+messaging.emit('Fallback', {});
+`);
+    expect(fact).toMatchObject({
+      eventNameExpr: 'Fallback',
+      evidence: {
+        receiverClassification: 'name_fallback',
+        receiverProof: 'compatibility_name_fallback',
+        receiverFallbackRefusedReason: 'binding_not_found',
+        consideredBindingSites: [
+          expect.objectContaining({ flow: 'reference', connect: false }),
+        ],
+      },
+    });
+  });
+
+  it('does not infer event receivers from comments or string contents', () => {
+    const facts = eventFacts(`
+function buildThing(..._args: unknown[]): {
+  emit(name: string, payload: unknown): void
+} {
+  return { emit(): void {} };
+}
+const gateway = buildThing(/* cds.connect.to("primary") */);
+const relay = buildThing('cds.connect.to(');
+const conduit = buildThing();
+gateway.emit('CommentFalsePositive', {});
+relay.emit('StringFalsePositive', {});
+conduit.emit('ControlNonClient', {});
+`);
+    expect(facts).toEqual([]);
+  });
+
+  it('excludes non-messaging emitters and service CRUD handlers only', () => {
+    const facts = eventFacts(`
+import cds from '@sap/cds';
+declare const io: { emit(name: string): void; on(name: string): void };
+declare const socket: {
+  broadcast: { emit(name: string): void };
+  on(name: string): void;
+};
+declare const writeStream: { on(name: string): void };
+declare const file: { on(name: string): void };
+declare const req: { pipe(value: unknown): { on(name: string): void } };
+declare const sink: unknown;
+declare const win: { on(name: string): void };
+declare const app: { on(name: string): void };
+io.emit('connection');
+socket.broadcast.emit('message');
+socket.on('event');
+writeStream.on('finish');
+file.on('end');
+req.pipe(sink).on('finish');
+win.on('close');
+app.on('window-all-closed');
+class Service {
+  register(): void { this.on('READ', (): void => {}); }
+  on(_name: string, _handler: () => void): void {}
+}
+async function subscribe(): Promise<void> {
+  const messaging = await cds.connect.messaging('primary');
+  messaging.on('READ', (): void => {});
+}
+`);
+    expect(facts).toEqual([
+      expect.objectContaining({
+        callType: 'async_subscribe',
+        eventNameExpr: 'READ',
+        unresolvedReason: undefined,
+      }),
+    ]);
   });
 
   it('folds stable local enum and const-object topics only', () => {
@@ -246,7 +377,7 @@ async function run(
     });
     expect(facts[2]).toMatchObject({
       eventNameExpr: 'MUTABLE.THIRD',
-      unresolvedReason: 'event_name_constant_container_mutable',
+      unresolvedReason: 'event_name_constant_container_unsafe_reference',
     });
     expect(facts[3]).toMatchObject({
       eventNameExpr: 'DYNAMIC.FOURTH',
@@ -318,6 +449,142 @@ async function run(): Promise<void> {
         unresolvedReason: 'event_name_constant_container_ambiguous',
       }),
     ]);
+  });
+
+  it('refuses partial object folding and accepts type-only references', () => {
+    const facts = eventFacts(`
+import cds from '@sap/cds';
+const BASE = { A: 'SpreadOverride' } as const;
+const SPREAD = { A: 'WrongOwnValue', ...BASE } as const;
+const KEY = 'A';
+const COMPUTED = { A: 'WrongComputedValue', [KEY]: 'ComputedOverride' };
+const GETTER = { get A(): string { return 'GetterValue'; } };
+const shorthandValue = 'ShorthandValue';
+const SHORTHAND = { shorthandValue };
+const SAFE = { READY: 'TypeSafeObject' } as const;
+type SafeKey = keyof typeof SAFE;
+enum SAFE_ENUM { READY = 'TypeSafeEnum' }
+function acceptsEnum(_value: SAFE_ENUM): void {}
+async function run(_key: SafeKey): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  bus.emit(SPREAD.A, {});
+  bus.emit(COMPUTED.A, {});
+  bus.emit(GETTER.A, {});
+  bus.emit(SHORTHAND.shorthandValue, {});
+  bus.emit(SAFE.READY, {});
+  bus.emit(SAFE_ENUM.READY, {});
+  acceptsEnum(SAFE_ENUM.READY);
+}
+`);
+
+    expect(facts).toEqual([
+      expect.objectContaining({
+        eventNameExpr: 'SPREAD.A',
+        unresolvedReason: 'event_name_constant_container_unsupported_shape',
+      }),
+      expect.objectContaining({
+        eventNameExpr: 'COMPUTED.A',
+        unresolvedReason: 'event_name_constant_container_unsupported_shape',
+      }),
+      expect.objectContaining({
+        eventNameExpr: 'GETTER.A',
+        unresolvedReason: 'event_name_constant_container_unsupported_shape',
+      }),
+      expect.objectContaining({
+        eventNameExpr: 'SHORTHAND.shorthandValue',
+        unresolvedReason: 'event_name_constant_container_unsupported_shape',
+      }),
+      expect.objectContaining({
+        eventNameExpr: 'TypeSafeObject',
+        unresolvedReason: undefined,
+      }),
+      expect.objectContaining({
+        eventNameExpr: 'TypeSafeEnum',
+        unresolvedReason: undefined,
+      }),
+    ]);
+  });
+
+  it('refuses authoritative loop enumeration for partial object shapes', () => {
+    const file = source(`
+declare const messaging: { on(name: string, handler: unknown): void };
+declare const handler: unknown;
+const BASE = { A: 'SpreadOverride' } as const;
+const TOPICS = { A: 'WrongOwnValue', ...BASE } as const;
+Object.values(TOPICS).forEach((topic) => {
+  messaging.on(topic, handler);
+});
+`);
+    const classified = classifyOutboundCallsInSource(file, 'events.ts');
+    const [fact] = reconcileEventSubscriptions(
+      file, classified, [], [],
+    ).classifications.map((item) => item.fact);
+    expect(fact?.evidence).toMatchObject({
+      subscriptionRegisteredInLoop: true,
+      subscriptionLoopRegistrationStatus: 'unresolved',
+      subscriptionLoopUnresolvedReason:
+        'subscription_loop_collection_not_statically_enumerable',
+    });
+  });
+
+  it('keeps empty constants legal but refuses them as event names', () => {
+    const [fact] = eventFacts(`
+import cds from '@sap/cds';
+const EMPTY_TOPIC = '';
+async function run(): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  bus.emit(EMPTY_TOPIC, {});
+}
+`);
+    expect(fact).toMatchObject({
+      eventNameExpr: 'EMPTY_TOPIC',
+      unresolvedReason: 'event_name_constant_value_empty',
+      evidence: {
+        eventNameUnresolvedReason: 'event_name_constant_value_empty',
+      },
+    });
+  });
+
+  it('derives skeletons after const-alias resolution', () => {
+    const [fact] = eventFacts(`
+import cds from '@sap/cds';
+async function run(payload: { code: string }): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  const eventName = \`\${payload.code.toUpperCase()}SetStatus\`;
+  bus.emit(eventName, {});
+}
+`);
+    expect(fact).toMatchObject({
+      eventNameExpr: '${payload.code.toUpperCase()}SetStatus',
+      unresolvedReason: 'dynamic_event_name_identifier',
+      eventSkeleton: {
+        status: 'complete',
+        literalSpans: ['', 'SetStatus'],
+        sourceKeys: ['payload.code.toUpperCase()'],
+        holeCount: 1,
+      },
+    });
+    expect(fact?.eventSkeleton?.signature).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('folds static template holes before deriving a shape', () => {
+    const [fact] = eventFacts(`
+import cds from '@sap/cds';
+const TOPICS = { START: 'JobStarted' } as const;
+async function run(code: string): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  bus.emit(\`\${code}\${TOPICS.START}\`, {});
+}
+`);
+    expect(fact).toMatchObject({
+      eventNameExpr: '${code}JobStarted',
+      unresolvedReason: 'dynamic_event_name_identifier',
+      eventSkeleton: {
+        literalSpans: ['', 'JobStarted'],
+        sourceKeys: ['code'],
+        candidateEligible: true,
+      },
+    });
   });
 
   it('derives name-independent skeletons and canonical hole keys', () => {
@@ -395,6 +662,27 @@ applications:
     });
   });
 
+  it('uses a configured environment-key allowlist without retaining neighbours', () => {
+    const facts = collectEnvironmentDeclarations(repositoryContext({
+      'nodemon.json': JSON.stringify({
+        env: {
+          TENANT_CODE: 'neutral',
+          PRIVATE_TOKEN: 'must-never-persist',
+        },
+      }),
+    }), ['TENANT_CODE']);
+    expect(facts).toMatchObject({
+      allowedKeys: ['TENANT_CODE'],
+      status: 'complete',
+      declarations: [{
+        key: 'TENANT_CODE',
+        value: 'neutral',
+      }],
+    });
+    expect(JSON.stringify(facts)).not.toContain('PRIVATE_TOKEN');
+    expect(JSON.stringify(facts)).not.toContain('must-never-persist');
+  });
+
   it('records one-hop process.env provenance and allowlisted transforms', () => {
     const files = {
       'env.ts': `
@@ -435,6 +723,46 @@ async function run(handler: () => void): Promise<void> {
     expect(facts[1]?.eventSkeleton?.environmentBindings[0]).toMatchObject({
       status: 'refused',
       reason: 'event_environment_transform_unsupported',
+    });
+  });
+
+  it('binds configured keys and labels unsupported package indirection', () => {
+    const files = {
+      'env.ts': 'export const envCode = process.env.TENANT_CODE;\n',
+      'events.ts': `
+import cds from '@sap/cds';
+import { envCode } from './env';
+import { packageCode } from '@neutral/environment';
+async function run(handler: () => void): Promise<void> {
+  const messaging = await cds.connect.messaging('primary');
+  messaging.on(\`\${envCode.toUpperCase()}RecordStored\`, handler);
+  messaging.on(\`\${packageCode}RecordStored\`, handler);
+}
+`,
+    };
+    const context = repositoryContext(files);
+    const eventSource = context.get('events.ts')?.sourceFile();
+    if (!eventSource) throw new Error('event_source_missing');
+    const facts = classifyOutboundCallsInSource(eventSource, 'events.ts', {
+      importedEventNameResolver: createImportedEventNameResolver(
+        context, eventSource, 'events.ts',
+      ),
+      eventEnvironmentReferenceResolver:
+        createEventEnvironmentReferenceResolver(
+          context, eventSource, 'events.ts', ['TENANT_CODE'],
+        ),
+    }).map((item) => item.fact).filter((fact) =>
+      fact.callType === 'async_subscribe');
+
+    expect(facts[0]?.eventSkeleton?.environmentBindings[0]).toMatchObject({
+      status: 'resolved',
+      environmentKey: 'TENANT_CODE',
+      transforms: ['toUpperCase'],
+      sourceFile: 'env.ts',
+    });
+    expect(facts[1]?.eventSkeleton?.environmentBindings[0]).toMatchObject({
+      status: 'refused',
+      reason: 'event_environment_package_import_unsupported',
     });
   });
 });

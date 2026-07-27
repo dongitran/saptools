@@ -1,9 +1,13 @@
 import type { Db } from '../db/connection.js';
 import { parseEventSkeletonFact } from '../utils/event-skeleton.js';
+import { boundCandidateLikeEvidence } from '../utils/bounded-projection.js';
 
 export interface EventShapeCandidateLinkSummary {
   edgeCount: number;
+  omittedCount: number;
 }
+
+const EVENT_SHAPE_LINK_CAP_PER_EMIT = 100;
 
 interface EventShapeRow extends Record<string, unknown> {
   id: number;
@@ -11,6 +15,7 @@ interface EventShapeRow extends Record<string, unknown> {
   repoName: string;
   signature: string;
   skeletonJson: string;
+  evidenceJson: string;
 }
 
 interface SubscriberAssociation extends Record<string, unknown> {
@@ -20,6 +25,7 @@ interface SubscriberAssociation extends Record<string, unknown> {
   targetId: string;
   status: string;
   evidenceJson: string;
+  targetLabel?: string | null;
 }
 
 function eventRows(
@@ -29,7 +35,7 @@ function eventRows(
 ): EventShapeRow[] {
   return db.prepare(`SELECT c.id,c.repo_id repoId,r.name repoName,
     c.event_skeleton_signature signature,
-    c.event_skeleton_json skeletonJson
+    c.event_skeleton_json skeletonJson,c.evidence_json evidenceJson
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE r.workspace_id=? AND c.call_type=?
       AND c.event_skeleton_signature IS NOT NULL
@@ -46,15 +52,19 @@ function associations(
   workspaceId: number,
   generation: number,
 ): SubscriberAssociation[] {
-  return db.prepare(`SELECT id graphEdgeId,
-    CAST(json_extract(evidence_json,'$.subscribeCallId') AS INTEGER)
+  return db.prepare(`SELECT edge.id graphEdgeId,
+    CAST(json_extract(edge.evidence_json,'$.subscribeCallId') AS INTEGER)
       subscribeCallId,
-    to_kind targetKind,to_id targetId,status,evidence_json evidenceJson
-    FROM graph_edges
-    WHERE workspace_id=? AND generation=?
-      AND edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
-      AND to_kind='symbol'
-    ORDER BY subscribeCallId,id`).all(
+    edge.to_kind targetKind,edge.to_id targetId,edge.status,
+    edge.evidence_json evidenceJson,
+    target.source_file || ':' || target.qualified_name targetLabel
+    FROM graph_edges edge
+    LEFT JOIN symbols target ON edge.to_kind='symbol'
+      AND target.id=CAST(edge.to_id AS INTEGER)
+    WHERE edge.workspace_id=? AND edge.generation=?
+      AND edge.edge_type='EVENT_SUBSCRIPTION_HANDLED_BY'
+      AND edge.to_kind='symbol'
+    ORDER BY subscribeCallId,edge.id`).all(
     workspaceId, generation,
   ) as unknown as SubscriberAssociation[];
 }
@@ -85,8 +95,11 @@ function candidateEvidence(
   emit: EventShapeRow,
   subscribe: EventShapeRow,
   association: SubscriberAssociation,
+  total: number,
+  shown: number,
 ): Record<string, unknown> {
   const evidence = parsedEvidence(association.evidenceJson);
+  const parser = parsedEvidence(emit.evidenceJson);
   return {
     publishCallId: emit.id,
     subscribeCallId: subscribe.id,
@@ -100,7 +113,12 @@ function candidateEvidence(
     subscriptionConsumerRepositoryName:
       evidence.subscriptionConsumerRepositoryName,
     handlerSymbolId: Number(association.targetId),
+    eventShapeCandidateTargetLabel: association.targetLabel,
     associationGraphEdgeId: association.graphEdgeId,
+    outboundEvidence: boundCandidateLikeEvidence(parser),
+    eventShapeLinkCandidateCount: total,
+    shownEventShapeLinkCandidateCount: shown,
+    omittedEventShapeLinkCandidateCount: Math.max(0, total - shown),
   };
 }
 
@@ -111,6 +129,8 @@ function insertCandidate(
   emit: EventShapeRow,
   subscribe: EventShapeRow,
   association: SubscriberAssociation,
+  total: number,
+  shown: number,
 ): void {
   db.prepare(`INSERT INTO graph_edges(
     workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
@@ -125,12 +145,30 @@ function insertCandidate(
     association.targetId,
     0.3,
     JSON.stringify(candidateEvidence(
-      emit, subscribe, association,
+      emit, subscribe, association, total, shown,
     )),
     1,
     'event_skeleton_equivalent_non_authoritative',
     generation,
   );
+}
+
+interface ShapeCandidate {
+  subscription: EventShapeRow;
+  association: SubscriberAssociation;
+}
+
+function candidatesForEmit(
+  emit: EventShapeRow,
+  subscriptions: readonly EventShapeRow[],
+  bySubscription: ReadonlyMap<number, SubscriberAssociation[]>,
+): ShapeCandidate[] {
+  return subscriptions.flatMap((subscription) =>
+    !candidateEligible(emit, subscription) ? []
+      : (bySubscription.get(subscription.id) ?? []).map((association) => ({
+          subscription,
+          association,
+        })));
 }
 
 export function linkEventShapeCandidates(
@@ -147,15 +185,20 @@ export function linkEventShapeCandidates(
       association,
     ]);
   let edgeCount = 0;
-  for (const emit of emits)
-    for (const subscription of subscriptions) {
-      if (!candidateEligible(emit, subscription)) continue;
-      for (const association of bySubscription.get(subscription.id) ?? []) {
-        insertCandidate(
-          db, workspaceId, generation, emit, subscription, association,
-        );
-        edgeCount += 1;
-      }
+  let omittedCount = 0;
+  for (const emit of emits) {
+    const candidates = candidatesForEmit(
+      emit, subscriptions, bySubscription,
+    );
+    const shown = candidates.slice(0, EVENT_SHAPE_LINK_CAP_PER_EMIT);
+    for (const candidate of shown) {
+      insertCandidate(
+        db, workspaceId, generation, emit, candidate.subscription,
+        candidate.association, candidates.length, shown.length,
+      );
+      edgeCount += 1;
     }
-  return { edgeCount };
+    omittedCount += Math.max(0, candidates.length - shown.length);
+  }
+  return { edgeCount, omittedCount };
 }

@@ -639,8 +639,11 @@ describe('event subscription handler linker', () => {
         firstError = error instanceof Error ? error.message : String(error);
       }
       expect(firstError).toContain('reindex_required');
-      expect(firstError).toContain('service-flow index --workspace /workspace --force');
-      expect(firstError).toContain('service-flow link --workspace /workspace --force');
+      expect(firstError).toContain(
+        "service-flow doctor --workspace '/workspace/preflight'",
+      );
+      expect(firstError).toContain('--strict --detail');
+      expect(firstError).not.toContain('service-flow index');
       expect(db.prepare('SELECT COUNT(*) count FROM graph_edges WHERE workspace_id=?')
         .get(workspaceId)?.count).toBe(1);
       expect(db.prepare('SELECT graph_stale_reason reason FROM repositories WHERE id=?')

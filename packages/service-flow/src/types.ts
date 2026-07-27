@@ -286,7 +286,9 @@ export interface GeneratedConstantFact {
   stable: boolean;
   resolutionStatus: 'resolved' | 'refused';
   unresolvedReason?: 'event_name_constant_member_not_string'
-    | 'event_name_constant_container_mutable';
+    | 'event_name_constant_container_mutable'
+    | 'event_name_constant_container_unsafe_reference'
+    | 'event_name_constant_container_unsupported_shape';
   declarationStartOffset: number;
   declarationEndOffset: number;
   valueStartOffset: number;

@@ -33,6 +33,7 @@ interface SubscriptionRow {
   packageName?: string | null;
   environmentJson?: string | null;
   eventSkeletonJson?: string | null;
+  evidenceJson?: string | null;
 }
 
 interface HandlerCallRow {
@@ -73,6 +74,7 @@ function subscriptionRows(db: Db, workspaceId: number): SubscriptionRow[] {
     c.call_site_start_offset startOffset,c.call_site_end_offset endOffset,
     c.confidence,c.unresolved_reason unresolvedReason,
     c.event_skeleton_json eventSkeletonJson,
+    c.evidence_json evidenceJson,
     r.package_name packageName,
     r.environment_declarations_json environmentJson
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
@@ -220,6 +222,7 @@ function evidenceFor(
   association: HandlerAssociation,
   event: LinkedEventTemplate,
   environment?: SubscriptionEnvironmentTarget,
+  loopValue?: string,
 ): Record<string, unknown> {
   const call: Partial<HandlerCallRow> = association.call ?? {};
   const symbolCallReason = boundedSymbolCallReason(call.unresolvedReason);
@@ -229,7 +232,24 @@ function evidenceFor(
     ? 'unresolved'
     : environmentAmbiguous ? 'ambiguous' : association.status;
   return {
+    ...eventDispatchEvidence(subscription, event, environment, loopValue),
+    ...handlerAssociationEvidence(
+      subscription, association, call, resolutionStatus,
+      environmentAmbiguous, environment,
+    ),
+    ...symbolCallReason,
+  };
+}
+
+function eventDispatchEvidence(
+  subscription: SubscriptionRow,
+  event: LinkedEventTemplate,
+  environment?: SubscriptionEnvironmentTarget,
+  loopValue?: string,
+): Record<string, unknown> {
+  return {
     eventName: subscription.eventName,
+    materializedLoopEventName: loopValue,
     ...(eventSkeletonEvidence(subscription.eventSkeletonJson)),
     ...(event.substitution.placeholders.length > 0 ? {
       effectiveEventName: event.targetId,
@@ -238,10 +258,6 @@ function evidenceFor(
     associationBasis: 'exact_subscription_call_span',
     dispatchScope: 'workspace_event_name_only',
     subscribeCallId: subscription.id,
-    symbolCallId: call.id,
-    roleSiteMatchCount: association.matchCount,
-    callRole: association.matchCount > 0 ? 'event_subscribe_handler' : undefined,
-    factOrigin: association.factOrigin ?? call.factOrigin,
     repositoryId: subscription.repoId,
     repositoryName: subscription.repoName,
     subscriptionConsumerRepositoryId: environment?.consumerRepoId,
@@ -256,6 +272,23 @@ function evidenceFor(
         collisionCount: environment?.collisionCount,
       },
     }),
+  };
+}
+
+function handlerAssociationEvidence(
+  subscription: SubscriptionRow,
+  association: HandlerAssociation,
+  call: Partial<HandlerCallRow>,
+  resolutionStatus: string,
+  environmentAmbiguous: boolean,
+  environment?: SubscriptionEnvironmentTarget,
+): Record<string, unknown> {
+  return {
+    symbolCallId: call.id,
+    roleSiteMatchCount: association.matchCount,
+    callRole: association.matchCount > 0
+      ? 'event_subscribe_handler' : undefined,
+    factOrigin: association.factOrigin ?? call.factOrigin,
     sourceFile: subscription.sourceFile,
     sourceLine: subscription.sourceLine,
     callSiteStartOffset: subscription.startOffset,
@@ -273,7 +306,6 @@ function evidenceFor(
     reasonCode: environmentAmbiguous
       ? environment?.resolution.reason ?? 'event_environment_value_collision'
       : association.reasonCode,
-    ...symbolCallReason,
   };
 }
 
@@ -304,20 +336,13 @@ function insertAssociationEdge(
   association: HandlerAssociation,
   event: LinkedEventTemplate,
   environment?: SubscriptionEnvironmentTarget,
+  loopValue?: string,
 ): void {
-  const environmentAmbiguous = environment?.resolution.status === 'ambiguous'
-    || Number(environment?.collisionCount ?? 1) > 1;
-  const status = event.isDynamic
-    ? 'unresolved'
-    : environmentAmbiguous ? 'ambiguous' : association.status;
-  const reason = event.isDynamic
-    ? event.substitution.missing.length > 0
-      ? 'event_template_variables_missing'
-      : event.unresolvedReason ?? 'event_name_unsupported_constant_expression'
-    : environmentAmbiguous
-      ? environment?.resolution.reason
-        ?? 'event_environment_value_collision'
-    : association.reasonCode ?? association.call?.unresolvedReason ?? null;
+  const ambiguous = environmentTargetAmbiguous(environment);
+  const status = associationEdgeStatus(event, association, ambiguous);
+  const reason = associationEdgeReason(
+    event, association, environment, ambiguous,
+  );
   db.prepare(`INSERT INTO graph_edges(
     workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
     confidence,evidence_json,is_dynamic,unresolved_reason,generation
@@ -331,12 +356,72 @@ function insertAssociationEdge(
     association.toId,
     association.call?.confidence ?? subscription.confidence,
     JSON.stringify(evidenceFor(
-      subscription, association, event, environment,
+      subscription, association, event, environment, loopValue,
     )),
     event.isDynamic ? 1 : 0,
     reason,
     generation,
   );
+}
+
+function environmentTargetAmbiguous(
+  environment?: SubscriptionEnvironmentTarget,
+): boolean {
+  return environment?.resolution.status === 'ambiguous'
+    || Number(environment?.collisionCount ?? 1) > 1;
+}
+
+function associationEdgeStatus(
+  event: LinkedEventTemplate,
+  association: HandlerAssociation,
+  environmentAmbiguous: boolean,
+): 'resolved' | 'ambiguous' | 'unresolved' {
+  if (event.isDynamic) return 'unresolved';
+  return environmentAmbiguous ? 'ambiguous' : association.status;
+}
+
+function associationEdgeReason(
+  event: LinkedEventTemplate,
+  association: HandlerAssociation,
+  environment: SubscriptionEnvironmentTarget | undefined,
+  environmentAmbiguous: boolean,
+): string | null {
+  if (event.isDynamic)
+    return event.substitution.missing.length > 0
+      ? 'event_template_variables_missing'
+      : event.unresolvedReason ?? 'event_name_unsupported_constant_expression';
+  if (environmentAmbiguous)
+    return environment?.resolution.reason
+      ?? 'event_environment_value_collision';
+  return association.reasonCode ?? association.call?.unresolvedReason ?? null;
+}
+
+function parsedEvidenceRecord(
+  value: string,
+): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function enumeratedLoopValues(
+  evidenceJson: string | null | undefined,
+): string[] | undefined {
+  if (!evidenceJson) return undefined;
+  const evidence = parsedEvidenceRecord(evidenceJson);
+  if (!evidence
+    || evidence.subscriptionLoopRegistrationStatus !== 'enumerated')
+    return undefined;
+  const values = evidence.subscriptionLoopValues;
+  if (!Array.isArray(values)
+    || !values.every((item): item is string => typeof item === 'string'))
+    return undefined;
+  return evidence.subscriptionLoopRegistrationCount === values.length
+    && evidence.omittedSubscriptionLoopValueCount === 0 ? values : undefined;
 }
 
 function linkedSubscriptionEvents(
@@ -347,24 +432,30 @@ function linkedSubscriptionEvents(
 ): Array<{
   event: LinkedEventTemplate;
   environment: SubscriptionEnvironmentTarget;
+  loopValue?: string;
 }> {
   const skeleton = parseEventSkeletonFact(subscription.eventSkeletonJson);
-  return subscriptionEnvironmentTargets(
+  const environments = subscriptionEnvironmentTargets(
     db,
     workspaceId,
     subscription.packageName ?? undefined,
     subscription.eventSkeletonJson,
     subscription.environmentJson,
     variables,
-  ).map((environment) => ({
-    environment,
-    event: linkEventTemplate(
-      subscription.eventName,
-      environment.resolution.variables,
-      subscription.unresolvedReason ?? undefined,
-      skeleton,
-    ),
-  }));
+  );
+  const loopValues = enumeratedLoopValues(subscription.evidenceJson);
+  const templates = loopValues ?? [subscription.eventName];
+  return environments.flatMap((environment) =>
+    templates.map((template) => ({
+      environment,
+      loopValue: loopValues ? template : undefined,
+      event: linkEventTemplate(
+        template,
+        environment.resolution.variables,
+        loopValues ? undefined : subscription.unresolvedReason ?? undefined,
+        loopValues ? undefined : skeleton,
+      ),
+    })));
 }
 
 function targetStatus(
@@ -414,7 +505,7 @@ export function linkEventSubscriptionHandlers(
     )) {
       insertAssociationEdge(
         db, workspaceId, generation, subscription, association,
-        target.event, target.environment,
+        target.event, target.environment, target.loopValue,
       );
       incrementSummary(
         summary,

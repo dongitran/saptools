@@ -161,9 +161,10 @@ function resetPackageEventCalls(
     const source = call.evidence.eventNameConstantSourceExpression;
     if (typeof source !== 'string' || source.length === 0)
       throw new Error('invalid_current_package_event_constant_evidence');
-    const reason = call.evidence.receiverClassification === 'unproven'
-      ? call.unresolvedReason : 'event_name_constant_resolution_pending';
-    update.run(source, reason, pendingEventEvidence(call.evidence), call.id);
+    update.run(
+      source, 'event_name_constant_resolution_pending',
+      pendingEventEvidence(call.evidence), call.id,
+    );
     batch.affectedCallerRepoIds.add(call.repoId);
     matched = true;
   }

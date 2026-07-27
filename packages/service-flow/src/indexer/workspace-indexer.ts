@@ -104,7 +104,12 @@ export interface IndexWorkspaceSummary {
 export async function indexWorkspace(
   db: Db,
   workspaceId: number,
-  options: { repo?: string; force: boolean; injectDerivedMaterializationFailure?: boolean },
+  options: {
+    repo?: string;
+    force: boolean;
+    eventEnvironmentKeys?: readonly string[];
+    injectDerivedMaterializationFailure?: boolean;
+  },
 ): Promise<IndexWorkspaceSummary> {
   const repos = selectedRepositories(db, workspaceId, options.repo);
   const runId = claimIndexRun(db, workspaceId, repos.length);
@@ -112,7 +117,9 @@ export async function indexWorkspace(
     fileCount: 0, diagnosticCount: 0, skippedCount: 0, rows: [],
   };
   try {
-    await prepareRepositories(repos, options.force, state);
+    await prepareRepositories(
+      repos, options.force, state, options.eventEnvironmentKeys,
+    );
     return publishPreparedWorkspaceRows(
       db, workspaceId, runId, state.rows, options,
     );
@@ -168,10 +175,13 @@ async function prepareRepositories(
   repos: readonly IndexRepository[],
   force: boolean,
   state: PreparationState,
+  eventEnvironmentKeys?: readonly string[],
 ): Promise<void> {
   for (const repo of repos) {
     state.activeRepoId = repo.id;
-    const result = await prepareRepositoryIndex(repo, force);
+    const result = await prepareRepositoryIndex(
+      repo, force, undefined, eventEnvironmentKeys,
+    );
     state.rows.push(result);
     state.fileCount += result.fileCount;
     state.diagnosticCount += result.diagnosticCount;

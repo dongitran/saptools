@@ -23,7 +23,7 @@ export type EventReceiverUnresolvedReason =
 export interface EventReceiverEvidenceSite {
   startOffset: number;
   endOffset: number;
-  flow: BindingLexicalSite['flow'];
+  flow: BindingLexicalSite['flow'] | 'reference';
   connect: boolean;
 }
 
@@ -34,6 +34,7 @@ export interface EventReceiverProof {
   receiverClassification: 'cap_evidence' | 'name_fallback' | 'unproven';
   receiverProof: string;
   unresolvedReason?: EventReceiverUnresolvedReason;
+  fallbackRefusedReason?: string;
   consideredBindingSites: EventReceiverEvidenceSite[];
 }
 
@@ -41,7 +42,6 @@ export interface EventReceiverIndex {
   source: ts.SourceFile;
   lexical: BindingLexicalIndex;
   imports: SymbolImportBinding[];
-  compatibilityNames: Set<string>;
 }
 
 const eventReceiverNames = new Set([
@@ -218,17 +218,6 @@ function sameExecutionScope(
   return sameScope(left, right);
 }
 
-function unsupportedBranch(node: ts.Node): boolean {
-  let current: ts.Node | undefined = node.parent;
-  while (current && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
-    if (ts.isIfStatement(current) || ts.isConditionalExpression(current)
-      || ts.isSwitchStatement(current)
-      || ts.isIterationStatement(current, false)) return true;
-    current = current.parent;
-  }
-  return false;
-}
-
 function reachingSites(
   index: EventReceiverIndex,
   declaration: BindingLexicalSite,
@@ -275,11 +264,6 @@ function lexicalProof(
     return value ? [value] : [];
   });
   const considered = evidenceSites(sites, identifier.text, index.imports);
-  if (sites.some((site) => unsupportedBranch(site.node)))
-    return unproven(
-      'event_receiver_unproven_binding', 'branch_dependent_assignment',
-      considered,
-    );
   if (expressions.length > 0
     && expressions.every((value) => isCapConnect(value, index.imports)))
     return {
@@ -313,15 +297,24 @@ function unproven(
 }
 
 function compatibilityFallback(
-  name: string,
-  index: EventReceiverIndex,
+  identifier: ts.Identifier,
+  refusedReason: string,
+  consideredBindingSites: EventReceiverEvidenceSite[],
 ): Omit<EventReceiverProof, 'effectiveReceiver' | 'receiver'
   | 'rootReceiver'> | undefined {
-  return eventReceiverNames.has(name) || index.compatibilityNames.has(name)
+  return eventReceiverNames.has(identifier.text)
     ? {
         receiverClassification: 'name_fallback',
         receiverProof: 'compatibility_name_fallback',
-        consideredBindingSites: [],
+        fallbackRefusedReason: refusedReason,
+        consideredBindingSites: consideredBindingSites.length > 0
+          ? consideredBindingSites
+          : [{
+              startOffset: identifier.getStart(identifier.getSourceFile()),
+              endOffset: identifier.getEnd(),
+              flow: 'reference',
+              connect: false,
+            }],
       }
     : undefined;
 }
@@ -344,9 +337,8 @@ function identifierProof(
     consideredBindingSites: [],
   };
   const proven = lexicalProof(identifier, use, index);
-  if (proven?.receiverClassification === 'cap_evidence') return proven;
-  return compatibilityFallback(identifier.text, index)
-    ?? proven
+  return proven
+    ?? compatibilityFallback(identifier, 'binding_not_found', [])
     ?? unproven('event_receiver_unproven_binding', 'binding_not_found');
 }
 
@@ -364,13 +356,11 @@ function rootIdentifier(
 
 export function createEventReceiverIndex(
   source: ts.SourceFile,
-  compatibilityNames: Set<string>,
 ): EventReceiverIndex {
   return {
     source,
     lexical: createBindingLexicalIndex(source),
     imports: collectSymbolImportBindings(source),
-    compatibilityNames,
   };
 }
 

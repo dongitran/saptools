@@ -566,7 +566,7 @@ export function classifyOutboundCallsInSource(
   const initializers = variableInitializers(source);
   const serviceVariables = collectServiceVariables(source);
   const eventAnalysis = createEventCallAnalysisContext(
-    source, serviceVariables, options.importedEventNameResolver,
+    source, options.importedEventNameResolver,
     options.eventEnvironmentReferenceResolver,
   );
   const wrapperSpecs = collectWrapperSpecs(source);

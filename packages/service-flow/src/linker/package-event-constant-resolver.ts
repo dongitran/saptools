@@ -20,7 +20,6 @@ interface EventConstantCall {
   id: number;
   binding: SymbolImportReference;
   evidence: Record<string, unknown>;
-  unresolvedReason?: string | null;
 }
 
 interface PackageRepository {
@@ -56,8 +55,7 @@ function jsonRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function callRows(db: Db, workspaceId: number): EventConstantCall[] {
-  const rows = db.prepare(`SELECT c.id,c.evidence_json evidenceJson,
-    c.unresolved_reason unresolvedReason
+  const rows = db.prepare(`SELECT c.id,c.evidence_json evidenceJson
     FROM outbound_calls c JOIN repositories r ON r.id=c.repo_id
     WHERE r.workspace_id=?
       AND c.call_type IN ('async_emit','async_subscribe')
@@ -69,11 +67,8 @@ function callRows(db: Db, workspaceId: number): EventConstantCall[] {
     const binding = parsePackageImportReference(
       evidence?.eventNameConstantImportBinding,
     );
-    return typeof row.id === 'number' && evidence && binding ? [{
-      id: row.id, evidence, binding,
-      unresolvedReason: typeof row.unresolvedReason === 'string'
-        ? row.unresolvedReason : null,
-    }] : [];
+    return typeof row.id === 'number' && evidence && binding
+      ? [{ id: row.id, evidence, binding }] : [];
   });
 }
 
@@ -179,14 +174,15 @@ function resolveRows(
     'event_name_constant_container_not_exported', fields,
   );
   if (Number(row.stable) !== 1) return failure(
-    'event_name_constant_container_mutable', fields,
+    constantRefusalReason(row), fields,
   );
   if (row.resolutionStatus !== 'resolved'
     || typeof row.value !== 'string') return failure(
-    String(row.unresolvedReason) === 'event_name_constant_container_mutable'
-      ? 'event_name_constant_container_mutable'
-      : 'event_name_constant_member_not_string',
+    constantRefusalReason(row),
     fields,
+  );
+  if (row.value.length === 0) return failure(
+    'event_name_constant_value_empty', fields,
   );
   return {
     ...fields,
@@ -196,6 +192,19 @@ function resolveRows(
     sourceLine: Number(row.sourceLine),
     eligibleCandidateCount: 1,
   };
+}
+
+function constantRefusalReason(row: Record<string, unknown>): string {
+  const reason = String(row.unresolvedReason ?? '');
+  if ([
+    'event_name_constant_container_mutable',
+    'event_name_constant_container_unsafe_reference',
+    'event_name_constant_container_unsupported_shape',
+    'event_name_constant_member_not_string',
+  ].includes(reason)) return reason;
+  return Number(row.stable) === 1
+    ? 'event_name_constant_member_not_string'
+    : 'event_name_constant_container_unsafe_reference';
 }
 
 function resolveCall(
@@ -232,11 +241,6 @@ export function expectedPackageEventConstantResolution(
     binding,
     evidence: {},
   });
-}
-
-function receiverReason(call: EventConstantCall): string | null {
-  return call.evidence.receiverClassification === 'unproven'
-    ? call.unresolvedReason ?? 'event_receiver_unproven_binding' : null;
 }
 
 function resolutionEvidence(
@@ -284,7 +288,7 @@ export function linkPackageEventConstants(
     unresolved_reason=?,evidence_json=? WHERE id=?`);
   for (const call of callRows(db, workspaceId)) {
     const resolution = resolveCall(db, workspaceId, call);
-    const reason = receiverReason(call) ?? resolution.reason ?? null;
+    const reason = resolution.reason ?? null;
     const sourceExpression = call.evidence.eventNameConstantSourceExpression;
     update.run(
       resolution.value ?? String(sourceExpression ?? ''),

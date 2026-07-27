@@ -1,5 +1,14 @@
 # Service Flow Resolution Notes
 
+## 0.1.73 event fact-contract repair notes
+
+- Package/CLI `0.1.73` keeps SQLite schema `14` and compact `service-flow/compact-graph@1`, while advancing analyzer compatibility to `0.1.73-facts.1`. Receiver/name facts, alias skeletons, constant safety, loop materialization, and environment-key configuration changed; existing workspaces require `index --force` and `link --force`.
+- Event receiver proof accepts a single structurally proven CAP-connect reaching assignment regardless of enclosing control-flow syntax. Mixed reaching values remain unproven, visible non-CAP declarations are never laundered through compatibility names, and the name fallback retains its refused-proof reason.
+- `outbound_calls.unresolved_reason` is event-name-only for event facts. Receiver proof remains bounded evidence that affects confidence and disclosure, so a static event name keeps canonical `event` identity even when receiver propagation is unproven.
+- Empty strings are valid generated constant values but invalid event topics. Alias-resolved templates derive their signed skeleton from the resolved opaque template text; no placeholder expression is evaluated.
+- Workspace configuration may add up to 16 event environment keys using `eventEnvironmentKeys`. Only keys matching `[A-Z_][A-Z0-9_]{0,63}` are admitted; adjacent keys remain excluded, and changing the configured set invalidates repository fingerprints.
+- Lifecycle diagnostics distinguish stale facts from invalid current facts, use the configured workspace path, and provide bounded repository/file/line/predicate examples. Event-shape fan-out and doctor reason groups have truthful shown/omitted counts.
+
 ## 0.1.72 package publication notes
 
 - Package/CLI `0.1.72` publishes the schema-14 event-surface implementation without changing fact or compact compatibility. SQLite remains schema `14`, analyzer remains `0.1.71-facts.1`, and compact remains `service-flow/compact-graph@1`; repositories already force-indexed with analyzer `0.1.71-facts.1` do not churn solely for this package patch.
@@ -188,7 +197,7 @@ Schema version 6 adds queryable external target metadata columns to `outbound_ca
 
 ## 0.1.18 auditability notes
 
-- CAP async event parsing treats `.emit()`, `.publish()`, and `.on()` consistently: a row is indexed only when the direct or chained root receiver has explicit CAP service or messaging evidence such as `cds` or a variable initialized from `cds.connect.to(...)`. Generic realtime/socket/EventEmitter receivers are ignored for CAP graph purposes by default.
+- CAP async event parsing treats `.emit()`, `.publish()`, and `.on()` consistently. Current analysis first proves lexical CAP-connect assignments, retains explicitly labelled fallback/provenance evidence where supported, and excludes known realtime/socket/stream/desktop receivers and CAP CRUD handler registrations from EventMesh facts.
 - Local CAP service calls now carry TypeScript AST evidence with classifier, source offsets, service lookup/name, operation, and alias chain.
 - Call-derived graph evidence nests persisted outbound parser evidence as `outboundEvidence`, allowing JSON trace output to explain parser classification without colliding with linker fields.
 - `graph_edges.is_dynamic` means the edge itself requires runtime operation-target resolution. Terminal database, external HTTP, and async event edges keep `is_dynamic=0`; dynamic binding provenance remains in `evidence_json.bindingHasDynamicExpression`.
@@ -266,7 +275,7 @@ Schema version 6 adds queryable external target metadata columns to `outbound_ca
 
 ### 0.1.17 parser ownership policy
 
-Outbound call extraction is AST-based and ignores comments, block comments, and string literals. CAP/service `.on(...)` registrations are indexed only when the receiver has CAP/service evidence, and top-level registrations receive `module:<relative-file>#event:<event-name>:<line>` synthetic owners. Generic event emitters such as desktop or window events are ignored by default rather than guessed as CAP async edges. Unsupported source shapes are surfaced through diagnostics and strict doctor ownerless categories instead of guessed graph edges.
+Outbound call extraction is AST-based and ignores comments, block comments, and string literals. CAP/service `.on(...)` registrations use lexical receiver proof or explicit compatibility/provenance evidence, and top-level registrations receive `module:<relative-file>#event:<event-name>:<line>` synthetic owners. Generic event emitters such as desktop, window, socket, and stream events are ignored rather than guessed as CAP async edges. Unsupported propagation remains typed evidence instead of silently becoming CAP proof.
 
 
 ## 0.1.35 OData placeholder semantics

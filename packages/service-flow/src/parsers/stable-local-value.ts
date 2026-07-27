@@ -205,6 +205,16 @@ function inertUnaryUse(node: ts.Node): boolean {
     || ts.isTypeOfExpression(parent)) && parent.expression === node));
 }
 
+function typePositionUse(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node.parent;
+  while (current && !ts.isStatement(current)
+    && !ts.isSourceFile(current)) {
+    if (ts.isTypeNode(current)) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 function safeReferenceUse(
   node: ts.Identifier,
   declaration: ts.Identifier,
@@ -213,7 +223,8 @@ function safeReferenceUse(
   return memberReceiverUse(use, declaration)
     || commonJsExportUse(use)
     || esmExportUse(use)
-    || inertUnaryUse(use);
+    || inertUnaryUse(use)
+    || typePositionUse(use);
 }
 
 export function stableLocalValueReference(

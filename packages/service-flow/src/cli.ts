@@ -4,6 +4,7 @@ import {
   createWorkspaceConfig,
   loadWorkspaceConfig,
   saveWorkspaceConfig,
+  type WorkspaceConfig,
 } from './config/workspace-config.js';
 import { openDatabase, openReadOnlyDatabase, type Db } from './db/connection.js';
 import {
@@ -20,6 +21,7 @@ import { classifyRepository } from './discovery/classify-repository.js';
 import { indexWorkspace } from './indexer/workspace-indexer.js';
 import { linkWorkspace } from './linker/cross-repo-linker.js';
 import { doctorDiagnostics, linkUpgradeWarnings } from './cli/doctor.js';
+import { factLifecycleDiagnostic } from './db/fact-lifecycle.js';
 import { trace } from './trace/trace-engine.js';
 import { compactTrace } from './trace/compact-trace.js';
 import {
@@ -33,6 +35,9 @@ import { renderDoctorDiagnostics } from './output/doctor-output.js';
 import { renderMermaid } from './output/mermaid-output.js';
 import { createStdoutWriter } from './output/stdout-policy.js';
 import { renderCompactJson } from './output/compact-json-output.js';
+import {
+  projectRepositoryInspection,
+} from './output/repository-inspection.js';
 import { VERSION } from './version.js';
 import type {
   DynamicMode,
@@ -122,6 +127,7 @@ async function withWorkspace<T>(
     db: ReturnType<typeof openDatabase>,
     workspaceId: number,
     rootPath: string,
+    config: WorkspaceConfig,
   ) => Promise<T> | T,
 ): Promise<T> {
   const config = await loadWorkspaceConfig(workspace);
@@ -130,7 +136,7 @@ async function withWorkspace<T>(
     const row = getWorkspace(db, config.rootPath);
     const workspaceId =
       row?.id ?? upsertWorkspace(db, config.rootPath, config.dbPath);
-    return await fn(db, workspaceId, config.rootPath);
+    return await fn(db, workspaceId, config.rootPath, config);
   } finally {
     db.close();
   }
@@ -275,10 +281,11 @@ function registerIndexCommand(program: Command): void {
     .option('--force')
     .action(
       (opts: { workspace?: string; repo?: string; force?: boolean }) =>
-        void withWorkspace(opts.workspace, async (db, workspaceId) => {
+        void withWorkspace(opts.workspace, async (db, workspaceId, _root, config) => {
           const r = await indexWorkspace(db, workspaceId, {
             repo: opts.repo,
             force: Boolean(opts.force),
+            eventEnvironmentKeys: config.eventEnvironmentKeys,
           });
           const outcome = indexCommandOutcome(r);
           writeStdout(outcome.stdout);
@@ -298,7 +305,7 @@ function registerLinkCommand(program: Command): void {
           const r = linkWorkspace(db, workspaceId);
           const upgradeWarnings = linkUpgradeWarnings(db, workspaceId);
           writeStdout(
-            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved, ${r.subscriptionHandlerResolvedCount} subscription handlers resolved, ${r.subscriptionHandlerAmbiguousCount} subscription handlers ambiguous, ${r.subscriptionHandlerUnresolvedCount} subscription handlers unresolved, ${r.subscriptionHandlerMissingAssociationCount} subscription handler associations missing, ${r.eventShapeCandidateCount} event shape candidates\n`,
+            `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved, ${r.subscriptionHandlerResolvedCount} subscription handlers resolved, ${r.subscriptionHandlerAmbiguousCount} subscription handlers ambiguous, ${r.subscriptionHandlerUnresolvedCount} subscription handlers unresolved, ${r.subscriptionHandlerMissingAssociationCount} subscription handler associations missing, ${r.eventShapeCandidateCount} event shape candidates, ${r.eventShapeCandidateOmittedCount} event shape candidates omitted by the link cap\n`,
           );
         }).catch(fail),
     );
@@ -329,22 +336,23 @@ function registerTraceCommand(program: Command): void {
 function listRepositoriesCommand(
   opts: { workspace?: string },
 ): Promise<void> {
-  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) =>
-    writeStdout(
-      renderJson(
-        listRepositories(db, workspaceId).map((repo) => ({
-          name: repo.name,
-          kind: repo.kind,
-          packageName: repo.package_name,
-        })),
-      ),
+  return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    if (writeLifecycleBlock(db, workspaceId)) return;
+    writeStdout(renderJson(
+      listRepositories(db, workspaceId).map((repo) => ({
+        name: repo.name,
+        kind: repo.kind,
+        packageName: repo.package_name,
+      })),
     ));
+  });
 }
 
 function listServicesCommand(
   opts: { workspace?: string; repo?: string },
 ): Promise<void> {
   return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    if (writeLifecycleBlock(db, workspaceId)) return;
     const selection = opts.repo
       ? selectRepository(db, opts.repo, workspaceId) : {};
     if (selection.diagnostic) {
@@ -363,6 +371,7 @@ function listOperationsCommand(
   opts: { workspace?: string; repo?: string; service?: string },
 ): Promise<void> {
   return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    if (writeLifecycleBlock(db, workspaceId)) return;
     const selection = opts.repo
       ? selectRepository(db, opts.repo, workspaceId) : {};
     if (selection.diagnostic) {
@@ -383,6 +392,7 @@ function listCallsCommand(
   opts: { workspace?: string; repo?: string; operation?: string },
 ): Promise<void> {
   return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    if (writeLifecycleBlock(db, workspaceId)) return;
     const selection = opts.repo
       ? selectRepository(db, opts.repo, workspaceId) : {};
     if (selection.diagnostic) {
@@ -460,9 +470,12 @@ function inspectRepositoryCommand(
   opts: { workspace?: string },
 ): Promise<void> {
   return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    if (writeLifecycleBlock(db, workspaceId)) return;
     const selection = selectRepository(db, name, workspaceId);
     writeStdout(renderJson(
-      selection.repo ?? selection.diagnostic ?? { error: 'repo not found' },
+      selection.repo
+        ? projectRepositoryInspection(selection.repo)
+        : selection.diagnostic ?? { error: 'repo not found' },
     ));
   });
 }
@@ -472,11 +485,20 @@ function inspectOperationCommand(
   opts: { workspace?: string },
 ): Promise<void> {
   return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
+    if (writeLifecycleBlock(db, workspaceId)) return;
     const rows = db.prepare(
       'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
     ).all(workspaceId, selector, selector);
     writeStdout(renderJson(rows));
   });
+}
+
+function writeLifecycleBlock(db: Db, workspaceId: number): boolean {
+  const diagnostic = factLifecycleDiagnostic(db, workspaceId);
+  if (!diagnostic) return false;
+  writeStdout(renderJson([diagnostic]));
+  process.exitCode = 1;
+  return true;
 }
 
 function registerInspectCommands(program: Command): void {

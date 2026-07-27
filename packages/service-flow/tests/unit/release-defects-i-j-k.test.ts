@@ -227,7 +227,7 @@ messaging.emit(selectEvent());
 
     expect(facts[0]).toMatchObject({
       eventNameExpr: 'Order.${kind}',
-      confidence: 0.5,
+      confidence: 0.2,
       unresolvedReason: 'dynamic_event_name_identifier',
       evidence: {
         eventNameStatus: 'dynamic',
@@ -237,7 +237,7 @@ messaging.emit(selectEvent());
     });
     expect(facts[1]).toMatchObject({
       eventNameExpr: 'selectEvent()',
-      confidence: 0.3,
+      confidence: 0.2,
       unresolvedReason: 'dynamic_event_name_unsupported_expression',
     });
   });
