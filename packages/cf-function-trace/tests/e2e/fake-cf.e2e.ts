@@ -58,6 +58,9 @@ async function canConnect(port: number): Promise<boolean> {
 }
 
 function expectSelectors(entries: readonly FakeCfLogEntry[]): void {
+  expect(entries.some((entry) => (
+    entry.args?.[0] === "app" && entry.args[1] === "demo-app"
+  ))).toBe(true);
   const sshCommands = entries.filter((entry) => entry.args?.[0] === "ssh");
   expect(sshCommands.some((entry) => {
     const command = entry.args?.join(" ") ?? "";

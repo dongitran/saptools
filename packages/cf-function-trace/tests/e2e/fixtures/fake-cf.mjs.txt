@@ -91,6 +91,9 @@ function handleCommand() {
         fail("fake auth credentials are unavailable");
       }
       return;
+    case "app":
+      process.stdout.write(`name: ${args[1] ?? ""}\nstate: started\n`);
+      return;
     case "ssh":
       if (args.includes("-N")) {
         handleTunnel();
