@@ -147,9 +147,11 @@ freezing the app until that tunnel is cleared.
 
 If a `SIGKILL` already happened, the tunnel is registered in the same session store `cf-debugger`
 itself uses: run `cf-debugger list` to confirm the orphaned session, then `cf-debugger stop <app>` to
-terminate it safely. If that does not clear it, find and kill the leftover `cf ssh <app>` process
-directly. Until a self-heal follow-up lands in `cf-debugger` itself, this manual step is the only way
-to recover a `SIGKILL`'d run.
+terminate it safely. If ownership cannot be verified, run `cf-debugger doctor` for the recorded PID,
+port, and recovery reason. `cf-debugger stop <app> --force` can then remove the unrecoverable record
+without signalling an unverified process. A tunnel left behind after that must be handled manually
+only after independently confirming that the reported PID is the exact `cf ssh` process owning the
+reported port; never kill a process merely because it matches a name or occupies the port.
 
 ## Query a saved run
 

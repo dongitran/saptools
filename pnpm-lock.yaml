@@ -219,7 +219,7 @@ importers:
   packages/cf-function-trace:
     dependencies:
       '@saptools/cf-inspector':
-        specifier: ^0.6.2
+        specifier: ^0.6.2 || ^0.8.0
         version: link:../cf-inspector
       commander:
         specifier: ^13.0.0
@@ -266,7 +266,7 @@ importers:
   packages/cf-inspector:
     dependencies:
       '@saptools/cf-debugger':
-        specifier: ^0.1.16
+        specifier: ^0.1.16 || ^0.2.0
         version: link:../cf-debugger
       commander:
         specifier: ^13.0.0
@@ -294,7 +294,7 @@ importers:
   packages/cf-live-trace:
     dependencies:
       '@saptools/cf-inspector':
-        specifier: ^0.4.8 || ^0.5.0
+        specifier: ^0.4.8 || ^0.5.0 || ^0.8.0
         version: link:../cf-inspector
       commander:
         specifier: ^13.0.0
