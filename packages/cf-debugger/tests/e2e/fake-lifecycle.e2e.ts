@@ -46,6 +46,7 @@ interface DebuggerStateForTest {
     readonly space: string;
     readonly apiEndpoint: string;
     readonly remotePort: number;
+    readonly remoteNodePid?: number;
     readonly cfHomeDir: string;
     readonly startedAt: string;
   }[];
@@ -184,6 +185,95 @@ test("User can start, inspect, and stop a fake-backed session", async () => {
     if (session !== undefined) {
       await stopCli(session.child);
     }
+    await cleanupHome(homeDir);
+  }
+});
+
+test("User can disambiguate status and stop with exact API endpoint or Node PID", async () => {
+  const homeDir = await createIsolatedHome();
+  const env = createFakeEnv(homeDir);
+  const startedAt = new Date().toISOString();
+  const commonSession = {
+    pid: process.pid,
+    controllerPid: process.pid,
+    hostname: hostname(),
+    region: "eu10",
+    org: "org-a",
+    space: "dev",
+    app: "demo-app",
+    process: "web",
+    instance: 0,
+    remotePort: 9229,
+    startedAt,
+    status: "starting",
+  } as const;
+
+  try {
+    await writeState(homeDir, {
+      version: "2",
+      sessions: [
+        {
+          ...commonSession,
+          sessionId: "selector-a",
+          apiEndpoint: "https://api-a.example.invalid",
+          localPort: 29_980,
+          cfHomeDir: join(homeDir, "selector-a-home"),
+        },
+        {
+          ...commonSession,
+          sessionId: "selector-b",
+          apiEndpoint: "https://api-b.example.invalid",
+          remoteNodePid: 9876,
+          localPort: 29_981,
+          cfHomeDir: join(homeDir, "selector-b-home"),
+        },
+      ],
+    });
+
+    const ambiguousStatus = await runCliCommand(env, ["status", ...TARGET_ARGS]);
+    expect(ambiguousStatus.code).not.toBe(0);
+    expect(ambiguousStatus.stderr).toContain("SESSION_AMBIGUOUS");
+
+    const statusByEndpoint = await runCliCommand(env, [
+      "status",
+      ...TARGET_ARGS,
+      "--api-endpoint",
+      "https://api-b.example.invalid",
+    ]);
+    expect(statusByEndpoint.code, statusByEndpoint.stderr).toBe(0);
+    expect(JSON.parse(statusByEndpoint.stdout)).toMatchObject({ sessionId: "selector-b" });
+
+    const statusByNodePid = await runCliCommand(env, [
+      "status",
+      ...TARGET_ARGS,
+      "--node-pid",
+      "9876",
+    ]);
+    expect(statusByNodePid.code, statusByNodePid.stderr).toBe(0);
+    expect(JSON.parse(statusByNodePid.stdout)).toMatchObject({ sessionId: "selector-b" });
+
+    const ambiguousStop = await runCliCommand(env, ["stop", ...TARGET_ARGS]);
+    expect(ambiguousStop.code).not.toBe(0);
+    expect(ambiguousStop.stderr).toContain("SESSION_AMBIGUOUS");
+
+    const stopByEndpoint = await runCliCommand(env, [
+      "stop",
+      ...TARGET_ARGS,
+      "--api-endpoint",
+      "https://api-a.example.invalid",
+    ]);
+    expect(stopByEndpoint.code, stopByEndpoint.stderr).toBe(0);
+    expect(stopByEndpoint.stdout).toContain("Stop requested for session selector-a");
+
+    const stopByNodePid = await runCliCommand(env, [
+      "stop",
+      ...TARGET_ARGS,
+      "--node-pid",
+      "9876",
+    ]);
+    expect(stopByNodePid.code, stopByNodePid.stderr).toBe(0);
+    expect(stopByNodePid.stdout).toContain("Stop requested for session selector-b");
+  } finally {
     await cleanupHome(homeDir);
   }
 });

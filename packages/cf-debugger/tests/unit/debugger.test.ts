@@ -1639,6 +1639,48 @@ describe("stopDebugger", () => {
     await expect(stopDebugger({ key })).rejects.toMatchObject({ code: "SESSION_AMBIGUOUS" });
     expect(mocks.removeSession).not.toHaveBeenCalled();
   });
+
+  it("disambiguates stop by exact API endpoint or remote Node PID", async () => {
+    const other = createSession(tempDir, {
+      sessionId: "session-b",
+      pid: 77_002,
+      apiEndpoint: "https://api-other.example.com",
+      nodePid: 9876,
+      status: "ready",
+    });
+    const sessions = [session, other];
+    mocks.readSessionSnapshot.mockResolvedValue(sessions);
+    mocks.inspectPortOwnership.mockResolvedValue({
+      status: "not-listening",
+      pids: [],
+    });
+    mocks.requestSessionStop.mockImplementation(
+      async (
+        sessionId: string,
+      ): Promise<
+        { readonly session: ActiveSession; readonly previousStatus: SessionStatus } | undefined
+      > => {
+        const selected = sessions.find((candidate) => candidate.sessionId === sessionId);
+        return selected === undefined
+          ? undefined
+          : { session: selected, previousStatus: selected.status };
+      },
+    );
+    mocks.removeSession.mockImplementation(
+      async (sessionId: string): Promise<ActiveSession | undefined> =>
+        sessions.find((candidate) => candidate.sessionId === sessionId),
+    );
+
+    await expect(
+      stopDebugger({ key: { ...key, apiEndpoint: other.apiEndpoint } }),
+    ).resolves.toMatchObject({ sessionId: "session-b", stale: true });
+    await expect(
+      stopDebugger({ key: { ...key, nodePid: 9876 } }),
+    ).resolves.toMatchObject({ sessionId: "session-b", stale: true });
+    expect(mocks.requestSessionStop).toHaveBeenNthCalledWith(1, "session-b");
+    expect(mocks.requestSessionStop).toHaveBeenNthCalledWith(2, "session-b");
+    expect(mocks.requestSessionStop).not.toHaveBeenCalledWith("session-a");
+  });
 });
 
 describe("session readers", () => {
