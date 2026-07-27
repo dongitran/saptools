@@ -161,10 +161,12 @@ a frame is `return`, then the function's own locals/parameters, then nested bloc
 so a large `this` (a framework/service object) is the first thing trimmed under a tight budget, not the
 function's own arguments.
 
-Remote targets auto-select the Node process that owns the app's `$PORT` listening socket (the HTTP server),
-so `--node-pid` is usually unnecessary even when an instance runs more than one Node process. Pass
-`--node-pid <pid>` only to override that choice or when no single process owns `$PORT` (selection then stays
-ambiguous and fails closed rather than guessing).
+Remote targets first reuse the Node process already owning the inspector port,
+then choose the sole Node process when exactly one exists. Only when several
+Node processes exist is the app's `$PORT` owner used as a tiebreaker; otherwise
+selection fails closed. Node `cluster` can leave `$PORT` owned by the primary
+rather than a request-handling worker, so inspect the ambiguity candidates and
+pass `--node-pid <pid>` when the intended worker differs.
 
 ## Reading Output
 
@@ -233,7 +235,10 @@ pkill -TERM -f 'cf-function-trace record'   # also fine
 
 If a `SIGKILL` already happened: the tunnel is registered in the same session store `cf-debugger` itself
 uses, so try `cf-debugger list` (install with `npm install -g @saptools/cf-debugger` if missing) to confirm
-the orphaned session, then `cf-debugger stop <app>` to terminate it safely. If that does not clear it, find
-and kill the leftover `cf ssh <app>` process directly (for example `ps aux | grep 'cf ssh'`, then `kill` the
-matching PID). Until a self-heal follow-up lands in `cf-debugger` itself, this manual step is the only way
-to recover a `SIGKILL`'d run.
+the orphaned session, then `cf-debugger stop <app>` to terminate it only after the recorded PID is proven to
+own the local listener. Run `cf-debugger doctor` when state, port, or session-home ownership is unclear.
+`cf-debugger stop --force --session-id <id>` can forget an unrecoverable record and remove only its exact
+owned v2 `CF_HOME`; it deliberately does **not** kill an unverified process. If the target remains paused,
+manually identify the exact leftover `cf ssh <app>` process and verify its app, instance, and local forward
+before signalling it. Never use a broad `pkill` or kill a process merely because it occupies the recorded
+port.

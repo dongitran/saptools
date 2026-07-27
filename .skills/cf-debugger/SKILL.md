@@ -7,7 +7,11 @@ description: Use when opening a Node.js inspector tunnel, debugging a SAP BTP CF
 
 ## Purpose
 
-Use `cf-debugger` to open an SSH tunnel to a Node.js inspector for a Cloud Foundry app. This is useful for attaching a debugger (like VSCode or Chrome DevTools) to a running SAP BTP Cloud Foundry app. It automatically handles `cf auth`, enabling SSH if disabled, sending `SIGUSR1` to the Node process, and setting up the port forward.
+Use `cf-debugger` to open an SSH tunnel to a Node.js inspector for a Cloud Foundry app. This is useful for attaching a debugger (like VSCode or Chrome DevTools) to a running SAP BTP Cloud Foundry app. It handles `cf auth`, selects and signals a verified Node PID, opens the port forward, proves the local listener belongs to the spawned tunnel, and verifies an attachable `/json/list` response through it.
+
+App-level SSH enablement and restart are opt-in. Never add
+`--allow-ssh-enable-restart` unless the user has confirmed that restarting the
+named app in the named org/space is acceptable.
 
 If `cf-debugger` is missing, install it: `npm install -g @saptools/cf-debugger`.
 
@@ -48,9 +52,25 @@ Stop all active sessions:
 cf-debugger stop --all
 ```
 
+Inspect state, orphan homes/ports, and legacy token-bearing artifacts without
+changing anything:
+
+```bash
+cf-debugger doctor
+```
+
+If ownership cannot be verified, `stop --force --session-id <id>` may forget the
+record and delete only its exact owned v2 `CF_HOME`. It never signals the
+unverified PID or the process currently holding the port.
+
 ## Troubleshooting
 
 - **Error: "No current CF target found"**: The user used a bare app name but hasn't run `cf target` recently. Use the full `<region>/<org>/<space>/<app>` selector.
 - **Error: "SESSION_ALREADY_RUNNING"**: There is already an active debugger session for this app. Use `cf-debugger list` to see it.
-- **Error: "SSH_NOT_ENABLED"**: The app or space doesn't allow SSH. Ensure that SSH is allowed at the space level and the CLI successfully restarted the app to enable it.
-- **Error: "TUNNEL_NOT_READY"**: The app might not be a Node.js app, or the Node.js process didn't start the inspector when it received `SIGUSR1`. Verify the app is a Node app.
+- **Error: "SSH_NOT_ENABLED"**: No restart was performed. Check space-level SSH and roles; either enable/restart manually or, only with the user's approval, retry with `--allow-ssh-enable-restart`.
+- **Error: "TUNNEL_NOT_READY"**: The spawned local forward never bound. Use the retained/redacted CF SSH stderr to diagnose transport/authentication.
+- **Error: "INSPECTOR_UNREACHABLE"**: The local forward bound, but `/json/list` did not prove an attachable remote inspector. The app/container may have restarted, the inspector may not have opened, or a different Node PID may own it.
+- **Error: "TUNNEL_OWNERSHIP_UNVERIFIED"**: Do not kill the PID or port owner by guess. Use `cf-debugger doctor`, then `stop --force --session-id <id>` only to clear unrecoverable state.
+
+On macOS, local ownership verification uses `lsof`. The CLI names this soft
+dependency when it is unavailable.
