@@ -33,6 +33,7 @@ export type {
   CompactStatusCountsV1,
 } from './trace/compact-contract.js';
 export { parseImplementationHint } from './trace/implementation-hints.js';
+export { DETAILED_TRACE_SCHEMA } from './output/json-output.js';
 export type { DynamicMode, ImplementationHint, TraceOptions } from './types.js';
 export { redactValue, redactText } from './utils/redaction.js';
 export type { Db } from './db/connection.js';

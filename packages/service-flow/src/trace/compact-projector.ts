@@ -537,26 +537,14 @@ function compactResult(
 }
 
 function omittedDetailedNodeCount(input: CompactProjectionInput): number {
-  const referenced = new Set(input.observations.flatMap((item) => [
-    ...detailedNodeIds(item.source), ...detailedNodeIds(item.target),
+  const referenced = new Set(input.trace.edges.flatMap((edge) => [
+    edge.fromNodeId ?? edge.from,
+    edge.toNodeId ?? edge.to,
   ]));
   return input.trace.nodes.filter((node) => {
     const id = typeof node.id === 'string' ? node.id : undefined;
     return id === undefined || !referenced.has(id);
   }).length;
-}
-
-function detailedNodeIds(endpoint: CompactSemanticEndpoint): string[] {
-  if (endpoint.kind === 'operation') return [`operation:${endpoint.operationId}`];
-  if (endpoint.kind === 'symbol') return [`symbol:${endpoint.symbolId}`];
-  if (endpoint.kind === 'handler_method')
-    return [`handler_method:${endpoint.handlerMethodId}`];
-  if (endpoint.kind === 'event') return [`event:${endpoint.eventName}`];
-  if (endpoint.kind === 'target') return [`${endpoint.targetKind}:${endpoint.targetId}`];
-  if (endpoint.kind === 'call_site') return [`call:${endpoint.callId}`];
-  if (endpoint.kind === 'scope')
-    return endpoint.symbolIds.map((symbolId) => `symbol:${symbolId}`);
-  return [];
 }
 
 function validateObservationOrdinals(

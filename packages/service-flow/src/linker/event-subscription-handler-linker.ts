@@ -1,5 +1,6 @@
 import type { Db } from '../db/connection.js';
 import {
+  applyEventReceiverProof,
   linkEventTemplate,
   type LinkedEventTemplate,
 } from './event-template-link.js';
@@ -262,7 +263,9 @@ function eventDispatchEvidence(
     repositoryName: subscription.repoName,
     subscriptionConsumerRepositoryId: environment?.consumerRepoId,
     subscriptionConsumerRepositoryName: environment?.consumerRepoName,
-    dispatchCertainty: environment?.resolution.status === 'resolved'
+    dispatchCertainty: event.unresolvedReason?.startsWith('event_receiver_')
+      ? 'receiver_unproven'
+      : environment?.resolution.status === 'resolved'
       ? 'environment_declaration_exact' : 'static_name_only',
     ...(environment?.resolution.status === 'not_applicable' ? {} : {
       eventEnvironmentResolution: {
@@ -470,16 +473,19 @@ function linkedSubscriptionEvents(
   );
   const loopValues = enumeratedLoopValues(subscription.evidenceJson);
   const templates = loopValues ?? [subscription.eventName];
+  const receiverEvidence = subscription.evidenceJson
+    ? parsedEvidenceRecord(subscription.evidenceJson) ?? {}
+    : {};
   return environments.flatMap((environment) =>
     templates.map((template) => ({
       environment,
       loopValue: loopValues ? template : undefined,
-      event: linkEventTemplate(
+      event: applyEventReceiverProof(linkEventTemplate(
         template,
         environment.resolution.variables,
         loopValues ? undefined : subscription.unresolvedReason ?? undefined,
         loopValues ? undefined : skeleton,
-      ),
+      ), receiverEvidence),
     })));
 }
 

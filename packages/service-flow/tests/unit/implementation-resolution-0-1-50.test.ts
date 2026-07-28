@@ -11,6 +11,9 @@ import {
   parseDecorators,
   trace,
 } from '../../src/index.js';
+import {
+  implementationMethodSignal,
+} from '../../src/linker/implementation-method-selection.js';
 import { renderMermaid } from '../../src/output/mermaid-output.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
 import type { HandlerMethodFact, TraceEdge } from '../../src/types.js';
@@ -261,6 +264,9 @@ describe('enum decorator implementation linking', () => {
     const qualityEdge = implementationEdge(db, 'runQualityCheck');
     expect(qualityEdge.status).toBe('resolved');
     expect(qualityEdge.evidence.selectionBasis).toBe('decorator_constant');
+    expect(arrayValue(qualityEdge.evidence.candidates)[0]).toMatchObject({
+      methodName: 'runQualityCheck',
+    });
     expect(JSON.stringify(qualityEdge.evidence)).not.toContain(
       'method_name_matches_but_decorator_targets_different_operation',
     );
@@ -353,7 +359,7 @@ service CollisionService {
 import { Func, Handler } from 'cds-routing-handlers';
 @Handler()
 export class CollisionHandler {
-  @Func(GeneratedOperations.second)
+  @Func(root.service.area.CollisionService.ActionSecond.name)
   async first(): Promise<void> {}
 }
 `),
@@ -375,6 +381,28 @@ createCombinedHandler({ handler: [CollisionHandler] });
       ],
     });
     db.close();
+  });
+
+  it('does not confuse an operation with a longer sibling containing its name', () => {
+    const signal = implementationMethodSignal({
+      methodName: 'set',
+      decoratorRawExpression:
+        'root.service.area.CollisionService.ActionUnrelated.name',
+      decoratorResolutionJson: JSON.stringify({
+        resolutionKind: 'unresolved',
+        argumentExpression:
+          'root.service.area.CollisionService.ActionUnrelated.name',
+      }),
+    }, {
+      operationName: 'set',
+      operationPath: 'set',
+      serviceOperationNames: JSON.stringify(['set', 'setStatus']),
+    });
+    expect(signal).toMatchObject({
+      matches: true,
+      contradicted: false,
+      selectionBasis: 'method_name_fallback',
+    });
   });
 
   it('marks method-name fallback selections in every output format', async () => {

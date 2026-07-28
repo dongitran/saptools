@@ -6,7 +6,7 @@ import {
 export type ImplementationSelectionBasis =
   | 'decorator_literal'
   | 'decorator_constant'
-  | 'decorator_expression_fallback'
+  | 'expression_spelling_fallback'
   | 'method_name_fallback';
 
 export interface ImplementationMethodSignal {
@@ -29,20 +29,39 @@ function serviceOperationNames(value: unknown): string[] {
   }
 }
 
-function rawMentionsSiblingOperation(
+function lowerFirst(value: string): string {
+  return value.length === 0
+    ? value
+    : `${value[0]?.toLowerCase() ?? ''}${value.slice(1)}`;
+}
+
+function expressionOperationName(
+  row: Record<string, unknown>,
+): string | undefined {
+  const resolution = objectJson(row.decoratorResolutionJson) ?? {};
+  const expression = stringValue(resolution.argumentExpression)
+    ?? stringValue(row.decoratorRawExpression);
+  const identifiers = expression?.match(/[A-Za-z_$][A-Za-z0-9_$]*/g);
+  if (!identifiers || identifiers.length === 0) return undefined;
+  const last = identifiers.at(-1);
+  const candidate = last === 'name'
+    ? identifiers.at(-2)
+    : last;
+  if (!candidate) return undefined;
+  const generated = /^(?:Action|Func)(.+)$/.exec(candidate)?.[1];
+  return normalizedOperationName(lowerFirst(generated ?? candidate));
+}
+
+function decoratorNamesSiblingOperation(
   row: Record<string, unknown>,
   operation: Record<string, unknown>,
   requested: string,
 ): boolean {
-  const raw = stringValue(row.decoratorRawExpression)?.toLowerCase();
-  if (!raw) return false;
-  const identifiers = new Set(
-    raw.match(/[a-z_$][a-z0-9_$]*/g) ?? [],
-  );
+  const decorated = expressionOperationName(row);
+  if (!decorated || decorated === requested) return false;
   return serviceOperationNames(operation.serviceOperationNames)
     .filter((name) => normalizedOperationName(name) !== requested)
-    .some((name) =>
-      identifiers.has(normalizedOperationName(name).toLowerCase()));
+    .some((name) => normalizedOperationName(name) === decorated);
 }
 
 function decoratorSelectionBasis(
@@ -71,7 +90,7 @@ function decoratorMethodSignal(
   );
   if (decorator.status !== 'resolved') return undefined;
   const selectionBasis = decoratorSelectionBasis(resolution)
-    ?? 'decorator_expression_fallback';
+    ?? 'expression_spelling_fallback';
   return decorator.operationName === operationName
     ? {
         matches: true, contradicted: false, selectionBasis,
@@ -102,7 +121,7 @@ export function implementationMethodSignal(
   if (decorator) return decorator;
   if (String(row.methodName ?? '') !== operationName)
     return rejected('method name does not match operation', false);
-  if (rawMentionsSiblingOperation(row, operation, operationName))
+  if (decoratorNamesSiblingOperation(row, operation, operationName))
     return {
       ...rejected('method_name_fallback_conflicts_with_sibling_operation'),
       selectionBasis: 'method_name_fallback',

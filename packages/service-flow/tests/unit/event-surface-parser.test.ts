@@ -23,6 +23,10 @@ import {
 import {
   reconcileEventSubscriptions,
 } from '../../src/parsers/event-subscription-facts.js';
+import {
+  createEventReceiverIndex,
+  proveEventReceiver,
+} from '../../src/parsers/event-receiver-analysis.js';
 import type { OutboundCallFact } from '../../src/types.js';
 import { parseServiceBindings } from '../../src/parsers/service-binding-parser.js';
 
@@ -426,6 +430,60 @@ async function subscribe(): Promise<void> {
         eventNameExpr: 'data',
       }),
     ]);
+  });
+
+  it('proves a Node stream parameter before generic parameter flow', () => {
+    const file = source(`
+import { Readable } from 'node:stream';
+function consume(stream: Readable): void {
+  stream.on('data', (): void => {});
+  stream.on('end', (): void => {});
+  stream.on('error', (): void => {});
+}
+`);
+    expect(classifyOutboundCallsInSource(file, 'events.ts')
+      .map((item) => item.fact)
+      .filter((fact) =>
+        fact.callType === 'async_emit'
+        || fact.callType === 'async_subscribe')).toEqual([]);
+    let call: ts.CallExpression | undefined;
+    const visit = (node: ts.Node): void => {
+      if (call) return;
+      if (ts.isCallExpression(node)
+        && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'on') call = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    if (!call || !ts.isPropertyAccessExpression(call.expression))
+      throw new Error('node_stream_listener_fixture_missing');
+    expect(proveEventReceiver(
+      call.expression.expression,
+      call,
+      createEventReceiverIndex(file),
+    )).toMatchObject({
+      receiverClassification: 'unproven',
+      receiverProof: 'node_event_parameter_type',
+      unresolvedReason: 'event_receiver_not_cap_client',
+    });
+  });
+
+  it('records the root receiver for this-property event calls', () => {
+    const [fact] = eventFacts(`
+class Publisher {
+  bus: { emit(name: string, payload: unknown): void };
+  publish(): void {
+    this.bus.emit('ThisTopic', {});
+  }
+}
+`);
+    expect(fact).toMatchObject({
+      eventNameExpr: 'ThisTopic',
+      evidence: {
+        receiverClassification: 'unproven',
+        rootReceiver: 'this',
+      },
+    });
   });
 
   it('folds stable local enum and const-object topics only', () => {

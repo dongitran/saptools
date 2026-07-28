@@ -27,6 +27,7 @@ CREATE INDEX IF NOT EXISTS idx_repo_name ON repositories(name);
 CREATE INDEX IF NOT EXISTS idx_service_path ON cds_services(service_path);
 CREATE INDEX IF NOT EXISTS idx_extension_import ON cds_services(extension_module_specifier, extension_imported_symbol, is_extend);
 CREATE INDEX IF NOT EXISTS idx_operation_name ON cds_operations(operation_name, operation_path);
+CREATE INDEX IF NOT EXISTS idx_operation_service ON cds_operations(service_id);
 CREATE INDEX IF NOT EXISTS idx_operation_base ON cds_operations(base_operation_id);
 CREATE INDEX IF NOT EXISTS idx_calls_repo ON outbound_calls(repo_id, call_type);
 CREATE INDEX IF NOT EXISTS idx_outbound_event_skeleton ON outbound_calls(event_skeleton_signature,call_type,repo_id);

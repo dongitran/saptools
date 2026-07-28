@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   compactTrace,
+  DETAILED_TRACE_SCHEMA,
   traceAndCompact,
 } from '../../src/index.js';
 import type {
@@ -47,15 +48,15 @@ type PublicFactContract = [
 describe('package, analyzer, and public compact contracts', () => {
   it('keeps package/CLI version authority separate from fact compatibility', async () => {
     expect(VERSION).toBe(packageJson.version);
-    expect(VERSION).toBe('0.1.75');
-    expect(ANALYZER_VERSION).toBe('0.1.75-facts.1');
+    expect(VERSION).toBe('0.1.76');
+    expect(ANALYZER_VERSION).toBe('0.1.76-facts.1');
     expect(ANALYZER_VERSION).not.toBe(VERSION);
     const source = await readFile(
       new URL('../../src/version.ts', import.meta.url), 'utf8',
     );
     expect(source).toContain('export const VERSION = packageJson.version;');
     expect(source).toContain(
-      "export const ANALYZER_VERSION = '0.1.75-facts.1';",
+      "export const ANALYZER_VERSION = '0.1.76-facts.1';",
     );
     expect(source).not.toMatch(/ANALYZER_VERSION\s*=\s*VERSION/);
   });
@@ -67,5 +68,6 @@ describe('package, analyzer, and public compact contracts', () => {
     expect(publicFactWidth).toBe(10);
     expect(compactTrace).toBeTypeOf('function');
     expect(traceAndCompact).toBeTypeOf('function');
+    expect(DETAILED_TRACE_SCHEMA).toBe('service-flow/detailed-trace@2');
   });
 });

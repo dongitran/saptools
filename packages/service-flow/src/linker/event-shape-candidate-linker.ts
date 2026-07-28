@@ -112,6 +112,8 @@ function candidateEligible(
 interface DeploymentAssessment {
   compatible: boolean;
   scope: string;
+  comparisonStatus: string;
+  comparisonReason?: string;
 }
 
 function hasDeploymentProvenance(value: unknown): boolean {
@@ -121,6 +123,33 @@ function hasDeploymentProvenance(value: unknown): boolean {
     return provenance === 'env_declaration_mta'
       || provenance === 'env_declaration_manifest';
   });
+}
+
+function comparisonUnavailable(
+  scope: string,
+  comparisonReason: string,
+): DeploymentAssessment {
+  return {
+    compatible: true,
+    scope,
+    comparisonStatus: 'not_possible',
+    comparisonReason,
+  };
+}
+
+function deploymentMismatch(authoritative: boolean): DeploymentAssessment {
+  return authoritative
+    ? {
+        compatible: false,
+        scope: 'shared_deployment_environment_value_mismatch',
+        comparisonStatus: 'compared_mismatch',
+      }
+    : {
+        compatible: true,
+        scope: 'shared_environment_value_mismatch_non_authoritative',
+        comparisonStatus: 'compared_non_authoritative_mismatch',
+        comparisonReason: 'development_environment_is_not_deployment_proof',
+      };
 }
 
 function deploymentAssessment(
@@ -134,9 +163,10 @@ function deploymentAssessment(
     .map((binding) => binding.environmentKey).filter(Boolean));
   const sharedKey = subscribeSkeleton?.environmentBindings.some((binding) =>
     binding.environmentKey && emitKeys.has(binding.environmentKey));
-  if (!sharedKey) return {
-    compatible: true, scope: 'environment_key_unshared',
-  };
+  if (!sharedKey) return comparisonUnavailable(
+    'environment_key_unshared',
+    'publisher_and_subscriber_environment_keys_unshared',
+  );
   const evidence = parsedEvidence(association.evidenceJson);
   const subscriptionEnvironment = parsedEvidence(
     evidence.eventEnvironmentResolution,
@@ -144,29 +174,26 @@ function deploymentAssessment(
   const environment = resolveEventEnvironment(
     emit.skeletonJson, emit.environmentJson, {},
   );
-  if (environment.status !== 'resolved') return {
-    compatible: true, scope: 'publisher_environment_unresolved',
-  };
-  if (subscriptionEnvironment.status !== 'resolved') return {
-    compatible: true, scope: 'subscription_environment_unresolved',
-  };
+  if (environment.status !== 'resolved') return comparisonUnavailable(
+    'publisher_environment_unresolved',
+    'publisher_environment_value_unresolved',
+  );
+  if (subscriptionEnvironment.status !== 'resolved')
+    return comparisonUnavailable(
+      'subscription_environment_unresolved',
+      'subscription_environment_value_unresolved',
+    );
   const event = linkEventTemplate(
     emit.eventName, environment.variables, undefined, emitSkeleton,
   );
   if (evidence.effectiveEventName === event.targetId) return {
-    compatible: true, scope: 'shared_environment_value_equal',
+    compatible: true,
+    scope: 'shared_environment_value_equal',
+    comparisonStatus: 'compared_equal',
   };
   const authoritative = hasDeploymentProvenance(environment.provenance)
     && hasDeploymentProvenance(subscriptionEnvironment.provenance);
-  return authoritative
-    ? {
-        compatible: false,
-        scope: 'shared_deployment_environment_value_mismatch',
-      }
-    : {
-        compatible: true,
-        scope: 'shared_environment_value_mismatch_non_authoritative',
-      };
+  return deploymentMismatch(authoritative);
 }
 
 function candidateEvidence(
@@ -180,6 +207,11 @@ function candidateEvidence(
   const deployments = deploymentProjection(candidate.deployments);
   const scopes = [...new Set(candidate.deployments.map((item) => item.scope))]
     .sort();
+  const comparisonStatuses = [...new Set(
+    candidate.deployments.map((item) => item.comparisonStatus),
+  )].sort();
+  const comparisonReasons = [...new Set(candidate.deployments
+    .flatMap((item) => item.comparisonReason ?? []))].sort();
   return {
     publishCallId: emit.id,
     subscribeCallId: subscribe.id,
@@ -190,6 +222,9 @@ function candidateEvidence(
     subscriptionRepositoryName: subscribe.repoName,
     deploymentScope: scopes.length === 1
       ? scopes[0] : 'mixed_environment_scope',
+    deploymentComparisonStatus: comparisonStatuses.length === 1
+      ? comparisonStatuses[0] : 'mixed',
+    deploymentComparisonReasons: comparisonReasons,
     deploymentRepositories: deployments.items,
     deploymentCount: deployments.totalCount,
     shownDeploymentCount: deployments.shownCount,
@@ -211,6 +246,8 @@ interface ShapeDeployment {
   environmentStatus?: string;
   associationGraphEdgeId: number;
   scope: string;
+  comparisonStatus: string;
+  comparisonReason?: string;
 }
 
 function deploymentProjection(
@@ -220,7 +257,8 @@ function deploymentProjection(
   for (const value of values) {
     const key = JSON.stringify([
       value.repositoryId, value.repositoryName, value.effectiveEventName,
-      value.environmentStatus, value.scope,
+      value.environmentStatus, value.scope, value.comparisonStatus,
+      value.comparisonReason,
     ]);
     if (!unique.has(key)) unique.set(key, value);
   }
@@ -233,7 +271,7 @@ function deploymentProjection(
 
 function shapeDeployment(
   association: SubscriberAssociation,
-  scope: string,
+  assessment: DeploymentAssessment,
 ): ShapeDeployment {
   const evidence = parsedEvidence(association.evidenceJson);
   const environment = parsedEvidence(evidence.eventEnvironmentResolution);
@@ -248,7 +286,9 @@ function shapeDeployment(
     environmentStatus: typeof environment.status === 'string'
       ? environment.status : undefined,
     associationGraphEdgeId: association.graphEdgeId,
-    scope,
+    scope: assessment.scope,
+    comparisonStatus: assessment.comparisonStatus,
+    comparisonReason: assessment.comparisonReason,
   };
 }
 
@@ -305,7 +345,7 @@ function candidatesForEmit(
       const key = `${subscription.id}:${association.targetKind}:${
         association.targetId}`;
       const existing = grouped.get(key);
-      const deployment = shapeDeployment(association, assessment.scope);
+      const deployment = shapeDeployment(association, assessment);
       if (existing) existing.deployments.push(deployment);
       else grouped.set(key, {
         subscription, association, deployments: [deployment],

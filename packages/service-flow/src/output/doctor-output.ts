@@ -25,16 +25,18 @@ export function renderDoctorTable(diagnostics: Diagnostic[]): string {
     hints: suggestedHintLines(diagnostic),
   }));
   const widths = {
-    severity: columnWidth('Severity', rows.map((row) => row.severity), 10),
-    code: columnWidth('Code', rows.map((row) => row.code), 44),
-    location: columnWidth('Location', rows.map((row) => row.location), 28),
+    severity: columnWidth('Severity', rows.map((row) => row.severity)),
+    code: columnWidth('Code', rows.map((row) => row.code)),
+    location: columnWidth('Location', rows.map((row) => row.location)),
   };
   const lines = [
     `${'Severity'.padEnd(widths.severity)} ${'Code'.padEnd(widths.code)} ${'Location'.padEnd(widths.location)} Message`,
     `${'-'.repeat(widths.severity)} ${'-'.repeat(widths.code)} ${'-'.repeat(widths.location)} ${'-'.repeat(7)}`,
   ];
   for (const row of rows) {
-    lines.push(`${truncate(row.severity, widths.severity).padEnd(widths.severity)} ${truncate(row.code, widths.code).padEnd(widths.code)} ${truncate(row.location, widths.location).padEnd(widths.location)} ${row.message}`);
+    lines.push(`${row.severity.padEnd(widths.severity)} ${
+      row.code.padEnd(widths.code)} ${
+      row.location.padEnd(widths.location)} ${row.message}`);
     lines.push(...row.hints.map((hint) => `  try ${hint}`));
   }
   return `${lines.join('\n')}\n`;
@@ -55,7 +57,9 @@ function compactMessage(diagnostic: Diagnostic): string {
   const message = String(diagnostic.message ?? '');
   const count = typeof diagnostic.count === 'number' ? ` count=${diagnostic.count}` : '';
   const total = typeof diagnostic.total === 'number' ? ` total=${diagnostic.total}` : '';
-  return `${message}${count}${total}`.trim();
+  const multiplicity = typeof diagnostic.multiplicity === 'number'
+    ? ` multiplicity=${diagnostic.multiplicity}` : '';
+  return `${message}${count}${total}${multiplicity}`.trim();
 }
 
 function suggestedHintLines(diagnostic: Diagnostic): string[] {
@@ -100,12 +104,6 @@ function cleanDoctorMessage(): string {
   return `${pc.green('No diagnostics recorded')}\n`;
 }
 
-function columnWidth(header: string, values: string[], max: number): number {
-  return Math.min(max, Math.max(header.length, ...values.map((value) => value.length)));
-}
-
-function truncate(value: string, width: number): string {
-  if (value.length <= width) return value;
-  if (width <= 1) return value.slice(0, width);
-  return `${value.slice(0, width - 1)}…`;
+function columnWidth(header: string, values: string[]): number {
+  return Math.max(header.length, ...values.map((value) => value.length));
 }

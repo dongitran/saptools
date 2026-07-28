@@ -251,6 +251,7 @@ export interface CompactEdgeDetailsV1 {
 
 export interface CompactDiagnosticDetailsV1 {
   reasonCode?: string;
+  multiplicity?: number;
   tiedCandidateRepos?: CompactReferenceGroupV1;
   selectorKind?: string;
   selectorSuggestions?: CompactReferenceGroupV1;

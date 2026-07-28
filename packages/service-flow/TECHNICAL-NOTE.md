@@ -1,5 +1,29 @@
 # Service Flow Resolution Notes
 
+## 0.1.76 reachable-guard and migration-safety notes
+
+- Package/CLI `0.1.76` uses SQLite schema `15`, analyzer
+  `0.1.76-facts.1`, compact `service-flow/compact-graph@1`, and detailed JSON
+  `service-flow/detailed-trace@2`. Parser facts changed, so upgrade with
+  `index --force` followed by `link --force`.
+- Schema 15 still performs the same additive normalization, but its repository
+  rebuild now asserts both required SQLite pragmas immediately before the DDL
+  and verifies every direct child-table row count before committing.
+- Sibling-operation fallback refusal derives one exact operation identity from
+  the persisted decorator expression. It never uses substring matching, and
+  fixture distribution checks require the refusal branch to have a non-zero
+  population.
+- Structural Node stream/event parameter types are evaluated before generic
+  parameter propagation. Unproven event receivers retain their name evidence
+  but produce non-terminal dynamic candidates.
+- Mermaid and table resolve canonical node ids consistently. Detailed JSON v2
+  declares canonical edge endpoints explicitly; display text remains in
+  `fromLabel` and `toLabel`.
+- Bare `trace` without a selector and `doctor --detail` without `--strict`
+  intentionally remain non-zero usage errors, preserving the behavior change
+  introduced in 0.1.75 for callers that previously relied on unbounded or
+  ineffective invocations.
+
 ## 0.1.75 decorator identity and output-honesty notes
 
 - Package/CLI `0.1.75` uses SQLite schema `15`, analyzer `0.1.75-facts.1`, compact `service-flow/compact-graph@1`, and requires `index --force` followed by `link --force`.

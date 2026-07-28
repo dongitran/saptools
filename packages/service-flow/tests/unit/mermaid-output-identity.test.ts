@@ -98,6 +98,59 @@ describe('Mermaid node identity', () => {
     expect(labels).toEqual(['Full neutral source label', 'Full neutral target label']);
   });
 
+  it('resolves canonical ids before a colliding earlier label', () => {
+    const result = trace(
+      [{
+        ...edge(1, 'source-id', 'Shared target'),
+        fromNodeId: 'source-id',
+        toNodeId: 'target-b',
+      }],
+      [
+        { id: 'source-id', label: 'Source', qualifiedLabel: 'repo:Source' },
+        {
+          id: 'target-a',
+          label: 'Shared target',
+          qualifiedLabel: 'repo-a:Shared target',
+        },
+        {
+          id: 'target-b',
+          label: 'Shared target',
+          qualifiedLabel: 'repo-b:Shared target',
+        },
+      ],
+    );
+    const mermaid = renderMermaid(result);
+    const table = renderTraceTable(result);
+
+    expect(mermaid).toContain('repo-b:Shared target');
+    expect(table).toContain('repo-b:Shared target');
+    expect(mermaid).not.toContain('repo-a:Shared target');
+  });
+
+  it('discloses an ambiguous label-only fallback', () => {
+    const output = renderMermaid(trace(
+      [edge(1, 'source', 'Shared target')],
+      [
+        { id: 'target-a', label: 'Shared target' },
+        { id: 'target-b', label: 'Shared target' },
+      ],
+    ));
+    expect(output).toContain(
+      'Shared target [ambiguous node label: 2 matches]',
+    );
+  });
+
+  it('renders tuple-shaped internal ids as readable stable paths', () => {
+    const result = trace([
+      edge(1, 'source', '["/NeutralService","/run"]'),
+    ]);
+    expect(renderTraceTable(result)).toContain('/NeutralService/run');
+    expect(renderMermaid(result)).toContain('/NeutralService/run');
+    expect(renderTraceTable(result)).not.toContain(
+      '["/NeutralService","/run"]',
+    );
+  });
+
   it('does not mutate table or JSON rendering', () => {
     const result = trace([
       edge(1, 'neutral-source', 'neutral-target'),
@@ -112,6 +165,7 @@ describe('Mermaid node identity', () => {
     expect(renderTraceJson(result)).toBe(jsonBefore);
     expect(JSON.stringify(result)).toBe(resultBefore);
     expect(JSON.parse(jsonBefore)).toMatchObject({
+      schema: 'service-flow/detailed-trace@2',
       edges: [{
         from: 'neutral-source',
         to: 'neutral-target',

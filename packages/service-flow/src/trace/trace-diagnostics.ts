@@ -7,7 +7,8 @@ export function loadTraceDiagnostics(
   workspaceId?: number,
 ): Array<Record<string, unknown>> {
   if (repoId === undefined && !includeWorkspaceDiagnostics) return [];
-  const diagnostics = db.prepare(`SELECT d.repo_id repoId,d.severity,d.code,d.message,
+  const diagnostics = db.prepare(`SELECT d.repo_id repoId,r.name repositoryName,
+      d.severity,d.code,d.message,
       d.source_file sourceFile,d.source_line sourceLine
     FROM diagnostics d LEFT JOIN repositories r ON r.id=d.repo_id
     WHERE (? IS NULL OR d.repo_id=?)
@@ -53,6 +54,39 @@ function packagePendingDiagnostic(count: number): Record<string, unknown> {
     requiredAction: 'relink',
     remediation: 'Run service-flow link --force for this workspace.',
   };
+}
+
+function diagnosticKey(value: Record<string, unknown>): string {
+  return JSON.stringify([
+    value.code,
+    value.repositoryName ?? value.repository ?? value.repoId,
+    value.sourceFile ?? value.file,
+    value.sourceLine ?? value.line,
+    value.message,
+  ]);
+}
+
+function diagnosticMultiplicity(value: Record<string, unknown>): number {
+  const count = value.multiplicity;
+  return typeof count === 'number' && Number.isSafeInteger(count) && count > 0
+    ? count : 1;
+}
+
+export function deduplicateTraceDiagnostics(
+  diagnostics: Array<Record<string, unknown>>,
+): void {
+  const unique = new Map<string, Record<string, unknown>>();
+  for (const diagnostic of diagnostics) {
+    const key = diagnosticKey(diagnostic);
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, { ...diagnostic });
+      continue;
+    }
+    existing.multiplicity = diagnosticMultiplicity(existing)
+      + diagnosticMultiplicity(diagnostic);
+  }
+  diagnostics.splice(0, diagnostics.length, ...unique.values());
 }
 
 export function prependTraceDiagnostic(

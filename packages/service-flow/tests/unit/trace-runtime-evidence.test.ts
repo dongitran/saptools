@@ -6,6 +6,9 @@ import { linkWorkspace, trace } from '../../src/index.js';
 import { prepareWorkspace, writeFixtureFile } from './test-workspace.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
 import { renderMermaid } from '../../src/output/mermaid-output.js';
+import {
+  deduplicateTraceDiagnostics,
+} from '../../src/trace/trace-diagnostics.js';
 
 async function createRuntimeResolutionFixture(root: string): Promise<void> {
   await writeFixtureFile(root, 'facade-service/.git-fixture');
@@ -31,6 +34,30 @@ export class FlowHandler {
 }
 
 describe('trace runtime evidence clarity', () => {
+  it('deduplicates site diagnostics and retains their multiplicity', () => {
+    const diagnostics = [
+      {
+        code: 'neutral_warning',
+        repositoryName: 'neutral-repo',
+        sourceFile: 'src/file.ts',
+        sourceLine: 4,
+        message: 'Repeated diagnostic.',
+      },
+      {
+        code: 'neutral_warning',
+        repositoryName: 'neutral-repo',
+        sourceFile: 'src/file.ts',
+        sourceLine: 4,
+        message: 'Repeated diagnostic.',
+      },
+    ];
+    deduplicateTraceDiagnostics(diagnostics);
+    expect(diagnostics).toEqual([expect.objectContaining({
+      code: 'neutral_warning',
+      multiplicity: 2,
+    })]);
+  });
+
   it('separates effective runtime resolution from persisted dynamic graph resolution', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'service-flow-runtime-evidence-'));
     await createRuntimeResolutionFixture(root);

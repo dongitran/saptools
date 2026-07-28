@@ -513,9 +513,16 @@ function inspectOperationCommand(
 ): Promise<void> {
   return withReadOnlyWorkspace(opts.workspace, (db, workspaceId) => {
     if (writeLifecycleBlock(db, workspaceId)) return;
-    const rows = db.prepare(
-      'SELECT o.* FROM cds_operations o JOIN cds_services s ON s.id=o.service_id JOIN repositories r ON r.id=s.repo_id WHERE r.workspace_id=? AND (o.operation_name=? OR o.operation_path=?)',
-    ).all(workspaceId, selector, selector);
+    const rows = db.prepare(`SELECT o.*,
+      r.name repository_name,r.package_name repository_package_name,
+      s.service_name,s.qualified_name qualified_service_name,s.service_path
+      FROM cds_operations o
+      JOIN cds_services s ON s.id=o.service_id
+      JOIN repositories r ON r.id=s.repo_id
+      WHERE r.workspace_id=?
+        AND (o.operation_name=? OR o.operation_path=?)
+      ORDER BY r.name COLLATE BINARY,s.service_path COLLATE BINARY,o.id`)
+      .all(workspaceId, selector, selector);
     writeStdout(renderJson(rows.length > 0 ? rows : [{
       severity: 'warning',
       code: 'selector_operation_not_found',

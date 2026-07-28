@@ -407,7 +407,10 @@ export function run(): void {
       ]);
       expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
         WHERE code='package_import_provenance_missing'`).get())
-        .toEqual({ count: 2 });
+        .toEqual({ count: 1 });
+      expect(db.prepare(`SELECT message FROM diagnostics
+        WHERE code='package_import_provenance_missing'`).get()?.message)
+        .toContain('2 package-derived call(s)');
       expect(() => linkWorkspace(db, workspaceId)).not.toThrow();
     } finally {
       db.close();

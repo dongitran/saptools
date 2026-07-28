@@ -131,13 +131,71 @@ const repositoryColumns = [
   'graph_stale_reason', 'graph_stale_at', 'fact_analyzer_version',
 ].join(',');
 
+const repositoryChildTables = [
+  'files',
+  'cds_requires',
+  'cds_services',
+  'symbols',
+  'handler_classes',
+  'handler_registrations',
+  'service_bindings',
+  'outbound_calls',
+  'generated_constants',
+  'symbol_calls',
+  'diagnostics',
+] as const;
+
+function pragmaEnabled(db: Db, name: string): boolean {
+  const row = db.pragma(name)[0];
+  return Number(row?.[name] ?? 0) === 1;
+}
+
+function repositoryChildCounts(db: Db): Map<string, number> {
+  return new Map(repositoryChildTables.map((table) => {
+    const row = db.prepare(`SELECT COUNT(*) count FROM ${table}`).get();
+    return [table, Number(row?.count ?? 0)];
+  }));
+}
+
+function assertForeignKeysDisabled(db: Db): void {
+  if (!pragmaEnabled(db, 'foreign_keys'))
+    return;
+  throw new Error(
+    'schema_v15_repository_rebuild_requires_foreign_keys_off',
+  );
+}
+
+function assertLegacyAlterTable(db: Db): void {
+  if (pragmaEnabled(db, 'legacy_alter_table')) return;
+  throw new Error(
+    'schema_v15_repository_rebuild_requires_legacy_alter_table',
+  );
+}
+
+function assertRepositoryChildrenPreserved(
+  db: Db,
+  before: Map<string, number>,
+): void {
+  const after = repositoryChildCounts(db);
+  for (const [table, count] of before) {
+    if (after.get(table) === count) continue;
+    throw new Error(
+      `schema_v15_repository_rebuild_changed_child_rows:${table}`,
+    );
+  }
+}
+
 function normalizeEnvironmentDefault(db: Db, priorVersion: number): void {
   if (priorVersion >= 15 || priorVersion === 0) return;
+  assertForeignKeysDisabled(db);
+  assertLegacyAlterTable(db);
+  const childCounts = repositoryChildCounts(db);
   db.exec('ALTER TABLE repositories RENAME TO repositories_schema_v14');
   db.exec(repositoriesTableSql);
   db.exec(`INSERT INTO repositories(${repositoryColumns})
     SELECT ${repositoryColumns} FROM repositories_schema_v14`);
   db.exec('DROP TABLE repositories_schema_v14');
+  assertRepositoryChildrenPreserved(db, childCounts);
 }
 
 export function migrate(db: Db): void {

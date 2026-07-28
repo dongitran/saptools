@@ -11,6 +11,7 @@ import {
   runtimeVariableDiagnostic,
 } from './evidence.js';
 import {
+  deduplicateTraceDiagnostics,
   loadTraceDiagnostics,
   prependTraceDiagnostic,
 } from './trace-diagnostics.js';
@@ -106,6 +107,7 @@ function finalizeDiagnostics(
     prependTraceDiagnostic(diagnostics, runtimeDiagnostic);
   for (const diagnostic of runtimeNoCandidateDiagnostics(edges))
     prependTraceDiagnostic(diagnostics, diagnostic);
+  deduplicateTraceDiagnostics(diagnostics);
 }
 
 function traceRuntime(

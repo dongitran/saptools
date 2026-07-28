@@ -1,12 +1,31 @@
 import type { TraceResult } from '../types.js';
+import { readableIdentifier } from './identifier-label.js';
+
+function ambiguousLabel(
+  idOrLabel: string,
+  count: number,
+): string {
+  const readable = readableIdentifier(idOrLabel);
+  return `${readable} [ambiguous node label: ${count} matches]`;
+}
+
 function label(
   trace: TraceResult,
   idOrLabel: string,
   nodeId?: string,
 ): string {
-  const node = trace.nodes.find((item) =>
-    item.id === nodeId || item.id === idOrLabel || item.label === idOrLabel);
-  return String(node?.qualifiedLabel ?? node?.label ?? idOrLabel);
+  const node = trace.nodes.find((item) => item.id === nodeId)
+    ?? trace.nodes.find((item) => item.id === idOrLabel);
+  if (node)
+    return readableIdentifier(
+      String(node.qualifiedLabel ?? node.label ?? idOrLabel),
+    );
+  const matches = trace.nodes.filter((item) => item.label === idOrLabel);
+  if (matches.length > 1) return ambiguousLabel(idOrLabel, matches.length);
+  const fallback = matches[0];
+  return readableIdentifier(
+    String(fallback?.qualifiedLabel ?? fallback?.label ?? idOrLabel),
+  );
 }
 function edgeLabel(edge: TraceResult['edges'][number]): string {
   const basis = edge.evidence.selectionBasis;

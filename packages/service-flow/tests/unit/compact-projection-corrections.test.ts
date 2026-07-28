@@ -33,6 +33,16 @@ const safeNames = [
 ];
 
 describe('compact missing-name projection', () => {
+  it('retains diagnostic multiplicity after detailed deduplication', () => {
+    const diagnostic = projectCompactDiagnostics([{
+      severity: 'warning',
+      code: 'neutral_repeated_warning',
+      message: 'Repeated warning.',
+      multiplicity: 7,
+    }])[0];
+    expect(diagnostic?.details).toMatchObject({ multiplicity: 7 });
+  });
+
   it('retains the documented safe grammar with binary ordering', () => {
     const projection = projectCompactMissingNames(
       [...safeNames].reverse(), safeNames.length,

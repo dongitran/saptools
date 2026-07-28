@@ -1,4 +1,5 @@
 import type { TraceResult } from '../types.js';
+import { readableIdentifier } from './identifier-label.js';
 
 function location(evidence: Record<string, unknown>): string {
   const selected = isRecord(evidence.selectedHandler)
@@ -54,7 +55,9 @@ function nodeLabel(
 ): string {
   const node = result.nodes.find((candidate) =>
     candidate.id === nodeId || candidate.id === label);
-  return String(node?.qualifiedLabel ?? node?.label ?? label);
+  return readableIdentifier(
+    String(node?.qualifiedLabel ?? node?.label ?? label),
+  );
 }
 
 function evidenceSummary(evidence: Record<string, unknown>): string {
@@ -75,7 +78,11 @@ function evidenceSummary(evidence: Record<string, unknown>): string {
 }
 
 function diagnosticLines(diagnostic: Record<string, unknown>): string[] {
-  const first = `${String(diagnostic.severity ?? 'info')} ${String(diagnostic.code ?? 'diagnostic')} ${String(diagnostic.message ?? '')}`;
+  const multiplicity = numberValue(diagnostic.multiplicity);
+  const first = `${String(diagnostic.severity ?? 'info')} ${
+    String(diagnostic.code ?? 'diagnostic')} ${
+    String(diagnostic.message ?? '')}${
+    multiplicity > 1 ? ` [multiplicity=${multiplicity}]` : ''}`;
   const details = diagnosticDetailLines(diagnostic);
   return [first, ...[...details, ...hintLines(diagnostic)]
     .map((hint) => `  ${hint}`)];

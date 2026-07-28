@@ -226,6 +226,15 @@ describe('service-flow CLI', () => {
     expect(JSON.parse(listResult.stdout)).toEqual(expect.arrayContaining([
       expect.objectContaining({ repo: 'facade-service' }),
     ]));
+    const inspectedOperation = JSON.parse(await run([
+      'inspect', 'operation', 'doWork', '--workspace', fixture,
+    ])) as Array<Record<string, unknown>>;
+    expect(inspectedOperation).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        repository_name: 'facade-service',
+        service_name: 'FacadeService',
+      }),
+    ]));
     const unknownOperation = JSON.parse(await run([
       'inspect', 'operation', 'neutralMissingOperation',
       '--workspace', fixture,

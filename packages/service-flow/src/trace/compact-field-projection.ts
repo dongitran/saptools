@@ -271,6 +271,8 @@ function compactDiagnosticDetails(
   const out: CompactDiagnosticDetailsV1 = {};
   const reasonCode = compactSafeCode(value.reasonCode);
   if (reasonCode) out.reasonCode = reasonCode;
+  if (value.multiplicity !== undefined)
+    out.multiplicity = compactCount(value.multiplicity);
   if (selectorDiagnosticCodes.has(code)) addDiagnosticSelector(out, value);
   if (code === 'reindex_required') addInvalidFactCategories(out, value);
   if (code === 'implementation_hint_mismatch')

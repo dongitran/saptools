@@ -39,16 +39,25 @@ export function packageImportProvenanceMissing(
 export function insertPackageProvenanceDiagnostic(
   db: Db,
   repoId: number,
-  call: SymbolCallFact,
-): void {
+  calls: readonly SymbolCallFact[],
+): number {
+  const first = calls[0];
+  if (!first) return 0;
+  const shown = calls.slice(0, 5).map((call) =>
+    `${call.sourceFile}:${call.sourceLine} ${call.calleeExpression.slice(
+      0, 80,
+    )}`);
+  const omitted = Math.max(0, calls.length - shown.length);
   db.prepare(`INSERT INTO diagnostics(
     repo_id,severity,code,message,source_file,source_line
   ) VALUES(?,?,?,?,?,?)`).run(
     repoId,
     'warning',
     'package_import_provenance_missing',
-    `Package-derived call "${call.calleeExpression.slice(0, 160)}" was retained as unresolved because its target provenance could not be proven.`,
-    call.sourceFile,
-    call.sourceLine,
+    `${calls.length} package-derived call(s) were retained as unresolved because target provenance could not be proven. Examples: ${
+      shown.join('; ')}${omitted > 0 ? `; ${omitted} omitted` : ''}.`,
+    first.sourceFile,
+    first.sourceLine,
   );
+  return 1;
 }

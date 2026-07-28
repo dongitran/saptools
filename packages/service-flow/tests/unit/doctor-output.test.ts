@@ -42,6 +42,20 @@ describe('doctor output rendering', () => {
     );
   });
 
+  it('keeps the full repository-qualified source location', () => {
+    const location =
+      'neutral-repository-with-a-long-name:src/deep/path/handler.ts:42';
+    const output = renderDoctorTable([{
+      severity: 'warning',
+      code: 'neutral_warning',
+      message: 'Neutral warning.',
+      repositoryName: 'neutral-repository-with-a-long-name',
+      sourceFile: 'src/deep/path/handler.ts',
+      sourceLine: 42,
+    }]);
+    expect(output).toContain(location);
+  });
+
   it('rejects unsupported doctor formats', () => {
     expect(() => renderDoctorDiagnostics([], 'yaml')).toThrow('Unsupported doctor format: yaml');
   });

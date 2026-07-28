@@ -331,7 +331,10 @@ const nodeEventFactories = new Set([
 ]);
 const nodeEventConstructors = new Set([
   'EventEmitter', 'Readable', 'Writable', 'Duplex', 'Transform',
-  'PassThrough',
+  'PassThrough', 'ReadStream', 'WriteStream',
+]);
+const nodeEventGlobalTypes = new Set([
+  'ReadableStream', 'WritableStream',
 ]);
 
 function importedBinding(
@@ -389,6 +392,31 @@ function nodeNonCapFactory(
     : nodeEventFactories.has(name);
 }
 
+function qualifiedTypeParts(name: ts.EntityName): ts.Identifier[] {
+  return ts.isIdentifier(name)
+    ? [name]
+    : [...qualifiedTypeParts(name.left), name.right];
+}
+
+function nodeEventParameterType(
+  declaration: BindingLexicalSite,
+  index: EventReceiverIndex,
+): boolean {
+  if (!ts.isParameter(declaration.node)
+    || !declaration.node.type
+    || !ts.isTypeReferenceNode(declaration.node.type)) return false;
+  const parts = qualifiedTypeParts(declaration.node.type.typeName);
+  const root = parts[0];
+  const member = parts.at(-1)?.text;
+  if (!root || !member) return false;
+  if (root.text === 'NodeJS')
+    return nodeEventGlobalTypes.has(member);
+  const moduleSpecifier = importModuleSpecifier(root, index.imports);
+  return Boolean(moduleSpecifier
+    && nodeEventModules.has(moduleSpecifier)
+    && nodeEventConstructors.has(member));
+}
+
 function helperReturnProof(
   sites: readonly BindingLexicalSite[],
   variableName: string,
@@ -413,8 +441,18 @@ function lexicalProof(
   );
   const declaration = selected.site;
   if (!declaration || selected.after || selected.ambiguous) return undefined;
-  if (declaration.declarationKind === 'parameter')
+  if (declaration.declarationKind === 'parameter') {
+    const considered = evidenceSites(
+      [declaration], identifier.text, index,
+    );
+    if (nodeEventParameterType(declaration, index))
+      return unproven(
+        'event_receiver_not_cap_client',
+        'node_event_parameter_type',
+        considered,
+      );
     return unproven('event_receiver_unproven_propagation', 'parameter_flow');
+  }
   const sites = reachingSites(index, declaration, useStart);
   const valueSites = sites.filter((site) => {
     const value = siteExpression(site, identifier.text);
@@ -515,6 +553,17 @@ function rootIdentifier(
   return undefined;
 }
 
+function rootReceiverName(expression: ts.Expression): string | undefined {
+  if (expression.kind === ts.SyntaxKind.ThisKeyword) return 'this';
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression)
+    || ts.isElementAccessExpression(expression))
+    return rootReceiverName(expression.expression);
+  if (ts.isCallExpression(expression))
+    return rootReceiverName(expression.expression);
+  return undefined;
+}
+
 export function createEventReceiverIndex(
   source: ts.SourceFile,
   serviceBindings: readonly ServiceBindingFact[] = [],
@@ -551,7 +600,7 @@ export function proveEventReceiver(
   return {
     ...proof,
     receiver,
-    rootReceiver: root?.text,
+    rootReceiver: rootReceiverName(expression),
     effectiveReceiver: receiver,
   };
 }

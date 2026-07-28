@@ -564,6 +564,7 @@ function candidateEvidence(candidate: ImplementationCandidate, rank: number): Re
     acceptedReasons: candidate.acceptedReasons,
     rejectedReasons: candidate.rejectedReasons,
     methodId: candidate.methodId,
+    methodName: candidate.methodName,
     classId: candidate.classId,
     className: candidate.className,
     sourceFile: candidate.sourceFile,

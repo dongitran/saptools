@@ -101,23 +101,26 @@ function recordCandidateOmission(
 export function recordHiddenEventShapeCandidates(
   diagnostics: Array<Record<string, unknown>>,
   rows: readonly TraceGraphEdgeRow[],
+  renderedRows: ReadonlyArray<{ edge_type: string }>,
   options: TraceOptions,
 ): void {
   if (!options.includeAsync) return;
   const count = rows.filter((row) =>
     row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER').length;
   if (count === 0) return;
+  const shown = renderedRows.filter((row) =>
+    row.edge_type === 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER').length;
+  const cap = candidateCap(options);
   if ((options.dynamicMode ?? 'strict') === 'candidates') {
-    const cap = candidateCap(options);
-    recordCandidateOmission(
-      diagnostics, count, Math.min(count, cap), cap,
-    );
+    recordCandidateOmission(diagnostics, count, shown, cap);
     return;
   }
   const existing = diagnostics.find((item) =>
     item.code === 'event_shape_candidates_hidden');
   if (existing) {
     existing.candidateCount = Number(existing.candidateCount ?? 0) + count;
+    existing.omittedCandidateCount =
+      Number(existing.omittedCandidateCount ?? 0) + count;
     return;
   }
   diagnostics.push({
@@ -126,6 +129,9 @@ export function recordHiddenEventShapeCandidates(
     message:
       'Non-authoritative event-shape candidates were excluded from strict traversal.',
     candidateCount: count,
+    shownCandidateCount: 0,
+    omittedCandidateCount: count,
+    maxDynamicCandidates: cap,
     dynamicMode: options.dynamicMode ?? 'strict',
     remediation:
       'Use --dynamic-mode candidates to inspect bounded subscriber candidates.',

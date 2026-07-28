@@ -395,7 +395,7 @@ export async function publish(): Promise<void> {
     db.close();
   });
 
-  it('keeps a static event name canonical across an unproven receiver', async () => {
+  it('keeps a static name but makes an unproven receiver non-terminal', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-axes-'));
     await Promise.all([
       writeFixtureFile(root, 'publisher/.git-fixture'),
@@ -437,10 +437,11 @@ export async function subscribe(): Promise<void> {
     linkWorkspace(db, workspaceId);
     expect(eventEdges(db)).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        edgeType: 'HANDLER_EMITS_EVENT',
-        status: 'terminal',
-        toKind: 'event',
-        toId: 'StaticThroughProperty',
+        edgeType: 'DYNAMIC_EDGE_CANDIDATE',
+        status: 'dynamic',
+        toKind: 'event_candidate',
+        toId: 'Event: StaticThroughProperty',
+        reason: 'event_receiver_unproven_propagation',
       }),
       expect.objectContaining({
         edgeType: 'EVENT_SUBSCRIPTION_HANDLED_BY',
@@ -450,12 +451,63 @@ export async function subscribe(): Promise<void> {
     ]));
     expect(trace(db, { repo: 'publisher' }, {
       depth: 8, workspaceId, includeAsync: true,
-    }).edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: 'event_name_matches_subscription_handler',
-        from: 'StaticThroughProperty',
-      }),
-    ]));
+    }).edges.some((edge) =>
+      edge.type === 'event_name_matches_subscription_handler')).toBe(false);
+    db.close();
+  });
+
+  it('keeps an unproven subscription receiver non-terminal', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-sub-axis-'));
+    await Promise.all([
+      writeFixtureFile(root, 'publisher/.git-fixture'),
+      writeFixtureFile(root, 'publisher/package.json',
+        packageJson('@neutral/sub-axis-publisher')),
+      writeFixtureFile(root, 'publisher/src/publish.ts', `
+import cds from '@sap/cds';
+export async function publish(): Promise<void> {
+  const bus = await cds.connect.messaging('primary');
+  await bus.emit('StaticUnprovenSubscription', {});
+}
+`),
+      writeFixtureFile(root, 'subscriber/.git-fixture'),
+      writeFixtureFile(root, 'subscriber/package.json',
+        packageJson('@neutral/sub-axis-subscriber')),
+      writeFixtureFile(root, 'subscriber/src/subscribe.ts', `
+interface Params {
+  messaging: { on(name: string, handler: () => void): void };
+}
+export function handleStatic(): void {}
+export function subscribe(params: Params): void {
+  params.messaging.on('StaticUnprovenSubscription', handleStatic);
+}
+`),
+    ]);
+    const { db, workspaceId } = await prepareWorkspace(root);
+    const subscription = eventCalls(db).find((call) =>
+      call.eventName === 'StaticUnprovenSubscription'
+      && parsedRecord(call.evidenceJson).classifier
+        === 'cap_service_event_subscription');
+    expect(subscription).toBeDefined();
+    expect(parsedRecord(subscription?.evidenceJson ?? '')).toMatchObject({
+      receiverClassification: 'unproven',
+      receiverUnresolvedReason: 'event_receiver_unproven_propagation',
+    });
+
+    linkWorkspace(db, workspaceId);
+    const association = eventEdges(db).find((edge) =>
+      edge.edgeType === 'EVENT_SUBSCRIPTION_HANDLED_BY');
+    expect(association).toMatchObject({
+      status: 'unresolved',
+      fromId: 'Event: StaticUnprovenSubscription',
+      reason: 'event_receiver_unproven_propagation',
+    });
+    expect(parsedRecord(association?.evidenceJson ?? '')).toMatchObject({
+      dispatchCertainty: 'receiver_unproven',
+    });
+    expect(trace(db, { repo: 'publisher' }, {
+      depth: 8, workspaceId, includeAsync: true,
+    }).edges.some((edge) =>
+      edge.type === 'event_name_matches_subscription_handler')).toBe(false);
     db.close();
   });
 
@@ -594,6 +646,9 @@ export const UNSAFE_TOPICS = { UNSAFE: 'UnsafeValue', ...BASE } as const;
       strict.diagnostics, 'event_shape_candidates_hidden',
     )).toMatchObject({
       candidateCount: 1,
+      shownCandidateCount: 0,
+      omittedCandidateCount: 1,
+      maxDynamicCandidates: 5,
       remediation:
         'Use --dynamic-mode candidates to inspect bounded subscriber candidates.',
     });
@@ -790,6 +845,9 @@ ${registrations}
       omittedCandidateCount: 1,
       maxDynamicCandidates: 1,
     });
+    expect(renderTraceTable(capped)).toContain(
+      'candidates: 1 shown, 1 omitted, 2 total; effective cap 1',
+    );
     const compact = traceAndCompact(db, { repo: 'publisher' }, {
       depth: 8, workspaceId, includeAsync: true,
       dynamicMode: 'candidates', maxDynamicCandidates: 1,
@@ -918,6 +976,10 @@ export const TOPICS = { FLOW_READY: 'WrongNeutralFlowReady' } as const;
     expect(shapeCandidates).toHaveLength(1);
     expect(shapeCandidates[0]?.evidence).toMatchObject({
       deploymentScope: 'environment_key_unshared',
+      deploymentComparisonStatus: 'not_possible',
+      deploymentComparisonReasons: [
+        'publisher_and_subscriber_environment_keys_unshared',
+      ],
       deploymentCount: 3,
       shownDeploymentCount: 3,
       omittedDeploymentCount: 0,
@@ -992,7 +1054,9 @@ export async function publish(): Promise<void> {
     ]);
     const deployments = db.prepare(`SELECT
       json_extract(json_each.value,'$.repositoryName') consumer,
-      json_extract(json_each.value,'$.scope') deploymentScope
+      json_extract(json_each.value,'$.scope') deploymentScope,
+      json_extract(json_each.value,'$.comparisonStatus') comparisonStatus,
+      json_extract(json_each.value,'$.comparisonReason') comparisonReason
       FROM graph_edges,
       json_each(graph_edges.evidence_json,'$.deploymentRepositories')
       WHERE edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
@@ -1001,16 +1065,22 @@ export async function publish(): Promise<void> {
       {
         consumer: 'consumer-a',
         deploymentScope: 'shared_environment_value_equal',
+        comparisonStatus: 'compared_equal',
+        comparisonReason: null,
       },
       {
         consumer: 'consumer-b',
         deploymentScope:
           'shared_environment_value_mismatch_non_authoritative',
+        comparisonStatus: 'compared_non_authoritative_mismatch',
+        comparisonReason: 'development_environment_is_not_deployment_proof',
       },
       {
         consumer: 'consumer-c',
         deploymentScope:
           'shared_environment_value_mismatch_non_authoritative',
+        comparisonStatus: 'compared_non_authoritative_mismatch',
+        comparisonReason: 'development_environment_is_not_deployment_proof',
       },
     ]);
     expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics

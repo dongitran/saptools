@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.76
+
+- Guarded the schema-15 repository-table rebuild with explicit
+  `foreign_keys=OFF` and `legacy_alter_table=ON` assertions and direct child-row
+  count preservation. The migration now refuses before mutation when either
+  prerequisite is absent.
+- Made the sibling-operation fallback guard reachable for dotted generated
+  decorator expressions through exact persisted decorator identity, without
+  substring matching. Spelling-only decisions are labelled
+  `expression_spelling_fallback`, and candidate evidence now includes method
+  names.
+- Proved typed Node stream/event parameters before generic parameter flow,
+  populated `this` roots, and made unproven event receivers dynamic candidates
+  rather than terminal dispatch edges. Proven CAP receiver facts and
+  single-hop helper returns retain their existing behavior.
+- Made environment comparison evidence say whether values were compared,
+  mismatched non-authoritatively, or could not be compared and why. Shape
+  candidate visibility and cap counts now describe the rows actually rendered.
+- Resolved Mermaid endpoints by canonical id before labels, disclosed ambiguous
+  label fallbacks, preserved full doctor locations, rendered tuple-shaped
+  internal ids readably, and deduplicated repeated diagnostics with an explicit
+  multiplicity.
+- Versioned detailed JSON as `service-flow/detailed-trace@2`; `from` and `to`
+  are canonical node ids while `fromLabel` and `toLabel` retain display text.
+  Compact remains `service-flow/compact-graph@1` and now computes omitted
+  detailed nodes from the current canonical endpoint scheme.
+- Package/CLI is `0.1.76`, SQLite remains schema `15`, and analyzer
+  compatibility is `0.1.76-facts.1`. Event receiver facts changed, so existing
+  workspaces require `index --force` followed by `link --force`.
+
 ## 0.1.75
 
 - Restored exported enum-member identity through dotted TypeScript namespaces. Generated decorator constants now use their declared string value across files, while private nested namespaces remain refused.

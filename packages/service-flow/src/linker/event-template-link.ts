@@ -21,6 +21,41 @@ export interface LinkedEventTemplate {
   substitution: RuntimeSubstitution;
 }
 
+function stringField(
+  value: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  return typeof value[key] === 'string' ? value[key] : undefined;
+}
+
+function receiverEvidence(
+  evidence: Record<string, unknown>,
+): Record<string, unknown> {
+  const nested = evidence.outboundEvidence;
+  return nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : evidence;
+}
+
+export function applyEventReceiverProof(
+  event: LinkedEventTemplate,
+  evidence: Record<string, unknown>,
+): LinkedEventTemplate {
+  const receiver = receiverEvidence(evidence);
+  if (event.isDynamic
+    || receiver.receiverClassification !== 'unproven') return event;
+  const reason = stringField(receiver, 'receiverUnresolvedReason')
+    ?? 'event_receiver_unproven_binding';
+  return {
+    ...event,
+    targetId: `Event: ${event.targetId}`,
+    targetKind: 'event_candidate',
+    status: 'dynamic',
+    isDynamic: true,
+    unresolvedReason: reason,
+  };
+}
+
 export function linkEventTemplate(
   template: string,
   variables: Record<string, string>,
@@ -64,12 +99,12 @@ export function insertEventCallEdge(
     call.environmentDeclarationsJson,
     variables,
   );
-  const event = linkEventTemplate(
+  const event = applyEventReceiverProof(linkEventTemplate(
     String(call.event_name_expr ?? ''), environment.variables,
     typeof call.unresolved_reason === 'string'
       ? call.unresolved_reason : undefined,
     skeleton,
-  );
+  ), evidence);
   const edgeType = event.isDynamic
     ? 'DYNAMIC_EDGE_CANDIDATE'
     : callType === 'async_emit'
@@ -77,7 +112,9 @@ export function insertEventCallEdge(
   const eventEvidence = {
     ...evidence,
     dispatchScope: 'workspace_event_name_only',
-    dispatchCertainty: environment.status === 'resolved'
+    dispatchCertainty: event.unresolvedReason?.startsWith('event_receiver_')
+      ? 'receiver_unproven'
+      : environment.status === 'resolved'
       ? 'environment_declaration_exact'
       : event.isDynamic ? 'runtime_variables_required' : 'static_name_only',
     ...(skeleton ? { eventSkeleton: skeleton } : {}),

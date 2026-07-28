@@ -157,6 +157,32 @@ function graphSnapshot(db: Db): Array<Record<string, unknown>> {
   ).all();
 }
 
+function repositoryChildSnapshot(db: Db): Record<string, number> {
+  const tables = [
+    'files',
+    'cds_requires',
+    'cds_services',
+    'symbols',
+    'handler_classes',
+    'handler_registrations',
+    'service_bindings',
+    'outbound_calls',
+    'generated_constants',
+    'symbol_calls',
+    'diagnostics',
+  ];
+  return Object.fromEntries(tables.map((table) => [
+    table,
+    db.prepare(
+      "SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name=?",
+    ).get(table)?.count === 1
+      ? Number(
+        db.prepare(`SELECT COUNT(*) count FROM ${table}`).get()?.count ?? 0,
+      )
+      : 0,
+  ]));
+}
+
 async function verifyReadOnlyV12(): Promise<void> {
   const dbPath = await createLegacyDatabase(12);
   const hashBefore = await fileHash(dbPath);
@@ -303,11 +329,21 @@ function verifyExactSiteIndex(db: Db): void {
   ]);
 }
 
+function verifyOperationServiceIndex(db: Db): void {
+  expect(db.prepare(
+    "PRAGMA index_list('cds_operations')",
+  ).all().some((item) => item.name === 'idx_operation_service')).toBe(true);
+  expect(db.prepare(
+    'PRAGMA index_info(idx_operation_service)',
+  ).all().map((item) => item.name)).toEqual(['service_id']);
+}
+
 async function verifyIdempotentIndexMigration(): Promise<void> {
   const dbPath = await createLegacyDatabase(12);
   const migrated = openDatabase(dbPath);
   const stateBefore = migrationState(migrated);
   verifyExactSiteIndex(migrated);
+  verifyOperationServiceIndex(migrated);
   migrate(migrated);
   expect(schemaVersion(migrated)).toBe(15);
   expect(migrated.prepare(
@@ -317,6 +353,51 @@ async function verifyIdempotentIndexMigration(): Promise<void> {
   )).toHaveLength(1);
   expect(migrationState(migrated)).toEqual(stateBefore);
   migrated.close();
+}
+
+function withoutForeignKeyDisable(db: Db): Db {
+  return {
+    ...db,
+    pragma(sql: string): Array<Record<string, unknown>> {
+      if (/^foreign_keys\s*=\s*off$/i.test(sql.trim())) return [];
+      return db.pragma(sql);
+    },
+  };
+}
+
+function withoutLegacyAlterEnable(db: Db): Db {
+  return {
+    ...db,
+    pragma(sql: string): Array<Record<string, unknown>> {
+      if (/^legacy_alter_table\s*=\s*on$/i.test(sql.trim())) return [];
+      return db.pragma(sql);
+    },
+  };
+}
+
+async function verifyRebuildRequiresForeignKeysOff(): Promise<void> {
+  const dbPath = await createLegacyDatabase(13);
+  const legacy = openDatabase(dbPath, { migrate: false });
+  const before = repositoryChildSnapshot(legacy);
+  expect(() => migrate(withoutForeignKeyDisable(legacy))).toThrow(
+    'schema_v15_repository_rebuild_requires_foreign_keys_off',
+  );
+  expect(schemaVersion(legacy)).toBe(13);
+  expect(repositoryChildSnapshot(legacy)).toEqual(before);
+  expect(legacy.pragma('foreign_keys')).toEqual([{ foreign_keys: 1 }]);
+  legacy.close();
+}
+
+async function verifyRebuildRequiresLegacyAlterTable(): Promise<void> {
+  const dbPath = await createLegacyDatabase(13);
+  const legacy = openDatabase(dbPath, { migrate: false });
+  const before = repositoryChildSnapshot(legacy);
+  expect(() => migrate(withoutLegacyAlterEnable(legacy))).toThrow(
+    'schema_v15_repository_rebuild_requires_legacy_alter_table',
+  );
+  expect(schemaVersion(legacy)).toBe(13);
+  expect(repositoryChildSnapshot(legacy)).toEqual(before);
+  legacy.close();
 }
 
 async function verifyV11Migration(): Promise<void> {
@@ -441,6 +522,8 @@ describe('schema 15 environment-default lifecycle and provenance migration', () 
   it('migrates v13 event facts without inventing provenance or replacing the graph', verifyV13Migration);
   it('migrates v12 facts without inventing provenance or replacing the graph', verifyV12Migration);
   it('creates one exact-site partial unique index and remains idempotent', verifyIdempotentIndexMigration);
+  it('refuses the schema-15 rebuild when foreign keys remain enabled', verifyRebuildRequiresForeignKeysOff);
+  it('refuses the schema-15 rebuild without legacy alter-table semantics', verifyRebuildRequiresLegacyAlterTable);
   it('migrates v11 through both fact migrations without fabricating identity', verifyV11Migration);
   it.each(malformedSchemaCases)(
     'bounds malformed current schema with a missing $label',

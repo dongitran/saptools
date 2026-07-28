@@ -34,15 +34,18 @@ export function insertSymbolCalls(
 ): number {
   const insertStmt = db.prepare('INSERT INTO symbol_calls(repo_id,caller_symbol_id,callee_symbol_id,callee_expression,import_source,source_file,source_line,call_site_start_offset,call_site_end_offset,call_role,status,confidence,evidence_json,unresolved_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   let diagnosticCount = 0;
+  const provenanceGaps: SymbolCallFact[] = [];
   for (const r of rows) {
     try {
-      diagnosticCount += insertSymbolCall(db, insertStmt, repoId, r);
+      if (insertSymbolCall(db, insertStmt, repoId, r))
+        provenanceGaps.push(r);
     } catch (error) {
       if (!containPreparedFactFailure(db, repoId, error, options)) throw error;
       diagnosticCount += 1;
     }
   }
-  return diagnosticCount;
+  return diagnosticCount
+    + insertPackageProvenanceDiagnostic(db, repoId, provenanceGaps);
 }
 
 function insertSymbolCall(
@@ -50,7 +53,7 @@ function insertSymbolCall(
   insertStmt: Statement,
   repoId: number,
   call: SymbolCallFact,
-): number {
+): boolean {
   const callerId = requiredSymbolCallOwnerId(db, repoId, call);
   const target = resolveSymbolCallTarget(db, repoId, call);
   const cardinality = resolutionCardinality(target);
@@ -70,9 +73,7 @@ function insertSymbolCall(
     }),
     target.reason,
   );
-  if (target.reason !== 'package_import_provenance_missing') return 0;
-  insertPackageProvenanceDiagnostic(db, repoId, call);
-  return 1;
+  return target.reason === 'package_import_provenance_missing';
 }
 
 interface SymbolTargetRow {

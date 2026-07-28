@@ -305,9 +305,6 @@ function processOutboundCall(
   persistedRows: TraceGraphEdgeRow[],
 ): void {
   recordCallNode(runtime.nodes, call);
-  recordHiddenEventShapeCandidates(
-    runtime.diagnostics, persistedRows, runtime.options,
-  );
   const receiver = receiverFromTraceEvidence(call.evidence_json) ?? '';
   const contextual = contextualRuntimeResolution(
     runtime.db, call, bindings.get(receiver), call.workspaceId, persistedRows,
@@ -315,6 +312,9 @@ function processOutboundCall(
   const rows = contextual.row
     ? [contextual.row]
     : visibleEventShapeRows(persistedRows, runtime.options);
+  recordHiddenEventShapeCandidates(
+    runtime.diagnostics, persistedRows, rows, runtime.options,
+  );
   for (const row of rows)
     processOutboundRow(runtime, current, call, { ...row }, contextual);
 }
