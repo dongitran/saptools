@@ -257,7 +257,7 @@ describe('compact JSON CLI contract', () => {
   });
 
   it('reports release and subscription-link summary contracts', async () => {
-    expect(await runCliOk(['--version'])).toBe('0.1.77\n');
+    expect(await runCliOk(['--version'])).toBe('0.1.78\n');
     expect(linkOutput).toContain('subscription handlers resolved');
     expect(linkOutput).toContain('subscription handlers ambiguous');
     expect(linkOutput).toContain('subscription handlers unresolved');

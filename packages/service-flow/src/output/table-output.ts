@@ -1,5 +1,8 @@
 import type { TraceResult } from '../types.js';
-import { endpointCaption } from './endpoint-caption.js';
+import {
+  displayEndpointCaption,
+  endpointCaption,
+} from './endpoint-caption.js';
 
 function location(evidence: Record<string, unknown>): string {
   const selected = isRecord(evidence.selectedHandler)
@@ -53,7 +56,7 @@ function nodeLabel(
   label: string,
   nodeId: string | undefined,
 ): string {
-  return endpointCaption(result, label, nodeId);
+  return displayEndpointCaption(endpointCaption(result, label, nodeId));
 }
 
 function evidenceSummary(evidence: Record<string, unknown>): string {

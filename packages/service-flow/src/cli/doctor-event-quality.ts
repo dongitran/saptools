@@ -569,7 +569,10 @@ function siblingFallbackRefusalPopulation(
 function deploymentComparisonPopulations(
   db: Db,
   workspaceId?: number,
-): Record<string, number> {
+): {
+  statuses: Record<string, number>;
+  reasons: Record<string, number>;
+} {
   const values = [
     'compared_equal',
     'compared_mismatch',
@@ -578,23 +581,55 @@ function deploymentComparisonPopulations(
     'not_possible',
     'mixed',
   ];
-  const rows = db.prepare(`SELECT COALESCE(json_extract(
-      evidence_json,'$.deploymentComparisonStatus'),'missing') status,
-      COUNT(*) count
+  const rows = db.prepare(`SELECT evidence_json evidenceJson
     FROM graph_edges e
     WHERE e.edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
-      AND ${workspacePredicate('e')}
-    GROUP BY status`).all(workspaceId, workspaceId);
-  const observed = new Map(rows.map((row) =>
-    [String(row.status), count(row.count)]));
-  return Object.fromEntries(values.map((value) =>
-    [value, observed.get(value) ?? 0]));
+      AND ${workspacePredicate('e')}`).all(workspaceId, workspaceId);
+  const statuses = new Map<string, number>();
+  const reasons = new Map<string, number>();
+  for (const row of rows)
+    addDeploymentPopulations(
+      environmentFact(row.evidenceJson), statuses, reasons,
+    );
+  return {
+    statuses: Object.fromEntries(values.map((value) =>
+      [value, statuses.get(value) ?? 0])),
+    reasons: Object.fromEntries([...reasons.entries()].sort()),
+  };
+}
+
+function addDeploymentPopulations(
+  evidence: Record<string, unknown>,
+  statuses: Map<string, number>,
+  reasons: Map<string, number>,
+): void {
+  const deployments = Array.isArray(evidence.deploymentRepositories)
+    ? evidence.deploymentRepositories.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === 'object' && !Array.isArray(item)),
+      )
+    : [];
+  const entries = deployments.length > 0 ? deployments : [evidence];
+  for (const entry of entries) {
+    const status = String(
+      entry.comparisonStatus ?? entry.deploymentComparisonStatus ?? 'missing',
+    );
+    statuses.set(status, (statuses.get(status) ?? 0) + 1);
+    const direct = entry.comparisonReason;
+    const listed = entry.deploymentComparisonReasons;
+    const values = typeof direct === 'string'
+      ? [direct] : Array.isArray(listed) ? listed : [];
+    for (const reason of values)
+      if (typeof reason === 'string')
+        reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+  }
 }
 
 function analysisBranchReachabilityQuality(
   db: Db,
   workspaceId?: number,
 ): Diagnostic {
+  const deployment = deploymentComparisonPopulations(db, workspaceId);
   const branchPopulations = {
     eventReceiverProvenNotCapExcluded: storedBranchPopulation(
       db, 'event_receiver_proven_not_cap', workspaceId,
@@ -610,8 +645,8 @@ function analysisBranchReachabilityQuality(
     ),
     methodNameFallbackSiblingRefused:
       siblingFallbackRefusalPopulation(db, workspaceId),
-    deploymentComparison:
-      deploymentComparisonPopulations(db, workspaceId),
+    deploymentComparison: deployment.statuses,
+    deploymentComparisonReasons: deployment.reasons,
   };
   return {
     severity: 'info',

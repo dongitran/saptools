@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.78
+
+- Restored the always-array `inspect operation` JSON shape while retaining a
+  non-zero missing-selector exit, and made trace/graph return exit 1 in every
+  format only when the requested start itself is refused. Runtime-variable,
+  hidden-candidate, and omission diagnostics remain successful trace results.
+- Versioned detailed JSON as `service-flow/detailed-trace@3`.
+  `fromLabel`/`toLabel` are resolved endpoint captions; ambiguous label-only
+  fallback is represented separately by `fromLabelAmbiguousMatches` or
+  `toLabelAmbiguousMatches` instead of embedding diagnostic prose in a data
+  field. Canonical `from`/`to` node ids remain unchanged.
+- Preserved the injective structural-scope grammar with executable
+  round-trip/collision checks, restored readable flat-array identifiers after
+  the scope attempt, and added non-zero fixtures for typed Node-parameter
+  exclusion, development-environment comparisons, Mermaid metacharacters, and
+  strict unproven subscriptions.
+- Extended branch reachability with deployment-comparison reason populations
+  and removed the unused incremental-index and depth-filter modules.
+- The stored `package_import_provenance_missing` reduction from four site rows
+  to two repository rows comes from the per-repository bounded aggregation
+  introduced in 0.1.76; it becomes visible after a force re-index. No 0.1.77
+  parser or diagnostic-deduplication change caused that reduction.
+- Package/CLI is `0.1.78`; SQLite remains schema `15`, analyzer compatibility
+  remains `0.1.77-facts.1`, compact remains
+  `service-flow/compact-graph@1`, and detailed JSON is
+  `service-flow/detailed-trace@3`. This output-only patch does not require
+  re-indexing or relinking a workspace already on analyzer
+  `0.1.77-facts.1`.
+
 ## 0.1.77
 
 - Restored terminal dispatch for statically named publications whose receiver

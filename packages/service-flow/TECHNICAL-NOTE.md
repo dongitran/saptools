@@ -1,5 +1,25 @@
 # Service Flow Resolution Notes
 
+## 0.1.78 output-contract and branch-reachability notes
+
+- Package/CLI `0.1.78` uses SQLite schema `15`, retains analyzer
+  `0.1.77-facts.1` and compact `service-flow/compact-graph@1`, and advances
+  detailed JSON to `service-flow/detailed-trace@3`. Existing current facts and
+  graph edges remain valid; no force index or link is required.
+- Detailed JSON keeps canonical `from`/`to` node ids. Its `fromLabel` and
+  `toLabel` fields now explicitly mean resolved endpoint captions, while
+  ambiguous label-only lookup counts occupy separate optional fields.
+- Trace and graph exit non-zero only when the requested start is refused.
+  Informational runtime-variable, hidden-candidate, and omission diagnostics do
+  not turn an otherwise valid traversal into a command failure.
+- Branch reachability includes deployment-comparison reason populations.
+  Controlled fixtures exercise typed Node parameter exclusion,
+  non-authoritative development declarations, authoritative mismatch,
+  Mermaid escaping, and unproven-subscription fail-closed behavior.
+- `package_import_provenance_missing` is aggregated once per repository with
+  bounded call-site examples. That storage change landed in 0.1.76; a later
+  force re-index explains the observed four-row to two-row transition.
+
 ## 0.1.77 event reachability and scope-identity notes
 
 - Package/CLI `0.1.77` uses SQLite schema `15`, analyzer

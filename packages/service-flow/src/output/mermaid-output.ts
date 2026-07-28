@@ -1,5 +1,8 @@
 import type { TraceResult } from '../types.js';
-import { endpointCaption } from './endpoint-caption.js';
+import {
+  displayEndpointCaption,
+  endpointCaption,
+} from './endpoint-caption.js';
 
 function mermaidText(value: string): string {
   return value
@@ -28,9 +31,11 @@ export function renderMermaid(trace: TraceResult): string {
   for (const e of trace.edges)
     lines.push(
       `  ${nodeId(e.fromNodeId ?? e.from)}["${mermaidText(
-        endpointCaption(trace, e.from, e.fromNodeId),
+        displayEndpointCaption(endpointCaption(
+          trace, e.from, e.fromNodeId,
+        )),
       )}"] -->|${edgeLabel(e)}| ${nodeId(e.toNodeId ?? e.to)}["${mermaidText(
-        endpointCaption(trace, e.to, e.toNodeId),
+        displayEndpointCaption(endpointCaption(trace, e.to, e.toNodeId)),
       )}"]`,
     );
   return `${lines.join('\n')}\n`;

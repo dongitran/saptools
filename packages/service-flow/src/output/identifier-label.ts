@@ -6,6 +6,7 @@ const SCOPE_SEGMENT_ESCAPES: ReadonlyArray<readonly [RegExp, string]> = [
   [/#/g, '%23'],
 ];
 
+// '%' must be escaped first or the other replacements become ambiguous.
 function escapeScopeSegment(value: string): string {
   return SCOPE_SEGMENT_ESCAPES.reduce(
     (text, [pattern, replacement]) => text.replace(pattern, replacement),
@@ -21,6 +22,8 @@ function scopeListField<T>(
   values: readonly T[] | null,
   render: (item: T) => string,
 ): string {
+  // Arity is explicit for 0 and 2+ members, and escaped members can contain
+  // neither '(' nor ',', so the alternatives stay pairwise disjoint.
   if (values === null) return '()';
   if (values.length === 0) return '0()';
   const parts = values.map(render);
@@ -46,6 +49,16 @@ function isScopeNumberList(value: unknown): value is number[] | null {
       && value.every((item) => typeof item === 'number'));
 }
 
+function flatArrayLabel(parsed: unknown, fallback: string): string {
+  if (!Array.isArray(parsed) || parsed.length === 0
+    || !parsed.every((item) =>
+      typeof item === 'string' || typeof item === 'number')) return fallback;
+  const parts = parsed.map(String);
+  return parts.every((part) => part.startsWith('/'))
+    ? parts.join('')
+    : parts.join(' / ');
+}
+
 export function readableIdentifier(value: string): string {
   if (!value.startsWith('[') || !value.endsWith(']')) return value;
   let parsed: unknown;
@@ -54,7 +67,8 @@ export function readableIdentifier(value: string): string {
   } catch {
     return value;
   }
-  if (!Array.isArray(parsed) || parsed.length !== 4) return value;
+  if (!Array.isArray(parsed) || parsed.length !== 4)
+    return flatArrayLabel(parsed, value);
   const tuple: readonly unknown[] = parsed;
   const [workspaceId, repositoryId, files, symbolIds] = tuple;
   if (!isScopeNumber(workspaceId) || !isScopeNumber(repositoryId)

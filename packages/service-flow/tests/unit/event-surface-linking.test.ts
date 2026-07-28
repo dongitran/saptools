@@ -93,6 +93,14 @@ export async function publishJob(): Promise<void> {
   notAClient.emit('NotCap', {});
 }
 `),
+    writeFixtureFile(root, 'publisher/src/node-stream.ts', `
+import { Readable } from 'node:stream';
+export function consume(stream: Readable): void {
+  stream.on('data', (): void => {});
+  stream.on('end', (): void => {});
+  stream.on('error', (): void => {});
+}
+`),
     writeFixtureFile(root, 'topics/.git-fixture'),
     writeFixtureFile(root, 'topics/package.json', packageJson(
       '@neutral/event-topics',
@@ -669,9 +677,9 @@ export function subscribe(params: Params): void {
       'strict_analysis_branch_reachability',
     )).toMatchObject({
       branchPopulations: {
-        eventReceiverProvenNotCapExcluded: 1,
+        eventReceiverProvenNotCapExcluded: 4,
         eventReceiverKnownNonCapExcluded: 0,
-        nodeEventParameterTypeExcluded: 0,
+        nodeEventParameterTypeExcluded: 3,
         methodNameFallbackSiblingRefused: 0,
       },
     });
@@ -1164,6 +1172,20 @@ export async function publish(): Promise<void> {
         comparisonReason: 'development_environment_is_not_deployment_proof',
       },
     ]);
+    expect(diagnostic(
+      doctorDiagnostics(db, true, { workspaceId }),
+      'strict_analysis_branch_reachability',
+    )).toMatchObject({
+      branchPopulations: {
+        deploymentComparison: {
+          compared_non_authoritative_equal: 1,
+          compared_non_authoritative_mismatch: 2,
+        },
+        deploymentComparisonReasons: {
+          development_environment_is_not_deployment_proof: 3,
+        },
+      },
+    });
     expect(db.prepare(`SELECT COUNT(*) count FROM diagnostics
       WHERE code='event_shape_candidate_expansion_refused'`).get())
       .toEqual({ count: 0 });

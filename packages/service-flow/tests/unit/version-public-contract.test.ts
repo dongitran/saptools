@@ -48,7 +48,7 @@ type PublicFactContract = [
 describe('package, analyzer, and public compact contracts', () => {
   it('keeps package/CLI version authority separate from fact compatibility', async () => {
     expect(VERSION).toBe(packageJson.version);
-    expect(VERSION).toBe('0.1.77');
+    expect(VERSION).toBe('0.1.78');
     expect(ANALYZER_VERSION).toBe('0.1.77-facts.1');
     expect(ANALYZER_VERSION).not.toBe(VERSION);
     const source = await readFile(
@@ -68,6 +68,6 @@ describe('package, analyzer, and public compact contracts', () => {
     expect(publicFactWidth).toBe(10);
     expect(compactTrace).toBeTypeOf('function');
     expect(traceAndCompact).toBeTypeOf('function');
-    expect(DETAILED_TRACE_SCHEMA).toBe('service-flow/detailed-trace@2');
+    expect(DETAILED_TRACE_SCHEMA).toBe('service-flow/detailed-trace@3');
   });
 });

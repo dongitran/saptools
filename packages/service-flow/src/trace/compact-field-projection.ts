@@ -44,7 +44,7 @@ const compactDiagnosticMessages: Readonly<Record<string, string>> = {
   external_package_calls_omitted:
     'Calls into packages without an indexed repository were omitted from trace edges.',
 };
-const selectorDiagnosticCodes = new Set([
+export const selectorDiagnosticCodes: ReadonlySet<string> = new Set([
   'handler_decorators_not_indexed',
   'handler_methods_not_indexed',
   'selector_repo_ambiguous',

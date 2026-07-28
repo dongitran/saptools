@@ -204,8 +204,6 @@ describe('service-flow CLI', () => {
       fixture,
       '--repo',
       'facade-service',
-      '--operation',
-      'doWork',
       '--format',
       'mermaid'
     ]);
@@ -213,7 +211,7 @@ describe('service-flow CLI', () => {
     expect(graphResult.stdout).toContain('flowchart TD');
     const graphJson = JSON.parse(await run([
       'graph', '--workspace', fixture, '--repo', 'facade-service',
-      '--operation', 'doWork', '--format', 'json',
+      '--format', 'json',
     ])) as {
       nodes: Array<{ id: string }>;
       edges: Array<{ from: string; to: string }>;
@@ -240,9 +238,9 @@ describe('service-flow CLI', () => {
       '--workspace', fixture,
     ]);
     expect(unknownOperationResult.exit.code).toBe(1);
-    expect(JSON.parse(unknownOperationResult.stdout)).toEqual(
+    expect(JSON.parse(unknownOperationResult.stdout)).toEqual([
       expect.objectContaining({ code: 'selector_operation_not_found' }),
-    );
+    ]);
     const doctorResult = await runResult(['doctor', '--workspace', fixture]);
     expect(doctorResult.stderr).toBe('');
     expect(doctorResult.stdout).toMatch(/No diagnostics|\[/);
@@ -439,19 +437,43 @@ describe('service-flow guided trace CLI', () => {
     ])) as { edges: unknown[] };
     expect(graphCandidateMode.edges.length).toBeGreaterThan(0);
 
-    const ambiguous = JSON.parse(await run([
+    const ambiguousResult = await runWithExit([
       'trace', '--workspace', traceFixture,
       '--repo', 'process-service',
       '--service', '/ProductProcessService',
       '--operation', 'activate',
       '--format', 'json',
       '--include-db', '--include-external', '--include-async',
-    ])) as { diagnostics: Array<{ resolutionStatus?: string }> };
+    ]);
+    expect(ambiguousResult.exit).toEqual({ code: 1, signal: null });
+    const ambiguous = JSON.parse(ambiguousResult.stdout) as {
+      diagnostics: Array<{ resolutionStatus?: string }>;
+    };
     expect(ambiguous.diagnostics).toContainEqual(expect.objectContaining({
       resolutionStatus: 'ambiguous_implementation',
     }));
+    for (const [command, format] of [
+      ['trace', 'table'],
+      ['trace', 'mermaid'],
+      ['trace', 'compact-json'],
+      ['graph', 'json'],
+      ['graph', 'mermaid'],
+      ['graph', 'compact-json'],
+    ]) {
+      const refused = await runWithExit([
+        command,
+        '--workspace', traceFixture,
+        '--repo', 'process-service',
+        '--service', '/ProductProcessService',
+        '--operation', 'activate',
+        '--format', format,
+      ]);
+      expect(refused.exit).toEqual({ code: 1, signal: null });
+      expect(refused.stderr).toBe('');
+      expect(refused.stdout.length).toBeGreaterThan(0);
+    }
 
-    const guided = JSON.parse(await run([
+    const guidedResult = await runWithExit([
       'trace', '--workspace', traceFixture,
       '--repo', 'process-service',
       '--service', '/ProductProcessService',
@@ -460,7 +482,9 @@ describe('service-flow guided trace CLI', () => {
       '--include-db', '--include-external', '--include-async',
       '--implementation-hint',
       'service=/ProductProcessService,operation=/activate,repo=process-helper-a',
-    ])) as {
+    ]);
+    expect(guidedResult.exit).toEqual({ code: 0, signal: null });
+    const guided = JSON.parse(guidedResult.stdout) as {
       edges: Array<{ type?: string; to?: string; toLabel?: string }>;
     };
     const guidedImplementation = guided.edges.find((edge) =>

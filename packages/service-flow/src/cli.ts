@@ -23,7 +23,7 @@ import { linkWorkspace } from './linker/cross-repo-linker.js';
 import { doctorDiagnostics, linkUpgradeWarnings } from './cli/doctor.js';
 import { factLifecycleDiagnostic } from './db/fact-lifecycle.js';
 import { trace } from './trace/trace-engine.js';
-import { compactTrace } from './trace/compact-trace.js';
+import { traceAndCompact } from './trace/compact-trace.js';
 import {
   parseVars,
   selectorRepoAmbiguousDiagnostic,
@@ -49,6 +49,7 @@ import { cleanWorkspaceState } from './cli/clean.js';
 import { indexCommandOutcome } from './cli/index-summary.js';
 import { normalizeEventEnvironmentKeys } from
   './parsers/environment-declarations.js';
+import { traceStartRefused } from './cli/trace-exit-status.js';
 
 const stdout = createStdoutWriter(process.stdout, fail);
 const TRACE_FORMATS = ['table', 'json', 'mermaid', 'compact-json'] as const;
@@ -201,11 +202,20 @@ function writeTraceOutput(
   format: TraceFormat | GraphFormat,
 ): void {
   if (format === 'compact-json') {
-    writeStdout(renderCompactJson(compactTrace(db, start, options)));
+    const execution = traceAndCompact(db, start, options);
+    writeStdout(renderCompactJson(execution.compact));
+    markRefusedTraceStart(execution.trace.diagnostics);
     return;
   }
   const result = trace(db, start, options);
   writeStdout(renderDetailedTrace(result, format));
+  markRefusedTraceStart(result.diagnostics);
+}
+
+function markRefusedTraceStart(
+  diagnostics: ReadonlyArray<Record<string, unknown>>,
+): void {
+  if (traceStartRefused(diagnostics)) process.exitCode = 1;
 }
 
 function renderDetailedTrace(
@@ -527,13 +537,13 @@ function inspectOperationCommand(
       writeStdout(renderJson(rows));
       return;
     }
-    writeStdout(renderJson({
+    writeStdout(renderJson([{
       severity: 'warning',
       code: 'selector_operation_not_found',
       message: `Operation selector not found: ${selector}`,
       selectorKind: 'operation',
       selector,
-    }));
+    }]));
     process.exitCode = 1;
   });
 }

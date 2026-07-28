@@ -12,6 +12,13 @@ interface RenderedEndpoint {
   label: string;
 }
 
+type ScopeTuple = [
+  workspaceId: number | null,
+  repositoryId: number | null,
+  files: string[] | null,
+  symbolIds: number[] | null,
+];
+
 function edge(step: number, from: string, to: string): TraceEdge {
   return { step, type: `edge_${step}`, from, to, evidence: {}, confidence: 1 };
 }
@@ -30,6 +37,42 @@ function renderedEndpoints(output: string): RenderedEndpoint[] {
       { id: String(match[3]), label: String(match[4]) },
     ];
   });
+}
+
+function unescapeScopeSegment(value: string): string {
+  return value
+    .replace(/%23/g, '#')
+    .replace(/%2C/g, ',')
+    .replace(/%29/g, ')')
+    .replace(/%28/g, '(')
+    .replace(/%25/g, '%');
+}
+
+function decodedList<T>(
+  value: string,
+  decode: (item: string) => T,
+): T[] | null {
+  if (value === '()') return null;
+  if (value === '0()') return [];
+  const multiple = /^([2-9]\d*)\((.*)\)$/.exec(value);
+  if (!multiple) return [decode(value)];
+  const parts = String(multiple[2]).split(',');
+  if (parts.length !== Number(multiple[1]))
+    throw new Error('scope_caption_arity_mismatch');
+  return parts.map(decode);
+}
+
+function decodeScopeCaption(value: string): ScopeTuple {
+  const match = /^scope:([^/]+)\/([^/]+)\/(.*)#(.*)$/.exec(value);
+  if (!match) throw new Error('scope_caption_invalid');
+  const numberField = (item: string): number | null =>
+    item === '-' ? null : Number(item);
+  return [
+    numberField(String(match[1])),
+    numberField(String(match[2])),
+    decodedList(String(match[3]), unescapeScopeSegment),
+    decodedList(String(match[4]), Number),
+  ];
 }
 
 describe('Mermaid node identity', () => {
@@ -144,20 +187,33 @@ describe('Mermaid node identity', () => {
     expect(renderTraceTable(result)).toContain(
       'Shared target [ambiguous node label: 2 matches]',
     );
+    expect(JSON.parse(renderTraceJson(result))).toMatchObject({
+      edges: [{
+        toLabel: 'Shared target',
+        toLabelAmbiguousMatches: 2,
+      }],
+    });
+    expect(renderTraceJson(result)).not.toContain(
+      'Shared target [ambiguous node label:',
+    );
   });
 
-  it('escapes quoted Mermaid labels and edge types', () => {
+  it('escapes Mermaid metacharacters and newlines in labels and edge types', () => {
     const result = trace([
       {
-        ...edge(1, 'source "quoted"', 'target'),
+        ...edge(1, 'source "quoted" | &\nnext', 'target'),
         type: 'edge|quoted',
       },
     ]);
     const output = renderMermaid(result);
 
-    expect(output).toContain('source &quot;quoted&quot;');
+    expect(output).toContain(
+      'source &quot;quoted&quot; &#124; &amp; next',
+    );
     expect(output).toContain('edge&#124;quoted');
     expect(output).not.toContain('["source "quoted""]');
+    expect(output.split('\n').filter((line) => line.includes('-->')))
+      .toHaveLength(1);
   });
 
   it('renders structural scope ids readably in every format', () => {
@@ -198,6 +254,44 @@ describe('Mermaid node identity', () => {
     ]);
   });
 
+  it('round-trips generated structural scopes without caption collisions', () => {
+    const tuples: ScopeTuple[] = [];
+    const segments = ['', '%', '(', ')', ',', '#', 'srv/a.ts', 'plain'];
+    for (let index = 0; index < 750; index += 1) {
+      const first = segments[index % segments.length] ?? '';
+      const second = segments[
+        Math.floor(index / segments.length) % segments.length] ?? '';
+      tuples.push([
+        index % 11 === 0 ? null : index % 17,
+        index % 13 === 0 ? null : index % 23,
+        index % 5 === 0 ? null : index % 5 === 1 ? []
+          : index % 5 === 2 ? [first] : [first, second],
+        index % 7 === 0 ? null : index % 7 === 1 ? []
+          : index % 7 === 2 ? [index] : [index, index + 1],
+      ]);
+    }
+    const sourceKeys = tuples.map((tuple) => JSON.stringify(tuple));
+    const captions = sourceKeys.map(readableIdentifier);
+
+    expect(captions.map(decodeScopeCaption)).toEqual(tuples);
+    const captionOwners = new Map<string, string>();
+    for (const [index, caption] of captions.entries()) {
+      const sourceKey = String(sourceKeys[index]);
+      const existing = captionOwners.get(caption);
+      if (existing !== undefined) expect(existing).toBe(sourceKey);
+      else captionOwners.set(caption, sourceKey);
+    }
+  });
+
+  it('retains the legacy readable fallback for flat identifier arrays', () => {
+    expect(readableIdentifier('["alpha","beta"]')).toBe('alpha / beta');
+    expect(readableIdentifier('["/a","/b"]')).toBe('/a/b');
+    expect(readableIdentifier('[1,"two",3]')).toBe('1 / two / 3');
+    expect(readableIdentifier('[]')).toBe('[]');
+    expect(readableIdentifier('[{"value":"nested"}]'))
+      .toBe('[{"value":"nested"}]');
+  });
+
   it('does not mutate table or JSON rendering', () => {
     const result = trace([
       edge(1, 'neutral-source', 'neutral-target'),
@@ -212,7 +306,7 @@ describe('Mermaid node identity', () => {
     expect(renderTraceJson(result)).toBe(jsonBefore);
     expect(JSON.stringify(result)).toBe(resultBefore);
     expect(JSON.parse(jsonBefore)).toMatchObject({
-      schema: 'service-flow/detailed-trace@2',
+      schema: 'service-flow/detailed-trace@3',
       edges: [{
         from: 'neutral-source',
         to: 'neutral-target',

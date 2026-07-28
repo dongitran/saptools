@@ -94,7 +94,7 @@ npm install @saptools/service-flow
 - Repository public-surface evidence uses the versioned `service-flow/package-public-surface@1` carrier and retains at most 256 public exposure records with truthful total/shown/omitted metadata. A displayed prefix never proves uniqueness or absence; an omitted requested scope stays unresolved unless an authoritative exact-name count proves the decision.
 - OData entity paths are conservative terminal remote entity edges. Reads, mutations, deletes, navigation paths, media-stream paths such as `/Documents(ID)/content`, and uppercase unknown entity-set candidates do not inflate unresolved operation counts. Lowercase action/function-style paths remain eligible for indexed operation resolution.
 - External HTTP destinations are static only when a safe literal or local const literal proves the value. Identifier, property-read, function-call, and arbitrary destination expressions are dynamic with stable `destination:dynamic:<hash>` ids and neutral labels; conditional literal branches expose only safe candidate names.
-- Schema version 14 adds canonical event-skeleton columns, a repository environment-declaration carrier, and generated string-constant facts/indexes. Schema 15 restores the historical schema-14 default and normalizes the repository carrier to the current empty allowlist without rewriting the applied migration. Its table rebuild verifies the required SQLite pragmas, direct child counts, and repository foreign-key targets. Package `0.1.77` uses analyzer `0.1.77-facts.1`; read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until migration, force reindex, and force relink succeed.
+- Schema version 14 adds canonical event-skeleton columns, a repository environment-declaration carrier, and generated string-constant facts/indexes. Schema 15 restores the historical schema-14 default and normalizes the repository carrier to the current empty allowlist without rewriting the applied migration. Its table rebuild verifies the required SQLite pragmas, direct child counts, and repository foreign-key targets. Package `0.1.78` uses analyzer `0.1.77-facts.1`; read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until migration, force reindex, and force relink succeed.
 
 
 ## 🚀 Quick Start
@@ -143,7 +143,9 @@ service-flow index --workspace /path/to/workspace \
 ```
 
 > [!IMPORTANT]
-> Package `0.1.77` uses schema 15 and advances fact compatibility to analyzer `0.1.77-facts.1`. Receiver classification and terminal event-dispatch semantics changed, so every existing workspace requires:
+> Package `0.1.78` uses schema 15 and retains analyzer `0.1.77-facts.1`.
+> Workspaces already indexed by that analyzer need no re-index or relink for
+> this output-only patch. Upgrades from an older analyzer still require:
 >
 > ```bash
 > service-flow index --workspace /path/to/workspace --force
@@ -481,11 +483,11 @@ Step  Type                 From                                To               
 
 ### Detailed JSON
 
-`--format json` remains the complete, pretty-printed authoritative audit artifact for raw evidence, candidate inspection, locations, and effective versus persisted decisions. Version `service-flow/detailed-trace@2` makes every edge `from` and `to` a canonical id present in `nodes`; `fromLabel` and `toLabel` retain display text. This intentionally large contract supersedes the pre-0.1.75 label-valued endpoint shape.
+`--format json` remains the complete, pretty-printed authoritative audit artifact for raw evidence, candidate inspection, locations, and effective versus persisted decisions. Version `service-flow/detailed-trace@3` makes every edge `from` and `to` a canonical id present in `nodes`; `fromLabel` and `toLabel` are resolved endpoint captions. A label-only lookup that matches multiple nodes keeps the caption clean and reports `fromLabelAmbiguousMatches` or `toLabelAmbiguousMatches` separately. This intentionally large contract supersedes the pre-0.1.75 label-valued endpoint shape and the v2 raw-label semantics.
 
 ```json
 {
-  "schema": "service-flow/detailed-trace@2",
+  "schema": "service-flow/detailed-trace@3",
   "start": {
     "repo": "facade-service",
     "servicePath": "/FacadeService",

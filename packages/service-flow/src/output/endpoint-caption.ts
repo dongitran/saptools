@@ -1,6 +1,11 @@
 import type { TraceResult } from '../types.js';
 import { readableIdentifier } from './identifier-label.js';
 
+export interface EndpointCaption {
+  caption: string;
+  ambiguousMatches?: number;
+}
+
 function nodeCaption(
   node: Record<string, unknown>,
   fallback: string,
@@ -23,15 +28,25 @@ export function endpointCaption(
   trace: TraceResult,
   idOrLabel: string,
   nodeId?: string,
-): string {
+): EndpointCaption {
   const byId = trace.nodes.find((node) => node.id === nodeId)
     ?? trace.nodes.find((node) => node.id === idOrLabel);
-  if (byId) return nodeCaption(byId, idOrLabel);
+  if (byId) return { caption: nodeCaption(byId, idOrLabel) };
   const matches = labelMatches(trace, idOrLabel);
-  if (matches.length > 1)
-    return `${readableIdentifier(idOrLabel)} [ambiguous node label: ${
-      matches.length} matches]`;
-  return matches[0]
-    ? nodeCaption(matches[0], idOrLabel)
-    : readableIdentifier(idOrLabel);
+  if (matches.length > 1) return {
+    caption: readableIdentifier(idOrLabel),
+    ambiguousMatches: matches.length,
+  };
+  return {
+    caption: matches[0]
+      ? nodeCaption(matches[0], idOrLabel)
+      : readableIdentifier(idOrLabel),
+  };
+}
+
+export function displayEndpointCaption(value: EndpointCaption): string {
+  return value.ambiguousMatches === undefined
+    ? value.caption
+    : `${value.caption} [ambiguous node label: ${
+      value.ambiguousMatches} matches]`;
 }

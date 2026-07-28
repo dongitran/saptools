@@ -860,7 +860,7 @@ describe('event subscriber trace traversal', () => {
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
       table: 'b6134c200777bca9c3377a6e0c50edcd8409a50de174ac1613807423ef47a665',
-      json: '6094dc8b6bdce412519ed7c8c3173257d717bf0a99a1ab3a61de20ec23735e1f',
+      json: '6d5da1876208f8299bb6014ee98f4f7e569817f6307337445aac1bbde8d2f7b1',
       mermaid: '0add06f0ab5b7f3a92a75248dc8b099955ac0d81d48199eda4c22b1522f4927f',
     });
   });
@@ -924,7 +924,7 @@ describe('event subscriber trace traversal', () => {
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
       table: '67992fd8e98d98bfdccd1fabd7bf4f30063fee2ac89860916d27bf83c32d1b1b',
-      json: 'd9b07a2b3c3226b0fdec2cf0ae6da890d1efcef45c586bab0fdf61c0c4b61e1f',
+      json: '357662860a58acdcd25ec659e8477cdab4402e8ab94d9c89b3f690668537603b',
       mermaid: '5270fa88cbedcbdeaea7fa928d260d726c09c89df383dda5f7bb0f26eb2a2d3a',
     });
   });
