@@ -287,9 +287,24 @@ describe('Mermaid node identity', () => {
     expect(readableIdentifier('["alpha","beta"]')).toBe('alpha / beta');
     expect(readableIdentifier('["/a","/b"]')).toBe('/a/b');
     expect(readableIdentifier('[1,"two",3]')).toBe('1 / two / 3');
+    expect(readableIdentifier('[1,2,3,4]')).toBe('1 / 2 / 3 / 4');
+    expect(readableIdentifier('["a","b","c","d"]'))
+      .toBe('a / b / c / d');
     expect(readableIdentifier('[]')).toBe('[]');
     expect(readableIdentifier('[{"value":"nested"}]'))
       .toBe('[{"value":"nested"}]');
+  });
+
+  it('reserves the structural scope caption namespace', () => {
+    const scope = '[1,2,["a.ts"],[7]]';
+    const flat = '["scope:1/2/a.ts#7"]';
+    expect(readableIdentifier(scope)).toBe('scope:1/2/a.ts#7');
+    expect(readableIdentifier(flat)).toBe(flat);
+    expect(readableIdentifier(scope)).not.toBe(readableIdentifier(flat));
+    expect(readableIdentifier(readableIdentifier(scope)))
+      .toBe(readableIdentifier(scope));
+    expect(readableIdentifier(readableIdentifier(flat)))
+      .toBe(readableIdentifier(flat));
   });
 
   it('does not mutate table or JSON rendering', () => {

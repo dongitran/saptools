@@ -1177,10 +1177,11 @@ export async function publish(): Promise<void> {
       'strict_analysis_branch_reachability',
     )).toMatchObject({
       branchPopulations: {
-        deploymentComparison: {
+        deploymentComparisonAssessments: {
           compared_non_authoritative_equal: 1,
           compared_non_authoritative_mismatch: 2,
         },
+        deploymentComparisonEdgeCount: 1,
         deploymentComparisonReasons: {
           development_environment_is_not_deployment_proof: 3,
         },

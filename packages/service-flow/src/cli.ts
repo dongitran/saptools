@@ -149,10 +149,11 @@ async function withReadOnlyWorkspace<T>(
   fn: (db: ReturnType<typeof openDatabase>, workspaceId: number, rootPath: string) => Promise<T> | T,
 ): Promise<T> {
   const config = await loadWorkspaceConfig(workspace);
-  const db = openReadOnlyDatabase(config.dbPath);
+  const dbPath = process.env.SERVICE_FLOW_DB ?? config.dbPath;
+  const db = openReadOnlyDatabase(dbPath);
   try {
     const row = getWorkspace(db, config.rootPath);
-    if (!row) throw new Error(`Workspace is not initialized in ${config.dbPath}`);
+    if (!row) throw new Error(`Workspace is not initialized in ${dbPath}`);
     return await fn(db, row.id, config.rootPath);
   } finally {
     db.close();
@@ -340,6 +341,11 @@ function registerLinkCommand(program: Command): void {
       (opts: { workspace?: string }) =>
         void withWorkspace(opts.workspace, (db, workspaceId) => {
           const r = linkWorkspace(db, workspaceId);
+          // Run after the graph transaction commits. Full ANALYZE also covers
+          // the joined handler tables that PRAGMA optimize may skip, and is
+          // required for the graph/symbol lookup indexes to receive their
+          // measured query plans.
+          db.exec('ANALYZE');
           const upgradeWarnings = linkUpgradeWarnings(db, workspaceId);
           writeStdout(
             `${upgradeWarnings.length ? `Warnings: ${upgradeWarnings.map((item) => String(item.code)).join(', ')}. Run service-flow doctor --strict for remediation.\n` : ''}Linked ${r.edgeCount} edges: ${r.remoteResolvedCount} remote operation calls resolved, ${r.localResolvedCount} local operation calls resolved, ${r.unresolvedCount} unresolved operation calls, ${r.ambiguousCount} ambiguous operation calls, ${r.dynamicCount} dynamic operation calls, ${r.terminalCount} terminal call edges, ${r.dependencyResolvedCount} dependency resolved, ${r.dependencyAmbiguousCount} dependency ambiguous, ${r.implementationResolvedCount} implementation resolved, ${r.implementationAmbiguousCount} implementation ambiguous, ${r.implementationUnresolvedCount} implementation unresolved, ${r.subscriptionHandlerResolvedCount} subscription handlers resolved, ${r.subscriptionHandlerAmbiguousCount} subscription handlers ambiguous, ${r.subscriptionHandlerUnresolvedCount} subscription handlers unresolved, ${r.subscriptionHandlerMissingAssociationCount} subscription handler associations missing, ${r.eventShapeCandidateCount} event shape candidates, ${r.eventShapeCandidateOmittedCount} event shape candidates refused by the diagnosed safety cap\n`,

@@ -5,6 +5,7 @@ const SCOPE_SEGMENT_ESCAPES: ReadonlyArray<readonly [RegExp, string]> = [
   [/,/g, '%2C'],
   [/#/g, '%23'],
 ];
+const SCOPE_CAPTION_PREFIX = 'scope:';
 
 // '%' must be escaped first or the other replacements become ambiguous.
 function escapeScopeSegment(value: string): string {
@@ -54,9 +55,12 @@ function flatArrayLabel(parsed: unknown, fallback: string): string {
     || !parsed.every((item) =>
       typeof item === 'string' || typeof item === 'number')) return fallback;
   const parts = parsed.map(String);
-  return parts.every((part) => part.startsWith('/'))
+  const rendered = parts.every((part) => part.startsWith('/'))
     ? parts.join('')
     : parts.join(' / ');
+  // The structural grammar owns this namespace. Preserve a colliding flat
+  // array verbatim so two distinct identifiers cannot share one caption.
+  return rendered.startsWith(SCOPE_CAPTION_PREFIX) ? fallback : rendered;
 }
 
 export function readableIdentifier(value: string): string {
@@ -72,8 +76,9 @@ export function readableIdentifier(value: string): string {
   const tuple: readonly unknown[] = parsed;
   const [workspaceId, repositoryId, files, symbolIds] = tuple;
   if (!isScopeNumber(workspaceId) || !isScopeNumber(repositoryId)
-    || !isScopeStringList(files) || !isScopeNumberList(symbolIds)) return value;
-  return `scope:${scopeNumberField(workspaceId)}/${
+    || !isScopeStringList(files) || !isScopeNumberList(symbolIds))
+    return flatArrayLabel(parsed, value);
+  return `${SCOPE_CAPTION_PREFIX}${scopeNumberField(workspaceId)}/${
     scopeNumberField(repositoryId)}/${
     scopeListField(files, escapeScopeSegment)}#${
     scopeListField(symbolIds, String)}`;

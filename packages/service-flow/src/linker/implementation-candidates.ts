@@ -10,6 +10,13 @@ import {
   implementationMethodSignal,
   type ImplementationSelectionBasis,
 } from './implementation-method-selection.js';
+import {
+  cachedCanonicalImplementationEvidence,
+  resetCanonicalImplementationEvidence,
+} from './implementation-evidence-cache.js';
+
+export { resetCanonicalImplementationEvidence } from
+  './implementation-evidence-cache.js';
 
 interface ImplementationCandidate extends Record<string, unknown> {
   methodId: number;
@@ -35,6 +42,7 @@ export function linkImplementations(
   workspaceId: number,
   generation: number,
 ): { edgeCount: number; resolvedCount: number; ambiguousCount: number; unresolvedCount: number } {
+  resetCanonicalImplementationEvidence(db);
   const operations = workspaceOperations(db, workspaceId);
   let edgeCount = 0;
   let resolvedCount = 0;
@@ -59,10 +67,14 @@ export function canonicalImplementationEvidence(
   db: Db,
   operationId: string | number,
 ): Record<string, unknown> | undefined {
-  const operation = operationById(db, operationId);
-  const workspaceId = numberValue(operation?.workspaceId);
-  if (!operation || workspaceId === undefined) return undefined;
-  return implementationDecision(db, workspaceId, operation, false).evidenceWithHints;
+  return cachedCanonicalImplementationEvidence(db, operationId, () => {
+    const operation = operationById(db, operationId);
+    const workspaceId = numberValue(operation?.workspaceId);
+    if (!operation || workspaceId === undefined) return undefined;
+    return implementationDecision(
+      db, workspaceId, operation, false,
+    ).evidenceWithHints;
+  });
 }
 
 function workspaceOperations(db: Db, workspaceId: number): Array<Record<string, unknown>> {

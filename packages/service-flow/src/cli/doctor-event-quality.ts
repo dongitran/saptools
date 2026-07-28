@@ -570,6 +570,7 @@ function deploymentComparisonPopulations(
   db: Db,
   workspaceId?: number,
 ): {
+  edgeCount: number;
   statuses: Record<string, number>;
   reasons: Record<string, number>;
 } {
@@ -592,6 +593,7 @@ function deploymentComparisonPopulations(
       environmentFact(row.evidenceJson), statuses, reasons,
     );
   return {
+    edgeCount: rows.length,
     statuses: Object.fromEntries(values.map((value) =>
       [value, statuses.get(value) ?? 0])),
     reasons: Object.fromEntries([...reasons.entries()].sort()),
@@ -645,7 +647,8 @@ function analysisBranchReachabilityQuality(
     ),
     methodNameFallbackSiblingRefused:
       siblingFallbackRefusalPopulation(db, workspaceId),
-    deploymentComparison: deployment.statuses,
+    deploymentComparisonAssessments: deployment.statuses,
+    deploymentComparisonEdgeCount: deployment.edgeCount,
     deploymentComparisonReasons: deployment.reasons,
   };
   return {

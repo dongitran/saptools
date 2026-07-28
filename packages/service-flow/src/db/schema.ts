@@ -37,6 +37,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_generated_constant_site ON generated_consta
 CREATE INDEX IF NOT EXISTS idx_symbol_calls_caller ON symbol_calls(repo_id, caller_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_outbound_call_site ON outbound_calls(repo_id, source_file, call_site_start_offset, call_site_end_offset, call_type);
 CREATE INDEX IF NOT EXISTS idx_symbol_call_site_role ON symbol_calls(repo_id, source_file, call_site_start_offset, call_site_end_offset, call_role);
+-- Keep status after the ownership prefix: service ownership leaves it
+-- unconstrained, while resolved-implementation lookups still use all columns.
+CREATE INDEX IF NOT EXISTS idx_graph_edge_lookup ON graph_edges(edge_type, from_kind, from_id, status, to_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edge_from ON graph_edges(from_kind, from_id);
+-- Relative symbol resolution uses a three-way name OR. Separate indexes let
+-- SQLite use its multi-index OR plan; source_file<>? cannot sit in the prefix.
+CREATE INDEX IF NOT EXISTS idx_symbol_repo_qualified ON symbols(repo_id, qualified_name);
+CREATE INDEX IF NOT EXISTS idx_symbol_repo_name ON symbols(repo_id, name);
+CREATE INDEX IF NOT EXISTS idx_symbol_repo_exported_name ON symbols(repo_id, exported, exported_name);
 CREATE INDEX IF NOT EXISTS idx_service_binding_site ON service_bindings(repo_id,source_file,variable_name,binding_site_start_offset,binding_site_end_offset);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_service_binding_exact_site ON service_bindings(repo_id,source_file,variable_name,binding_site_start_offset,binding_site_end_offset) WHERE binding_site_start_offset IS NOT NULL AND binding_site_end_offset IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(kind, name, path, repo);

@@ -30,6 +30,19 @@ async function run(
   return stdout;
 }
 
+async function runWithEnvironment(
+  args: string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<{ stdout: string; stderr: string }> {
+  const { stdout, stderr } = await execFileAsync(
+    'node', [cli, ...args], {
+      cwd: path.resolve('.'),
+      env: { ...process.env, ...environment },
+    },
+  );
+  return { stdout, stderr };
+}
+
 interface ProcessExit {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -318,6 +331,51 @@ describe('service-flow CLI lifecycle guards', () => {
       ]);
     }
   });
+
+  it('pins only read-only commands to SERVICE_FLOW_DB', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'service-flow-read-db-override-'),
+    );
+    const configuredPath = path.join(root, 'configured.db');
+    const alternatePath = path.join(root, 'alternate.db');
+    await writeFile(path.join(root, '.git-fixture'), '');
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({
+      name: '@neutral/configured-repository', version: '1.0.0',
+    }));
+    await writeFile(path.join(root, 'index.ts'), 'export const value = 1;\n');
+    await run(['init', root, '--db', configuredPath]);
+
+    const alternate = openDatabase(alternatePath);
+    alternate.prepare(`INSERT INTO workspaces(
+      root_path,db_path,created_at,updated_at
+    ) VALUES(?,?,?,?)`).run(root, alternatePath, 'now', 'now');
+    alternate.close();
+
+    await runWithEnvironment([
+      'index', '--workspace', root, '--force',
+    ], { SERVICE_FLOW_DB: alternatePath });
+    const configured = JSON.parse(await run([
+      'list', 'repos', '--workspace', root,
+    ])) as Array<{ name?: string }>;
+    expect(configured).toContainEqual(expect.objectContaining({
+      name: root.split(path.sep).at(-1),
+      packageName: '@neutral/configured-repository',
+    }));
+    const overridden = await runWithEnvironment([
+      'list', 'repos', '--workspace', root,
+    ], { SERVICE_FLOW_DB: alternatePath });
+    expect(overridden.stderr).toBe('');
+    expect(JSON.parse(overridden.stdout)).toEqual([]);
+
+    const configuredDb = openDatabase(configuredPath, { readonly: true });
+    expect(configuredDb.prepare(`SELECT index_status status
+      FROM repositories`).get()?.status).toBe('indexed');
+    configuredDb.close();
+    const untouched = openDatabase(alternatePath, { readonly: true });
+    expect(untouched.prepare('SELECT COUNT(*) count FROM repositories').get())
+      .toEqual({ count: 0 });
+    untouched.close();
+  });
 });
 
 describe('service-flow CLI pipe safety', () => {
@@ -505,6 +563,21 @@ describe('service-flow guided trace CLI', () => {
     expect(doctorTable).toContain('strict_service_binding_quality');
 
     const db = openDatabase(dbPath, { readonly: true });
+    const statistics = db.prepare(
+      'SELECT tbl,idx FROM sqlite_stat1 ORDER BY tbl,idx',
+    ).all();
+    const analyzedTables = new Set(statistics.map((row) => String(row.tbl)));
+    expect([...analyzedTables]).toEqual(expect.arrayContaining([
+      'graph_edges', 'handler_classes', 'handler_registrations', 'symbols',
+    ]));
+    const analyzedIndexes = statistics.map((row) => row.idx);
+    expect(analyzedIndexes).toEqual(expect.arrayContaining([
+      'idx_graph_edge_lookup',
+      'idx_graph_edge_from',
+      'idx_symbol_repo_qualified',
+      'idx_symbol_repo_name',
+      'idx_symbol_repo_exported_name',
+    ]));
     expect(db.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();

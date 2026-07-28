@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.79
+
+- Added covering graph-edge lookup indexes and three repository/name symbol
+  indexes with the measured prefix order. Existing schema-15 databases receive
+  them on their next read-write open without a schema migration.
+- Runs full SQLite `ANALYZE` after a successful link transaction so the new
+  indexes and every implementation-candidate join table have planner
+  statistics. Run `link --force` once after upgrade to install the indexes and
+  statistics; no fact re-index is required.
+- Memoizes canonical implementation evidence per database and operation during
+  call linking, with an explicit reset before every implementation-link phase
+  so same-process relinks cannot reuse stale decisions.
+- Reserved the `scope:` caption namespace for structural scope tuples and
+  restored flat-array rendering for invalid four-element tuple candidates.
+- Renamed the doctor branch counter to
+  `deploymentComparisonAssessments` and added
+  `deploymentComparisonEdgeCount`, making one-edge/many-deployment expansion
+  explicit.
+- Read-only commands accept `SERVICE_FLOW_DB` as an operational database-path
+  override. Index and link continue to mutate only the database named by the
+  workspace configuration.
+- Package/CLI is `0.1.79`; SQLite remains schema `15`, analyzer compatibility
+  remains `0.1.77-facts.1`, compact remains
+  `service-flow/compact-graph@1`, and detailed JSON remains
+  `service-flow/detailed-trace@3`.
+
 ## 0.1.78
 
 - Restored the always-array `inspect operation` JSON shape while retaining a
@@ -18,10 +44,10 @@
   strict unproven subscriptions.
 - Extended branch reachability with deployment-comparison reason populations
   and removed the unused incremental-index and depth-filter modules.
-- The stored `package_import_provenance_missing` reduction from four site rows
-  to two repository rows comes from the per-repository bounded aggregation
-  introduced in 0.1.76; it becomes visible after a force re-index. No 0.1.77
-  parser or diagnostic-deduplication change caused that reduction.
+- Corrected after release: the stored `package_import_provenance_missing`
+  reduction from four site rows to two repository rows occurred in 0.1.76,
+  when diagnostics became one bounded row per affected repository. Pristine
+  0.1.76 and later builds already store two rows for the measured workspace.
 - Package/CLI is `0.1.78`; SQLite remains schema `15`, analyzer compatibility
   remains `0.1.77-facts.1`, compact remains
   `service-flow/compact-graph@1`, and detailed JSON is

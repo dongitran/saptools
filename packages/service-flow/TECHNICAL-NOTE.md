@@ -1,5 +1,28 @@
 # Service Flow Resolution Notes
 
+## 0.1.79 indexed lookup and caption-namespace notes
+
+- Package/CLI `0.1.79` retains SQLite schema `15`, analyzer
+  `0.1.77-facts.1`, compact `service-flow/compact-graph@1`, and detailed JSON
+  `service-flow/detailed-trace@3`. No fact re-index is required.
+- Read-write migration unconditionally restores covering graph-edge and
+  repository/name symbol indexes even on a current schema-15 database. A
+  successful CLI link then runs full `ANALYZE` after its graph transaction
+  commits. Read-only opens deliberately do neither, so run one link after
+  upgrade to realize the planner improvement.
+- Canonical implementation evidence is cached per `Db` and operation id only
+  after facts, dependency edges, and implementation edges are final. The cache
+  resets before every implementation-link phase, including repeated links in
+  one process.
+- `strict_analysis_branch_reachability` reports deployment comparison
+  assessments separately from their source edge count. One event-shape edge
+  may carry several deployment-repository assessments.
+- Structural scope captions exclusively own the `scope:` namespace. A flat
+  identifier array that would collide remains raw, while non-scope
+  four-element arrays use the same legacy fallback as every other arity.
+- `SERVICE_FLOW_DB` overrides the database path only at the common read-only
+  command boundary. Mutation commands remain anchored to workspace config.
+
 ## 0.1.78 output-contract and branch-reachability notes
 
 - Package/CLI `0.1.78` uses SQLite schema `15`, retains analyzer
@@ -17,8 +40,9 @@
   non-authoritative development declarations, authoritative mismatch,
   Mermaid escaping, and unproven-subscription fail-closed behavior.
 - `package_import_provenance_missing` is aggregated once per repository with
-  bounded call-site examples. That storage change landed in 0.1.76; a later
-  force re-index explains the observed four-row to two-row transition.
+  bounded call-site examples. Corrected after release: the four-row to two-row
+  transition occurred in 0.1.76 itself; pristine 0.1.76 and later databases
+  already store the same two repository rows for the measured workspace.
 
 ## 0.1.77 event reachability and scope-identity notes
 

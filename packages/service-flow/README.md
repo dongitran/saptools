@@ -94,7 +94,7 @@ npm install @saptools/service-flow
 - Repository public-surface evidence uses the versioned `service-flow/package-public-surface@1` carrier and retains at most 256 public exposure records with truthful total/shown/omitted metadata. A displayed prefix never proves uniqueness or absence; an omitted requested scope stays unresolved unless an authoritative exact-name count proves the decision.
 - OData entity paths are conservative terminal remote entity edges. Reads, mutations, deletes, navigation paths, media-stream paths such as `/Documents(ID)/content`, and uppercase unknown entity-set candidates do not inflate unresolved operation counts. Lowercase action/function-style paths remain eligible for indexed operation resolution.
 - External HTTP destinations are static only when a safe literal or local const literal proves the value. Identifier, property-read, function-call, and arbitrary destination expressions are dynamic with stable `destination:dynamic:<hash>` ids and neutral labels; conditional literal branches expose only safe candidate names.
-- Schema version 14 adds canonical event-skeleton columns, a repository environment-declaration carrier, and generated string-constant facts/indexes. Schema 15 restores the historical schema-14 default and normalizes the repository carrier to the current empty allowlist without rewriting the applied migration. Its table rebuild verifies the required SQLite pragmas, direct child counts, and repository foreign-key targets. Package `0.1.78` uses analyzer `0.1.77-facts.1`; read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until migration, force reindex, and force relink succeed.
+- Schema version 14 adds canonical event-skeleton columns, a repository environment-declaration carrier, and generated string-constant facts/indexes. Schema 15 restores the historical schema-14 default and normalizes the repository carrier to the current empty allowlist without rewriting the applied migration. Its table rebuild verifies the required SQLite pragmas, direct child counts, and repository foreign-key targets. Package `0.1.79` uses analyzer `0.1.77-facts.1`; read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until migration, force reindex, and force relink succeed.
 
 
 ## 🚀 Quick Start
@@ -121,6 +121,18 @@ service-flow doctor --workspace /path/to/workspace
 
 After `init`, the workspace configuration and SQLite database live below the selected workspace by default. Run `index` whenever source changes; unchanged repositories are skipped unless `--force` is supplied. Then run `link` to rebuild the graph edges used by `trace` and `graph`.
 
+Read-only commands (`trace`, `graph`, `list`, `inspect`, and `doctor`) may
+temporarily target a specific database without rewriting shared workspace
+configuration:
+
+```bash
+SERVICE_FLOW_DB=/absolute/path/to/service-flow.db \
+  service-flow graph --workspace /path/to/workspace --repo facade-service
+```
+
+`SERVICE_FLOW_DB` is an operational database selector, not an analyzed
+workspace environment value. It never redirects `index` or `link`.
+
 To allow non-secret event prefix declarations, edit
 `.service-flow/config.json` and add the exact keys used by the workspace:
 
@@ -143,9 +155,11 @@ service-flow index --workspace /path/to/workspace \
 ```
 
 > [!IMPORTANT]
-> Package `0.1.78` uses schema 15 and retains analyzer `0.1.77-facts.1`.
-> Workspaces already indexed by that analyzer need no re-index or relink for
-> this output-only patch. Upgrades from an older analyzer still require:
+> Package `0.1.79` uses schema 15 and retains analyzer `0.1.77-facts.1`.
+> Workspaces already indexed by that analyzer need no re-index. Run
+> `link --force` once after upgrading so the read-write open installs the new
+> lookup indexes and the completed link records planner statistics. Upgrades
+> from an older analyzer still require:
 >
 > ```bash
 > service-flow index --workspace /path/to/workspace --force
