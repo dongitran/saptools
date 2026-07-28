@@ -18,6 +18,23 @@ interface PreparedFixture {
   calls: OutboundCallFact[];
 }
 
+describe('binding lexical index reuse', () => {
+  it('reuses one immutable index for a source-file identity', () => {
+    const source = ts.createSourceFile(
+      'memoized.ts',
+      'const value = 1; value;',
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const first = createBindingLexicalIndex(source);
+    const second = createBindingLexicalIndex(source);
+
+    expect(second).toBe(first);
+    expect(second.sites).toBe(first.sites);
+  });
+});
+
 async function prepare(sourceText: string): Promise<PreparedFixture> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'service-flow-binding-scope-'));
   const file = 'scope.ts';

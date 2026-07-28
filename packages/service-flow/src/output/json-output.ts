@@ -1,4 +1,5 @@
 import type { TraceResult } from '../types.js';
+import { endpointCaption } from './endpoint-caption.js';
 export const DETAILED_TRACE_SCHEMA = 'service-flow/detailed-trace@2';
 export function renderJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -18,8 +19,8 @@ export function renderTraceJson(trace: TraceResult): string {
         ...rest,
         from: fromNodeId ?? edge.from,
         to: toNodeId ?? edge.to,
-        fromLabel: edge.from,
-        toLabel: edge.to,
+        fromLabel: endpointCaption(trace, edge.from, fromNodeId),
+        toLabel: endpointCaption(trace, edge.to, toNodeId),
       };
     }),
   });

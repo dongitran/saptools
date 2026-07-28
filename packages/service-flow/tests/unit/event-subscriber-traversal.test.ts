@@ -860,7 +860,7 @@ describe('event subscriber trace traversal', () => {
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
       table: 'b6134c200777bca9c3377a6e0c50edcd8409a50de174ac1613807423ef47a665',
-      json: '80c299ffc6189f08b12dbc2895ff18f0984eb742220eca2e4c49ea37e8824927',
+      json: '6094dc8b6bdce412519ed7c8c3173257d717bf0a99a1ab3a61de20ec23735e1f',
       mermaid: '0add06f0ab5b7f3a92a75248dc8b099955ac0d81d48199eda4c22b1522f4927f',
     });
   });
@@ -923,9 +923,9 @@ describe('event subscriber trace traversal', () => {
       json: sha256(renderTraceJson(result)),
       mermaid: sha256(renderMermaid(result)),
     }).toEqual({
-      table: '47fc254e6897a9ed1af3bbc816993886e30d942b4fae73a4f1b27550a96fa2ed',
-      json: '632af05ed1ab3440b7dc664644b9ad25891a9a69f499164ed954c8894276e3ed',
-      mermaid: '097ac09be1af729afba158ddeaded53a52a4f6837364ea04898071cf249b1da2',
+      table: '67992fd8e98d98bfdccd1fabd7bf4f30063fee2ac89860916d27bf83c32d1b1b',
+      json: 'd9b07a2b3c3226b0fdec2cf0ae6da890d1efcef45c586bab0fdf61c0c4b61e1f',
+      mermaid: '5270fa88cbedcbdeaea7fa928d260d726c09c89df383dda5f7bb0f26eb2a2d3a',
     });
   });
 });

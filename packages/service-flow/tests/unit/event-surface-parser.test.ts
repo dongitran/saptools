@@ -468,6 +468,33 @@ function consume(stream: Readable): void {
     });
   });
 
+  it('excludes every listener on an untyped stream-named receiver', () => {
+    const facts = eventFacts(`
+function consume(stream): void {
+  stream.on('data', (): void => {});
+  stream.on('end', (): void => {});
+  stream.on('error', (): void => {});
+}
+`);
+    expect(facts).toEqual([]);
+  });
+
+  it('keeps a stream-named receiver when CAP evidence proves it', () => {
+    const facts = eventFacts(`
+import cds from '@sap/cds';
+async function subscribe(): Promise<void> {
+  const stream = await cds.connect.messaging('primary');
+  stream.on('NeutralEvent', (): void => {});
+}
+`);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.callType).toBe('async_subscribe');
+    expect(facts[0]?.eventNameExpr).toBe('NeutralEvent');
+    expect(facts[0]?.evidence).toMatchObject({
+      receiverClassification: 'cap_evidence',
+    });
+  });
+
   it('records the root receiver for this-property event calls', () => {
     const [fact] = eventFacts(`
 class Publisher {

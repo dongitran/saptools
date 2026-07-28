@@ -60,6 +60,8 @@ export interface VisibleBinding<T> {
   scopeIndex?: number;
 }
 
+const lexicalIndexes = new WeakMap<ts.SourceFile, BindingLexicalIndex>();
+
 function unwrapIdentity(expression: ts.Expression): ts.Expression {
   if (ts.isParenthesizedExpression(expression)
     || ts.isAwaitExpression(expression)
@@ -564,9 +566,13 @@ function attachDeclarationKeys(sites: BindingLexicalSite[]): void {
 export function createBindingLexicalIndex(
   source: ts.SourceFile,
 ): BindingLexicalIndex {
+  const cached = lexicalIndexes.get(source);
+  if (cached) return cached;
   const sites = collectSites(source);
   attachDeclarationKeys(sites);
-  return { source, sites };
+  const index = { source, sites };
+  lexicalIndexes.set(source, index);
+  return index;
 }
 
 export function bindingSite(

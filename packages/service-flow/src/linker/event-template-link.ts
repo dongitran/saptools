@@ -37,15 +37,21 @@ function receiverEvidence(
     : evidence;
 }
 
+export function eventReceiverUnprovenReason(
+  evidence: Record<string, unknown>,
+): string | undefined {
+  const receiver = receiverEvidence(evidence);
+  if (receiver.receiverClassification !== 'unproven') return undefined;
+  return stringField(receiver, 'receiverUnresolvedReason')
+    ?? 'event_receiver_unproven_binding';
+}
+
 export function applyEventReceiverProof(
   event: LinkedEventTemplate,
   evidence: Record<string, unknown>,
 ): LinkedEventTemplate {
-  const receiver = receiverEvidence(evidence);
-  if (event.isDynamic
-    || receiver.receiverClassification !== 'unproven') return event;
-  const reason = stringField(receiver, 'receiverUnresolvedReason')
-    ?? 'event_receiver_unproven_binding';
+  const reason = eventReceiverUnprovenReason(evidence);
+  if (event.isDynamic || reason === undefined) return event;
   return {
     ...event,
     targetId: `Event: ${event.targetId}`,
@@ -99,12 +105,22 @@ export function insertEventCallEdge(
     call.environmentDeclarationsJson,
     variables,
   );
-  const event = applyEventReceiverProof(linkEventTemplate(
+  const published = linkEventTemplate(
     String(call.event_name_expr ?? ''), environment.variables,
     typeof call.unresolved_reason === 'string'
       ? call.unresolved_reason : undefined,
     skeleton,
-  ), evidence);
+  );
+  const receiverUnprovenReason = published.isDynamic
+    ? undefined : eventReceiverUnprovenReason(evidence);
+  const receiverUnproven = receiverUnprovenReason !== undefined;
+  // Keeping a statically named publication terminal is a deliberate
+  // compatibility trade: it recovers CAP emitters whose client propagation
+  // cannot be proven, while dispatchCertainty preserves the weaker proof.
+  // Subscriptions retain the stricter receiver gate so stream listeners cannot
+  // become event consumers.
+  const event = callType === 'async_emit'
+    ? published : applyEventReceiverProof(published, evidence);
   const edgeType = event.isDynamic
     ? 'DYNAMIC_EDGE_CANDIDATE'
     : callType === 'async_emit'
@@ -112,7 +128,7 @@ export function insertEventCallEdge(
   const eventEvidence = {
     ...evidence,
     dispatchScope: 'workspace_event_name_only',
-    dispatchCertainty: event.unresolvedReason?.startsWith('event_receiver_')
+    dispatchCertainty: receiverUnproven
       ? 'receiver_unproven'
       : environment.status === 'resolved'
       ? 'environment_declaration_exact'
@@ -129,7 +145,8 @@ export function insertEventCallEdge(
     }),
   };
   const unresolvedReason = environment.reason
-    ?? event.unresolvedReason;
+    ?? event.unresolvedReason
+    ?? receiverUnprovenReason;
   db.prepare(`INSERT INTO graph_edges(
     workspace_id,edge_type,status,from_kind,from_id,to_kind,to_id,
     confidence,evidence_json,is_dynamic,unresolved_reason,generation

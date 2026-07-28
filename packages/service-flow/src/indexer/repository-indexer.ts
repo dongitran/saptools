@@ -69,6 +69,9 @@ import {
 import {
   createEventEnvironmentReferenceResolver,
 } from '../parsers/event-environment-reference.js';
+import type {
+  EventCallAnalysis,
+} from '../parsers/event-call-analysis.js';
 import { invalidateEventSurfaceFacts } from
   '../db/event-surface-invalidation.js';
 import type { CdsServiceFact, GeneratedConstantFact, HandlerClassFact, HandlerRegistrationFact, OutboundCallFact, PackageFacts, ServiceBindingFact, ExecutableSymbolFact, SymbolCallFact } from '../types.js';
@@ -86,6 +89,7 @@ interface ParsedFacts {
   symbols: ExecutableSymbolFact[];
   symbolCalls: SymbolCallFact[];
   generatedConstants: GeneratedConstantFact[];
+  analysisBranchPopulations: Record<string, number>;
   fileRecords: Array<{ relativePath: string; extension: string; sha256: string; sizeBytes: number }>;
 }
 export interface PreparedRepositoryIndex extends IndexRepoResult {
@@ -208,6 +212,9 @@ export function publishPreparedRepositoryIndex(
     repoId,
   );
   clearRepoFacts(db, repoId);
+  insertAnalysisBranchPopulations(
+    db, repoId, prepared.parsed.analysisBranchPopulations,
+  );
   insertRequires(db, repoId, prepared.packageFacts.cdsRequires);
   const fileStmt = db.prepare('INSERT INTO files(repo_id,relative_path,extension,sha256,size_bytes,last_indexed_at) VALUES(?,?,?,?,?,?) ON CONFLICT(repo_id,relative_path) DO UPDATE SET sha256=excluded.sha256,size_bytes=excluded.size_bytes,last_indexed_at=excluded.last_indexed_at');
   for (const file of prepared.parsed.fileRecords) fileStmt.run(repoId, file.relativePath, file.extension, file.sha256, file.sizeBytes, now);
@@ -219,6 +226,22 @@ export function publishPreparedRepositoryIndex(
   );
   db.prepare("UPDATE repositories SET last_indexed_at=?, index_status='indexed', error_count=0, fingerprint=?, fact_generation=COALESCE(fact_generation,0)+1, graph_stale_reason='facts_changed', graph_stale_at=?, fact_analyzer_version=? WHERE id=?").run(now, prepared.fingerprint, now, ANALYZER_VERSION, repoId);
   return publicationDiagnosticCount;
+}
+
+function insertAnalysisBranchPopulations(
+  db: Db,
+  repoId: number,
+  populations: Record<string, number>,
+): void {
+  const insert = db.prepare(`INSERT INTO diagnostics(
+    repo_id,severity,code,message
+  ) VALUES(?,'info',?,?)`);
+  for (const [branch, count] of Object.entries(populations).sort()) {
+    if (count > 0)
+      insert.run(
+        repoId, `analysis_branch_population_${branch}`, String(count),
+      );
+  }
 }
 
 function insertPreparedCallFacts(
@@ -296,7 +319,18 @@ async function parseAllSourceFacts(
   environmentDeclarations: EnvironmentDeclarationsFact,
   eventEnvironmentKeys?: readonly string[],
 ): Promise<ParsedFacts> {
-  const facts: ParsedFacts = { services: [], handlers: [], registrations: [], bindings: [], calls: [], symbols: [], symbolCalls: [], generatedConstants: [], fileRecords: [] };
+  const facts: ParsedFacts = {
+    services: [],
+    handlers: [],
+    registrations: [],
+    bindings: [],
+    calls: [],
+    symbols: [],
+    symbolCalls: [],
+    generatedConstants: [],
+    analysisBranchPopulations: {},
+    fileRecords: [],
+  };
   for (const snapshot of sources.entries()) {
     const file = snapshot.filePath;
     facts.fileRecords.push({
@@ -319,6 +353,10 @@ async function parseAllSourceFacts(
             sources, source, file, eventEnvironmentKeys,
           ),
         serviceBindings: bindings,
+        eventAnalysisObserver: (analysis): void =>
+          recordEventAnalysisPopulation(
+            facts.analysisBranchPopulations, analysis,
+          ),
       });
       facts.handlers.push(...(await parseDecorators(root, file, sources)));
       facts.registrations.push(...(await parseHandlerRegistrations(root, file, sources)));
@@ -339,6 +377,18 @@ async function parseAllSourceFacts(
     }
   }
   return facts;
+}
+
+function recordEventAnalysisPopulation(
+  populations: Record<string, number>,
+  analysis: EventCallAnalysis,
+): void {
+  if (analysis.status !== 'excluded') return;
+  populations[analysis.exclusionReason] =
+    (populations[analysis.exclusionReason] ?? 0) + 1;
+  if (analysis.receiverProof === 'node_event_parameter_type')
+    populations.node_event_parameter_type =
+      (populations.node_event_parameter_type ?? 0) + 1;
 }
 async function findSourceFiles(root: string): Promise<string[]> {
   const out: string[] = [];

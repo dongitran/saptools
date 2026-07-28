@@ -152,6 +152,21 @@ function deploymentMismatch(authoritative: boolean): DeploymentAssessment {
       };
 }
 
+function deploymentMatch(authoritative: boolean): DeploymentAssessment {
+  return authoritative
+    ? {
+        compatible: true,
+        scope: 'shared_environment_value_equal',
+        comparisonStatus: 'compared_equal',
+      }
+    : {
+        compatible: true,
+        scope: 'shared_environment_value_equal_non_authoritative',
+        comparisonStatus: 'compared_non_authoritative_equal',
+        comparisonReason: 'development_environment_is_not_deployment_proof',
+      };
+}
+
 function deploymentAssessment(
   emit: EventShapeRow,
   subscribe: EventShapeRow,
@@ -186,14 +201,11 @@ function deploymentAssessment(
   const event = linkEventTemplate(
     emit.eventName, environment.variables, undefined, emitSkeleton,
   );
-  if (evidence.effectiveEventName === event.targetId) return {
-    compatible: true,
-    scope: 'shared_environment_value_equal',
-    comparisonStatus: 'compared_equal',
-  };
   const authoritative = hasDeploymentProvenance(environment.provenance)
     && hasDeploymentProvenance(subscriptionEnvironment.provenance);
-  return deploymentMismatch(authoritative);
+  return evidence.effectiveEventName === event.targetId
+    ? deploymentMatch(authoritative)
+    : deploymentMismatch(authoritative);
 }
 
 function candidateEvidence(

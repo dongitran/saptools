@@ -523,13 +523,18 @@ function inspectOperationCommand(
         AND (o.operation_name=? OR o.operation_path=?)
       ORDER BY r.name COLLATE BINARY,s.service_path COLLATE BINARY,o.id`)
       .all(workspaceId, selector, selector);
-    writeStdout(renderJson(rows.length > 0 ? rows : [{
+    if (rows.length > 0) {
+      writeStdout(renderJson(rows));
+      return;
+    }
+    writeStdout(renderJson({
       severity: 'warning',
       code: 'selector_operation_not_found',
       message: `Operation selector not found: ${selector}`,
       selectorKind: 'operation',
       selector,
-    }]));
+    }));
+    process.exitCode = 1;
   });
 }
 

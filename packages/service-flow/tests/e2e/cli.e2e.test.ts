@@ -235,13 +235,14 @@ describe('service-flow CLI', () => {
         service_name: 'FacadeService',
       }),
     ]));
-    const unknownOperation = JSON.parse(await run([
+    const unknownOperationResult = await runWithExit([
       'inspect', 'operation', 'neutralMissingOperation',
       '--workspace', fixture,
-    ])) as Array<{ code?: string }>;
-    expect(unknownOperation).toEqual([
-      expect.objectContaining({ code: 'selector_operation_not_found' }),
     ]);
+    expect(unknownOperationResult.exit.code).toBe(1);
+    expect(JSON.parse(unknownOperationResult.stdout)).toEqual(
+      expect.objectContaining({ code: 'selector_operation_not_found' }),
+    );
     const doctorResult = await runResult(['doctor', '--workspace', fixture]);
     expect(doctorResult.stderr).toBe('');
     expect(doctorResult.stdout).toMatch(/No diagnostics|\[/);
@@ -399,7 +400,8 @@ describe('service-flow guided trace CLI', () => {
       unresolvedReason?: string;
     }> };
     expect(runtime.edges.some((edge) =>
-      edge.toLabel === '/ProductProcessService/runDeepCheck')).toBe(true);
+      edge.toLabel
+        === 'process-service:/ProductProcessService/runDeepCheck')).toBe(true);
     const gaps = runtime.edges.filter((edge) => edge.unresolvedReason);
     expect(gaps).toEqual([]);
 

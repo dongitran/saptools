@@ -338,12 +338,22 @@ function verifyOperationServiceIndex(db: Db): void {
   ).all().map((item) => item.name)).toEqual(['service_id']);
 }
 
+function verifyHandlerMethodClassIndex(db: Db): void {
+  expect(db.prepare(
+    "PRAGMA index_list('handler_methods')",
+  ).all().some((item) => item.name === 'idx_handler_method_class')).toBe(true);
+  expect(db.prepare(
+    'PRAGMA index_info(idx_handler_method_class)',
+  ).all().map((item) => item.name)).toEqual(['handler_class_id']);
+}
+
 async function verifyIdempotentIndexMigration(): Promise<void> {
   const dbPath = await createLegacyDatabase(12);
   const migrated = openDatabase(dbPath);
   const stateBefore = migrationState(migrated);
   verifyExactSiteIndex(migrated);
   verifyOperationServiceIndex(migrated);
+  verifyHandlerMethodClassIndex(migrated);
   migrate(migrated);
   expect(schemaVersion(migrated)).toBe(15);
   expect(migrated.prepare(
@@ -353,6 +363,38 @@ async function verifyIdempotentIndexMigration(): Promise<void> {
   )).toHaveLength(1);
   expect(migrationState(migrated)).toEqual(stateBefore);
   migrated.close();
+}
+
+async function verifyRebuildRejectsRewrittenForeignKey(): Promise<void> {
+  const dbPath = await createLegacyDatabase(13);
+  const legacy = openDatabase(dbPath, { migrate: false });
+  legacy.pragma('foreign_keys = OFF');
+  legacy.exec(`
+    ALTER TABLE files RENAME TO files_valid_target;
+    CREATE TABLE files (
+      id INTEGER PRIMARY KEY,
+      repo_id INTEGER NOT NULL,
+      relative_path TEXT NOT NULL,
+      extension TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      last_indexed_at TEXT NOT NULL,
+      UNIQUE(repo_id,relative_path),
+      FOREIGN KEY(repo_id) REFERENCES repositories_schema_v14(id)
+        ON DELETE CASCADE
+    );
+    INSERT INTO files SELECT * FROM files_valid_target;
+    DROP TABLE files_valid_target;
+  `);
+  legacy.pragma('foreign_keys = ON');
+  const before = repositoryChildSnapshot(legacy);
+
+  expect(() => migrate(legacy)).toThrow(
+    'schema_v15_repository_rebuild_invalid_foreign_key_target:files',
+  );
+  expect(schemaVersion(legacy)).toBe(13);
+  expect(repositoryChildSnapshot(legacy)).toEqual(before);
+  legacy.close();
 }
 
 function withoutForeignKeyDisable(db: Db): Db {
@@ -524,6 +566,7 @@ describe('schema 15 environment-default lifecycle and provenance migration', () 
   it('creates one exact-site partial unique index and remains idempotent', verifyIdempotentIndexMigration);
   it('refuses the schema-15 rebuild when foreign keys remain enabled', verifyRebuildRequiresForeignKeysOff);
   it('refuses the schema-15 rebuild without legacy alter-table semantics', verifyRebuildRequiresLegacyAlterTable);
+  it('refuses a rewritten repository foreign-key target with intact rows', verifyRebuildRejectsRewrittenForeignKey);
   it('migrates v11 through both fact migrations without fabricating identity', verifyV11Migration);
   it.each(malformedSchemaCases)(
     'bounds malformed current schema with a missing $label',

@@ -361,6 +361,9 @@ import { Func, Handler } from 'cds-routing-handlers';
 export class CollisionHandler {
   @Func(root.service.area.CollisionService.ActionSecond.name)
   async first(): Promise<void> {}
+
+  @Func('first')
+  async declaredFirst(): Promise<void> {}
 }
 `),
       writeFixtureFile(root, 'service/srv/server.ts', `
@@ -372,14 +375,21 @@ createCombinedHandler({ handler: [CollisionHandler] });
     const { db, workspaceId } = await prepareWorkspace(root);
     linkWorkspace(db, workspaceId);
     const edge = implementationEdge(db, 'first');
-    expect(edge.status).toBe('unresolved');
-    expect(arrayValue(edge.evidence.candidates)[0]).toMatchObject({
+    expect(edge.status).toBe('resolved');
+    expect(arrayValue(edge.evidence.candidates).find((candidate) =>
+      candidate.methodName === 'first')).toMatchObject({
       accepted: false,
       selectionBasis: 'method_name_fallback',
       rejectedReasons: [
         'method_name_fallback_conflicts_with_sibling_operation',
       ],
     });
+    const reachability = doctorDiagnostics(db, true, {
+      workspaceId,
+    }).find((item) => item.code === 'strict_analysis_branch_reachability');
+    expect(objectValue(
+      reachability?.branchPopulations,
+    ).methodNameFallbackSiblingRefused).toBe(1);
     db.close();
   });
 
@@ -393,10 +403,10 @@ createCombinedHandler({ handler: [CollisionHandler] });
         argumentExpression:
           'root.service.area.CollisionService.ActionUnrelated.name',
       }),
+      siblingDecoratorValues: JSON.stringify(['setStatus']),
     }, {
       operationName: 'set',
       operationPath: 'set',
-      serviceOperationNames: JSON.stringify(['set', 'setStatus']),
     });
     expect(signal).toMatchObject({
       matches: true,

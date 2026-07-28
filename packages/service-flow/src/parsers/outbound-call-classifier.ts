@@ -36,6 +36,7 @@ import {
 import {
   analyzeEventCall,
   createEventCallAnalysisContext,
+  type EventCallAnalysis,
   type EventCallAnalysisContext,
 } from './event-call-analysis.js';
 import type {
@@ -60,6 +61,7 @@ export interface OutboundClassificationOptions {
   importedEventNameResolver?: ImportedEventNameResolver;
   eventEnvironmentReferenceResolver?: EventEnvironmentReferenceResolver;
   serviceBindings?: readonly ServiceBindingFact[];
+  eventAnalysisObserver?: (analysis: EventCallAnalysis) => void;
 }
 
 function namedFunctionLike(
@@ -108,6 +110,7 @@ interface OutboundCallContext {
   initializers: Map<string, ts.Expression>;
   serviceVariables: Set<string>;
   eventAnalysis: EventCallAnalysisContext;
+  eventAnalysisObserver?: (analysis: EventCallAnalysis) => void;
   wrapperSpecs: Map<string, WrapperSpec>;
   add: AddOutboundCall;
 }
@@ -490,6 +493,7 @@ function classifyEventCall(
   if (!ts.isPropertyAccessExpression(expression)
     || !['emit', 'publish', 'on'].includes(expression.name.text)) return false;
   const event = analyzeEventCall(node, expression, context.eventAnalysis);
+  context.eventAnalysisObserver?.(event);
   if (event.status === 'classified')
     context.add(node, event.fact, event.evidence);
   return event.status !== 'unclassified';
@@ -587,7 +591,9 @@ export function classifyOutboundCallsInSource(
     } });
   };
   const context = {
-    source, initializers, serviceVariables, eventAnalysis, wrapperSpecs, add,
+    source, initializers, serviceVariables, eventAnalysis,
+    eventAnalysisObserver: options.eventAnalysisObserver,
+    wrapperSpecs, add,
   };
   visitOutboundCalls(
     source, internalRanges,

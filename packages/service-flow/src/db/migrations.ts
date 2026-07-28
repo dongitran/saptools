@@ -185,6 +185,21 @@ function assertRepositoryChildrenPreserved(
   }
 }
 
+function assertRepositoryForeignKeyTargets(db: Db): void {
+  for (const table of repositoryChildTables) {
+    const hasRepositoryColumn = db.prepare(`PRAGMA table_info(${table})`).all()
+      .some((row) => row.name === 'repo_id');
+    if (!hasRepositoryColumn) continue;
+    const targets = db.prepare(`PRAGMA foreign_key_list(${table})`).all()
+      .filter((row) => row.from === 'repo_id');
+    if (targets.length === 1 && targets[0]?.table === 'repositories')
+      continue;
+    throw new Error(
+      `schema_v15_repository_rebuild_invalid_foreign_key_target:${table}`,
+    );
+  }
+}
+
 function normalizeEnvironmentDefault(db: Db, priorVersion: number): void {
   if (priorVersion >= 15 || priorVersion === 0) return;
   assertForeignKeysDisabled(db);
@@ -196,6 +211,7 @@ function normalizeEnvironmentDefault(db: Db, priorVersion: number): void {
     SELECT ${repositoryColumns} FROM repositories_schema_v14`);
   db.exec('DROP TABLE repositories_schema_v14');
   assertRepositoryChildrenPreserved(db, childCounts);
+  assertRepositoryForeignKeyTargets(db);
 }
 
 export function migrate(db: Db): void {

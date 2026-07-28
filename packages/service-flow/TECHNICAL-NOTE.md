@@ -1,5 +1,31 @@
 # Service Flow Resolution Notes
 
+## 0.1.77 event reachability and scope-identity notes
+
+- Package/CLI `0.1.77` uses SQLite schema `15`, analyzer
+  `0.1.77-facts.1`, compact `service-flow/compact-graph@1`, and detailed JSON
+  `service-flow/detailed-trace@2`. Re-index and re-link existing workspaces.
+- A static publication through an unproven receiver deliberately retains its
+  canonical terminal event node to preserve observed CAP publication recall.
+  This is a compatibility trade, not proof that the receiver is CAP:
+  `dispatchCertainty=receiver_unproven` and the receiver reason remain on the
+  edge. The consuming side stays fail-closed, so an unproven subscription is
+  still a non-terminal candidate.
+- Structural scope keys render with the invertible
+  `scope:<workspace>/<repo>/<files>#<symbols>` grammar. Escaping covers `%`,
+  parentheses, commas, and `#`; empty and singleton lists remain
+  distinguishable. Synthetic nodes are keyed by the represented scope rather
+  than an edge ordinal.
+- Method-name fallback consults exact resolved decorator values from sibling
+  methods. It never derives a sibling identity from a constant's spelling and
+  never uses substring matching.
+- `doctor --strict` reports selected guard-path populations, including zeros,
+  plus publication dispatch-certainty buckets. Internal per-repository branch
+  counters are aggregated and do not appear as ordinary site diagnostics.
+- The E2E pre-hook rebuilds the ignored executable `dist/` bundle from current
+  `src`; the release gate runs that build before package assembly so source and
+  shipped executable are verified together.
+
 ## 0.1.76 reachable-guard and migration-safety notes
 
 - Package/CLI `0.1.76` uses SQLite schema `15`, analyzer

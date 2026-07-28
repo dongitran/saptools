@@ -1,4 +1,5 @@
 import type { TraceEdge } from '../types.js';
+import { readableIdentifier } from '../output/identifier-label.js';
 
 type NodeEntry = [string, Record<string, unknown>];
 type EndpointSide = 'from' | 'to';
@@ -63,21 +64,20 @@ function qualifiedLabel(label: string, repository: string | undefined): string {
 
 function syntheticEndpoint(
   nodes: Map<string, Record<string, unknown>>,
-  side: EndpointSide,
   label: string,
   repository: string | undefined,
-  ordinal: number,
 ): string {
-  const scope = repository ?? `repository_unavailable:${ordinal}`;
-  const id = `unresolved_${side}:${scope}:${label}`;
-  nodes.set(id, {
-    id,
-    kind: `unresolved_${side}`,
-    label: qualifiedLabel(label, repository),
-    repoName: repository ?? 'repository_unavailable',
-    repositoryStatus: repository ? 'attributed' : 'unavailable',
-    unresolved: true,
-  });
+  const scope = repository ?? 'repository_unavailable';
+  const id = `unresolved_endpoint:${scope}:${label}`;
+  if (!nodes.has(id))
+    nodes.set(id, {
+      id,
+      kind: 'unresolved_endpoint',
+      label: qualifiedLabel(label, repository),
+      repoName: repository ?? 'repository_unavailable',
+      repositoryStatus: repository ? 'attributed' : 'unavailable',
+      unresolved: true,
+    });
   return id;
 }
 
@@ -87,7 +87,6 @@ function closeEndpoint(
   ids: Set<string>,
   edge: TraceEdge,
   side: EndpointSide,
-  ordinal: number,
 ): void {
   const explicit = side === 'from' ? edge.fromNodeId : edge.toNodeId;
   if (explicit && ids.has(explicit)) return;
@@ -100,7 +99,7 @@ function closeEndpoint(
   const repository = evidenceRepository(edge.evidence);
   const existing = candidateId(labels.get(endpoint), repository);
   const id = existing ?? syntheticEndpoint(
-    nodes, side, endpoint, repository, ordinal,
+    nodes, endpoint, repository,
   );
   if (side === 'from') edge.fromNodeId = id;
   else edge.toNodeId = id;
@@ -111,13 +110,19 @@ export function closeTraceEdgeEndpoints(
   nodes: Map<string, Record<string, unknown>>,
   edges: TraceEdge[],
 ): void {
+  nodes.forEach((node) => {
+    const label = text(node.label);
+    if (label !== undefined) node.label = readableIdentifier(label);
+  });
   const ids = new Set([...nodes.values()].flatMap((node) => {
     const id = text(node.id);
     return id ? [id] : [];
   }));
   const labels = nodesByLabel(nodes);
-  edges.forEach((edge, index) => {
-    closeEndpoint(nodes, labels, ids, edge, 'from', index);
-    closeEndpoint(nodes, labels, ids, edge, 'to', index);
+  edges.forEach((edge) => {
+    edge.from = readableIdentifier(edge.from);
+    edge.to = readableIdentifier(edge.to);
+    closeEndpoint(nodes, labels, ids, edge, 'from');
+    closeEndpoint(nodes, labels, ids, edge, 'to');
   });
 }

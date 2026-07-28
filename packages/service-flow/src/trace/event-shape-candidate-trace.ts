@@ -14,6 +14,15 @@ import {
 
 const defaultEventShapeCandidateCap = 5;
 const maximumEventShapeCandidateCap = 50;
+interface CandidateOmissionTotals {
+  count: number;
+  shown: number;
+  omitted: number;
+}
+const candidateOmissionTotals = new WeakMap<
+  Array<Record<string, unknown>>,
+  CandidateOmissionTotals
+>();
 
 function candidateCap(options: TraceOptions): number {
   const value = options.maxDynamicCandidates
@@ -74,24 +83,30 @@ function recordCandidateOmission(
   cap: number,
 ): void {
   const omitted = Math.max(0, count - shown);
-  if (omitted === 0) return;
+  const previous = candidateOmissionTotals.get(diagnostics)
+    ?? { count: 0, shown: 0, omitted: 0 };
+  const totals = {
+    count: previous.count + count,
+    shown: previous.shown + shown,
+    omitted: previous.omitted + omitted,
+  };
+  candidateOmissionTotals.set(diagnostics, totals);
+  if (totals.omitted === 0) return;
   const existing = diagnostics.find((item) =>
     item.code === 'event_shape_candidates_omitted');
   if (existing) {
-    existing.candidateCount = Number(existing.candidateCount ?? 0) + count;
-    existing.shownCandidateCount =
-      Number(existing.shownCandidateCount ?? 0) + shown;
-    existing.omittedCandidateCount =
-      Number(existing.omittedCandidateCount ?? 0) + omitted;
+    existing.candidateCount = totals.count;
+    existing.shownCandidateCount = totals.shown;
+    existing.omittedCandidateCount = totals.omitted;
     return;
   }
   diagnostics.push({
     severity: 'info',
     code: 'event_shape_candidates_omitted',
     message: 'Event-shape candidates exceeded the requested trace display cap.',
-    candidateCount: count,
-    shownCandidateCount: shown,
-    omittedCandidateCount: omitted,
+    candidateCount: totals.count,
+    shownCandidateCount: totals.shown,
+    omittedCandidateCount: totals.omitted,
     maxDynamicCandidates: cap,
     remediation:
       'Increase --max-dynamic-candidates to inspect more candidates.',

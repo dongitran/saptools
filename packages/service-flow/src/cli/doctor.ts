@@ -11,9 +11,7 @@ import {
   packagePendingDiagnostics,
   symbolCallQuality,
 } from './doctor-package-resolution.js';
-import {
-  eventSurfaceQualityDiagnostics,
-} from './doctor-event-quality.js';
+import { eventSurfaceQualityDiagnostics } from './doctor-event-quality.js';
 export { linkUpgradeWarnings } from './doctor-lifecycle.js';
 
 type Diagnostic = Record<string, unknown>;
@@ -28,6 +26,7 @@ export function doctorDiagnostics(db: Db, strict: boolean, options: DoctorOption
   const diagnostics = db.prepare(`SELECT r.name repositoryName,d.severity,
     d.code,d.message,d.source_file sourceFile,d.source_line sourceLine
     FROM diagnostics d LEFT JOIN repositories r ON r.id=d.repo_id
+    WHERE d.code NOT GLOB 'analysis_branch_population_*'
     ORDER BY d.id`).all() as Diagnostic[];
   if (lifecycle && Number(lifecycle.invalidCallFactCount ?? 0) > 0)
     return boundDoctorDiagnostics([

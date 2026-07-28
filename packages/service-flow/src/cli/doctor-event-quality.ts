@@ -339,6 +339,7 @@ function receiverProofQuality(
   const row = receiverProofAggregate(db, workspaceId);
   const buckets = receiverReasonBuckets(db, workspaceId);
   const bucketCount = receiverReasonBucketCount(db, workspaceId);
+  const certainty = publicationDispatchCertainty(db, workspaceId);
   const questionable = count(row?.nameFallback) + count(row?.unproven);
   return {
     severity: questionable > 0 ? 'warning' : 'info',
@@ -353,9 +354,40 @@ function receiverProofQuality(
     reasonBucketCount: bucketCount,
     shownReasonBucketCount: buckets.length,
     omittedReasonBucketCount: Math.max(0, bucketCount - buckets.length),
+    publicationDispatchCertaintyBuckets: certainty.buckets,
+    publicationDispatchCertaintyBucketCount: certainty.total,
+    shownPublicationDispatchCertaintyBucketCount: certainty.buckets.length,
+    omittedPublicationDispatchCertaintyBucketCount:
+      Math.max(0, certainty.total - certainty.buckets.length),
     examples: receiverProofExamples(db, workspaceId),
     exampleCount: questionable,
   };
+}
+
+function publicationDispatchCertainty(
+  db: Db,
+  workspaceId?: number,
+): { buckets: Diagnostic[]; total: number } {
+  const rows = db.prepare(`SELECT COALESCE(json_extract(
+      e.evidence_json,'$.dispatchCertainty'),'missing') certainty,
+      COUNT(*) count
+    FROM graph_edges e JOIN outbound_calls c
+      ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER)
+    JOIN repositories r ON r.id=c.repo_id
+    WHERE c.call_type='async_emit' AND ${workspacePredicate('r')}
+      AND e.edge_type IN ('HANDLER_EMITS_EVENT','DYNAMIC_EDGE_CANDIDATE')
+    GROUP BY certainty ORDER BY count DESC,certainty COLLATE BINARY
+    LIMIT 16`).all(workspaceId, workspaceId) as Diagnostic[];
+  const total = count(db.prepare(`SELECT COUNT(DISTINCT COALESCE(
+      json_extract(e.evidence_json,'$.dispatchCertainty'),'missing')) count
+    FROM graph_edges e JOIN outbound_calls c
+      ON e.from_kind='call' AND c.id=CAST(e.from_id AS INTEGER)
+    JOIN repositories r ON r.id=c.repo_id
+    WHERE c.call_type='async_emit' AND ${workspacePredicate('r')}
+      AND e.edge_type IN (
+        'HANDLER_EMITS_EVENT','DYNAMIC_EDGE_CANDIDATE'
+      )`).get(workspaceId, workspaceId)?.count);
+  return { buckets: rows, total };
 }
 
 function receiverProofExamples(
@@ -503,6 +535,92 @@ function environmentConfigurationQuality(
   };
 }
 
+function storedBranchPopulation(
+  db: Db,
+  branch: string,
+  workspaceId?: number,
+): number {
+  const row = db.prepare(`SELECT COALESCE(SUM(
+      CAST(d.message AS INTEGER)),0) count
+    FROM diagnostics d JOIN repositories r ON r.id=d.repo_id
+    WHERE d.code=? AND ${workspacePredicate('r')}`).get(
+    `analysis_branch_population_${branch}`, workspaceId, workspaceId,
+  );
+  return count(row?.count);
+}
+
+function siblingFallbackRefusalPopulation(
+  db: Db,
+  workspaceId?: number,
+): number {
+  const row = db.prepare(`SELECT COUNT(*) count
+    FROM graph_edges e,
+      json_each(e.evidence_json,'$.candidates') candidate,
+      json_each(candidate.value,'$.rejectedReasons') reason
+    WHERE e.edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'
+      AND ${workspacePredicate('e')}
+      AND reason.value=
+        'method_name_fallback_conflicts_with_sibling_operation'`).get(
+    workspaceId, workspaceId,
+  );
+  return count(row?.count);
+}
+
+function deploymentComparisonPopulations(
+  db: Db,
+  workspaceId?: number,
+): Record<string, number> {
+  const values = [
+    'compared_equal',
+    'compared_mismatch',
+    'compared_non_authoritative_equal',
+    'compared_non_authoritative_mismatch',
+    'not_possible',
+    'mixed',
+  ];
+  const rows = db.prepare(`SELECT COALESCE(json_extract(
+      evidence_json,'$.deploymentComparisonStatus'),'missing') status,
+      COUNT(*) count
+    FROM graph_edges e
+    WHERE e.edge_type='EVENT_SHAPE_CANDIDATE_SUBSCRIBER'
+      AND ${workspacePredicate('e')}
+    GROUP BY status`).all(workspaceId, workspaceId);
+  const observed = new Map(rows.map((row) =>
+    [String(row.status), count(row.count)]));
+  return Object.fromEntries(values.map((value) =>
+    [value, observed.get(value) ?? 0]));
+}
+
+function analysisBranchReachabilityQuality(
+  db: Db,
+  workspaceId?: number,
+): Diagnostic {
+  const branchPopulations = {
+    eventReceiverProvenNotCapExcluded: storedBranchPopulation(
+      db, 'event_receiver_proven_not_cap', workspaceId,
+    ),
+    eventReceiverKnownNonCapExcluded: storedBranchPopulation(
+      db, 'event_receiver_known_non_cap', workspaceId,
+    ),
+    eventSemanticFilterExcluded: storedBranchPopulation(
+      db, 'event_semantic_filter', workspaceId,
+    ),
+    nodeEventParameterTypeExcluded: storedBranchPopulation(
+      db, 'node_event_parameter_type', workspaceId,
+    ),
+    methodNameFallbackSiblingRefused:
+      siblingFallbackRefusalPopulation(db, workspaceId),
+    deploymentComparison:
+      deploymentComparisonPopulations(db, workspaceId),
+  };
+  return {
+    severity: 'info',
+    code: 'strict_analysis_branch_reachability',
+    message: 'Selected parser and linker guard branch populations',
+    branchPopulations,
+  };
+}
+
 export function eventSurfaceQualityDiagnostics(
   db: Db,
   workspaceId?: number,
@@ -515,5 +633,6 @@ export function eventSurfaceQualityDiagnostics(
     receiverProofQuality(db, workspaceId),
     shapeEnvironmentQuality(db, workspaceId),
     environmentConfigurationQuality(db, workspaceId),
+    analysisBranchReachabilityQuality(db, workspaceId),
   ];
 }

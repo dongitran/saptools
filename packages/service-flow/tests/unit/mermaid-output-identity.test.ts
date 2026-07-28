@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { TraceEdge, TraceResult } from '../../src/types.js';
 import { renderTraceJson } from '../../src/output/json-output.js';
+import { readableIdentifier } from '../../src/output/identifier-label.js';
 import { renderMermaid } from '../../src/output/mermaid-output.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
+import { closeTraceEdgeEndpoints } from
+  '../../src/trace/trace-node-closure.js';
 
 interface RenderedEndpoint {
   id: string;
@@ -128,27 +131,71 @@ describe('Mermaid node identity', () => {
   });
 
   it('discloses an ambiguous label-only fallback', () => {
-    const output = renderMermaid(trace(
+    const result = trace(
       [edge(1, 'source', 'Shared target')],
       [
         { id: 'target-a', label: 'Shared target' },
         { id: 'target-b', label: 'Shared target' },
       ],
-    ));
-    expect(output).toContain(
+    );
+    expect(renderMermaid(result)).toContain(
+      'Shared target [ambiguous node label: 2 matches]',
+    );
+    expect(renderTraceTable(result)).toContain(
       'Shared target [ambiguous node label: 2 matches]',
     );
   });
 
-  it('renders tuple-shaped internal ids as readable stable paths', () => {
+  it('escapes quoted Mermaid labels and edge types', () => {
     const result = trace([
-      edge(1, 'source', '["/NeutralService","/run"]'),
+      {
+        ...edge(1, 'source "quoted"', 'target'),
+        type: 'edge|quoted',
+      },
     ]);
-    expect(renderTraceTable(result)).toContain('/NeutralService/run');
-    expect(renderMermaid(result)).toContain('/NeutralService/run');
-    expect(renderTraceTable(result)).not.toContain(
-      '["/NeutralService","/run"]',
-    );
+    const output = renderMermaid(result);
+
+    expect(output).toContain('source &quot;quoted&quot;');
+    expect(output).toContain('edge&#124;quoted');
+    expect(output).not.toContain('["source "quoted""]');
+  });
+
+  it('renders structural scope ids readably in every format', () => {
+    const raw = '[1,26,["srv/events/Neutral.ts"],[5161]]';
+    const result = trace([edge(1, 'source', raw)]);
+    const nodes = new Map(result.nodes.map((node) =>
+      [String(node.id), node]));
+    closeTraceEdgeEndpoints(nodes, result.edges);
+    result.nodes = [...nodes.values()];
+
+    const expected = 'scope:1/26/srv/events/Neutral.ts#5161';
+    expect(renderTraceTable(result)).toContain(expected);
+    expect(renderMermaid(result)).toContain(expected);
+    expect(renderTraceJson(result)).toContain(expected);
+    expect(renderTraceJson(result)).not.toContain(raw);
+  });
+
+  it('keeps escaped and empty structural scopes injective', () => {
+    const values = [
+      '[1,2,[],[]]',
+      '[1,2,[""],[]]',
+      '[1,2,["%"],[3]]',
+      '[1,2,["("],[3]]',
+      '[1,2,[")"],[3]]',
+      '[1,2,[","],[3]]',
+      '[1,2,["#"],[3]]',
+    ].map(readableIdentifier);
+
+    expect(new Set(values).size).toBe(values.length);
+    expect(values).toEqual([
+      'scope:1/2/0()#0()',
+      'scope:1/2/#0()',
+      'scope:1/2/%25#3',
+      'scope:1/2/%28#3',
+      'scope:1/2/%29#3',
+      'scope:1/2/%2C#3',
+      'scope:1/2/%23#3',
+    ]);
   });
 
   it('does not mutate table or JSON rendering', () => {

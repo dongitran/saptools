@@ -9,6 +9,12 @@ import { indexWorkspace } from '../../src/indexer/workspace-indexer.js';
 import { linkWorkspace } from '../../src/linker/cross-repo-linker.js';
 import { renderTraceTable } from '../../src/output/table-output.js';
 import { traceAndCompact } from '../../src/trace/compact-trace.js';
+import {
+  recordHiddenEventShapeCandidates,
+} from '../../src/trace/event-shape-candidate-trace.js';
+import type {
+  TraceGraphEdgeRow,
+} from '../../src/trace/trace-graph-lookups.js';
 import { trace } from '../../src/trace/trace-engine.js';
 import type { TraceResult } from '../../src/types.js';
 import {
@@ -43,6 +49,20 @@ function expectEveryEdgeTargetRegistered(result: TraceResult): void {
     typeof node.id === 'string' ? [node.id] : []));
   expect(result.edges.filter((edge) =>
     !nodeIds.has(edge.toNodeId ?? edge.to))).toEqual([]);
+}
+
+function shapeCandidateRow(id: number): TraceGraphEdgeRow {
+  return {
+    id,
+    edge_type: 'EVENT_SHAPE_CANDIDATE_SUBSCRIBER',
+    from_kind: 'call',
+    from_id: String(id),
+    to_kind: 'symbol',
+    to_id: String(id),
+    status: 'dynamic',
+    confidence: 0.2,
+    evidence_json: '{}',
+  };
 }
 
 function packageJson(
@@ -350,6 +370,38 @@ function semanticEventEdges(db: Db): Record<string, unknown>[] {
 }
 
 describe('event surface linking', () => {
+  it('counts uncapped scopes when a later candidate scope is capped', () => {
+    const diagnostics: Array<Record<string, unknown>> = [];
+    const options = {
+      depth: 8,
+      includeAsync: true,
+      dynamicMode: 'candidates' as const,
+      maxDynamicCandidates: 1,
+    };
+    recordHiddenEventShapeCandidates(
+      diagnostics,
+      [shapeCandidateRow(1)],
+      [shapeCandidateRow(1)],
+      options,
+    );
+    expect(diagnostics).toEqual([]);
+    recordHiddenEventShapeCandidates(
+      diagnostics,
+      [shapeCandidateRow(2), shapeCandidateRow(3)],
+      [shapeCandidateRow(2)],
+      options,
+    );
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'event_shape_candidates_omitted',
+        candidateCount: 3,
+        shownCandidateCount: 2,
+        omittedCandidateCount: 1,
+        maxDynamicCandidates: 1,
+      }),
+    ]);
+  });
+
   it('accepts empty constants but refuses an empty value as an event name', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-empty-'));
     await Promise.all([
@@ -395,7 +447,7 @@ export async function publish(): Promise<void> {
     db.close();
   });
 
-  it('keeps a static name but makes an unproven receiver non-terminal', async () => {
+  it('keeps a static unproven-receiver publication terminal and disclosed', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'sf-event-axes-'));
     await Promise.all([
       writeFixtureFile(root, 'publisher/.git-fixture'),
@@ -437,10 +489,10 @@ export async function subscribe(): Promise<void> {
     linkWorkspace(db, workspaceId);
     expect(eventEdges(db)).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        edgeType: 'DYNAMIC_EDGE_CANDIDATE',
-        status: 'dynamic',
-        toKind: 'event_candidate',
-        toId: 'Event: StaticThroughProperty',
+        edgeType: 'HANDLER_EMITS_EVENT',
+        status: 'terminal',
+        toKind: 'event',
+        toId: 'StaticThroughProperty',
         reason: 'event_receiver_unproven_propagation',
       }),
       expect.objectContaining({
@@ -449,10 +501,27 @@ export async function subscribe(): Promise<void> {
         fromId: 'StaticThroughProperty',
       }),
     ]));
-    expect(trace(db, { repo: 'publisher' }, {
+    const result = trace(db, { repo: 'publisher' }, {
       depth: 8, workspaceId, includeAsync: true,
-    }).edges.some((edge) =>
-      edge.type === 'event_name_matches_subscription_handler')).toBe(false);
+    });
+    expect(result.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'event_name_matches_subscription_handler',
+        from: 'StaticThroughProperty',
+      }),
+    ]));
+    expect(parsedRecord(eventEdges(db).find((edge) =>
+      edge.edgeType === 'HANDLER_EMITS_EVENT')?.evidenceJson ?? '')).toMatchObject({
+      dispatchCertainty: 'receiver_unproven',
+    });
+    const quality = diagnostic(
+      doctorDiagnostics(db, true, { workspaceId }),
+      'strict_event_receiver_classification_quality',
+    );
+    expect(quality.publicationDispatchCertaintyBuckets).toContainEqual({
+      certainty: 'receiver_unproven',
+      count: 1,
+    });
     db.close();
   });
 
@@ -594,6 +663,17 @@ export function subscribe(params: Params): void {
       nameFallback: 0,
       unproven: 0,
       questionable: 0,
+    });
+    expect(diagnostic(
+      doctorDiagnostics(db, true, { workspaceId }),
+      'strict_analysis_branch_reachability',
+    )).toMatchObject({
+      branchPopulations: {
+        eventReceiverProvenNotCapExcluded: 1,
+        eventReceiverKnownNonCapExcluded: 0,
+        nodeEventParameterTypeExcluded: 0,
+        methodNameFallbackSiblingRefused: 0,
+      },
     });
     await writeFixtureFile(root, 'topics/src/index.ts', `
 export const TOPICS = { FLOW_READY: 'NeutralFlowRestarted' } as const;
@@ -1064,9 +1144,10 @@ export async function publish(): Promise<void> {
     expect(deployments).toEqual([
       {
         consumer: 'consumer-a',
-        deploymentScope: 'shared_environment_value_equal',
-        comparisonStatus: 'compared_equal',
-        comparisonReason: null,
+        deploymentScope:
+          'shared_environment_value_equal_non_authoritative',
+        comparisonStatus: 'compared_non_authoritative_equal',
+        comparisonReason: 'development_environment_is_not_deployment_proof',
       },
       {
         consumer: 'consumer-b',

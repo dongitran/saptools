@@ -1,5 +1,5 @@
 import type { TraceResult } from '../types.js';
-import { readableIdentifier } from './identifier-label.js';
+import { endpointCaption } from './endpoint-caption.js';
 
 function location(evidence: Record<string, unknown>): string {
   const selected = isRecord(evidence.selectedHandler)
@@ -53,11 +53,7 @@ function nodeLabel(
   label: string,
   nodeId: string | undefined,
 ): string {
-  const node = result.nodes.find((candidate) =>
-    candidate.id === nodeId || candidate.id === label);
-  return readableIdentifier(
-    String(node?.qualifiedLabel ?? node?.label ?? label),
-  );
+  return endpointCaption(result, label, nodeId);
 }
 
 function evidenceSummary(evidence: Record<string, unknown>): string {

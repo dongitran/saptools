@@ -47,7 +47,13 @@ export interface EventCallAnalysisContext {
 
 export type EventCallAnalysis =
   | { status: 'classified'; fact: EventFact; evidence: Record<string, unknown> }
-  | { status: 'excluded' }
+  | {
+      status: 'excluded';
+      exclusionReason: 'event_receiver_proven_not_cap'
+        | 'event_receiver_known_non_cap'
+        | 'event_semantic_filter';
+      receiverProof?: string;
+    }
   | { status: 'unclassified' };
 
 interface EventNameState {
@@ -61,7 +67,7 @@ interface EventNameState {
 
 const CAP_CRUD_EVENTS = new Set(['READ', 'CREATE', 'UPDATE', 'DELETE']);
 const KNOWN_NON_CAP_EVENT_RECEIVERS = new Set([
-  'io', 'socket', 'writeStream', 'file', 'win', 'app',
+  'io', 'socket', 'writeStream', 'stream', 'file', 'win', 'app',
 ]);
 
 function eventNameReason(
@@ -353,10 +359,24 @@ export function analyzeEventCall(
   const receiver = proveEventReceiver(
     expression.expression, node, context.receivers,
   );
-  if (receiver.unresolvedReason === 'event_receiver_not_cap_client'
-    || knownNonCapReceiver(expression.expression, receiver))
-    return { status: 'excluded' };
-  if (excludedEvent(method, receiver, state)) return { status: 'excluded' };
+  if (receiver.unresolvedReason === 'event_receiver_not_cap_client')
+    return {
+      status: 'excluded',
+      exclusionReason: 'event_receiver_proven_not_cap',
+      receiverProof: receiver.receiverProof,
+    };
+  if (knownNonCapReceiver(expression.expression, receiver))
+    return {
+      status: 'excluded',
+      exclusionReason: 'event_receiver_known_non_cap',
+      receiverProof: receiver.receiverProof,
+    };
+  if (excludedEvent(method, receiver, state))
+    return {
+      status: 'excluded',
+      exclusionReason: 'event_semantic_filter',
+      receiverProof: receiver.receiverProof,
+    };
   return {
     status: 'classified',
     fact: {

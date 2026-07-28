@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.77
+
+- Restored terminal dispatch for statically named publications whose receiver
+  propagation remains unproven, while retaining the receiver reason and
+  `dispatchCertainty=receiver_unproven`. Unproven subscriptions remain dynamic
+  candidates, making the precision-for-recall boundary explicit and
+  asymmetric.
+- Applied one receiver-level compatibility decision to every listener on an
+  unproven `stream` identifier. Affirmative CAP evidence still wins, so a
+  CAP-connected receiver named `stream` remains an event client.
+- Replaced the inert flat-tuple formatter with an injective structural-scope
+  grammar, normalised scope labels before endpoint closure, deduplicated
+  synthetic nodes by scope, and shared one id-first endpoint caption resolver
+  across table, Mermaid, and detailed JSON. Mermaid now escapes labels
+  independently.
+- Replaced spelling-derived sibling-operation refusal with exact resolved
+  decorator values from sibling methods, added the supporting handler-method
+  index, and memoized lexical binding indexes by TypeScript source-file
+  identity.
+- Strengthened schema-15 migration validation with direct foreign-key target
+  checks, fixed multi-scope dynamic-candidate totals, made doctor
+  deduplication executable, exposed branch and publication-certainty
+  populations, and made unknown operation inspection a non-zero diagnostic.
+- Package/CLI is `0.1.77`, SQLite remains schema `15`, analyzer compatibility
+  is `0.1.77-facts.1`, compact remains `service-flow/compact-graph@1`, and
+  detailed JSON remains `service-flow/detailed-trace@2`. Parser facts changed,
+  so existing workspaces require `index --force` followed by `link --force`.
+
 ## 0.1.76
 
 - Guarded the schema-15 repository-table rebuild with explicit

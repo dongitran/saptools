@@ -380,6 +380,20 @@ function implementationCandidates(
       hm.id methodId,hm.method_name methodName,hm.decorator_value decoratorValue,
       hm.decorator_raw_expression decoratorRawExpression,
       hm.decorator_resolution_json decoratorResolutionJson,hc.id classId,
+      (SELECT json_group_array(sibling.decorator_value)
+        FROM handler_methods sibling
+        WHERE sibling.handler_class_id=hm.handler_class_id
+          AND sibling.id<>hm.id AND sibling.decorator_value IS NOT NULL
+          AND COALESCE(json_extract(
+            sibling.decorator_resolution_json,'$.handlerKind'),
+            CASE WHEN sibling.decorator_kind='Event' THEN 'event'
+              WHEN sibling.decorator_kind IN ('Action','Func','On')
+                THEN 'operation'
+              ELSE 'unsupported' END)='operation'
+          AND COALESCE(json_extract(
+            sibling.decorator_resolution_json,'$.executable'),
+            CASE WHEN sibling.decorator_kind IN ('Action','Func','On')
+              THEN 1 ELSE 0 END)=1) siblingDecoratorValues,
       hc.class_name className,hc.source_file sourceFile,hm.source_line sourceLine,
       hr.id registrationId,hr.handler_class_id registrationHandlerClassId,
       hr.class_name registrationClassName,hr.repo_id applicationRepoId,

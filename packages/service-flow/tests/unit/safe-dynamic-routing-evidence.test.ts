@@ -227,6 +227,27 @@ function graphEvidence(db: Db): Row[] {
 }
 
 describe('call-scoped dynamic routing evidence', () => {
+  it('deduplicates doctor diagnostics and retains multiplicity', () => {
+    const diagnostic = {
+      severity: 'warning',
+      code: 'neutral_duplicate',
+      message: 'Neutral duplicate diagnostic',
+      repositoryName: 'neutral-repo',
+      sourceFile: 'srv/handler.ts',
+      sourceLine: 17,
+    };
+    expect(boundDoctorDiagnostics([
+      diagnostic,
+      { ...diagnostic },
+      { ...diagnostic, multiplicity: 3 },
+    ])).toEqual([
+      expect.objectContaining({
+        ...diagnostic,
+        multiplicity: 5,
+      }),
+    ]);
+  });
+
   it('uses the selected helper-returned binding to derive route-owner identity', async () => {
     const { db, workspaceId } = await prepareRoutingWorkspace();
     linkWorkspace(db, workspaceId);

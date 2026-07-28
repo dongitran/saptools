@@ -11,7 +11,8 @@ export function loadTraceDiagnostics(
       d.severity,d.code,d.message,
       d.source_file sourceFile,d.source_line sourceLine
     FROM diagnostics d LEFT JOIN repositories r ON r.id=d.repo_id
-    WHERE (? IS NULL OR d.repo_id=?)
+    WHERE d.code NOT GLOB 'analysis_branch_population_*'
+      AND (? IS NULL OR d.repo_id=?)
       AND (? IS NULL OR d.repo_id IS NULL OR r.workspace_id=?)
     ORDER BY severity,code,COALESCE(source_file,''),
       COALESCE(source_line,0),d.id`).all(

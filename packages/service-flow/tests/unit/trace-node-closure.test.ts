@@ -43,15 +43,15 @@ describe('rendered trace target closure', () => {
     expect(edges.map((item) => item.toNodeId)).toEqual([
       'symbol:17',
       'operation:29',
-      'unresolved_to:repository_unavailable:2:Entity: Records',
-      'unresolved_to:repository_unavailable:3:repo-b:src/Subscriber.ts:Subscriber.handle',
+      'unresolved_endpoint:repository_unavailable:Entity: Records',
+      'unresolved_endpoint:repository_unavailable:repo-b:src/Subscriber.ts:Subscriber.handle',
     ]);
     expect(edges.every((item) => nodeIds.has(item.fromNodeId))).toBe(true);
     expect(edges.every((item) => nodeIds.has(item.toNodeId))).toBe(true);
     expect(nodes.get(
-      'unresolved_to:repository_unavailable:2:Entity: Records',
+      'unresolved_endpoint:repository_unavailable:Entity: Records',
     )).toMatchObject({
-      kind: 'unresolved_to',
+      kind: 'unresolved_endpoint',
       repoName: 'repository_unavailable',
       unresolved: true,
     });
@@ -89,8 +89,8 @@ describe('rendered trace target closure', () => {
 
     closeTraceEdgeEndpoints(nodes, [first, second]);
 
-    expect(first.toNodeId).toBe('unresolved_to:repo-a:Handler.run');
-    expect(second.toNodeId).toBe('unresolved_to:repo-b:Handler.run');
+    expect(first.toNodeId).toBe('unresolved_endpoint:repo-a:Handler.run');
+    expect(second.toNodeId).toBe('unresolved_endpoint:repo-b:Handler.run');
     expect(first.toNodeId).not.toBe(second.toNodeId);
     expect(nodes.get(String(first.toNodeId))).toMatchObject({
       label: 'repo-a:Handler.run',
@@ -100,5 +100,21 @@ describe('rendered trace target closure', () => {
       label: 'repo-b:Handler.run',
       repoName: 'repo-b',
     });
+  });
+
+  it('deduplicates synthetic nodes by their structural scope', () => {
+    const scope = '[1,26,["srv/events/Handler.ts"],[5161]]';
+    const nodes = new Map<string, Record<string, unknown>>([
+      ['source:1', { id: 'source:1', kind: 'symbol', label: 'source' }],
+    ]);
+    const first = edge('local_symbol_call', scope);
+    const second = edge('local_symbol_call', scope);
+
+    closeTraceEdgeEndpoints(nodes, [first, second]);
+
+    expect(first.to).toBe('scope:1/26/srv/events/Handler.ts#5161');
+    expect(first.toNodeId).toBe(second.toNodeId);
+    expect([...nodes.values()].filter((node) =>
+      node.kind === 'unresolved_endpoint')).toHaveLength(1);
   });
 });

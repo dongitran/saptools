@@ -31,11 +31,42 @@ const boundedDoctorArrayKeys = new Set([
   'expandedExamples',
   'selectorSuggestions',
   'serviceSuggestions',
+  'publicationDispatchCertaintyBuckets',
   'repositories',
 ]);
 
 export function boundDoctorDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
-  return diagnostics.map(boundDoctorDiagnostic);
+  return deduplicateDoctorDiagnostics(diagnostics).map(boundDoctorDiagnostic);
+}
+
+function deduplicateDoctorDiagnostics(
+  diagnostics: Diagnostic[],
+): Diagnostic[] {
+  const unique = new Map<string, Diagnostic>();
+  for (const diagnostic of diagnostics) {
+    const key = JSON.stringify([
+      diagnostic.code,
+      diagnostic.repositoryName ?? diagnostic.repository
+        ?? diagnostic.repoId,
+      diagnostic.sourceFile ?? diagnostic.file,
+      diagnostic.sourceLine ?? diagnostic.line,
+      diagnostic.message,
+    ]);
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, { ...diagnostic });
+      continue;
+    }
+    existing.multiplicity = diagnosticMultiplicity(existing)
+      + diagnosticMultiplicity(diagnostic);
+  }
+  return [...unique.values()];
+}
+
+function diagnosticMultiplicity(diagnostic: Diagnostic): number {
+  const value = diagnostic.multiplicity;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value : 1;
 }
 
 function boundDoctorDiagnostic(diagnostic: Diagnostic): Diagnostic {
@@ -123,6 +154,8 @@ function projectionStem(key: string): string {
     expandedExamples: 'expandedExample',
     selectorSuggestions: 'selectorSuggestion',
     serviceSuggestions: 'serviceSuggestion',
+    publicationDispatchCertaintyBuckets:
+      'publicationDispatchCertaintyBucket',
   };
   return stems[key] ?? 'repository';
 }

@@ -200,7 +200,7 @@ describe('compact JSON CLI contract', () => {
       depth: 100, includeAsync: true, includeDb: true, includeExternal: true,
     }));
     expect(graph.source).toEqual(expect.objectContaining({
-      schemaVersion: 15, analyzerVersion: '0.1.76-facts.1',
+      schemaVersion: 15, analyzerVersion: '0.1.77-facts.1',
     }));
     expect(graph.summary.fullTraceEdges).toBeGreaterThan(databaseCallCount);
   });
@@ -257,7 +257,7 @@ describe('compact JSON CLI contract', () => {
   });
 
   it('reports release and subscription-link summary contracts', async () => {
-    expect(await runCliOk(['--version'])).toBe('0.1.76\n');
+    expect(await runCliOk(['--version'])).toBe('0.1.77\n');
     expect(linkOutput).toContain('subscription handlers resolved');
     expect(linkOutput).toContain('subscription handlers ambiguous');
     expect(linkOutput).toContain('subscription handlers unresolved');
