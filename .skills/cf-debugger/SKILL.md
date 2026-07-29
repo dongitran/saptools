@@ -60,14 +60,18 @@ cf-debugger doctor
 ```
 
 If ownership cannot be verified, `stop --force --session-id <id>` may forget the
-record and delete only its exact owned v2 `CF_HOME`. It never signals the
-unverified PID or the process currently holding the port.
+record first and then best-effort delete only its exact owned v2 `CF_HOME`. It
+never signals the unverified PID or the process currently holding the port. If
+home deletion fails, warn that it may retain a refresh token and use
+`cf-debugger doctor` to find the resulting orphan.
 
 ## Troubleshooting
 
 - **Error: "No current CF target found"**: The user used a bare app name but hasn't run `cf target` recently. Use the full `<region>/<org>/<space>/<app>` selector.
 - **Error: "SESSION_ALREADY_RUNNING"**: There is already an active debugger session for this app. Use `cf-debugger list` to see it.
 - **Error: "SSH_NOT_ENABLED"**: No restart was performed. Check space-level SSH and roles; either enable/restart manually or, only with the user's approval, retry with `--allow-ssh-enable-restart`.
+- **Error: "CF_MUTATION_TIMEOUT"**: A permitted enable/restart was issued once and may still be completing on the platform. Check app state before retrying; cf-debugger deliberately does not repeat mutating commands.
+- **Error: "UNSAFE_INPUT" for `--api-endpoint`**: Only an absolute HTTPS endpoint without userinfo, query, fragment, or non-root path is accepted. Do not bypass this guard for a plaintext landscape because CF credentials are sent to the selected endpoint.
 - **Error: "TUNNEL_NOT_READY"**: The spawned local forward never bound. Use the retained/redacted CF SSH stderr to diagnose transport/authentication.
 - **Error: "INSPECTOR_UNREACHABLE"**: The local forward bound, but `/json/list` did not prove an attachable remote inspector. The app/container may have restarted, the inspector may not have opened, or a different Node PID may own it.
 - **Error: "TUNNEL_OWNERSHIP_UNVERIFIED"**: Do not kill the PID or port owner by guess. Use `cf-debugger doctor`, then `stop --force --session-id <id>` only to clear unrecoverable state.

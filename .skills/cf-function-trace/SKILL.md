@@ -237,8 +237,9 @@ If a `SIGKILL` already happened: the tunnel is registered in the same session st
 uses, so try `cf-debugger list` (install with `npm install -g @saptools/cf-debugger` if missing) to confirm
 the orphaned session, then `cf-debugger stop <app>` to terminate it only after the recorded PID is proven to
 own the local listener. Run `cf-debugger doctor` when state, port, or session-home ownership is unclear.
-`cf-debugger stop --force --session-id <id>` can forget an unrecoverable record and remove only its exact
-owned v2 `CF_HOME`; it deliberately does **not** kill an unverified process. If the target remains paused,
+`cf-debugger stop --force --session-id <id>` can forget an unrecoverable record first and then best-effort
+remove only its exact owned v2 `CF_HOME`; it deliberately does **not** kill an unverified process. If home
+deletion fails, `cf-debugger doctor` reports the token-bearing orphan for guarded cleanup. If the target remains paused,
 manually identify the exact leftover `cf ssh <app>` process and verify its app, instance, and local forward
 before signalling it. Never use a broad `pkill` or kill a process merely because it occupies the recorded
 port.

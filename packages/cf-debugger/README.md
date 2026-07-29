@@ -14,6 +14,9 @@ Node.js 20+ and the official `cf` CLI are required. CF CLI v8 is recommended.
 Non-`web` process targeting uses `cf ssh --process` and requires CF CLI v7+.
 On macOS, `lsof` is a soft dependency used to prove which PID owns a local
 listening port. Install it if `cf-debugger` reports `TUNNEL_OWNER_UNVERIFIED`.
+Without it, an explicit stop refuses to signal a state-recorded PID whose port
+ownership cannot be proved; teardown still completes when the spawned child is
+independently confirmed dead.
 
 ## Quick start
 
@@ -43,9 +46,11 @@ Debugger ready for my-app (eu10/my-org/dev).
 Press Ctrl+C to stop.
 ```
 
-Attach the IDE to `127.0.0.1:20142`. The remote inspector advertises its own
-`ws://127.0.0.1:9229/...` URL through the tunnel; `cf-debugger` validates that
-the URL exists but does not print or follow that remote-authority URL.
+Attach the IDE to `127.0.0.1:20142`. Node derives the advertised
+`webSocketDebuggerUrl` from the incoming request's `Host` header, so a URL
+returned through the forward already names the local forwarded port and is
+directly usable. `cf-debugger` validates that the URL is well formed but does
+not print or follow it.
 
 ## CLI
 
@@ -63,13 +68,13 @@ When region, org, or space is omitted, the current `cf target` supplies it.
 | Flag | Meaning |
 | --- | --- |
 | `--region <key>` | SAP region key; defaults to the current CF target |
-| `--api-endpoint <url>` | Exact endpoint override, including nonstandard landscapes |
+| `--api-endpoint <url>` | Absolute HTTPS endpoint override, including private/nonstandard hosts |
 | `--org <name>`, `--space <name>`, `--app <name>` | CF target and app |
 | `--process <name>` | CF process, default `web` |
 | `-i, --instance <index>` | Zero-based process instance, default `0` |
 | `--node-pid <pid>` | Exact remote Node PID |
 | `--port <number>` | Preferred local port; otherwise choose from `20000–20999` |
-| `--remote-port <number>` | Remote inspector port, default `9229` |
+| `--remote-port <number>` | Port where cf-debugger looks for an existing remote inspector, default `9229` |
 | `--timeout <seconds>` | Local-tunnel and inspector-readiness budget, default `180` |
 | `--startup-timeout <seconds>` | Overall startup deadline, default `300`, maximum `1800` |
 | `--allow-ssh-enable-restart` | Permit app-level SSH enablement and one app restart |
@@ -81,7 +86,15 @@ When region, org, or space is omitted, the current `cf target` supplies it.
 > `SSH_NOT_ENABLED` and no deployment mutation. Use
 > `--allow-ssh-enable-restart`, or set `CF_DEBUGGER_ALLOW_RESTART=1`, only when
 > restarting the named app is acceptable. `CF_DEBUGGER_ALLOW_RESTART=0` keeps
-> the guard enabled for a production shell.
+> the guard enabled for a production shell and also vetoes a programmatic
+> `allowSshEnableRestart: true`. The environment value `1` can opt in the CLI,
+> but never grants permission to a programmatic caller by itself.
+
+`--api-endpoint` accepts arbitrary hostnames but requires an absolute `https:`
+URL with no userinfo, query, fragment, or non-root path. Invalid values are
+rejected before `cf api` or `cf auth`. Version 0.2.2 intentionally rejects
+plaintext `http://` landscapes because credentials would be sent to that
+endpoint.
 
 Even with permission, a restart occurs only when all of these are true:
 
@@ -96,15 +109,18 @@ stderr names the app and org/space. With an explicit `--node-pid`, automatic
 restart is always rejected because the container replacement invalidates that
 PID.
 
-The per-attempt CF command timeout is 60 seconds. Transient transport errors
-retry with bounded exponential delays while the single overall startup budget
-still has time. `cf auth` has no outer retry loop, and rejected credentials fail
-after one attempt; repeated manual failures may count toward a tenant's
-identity-provider lockout policy. The one-shot SSH signal and readiness wait are
-also clamped to the same overall deadline. No retry configuration multiplies
-startup work past `--startup-timeout`. After a timeout, fail-closed tunnel and
-state cleanup still runs; that safety teardown can briefly extend the observed
-command wall time rather than abandoning an unverified child.
+Read-only CF commands have a 60-second per-attempt cap and retry transient
+transport errors with bounded exponential delays while the single overall
+startup budget still has time. Deployment-mutating commands have a separate
+180-second cap and are never retried: a timed-out enable/restart reports
+`CF_MUTATION_TIMEOUT` because the server-side mutation may still be completing.
+`cf auth` has no outer retry loop, and rejected credentials fail after one
+attempt; repeated manual failures may count toward a tenant's identity-provider
+lockout policy. The one-shot SSH signal and readiness wait are also clamped to
+the same overall deadline. No retry configuration multiplies startup work past
+`--startup-timeout`. After a timeout, fail-closed tunnel and state cleanup still
+runs; that safety teardown can briefly extend the observed command wall time
+rather than abandoning an unverified child.
 
 ### `stop`
 
@@ -117,19 +133,20 @@ cf-debugger stop --all
 cf-debugger stop --session-id 550e8400-e29b-41d4-a716-446655440000 --force
 ```
 
-`stop --all` attempts every local session, reports stopped, stale, pending, and
-failed outcomes separately, and exits nonzero if any session failed. It cannot
+`stop --all` attempts every local session, reports stopped, forced, stale,
+pending, and failed outcomes separately, and exits `70` if any tunnel cleanup
+failed (`1` for other failures). It cannot
 be combined with a positional selector, `--session-id`, or target selector
 options; ambiguous scope is rejected instead of widening to every session.
 
 `stop --force` means “forget safely,” not “kill harder.” It never signals a PID
-whose tunnel ownership is unproven. It removes the state record and only the
-exact derived v2 `CF_HOME`, then warns with the abandoned PID and port so they
-can be investigated manually. This is the supported recovery for a dead tunnel
-whose old port is now occupied by another program, or an abandoned startup
-record that cannot be verified. If a damaged record names a non-owned home
-path, that path is left untouched and named in the warning while the record is
-still forgotten.
+whose tunnel ownership is unproven. It forgets the state record first, then
+best-effort removes only the exact derived v2 `CF_HOME`. A deletion failure is
+non-fatal and warns that the retained path may contain a live refresh token;
+`doctor` then reports it as an orphan eligible for `doctor --cleanup`. The
+warning also names the abandoned PID and port for manual investigation. If a
+damaged record names a non-owned home path, that path is left untouched while
+the record is still forgotten.
 
 ### `list` and `status`
 
@@ -161,12 +178,16 @@ The default is read-only JSON reporting. It includes:
 - v2 session homes with no state record;
 - listeners in `20000–20999` that no state record claims;
 - leftover state temp, lock, recovery, stop-intent, and corrupt-backup files;
-- legacy v1 state/homes and their credential-retention risk.
+- legacy v1 state/homes, home count, parseable claimed sessions, conservative
+  PID liveness, and their credential-retention risk.
 
 `--cleanup` removes only canonical orphan v2 homes and sufficiently old,
 package-owned temp/lock/recovery/stop-intent artifacts. It revalidates orphan
 homes against lock-guarded state immediately before deletion. It never signals
 an unclaimed listener, removes corrupt evidence, or removes legacy v1 artifacts.
+Corrupt backups include a manual-removal command in the report while remaining
+ineligible for automatic cleanup. A symlinked v2 homes root is reported and
+never traversed.
 
 ## Region resolution
 
@@ -205,7 +226,13 @@ explicitly if a worker is the intended target.
 
 The remote probe reads `/proc/<pid>/exe`, not argv. Its marker lines are filtered
 by a strict `saptools-inspector-*` prefix, so CF SSH banners cannot impersonate
-results.
+results. GNU `find -lname` is capability-probed and is normally fast; the
+portable fallback walks descriptors with `readlink` and can take roughly
+10–12 seconds in a descriptor-heavy non-GNU container.
+
+`--remote-port` does not choose the port opened by `SIGUSR1`; Node always uses
+its default inspector port for that signal. A non-default value is therefore
+for an app already started with matching `--inspect=<port>`.
 
 ### Status sequence
 
@@ -251,6 +278,13 @@ individually, and the original state file is moved to a private
 version, or root shape is likewise preserved before a fresh empty v2 file is
 written.
 
+During mixed-version use, an older cf-debugger sharing this v2 file may strip
+optional fields it does not understand, including process-identity and startup
+budget data. Newer code treats an absent/legacy identity as “cannot tell” and
+retains the record with PID-only compatibility rather than pruning it; `doctor`
+surfaces that degraded verdict. Updating every installed consumer is the only
+way to restore the stronger identity check persistently.
+
 Legacy `~/.saptools/cf-debugger-homes/` directories may still contain live
 refresh and access tokens. `doctor` reports but never deletes them. After
 confirming no v1 tunnel is running, remove them explicitly:
@@ -274,7 +308,7 @@ and redact sensitive values before they reach errors or verbose output.
 | Variable | Meaning |
 | --- | --- |
 | `SAP_EMAIL`, `SAP_PASSWORD` | CF authentication credentials |
-| `CF_DEBUGGER_ALLOW_RESTART=0\|1` | Shell-level restart guard/default |
+| `CF_DEBUGGER_ALLOW_RESTART=0\|1` | CLI default; `0` is also a hard veto for the programmatic API |
 | `CF_DEBUGGER_CF_BIN` | Replace the `cf` executable; useful for wrappers and deterministic test stubs |
 
 A caller-provided child environment cannot override the per-session `CF_HOME`.
@@ -289,6 +323,7 @@ domain code; it is never converted into success.
 | --- | --- |
 | `UNKNOWN_REGION`, `UNSAFE_INPUT`, `MISSING_CREDENTIALS` | Invalid endpoint/key, selector, numeric input, or credentials |
 | `CF_LOGIN_FAILED`, `CF_AUTH_FAILED`, `CF_TARGET_FAILED`, `CF_CLI_FAILED`, `CF_CLI_TIMEOUT` | CF command failure; rejected auth is not retried |
+| `CF_MUTATION_TIMEOUT` | A deployment mutation timed out, was not retried, and may still be completing remotely |
 | `STARTUP_TIMEOUT`, `ABORTED` | Overall deadline expired, or caller/stop intent cancelled startup |
 | `APP_NOT_FOUND` | The targeted app does not exist in the selected org/space |
 | `SSH_NOT_ENABLED`, `SSH_PERMISSION_DENIED`, `SSH_STATE_UNKNOWN` | Restart refused/not useful, permission denied, or SSH state ambiguous |
@@ -302,13 +337,15 @@ domain code; it is never converted into success.
 | `TUNNEL_EXITED`, `TUNNEL_TERMINATION_FAILED`, `TUNNEL_OWNERSHIP_UNVERIFIED` | Tunnel died, cleanup could not terminate it, or stop could not safely signal it |
 | `SESSION_ALREADY_RUNNING`, `SESSION_AMBIGUOUS`, `SESSION_NOT_FOUND` | Session selection conflict |
 | `SESSION_STATE_LOST`, `SESSION_STATE_CONFLICT`, `STATE_LOCK_TIMEOUT` | Atomic state/lifecycle invariant failed |
+| `CF_HOME_CLEANUP_FAILED` | Session state was removed but lifecycle cleanup could not remove its exact credential-bearing CF home |
+| `PACKAGE_METADATA_INVALID` | Runtime package metadata has no usable version |
 | `STOP_FAILED` | One entry in a batch stop failed with a non-coded internal error |
 
 | Exit | Meaning |
 | --- | --- |
 | `0` | Clean completion |
 | `1` | Coded operational/startup error, including `STARTUP_TIMEOUT` |
-| `70` | Cleanup/termination failed and state was retained |
+| `70` | Tunnel or lifecycle cleanup failed; ownership state or a credential-bearing home may remain |
 | SSH child's nonzero code | An unexpected numeric SSH exit is preserved, for example `255` |
 | `128 + signal` | Tunnel child died from a signal, for example `137` for `SIGKILL` |
 | `130`, `143` | User interrupted with `SIGINT` or `SIGTERM` |
@@ -337,7 +374,7 @@ const handle = await startDebugger({
 await handle.dispose();
 
 const summary = await stopAllDebuggers();
-// 0.2.0 returns per-session outcomes plus stopped/stale/pending/failed counts.
+// Outcomes and counts distinguish stopped/forced/stale/pending/failed.
 ```
 
 Persisted schema additions in 0.2.0 are optional. Absence means compatible
