@@ -1,7 +1,6 @@
 import { hostname as getHostname } from "node:os";
 import nodeProcess from "node:process";
 
-import { isOwnedSessionCfHomeDir } from "../paths.js";
 import { inspectListeningProcesses, inspectPortOwnership } from "../port.js";
 import {
   clearSessionStopIntent,
@@ -10,25 +9,22 @@ import {
   matchesKey,
   readActiveSessions,
   readSessionSnapshot,
-  removeSession,
   requestSessionStop,
-  writeSessionStopIntent,
 } from "../state.js";
 import type { ActiveSession, SessionKey } from "../types.js";
 import { CfDebuggerError } from "../types.js";
 
 import {
-  MAX_STARTUP_TIMEOUT_MS,
-  STARTUP_STALE_SLACK_MS,
-} from "./constants.js";
-import { inspectProcessIdentity } from "./process-identity.js";
-import type { ProcessIdentityVerdict } from "./process-identity.js";
-import {
   terminatePidOrGroup,
   type TerminationOutcome,
   type TerminationVerifier,
 } from "./processes.js";
-import { removeOwnedSessionCfHome } from "./session-home.js";
+import { forgetSessionThenCleanupHome } from "./session-cleanup.js";
+import {
+  inspectRecordedProcess,
+  type RecordedProcessVerdict,
+  startupExpired,
+} from "./session-process.js";
 
 export interface StopOptions {
   readonly sessionId?: string;
@@ -46,7 +42,7 @@ export interface StopDebuggerResult extends ActiveSession {
 export interface StopAllOutcome {
   readonly sessionId: string;
   readonly app: string;
-  readonly status: "failed" | "pending" | "stale" | "stopped";
+  readonly status: "failed" | "forced" | "pending" | "stale" | "stopped";
   readonly result?: StopDebuggerResult;
   readonly error?: CfDebuggerError;
 }
@@ -54,6 +50,7 @@ export interface StopAllOutcome {
 export interface StopAllResult {
   readonly outcomes: readonly StopAllOutcome[];
   readonly failed: number;
+  readonly forced: number;
   readonly pending: number;
   readonly stale: number;
   readonly stopped: number;
@@ -80,30 +77,13 @@ function findMatchingSession(
   return matches[0];
 }
 
-function startupAgeLimit(session: ActiveSession): number {
-  return (session.startupTimeoutMs ?? MAX_STARTUP_TIMEOUT_MS) + STARTUP_STALE_SLACK_MS;
-}
-
-function startupExpired(session: ActiveSession): boolean {
-  const startedAt = Date.parse(session.startedAt);
-  return Number.isNaN(startedAt) || Date.now() - startedAt > startupAgeLimit(session);
-}
-
-type RecordedProcessVerdict = "dead" | ProcessIdentityVerdict;
-
-async function inspectRecordedProcess(
-  pid: number,
-  identity: string | undefined,
-): Promise<RecordedProcessVerdict> {
-  if (!isPidAlive(pid)) {
-    return "dead";
-  }
-  return await inspectProcessIdentity(pid, identity);
-}
-
 async function inspectController(target: ActiveSession): Promise<RecordedProcessVerdict> {
   const controllerPid = target.controllerPid ?? target.pid;
-  return await inspectRecordedProcess(controllerPid, target.controllerProcessIdentity);
+  return await inspectRecordedProcess(
+    controllerPid,
+    target.controllerProcessIdentity,
+    isPidAlive,
+  );
 }
 
 export async function ownsRecordedTunnel(target: ActiveSession): Promise<boolean> {
@@ -114,6 +94,7 @@ export async function ownsRecordedTunnel(target: ActiveSession): Promise<boolean
   const processVerdict = await inspectRecordedProcess(
     tunnelPid,
     target.tunnelProcessIdentity,
+    isPidAlive,
   );
   if (processVerdict !== "match") {
     return false;
@@ -121,19 +102,35 @@ export async function ownsRecordedTunnel(target: ActiveSession): Promise<boolean
   return (await inspectPortOwnership(target.localPort, tunnelPid)).status === "owned";
 }
 
-async function terminateVerifiedTunnel(target: ActiveSession): Promise<TerminationOutcome> {
+async function terminateVerifiedTunnel(
+  target: ActiveSession,
+  recordExpectedStop: boolean,
+): Promise<TerminationOutcome> {
   const tunnelPid = target.tunnelPid;
   if (tunnelPid === undefined || tunnelPid === nodeProcess.pid) {
     return tunnelPid === nodeProcess.pid ? "still-alive" : "terminated";
   }
+  let stopIntentRecorded = false;
   try {
     const verifyBeforeSignal: TerminationVerifier = async (signal): Promise<boolean> => {
       if (signal === "SIGTERM" || target.tunnelProcessIdentity === undefined) {
-        return await ownsRecordedTunnel(target);
+        if (!(await ownsRecordedTunnel(target))) {
+          return false;
+        }
+        if (recordExpectedStop && !stopIntentRecorded) {
+          const claim = await requestSessionStop(target.sessionId);
+          if (claim === undefined) {
+            return false;
+          }
+          stopIntentRecorded = true;
+          return await ownsRecordedTunnel(target);
+        }
+        return true;
       }
       return await inspectRecordedProcess(
         tunnelPid,
         target.tunnelProcessIdentity,
+        isPidAlive,
       ) === "match";
     };
     return await terminatePidOrGroup(
@@ -151,13 +148,10 @@ async function terminateVerifiedTunnelAndConfirm(
   target: ActiveSession,
   recordExpectedStop = false,
 ): Promise<void> {
-  if (recordExpectedStop) {
-    await writeSessionStopIntent(target.sessionId);
-  }
   if (!(await ownsRecordedTunnel(target))) {
     throw ownershipError(target, "recorded tunnel no longer owns the local port");
   }
-  const termination = await terminateVerifiedTunnel(target);
+  const termination = await terminateVerifiedTunnel(target, recordExpectedStop);
   if (termination !== "terminated" || await ownsRecordedTunnel(target)) {
     throw new CfDebuggerError(
       "TUNNEL_TERMINATION_FAILED",
@@ -177,18 +171,30 @@ async function removeOwnedSession(
   preserveStopIntent = false,
 ): Promise<StopDebuggerResult> {
   let resultWarning = warning;
-  if (isOwnedSessionCfHomeDir(target.sessionId, target.cfHomeDir)) {
-    await removeOwnedSessionCfHome(target.sessionId, target.cfHomeDir);
-  } else {
+  const cleanup = await forgetSessionThenCleanupHome(target);
+  if (cleanup.homeStatus === "retained") {
+    const retained =
+      `The session record was removed, but its owned CF home ${target.cfHomeDir} ` +
+      "could not be deleted and may still hold a live CF refresh token; remove it " +
+      "manually or run `cf-debugger doctor --cleanup`.";
+    resultWarning = appendWarning(resultWarning, retained);
+  } else if (cleanup.homeStatus === "unowned") {
     const skipped = `State referenced unowned CF home ${target.cfHomeDir}; it was not deleted.`;
-    resultWarning = resultWarning === undefined ? skipped : `${resultWarning} ${skipped}`;
+    resultWarning = appendWarning(resultWarning, skipped);
   }
-  const removed = await removeSession(target.sessionId);
   if (!preserveStopIntent) {
-    await clearSessionStopIntent(target.sessionId);
+    try {
+      await clearSessionStopIntent(target.sessionId);
+    } catch {
+      resultWarning = appendWarning(
+        resultWarning,
+        `The session record was removed, but its stop-intent artifact could not be deleted; ` +
+          "run `cf-debugger doctor --cleanup` after resolving the filesystem error.",
+      );
+    }
   }
   return {
-    ...(removed ?? target),
+    ...(cleanup.removed ?? target),
     stale,
     pending: false,
     forced,
@@ -207,6 +213,10 @@ function ownershipError(target: ActiveSession, detail: string): CfDebuggerError 
 function forcedWarning(target: ActiveSession, detail: string): string {
   return `Forced state cleanup abandoned PID ${String(target.tunnelPid ?? target.controllerPid ?? target.pid)} ` +
     `and local port ${target.localPort.toString()}: ${detail}. No unverified process was signalled.`;
+}
+
+function appendWarning(current: string | undefined, next: string): string {
+  return current === undefined ? next : `${current} ${next}`;
 }
 
 async function forceRemoveUnverified(
@@ -233,7 +243,11 @@ async function stopReadySession(
   }
   const tunnelVerdict = target.tunnelPid === undefined
     ? "dead"
-    : await inspectRecordedProcess(target.tunnelPid, target.tunnelProcessIdentity);
+    : await inspectRecordedProcess(
+      target.tunnelPid,
+      target.tunnelProcessIdentity,
+      isPidAlive,
+    );
   const tunnelDead = target.tunnelPid === undefined ||
     !isPidOrGroupAlive(target.tunnelPid) ||
     tunnelVerdict === "mismatch";
@@ -241,7 +255,7 @@ async function stopReadySession(
     ? await inspectListeningProcesses(target.localPort)
     : await inspectPortOwnership(target.localPort, target.tunnelPid);
   if (tunnelDead && ownership.status === "not-listening") {
-    return await removeOwnedSession(target, true, false, undefined, true);
+    return await removeOwnedSession(target, true);
   }
   const detail = ownership.status === "unverified"
     ? ownership.reason
@@ -251,7 +265,7 @@ async function stopReadySession(
         ? "the recorded tunnel identity could not be inspected"
         : "the recorded tunnel could not be proven dead and owned";
   if (force) {
-    return await forceRemoveUnverified(target, detail, true);
+    return await forceRemoveUnverified(target, detail);
   }
   throw ownershipError(target, detail);
 }
@@ -305,20 +319,27 @@ export async function stopDebugger(
   if (target === undefined) {
     return undefined;
   }
+  if (target.status === "ready") {
+    return await stopReadySession(target, options.force === true);
+  }
   const claim = await requestSessionStop(target.sessionId);
   if (claim === undefined) {
     return undefined;
   }
-  return claim.previousStatus === "ready"
-    ? await stopReadySession(claim.session, options.force === true)
-    : await stopStartingSession(claim.session, options.force === true);
+  return await stopStartingSession(claim.session, options.force === true);
 }
 
 function outcomeForResult(result: StopDebuggerResult): StopAllOutcome {
   return {
     sessionId: result.sessionId,
     app: result.app,
-    status: result.pending ? "pending" : result.stale ? "stale" : "stopped",
+    status: result.pending
+      ? "pending"
+      : result.forced
+        ? "forced"
+        : result.stale
+          ? "stale"
+          : "stopped",
     result,
   };
 }
@@ -352,6 +373,7 @@ function summarizeOutcomes(outcomes: readonly StopAllOutcome[]): StopAllResult {
   return {
     outcomes,
     failed: count("failed"),
+    forced: count("forced"),
     pending: count("pending"),
     stale: count("stale"),
     stopped: count("stopped"),

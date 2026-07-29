@@ -27,5 +27,9 @@ export type {
 export {
   clearSessionStopIntent,
   hasSessionStopIntent,
+  inspectSessionStateStopIntent,
   writeSessionStopIntent,
+} from "./session-state/stop-intent.js";
+export type {
+  SessionStateStopIntentVerdict,
 } from "./session-state/stop-intent.js";

@@ -215,16 +215,29 @@ export function decodeSession(value: unknown): ActiveSession | undefined {
   }
 }
 
-function duplicateSessionIds(sessions: readonly ActiveSession[]): ReadonlySet<string> {
+interface DecodedSessions {
+  readonly dropped: readonly string[];
+  readonly sessions: readonly ActiveSession[];
+}
+
+function decodeSessions(rawSessions: readonly unknown[]): DecodedSessions {
   const seen = new Set<string>();
-  const duplicates = new Set<string>();
-  for (const session of sessions) {
+  const sessions: ActiveSession[] = [];
+  const dropped: string[] = [];
+  for (const [index, raw] of rawSessions.entries()) {
+    const session = decodeSession(raw);
+    if (session === undefined) {
+      dropped.push(`session[${index.toString()}]: invalid entry`);
+      continue;
+    }
     if (seen.has(session.sessionId)) {
-      duplicates.add(session.sessionId);
+      dropped.push(`session[${index.toString()}]: duplicate sessionId ${session.sessionId}`);
+      continue;
     }
     seen.add(session.sessionId);
+    sessions.push(session);
   }
-  return duplicates;
+  return { dropped, sessions };
 }
 
 export function decodeStateFileDetailed(value: unknown): StateDecodeResult {
@@ -238,22 +251,11 @@ export function decodeStateFileDetailed(value: unknown): StateDecodeResult {
   if (!Array.isArray(rawSessions)) {
     return { kind: "invalid-file", reason: "sessions is not an array" };
   }
-  const decoded = rawSessions.map((raw) => decodeSession(raw));
-  const valid = decoded.filter((session): session is ActiveSession => session !== undefined);
-  const duplicates = duplicateSessionIds(valid);
-  const sessions = valid.filter((session) => !duplicates.has(session.sessionId));
-  const dropped = decoded.flatMap((session, index): readonly string[] => {
-    if (session === undefined) {
-      return [`session[${index.toString()}]: invalid entry`];
-    }
-    return duplicates.has(session.sessionId)
-      ? [`session[${index.toString()}]: duplicate sessionId ${session.sessionId}`]
-      : [];
-  });
+  const decoded = decodeSessions(rawSessions);
   return {
     kind: "decoded",
-    state: { version: "2", sessions },
-    dropped,
+    state: { version: "2", sessions: decoded.sessions },
+    dropped: decoded.dropped,
   };
 }
 

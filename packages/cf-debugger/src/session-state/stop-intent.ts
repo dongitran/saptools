@@ -1,6 +1,25 @@
-import { access, chmod, mkdir, unlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  readFile,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 
-import { saptoolsDir, sessionStopIntentPath } from "../paths.js";
+import {
+  saptoolsDir,
+  sessionStopIntentPath,
+  stateFilePath,
+} from "../paths.js";
+
+import { decodeStateFileDetailed } from "./decoder.js";
+
+export type SessionStateStopIntentVerdict =
+  | "active"
+  | "missing"
+  | "requested"
+  | "unavailable";
 
 function errorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) {
@@ -37,6 +56,34 @@ export async function hasSessionStopIntent(sessionId: string): Promise<boolean> 
     }
     throw error;
   }
+}
+
+export async function inspectSessionStateStopIntent(
+  sessionId: string,
+): Promise<SessionStateStopIntentVerdict> {
+  let raw: string;
+  try {
+    raw = await readFile(stateFilePath(), "utf8");
+  } catch (error: unknown) {
+    return errorCode(error) === "ENOENT" ? "missing" : "unavailable";
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return "unavailable";
+  }
+  const decoded = decodeStateFileDetailed(parsed);
+  if (decoded.kind === "invalid-file") {
+    return "unavailable";
+  }
+  const session = decoded.state.sessions.find((candidate) => candidate.sessionId === sessionId);
+  if (session === undefined) {
+    return decoded.dropped.length > 0 ? "unavailable" : "missing";
+  }
+  return session.stopRequestedAt !== undefined || session.status === "stopping"
+    ? "requested"
+    : "active";
 }
 
 export async function clearSessionStopIntent(sessionId: string): Promise<void> {

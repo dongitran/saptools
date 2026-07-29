@@ -10,15 +10,20 @@ import {
   cfAuth,
   cfEnableSsh,
   cfLogin,
+  cfRestartApp,
   cfSshEnabled,
   cfTarget,
 } from "../../src/cloud-foundry/commands.js";
-import type { CfExecContext } from "../../src/cloud-foundry/execute.js";
+import type {
+  CfCommand,
+  CfExecContext,
+} from "../../src/cloud-foundry/execute.js";
 import {
   DEFAULT_CF_COMMAND_TIMEOUT_MS,
   DEFAULT_CF_OPERATION_TIMEOUT_MS,
   runCf,
 } from "../../src/cloud-foundry/execute.js";
+import { createStartupDeadline } from "../../src/debug-session/startup-deadline.js";
 
 interface LoggedCommand {
   readonly args: readonly string[];
@@ -26,6 +31,14 @@ interface LoggedCommand {
   readonly cfHome: string;
   readonly hasAuthPassword: boolean;
   readonly hasAuthUsername: boolean;
+}
+
+function retryableCommand(args: readonly string[]): CfCommand {
+  return { args, retryPolicy: "retry-transient" };
+}
+
+function mutatingCommand(args: readonly string[]): CfCommand {
+  return { args, retryPolicy: "mutation" };
 }
 
 const FAKE_CF_SOURCE = `#!/usr/bin/env node
@@ -61,6 +74,17 @@ switch (args[0]) {
   case "api": {
     if (process.env.CF_DEBUGGER_TEST_FAIL_API === "1") {
       fail("api unavailable");
+    }
+    if (process.env.CF_DEBUGGER_TEST_FAIL_API === "transient-once") {
+      const counterPath = join(cfHome, "api-count.txt");
+      const previous = existsSync(counterPath)
+        ? Number.parseInt(readFileSync(counterPath, "utf8"), 10)
+        : 0;
+      mkdirSync(cfHome, { recursive: true });
+      writeFileSync(counterPath, String(previous + 1), "utf8");
+      if (previous === 0) {
+        fail("dial tcp: i/o timeout");
+      }
     }
     process.stdout.write("api ok\\n");
     break;
@@ -123,6 +147,16 @@ switch (args[0]) {
     process.stdout.write("sleep ok\\n");
     break;
   }
+  case "restart": {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    process.stdout.write("restart ok\\n");
+    break;
+  }
+  case "enable-ssh": {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    process.stdout.write("enable ssh ok\\n");
+    break;
+  }
   case "descendant-holds-output": {
     const descendant = spawn(
       process.execPath,
@@ -155,6 +189,20 @@ async function readLog(logPath: string): Promise<readonly LoggedCommand[]> {
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as LoggedCommand);
+}
+
+async function createHangingMutationCf(
+  directory: string,
+): Promise<{ readonly command: string; readonly logPath: string }> {
+  const command = join(directory, "hanging-mutation-cf.sh");
+  const mutationLogPath = join(directory, "mutation-commands.log");
+  await writeFile(
+    command,
+    "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$CF_DEBUGGER_TEST_MUTATION_LOG\"\nsleep 2\n",
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  return { command, logPath: mutationLogPath };
 }
 
 describe("cloud-foundry command wrappers", () => {
@@ -225,7 +273,7 @@ describe("cloud-foundry command wrappers", () => {
   });
 
   it("runs CF commands with the isolated CF home", async () => {
-    await expect(runCf(["apps"], context, {
+    await expect(runCf(retryableCommand(["apps"]), context, {
       env: { CF_COLOR: "true", CF_HOME: join(tempDir, "attacker-home") },
     })).resolves.toBe("name\ndemo-app\n");
 
@@ -252,7 +300,7 @@ describe("cloud-foundry command wrappers", () => {
       readonly delayMs: number;
       readonly remainingMs: number;
     }[] = [];
-    await runCf(["network-test", "sensitive-target"], {
+    await runCf(retryableCommand(["network-test", "sensitive-target"]), {
       ...context,
       sensitiveValues: ["sensitive-target"],
       onRetry: (status): void => {
@@ -272,10 +320,97 @@ describe("cloud-foundry command wrappers", () => {
     expect(retries[0]?.remainingMs).toBeLessThanOrEqual(DEFAULT_CF_OPERATION_TIMEOUT_MS);
   });
 
+  it.each([800, 2_200, 4_500])(
+    "never retries a mutating command within a %dms operation budget",
+    async (retryBudgetMs) => {
+      const mutation = await createHangingMutationCf(tempDir);
+      await expect(runCf(mutatingCommand(["restart", "demo-app"]), {
+        ...context,
+        command: mutation.command,
+      }, {
+        env: { CF_DEBUGGER_TEST_MUTATION_LOG: mutation.logPath },
+        retryBudgetMs,
+        timeoutMs: 300,
+      })).rejects.toMatchObject({
+        code: "CF_MUTATION_TIMEOUT",
+      });
+
+      const commands = await readFile(mutation.logPath, "utf8");
+      expect(commands.trim().split("\n")).toEqual(["restart"]);
+    },
+  );
+
+  it("explains that a timed-out mutation may still be completing remotely", async () => {
+    const mutation = await createHangingMutationCf(tempDir);
+    await expect(runCf(mutatingCommand(["restart", "demo-app"]), {
+      ...context,
+      command: mutation.command,
+    }, {
+      env: { CF_DEBUGGER_TEST_MUTATION_LOG: mutation.logPath },
+      retryBudgetMs: 2_200,
+      timeoutMs: 300,
+    })).rejects.toMatchObject({
+      code: "CF_MUTATION_TIMEOUT",
+      message: expect.stringMatching(/may still be completing.*check the application state/i),
+    });
+  });
+
+  it("preserves the mutation diagnostic when the real startup deadline is shorter than its cap", async () => {
+    const mutation = await createHangingMutationCf(tempDir);
+    const deadline = createStartupDeadline(1_200);
+    try {
+      await expect(runCf(mutatingCommand(["restart", "demo-app"]), {
+        ...context,
+        command: mutation.command,
+        deadlineAt: deadline.expiresAt,
+        signal: deadline.signal,
+        startupTimeoutMs: deadline.timeoutMs,
+      }, {
+        env: { CF_DEBUGGER_TEST_MUTATION_LOG: mutation.logPath },
+        timeoutMs: 600,
+      })).rejects.toMatchObject({
+        code: "CF_MUTATION_TIMEOUT",
+        message: expect.stringMatching(/may still be completing/i),
+      });
+      const commands = await readFile(mutation.logPath, "utf8");
+      expect(commands.trim().split("\n")).toEqual(["restart"]);
+    } finally {
+      deadline.dispose();
+    }
+  });
+
+  it.each([
+    ["enable-ssh", cfEnableSsh],
+    ["restart", cfRestartApp],
+  ] as const)(
+    "declares %s as a non-retryable mutation",
+    async (verb, invoke) => {
+      await expect(invoke("demo-app", {
+        ...context,
+        deadlineAt: Date.now() + 900,
+        startupTimeoutMs: 900,
+      })).rejects.toMatchObject({
+        code: "CF_MUTATION_TIMEOUT",
+      });
+
+      const commands = await readLog(logPath);
+      expect(commands.map((entry) => entry.args[0])).toEqual([verb]);
+    },
+  );
+
+  it("keeps retrying transient failures for a declared retryable wrapper", async () => {
+    process.env["CF_DEBUGGER_TEST_FAIL_API"] = "transient-once";
+
+    await expect(cfApi("https://api.example.com", context)).resolves.toBeUndefined();
+
+    const commands = await readLog(logPath);
+    expect(commands.map((entry) => entry.args[0])).toEqual(["api", "api"]);
+  });
+
   it("stops retrying when the overall operation budget cannot fit another attempt", async () => {
     process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "100";
     const startedAt = Date.now();
-    await expect(runCf(["network-test"], context, {
+    await expect(runCf(retryableCommand(["network-test"]), context, {
       retryBudgetMs: 800,
     })).rejects.toMatchObject({
       code: "CF_CLI_TIMEOUT",
@@ -290,7 +425,7 @@ describe("cloud-foundry command wrappers", () => {
     process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
     process.env["CF_DEBUGGER_TEST_IGNORE_SIGTERM"] = "1";
     const startedAt = Date.now();
-    await expect(runCf(["sleep-test"], context, {
+    await expect(runCf(retryableCommand(["sleep-test"]), context, {
       retryBudgetMs: 250,
       timeoutMs: 60_000,
     })).rejects.toMatchObject({
@@ -304,7 +439,7 @@ describe("cloud-foundry command wrappers", () => {
 
   it("does not wait for a wrapper descendant that inherits command output", async () => {
     const startedAt = Date.now();
-    await expect(runCf(["descendant-holds-output"], context, {
+    await expect(runCf(retryableCommand(["descendant-holds-output"]), context, {
       retryBudgetMs: 250,
       timeoutMs: 250,
     })).rejects.toMatchObject({
@@ -317,7 +452,7 @@ describe("cloud-foundry command wrappers", () => {
   it("reports a shared startup deadline with the active phase", async () => {
     process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
     const startedAt = Date.now();
-    await expect(runCf(["sleep-test"], {
+    await expect(runCf(retryableCommand(["sleep-test"]), {
       ...context,
       deadlineAt: Date.now() + 250,
       phase: "authentication",
@@ -333,10 +468,10 @@ describe("cloud-foundry command wrappers", () => {
   });
 
   it("does not retry arbitrary timeout or 502 text from command output", async () => {
-    await expect(runCf(["stdout-noise"], context)).rejects.toMatchObject({
+    await expect(runCf(retryableCommand(["stdout-noise"]), context)).rejects.toMatchObject({
       code: "CF_CLI_FAILED",
     });
-    await expect(runCf(["stderr-noise"], context)).rejects.toMatchObject({
+    await expect(runCf(retryableCommand(["stderr-noise"]), context)).rejects.toMatchObject({
       code: "CF_CLI_FAILED",
     });
 
@@ -348,7 +483,10 @@ describe("cloud-foundry command wrappers", () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(runCf(["apps"], { ...context, signal: controller.signal })).rejects.toMatchObject({
+    await expect(runCf(
+      retryableCommand(["apps"]),
+      { ...context, signal: controller.signal },
+    )).rejects.toMatchObject({
       code: "ABORTED",
     });
     await expect(readLog(logPath)).resolves.toEqual([]);
@@ -357,7 +495,11 @@ describe("cloud-foundry command wrappers", () => {
   it("terminates an active CF command when the caller aborts", async () => {
     process.env["CF_DEBUGGER_TEST_TIMEOUT"] = "1";
     const controller = new AbortController();
-    const running = runCf(["sleep-test"], { ...context, signal: controller.signal }, 60_000);
+    const running = runCf(
+      retryableCommand(["sleep-test"]),
+      { ...context, signal: controller.signal },
+      60_000,
+    );
     setTimeout(() => {
       controller.abort();
     }, 25);
@@ -369,7 +511,10 @@ describe("cloud-foundry command wrappers", () => {
     process.env["CF_DEBUGGER_TEST_NETWORK_FAILURES"] = "2";
     const controller = new AbortController();
     const startedAt = Date.now();
-    const running = runCf(["network-test"], { ...context, signal: controller.signal });
+    const running = runCf(
+      retryableCommand(["network-test"]),
+      { ...context, signal: controller.signal },
+    );
     setTimeout(() => {
       controller.abort();
     }, 500);
@@ -469,7 +614,7 @@ describe("cloud-foundry command wrappers", () => {
   }, 10_000);
 
   it("normalizes sensitive values before redacting overlapping failure text", async () => {
-    await expect(runCf(["abcdef"], context, {
+    await expect(runCf(retryableCommand(["abcdef"]), context, {
       sensitiveValues: ["", "abc", "abcdef", "abc"],
     })).rejects.toMatchObject({
       code: "CF_CLI_FAILED",

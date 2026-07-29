@@ -10,6 +10,8 @@ import { CfDebuggerError } from "../types.js";
 const MAX_BUFFER = 16 * 1024 * 1024;
 export const DEFAULT_CF_COMMAND_TIMEOUT_MS = 60_000;
 export const DEFAULT_CF_OPERATION_TIMEOUT_MS = 300_000;
+export const MUTATING_CF_ATTEMPT_TIMEOUT_MS = 180_000;
+const MUTATION_DIAGNOSTIC_RESERVE_MS = 250;
 const REDACTED_ARG = "<redacted>";
 const MAX_RETRY_DELAY_MS = 10_000;
 
@@ -41,6 +43,11 @@ export interface CfRunOptions {
   readonly retryBudgetMs?: number;
 }
 
+export interface CfCommand {
+  readonly args: readonly string[];
+  readonly retryPolicy: "mutation" | "retry-transient";
+}
+
 interface CfFailureDetails {
   readonly code: string | undefined;
   readonly killed: boolean;
@@ -59,6 +66,14 @@ export interface BoundedExecFileOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly maxBuffer?: number;
   readonly signal?: AbortSignal;
+  readonly timeoutMs: number;
+}
+
+interface ExecutionSettlement {
+  settled: boolean;
+}
+
+interface CfAttemptPlan {
   readonly timeoutMs: number;
 }
 
@@ -263,61 +278,103 @@ function signalCfChild(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
+function rejectBoundedExecution(
+  settlement: ExecutionSettlement,
+  cleanup: () => void,
+  reject: (reason?: unknown) => void,
+  failure: Error,
+): void {
+  if (settlement.settled) {
+    return;
+  }
+  settlement.settled = true;
+  cleanup();
+  reject(failure);
+}
+
+function handleBoundedCompletion(
+  settlement: ExecutionSettlement,
+  cleanup: () => void,
+  resolve: (value: { readonly stderr: string; readonly stdout: string }) => void,
+  reject: (reason?: unknown) => void,
+  signal: AbortSignal | undefined,
+  error: ExecFileException | null,
+  stdout: string,
+  stderr: string,
+): void {
+  if (settlement.settled) {
+    return;
+  }
+  if (error === null && signal?.aborted !== true) {
+    settlement.settled = true;
+    cleanup();
+    resolve({ stderr, stdout });
+    return;
+  }
+  const failure = error ?? new Error("Command was aborted.");
+  Reflect.set(failure, "stderr", stderr);
+  rejectBoundedExecution(settlement, cleanup, reject, failure);
+}
+
+function terminateBoundedExecution(
+  settlement: ExecutionSettlement,
+  cleanup: () => void,
+  reject: (reason?: unknown) => void,
+  child: ChildProcess,
+  code: "ABORT_ERR" | "ETIMEDOUT",
+  message: string,
+): void {
+  if (settlement.settled) {
+    return;
+  }
+  signalCfChild(child, "SIGKILL");
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  const failure = new Error(message);
+  Reflect.set(failure, "code", code);
+  Reflect.set(failure, "killed", true);
+  Reflect.set(failure, "stderr", "");
+  rejectBoundedExecution(settlement, cleanup, reject, failure);
+}
+
 export async function executeFileBounded(
   command: string,
   args: readonly string[],
   options: BoundedExecFileOptions,
 ): Promise<{ readonly stderr: string; readonly stdout: string }> {
   return await new Promise((resolve, reject) => {
-    let settled = false;
+    const settlement: ExecutionSettlement = { settled: false };
     const cleanup = (): void => {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
-    };
-    const rejectOnce = (error: Error): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      reject(error);
     };
     const child = execFile(command, [...args], {
       env: options.env,
       maxBuffer: options.maxBuffer ?? MAX_BUFFER,
       encoding: "utf8",
     }, (error: ExecFileException | null, stdout: string, stderr: string) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      if (error === null && options.signal?.aborted !== true) {
-        resolve({ stderr, stdout });
-        return;
-      }
-      const failure = error ?? new Error("Command was aborted.");
-      Reflect.set(failure, "stderr", stderr);
-      reject(failure);
+      handleBoundedCompletion(
+        settlement,
+        cleanup,
+        resolve,
+        reject,
+        options.signal,
+        error,
+        stdout,
+        stderr,
+      );
     });
-    const terminateAndReject = (code: "ABORT_ERR" | "ETIMEDOUT", message: string): void => {
-      if (settled) {
-        return;
-      }
-      signalCfChild(child, "SIGKILL");
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      const failure = new Error(message);
-      Reflect.set(failure, "code", code);
-      Reflect.set(failure, "killed", true);
-      Reflect.set(failure, "stderr", "");
-      rejectOnce(failure);
+    const terminate = (
+      code: "ABORT_ERR" | "ETIMEDOUT",
+      message: string,
+    ): void => {
+      terminateBoundedExecution(settlement, cleanup, reject, child, code, message);
     };
     const onAbort = (): void => {
-      terminateAndReject("ABORT_ERR", "Command was aborted.");
+      terminate("ABORT_ERR", "Command was aborted.");
     };
     const timer = setTimeout(() => {
-      terminateAndReject("ETIMEDOUT", "Command exceeded its execution deadline.");
+      terminate("ETIMEDOUT", "Command exceeded its execution deadline.");
     }, options.timeoutMs);
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) {
@@ -342,6 +399,19 @@ function createCfCliError(
     "CF_CLI_FAILED",
     `cf ${formatArgsForError(args, redactionValues)} failed: ${detail}`,
     stderr,
+  );
+}
+
+function mutationTimeoutError(
+  args: readonly string[],
+  redactionValues: readonly string[],
+): CfDebuggerError {
+  const verb = args[0] ?? "command";
+  return new CfDebuggerError(
+    "CF_MUTATION_TIMEOUT",
+    `cf ${formatArgsForError(args, redactionValues)} did not complete within its deadline ` +
+      `and was not retried, because it mutates the deployed application. The ${verb} may still ` +
+      "be completing on the platform; check the application state before retrying.",
   );
 }
 
@@ -381,8 +451,73 @@ function reportRetry(
   });
 }
 
+function planCfAttempt(
+  command: CfCommand,
+  options: ResolvedCfRunOptions,
+  context: CfExecContext,
+): CfAttemptPlan {
+  const remainingMs = options.deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw timeoutError(context, command.args, options.redactionValues);
+  }
+  const attemptCap = command.retryPolicy === "mutation"
+    ? Math.min(MUTATING_CF_ATTEMPT_TIMEOUT_MS, options.attemptTimeoutMs * 3)
+    : options.attemptTimeoutMs;
+  const attemptBudget = command.retryPolicy === "mutation"
+    ? Math.max(1, remainingMs - MUTATION_DIAGNOSTIC_RESERVE_MS)
+    : remainingMs;
+  return {
+    // A mutating child must time out before the overall startup signal so the
+    // user receives the specific "mutation may still be in flight" diagnostic.
+    timeoutMs: Math.max(1, Math.min(attemptCap, attemptBudget)),
+  };
+}
+
+async function handleCfAttemptFailure(
+  error: unknown,
+  command: CfCommand,
+  context: CfExecContext,
+  options: ResolvedCfRunOptions,
+  attempt: number,
+  attemptTimeoutMs: number,
+  startedAt: number,
+): Promise<void> {
+  const failure = readFailureDetails(error);
+  if (context.signal?.aborted || failure.code === "ABORT_ERR") {
+    throw abortError(context);
+  }
+  const elapsedMs = Date.now() - startedAt;
+  const attemptTimedOut = failure.killed &&
+    elapsedMs + 100 >= attemptTimeoutMs;
+  if (command.retryPolicy === "mutation") {
+    throw attemptTimedOut
+      ? mutationTimeoutError(command.args, options.redactionValues)
+      : createCfCliError(command.args, failure, options.redactionValues);
+  }
+  if (
+    isCredentialRejection(command.args, failure) ||
+    !isTransientNetworkError(failure, attemptTimedOut)
+  ) {
+    throw createCfCliError(command.args, failure, options.redactionValues);
+  }
+  const delayMs = retryDelayMs(attempt);
+  const remainingMs = options.deadlineAt - Date.now();
+  if (remainingMs <= delayMs) {
+    throw timeoutError(context, command.args, options.redactionValues);
+  }
+  reportRetry(
+    context,
+    command.args,
+    attempt,
+    delayMs,
+    remainingMs,
+    options.redactionValues,
+  );
+  await waitForRetry(delayMs, context);
+}
+
 export async function runCf(
-  args: readonly string[],
+  command: CfCommand,
   context: CfExecContext,
   input: number | CfRunOptions = {},
 ): Promise<string> {
@@ -393,43 +528,21 @@ export async function runCf(
   let attempt = 0;
 
   for (;;) {
-    const remainingMs = options.deadlineAt - Date.now();
-    if (remainingMs <= 0) {
-      throw timeoutError(context, args, options.redactionValues);
-    }
+    const plan = planCfAttempt(command, options, context);
     attempt += 1;
-    const attemptTimeoutMs = Math.max(1, Math.min(options.attemptTimeoutMs, remainingMs));
     const startedAt = Date.now();
     try {
-      return await executeCfAttempt(args, context, options, attemptTimeoutMs);
+      return await executeCfAttempt(command.args, context, options, plan.timeoutMs);
     } catch (error: unknown) {
-      const failure = readFailureDetails(error);
-      if (context.signal?.aborted || failure.code === "ABORT_ERR") {
-        throw abortError(context);
-      }
-      const elapsedMs = Date.now() - startedAt;
-      const attemptTimedOut = failure.killed &&
-        elapsedMs + 100 >= attemptTimeoutMs;
-      if (
-        isCredentialRejection(args, failure) ||
-        !isTransientNetworkError(failure, attemptTimedOut)
-      ) {
-        throw createCfCliError(args, failure, options.redactionValues);
-      }
-      const delayMs = retryDelayMs(attempt);
-      const afterFailureMs = options.deadlineAt - Date.now();
-      if (afterFailureMs <= delayMs) {
-        throw timeoutError(context, args, options.redactionValues);
-      }
-      reportRetry(
+      await handleCfAttemptFailure(
+        error,
+        command,
         context,
-        args,
+        options,
         attempt,
-        delayMs,
-        afterFailureMs,
-        options.redactionValues,
+        plan.timeoutMs,
+        startedAt,
       );
-      await waitForRetry(delayMs, context);
     }
   }
 }

@@ -10,7 +10,7 @@ import { inspectPortOwnership } from "../port.js";
 import {
   clearSessionStopIntent,
   hasSessionStopIntent,
-  removeSession,
+  inspectSessionStateStopIntent,
   updateSessionStatus,
 } from "../state.js";
 import type {
@@ -26,7 +26,7 @@ import {
 } from "./process-identity.js";
 import { killProcessGroupOrProc } from "./processes.js";
 import type { TerminationVerifier } from "./processes.js";
-import { removeOwnedSessionCfHome } from "./session-home.js";
+import { forgetSessionThenCleanupHome } from "./session-cleanup.js";
 
 type StatusEmitter = (status: SessionStatus, message?: string) => void;
 const handleLifecycles = new WeakMap<DebuggerHandle, TunnelLifecycle>();
@@ -44,8 +44,25 @@ export interface TunnelLifecycle {
   readonly error: () => CfDebuggerError | undefined;
 }
 
+interface TunnelLifecycleState {
+  child: ChildProcess | undefined;
+  childIdentity: Promise<string | undefined> | undefined;
+  childFailed: boolean;
+  tunnelError: CfDebuggerError | undefined;
+  finalizing: boolean;
+  exitResolve: (code: number | null) => void;
+}
+
+interface InitializedTunnelLifecycle {
+  readonly exitPromise: Promise<number | null>;
+  readonly state: TunnelLifecycleState;
+}
+
 function signalExitCode(signal: NodeJS.Signals): number {
-  return 128 + osConstants.signals[signal];
+  const signum = osConstants.signals[signal];
+  return typeof signum === "number" && Number.isFinite(signum)
+    ? 128 + signum
+    : 1;
 }
 
 function unexpectedExitCode(
@@ -68,6 +85,10 @@ function emitSafely(
   } catch {
     // Status observers are informational and must never defeat owned-resource cleanup.
   }
+}
+
+function ignoreCleanupFailure(): void {
+  // Stop-intent cleanup is best-effort after the owning lifecycle has ended.
 }
 
 async function runCleanupActions(
@@ -101,10 +122,12 @@ async function handleTunnelClose(
   markFailed: (error: CfDebuggerError) => void,
   emit: StatusEmitter,
 ): Promise<void> {
-  const stopRequested = await hasSessionStopIntent(sessionId);
+  const stopRequested = isFinalizing()
+    ? false
+    : await hasExpectedStopSignal(sessionId);
   const expected = isFinalizing() || stopRequested;
   if (stopRequested) {
-    await clearSessionStopIntent(sessionId);
+    await clearSessionStopIntent(sessionId).catch(ignoreCleanupFailure);
   }
   if (!expected && !hasFailed()) {
     const detail = signal === null
@@ -122,6 +145,22 @@ async function handleTunnelClose(
     emitSafely(emit, "error", error.message);
   }
   resolveExit(expected && !hasFailed() ? 0 : unexpectedExitCode(code, signal));
+}
+
+async function hasExpectedStopSignal(sessionId: string): Promise<boolean> {
+  let sidecarRequested = false;
+  try {
+    sidecarRequested = await hasSessionStopIntent(sessionId);
+  } catch {
+    // The state record is an independent compatibility and error fallback.
+  }
+  try {
+    const verdict = await inspectSessionStateStopIntent(sessionId);
+    return verdict === "requested" ||
+      (verdict === "missing" && sidecarRequested);
+  } catch {
+    return false;
+  }
 }
 
 function attachTunnelEvents(
@@ -183,110 +222,183 @@ async function expectedTunnelStillOwned(
 }
 
 async function cleanupFinishedSession(session: ActiveSession): Promise<void> {
-  await removeOwnedSessionCfHome(session.sessionId, session.cfHomeDir);
-  await removeSession(session.sessionId);
-  await clearSessionStopIntent(session.sessionId);
+  const cleanup = await forgetSessionThenCleanupHome(session);
+  await clearSessionStopIntent(session.sessionId).catch(ignoreCleanupFailure);
+  if (cleanup.homeStatus !== "removed") {
+    throw new CfDebuggerError(
+      "CF_HOME_CLEANUP_FAILED",
+      cleanup.homeStatus === "retained"
+        ? `Session state was removed, but owned CF home ${session.cfHomeDir} could not be deleted. ` +
+          "It may contain a live CF refresh token; remove it manually or run `cf-debugger doctor --cleanup`."
+        : `Session state was removed, but unowned CF home ${session.cfHomeDir} was not deleted.`,
+    );
+  }
 }
 
-export function createTunnelLifecycle(
-  session: ActiveSession,
-  emit: StatusEmitter,
-): TunnelLifecycle {
-  let child: ChildProcess | undefined;
-  let childIdentity: Promise<string | undefined> | undefined;
-  let childFailed = false;
-  let tunnelError: CfDebuggerError | undefined;
-  let finalizing = false;
+function initializeTunnelLifecycle(): InitializedTunnelLifecycle {
   let exitResolve: (code: number | null) => void = (_code) => {
     throw new Error("Tunnel exit resolver was used before initialization.");
   };
   const exitPromise = new Promise<number | null>((resolve) => {
     exitResolve = resolve;
   });
-  const observeChild = (tunnelChild: ChildProcess): void => {
-    child = tunnelChild;
-    childIdentity = tunnelChild.pid === undefined
-      ? undefined
-      : readProcessIdentity(tunnelChild.pid);
-    attachTunnelEvents(
-      session.sessionId,
-      tunnelChild,
-      exitResolve,
-      (): boolean => finalizing,
-      (): boolean => childFailed,
-      (error): void => {
-        if (!childFailed) {
-          childFailed = true;
-          tunnelError = error;
-        }
-      },
-      emit,
-    );
-  };
-  const verifyBeforeSignal: TerminationVerifier = async (signal): Promise<boolean> => {
-    const tunnelChild = child;
-    const childPid = tunnelChild?.pid;
-    if (
-      tunnelChild === undefined ||
-      childPid === undefined ||
-      !childIsOpen(tunnelChild)
-    ) {
-      return false;
-    }
-    const expectedIdentity = await childIdentity;
-    if (expectedIdentity !== undefined) {
-      return await inspectProcessIdentity(childPid, expectedIdentity) === "match" &&
-        childIsOpen(tunnelChild);
-    }
-    if (signal === "SIGKILL") {
-      return await expectedTunnelStillOwned(session, tunnelChild) === true;
-    }
-    // The still-open ChildProcess handle is the best available ownership proof
-    // on platforms without a process birth token.
-    return true;
-  };
-  const finalize = async (emitStopped: boolean): Promise<void> => {
-    finalizing = true;
-    const termination = child === undefined
-      ? "terminated"
-      : await killProcessGroupOrProc(child, verifyBeforeSignal);
-    const stillOwned = await expectedTunnelStillOwned(session, child);
-    if (termination !== "terminated" || stillOwned === true || stillOwned === "unverified") {
-      const stderr = child === undefined
-        ? undefined
-        : formatTunnelDiagnostics(getTunnelDiagnostics(child));
-      throw new CfDebuggerError(
-        "TUNNEL_TERMINATION_FAILED",
-        `Tunnel for session ${session.sessionId} did not terminate cleanly; state and CF home were retained.`,
-        stderr,
-      );
-    }
-    await cleanupFinishedSession(session);
-    if (emitStopped) {
-      emitSafely(emit, "stopped");
-    }
-  };
   return {
     exitPromise,
-    assertRunning: (): void => {
-      if (
-        child === undefined ||
-        !childIsOpen(child) ||
-        childFailed
-      ) {
-        throw new CfDebuggerError(
-          "TUNNEL_NOT_READY",
-          `SSH tunnel for session ${session.sessionId} exited before readiness could be committed.`,
-          child === undefined
-            ? undefined
-            : formatTunnelDiagnostics(getTunnelDiagnostics(child)),
-        );
-      }
+    state: {
+      child: undefined,
+      childIdentity: undefined,
+      childFailed: false,
+      tunnelError: undefined,
+      finalizing: false,
+      exitResolve,
     },
-    finalize,
-    observeChild,
-    failed: (): boolean => childFailed,
-    error: (): CfDebuggerError | undefined => tunnelError,
+  };
+}
+
+function recordTunnelFailure(
+  state: TunnelLifecycleState,
+  error: CfDebuggerError,
+): void {
+  if (!state.childFailed) {
+    state.childFailed = true;
+    state.tunnelError = error;
+  }
+}
+
+function observeTunnelChild(
+  state: TunnelLifecycleState,
+  sessionId: string,
+  tunnelChild: ChildProcess,
+  emit: StatusEmitter,
+): void {
+  state.child = tunnelChild;
+  state.childIdentity = tunnelChild.pid === undefined
+    ? undefined
+    : readProcessIdentity(tunnelChild.pid);
+  attachTunnelEvents(
+    sessionId,
+    tunnelChild,
+    state.exitResolve,
+    (): boolean => state.finalizing,
+    (): boolean => state.childFailed,
+    (error): void => {
+      recordTunnelFailure(state, error);
+    },
+    emit,
+  );
+}
+
+async function verifyTunnelBeforeSignal(
+  state: TunnelLifecycleState,
+  session: ActiveSession,
+  signal: NodeJS.Signals,
+): Promise<boolean> {
+  const tunnelChild = state.child;
+  const childPid = tunnelChild?.pid;
+  if (
+    tunnelChild === undefined ||
+    childPid === undefined ||
+    !childIsOpen(tunnelChild)
+  ) {
+    return false;
+  }
+  const expectedIdentity = await state.childIdentity;
+  if (expectedIdentity !== undefined) {
+    return await inspectProcessIdentity(childPid, expectedIdentity) === "match" &&
+      childIsOpen(tunnelChild);
+  }
+  if (signal === "SIGKILL") {
+    return await expectedTunnelStillOwned(session, tunnelChild) === true;
+  }
+  // The still-open ChildProcess handle is the best available ownership proof
+  // on platforms without a process birth token.
+  return true;
+}
+
+function tunnelTerminationError(
+  session: ActiveSession,
+  child: ChildProcess | undefined,
+): CfDebuggerError {
+  const stderr = child === undefined
+    ? undefined
+    : formatTunnelDiagnostics(getTunnelDiagnostics(child));
+  return new CfDebuggerError(
+    "TUNNEL_TERMINATION_FAILED",
+    `Tunnel for session ${session.sessionId} did not terminate cleanly; state and CF home were retained.`,
+    stderr,
+  );
+}
+
+async function finalizeTunnelLifecycle(
+  state: TunnelLifecycleState,
+  session: ActiveSession,
+  emit: StatusEmitter,
+  emitStopped: boolean,
+): Promise<void> {
+  state.finalizing = true;
+  const verify: TerminationVerifier = async (signal): Promise<boolean> => {
+    return await verifyTunnelBeforeSignal(state, session, signal);
+  };
+  const termination = state.child === undefined
+    ? "terminated"
+    : await killProcessGroupOrProc(state.child, verify);
+  const stillOwned = await expectedTunnelStillOwned(session, state.child);
+  if (termination !== "terminated" || stillOwned === true) {
+    throw tunnelTerminationError(session, state.child);
+  }
+  if (stillOwned === "unverified" && emitStopped) {
+    emitSafely(
+      emit,
+      "stopping",
+      "Tunnel process termination was confirmed, but local port ownership could not be rechecked. " +
+        "On macOS, install lsof to restore that diagnostic.",
+    );
+  }
+  await cleanupFinishedSession(session);
+  if (emitStopped) {
+    emitSafely(emit, "stopped");
+  }
+}
+
+function assertTunnelRunning(
+  state: TunnelLifecycleState,
+  session: ActiveSession,
+): void {
+  if (
+    state.child !== undefined &&
+    childIsOpen(state.child) &&
+    !state.childFailed
+  ) {
+    return;
+  }
+  throw new CfDebuggerError(
+    "TUNNEL_NOT_READY",
+    `SSH tunnel for session ${session.sessionId} exited before readiness could be committed.`,
+    state.child === undefined
+      ? undefined
+      : formatTunnelDiagnostics(getTunnelDiagnostics(state.child)),
+  );
+}
+
+export function createTunnelLifecycle(
+  session: ActiveSession,
+  emit: StatusEmitter,
+): TunnelLifecycle {
+  const initialized = initializeTunnelLifecycle();
+  const { state } = initialized;
+  return {
+    exitPromise: initialized.exitPromise,
+    assertRunning: (): void => {
+      assertTunnelRunning(state, session);
+    },
+    finalize: async (emitStopped): Promise<void> => {
+      await finalizeTunnelLifecycle(state, session, emit, emitStopped);
+    },
+    observeChild: (child): void => {
+      observeTunnelChild(state, session.sessionId, child, emit);
+    },
+    failed: (): boolean => state.childFailed,
+    error: (): CfDebuggerError | undefined => state.tunnelError,
   };
 }
 

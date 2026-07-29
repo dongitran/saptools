@@ -17,13 +17,16 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { runDoctor } from "../../src/debug-session/doctor.js";
 import {
   stopAllDebuggers,
   stopDebugger,
 } from "../../src/debug-session/sessions.js";
 import * as paths from "../../src/paths.js";
 import { decodeSession } from "../../src/session-state/decoder.js";
+import * as health from "../../src/session-state/health.js";
 import {
+  hasSessionStopIntent,
   isPidOrGroupAlive,
   matchesKey,
   readActiveSessions,
@@ -320,20 +323,40 @@ describe("state management", () => {
     }));
   });
 
-  it("rejects duplicate persisted session ids", async () => {
-    await writeFile(
-      join(tempDir, "state.json"),
-      JSON.stringify({
-        version: "2",
-        sessions: [
-          persistedSession(tempDir),
-          persistedSession(tempDir, { app: "another-app" }),
-        ],
-      }),
-      "utf8",
-    );
+  it("keeps the first duplicate session id and preserves the original state", async () => {
+    const statePath = join(tempDir, "state.json");
+    const original = {
+      version: "2",
+      sessions: [
+        persistedSession(tempDir),
+        persistedSession(tempDir, { app: "another-app" }),
+      ],
+    };
+    const stderrSpy = vi.spyOn(process.stderr, "write");
+    await writeFile(statePath, JSON.stringify(original), "utf8");
 
-    await expect(readSessionSnapshot()).resolves.toEqual([]);
+    await expect(readSessionSnapshot()).resolves.toEqual([
+      expect.objectContaining({
+        app: "demo-app",
+        sessionId: "session-a",
+      }),
+    ]);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("session[1]: duplicate sessionId session-a"),
+    );
+    const files = await readdir(tempDir);
+    const backup = files.find((name) => name.startsWith("state.json.corrupt-"));
+    expect(backup).toEqual(expect.any(String));
+    if (backup === undefined) {
+      throw new Error("expected duplicate-state backup");
+    }
+    expect(JSON.parse(await readFile(join(tempDir, backup), "utf8"))).toEqual(original);
+    const repaired = JSON.parse(await readFile(statePath, "utf8")) as {
+      readonly sessions: readonly { readonly app?: unknown }[];
+    };
+    expect(repaired.sessions).toEqual([
+      expect.objectContaining({ app: "demo-app" }),
+    ]);
   });
 
   it("retains valid entries and preserves evidence when one entry is malformed", async () => {
@@ -538,6 +561,80 @@ describe("state management", () => {
     expect(a.session.localPort).not.toBe(b.session.localPort);
   });
 
+  it("starts concurrent distinct keys at different deterministic candidates", async () => {
+    let firstProbeCount = 0;
+    let releaseProbes: () => void = () => undefined;
+    const bothProbesStarted = new Promise<void>((resolve) => {
+      releaseProbes = resolve;
+    });
+    const probesA: number[] = [];
+    const probesB: number[] = [];
+    const recordProbe = (ports: number[]) => async (port: number): Promise<boolean> => {
+      ports.push(port);
+      if (ports.length === 1) {
+        firstProbeCount += 1;
+        if (firstProbeCount === 2) {
+          releaseProbes();
+        }
+        await bothProbesStarted;
+      }
+      return true;
+    };
+    const common = {
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      apiEndpoint: "https://example.com",
+      cfHomeForSession: (id: string) => join(tempDir, id),
+    };
+
+    const [first, second] = await Promise.all([
+      registerNewSession({ ...common, app: "concurrent-app-a", portProbe: recordProbe(probesA) }),
+      registerNewSession({ ...common, app: "concurrent-app-b", portProbe: recordProbe(probesB) }),
+    ]);
+
+    expect(probesA[0]).toEqual(expect.any(Number));
+    expect(probesB[0]).toEqual(expect.any(Number));
+    expect(probesA[0]).not.toBe(probesB[0]);
+    expect(first.session.localPort).toBe(probesA[0]);
+    expect(second.session.localPort).toBe(probesB[0]);
+  });
+
+  it("scans the complete configured range in circular order", async () => {
+    const probed: number[] = [];
+    const basePort = 30_000;
+    const maxPort = 30_016;
+
+    await expect(registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "wraparound-app-0",
+      apiEndpoint: "https://example.com",
+      basePort,
+      maxPort,
+      portProbe: async (port): Promise<boolean> => {
+        probed.push(port);
+        return false;
+      },
+      cfHomeForSession: (id) => join(tempDir, id),
+    })).rejects.toMatchObject({ code: "PORT_UNAVAILABLE" });
+
+    expect(probed).toHaveLength(maxPort - basePort + 1);
+    expect(new Set(probed)).toEqual(new Set(
+      Array.from({ length: maxPort - basePort + 1 }, (_, index) => basePort + index),
+    ));
+    expect(probed[0]).toBe(30_004);
+    for (let index = 1; index < probed.length; index += 1) {
+      const previous = probed[index - 1];
+      const current = probed[index];
+      if (previous === undefined || current === undefined) {
+        throw new Error("expected a complete port scan");
+      }
+      expect(current).toBe(previous === maxPort ? basePort : previous + 1);
+    }
+  });
+
   it("uses a free preferred port when provided", async () => {
     const result = await registerNewSession({
       region: "eu10",
@@ -553,7 +650,29 @@ describe("state management", () => {
     expect(result.session.localPort).toBe(20_555);
   });
 
-  it("skips an unavailable preferred port and selects the first free fallback", async () => {
+  it("prioritizes a valid preferred port outside the configured scan range", async () => {
+    const probes: number[] = [];
+    const result = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      preferredPort: 20_555,
+      basePort: 30_000,
+      maxPort: 30_002,
+      portProbe: async (port): Promise<boolean> => {
+        probes.push(port);
+        return true;
+      },
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+
+    expect(result.session.localPort).toBe(20_555);
+    expect(probes).toEqual([20_555, 20_555]);
+  });
+
+  it("skips an unavailable preferred port and uses the key-derived fallback", async () => {
     const result = await registerNewSession({
       region: "eu10",
       org: "org-a",
@@ -565,7 +684,7 @@ describe("state management", () => {
       cfHomeForSession: (id) => join(tempDir, id),
     });
 
-    expect(result.session.localPort).toBe(20_000);
+    expect(result.session.localPort).toBe(20_459);
   });
 
   it("throws when no local port can be reserved", async () => {
@@ -584,6 +703,59 @@ describe("state management", () => {
     ).rejects.toMatchObject({
       code: "PORT_UNAVAILABLE",
     });
+  });
+
+  it.each([
+    ["preferredPort below range", { preferredPort: 0 }],
+    ["preferredPort above range", { preferredPort: 65_536 }],
+    ["preferredPort fractional", { preferredPort: 20_000.5 }],
+    ["basePort below range", { basePort: 0 }],
+    ["basePort above range", { basePort: 65_536 }],
+    ["basePort fractional", { basePort: 20_000.5 }],
+    ["basePort non-finite", { basePort: Number.NaN }],
+    ["maxPort below range", { maxPort: 0 }],
+    ["maxPort above range", { maxPort: 65_536 }],
+    ["maxPort fractional", { maxPort: 20_000.5 }],
+    ["maxPort non-finite", { maxPort: Number.POSITIVE_INFINITY }],
+    ["inverted scan range", { basePort: 30_001, maxPort: 30_000 }],
+  ])("rejects invalid local port configuration: %s", async (_label, overrides) => {
+    const portProbe = vi.fn(async (): Promise<boolean> => true);
+    await expect(registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      portProbe,
+      cfHomeForSession: (id) => join(tempDir, id),
+      ...overrides,
+    })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+
+    expect(portProbe).not.toHaveBeenCalled();
+    await expect(access(join(tempDir, "state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    ["region", { region: "" }],
+    ["org", { org: " org-a" }],
+    ["space", { space: "-dev" }],
+    ["app", { app: "demo\napp" }],
+    ["apiEndpoint", { apiEndpoint: "https://example.com " }],
+  ])("rejects unsafe direct registration %s before side effects", async (_label, overrides) => {
+    const portProbe = vi.fn(async (): Promise<boolean> => true);
+    await expect(registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      portProbe,
+      cfHomeForSession: (id) => join(tempDir, id),
+      ...overrides,
+    })).rejects.toMatchObject({ code: "UNSAFE_INPUT" });
+
+    expect(portProbe).not.toHaveBeenCalled();
+    await expect(access(join(tempDir, "state.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("updateSessionStatus writes the new status to disk", async () => {
@@ -669,6 +841,26 @@ describe("state management", () => {
     expect(first?.session.status).toBe("signaling");
     expect(first?.session.stopRequestedAt).toEqual(expect.any(String));
     expect(second?.session.stopRequestedAt).toBe(first?.session.stopRequestedAt);
+  });
+
+  it("records both stop-intent sources for a ready session", async () => {
+    const result = await registerNewSession({
+      region: "eu10",
+      org: "org-a",
+      space: "dev",
+      app: "demo-app",
+      apiEndpoint: "https://example.com",
+      portProbe: async () => true,
+      cfHomeForSession: (id) => join(tempDir, id),
+    });
+    await updateSessionPid(result.session.sessionId, process.pid);
+    await updateSessionStatus(result.session.sessionId, "ready");
+
+    const claim = await requestSessionStop(result.session.sessionId);
+
+    expect(claim?.previousStatus).toBe("ready");
+    expect(claim?.session.stopRequestedAt).toEqual(expect.any(String));
+    await expect(hasSessionStopIntent(result.session.sessionId)).resolves.toBe(true);
   });
 
   it("rejects a ready transition before a tunnel PID exists", async () => {
@@ -830,6 +1022,75 @@ describe("state management", () => {
     expect(sessions).toEqual([]);
   });
 
+  it("inspects health outside the lock and retains a session changed before prune persistence", async () => {
+    const statePath = join(tempDir, "state.json");
+    const session = persistedSession(tempDir, {
+      sessionId: "health-race",
+      pid: process.pid,
+      tunnelPid: process.pid,
+      status: "ready",
+    });
+    await writeFile(statePath, JSON.stringify({
+      version: "2",
+      sessions: [session],
+    }), "utf8");
+    let inspections = 0;
+    vi.spyOn(health, "inspectSessionHealth").mockImplementation(
+      async (): Promise<health.SessionHealthVerdict> => {
+        inspections += 1;
+        await expect(access(join(tempDir, "state.lock"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        await writeFile(statePath, JSON.stringify({
+          version: "2",
+          sessions: [{ ...session, message: "became healthy" }],
+        }), "utf8");
+        return { status: "stale", reason: "first snapshot was stale" };
+      },
+    );
+
+    await expect(readActiveSessions()).resolves.toEqual([
+      expect.objectContaining({
+        message: "became healthy",
+        sessionId: "health-race",
+      }),
+    ]);
+    expect(inspections).toBe(1);
+  });
+
+  it("revalidates an unchanged stale candidate and retains it when it becomes healthy", async () => {
+    const session = persistedSession(tempDir, {
+      sessionId: "health-revalidation",
+      pid: process.pid,
+      tunnelPid: process.pid,
+      status: "ready",
+    });
+    await writeFile(join(tempDir, "state.json"), JSON.stringify({
+      version: "2",
+      sessions: [session],
+    }), "utf8");
+    let inspections = 0;
+    vi.spyOn(health, "inspectSessionHealth").mockImplementation(
+      async (): Promise<health.SessionHealthVerdict> => {
+        inspections += 1;
+        if (inspections === 1) {
+          await expect(access(join(tempDir, "state.lock"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+          return { status: "stale", reason: "temporarily stale" };
+        }
+        await expect(access(join(tempDir, "state.lock"))).resolves.toBeUndefined();
+        return { status: "healthy", reason: "became healthy" };
+      },
+    );
+
+    await expect(readActiveSessions()).resolves.toEqual([
+      expect.objectContaining({ sessionId: "health-revalidation" }),
+    ]);
+    expect(inspections).toBe(2);
+    await expect(readSessionSnapshot()).resolves.toHaveLength(1);
+  });
+
   it.runIf(process.platform === "linux" || process.platform === "darwin")(
     "prunes a live controller PID whose persisted identity token does not match",
     async () => {
@@ -839,7 +1100,9 @@ describe("state management", () => {
           version: "2",
           sessions: [persistedSession(tempDir, {
             sessionId: "reused-controller",
-            controllerProcessIdentity: `${process.platform}:definitely-not-this-process`,
+            controllerProcessIdentity: process.platform === "linux"
+              ? "linux:v1:0"
+              : "darwin:v1:Thu Jan 1 00:00:00 1970",
           })],
         }),
         "utf8",
@@ -1252,6 +1515,49 @@ describe("session recovery", () => {
     await expect(access(cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.runIf(process.platform !== "win32")(
+    "force-forgets state before an owned home cleanup failure and leaves a doctor-visible orphan",
+    async () => {
+      const { server, port } = await listenOnEphemeralPort();
+      await closeServer(server);
+      const sessionId = "force-home-cleanup-failure";
+      const cfHomeDir = paths.sessionCfHomeDir(sessionId);
+      const lockedDir = join(cfHomeDir, "locked");
+      await mkdir(lockedDir, { recursive: true });
+      await writeFile(join(lockedDir, "token-bearing-config.json"), "secret", "utf8");
+      await chmod(lockedDir, 0o500);
+      await writeFile(join(tempDir, "state.json"), JSON.stringify({
+        version: "2",
+        sessions: [persistedSession(tempDir, {
+          sessionId,
+          pid: process.pid,
+          controllerPid: process.pid,
+          localPort: port,
+          cfHomeDir,
+          status: "starting",
+        })],
+      }), "utf8");
+
+      try {
+        const forced = await stopDebugger({ sessionId, force: true });
+
+        expect(forced).toEqual(expect.objectContaining({
+          forced: true,
+          warning: expect.stringMatching(/live CF refresh token.*doctor --cleanup/i),
+        }));
+        await expect(readSessionSnapshot()).resolves.toEqual([]);
+        await expect(access(cfHomeDir)).resolves.toBeUndefined();
+        const doctor = await runDoctor();
+        expect(doctor.orphanHomes).toContainEqual(expect.objectContaining({
+          path: cfHomeDir,
+          sessionId,
+        }));
+      } finally {
+        await chmod(lockedDir, 0o700).catch(() => undefined);
+      }
+    },
+  );
+
   it("force-forgets a stranger-owned port without signalling either child", async () => {
     const listener = await spawnListeningChild();
     const sleeper = await spawnSleeperChild();
@@ -1291,6 +1597,7 @@ describe("session recovery", () => {
     expect(sleeper.exitCode).toBeNull();
     expect(listener.child.exitCode).toBeNull();
     await expect(readSessionSnapshot()).resolves.toEqual([]);
+    await expect(hasSessionStopIntent(sessionId)).resolves.toBe(false);
     await expect(access(cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -1366,6 +1673,7 @@ describe("session recovery", () => {
 
     expect(result).toMatchObject({
       failed: 1,
+      forced: 0,
       pending: 0,
       stale: 1,
       stopped: 0,

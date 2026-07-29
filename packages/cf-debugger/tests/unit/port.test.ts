@@ -1,5 +1,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import {
+  createServer as createHttpServer,
+  globalAgent,
+  type Server as HttpServer,
+} from "node:http";
 import { createServer as createNetServer, type Server as NetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +12,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   classifyPortOwnership,
-  findListeningProcessId,
-  findListeningProcessIds,
   inspectListeningProcesses,
   inspectPortOwnership,
   isPortFree,
+  isPortListening,
   parseWindowsNetstatListeningPids,
   probeInspectorReady,
   probeTunnelReady,
@@ -145,6 +148,11 @@ describe("probeTunnelReady", () => {
     await expect(probeTunnelReady(port, 1)).resolves.toBe(false);
   });
 
+  it("clamps a negative socket timeout before attempting a connection", async () => {
+    const port = await reserveFreePort();
+    await expect(isPortListening(port, -1)).resolves.toBe(false);
+  });
+
   it("rejects immediately when tunnel probing is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -194,6 +202,26 @@ describe("probeInspectorReady", () => {
       await expect(probeInspectorReady(port, 500)).resolves.toEqual({ status: "ready" });
       expect(requestedPath).toBe("/json/list");
     } finally {
+      await closeHttpServer(server);
+    }
+  });
+
+  it("bypasses the process-wide HTTP agent for the loopback request", async () => {
+    const server = createHttpServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify([
+        { webSocketDebuggerUrl: "ws://127.0.0.1:9229/target-id" },
+      ]));
+    });
+    const createConnection = vi.spyOn(globalAgent, "createConnection").mockImplementation(() => {
+      throw new Error("The loopback readiness probe used the global HTTP agent.");
+    });
+    const port = await listenHttpServer(server);
+    try {
+      await expect(probeInspectorReady(port, 500)).resolves.toEqual({ status: "ready" });
+      expect(createConnection).not.toHaveBeenCalled();
+    } finally {
+      createConnection.mockRestore();
       await closeHttpServer(server);
     }
   });
@@ -251,6 +279,31 @@ describe("probeInspectorReady", () => {
       await closeHttpServer(server);
     }
   });
+
+  it("grows the bounded attempt timeout for a slow healthy inspector", async () => {
+    let requestCount = 0;
+    const server = createHttpServer((_request, response) => {
+      requestCount += 1;
+      const timer = setTimeout(() => {
+        if (!response.destroyed) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify([
+            { webSocketDebuggerUrl: "ws://127.0.0.1:9229/target-id" },
+          ]));
+        }
+      }, 2_700);
+      response.once("close", () => {
+        clearTimeout(timer);
+      });
+    });
+    const port = await listenHttpServer(server);
+    try {
+      await expect(probeInspectorReady(port, 9_000)).resolves.toEqual({ status: "ready" });
+      expect(requestCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      await closeHttpServer(server);
+    }
+  }, 10_000);
 
   it("stops an active HTTP probe promptly when the caller aborts", async () => {
     const server = createHttpServer(() => {
@@ -313,7 +366,10 @@ describe("listener ownership", () => {
     server = createNetServer();
     const port = await listenNetServer(server);
 
-    await expect(findListeningProcessIds(port)).resolves.toEqual([process.pid]);
+    await expect(inspectListeningProcesses(port)).resolves.toEqual({
+      status: "found",
+      pids: [process.pid],
+    });
     await expect(inspectPortOwnership(port, process.pid)).resolves.toEqual({
       status: "owned",
       pids: [process.pid],
@@ -331,15 +387,8 @@ describe("listener ownership", () => {
     });
   });
 
-  it("keeps the single-PID compatibility accessor deterministic", async () => {
-    server = createNetServer();
-    const port = await listenNetServer(server);
-    await expect(findListeningProcessId(port)).resolves.toBe(process.pid);
-  });
-
   it("reports no owner when no process is listening", async () => {
     const port = await reserveFreePort();
-    await expect(findListeningProcessId(port)).resolves.toBeUndefined();
     await expect(inspectPortOwnership(port, process.pid)).resolves.toEqual({
       status: "not-listening",
       pids: [],

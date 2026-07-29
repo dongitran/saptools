@@ -146,7 +146,67 @@ test("CLI reports the package version", async () => {
   try {
     const result = await runCliCommand(createFakeEnv(homeDir), ["--version"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe("0.2.1");
+    expect(result.stdout.trim()).toBe("0.2.2");
+  } finally {
+    await cleanupHome(homeDir);
+  }
+});
+
+test("CLI rejects unsafe API endpoint overrides before invoking cf", async () => {
+  const invalidEndpoints = [
+    "http://plaintext.example",
+    "ftp://x",
+    "--skip-ssl-validation",
+    "   ",
+    "https://u:p@h.example",
+    "https://h.example/?q=1",
+    "https://h.example/#fragment",
+    "https://h.example/path",
+    "https://h.example/\n",
+    "not-a-url",
+  ];
+  for (const endpoint of invalidEndpoints) {
+    const homeDir = await createIsolatedHome();
+    try {
+      const result = await runCliCommand(createFakeEnv(homeDir), [
+        "start",
+        "--org",
+        "org-a",
+        "--space",
+        "dev",
+        "--app",
+        "demo-app",
+        "--api-endpoint",
+        endpoint,
+      ]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("Error [UNSAFE_INPUT]");
+      await expect(readFakeCommands(homeDir)).resolves.toEqual([]);
+    } finally {
+      await cleanupHome(homeDir);
+    }
+  }
+});
+
+test("CLI accepts a private HTTPS API endpoint and invokes cf api once", async () => {
+  const homeDir = await createIsolatedHome();
+  try {
+    const result = await runCliCommand(createFakeEnv(homeDir, {
+      CF_DEBUGGER_FAKE_AUTH_FAIL: "1",
+    }), [
+      "start",
+      ...TARGET_ARGS,
+      "--api-endpoint",
+      "https://api.cf.internal.example",
+    ]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("CF_AUTH_FAILED");
+    const commands = await readFakeCommands(homeDir);
+    expect(commands.filter((command) =>
+      command === "api https://api.cf.internal.example"
+    )).toHaveLength(1);
+    expect(commands.filter((command) => command === "auth")).toHaveLength(1);
   } finally {
     await cleanupHome(homeDir);
   }
@@ -564,7 +624,9 @@ test("User can clear multiple fake-backed sessions with stop all", async () => {
 
     const stop = await runCliCommand(env, ["stop", "--all"]);
     expect(stop.code, stop.stderr).toBe(0);
-    expect(stop.stdout).toContain("Stop summary: 2 stopped, 0 stale, 0 pending, 0 failed.");
+    expect(stop.stdout).toContain(
+      "Stop summary: 2 stopped, 0 forced, 0 stale, 0 pending, 0 failed.",
+    );
     const ownerExits = await Promise.all(
       sessions.map(async (started) => await waitForCliExit(started.child)),
     );

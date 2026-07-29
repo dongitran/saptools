@@ -209,6 +209,69 @@ describe("cfSshOneShot", () => {
     },
   );
 
+  it.runIf(process.platform !== "win32")(
+    "sends SIGTERM to a spawned open child when its process identity is unavailable",
+    async () => {
+      vi.useFakeTimers();
+      const child = createChild();
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+      mocks.spawn.mockReturnValue(child);
+      mocks.readProcessIdentity.mockResolvedValue(undefined);
+
+      try {
+        const resultPromise = cfSshOneShot(
+          "demo-app",
+          "printf markers",
+          { cfHome: "/tmp/cf-home", command: "cf" },
+          25,
+        );
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(killSpy).toHaveBeenCalledWith(-2_147_483_600, "SIGTERM");
+        expect(mocks.inspectProcessIdentity).not.toHaveBeenCalled();
+        child.emit("close", null, "SIGTERM");
+
+        await expect(resultPromise).resolves.toMatchObject({ timedOutAfterMs: 25 });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        killSpy.mockRestore();
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "does not escalate an identity-unavailable one-shot child to SIGKILL",
+    async () => {
+      vi.useFakeTimers();
+      const child = createChild();
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+      mocks.spawn.mockReturnValue(child);
+      mocks.readProcessIdentity.mockResolvedValue(undefined);
+
+      try {
+        const resultPromise = cfSshOneShot(
+          "demo-app",
+          "printf markers",
+          { cfHome: "/tmp/cf-home", command: "cf" },
+          25,
+        );
+
+        await vi.advanceTimersByTimeAsync(25);
+        expect(killSpy).toHaveBeenCalledWith(-2_147_483_600, "SIGTERM");
+        await vi.advanceTimersByTimeAsync(1000);
+
+        await expect(resultPromise).resolves.toMatchObject({ timedOutAfterMs: 25 });
+        expect(killSpy).not.toHaveBeenCalledWith(-2_147_483_600, "SIGKILL");
+        expect(child.stdout.destroy).toHaveBeenCalledOnce();
+        expect(child.stderr.destroy).toHaveBeenCalledOnce();
+        expect(child.unref).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        killSpy.mockRestore();
+      }
+    },
+  );
+
   it("does not spawn after an abort or startup deadline has already elapsed", async () => {
     const controller = new AbortController();
     controller.abort();

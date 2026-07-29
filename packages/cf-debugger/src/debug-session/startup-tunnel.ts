@@ -36,6 +36,22 @@ interface LinkedAbortSignal {
   dispose(): void;
 }
 
+interface ChildExitObservation {
+  readonly promise: Promise<void>;
+  dispose(): void;
+}
+
+interface ReadyWindow {
+  readonly deadlineAt: number;
+  readonly finalOwnerReserveMs: number;
+  readonly localTimeoutMs: number;
+  readonly ownerTimeoutMs: number;
+}
+
+// Covers the initial 2.5s probe, one poll interval, and a slower grown attempt.
+const INSPECTOR_READY_RESERVE_MS = 10_000;
+const OWNER_READY_ATTEMPT_MAX_MS = 5_000;
+
 function linkAbortSignals(signals: readonly AbortSignal[]): LinkedAbortSignal {
   const controller = new AbortController();
   const subscriptions: (readonly [AbortSignal, () => void])[] = [];
@@ -55,6 +71,36 @@ function linkAbortSignals(signals: readonly AbortSignal[]): LinkedAbortSignal {
     dispose: (): void => {
       for (const [signal, abort] of subscriptions) {
         signal.removeEventListener("abort", abort);
+      }
+    },
+  };
+}
+
+function observeChildExit(child: ChildProcess): ChildExitObservation {
+  let listening = true;
+  let resolveExit: (() => void) | undefined;
+  const onClose = (): void => {
+    listening = false;
+    resolveExit?.();
+  };
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return {
+      promise: Promise.resolve(),
+      dispose: (): void => {
+        child.removeListener("close", onClose);
+      },
+    };
+  }
+  const promise = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+    child.once("close", onClose);
+  });
+  return {
+    promise,
+    dispose: (): void => {
+      if (listening) {
+        listening = false;
+        child.removeListener("close", onClose);
       }
     },
   };
@@ -83,6 +129,36 @@ function remainingReadyTimeout(inputs: TunnelInputs): number {
   return Math.max(
     1,
     Math.min(inputs.tunnelReadyTimeoutMs, inputs.context.deadlineAt - Date.now()),
+  );
+}
+
+function createReadyWindow(timeoutMs: number): ReadyWindow {
+  const totalMs = Math.max(1, timeoutMs);
+  const inspectorReserveMs = Math.min(
+    INSPECTOR_READY_RESERVE_MS,
+    Math.floor(totalMs / 2),
+  );
+  const ownerReserveMs = Math.min(
+    OWNER_READY_ATTEMPT_MAX_MS * 2,
+    Math.floor((totalMs - inspectorReserveMs) / 2),
+  );
+  const ownerTimeoutMs = Math.max(1, Math.floor(ownerReserveMs / 2));
+  return {
+    deadlineAt: Date.now() + totalMs,
+    finalOwnerReserveMs: ownerTimeoutMs,
+    localTimeoutMs: Math.max(1, totalMs - inspectorReserveMs - ownerReserveMs),
+    ownerTimeoutMs,
+  };
+}
+
+function remainingWindowMs(window: ReadyWindow): number {
+  return Math.max(0, window.deadlineAt - Date.now());
+}
+
+function remainingInspectorMs(window: ReadyWindow): number {
+  return Math.max(
+    1,
+    remainingWindowMs(window) - window.finalOwnerReserveMs,
   );
 }
 
@@ -125,6 +201,7 @@ async function waitForLocalTunnel(
   timeoutMs: number,
 ): Promise<void> {
   const childEnded = new AbortController();
+  const childExit = observeChildExit(child);
   const linked = linkAbortSignals([
     ...(inputs.context.signal === undefined ? [] : [inputs.context.signal]),
     childEnded.signal,
@@ -133,7 +210,7 @@ async function waitForLocalTunnel(
     const probe = probeTunnelReady(inputs.session.localPort, timeoutMs, linked.signal);
     const winner = await Promise.race([
       probe.then((ready) => ({ kind: "probe" as const, ready })),
-      childExitPromise(child).then(() => ({ kind: "child-exit" as const })),
+      childExit.promise.then(() => ({ kind: "child-exit" as const })),
     ]);
     if (winner.kind === "probe" && winner.ready) {
       return;
@@ -143,6 +220,7 @@ async function waitForLocalTunnel(
       await probe.catch(() => false);
     }
   } finally {
+    childExit.dispose();
     linked.dispose();
   }
   throw new CfDebuggerError(
@@ -157,26 +235,35 @@ async function verifyLocalOwner(
   inputs: TunnelInputs,
   child: ChildProcess,
   childPid: number,
+  timeoutMs: number,
 ): Promise<void> {
-  const ownership = await inspectPortOwnership(
-    inputs.session.localPort,
-    childPid,
-    inputs.context.signal,
-  );
+  const phaseTimeout = AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)));
+  const linked = linkAbortSignals([
+    ...(inputs.context.signal === undefined ? [] : [inputs.context.signal]),
+    phaseTimeout,
+  ]);
+  let ownership: Awaited<ReturnType<typeof inspectPortOwnership>>;
+  try {
+    ownership = await inspectPortOwnership(
+      inputs.session.localPort,
+      childPid,
+      linked.signal,
+    );
+  } catch (error: unknown) {
+    if (phaseTimeout.aborted && inputs.context.signal?.aborted !== true) {
+      ownership = {
+        status: "unverified",
+        reason: `ownership inspection exceeded its ${Math.round(timeoutMs).toString()}ms readiness budget`,
+      };
+    } else {
+      throw error;
+    }
+  } finally {
+    linked.dispose();
+  }
   if (ownership.status !== "owned") {
     throw ownerVerificationError(inputs.session.localPort, ownership, child);
   }
-}
-
-function childExitPromise(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    child.once("close", () => {
-      resolve();
-    });
-  });
 }
 
 async function verifyInspector(
@@ -185,6 +272,7 @@ async function verifyInspector(
   timeoutMs: number,
 ): Promise<void> {
   const childEnded = new AbortController();
+  const childExit = observeChildExit(child);
   const linked = linkAbortSignals([
     ...(inputs.context.signal === undefined ? [] : [inputs.context.signal]),
     childEnded.signal,
@@ -193,7 +281,7 @@ async function verifyInspector(
     const probe = probeInspectorReady(inputs.session.localPort, timeoutMs, linked.signal);
     const winner = await Promise.race([
       probe.then((result) => ({ kind: "probe" as const, result })),
-      childExitPromise(child).then(() => ({ kind: "child-exit" as const })),
+      childExit.promise.then(() => ({ kind: "child-exit" as const })),
     ]);
     if (winner.kind === "probe" && winner.result.status === "ready") {
       return;
@@ -203,6 +291,7 @@ async function verifyInspector(
       await probe.catch(() => ({ status: "unreachable" as const }));
     }
   } finally {
+    childExit.dispose();
     linked.dispose();
   }
   throw new CfDebuggerError(
@@ -272,15 +361,14 @@ export async function openReadyTunnel(inputs: TunnelInputs): Promise<void> {
   inputs.onChild(child);
   const childPid = requireChildPid(child);
   await recordTunnelPid(inputs, childPid);
-  const timeoutMs = remainingReadyTimeout(inputs);
-  const readyDeadline = Date.now() + timeoutMs;
-  await waitForLocalTunnel(inputs, child, timeoutMs);
+  const readyWindow = createReadyWindow(remainingReadyTimeout(inputs));
+  await waitForLocalTunnel(inputs, child, readyWindow.localTimeoutMs);
   ensureStartupActive(inputs, "local tunnel binding");
-  await verifyLocalOwner(inputs, child, childPid);
+  await verifyLocalOwner(inputs, child, childPid, readyWindow.ownerTimeoutMs);
   ensureStartupActive(inputs, "local tunnel ownership verification");
-  await verifyInspector(inputs, child, Math.max(1, readyDeadline - Date.now()));
+  await verifyInspector(inputs, child, remainingInspectorMs(readyWindow));
   ensureStartupActive(inputs, "inspector readiness verification");
-  await verifyLocalOwner(inputs, child, childPid);
+  await verifyLocalOwner(inputs, child, childPid, remainingWindowMs(readyWindow));
   ensureStartupActive(inputs, "final local tunnel ownership verification");
   if (child.exitCode !== null || child.signalCode !== null) {
     throw new CfDebuggerError(

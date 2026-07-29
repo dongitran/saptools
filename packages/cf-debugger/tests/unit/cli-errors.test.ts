@@ -5,6 +5,7 @@ import {
   CleanupFailureError,
   cliErrorExitCode,
   hasTunnelTerminationFailure,
+  stopAllExitCode,
 } from "../../src/cli-errors.js";
 import { CfDebuggerError } from "../../src/types.js";
 
@@ -51,5 +52,14 @@ describe("CLI error exit codes", () => {
     Reflect.set(failure, "cliExitCode", 143);
 
     expect(cliErrorExitCode(failure)).toBe(143);
+  });
+
+  it("uses the cleanup-failure exit code for stop --all when any cleanup failed", () => {
+    expect(stopAllExitCode([
+      new CfDebuggerError("SESSION_NOT_FOUND", "gone"),
+      new CfDebuggerError("TUNNEL_TERMINATION_FAILED", "still alive"),
+    ])).toBe(CLEANUP_FAILURE_EXIT_CODE);
+    expect(stopAllExitCode([new CfDebuggerError("SESSION_NOT_FOUND", "gone")])).toBe(1);
+    expect(stopAllExitCode([])).toBeUndefined();
   });
 });

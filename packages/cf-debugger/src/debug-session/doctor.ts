@@ -15,23 +15,27 @@ import {
   isPortListening,
 } from "../network/ports.js";
 import {
-  CF_DEBUGGER_HOMES_DIRNAME,
   CF_DEBUGGER_LOCK_FILENAME,
   CF_DEBUGGER_STATE_FILENAME,
   CF_DEBUGGER_STOP_INTENT_PREFIX,
-  isOwnedSessionCfHomeDir,
   saptoolsDir,
   stateFilePath,
   stateLockPath,
 } from "../paths.js";
 import { decodeStateFileDetailed } from "../session-state/decoder.js";
 import type { SessionHealthVerdict } from "../session-state/store.js";
-import { inspectSessionHealth } from "../session-state/store.js";
 import type {
   ActiveSession,
   StateFile,
 } from "../types.js";
 
+import { discoverOrphanHomes } from "./doctor-homes.js";
+import {
+  findLegacyArtifacts,
+  shellQuoteForCommand,
+  type DoctorLegacyFinding,
+} from "./doctor-legacy.js";
+import { inspectDoctorSessions } from "./doctor-session-health.js";
 import { inspectProcessIdentity } from "./process-identity.js";
 import { tryRemoveOwnedSessionCfHome } from "./session-home.js";
 
@@ -41,9 +45,11 @@ const PORT_SCAN_CONCURRENCY = 32;
 const STALE_TEMP_AGE_MS = 24 * 60 * 60 * 1_000;
 const STALE_LOCK_AGE_MS = 60 * 60 * 1_000;
 const FOREIGN_OR_MALFORMED_LOCK_AGE_MS = 24 * 60 * 60 * 1_000;
-const LEGACY_STATE_FILENAME = "cf-debugger-state.json";
-const LEGACY_LOCK_FILENAME = "cf-debugger-state.lock";
-const LEGACY_HOMES_DIRNAME = "cf-debugger-homes";
+export type {
+  DoctorLegacyFinding,
+  DoctorLegacyLiveness,
+  DoctorLegacySessionFinding,
+} from "./doctor-legacy.js";
 
 export type DoctorCleanupStatus =
   | "not-requested"
@@ -62,6 +68,7 @@ export interface DoctorHomeFinding {
   readonly path: string;
   readonly cleanupEligible: boolean;
   readonly cleanupStatus: DoctorCleanupStatus;
+  readonly reason?: string;
 }
 
 export interface DoctorPortFinding {
@@ -85,14 +92,7 @@ export interface DoctorArtifactFinding {
   readonly cleanupEligible: boolean;
   readonly cleanupStatus: DoctorCleanupStatus;
   readonly cleanupError?: string;
-}
-
-export interface DoctorLegacyFinding {
-  readonly statePath: string;
-  readonly statePresent: boolean;
-  readonly homesPath: string;
-  readonly homesPresent: boolean;
-  readonly warning?: string;
+  readonly note?: string;
   readonly manualRemovalCommand?: string;
 }
 
@@ -128,8 +128,14 @@ interface ArtifactCandidate {
   readonly path: string;
   readonly ageMs: number;
   readonly cleanupEligible: boolean;
+  readonly cleanupBlocked: boolean;
   readonly fingerprint: string;
   readonly sessionId?: string;
+}
+
+interface OrphanHomeInspection {
+  readonly findings: readonly DoctorHomeFinding[];
+  readonly warnings: readonly string[];
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -187,25 +193,6 @@ async function readDoctorState(): Promise<StateReadResult> {
   };
 }
 
-async function inspectSessions(
-  sessions: readonly ActiveSession[],
-): Promise<readonly DoctorSessionFinding[]> {
-  const local = sessions.filter((session) => session.hostname === hostname());
-  return await Promise.all(local.map(async (session): Promise<DoctorSessionFinding> => {
-    try {
-      return { session, health: await inspectSessionHealth(session) };
-    } catch (error: unknown) {
-      return {
-        session,
-        health: {
-          status: "unverified",
-          reason: `health inspection failed: ${errorMessage(error)}`,
-        },
-      };
-    }
-  }));
-}
-
 async function readDirectory(path: string): Promise<readonly Dirent[]> {
   try {
     return await readdir(path, { withFileTypes: true });
@@ -219,31 +206,50 @@ async function readDirectory(path: string): Promise<readonly Dirent[]> {
 
 async function findOrphanHomes(
   sessions: readonly ActiveSession[],
-  cleanup: boolean,
-): Promise<readonly DoctorHomeFinding[]> {
-  const root = join(saptoolsDir(), CF_DEBUGGER_HOMES_DIRNAME);
-  const claimed = new Set(sessions.map((session) => session.sessionId));
-  const entries = await readDirectory(root);
-  const orphans = entries
-    .filter((entry) => entry.isDirectory() && !claimed.has(entry.name))
-    .sort((left, right) => left.name.localeCompare(right.name));
-  return await Promise.all(orphans.map(async (entry): Promise<DoctorHomeFinding> => {
-    const path = join(root, entry.name);
-    const cleanupEligible = isOwnedSessionCfHomeDir(entry.name, path);
-    if (!cleanup) {
-      return { sessionId: entry.name, path, cleanupEligible, cleanupStatus: "not-requested" };
-    }
-    if (!cleanupEligible) {
-      return { sessionId: entry.name, path, cleanupEligible, cleanupStatus: "not-eligible" };
-    }
-    const cleanupStatus = await cleanupOrphanHome(entry.name, path);
-    return {
-      sessionId: entry.name,
-      path,
-      cleanupEligible,
-      cleanupStatus,
-    };
-  }));
+  cleanupRequested: boolean,
+  cleanupSafe: boolean,
+): Promise<OrphanHomeInspection> {
+  const discovery = await discoverOrphanHomes(sessions);
+  const findings = await Promise.all(discovery.candidates.map(
+    async (candidate): Promise<DoctorHomeFinding> => {
+      const { cleanupEligible, path, reason, sessionId } = candidate;
+      if (!cleanupRequested) {
+        return {
+          sessionId,
+          path,
+          cleanupEligible,
+          cleanupStatus: "not-requested",
+          ...(reason === undefined ? {} : { reason }),
+        };
+      }
+      if (!cleanupSafe) {
+        return {
+          sessionId,
+          path,
+          cleanupEligible,
+          cleanupStatus: cleanupEligible ? "skipped" : "not-eligible",
+          ...(reason === undefined ? {} : { reason }),
+        };
+      }
+      if (!cleanupEligible) {
+        return {
+          sessionId,
+          path,
+          cleanupEligible,
+          cleanupStatus: "not-eligible",
+          ...(reason === undefined ? {} : { reason }),
+        };
+      }
+      const cleanupStatus = await cleanupOrphanHome(sessionId, path);
+      return {
+        sessionId,
+        path,
+        cleanupEligible,
+        cleanupStatus,
+      };
+    },
+  ));
+  return { findings, warnings: discovery.warnings };
 }
 
 async function cleanupOrphanHome(
@@ -466,14 +472,16 @@ async function inspectArtifact(
   const regularFile = stats.isFile();
   let sessionId: string | undefined;
   let cleanupEligible = regularFile && kind === "state-temp" && ageMs >= STALE_TEMP_AGE_MS;
+  let cleanupBlocked = false;
   if (regularFile && kind === "stop-intent") {
     sessionId = entry.name.slice(
       CF_DEBUGGER_STOP_INTENT_PREFIX.length,
       -".stop".length,
     );
-    cleanupEligible = stopIntentCleanupSafe &&
-      ageMs >= STALE_TEMP_AGE_MS &&
+    const otherwiseEligible = ageMs >= STALE_TEMP_AGE_MS &&
       !claimedSessionIds.has(sessionId);
+    cleanupEligible = stopIntentCleanupSafe && otherwiseEligible;
+    cleanupBlocked = !stopIntentCleanupSafe && otherwiseEligible;
   }
   if (regularFile && (kind === "state-lock" || kind === "state-recovery")) {
     cleanupEligible = await lockCleanupEligible(path, ageMs);
@@ -483,6 +491,7 @@ async function inspectArtifact(
     path,
     ageMs,
     cleanupEligible,
+    cleanupBlocked,
     fingerprint: artifactFingerprint(stats),
     ...(sessionId === undefined ? {} : { sessionId }),
   };
@@ -536,6 +545,20 @@ async function cleanupArtifact(
   }
 }
 
+async function resolveArtifactCleanup(
+  candidate: ArtifactCandidate,
+  cleanup: boolean,
+): Promise<{ readonly status: DoctorCleanupStatus; readonly error?: string }> {
+  if (!cleanup) {
+    return {
+      status: candidate.cleanupEligible ? "not-requested" : "not-eligible",
+    };
+  }
+  return candidate.cleanupBlocked
+    ? { status: "skipped" }
+    : await cleanupArtifact(candidate);
+}
+
 async function findArtifacts(
   cleanup: boolean,
   sessions: readonly ActiveSession[],
@@ -553,11 +576,7 @@ async function findArtifacts(
   ).sort((left, right) => left.path.localeCompare(right.path));
   const findings: DoctorArtifactFinding[] = [];
   for (const candidate of candidates) {
-    const result = cleanup
-      ? await cleanupArtifact(candidate)
-      : {
-        status: candidate.cleanupEligible ? "not-requested" : "not-eligible",
-      } satisfies { readonly status: DoctorCleanupStatus };
+    const result = await resolveArtifactCleanup(candidate, cleanup);
     findings.push({
       kind: candidate.kind,
       path: candidate.path,
@@ -565,49 +584,17 @@ async function findArtifacts(
       cleanupEligible: candidate.cleanupEligible,
       cleanupStatus: result.status,
       ...(result.error === undefined ? {} : { cleanupError: result.error }),
+      ...(candidate.kind === "corrupt-backup"
+        ? {
+            note:
+              "Preserved recovery evidence; it may contain debugger session metadata such as " +
+              "target names, PIDs, ports, and CF home paths. Inspect it before manual removal.",
+            manualRemovalCommand: `rm -- ${shellQuoteForCommand(candidate.path)}`,
+          }
+        : {}),
     });
   }
   return findings;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await lstat(path);
-    return true;
-  } catch (error: unknown) {
-    if (errorCode(error) === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
-}
-
-async function findLegacyArtifacts(): Promise<DoctorLegacyFinding> {
-  const statePath = join(saptoolsDir(), LEGACY_STATE_FILENAME);
-  const lockPath = join(saptoolsDir(), LEGACY_LOCK_FILENAME);
-  const homesPath = join(saptoolsDir(), LEGACY_HOMES_DIRNAME);
-  const [statePresent, homesPresent] = await Promise.all([
-    pathExists(statePath),
-    pathExists(homesPath),
-  ]);
-  if (!statePresent && !homesPresent) {
-    return { statePath, statePresent, homesPath, homesPresent };
-  }
-  const command = `rm -rf -- ${shellQuote(homesPath)} ${shellQuote(statePath)} ${shellQuote(lockPath)}`;
-  return {
-    statePath,
-    statePresent,
-    homesPath,
-    homesPresent,
-    warning:
-      "Legacy v1 debugger homes may contain live CF refresh and access tokens. " +
-      "Confirm no v1 tunnel is running before removing them.",
-    manualRemovalCommand: command,
-  };
 }
 
 function reportWarnings(
@@ -632,14 +619,14 @@ function reportWarnings(
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const cleanup = options.cleanup === true;
   const stateResult = await readDoctorState();
-  const homeCleanup = cleanup && stateResult.homeCleanupSafe;
-  const [sessions, orphanHomes, unclaimedPorts, artifacts, legacy] = await Promise.all([
-    inspectSessions(stateResult.state.sessions),
-    findOrphanHomes(stateResult.state.sessions, homeCleanup),
+  const [sessions, homeInspection, unclaimedPorts, artifacts, legacy] = await Promise.all([
+    inspectDoctorSessions(stateResult.state.sessions),
+    findOrphanHomes(stateResult.state.sessions, cleanup, stateResult.homeCleanupSafe),
     findUnclaimedPorts(stateResult.state.sessions),
     findArtifacts(cleanup, stateResult.state.sessions, stateResult.homeCleanupSafe),
     findLegacyArtifacts(),
   ]);
+  const orphanHomes = homeInspection.findings;
   const cleanedPaths = [
     ...orphanHomes
       .filter((finding) => finding.cleanupStatus === "removed")
@@ -656,6 +643,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     legacy,
     warnings: [
       ...reportWarnings(stateResult.warnings, orphanHomes, unclaimedPorts, legacy),
+      ...homeInspection.warnings,
       ...(cleanup && !stateResult.homeCleanupSafe
         ? [
             "Skipped orphan-home and stop-intent cleanup because debugger state was incomplete or invalid.",

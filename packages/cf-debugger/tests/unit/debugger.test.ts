@@ -26,10 +26,10 @@ const mocks = vi.hoisted(() => ({
   cfSshOneShot: vi.fn(),
   cfTarget: vi.fn(),
   clearSessionStopIntent: vi.fn(),
-  findListeningProcessId: vi.fn(),
   formatTunnelDiagnostics: vi.fn(),
   getTunnelDiagnostics: vi.fn(),
   hasSessionStopIntent: vi.fn(),
+  inspectSessionStateStopIntent: vi.fn(),
   inspectListeningProcesses: vi.fn(),
   inspectPortOwnership: vi.fn(),
   isPidAlive: vi.fn(),
@@ -79,7 +79,6 @@ vi.mock("../../src/paths.js", () => ({
 }));
 
 vi.mock("../../src/port.js", () => ({
-  findListeningProcessId: mocks.findListeningProcessId,
   inspectListeningProcesses: mocks.inspectListeningProcesses,
   inspectPortOwnership: mocks.inspectPortOwnership,
   isPortFree: mocks.isPortFree,
@@ -95,6 +94,7 @@ vi.mock("../../src/regions.js", () => ({
 vi.mock("../../src/state.js", () => ({
   clearSessionStopIntent: mocks.clearSessionStopIntent,
   hasSessionStopIntent: mocks.hasSessionStopIntent,
+  inspectSessionStateStopIntent: mocks.inspectSessionStateStopIntent,
   isPidAlive: mocks.isPidAlive,
   isPidOrGroupAlive: (pid: number): boolean => {
     if (mocks.isPidAlive(pid) === true) {
@@ -128,7 +128,13 @@ vi.mock("../../src/state.js", () => ({
   writeSessionStopIntent: mocks.writeSessionStopIntent,
 }));
 
-const { getSession, listSessions, startDebugger, stopDebugger } = await import("../../src/debugger.js");
+const {
+  getSession,
+  listSessions,
+  startDebugger,
+  stopAllDebuggers,
+  stopDebugger,
+} = await import("../../src/debugger.js");
 
 const key: SessionKey = {
   region: "eu10",
@@ -216,12 +222,15 @@ describe("startDebugger orchestration", () => {
   let child: ChildProcess;
   let originalEmail: string | undefined;
   let originalPassword: string | undefined;
+  let originalRestartEnvironment: string | undefined;
 
   beforeEach(async () => {
     originalEmail = process.env["SAP_EMAIL"];
     originalPassword = process.env["SAP_PASSWORD"];
+    originalRestartEnvironment = process.env["CF_DEBUGGER_ALLOW_RESTART"];
     delete process.env["SAP_EMAIL"];
     delete process.env["SAP_PASSWORD"];
+    delete process.env["CF_DEBUGGER_ALLOW_RESTART"];
 
     tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-orchestration-"));
     mocks.saptoolsDir.mockReturnValue(tempDir);
@@ -271,7 +280,6 @@ describe("startDebugger orchestration", () => {
     });
     mocks.probeTunnelReady.mockResolvedValue(true);
     mocks.probeInspectorReady.mockResolvedValue({ status: "ready" });
-    mocks.findListeningProcessId.mockResolvedValue(44_001);
     mocks.inspectListeningProcesses.mockResolvedValue({
       status: "found",
       pids: [44_001],
@@ -286,6 +294,7 @@ describe("startDebugger orchestration", () => {
     );
     mocks.isPidAlive.mockReturnValue(false);
     mocks.hasSessionStopIntent.mockResolvedValue(false);
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("active");
     mocks.clearSessionStopIntent.mockResolvedValue(undefined);
     mocks.writeSessionStopIntent.mockResolvedValue(undefined);
     mocks.updateSessionPid.mockImplementation(async (_sessionId: string, pid: number) => {
@@ -328,6 +337,11 @@ describe("startDebugger orchestration", () => {
     } else {
       process.env["SAP_PASSWORD"] = originalPassword;
     }
+    if (originalRestartEnvironment === undefined) {
+      delete process.env["CF_DEBUGGER_ALLOW_RESTART"];
+    } else {
+      process.env["CF_DEBUGGER_ALLOW_RESTART"] = originalRestartEnvironment;
+    }
     await rm(tempDir, { recursive: true, force: true });
   });
 
@@ -336,6 +350,19 @@ describe("startDebugger orchestration", () => {
       code: "MISSING_CREDENTIALS",
     });
     expect(mocks.registerNewSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ app: "--skip-ssl-validation" }, "app"],
+    [{ org: " org-a" }, "org"],
+    [{ space: "dev\nother" }, "space"],
+  ] as const)("rejects unsafe CF target operand %j before registration", async (override, label) => {
+    await expect(startDebugger(withCredentials(override))).rejects.toMatchObject({
+      code: "UNSAFE_INPUT",
+      message: expect.stringContaining(label),
+    });
+    expect(mocks.registerNewSession).not.toHaveBeenCalled();
+    expect(mocks.cfLogin).not.toHaveBeenCalled();
   });
 
   it("starts a tunnel, records readiness, and disposes cleanup once", async () => {
@@ -374,7 +401,7 @@ describe("startDebugger orchestration", () => {
     );
     expect(mocks.probeTunnelReady).toHaveBeenCalledWith(
       20_123,
-      180_000,
+      expect.any(Number),
       expect.any(AbortSignal),
     );
     expect(mocks.inspectPortOwnership).toHaveBeenCalledWith(
@@ -556,6 +583,46 @@ describe("startDebugger orchestration", () => {
     expect(mocks.cfRestartApp).not.toHaveBeenCalled();
     expect(mocks.cfSshOneShot).toHaveBeenCalledTimes(1);
     expect(mocks.spawnSshTunnel).not.toHaveBeenCalled();
+  });
+
+  it("honors the restart environment veto for the programmatic API", async () => {
+    process.env["CF_DEBUGGER_ALLOW_RESTART"] = "0";
+    mocks.cfSshOneShot.mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "SSH support is disabled",
+      outputTruncated: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    });
+
+    await expect(startDebugger(withCredentials({
+      allowSshEnableRestart: true,
+    }))).rejects.toMatchObject({ code: "SSH_NOT_ENABLED" });
+
+    expect(mocks.cfSshEnabled).not.toHaveBeenCalled();
+    expect(mocks.cfEnableSsh).not.toHaveBeenCalled();
+    expect(mocks.cfRestartApp).not.toHaveBeenCalled();
+  });
+
+  it("does not let the restart environment opt in for a programmatic caller", async () => {
+    process.env["CF_DEBUGGER_ALLOW_RESTART"] = "1";
+    mocks.cfSshOneShot.mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "SSH support is disabled",
+      outputTruncated: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    });
+
+    await expect(startDebugger(withCredentials())).rejects.toMatchObject({
+      code: "SSH_NOT_ENABLED",
+    });
+
+    expect(mocks.cfSshEnabled).not.toHaveBeenCalled();
+    expect(mocks.cfEnableSsh).not.toHaveBeenCalled();
+    expect(mocks.cfRestartApp).not.toHaveBeenCalled();
   });
 
   it("does not restart when SSH is already enabled", async () => {
@@ -828,6 +895,20 @@ describe("startDebugger orchestration", () => {
     await expect(access(session.cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("cleans up after confirmed termination when port ownership cannot be rechecked", async () => {
+    const handle = await startDebugger(withCredentials());
+    mocks.inspectPortOwnership.mockResolvedValue({
+      status: "unverified",
+      pids: [],
+      reason: "lsof is unavailable",
+    });
+
+    await expect(handle.dispose()).resolves.toBeUndefined();
+
+    expect(mocks.removeSession).toHaveBeenCalledWith(session.sessionId);
+    await expect(access(session.cfHomeDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("retries disposal after transient state removal failure", async () => {
     const handle = await startDebugger(withCredentials());
     const stateError = new Error("state removal failed");
@@ -865,12 +946,74 @@ describe("startDebugger orchestration", () => {
   it("treats a verified external stop intent as a clean tunnel exit", async () => {
     const handle = await startDebugger(withCredentials());
     mocks.hasSessionStopIntent.mockResolvedValue(true);
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("requested");
     Object.assign(child, { signalCode: "SIGTERM" });
     child.emit("close", null, "SIGTERM");
 
     await expect(handle.waitForExit()).resolves.toBe(0);
     expect(mocks.clearSessionStopIntent).toHaveBeenCalledWith(session.sessionId);
     await handle.dispose();
+  });
+
+  it("does not let a stale sidecar override active session state", async () => {
+    const handle = await startDebugger(withCredentials());
+    mocks.hasSessionStopIntent.mockResolvedValue(true);
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("active");
+    Object.assign(child, { signalCode: "SIGTERM" });
+    child.emit("close", null, "SIGTERM");
+
+    await expect(handle.waitForExit()).resolves.toBe(143);
+    await expect(handle.dispose()).resolves.toBeUndefined();
+  });
+
+  it("accepts a preserved stop intent after external stop removed the state record", async () => {
+    const handle = await startDebugger(withCredentials());
+    mocks.hasSessionStopIntent.mockResolvedValue(true);
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("missing");
+    Object.assign(child, { signalCode: "SIGTERM" });
+    child.emit("close", null, "SIGTERM");
+
+    await expect(handle.waitForExit()).resolves.toBe(0);
+    expect(mocks.clearSessionStopIntent).toHaveBeenCalledWith(session.sessionId);
+    await expect(handle.dispose()).resolves.toBeUndefined();
+  });
+
+  it("uses the state stop claim when the sidecar intent cannot be inspected", async () => {
+    const handle = await startDebugger(withCredentials());
+    mocks.hasSessionStopIntent.mockRejectedValue(
+      Object.assign(new Error("permission denied"), { code: "EACCES" }),
+    );
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("requested");
+    Object.assign(child, { signalCode: "SIGTERM" });
+    child.emit("close", null, "SIGTERM");
+
+    await expect(handle.waitForExit()).resolves.toBe(0);
+    await expect(handle.dispose()).resolves.toBeUndefined();
+  });
+
+  it("does not treat a missing state record as permission to hide a tunnel crash", async () => {
+    const statuses: SessionStatus[] = [];
+    const handle = await startDebugger(withCredentials({
+      onStatus: (status) => {
+        statuses.push(status);
+      },
+    }));
+    mocks.hasSessionStopIntent.mockResolvedValue(false);
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("missing");
+    Object.assign(child, { signalCode: "SIGTERM" });
+    child.emit("close", null, "SIGTERM");
+
+    await expect(handle.waitForExit()).resolves.toBe(143);
+    expect(statuses).toContain("error");
+    await expect(handle.dispose()).resolves.toBeUndefined();
+  });
+
+  it("maps an unknown child signal to a stable failure code", async () => {
+    const handle = await startDebugger(withCredentials());
+    child.emit("close", null, "SIGUNKNOWN");
+
+    await expect(handle.waitForExit()).resolves.toBe(1);
+    await expect(handle.dispose()).resolves.toBeUndefined();
   });
 
   it("treats an unexpected zero-code tunnel close as a failure", async () => {
@@ -1299,7 +1442,6 @@ describe("startDebugger orchestration", () => {
   });
 
   it("rejects a tunnel listener owned by a process other than the spawned CF child", async () => {
-    mocks.findListeningProcessId.mockResolvedValue(55_001);
     mocks.inspectPortOwnership.mockResolvedValue({
       status: "not-owned",
       pids: [55_001],
@@ -1368,12 +1510,10 @@ describe("stopDebugger", () => {
     tempDir = await mkdtemp(join(tmpdir(), "cf-debugger-stop-"));
     session = createSession(tempDir, { pid: 77_001, status: "ready" });
     mocks.isPortListening.mockReset();
-    mocks.findListeningProcessId.mockReset();
     mocks.isPidAlive.mockReset();
     mocks.readAndPruneActiveSessions.mockResolvedValue({ sessions: [session], removed: [] });
     mocks.readSessionSnapshot.mockImplementation(async () => [session]);
     mocks.isPortListening.mockResolvedValueOnce(true).mockResolvedValue(false);
-    mocks.findListeningProcessId.mockResolvedValue(session.pid);
     mocks.inspectListeningProcesses.mockResolvedValue({
       status: "found",
       pids: [session.pid],
@@ -1413,7 +1553,22 @@ describe("stopDebugger", () => {
       expect(removed?.sessionId).toBe("session-a");
       expect(removed?.stale).toBe(false);
       expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
+      expect(mocks.clearSessionStopIntent).not.toHaveBeenCalled();
     });
+  });
+
+  it("reports stop-intent cleanup failure without resurrecting forgotten state", async () => {
+    mocks.clearSessionStopIntent.mockRejectedValueOnce(
+      Object.assign(new Error("permission denied"), { code: "EACCES" }),
+    );
+    mocks.inspectPortOwnership.mockResolvedValue({
+      status: "not-listening",
+      pids: [],
+    });
+    const removed = await stopDebugger({ key });
+
+    expect(removed?.warning).toContain("stop-intent artifact could not be deleted");
+    expect(mocks.removeSession).toHaveBeenCalledWith("session-a");
   });
 
   it("requests cooperative cancellation without deleting a non-ready session", async () => {
@@ -1481,7 +1636,6 @@ describe("stopDebugger", () => {
 
   it("does not signal a PID that no longer owns the recorded tunnel port", async () => {
     mocks.isPortListening.mockResolvedValue(true);
-    mocks.findListeningProcessId.mockResolvedValue(88_002);
     mocks.inspectPortOwnership.mockResolvedValue({
       status: "not-owned",
       pids: [88_002],
@@ -1494,15 +1648,60 @@ describe("stopDebugger", () => {
 
       expect(killSpy).not.toHaveBeenCalled();
       expect(mocks.removeSession).not.toHaveBeenCalled();
+      expect(mocks.requestSessionStop).not.toHaveBeenCalled();
     } finally {
       killSpy.mockRestore();
     }
   });
 
+  it("does not signal when ownership is lost after recording the ready-stop intent", async () => {
+    mocks.isPidAlive.mockImplementation((pid: number) => pid === session.tunnelPid);
+    mocks.inspectPortOwnership
+      .mockResolvedValueOnce({ status: "owned", pids: [session.pid] })
+      .mockResolvedValueOnce({ status: "owned", pids: [session.pid] })
+      .mockResolvedValueOnce({ status: "owned", pids: [session.pid] })
+      .mockResolvedValueOnce({ status: "not-owned", pids: [88_002] });
+    const killSpy = vi.spyOn(process, "kill");
+
+    try {
+      await expect(stopDebugger({ sessionId: session.sessionId })).rejects.toMatchObject({
+        code: "TUNNEL_TERMINATION_FAILED",
+        message: expect.stringContaining("could not be reverified"),
+      });
+
+      expect(mocks.requestSessionStop).toHaveBeenCalledWith(session.sessionId);
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(mocks.removeSession).not.toHaveBeenCalled();
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it("reports forced removals distinctly in stop-all results", async () => {
+    mocks.isPidAlive.mockReturnValue(true);
+    mocks.inspectPortOwnership.mockResolvedValue({
+      status: "not-owned",
+      pids: [88_002],
+    });
+
+    const result = await stopAllDebuggers(true);
+
+    expect(result).toMatchObject({
+      failed: 0,
+      forced: 1,
+      pending: 0,
+      stale: 0,
+      stopped: 0,
+    });
+    expect(result.outcomes).toContainEqual(expect.objectContaining({
+      sessionId: session.sessionId,
+      status: "forced",
+    }));
+  });
+
   it("retains ready-session evidence when the verified tunnel does not terminate", async () => {
     vi.useFakeTimers();
     mocks.isPortListening.mockReset().mockResolvedValue(true);
-    mocks.findListeningProcessId.mockResolvedValue(session.tunnelPid);
     mocks.inspectPortOwnership.mockResolvedValue({
       status: "owned",
       pids: [session.tunnelPid],
@@ -1538,7 +1737,6 @@ describe("stopDebugger", () => {
       previousStatus: "tunneling",
     });
     mocks.isPortListening.mockReset().mockResolvedValue(true);
-    mocks.findListeningProcessId.mockResolvedValue(session.tunnelPid);
     mocks.inspectPortOwnership.mockResolvedValue({
       status: "owned",
       pids: [session.tunnelPid],
@@ -1677,9 +1875,9 @@ describe("stopDebugger", () => {
     await expect(
       stopDebugger({ key: { ...key, nodePid: 9876 } }),
     ).resolves.toMatchObject({ sessionId: "session-b", stale: true });
-    expect(mocks.requestSessionStop).toHaveBeenNthCalledWith(1, "session-b");
-    expect(mocks.requestSessionStop).toHaveBeenNthCalledWith(2, "session-b");
-    expect(mocks.requestSessionStop).not.toHaveBeenCalledWith("session-a");
+    expect(mocks.requestSessionStop).not.toHaveBeenCalled();
+    expect(mocks.removeSession).toHaveBeenNthCalledWith(1, "session-b");
+    expect(mocks.removeSession).toHaveBeenNthCalledWith(2, "session-b");
   });
 });
 

@@ -1,3 +1,4 @@
+import { hasControlCharacter } from "../input-validation.js";
 import { CfDebuggerError } from "../types.js";
 
 export const DEFAULT_CF_PROCESS = "web";
@@ -60,16 +61,6 @@ export function resolveNodeTarget(input: NodeTargetSelectors): ResolvedNodeTarge
   return input.nodePid === undefined
     ? { process: processName, instance }
     : { process: processName, instance, nodePid: input.nodePid };
-}
-
-function hasControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 32 || code === 127) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export function buildNodeInspectorCommand(

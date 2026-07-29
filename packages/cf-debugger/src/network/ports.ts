@@ -1,14 +1,15 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { get as httpGet, type IncomingMessage } from "node:http";
-import { createConnection, createServer } from "node:net";
+import { createServer, Socket } from "node:net";
 import { promisify } from "node:util";
 
 import { CfDebuggerError } from "../types.js";
 
 const execFileAsync = promisify(execFile);
 const PROBE_INTERVAL_MS = 250;
-const INSPECTOR_ATTEMPT_TIMEOUT_MS = 2_500;
+const INITIAL_INSPECTOR_ATTEMPT_TIMEOUT_MS = 2_500;
+const MAX_INSPECTOR_ATTEMPT_TIMEOUT_MS = 10_000;
 const MAX_INSPECTOR_RESPONSE_BYTES = 64 * 1_024;
 const OWNER_COMMAND_TIMEOUT_MS = 5_000;
 
@@ -296,14 +297,6 @@ export async function inspectListeningProcesses(
   return { status: "not-listening", pids: [] };
 }
 
-export async function findListeningProcessIds(
-  port: number,
-  signal?: AbortSignal,
-): Promise<readonly number[]> {
-  const inspection = await inspectListeningProcesses(port, signal);
-  return inspection.status === "found" ? inspection.pids : [];
-}
-
 export function classifyPortOwnership(
   pids: readonly number[],
   expectedPid: number,
@@ -374,21 +367,34 @@ export async function isPortFree(
 
 export async function isPortListening(port: number, timeoutMs = 200): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
-    const socket = createConnection({ port, host: "127.0.0.1" });
-    socket.setTimeout(timeoutMs);
-    socket.once("connect", () => {
+    const socket = new Socket();
+    let settled = false;
+    const finish = (listening: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       socket.destroy();
-      resolve(true);
+      resolve(listening);
+    };
+    socket.once("connect", () => {
+      finish(true);
     });
     socket.once("error", () => {
-      socket.destroy();
-      resolve(false);
+      finish(false);
     });
     socket.once("timeout", () => {
-      socket.destroy();
-      resolve(false);
+      finish(false);
     });
+    socket.setTimeout(positiveTimeout(timeoutMs));
+    socket.connect({ port, host: "127.0.0.1" });
   });
+}
+
+function positiveTimeout(timeoutMs: number): number {
+  return Number.isFinite(timeoutMs)
+    ? Math.max(1, Math.floor(timeoutMs))
+    : 1;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -425,7 +431,7 @@ export async function probeTunnelReady(
 
   while (Date.now() < deadline) {
     const remainingMs = deadline - Date.now();
-    if (await isPortListening(port, Math.min(200, remainingMs))) {
+    if (await isPortListening(port, positiveTimeout(Math.min(200, remainingMs)))) {
       return true;
     }
     const waitMs = Math.min(PROBE_INTERVAL_MS, Math.max(0, deadline - Date.now()));
@@ -504,6 +510,26 @@ function readInspectorResponse(
   });
 }
 
+interface InspectorAttemptState {
+  settled: boolean;
+  removeAbortListener?: () => void;
+  timer?: NodeJS.Timeout;
+}
+
+function finishInspectorAttempt(
+  state: InspectorAttemptState,
+  ready: boolean,
+  resolve: (ready: boolean) => void,
+): void {
+  if (state.settled) {
+    return;
+  }
+  state.settled = true;
+  clearTimeout(state.timer);
+  state.removeAbortListener?.();
+  resolve(ready);
+}
+
 function probeInspectorAttempt(
   port: number,
   timeoutMs: number,
@@ -511,22 +537,16 @@ function probeInspectorAttempt(
 ): Promise<boolean> {
   throwIfAborted(signal);
   return new Promise<boolean>((resolve, reject) => {
-    const state: {
-      settled: boolean;
-      removeAbortListener?: () => void;
-      timer?: NodeJS.Timeout;
-    } = { settled: false };
+    const state: InspectorAttemptState = { settled: false };
     const finish = (ready: boolean): void => {
-      if (!state.settled) {
-        state.settled = true;
-        clearTimeout(state.timer);
-        state.removeAbortListener?.();
-        resolve(ready);
-      }
+      finishInspectorAttempt(state, ready, resolve);
     };
-    const request = httpGet({ host: "127.0.0.1", port, path: "/json/list" }, (response) => {
-      readInspectorResponse(response, finish);
-    });
+    const request = httpGet(
+      { agent: false, host: "127.0.0.1", port, path: "/json/list" },
+      (response) => {
+        readInspectorResponse(response, finish);
+      },
+    );
     const onAbort = (): void => {
       request.destroy();
       if (!state.settled) {
@@ -547,7 +567,7 @@ function probeInspectorAttempt(
     state.timer = setTimeout(() => {
       request.destroy();
       finish(false);
-    }, timeoutMs);
+    }, positiveTimeout(timeoutMs));
     request.once("error", () => {
       if (signal?.aborted) {
         onAbort();
@@ -558,23 +578,35 @@ function probeInspectorAttempt(
   });
 }
 
+function inspectorAttemptTimeout(
+  attempt: number,
+  remainingMs: number,
+): number {
+  const growingCap = Math.min(
+    MAX_INSPECTOR_ATTEMPT_TIMEOUT_MS,
+    INITIAL_INSPECTOR_ATTEMPT_TIMEOUT_MS * (2 ** attempt),
+  );
+  // Keep half of the remaining budget available for a later attempt.
+  const retryShare = Math.ceil(remainingMs / 2);
+  return positiveTimeout(Math.min(growingCap, retryShare, remainingMs));
+}
+
 export async function probeInspectorReady(
   port: number,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<InspectorReadinessResult> {
   const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
   throwIfAborted(signal);
 
   while (Date.now() < deadline) {
     const remainingMs = deadline - Date.now();
-    const attemptTimeoutMs = Math.max(
-      1,
-      Math.min(INSPECTOR_ATTEMPT_TIMEOUT_MS, remainingMs),
-    );
+    const attemptTimeoutMs = inspectorAttemptTimeout(attempt, remainingMs);
     if (await probeInspectorAttempt(port, attemptTimeoutMs, signal)) {
       return { status: "ready" };
     }
+    attempt += 1;
     const waitMs = Math.min(PROBE_INTERVAL_MS, Math.max(0, deadline - Date.now()));
     if (waitMs > 0) {
       await waitForNextProbe(waitMs, signal);
@@ -583,9 +615,4 @@ export async function probeInspectorReady(
 
   throwIfAborted(signal);
   return { status: "unreachable" };
-}
-
-export async function findListeningProcessId(port: number): Promise<number | undefined> {
-  const pids = await findListeningProcessIds(port);
-  return pids[0];
 }

@@ -1,3 +1,4 @@
+import { hasControlCharacter } from "./input-validation.js";
 import { CfDebuggerError } from "./types.js";
 
 export interface RegionInfo {
@@ -77,13 +78,69 @@ function synthesizeApiEndpoint(regionKey: string): string {
   return `https://api.cf.${regionKey}.${domain}`;
 }
 
+function rejectApiEndpoint(raw: string, reason: string): CfDebuggerError {
+  return new CfDebuggerError(
+    "UNSAFE_INPUT",
+    `Invalid --api-endpoint ${JSON.stringify(raw)}: ${reason}. ` +
+      "Expected an absolute https URL such as https://api.cf.<region>.hana.ondemand.com.",
+  );
+}
+
+export function validateApiEndpointOverride(raw: unknown): string {
+  if (typeof raw !== "string") {
+    throw new CfDebuggerError(
+      "UNSAFE_INPUT",
+      "Invalid --api-endpoint value: it must be a string.",
+    );
+  }
+  const value = raw.trim();
+  if (value.length === 0) {
+    throw rejectApiEndpoint(raw, "the value is empty or whitespace only");
+  }
+  if (value !== raw) {
+    throw rejectApiEndpoint(raw, "it contains surrounding whitespace");
+  }
+  if (value.startsWith("-")) {
+    throw rejectApiEndpoint(raw, "a leading hyphen would be parsed as a cf CLI flag");
+  }
+  if (hasControlCharacter(value)) {
+    throw rejectApiEndpoint(raw, "it contains control characters");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw rejectApiEndpoint(raw, "it is not a parseable absolute URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw rejectApiEndpoint(
+      raw,
+      `the scheme must be https, not ${parsed.protocol.replace(":", "")} ` +
+        "(credentials are sent to this endpoint)",
+    );
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw rejectApiEndpoint(raw, "it must not embed userinfo credentials");
+  }
+  if (parsed.search !== "" || parsed.hash !== "") {
+    throw rejectApiEndpoint(raw, "it must not carry a query string or fragment");
+  }
+  if (parsed.pathname !== "" && parsed.pathname !== "/") {
+    throw rejectApiEndpoint(raw, "it must not carry a path");
+  }
+  if (parsed.hostname === "") {
+    throw rejectApiEndpoint(raw, "it has no host");
+  }
+  return value;
+}
+
 export function resolveApiEndpoint(
   regionKey: string,
   override?: string,
   onWarning?: (warning: string) => void,
 ): string {
-  if (override !== undefined && override !== "") {
-    return override;
+  if (override !== undefined) {
+    return validateApiEndpointOverride(override);
   }
   if (!REGION_KEY_PATTERN.test(regionKey)) {
     throw new CfDebuggerError(

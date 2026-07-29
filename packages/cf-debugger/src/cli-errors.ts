@@ -44,3 +44,14 @@ export function cliErrorExitCode(error: unknown): number {
   }
   return hasCleanupFailure(error) ? CLEANUP_FAILURE_EXIT_CODE : 1;
 }
+
+export function stopAllExitCode(
+  errors: readonly Error[],
+): number | undefined {
+  if (errors.length === 0) {
+    return undefined;
+  }
+  return errors.some((error) => hasTunnelTerminationFailure(error))
+    ? CLEANUP_FAILURE_EXIT_CODE
+    : 1;
+}

@@ -1,10 +1,25 @@
-import { hasSessionStopIntent } from "../state.js";
+import {
+  hasSessionStopIntent,
+  inspectSessionStateStopIntent,
+} from "../state.js";
 
 const STOP_REQUEST_POLL_MS = 500;
 
 export interface StartupCancellation {
   readonly signal: AbortSignal;
   dispose(): void;
+}
+
+async function startupStopWasRequested(sessionId: string): Promise<boolean> {
+  try {
+    if (await hasSessionStopIntent(sessionId)) {
+      return true;
+    }
+  } catch {
+    // The unlocked state read below is an independent compatibility backstop.
+  }
+  const stateVerdict = await inspectSessionStateStopIntent(sessionId);
+  return stateVerdict === "missing" || stateVerdict === "requested";
 }
 
 export function createStartupCancellation(
@@ -23,7 +38,7 @@ export function createStartupCancellation(
   };
   const poll = async (): Promise<void> => {
     try {
-      if (active && await hasSessionStopIntent(sessionId)) {
+      if (active && await startupStopWasRequested(sessionId)) {
         controller.abort();
       }
     } catch {

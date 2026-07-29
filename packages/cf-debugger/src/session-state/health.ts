@@ -2,14 +2,11 @@ import { hostname as getHostname } from "node:os";
 import nodeProcess from "node:process";
 
 import {
-  MAX_STARTUP_TIMEOUT_MS,
-  STARTUP_STALE_SLACK_MS,
-} from "../debug-session/constants.js";
-import { inspectProcessIdentity } from "../debug-session/process-identity.js";
-import type { ProcessIdentityVerdict } from "../debug-session/process-identity.js";
+  inspectRecordedProcess,
+  startupExpired,
+} from "../debug-session/session-process.js";
 import { inspectPortOwnership } from "../port.js";
 import type { ActiveSession } from "../types.js";
-import { CfDebuggerError } from "../types.js";
 
 function errorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) {
@@ -43,31 +40,6 @@ export interface SessionHealthVerdict {
   readonly reason: string;
 }
 
-function startupAgeLimit(session: ActiveSession): number {
-  return (session.startupTimeoutMs ?? MAX_STARTUP_TIMEOUT_MS) + STARTUP_STALE_SLACK_MS;
-}
-
-function startupExpired(session: ActiveSession): boolean {
-  const startedAt = Date.parse(session.startedAt);
-  return Number.isNaN(startedAt) || Date.now() - startedAt > startupAgeLimit(session);
-}
-
-type RecordedProcessVerdict = "dead" | ProcessIdentityVerdict;
-
-async function inspectRecordedProcess(
-  pid: number,
-  identity: string | undefined,
-  signal?: AbortSignal,
-): Promise<RecordedProcessVerdict> {
-  if (signal?.aborted) {
-    throw new CfDebuggerError("ABORTED", "Session health inspection was aborted.");
-  }
-  if (!isPidAlive(pid)) {
-    return "dead";
-  }
-  return await inspectProcessIdentity(pid, identity, signal);
-}
-
 async function readySessionHealth(
   session: ActiveSession,
   signal?: AbortSignal,
@@ -79,6 +51,7 @@ async function readySessionHealth(
   const processVerdict = await inspectRecordedProcess(
     tunnelPid,
     session.tunnelProcessIdentity,
+    isPidAlive,
     signal,
   );
   if (processVerdict === "dead" && isProcessGroupAlive(tunnelPid)) {
@@ -122,6 +95,7 @@ async function startingSessionHealth(
   const processVerdict = await inspectRecordedProcess(
     controllerPid,
     session.controllerProcessIdentity,
+    isPidAlive,
     signal,
   );
   if (processVerdict === "match") {

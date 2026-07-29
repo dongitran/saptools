@@ -13,9 +13,11 @@ import {
   resolveNodeTarget,
   type ResolvedNodeTarget,
 } from "../cloud-foundry/node-process.js";
+import { validateCfCliOperand } from "../input-validation.js";
 import { sessionCfHomeDir } from "../paths.js";
 import { isPortFree } from "../port.js";
 import { resolveApiEndpoint } from "../regions.js";
+import { applyRestartEnvironmentVeto } from "../restart-policy.js";
 import {
   registerNewSession,
   sessionKeyString,
@@ -75,6 +77,29 @@ interface StartupInputs {
 interface Credentials {
   readonly email: string;
   readonly password: string;
+}
+
+interface ResolvedStartupPlan {
+  readonly apiEndpoint: string;
+  readonly credentials: Credentials;
+  readonly options: StartDebuggerOptions;
+  readonly target: ResolvedNodeTarget;
+  readonly tracker: StatusTracker;
+  readonly tunnelReadyTimeoutMs: number;
+}
+
+interface StartupResources {
+  cancellation?: ReturnType<typeof createStartupCancellation>;
+  lifecycle?: ReturnType<typeof createTunnelLifecycle>;
+}
+
+function validateStartTarget(options: StartDebuggerOptions): StartDebuggerOptions {
+  return {
+    ...options,
+    app: validateCfCliOperand(options.app, "app"),
+    org: validateCfCliOperand(options.org, "org"),
+    space: validateCfCliOperand(options.space, "space"),
+  };
 }
 
 function requireCredentials(options: StartDebuggerOptions): Credentials {
@@ -368,62 +393,119 @@ function normalizeStartupError(
   return error;
 }
 
+function resolveStartupPlan(options: StartDebuggerOptions): ResolvedStartupPlan {
+  const validatedOptions = validateStartTarget(options);
+  const restartAllowed = applyRestartEnvironmentVeto(
+    validatedOptions.allowSshEnableRestart,
+    nodeProcess.env["CF_DEBUGGER_ALLOW_RESTART"],
+  );
+  const effectiveOptions = restartAllowed === validatedOptions.allowSshEnableRestart
+    ? validatedOptions
+    : { ...validatedOptions, allowSshEnableRestart: restartAllowed };
+  const target = resolveNodeTarget(effectiveOptions);
+  const credentials = requireCredentials(effectiveOptions);
+  const apiEndpoint = resolveApiEndpoint(
+    effectiveOptions.region,
+    effectiveOptions.apiEndpoint,
+    writeWarning,
+  );
+  const tunnelReadyTimeoutMs = resolveTunnelReadyTimeoutMs(
+    effectiveOptions.tunnelReadyTimeoutMs,
+  );
+  return {
+    apiEndpoint,
+    credentials,
+    options: effectiveOptions,
+    target,
+    tracker: createStatusTracker(effectiveOptions),
+    tunnelReadyTimeoutMs,
+  };
+}
+
+async function completeStartup(
+  plan: ResolvedStartupPlan,
+  deadline: StartupDeadline,
+  resources: StartupResources,
+): Promise<DebuggerHandle> {
+  throwIfStartupAborted(
+    deadline.signal,
+    deadline.expiresAt,
+    deadline.timeoutMs,
+    "initialization",
+  );
+  await pruneAndCleanupOrphans(startupStateAccess(deadline.signal, deadline.expiresAt));
+  throwIfStartupAborted(
+    deadline.signal,
+    deadline.expiresAt,
+    deadline.timeoutMs,
+    "state cleanup",
+  );
+  const session = await registerSession(
+    plan.options,
+    plan.target,
+    plan.apiEndpoint,
+    deadline,
+  );
+  resources.cancellation = createStartupCancellation(session.sessionId, deadline.signal);
+  const context = createCfContext(
+    session,
+    plan.credentials,
+    resources.cancellation,
+    deadline,
+    plan.tracker,
+    plan.options.verbose === true,
+  );
+  resources.lifecycle = createTunnelLifecycle(session, plan.tracker.emit);
+  const activeSession = await establishDebuggerSession({
+    options: { ...plan.options, remotePort: session.remotePort },
+    target: plan.target,
+    session,
+    context,
+    credentials: plan.credentials,
+    tunnelReadyTimeoutMs: plan.tunnelReadyTimeoutMs,
+    emit: plan.tracker.emit,
+    transition: createTransition(session.sessionId, context),
+    lifecycle: resources.lifecycle,
+  });
+  resources.cancellation.dispose();
+  deadline.dispose();
+  return createDebuggerHandle(activeSession, plan.tracker.emit, resources.lifecycle);
+}
+
+async function handleStartupFailure(
+  error: unknown,
+  plan: ResolvedStartupPlan,
+  resources: StartupResources,
+  deadline: StartupDeadline,
+): Promise<DebuggerHandle> {
+  resources.cancellation?.dispose();
+  deadline.dispose();
+  const normalized = normalizeStartupError(
+    error,
+    deadline.expiresAt,
+    deadline.timeoutMs,
+  );
+  if (resources.lifecycle !== undefined) {
+    return await cleanupFailedStartup(normalized, resources.lifecycle, plan.tracker.emit);
+  }
+  plan.tracker.emit(
+    "error",
+    normalized instanceof Error ? normalized.message : String(normalized),
+  );
+  throw normalized;
+}
+
 async function startDebuggerUsingDeadline(
   options: StartDebuggerOptions,
   deadline: StartupDeadline,
 ): Promise<DebuggerHandle> {
-  const target = resolveNodeTarget(options);
-  const credentials = requireCredentials(options);
-  const apiEndpoint = resolveApiEndpoint(options.region, options.apiEndpoint, writeWarning);
-  const startupTimeoutMs = deadline.timeoutMs;
-  const tunnelReadyTimeoutMs = resolveTunnelReadyTimeoutMs(options.tunnelReadyTimeoutMs);
-  const tracker = createStatusTracker(options);
-  tracker.emit("starting");
-  let cancellation: ReturnType<typeof createStartupCancellation> | undefined;
-  let lifecycle: ReturnType<typeof createTunnelLifecycle> | undefined;
+  const plan = resolveStartupPlan(options);
+  const resources: StartupResources = {};
+  plan.tracker.emit("starting");
   try {
-    throwIfStartupAborted(deadline.signal, deadline.expiresAt, startupTimeoutMs, "initialization");
-    await pruneAndCleanupOrphans(
-      startupStateAccess(deadline.signal, deadline.expiresAt),
-    );
-    throwIfStartupAborted(deadline.signal, deadline.expiresAt, startupTimeoutMs, "state cleanup");
-    const session = await registerSession(options, target, apiEndpoint, deadline);
-    cancellation = createStartupCancellation(session.sessionId, deadline.signal);
-    const context = createCfContext(
-      session,
-      credentials,
-      cancellation,
-      deadline,
-      tracker,
-      options.verbose === true,
-    );
-    lifecycle = createTunnelLifecycle(session, tracker.emit);
-    const activeSession = await establishDebuggerSession({
-      options: { ...options, remotePort: session.remotePort },
-      target,
-      session,
-      context,
-      credentials,
-      tunnelReadyTimeoutMs,
-      emit: tracker.emit,
-      transition: createTransition(session.sessionId, context),
-      lifecycle,
-    });
-    cancellation.dispose();
-    deadline.dispose();
-    return createDebuggerHandle(activeSession, tracker.emit, lifecycle);
+    return await completeStartup(plan, deadline, resources);
   } catch (error: unknown) {
-    cancellation?.dispose();
-    deadline.dispose();
-    const normalized = normalizeStartupError(error, deadline.expiresAt, startupTimeoutMs);
-    if (lifecycle === undefined) {
-      tracker.emit(
-        "error",
-        normalized instanceof Error ? normalized.message : String(normalized),
-      );
-      throw normalized;
-    }
-    return await cleanupFailedStartup(normalized, lifecycle, tracker.emit);
+    return await handleStartupFailure(error, plan, resources, deadline);
   }
 }
 

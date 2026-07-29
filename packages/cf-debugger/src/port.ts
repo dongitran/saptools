@@ -1,6 +1,4 @@
 export {
-  findListeningProcessIds,
-  findListeningProcessId,
   inspectListeningProcesses,
   inspectPortOwnership,
   isPortFree,

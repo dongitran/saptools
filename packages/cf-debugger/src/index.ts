@@ -21,6 +21,8 @@ export type {
   DoctorCleanupStatus,
   DoctorHomeFinding,
   DoctorLegacyFinding,
+  DoctorLegacyLiveness,
+  DoctorLegacySessionFinding,
   DoctorOptions,
   DoctorPortFinding,
   DoctorReport,

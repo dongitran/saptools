@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 import { CfDebuggerError } from "../types.js";
 
 const execFileAsync = promisify(execFile);
+const PROCESS_IDENTITY_VERSION = "v1";
+const DARWIN_START_TIME_PATTERN =
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +(?:[1-9]|[12]\d|3[01]) \d{2}:\d{2}:\d{2} \d{4}$/;
 
 export type ProcessIdentityVerdict = "match" | "mismatch" | "unavailable";
 
@@ -44,7 +47,9 @@ async function linuxProcessIdentity(
       ...(signal === undefined ? {} : { signal }),
     });
     const startTime = parseLinuxProcessStartTime(statLine);
-    return startTime === undefined ? undefined : `linux:${startTime}`;
+    return startTime === undefined
+      ? undefined
+      : `linux:${PROCESS_IDENTITY_VERSION}:${startTime}`;
   } catch (error: unknown) {
     throwIfAborted(signal);
     if (errorCode(error) === "ENOENT") {
@@ -54,17 +59,30 @@ async function linuxProcessIdentity(
   }
 }
 
+export function darwinIdentityEnvironment(
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return {
+    ...environment,
+    LC_ALL: "C",
+    TZ: "UTC",
+  };
+}
+
 async function darwinProcessIdentity(
   pid: number,
   signal: AbortSignal | undefined,
 ): Promise<string | undefined> {
   try {
     const { stdout } = await execFileAsync("ps", ["-p", pid.toString(), "-o", "lstart="], {
+      env: darwinIdentityEnvironment(nodeProcess.env),
       ...(signal === undefined ? {} : { signal }),
       timeout: 2_000,
     });
     const startedAt = stdout.trim();
-    return startedAt.length === 0 ? undefined : `darwin:${startedAt}`;
+    return startedAt.length === 0
+      ? undefined
+      : `darwin:${PROCESS_IDENTITY_VERSION}:${startedAt}`;
   } catch {
     throwIfAborted(signal);
     return undefined;
@@ -90,12 +108,13 @@ export async function readProcessIdentity(
   return undefined;
 }
 
-export async function processIdentityMatches(
-  pid: number,
-  expected: string | undefined,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  return await inspectProcessIdentity(pid, expected, signal) === "match";
+function isCurrentProcessIdentity(identity: string): boolean {
+  if (/^linux:v1:\d+$/.test(identity)) {
+    return true;
+  }
+  const darwinPrefix = `darwin:${PROCESS_IDENTITY_VERSION}:`;
+  return identity.startsWith(darwinPrefix)
+    && DARWIN_START_TIME_PATTERN.test(identity.slice(darwinPrefix.length));
 }
 
 export async function inspectProcessIdentity(
@@ -107,8 +126,13 @@ export async function inspectProcessIdentity(
   if (expected === undefined) {
     return "match";
   }
+  if (!isCurrentProcessIdentity(expected)) {
+    // Older readers and previous token formats cannot be compared safely. Retaining the
+    // session is safer than interpreting an upgrade-induced format change as PID reuse.
+    return "unavailable";
+  }
   const current = await readProcessIdentity(pid, signal);
-  if (current === undefined) {
+  if (current === undefined || !isCurrentProcessIdentity(current)) {
     return "unavailable";
   }
   return current === expected ? "match" : "mismatch";

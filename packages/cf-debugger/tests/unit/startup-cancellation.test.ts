@@ -1,16 +1,25 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   hasSessionStopIntent: vi.fn(),
+  inspectSessionStateStopIntent: vi.fn(),
+  readSessionSnapshot: vi.fn(),
 }));
 
 vi.mock("../../src/state.js", () => ({
   hasSessionStopIntent: mocks.hasSessionStopIntent,
+  inspectSessionStateStopIntent: mocks.inspectSessionStateStopIntent,
+  readSessionSnapshot: mocks.readSessionSnapshot,
 }));
 
 const { createStartupCancellation } = await import(
   "../../src/debug-session/startup-cancellation.js"
 );
+
+beforeEach(() => {
+  mocks.hasSessionStopIntent.mockResolvedValue(false);
+  mocks.inspectSessionStateStopIntent.mockResolvedValue("active");
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -57,6 +66,47 @@ describe("startup cancellation monitor", () => {
     await vi.advanceTimersByTimeAsync(500);
 
     expect(cancellation.signal.aborted).toBe(true);
+    cancellation.dispose();
+  });
+
+  it.each(["requested", "missing"])(
+    "aborts when the unlocked state backstop reports %s",
+    async (verdict): Promise<void> => {
+      vi.useFakeTimers();
+      mocks.inspectSessionStateStopIntent.mockResolvedValue(verdict);
+
+      const cancellation = createStartupCancellation("session-a");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(cancellation.signal.aborted).toBe(true);
+      expect(mocks.inspectSessionStateStopIntent).toHaveBeenCalledWith("session-a");
+      expect(mocks.readSessionSnapshot).not.toHaveBeenCalled();
+      cancellation.dispose();
+    },
+  );
+
+  it("keeps polling when the unlocked state backstop is unavailable", async () => {
+    vi.useFakeTimers();
+    mocks.inspectSessionStateStopIntent.mockResolvedValue("unavailable");
+
+    const cancellation = createStartupCancellation("session-a");
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(cancellation.signal.aborted).toBe(false);
+    expect(mocks.inspectSessionStateStopIntent).toHaveBeenCalledTimes(3);
+    expect(mocks.readSessionSnapshot).not.toHaveBeenCalled();
+    cancellation.dispose();
+  });
+
+  it("uses the sidecar as the primary stop signal", async () => {
+    vi.useFakeTimers();
+    mocks.hasSessionStopIntent.mockResolvedValue(true);
+
+    const cancellation = createStartupCancellation("session-a");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cancellation.signal.aborted).toBe(true);
+    expect(mocks.inspectSessionStateStopIntent).not.toHaveBeenCalled();
     cancellation.dispose();
   });
 

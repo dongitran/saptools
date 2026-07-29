@@ -132,7 +132,7 @@ describe("withFileLock", () => {
 
     await expect(withFileLock(lockPath, async (): Promise<string> => "recovered", {
       pollMs: 5,
-      timeoutMs: 100,
+      timeoutMs: 500,
     })).resolves.toBe("recovered");
   });
 

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname as getHostname } from "node:os";
 import { dirname, isAbsolute } from "node:path";
@@ -10,6 +10,7 @@ import {
 } from "../cloud-foundry/node-process.js";
 import { MAX_STARTUP_TIMEOUT_MS } from "../debug-session/constants.js";
 import { readProcessIdentity } from "../debug-session/process-identity.js";
+import { validateCfCliOperand } from "../input-validation.js";
 import { withFileLock } from "../lock.js";
 import {
   isSafeSessionId,
@@ -20,7 +21,7 @@ import { CfDebuggerError } from "../types.js";
 import type { ActiveSession, SessionKey, StateFile } from "../types.js";
 
 import { decodeStateFileDetailed } from "./decoder.js";
-import { filterStaleSessions } from "./health.js";
+import { inspectSessionHealth } from "./health.js";
 import { writeSessionStopIntent } from "./stop-intent.js";
 
 export {
@@ -147,27 +148,86 @@ export interface StateAccessOptions {
   readonly timeoutMs?: number;
 }
 
-interface PrunedState extends StateReaderResult {
-  readonly persisted: StateFile;
+interface PruneInspection {
+  readonly snapshotById: ReadonlyMap<string, ActiveSession>;
+  readonly staleIds: ReadonlySet<string>;
 }
 
-async function readAndPruneLocked(signal?: AbortSignal): Promise<PrunedState> {
+function samePersistedSession(left: ActiveSession, right: ActiveSession): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function inspectPruneCandidates(
+  raw: StateFile,
+  signal?: AbortSignal,
+): Promise<PruneInspection> {
+  const host = getHostname();
+  const local = raw.sessions.filter((session) => session.hostname === host);
+  const verdicts = await Promise.all(local.map(async (session) => ({
+    session,
+    verdict: await inspectSessionHealth(session, host, signal),
+  })));
+  return {
+    snapshotById: new Map(local.map((session) => [session.sessionId, session])),
+    staleIds: new Set(
+      verdicts
+        .filter(({ verdict }) => verdict.status === "stale")
+        .map(({ session }) => session.sessionId),
+    ),
+  };
+}
+
+async function persistPruneInspection(
+  inspection: PruneInspection,
+  signal?: AbortSignal,
+): Promise<StateReaderResult> {
   const raw = await readStateRaw();
   const host = getHostname();
-  const remote = raw.sessions.filter((session) => session.hostname !== host);
-  const local = raw.sessions.filter((session) => session.hostname === host);
-  const sessions = await filterStaleSessions(local, signal);
-  const activeIds = new Set(sessions.map((session) => session.sessionId));
-  const removed = local.filter((session) => !activeIds.has(session.sessionId));
-  const persisted: StateFile = { version: "2", sessions: [...remote, ...sessions] };
-  if (removed.length > 0) {
-    await writeState(persisted);
+  const removed: ActiveSession[] = [];
+  const sessions: ActiveSession[] = [];
+  for (const session of raw.sessions.filter((entry) => entry.hostname === host)) {
+    const snapshot = inspection.snapshotById.get(session.sessionId);
+    if (
+      snapshot === undefined ||
+      !inspection.staleIds.has(session.sessionId) ||
+      !samePersistedSession(snapshot, session)
+    ) {
+      sessions.push(session);
+      continue;
+    }
+    const verdict = await inspectSessionHealth(session, host, signal);
+    if (verdict.status === "stale") {
+      removed.push(session);
+    } else {
+      sessions.push(session);
+    }
   }
-  return { sessions, removed, persisted };
+  if (removed.length > 0) {
+    const remote = raw.sessions.filter((session) => session.hostname !== host);
+    await writeState({ version: "2", sessions: [...remote, ...sessions] });
+  }
+  return { sessions, removed };
+}
+
+async function inspectAndPrune(
+  options?: StateAccessOptions,
+): Promise<StateReaderResult> {
+  const snapshot = await withFileLock(
+    stateLockPath(),
+    readStateRaw,
+    options,
+  );
+  const inspection = await inspectPruneCandidates(snapshot, options?.signal);
+  return await withFileLock(
+    stateLockPath(),
+    async (): Promise<StateReaderResult> =>
+      await persistPruneInspection(inspection, options?.signal),
+    options,
+  );
 }
 
 export async function readActiveSessions(): Promise<readonly ActiveSession[]> {
-  const result = await withFileLock(stateLockPath(), readAndPruneLocked);
+  const result = await inspectAndPrune();
   return result.sessions;
 }
 
@@ -182,12 +242,7 @@ export async function readSessionSnapshot(
 export async function readAndPruneActiveSessions(
   options?: StateAccessOptions,
 ): Promise<StateReaderResult> {
-  const result = await withFileLock(
-    stateLockPath(),
-    async (): Promise<PrunedState> => await readAndPruneLocked(options?.signal),
-    options,
-  );
-  return { sessions: result.sessions, removed: result.removed };
+  return await inspectAndPrune(options);
 }
 
 export function sessionKeyString(key: SessionKey): string {
@@ -259,29 +314,43 @@ export interface RegisterSessionInput extends SessionKey {
   readonly stateAccess?: StateAccessOptions;
 }
 
-async function pickPort(
+interface PortRange {
+  readonly basePort: number;
+  readonly maxPort: number;
+}
+
+function portCandidates(
   preferred: number | undefined,
-  reserved: ReadonlySet<number>,
-  probe: (port: number) => Promise<boolean>,
-  basePort: number,
-  maxPort: number,
-): Promise<number> {
-  const candidates = preferred === undefined
-    ? []
-    : [preferred];
-  for (let port = basePort; port <= maxPort; port += 1) {
+  range: PortRange,
+  scanOffset: number,
+): readonly number[] {
+  const candidates = preferred === undefined ? [] : [preferred];
+  const size = range.maxPort - range.basePort + 1;
+  for (let index = 0; index < size; index += 1) {
+    const port = range.basePort + ((scanOffset + index) % size);
     if (port !== preferred) {
       candidates.push(port);
     }
   }
-  for (const port of candidates) {
+  return candidates;
+}
+
+async function pickPort(
+  preferred: number | undefined,
+  reserved: ReadonlySet<number>,
+  probe: (port: number) => Promise<boolean>,
+  range: PortRange,
+  scanOffset: number,
+): Promise<number> {
+  for (const port of portCandidates(preferred, range, scanOffset)) {
     if (!reserved.has(port) && await probe(port)) {
       return port;
     }
   }
   throw new CfDebuggerError(
     "PORT_UNAVAILABLE",
-    `No free local port available in range ${basePort.toString()}–${maxPort.toString()}`,
+    `No free local port available in range ` +
+      `${range.basePort.toString()}–${range.maxPort.toString()}`,
   );
 }
 
@@ -294,17 +363,21 @@ async function selectRegistrationCandidate(
   input: RegisterSessionInput,
   target: ReturnType<typeof resolveNodeTarget>,
   excluded: ReadonlySet<number>,
+  range: PortRange,
+  scanOffset: number,
 ): Promise<RegistrationCandidate> {
+  await readAndPruneActiveSessions(input.stateAccess);
   return await withFileLock(stateLockPath(), async (): Promise<RegistrationCandidate> => {
-    const current = await readAndPruneLocked(input.stateAccess?.signal);
-    const existing = current.sessions.find((session) =>
+    const raw = await readStateRaw();
+    const local = raw.sessions.filter((session) => session.hostname === getHostname());
+    const existing = local.find((session) =>
       matchesRegistrationTarget(session, input, target)
     );
     if (existing !== undefined) {
       return { existing };
     }
     const reserved = new Set([
-      ...current.sessions.map((session) => session.localPort),
+      ...local.map((session) => session.localPort),
       ...excluded,
     ]);
     return {
@@ -312,18 +385,44 @@ async function selectRegistrationCandidate(
         input.preferredPort,
         reserved,
         (): Promise<boolean> => Promise.resolve(true),
-        input.basePort ?? DEFAULT_BASE_PORT,
-        input.maxPort ?? DEFAULT_MAX_PORT,
+        range,
+        scanOffset,
       ),
     };
   }, input.stateAccess);
 }
 
-function validateSessionInput(input: RegisterSessionInput): void {
-  const remotePort = input.remotePort ?? DEFAULT_NODE_INSPECTOR_PORT;
-  if (!Number.isSafeInteger(remotePort) || remotePort <= 0 || remotePort > 65_535) {
-    throw new CfDebuggerError("UNSAFE_INPUT", "Remote inspector port must be from 1 to 65535.");
+function validateTcpPort(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 65_535) {
+    throw new CfDebuggerError("UNSAFE_INPUT", `${label} must be from 1 to 65535.`);
   }
+}
+
+function validatePortRange(input: RegisterSessionInput): PortRange {
+  const basePort = input.basePort ?? DEFAULT_BASE_PORT;
+  const maxPort = input.maxPort ?? DEFAULT_MAX_PORT;
+  validateTcpPort(basePort, "Local port range start");
+  validateTcpPort(maxPort, "Local port range end");
+  if (basePort > maxPort) {
+    throw new CfDebuggerError(
+      "UNSAFE_INPUT",
+      "Local port range start must not exceed its end.",
+    );
+  }
+  if (input.preferredPort !== undefined) {
+    validateTcpPort(input.preferredPort, "Preferred local port");
+  }
+  return { basePort, maxPort };
+}
+
+function validateSessionInput(input: RegisterSessionInput): PortRange {
+  validateCfCliOperand(input.region, "Region");
+  validateCfCliOperand(input.org, "Cloud Foundry org");
+  validateCfCliOperand(input.space, "Cloud Foundry space");
+  validateCfCliOperand(input.app, "Cloud Foundry app");
+  validateCfCliOperand(input.apiEndpoint, "Cloud Foundry API endpoint");
+  const remotePort = input.remotePort ?? DEFAULT_NODE_INSPECTOR_PORT;
+  validateTcpPort(remotePort, "Remote inspector port");
   if (
     input.startupTimeoutMs !== undefined &&
     (
@@ -334,6 +433,25 @@ function validateSessionInput(input: RegisterSessionInput): void {
   ) {
     throw new CfDebuggerError("UNSAFE_INPUT", "Persisted startup timeout is outside the supported range.");
   }
+  return validatePortRange(input);
+}
+
+function registrationScanOffset(
+  input: RegisterSessionInput,
+  target: ReturnType<typeof resolveNodeTarget>,
+  range: PortRange,
+): number {
+  const identity = JSON.stringify([
+    input.apiEndpoint,
+    input.region,
+    input.org,
+    input.space,
+    input.app,
+    target.process,
+    target.instance,
+  ]);
+  const hash = createHash("sha256").update(identity).digest().readUInt32BE(0);
+  return hash % (range.maxPort - range.basePort + 1);
 }
 
 function createRegisteredSession(
@@ -379,22 +497,24 @@ async function persistRegistration(
   candidate: number,
   controllerProcessIdentity: string | undefined,
 ): Promise<RegisterSessionResult | undefined> {
+  await readAndPruneActiveSessions(input.stateAccess);
   return await withFileLock(stateLockPath(), async (): Promise<RegisterSessionResult | undefined> => {
-    const current = await readAndPruneLocked(input.stateAccess?.signal);
-    const existing = current.sessions.find((session) =>
+    const raw = await readStateRaw();
+    const local = raw.sessions.filter((session) => session.hostname === getHostname());
+    const existing = local.find((session) =>
       matchesRegistrationTarget(session, input, target)
     );
     if (existing !== undefined) {
       return { session: existing, existing };
     }
-    const reserved = current.sessions.some((session) => session.localPort === candidate);
+    const reserved = local.some((session) => session.localPort === candidate);
     if (reserved || !(await input.portProbe(candidate))) {
       return undefined;
     }
     const session = createRegisteredSession(input, target, candidate, controllerProcessIdentity);
     await writeState({
       version: "2",
-      sessions: [...current.persisted.sessions, session],
+      sessions: [...raw.sessions, session],
     });
     return { session };
   }, input.stateAccess);
@@ -403,17 +523,23 @@ async function persistRegistration(
 export async function registerNewSession(
   input: RegisterSessionInput,
 ): Promise<RegisterSessionResult> {
-  validateSessionInput(input);
+  const range = validateSessionInput(input);
   const target = resolveNodeTarget(input);
+  const scanOffset = registrationScanOffset(input, target, range);
   const controllerIdentity = await readProcessIdentity(
     nodeProcess.pid,
     input.stateAccess?.signal,
   );
   const excluded = new Set<number>();
-  const maximumAttempts = (input.maxPort ?? DEFAULT_MAX_PORT) -
-    (input.basePort ?? DEFAULT_BASE_PORT) + 2;
+  const maximumAttempts = range.maxPort - range.basePort + 2;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const selection = await selectRegistrationCandidate(input, target, excluded);
+    const selection = await selectRegistrationCandidate(
+      input,
+      target,
+      excluded,
+      range,
+      scanOffset,
+    );
     if (selection.existing !== undefined) {
       return { session: selection.existing, existing: selection.existing };
     }
@@ -557,9 +683,6 @@ export async function requestSessionStop(sessionId: string): Promise<SessionStop
     const target = raw.sessions.find((session) => session.sessionId === sessionId);
     if (target === undefined) {
       return undefined;
-    }
-    if (target.status === "ready") {
-      return { session: target, previousStatus: target.status };
     }
     await writeSessionStopIntent(sessionId);
     if (target.stopRequestedAt !== undefined) {

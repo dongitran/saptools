@@ -13,6 +13,46 @@ type TerminationTargetKind = "group" | "pid";
 export type TerminationOutcome = "ownership-lost" | "still-alive" | "terminated";
 export type TerminationVerifier = (signal: "SIGKILL" | "SIGTERM") => Promise<boolean>;
 
+function terminationTargetAlive(pid: number, targetKind: TerminationTargetKind): boolean {
+  return targetKind === "group" ? isProcessGroupAlive(pid) : isPidAlive(pid);
+}
+
+function signalTerminationTarget(
+  pid: number,
+  targetKind: TerminationTargetKind,
+  signal: "SIGKILL" | "SIGTERM",
+): void {
+  try {
+    process.kill(targetKind === "group" ? -pid : pid, signal);
+  } catch {
+    // The verified target may exit between the liveness check and the signal.
+  }
+}
+
+async function waitForTargetExit(
+  pid: number,
+  targetKind: TerminationTargetKind,
+  timeoutMs: number,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!terminationTargetAlive(pid, targetKind)) {
+      return true;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, PID_TERMINATION_POLL_MS);
+    });
+  }
+  return !terminationTargetAlive(pid, targetKind);
+}
+
+async function signalIsAuthorized(
+  verifier: TerminationVerifier | undefined,
+  signal: "SIGKILL" | "SIGTERM",
+): Promise<boolean> {
+  return verifier === undefined || await verifier(signal);
+}
+
 export async function terminatePidOrGroup(
   pid: number,
   timeoutMs: number = CHILD_SIGTERM_GRACE_MS,
@@ -20,55 +60,25 @@ export async function terminatePidOrGroup(
   verifyBeforeSignal?: TerminationVerifier,
 ): Promise<TerminationOutcome> {
   const targetKind = pinnedTarget ?? (isProcessGroupAlive(pid) ? "group" : "pid");
-  const targetAlive = (): boolean => targetKind === "group"
-    ? isProcessGroupAlive(pid)
-    : isPidAlive(pid);
-  if (!targetAlive()) {
+  if (!terminationTargetAlive(pid, targetKind)) {
     return "terminated";
   }
-  if (
-    verifyBeforeSignal !== undefined &&
-    !(await verifyBeforeSignal("SIGTERM"))
-  ) {
+  if (!(await signalIsAuthorized(verifyBeforeSignal, "SIGTERM"))) {
     return "ownership-lost";
   }
 
-  try {
-    process.kill(targetKind === "group" ? -pid : pid, "SIGTERM");
-  } catch {
-    // target already gone
+  signalTerminationTarget(pid, targetKind, "SIGTERM");
+  if (await waitForTargetExit(pid, targetKind, timeoutMs)) {
+    return "terminated";
   }
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (!targetAlive()) {
-      return "terminated";
-    }
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, PID_TERMINATION_POLL_MS);
-    });
-  }
-
-  if (
-    verifyBeforeSignal !== undefined &&
-    !(await verifyBeforeSignal("SIGKILL"))
-  ) {
+  if (!(await signalIsAuthorized(verifyBeforeSignal, "SIGKILL"))) {
     return "ownership-lost";
   }
-  try {
-    process.kill(targetKind === "group" ? -pid : pid, "SIGKILL");
-  } catch {
-    // target already gone
-  }
-  const forceStartedAt = Date.now();
-  while (Date.now() - forceStartedAt < CHILD_SIGKILL_GRACE_MS) {
-    if (!targetAlive()) {
-      return "terminated";
-    }
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, PID_TERMINATION_POLL_MS);
-    });
-  }
-  return targetAlive() ? "still-alive" : "terminated";
+
+  signalTerminationTarget(pid, targetKind, "SIGKILL");
+  return await waitForTargetExit(pid, targetKind, CHILD_SIGKILL_GRACE_MS)
+    ? "terminated"
+    : "still-alive";
 }
 
 export async function killProcessGroupOrProc(

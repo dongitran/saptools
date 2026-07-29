@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -29,6 +30,19 @@ interface LockOwner {
   readonly token: string;
   readonly version: "1";
 }
+
+interface MissingLockObservation {
+  readonly status: "missing";
+}
+
+interface PresentLockObservation {
+  readonly fingerprint: string;
+  readonly owner: LockOwner | undefined;
+  readonly stale: boolean;
+  readonly status: "present";
+}
+
+type LockObservation = MissingLockObservation | PresentLockObservation;
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
   if (signal?.aborted) {
@@ -116,18 +130,11 @@ async function readLockOwner(lockPath: string): Promise<LockOwner | undefined> {
   }
 }
 
-async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> {
-  let modifiedAt: number;
-  try {
-    modifiedAt = (await stat(lockPath)).mtimeMs;
-  } catch (error: unknown) {
-    if (errorCode(error) === "ENOENT") {
-      return true;
-    }
-    throw error;
-  }
-  const owner = await readLockOwner(lockPath);
-  const ageMs = Date.now() - modifiedAt;
+async function lockOwnerIsStale(
+  owner: LockOwner | undefined,
+  ageMs: number,
+  staleMs: number,
+): Promise<boolean> {
   if (owner?.hostname === hostname()) {
     if (!isProcessAlive(owner.pid)) {
       return true;
@@ -151,24 +158,72 @@ async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> 
   return ageMs > staleMs * FOREIGN_HOST_STALE_MULTIPLIER;
 }
 
+async function inspectLockStaleness(
+  lockPath: string,
+  staleMs: number,
+): Promise<LockObservation> {
+  const owner = await readLockOwner(lockPath);
+  try {
+    const stats = await stat(lockPath);
+    return {
+      fingerprint: lockFingerprint(stats),
+      owner,
+      stale: await lockOwnerIsStale(owner, Date.now() - stats.mtimeMs, staleMs),
+      status: "present",
+    };
+  } catch (error: unknown) {
+    if (errorCode(error) === "ENOENT") {
+      return { status: "missing" };
+    }
+    throw error;
+  }
+}
+
+function lockFingerprint(stats: Stats): string {
+  return [
+    stats.dev.toString(),
+    stats.ino.toString(),
+    stats.size.toString(),
+    stats.mtimeMs.toString(),
+  ].join(":");
+}
+
+async function removeObservedLock(
+  lockPath: string,
+  observation: PresentLockObservation,
+): Promise<boolean> {
+  if (observation.owner !== undefined) {
+    return await removeOwnedLock(lockPath, observation.owner.token);
+  }
+  try {
+    if (lockFingerprint(await stat(lockPath)) !== observation.fingerprint) {
+      return false;
+    }
+    await unlink(lockPath);
+    return true;
+  } catch (error: unknown) {
+    if (errorCode(error) === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function reclaimAbandonedRecoveryLock(
   recoveryPath: string,
   staleMs: number,
 ): Promise<void> {
-  if (!(await isStaleLock(recoveryPath, staleMs))) {
+  const observation = await inspectLockStaleness(recoveryPath, staleMs);
+  if (
+    observation.status !== "present"
+    || !observation.stale
+    || observation.owner === undefined
+  ) {
+    // Without the stale observation's owner token there is no compare-and-delete
+    // operation that can safely distinguish this file from a newly acquired lock.
     return;
   }
-  const owner = await readLockOwner(recoveryPath);
-  if (owner !== undefined) {
-    // removeOwnedLock reads again, so a replacement lock with a new token survives this race.
-    await removeOwnedLock(recoveryPath, owner.token);
-    return;
-  }
-  await unlink(recoveryPath).catch((error: unknown) => {
-    if (errorCode(error) !== "ENOENT") {
-      throw error;
-    }
-  });
+  await removeOwnedLock(recoveryPath, observation.owner.token);
 }
 
 async function reclaimStaleLock(lockPath: string, staleMs: number): Promise<boolean> {
@@ -184,31 +239,26 @@ async function reclaimStaleLock(lockPath: string, staleMs: number): Promise<bool
     throw error;
   }
   try {
-    if (!(await isStaleLock(lockPath, staleMs))) {
+    const observation = await inspectLockStaleness(lockPath, staleMs);
+    if (observation.status !== "present" || !observation.stale) {
       return false;
     }
-    try {
-      await unlink(lockPath);
-    } catch (error: unknown) {
-      if (errorCode(error) !== "ENOENT") {
-        throw error;
-      }
-    }
-    return true;
+    return await removeObservedLock(lockPath, observation);
   } finally {
     await releaseFileLock(recoveryPath, recoveryLock);
   }
 }
 
-async function removeOwnedLock(lockPath: string, token: string): Promise<void> {
+async function removeOwnedLock(lockPath: string, token: string): Promise<boolean> {
   const owner = await readLockOwner(lockPath);
   if (owner?.token !== token) {
-    return;
+    return false;
   }
-  await unlink(lockPath).catch((error: unknown) => {
+  return await unlink(lockPath).then(() => true).catch((error: unknown) => {
     if (errorCode(error) !== "ENOENT") {
       throw error;
     }
+    return false;
   });
 }
 

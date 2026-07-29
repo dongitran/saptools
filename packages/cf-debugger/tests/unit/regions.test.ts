@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { regionKeyFromSapApiEndpoint } from "../../src/cloud-foundry/commands.js";
-import { listKnownRegionKeys, resolveApiEndpoint } from "../../src/regions.js";
+import {
+  listKnownRegionKeys,
+  resolveApiEndpoint,
+  validateApiEndpointOverride,
+} from "../../src/regions.js";
 import { CfDebuggerError } from "../../src/types.js";
 
 const CURATED_REGIONS: Readonly<Record<string, string>> = {
@@ -115,7 +119,7 @@ describe("resolveApiEndpoint", () => {
     );
   });
 
-  it("honours an override before validating or warning", () => {
+  it("honours a validated HTTPS override before region validation or warning", () => {
     const warnings: string[] = [];
 
     expect(resolveApiEndpoint("nonsense", "https://custom.example.com", (warning) => {
@@ -124,6 +128,36 @@ describe("resolveApiEndpoint", () => {
       "https://custom.example.com",
     );
     expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    ["plaintext HTTP", "http://plaintext.example"],
+    ["FTP", "ftp://x"],
+    ["leading CLI flag", "--skip-ssl-validation"],
+    ["whitespace only", "   "],
+    ["surrounding whitespace", " https://api.cf.internal.example"],
+    ["userinfo", "https://u:p@h.example"],
+    ["query", "https://h.example/?x=1"],
+    ["fragment", "https://h.example/#x"],
+    ["path", "https://h.example/x"],
+    ["control character", "https://h.example/\n"],
+    ["non-URL", "not-a-url"],
+  ])("rejects an unsafe %s endpoint override", (_name, endpoint) => {
+    expect(() => resolveApiEndpoint("eu10", endpoint)).toThrowError(
+      expect.objectContaining({ code: "UNSAFE_INPUT" }),
+    );
+  });
+
+  it("accepts a private HTTPS API endpoint without host allowlisting", () => {
+    expect(resolveApiEndpoint("nonsense", "https://api.cf.internal.example")).toBe(
+      "https://api.cf.internal.example",
+    );
+  });
+
+  it("rejects non-string programmatic endpoint input with a coded error", () => {
+    expect(() => validateApiEndpointOverride(42)).toThrowError(
+      expect.objectContaining({ code: "UNSAFE_INPUT" }),
+    );
   });
 
   it.each([

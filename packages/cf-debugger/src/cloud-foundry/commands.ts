@@ -12,7 +12,11 @@ const CURRENT_TARGET_TIMEOUT_MS = 30_000;
 function rethrowControlFlowError(error: unknown): void {
   if (
     error instanceof CfDebuggerError &&
-    (error.code === "ABORTED" || error.code === "STARTUP_TIMEOUT")
+    (
+      error.code === "ABORTED" ||
+      error.code === "CF_MUTATION_TIMEOUT" ||
+      error.code === "STARTUP_TIMEOUT"
+    )
   ) {
     throw error;
   }
@@ -33,7 +37,10 @@ export interface CurrentCfTarget {
 }
 
 export async function cfApi(apiEndpoint: string, context: CfExecContext): Promise<void> {
-  await runCf(["api", apiEndpoint], context);
+  await runCf({
+    args: ["api", apiEndpoint],
+    retryPolicy: "retry-transient",
+  }, context);
 }
 
 export async function cfAuth(
@@ -42,7 +49,10 @@ export async function cfAuth(
   context: CfExecContext,
 ): Promise<void> {
   try {
-    await runCf(["auth"], context, {
+    await runCf({
+      args: ["auth"],
+      retryPolicy: "retry-transient",
+    }, context, {
       env: { CF_PASSWORD: password, CF_USERNAME: email },
       sensitiveValues: [email, password],
     });
@@ -83,7 +93,10 @@ export async function cfTarget(
   context: CfExecContext,
 ): Promise<void> {
   try {
-    await runCf(["target", "-o", org, "-s", space], context);
+    await runCf({
+      args: ["target", "-o", org, "-s", space],
+      retryPolicy: "retry-transient",
+    }, context);
   } catch (err: unknown) {
     rethrowControlFlowError(err);
     if (err instanceof CfDebuggerError) {
@@ -95,7 +108,10 @@ export async function cfTarget(
 
 export async function cfAppExists(appName: string, context: CfExecContext): Promise<boolean> {
   try {
-    await runCf(["app", appName], context);
+    await runCf({
+      args: ["app", appName],
+      retryPolicy: "retry-transient",
+    }, context);
     return true;
   } catch (err: unknown) {
     rethrowControlFlowError(err);
@@ -114,7 +130,10 @@ export async function cfSshEnabled(
   context: CfExecContext,
 ): Promise<SshEnablementState> {
   try {
-    const stdout = await runCf(["ssh-enabled", appName], context);
+    const stdout = await runCf({
+      args: ["ssh-enabled", appName],
+      retryPolicy: "retry-transient",
+    }, context);
     const normalized = stdout.toLowerCase();
     if (normalized.includes("ssh support is enabled")) {
       return "enabled";
@@ -131,7 +150,10 @@ export async function cfSshEnabled(
 
 export async function cfEnableSsh(appName: string, context: CfExecContext): Promise<void> {
   try {
-    await runCf(["enable-ssh", appName], context);
+    await runCf({
+      args: ["enable-ssh", appName],
+      retryPolicy: "mutation",
+    }, context);
   } catch (err: unknown) {
     rethrowControlFlowError(err);
     if (err instanceof CfDebuggerError) {
@@ -142,7 +164,10 @@ export async function cfEnableSsh(appName: string, context: CfExecContext): Prom
 }
 
 export async function cfRestartApp(appName: string, context: CfExecContext): Promise<void> {
-  await runCf(["restart", appName], context);
+  await runCf({
+    args: ["restart", appName],
+    retryPolicy: "mutation",
+  }, context);
 }
 
 export async function readCurrentCfTarget(
