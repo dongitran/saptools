@@ -104,6 +104,8 @@ function remoteQueryState(db: Db): RemoteQueryState {
   const calls = records(db.prepare(`SELECT c.source_line sourceLine,
     c.query_entity queryEntity,c.confidence,c.unresolved_reason unresolvedReason,
     c.source_symbol_id sourceSymbolId,s.qualified_name qualifiedName,
+    json_extract(c.evidence_json,'$.queryRoot') queryRoot,
+    json_extract(c.evidence_json,'$.methodDefaulted') methodDefaulted,
     json_valid(c.evidence_json) evidenceValid,length(c.evidence_json) evidenceLength
     FROM outbound_calls c LEFT JOIN symbols s ON s.id=c.source_symbol_id
     WHERE c.call_type='remote_query' ORDER BY c.source_line`).all());
@@ -134,6 +136,10 @@ function expectRemoteQueryState(state: RemoteQueryState): void {
   expect(state.calls.map((row) => row.unresolvedReason)).toEqual([
     'dynamic_entity_expression', null,
   ]);
+  expect(state.calls.map((row) => row.queryRoot)).toEqual([
+    'SELECT.from', 'SELECT.from',
+  ]);
+  expect(state.calls.map((row) => row.methodDefaulted)).toEqual([1, 1]);
   expect(state.calls.every((row) => row.sourceSymbolId !== null
     && row.qualifiedName === 'RemoteQueryHandler.inspectRemote')).toBe(true);
   expect(state.edges.map((row) => [row.edgeType, row.status])).toEqual([
@@ -234,6 +240,31 @@ describe('remote query static entity compatibility', () => {
       expect.objectContaining({
         queryEntity: undefined, unresolvedReason: 'dynamic_entity_expression',
       }),
+    ]);
+  });
+
+  it('records structural query roots and distinct method defaults', () => {
+    const calls = remoteQueryCalls(`import { Foo } from '#cds-models/neutral';
+      async function run(method: string): Promise<void> {
+        await srv.send({ query: SELECT.one.from(Foo) });
+        await srv.send({ method, query: INSERT.into(Foo).entries([]) });
+        await srv.send({ method: 'PATCH', query: UPDATE.entity(Foo) });
+        await srv.send({ query: DELETE.from(Foo) });
+        await srv.send({ query: buildQuery() });
+      }`);
+    expect(calls.map((call) => call.method)).toEqual([
+      'POST', 'POST', 'PATCH', 'POST', 'POST',
+    ]);
+    expect(calls.map((call) => call.evidence?.queryRoot)).toEqual([
+      'SELECT.one.from', 'INSERT.into', 'UPDATE.entity', 'DELETE.from',
+      undefined,
+    ]);
+    expect(calls.map((call) => call.evidence?.methodDefaulted)).toEqual([
+      true, undefined, undefined, true, true,
+    ]);
+    expect(calls.map((call) =>
+      call.evidence?.dynamicMethodDefaulted)).toEqual([
+      undefined, true, undefined, undefined, undefined,
     ]);
   });
 });

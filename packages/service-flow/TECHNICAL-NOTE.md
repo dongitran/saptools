@@ -1,5 +1,30 @@
 # Service Flow Resolution Notes
 
+## 0.1.80 completeness and evidence notes
+
+- Package/CLI `0.1.80` retains SQLite schema `15`, compact
+  `service-flow/compact-graph@1`, and detailed JSON
+  `service-flow/detailed-trace@3`, while analyzer compatibility advances to
+  `0.1.80-facts.1`. Re-index and re-link existing workspaces.
+- Implementation linking seeds the canonical-evidence cache with the decision
+  already derived for every operation, including zero-candidate operations.
+  The cache remains keyed per `Db` and string operation id and resets before
+  every implementation-link phase.
+- Object-form remote query sends expose structural CQL roots and distinguish a
+  missing method property from a dynamic method expression. This is additive
+  evidence; call types, fallback method values, targets, and edge semantics are
+  unchanged.
+- Table output discloses receiver proof only on the explicitly weaker
+  `receiver_unproven` dispatch tier. Detailed JSON remains authoritative for
+  full binding-site evidence.
+- A successful `link` remains the point that refreshes SQLite planner
+  statistics. The post-commit `ANALYZE` is intentionally not wrapped in an
+  unexercised catch; a statistics failure therefore remains visible.
+- Audit summaries must not treat raw `cds_operations` or implementation-edge
+  rows as unique decisions: inherited model operations must be grouped by
+  provenance/base identity, and duplicate package-name ambiguity must be
+  reported separately from analyzer uncertainty.
+
 ## 0.1.79 indexed lookup and caption-namespace notes
 
 - Package/CLI `0.1.79` retains SQLite schema `15`, analyzer

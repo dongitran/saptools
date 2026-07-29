@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import type { Db } from '../../src/db/connection.js';
 import {
   canonicalImplementationEvidence,
-  resetCanonicalImplementationEvidence,
 } from '../../src/linker/implementation-candidates.js';
 import { linkWorkspace } from '../../src/linker/cross-repo-linker.js';
 import { prepareWorkspace } from './test-workspace.js';
@@ -54,10 +53,8 @@ function candidateRepositories(
 }
 
 describe('canonical implementation evidence cache', () => {
-  it('reuses one decision for repeated reads of an operation', async () => {
+  it('derives and seeds exactly one decision per operation', async () => {
     const current = await preparedFixture();
-    linkWorkspace(current.db, current.workspaceId);
-    const id = operationId(current.db);
     let candidateQueries = 0;
     const counted: Db = {
       ...current.db,
@@ -68,12 +65,37 @@ describe('canonical implementation evidence cache', () => {
         return current.db.prepare(sql);
       },
     };
-    resetCanonicalImplementationEvidence(counted);
+    const service = current.db.prepare(
+      'SELECT id FROM cds_services ORDER BY id LIMIT 1',
+    ).get();
+    const noCandidate = current.db.prepare(`INSERT INTO cds_operations(
+      service_id,operation_type,operation_name,operation_path,params_json,
+      return_type,source_file,source_line,provenance,base_operation_id
+    ) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
+      service?.id, 'action', 'noCandidateSeed', '/noCandidateSeed', '[]',
+      null, 'srv/no-candidate.cds', 999, 'direct', null,
+    );
+    expect(noCandidate).toBeDefined();
+    const operationIds = current.db.prepare(
+      'SELECT id FROM cds_operations ORDER BY id',
+    ).all().map((row) => Number(row.id));
+    linkWorkspace(counted, current.workspaceId);
+    expect(candidateQueries).toBe(operationIds.length);
 
-    const first = canonicalImplementationEvidence(counted, id);
-    const second = canonicalImplementationEvidence(counted, String(id));
-    expect(second).toBe(first);
-    expect(candidateQueries).toBe(1);
+    const evidence = operationIds.map((id) =>
+      canonicalImplementationEvidence(counted, id));
+    operationIds.forEach((id, index) => {
+      expect(canonicalImplementationEvidence(counted, String(id)))
+        .toBe(evidence[index]);
+    });
+    expect(candidateQueries).toBe(operationIds.length);
+    expect(current.db.prepare(`SELECT 1 FROM graph_edges
+      WHERE edge_type='OPERATION_IMPLEMENTED_BY_HANDLER'
+        AND from_id=?`).get(String(noCandidate?.id))).toBeUndefined();
+    expect(canonicalImplementationEvidence(
+      counted, String(noCandidate?.id),
+    )).toBeDefined();
+    expect(candidateQueries).toBe(operationIds.length);
     current.db.close();
   });
 
@@ -81,7 +103,6 @@ describe('canonical implementation evidence cache', () => {
     const current = await preparedFixture();
     linkWorkspace(current.db, current.workspaceId);
     const id = operationId(current.db);
-    resetCanonicalImplementationEvidence(current.db);
     const before = canonicalImplementationEvidence(current.db, id);
     expect(candidateRepositories(before)).toEqual(['helper-a', 'helper-b']);
 

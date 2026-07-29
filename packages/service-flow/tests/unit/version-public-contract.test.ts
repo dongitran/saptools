@@ -48,15 +48,15 @@ type PublicFactContract = [
 describe('package, analyzer, and public compact contracts', () => {
   it('keeps package/CLI version authority separate from fact compatibility', async () => {
     expect(VERSION).toBe(packageJson.version);
-    expect(VERSION).toBe('0.1.79');
-    expect(ANALYZER_VERSION).toBe('0.1.77-facts.1');
+    expect(VERSION).toBe('0.1.80');
+    expect(ANALYZER_VERSION).toBe('0.1.80-facts.1');
     expect(ANALYZER_VERSION).not.toBe(VERSION);
     const source = await readFile(
       new URL('../../src/version.ts', import.meta.url), 'utf8',
     );
     expect(source).toContain('export const VERSION = packageJson.version;');
     expect(source).toContain(
-      "export const ANALYZER_VERSION = '0.1.77-facts.1';",
+      "export const ANALYZER_VERSION = '0.1.80-facts.1';",
     );
     expect(source).not.toMatch(/ANALYZER_VERSION\s*=\s*VERSION/);
   });

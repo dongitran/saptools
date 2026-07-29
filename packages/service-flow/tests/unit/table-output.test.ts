@@ -29,4 +29,52 @@ describe('trace table output', () => {
     );
     expect(table).not.toContain('…');
   });
+
+  it('discloses proof only for an unproven receiver certainty', () => {
+    const evidence = {
+      file: 'srv/helpers/emit.ts',
+      sourceLine: 252,
+      dispatchScope: 'workspace_event_name_only',
+      outboundEvidence: {
+        receiverProof: 'parameter_flow',
+        rootReceiver: 'messaging',
+      },
+    };
+    const result: TraceResult = {
+      start: {},
+      nodes: [],
+      diagnostics: [],
+      edges: [
+        {
+          step: 1,
+          type: 'async_emit',
+          from: 'call:1',
+          to: 'event:Unproven',
+          evidence: {
+            ...evidence,
+            dispatchCertainty: 'receiver_unproven',
+          },
+          confidence: 0.5,
+        },
+        {
+          step: 2,
+          type: 'async_emit',
+          from: 'call:2',
+          to: 'event:Static',
+          evidence: {
+            ...evidence,
+            dispatchCertainty: 'static_name_only',
+          },
+          confidence: 0.8,
+        },
+      ],
+    };
+
+    const table = renderTraceTable(result);
+
+    expect(table).toContain(
+      'certainty=receiver_unproven,proof=parameter_flow(messaging)',
+    );
+    expect(table.match(/proof=parameter_flow\(messaging\)/g)).toHaveLength(1);
+  });
 });

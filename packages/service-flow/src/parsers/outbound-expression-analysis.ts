@@ -1,14 +1,8 @@
 import ts from 'typescript';
-import {
-  chainIncludesForUpdate,
-  queryBuilderRoot,
-  type DirectQueryBuilderStatement,
-} from './direct-query-execution.js';
-import {
-  expressionName,
-  maxAliasDepth,
-  resolveBinding,
-} from './query-entity-resolution.js';
+import { chainIncludesForUpdate, queryBuilderRoot,
+  type DirectQueryBuilderStatement } from './direct-query-execution.js';
+import { expressionName, maxAliasDepth,
+  resolveBinding } from './query-entity-resolution.js';
 import type { OperationPathAnalysis } from './operation-path-analysis.js';
 import { stripQuotes } from '../utils/path-utils.js';
 export function lineOf(text: string, index: number): number {
@@ -48,6 +42,12 @@ export function queryRunEvidence(
     } : {}),
     ...(hasForUpdate ? { hasForUpdate: true } : {}),
   };
+}
+export function remoteQueryRoot(
+  query: ts.Expression | undefined,
+): string | undefined {
+  const root = query ? queryBuilderRoot(query) : undefined;
+  return root ? expressionName(root.expression) : undefined;
 }
 export function queryWarning(expression: string): string {
   if (/^\s*[`'"]/.test(expression)) return 'raw_sql_or_cql_expression';

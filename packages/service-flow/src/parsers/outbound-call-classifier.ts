@@ -24,6 +24,7 @@ import {
   queryRunEvidence,
   queryWarning,
   receiverName,
+  remoteQueryRoot,
   resolveExpression,
   rootReceiverName,
   safeOperationName,
@@ -162,12 +163,17 @@ function sendExpression(
 function objectSendMethod(
   object: ts.ObjectLiteralExpression,
   node: ts.CallExpression,
-): { method: string; dynamicDefaulted: boolean } {
+): {
+  method: string;
+  dynamicDefaulted: boolean;
+  methodDefaulted: boolean;
+} {
   const expression = propertyInitializer(object, 'method');
   const resolution = resolveExpression(expression, node, 'literal');
   return {
     method: stripQuotes(resolution.value ?? 'POST'),
     dynamicDefaulted: Boolean(expression && resolution.value === undefined),
+    methodDefaulted: !expression,
   };
 }
 
@@ -221,6 +227,8 @@ function objectSendEvidence(
   pathAnalysis: OperationPathAnalysis,
   unresolvedReason: string | undefined,
   dynamicMethodDefaulted: boolean,
+  methodDefaulted: boolean,
+  queryRoot: string | undefined,
 ): Record<string, unknown> {
   return {
     receiver,
@@ -234,6 +242,8 @@ function objectSendEvidence(
     staticPathCandidates: legacyPathCandidates(pathAnalysis),
     parserWarning: unresolvedReason,
     ...(dynamicMethodDefaulted ? { dynamicMethodDefaulted: true } : {}),
+    ...(methodDefaulted ? { methodDefaulted: true } : {}),
+    ...(queryRoot ? { queryRoot } : {}),
   };
 }
 
@@ -276,7 +286,8 @@ function classifyObjectSend(
     unresolvedReason,
   }, objectSendEvidence(
     object, receiver, rawOperation, operationPath, intent, pathAnalysis,
-    unresolvedReason, methodState.dynamicDefaulted,
+    unresolvedReason, methodState.dynamicDefaulted, methodState.methodDefaulted,
+    remoteQueryRoot(query),
   ));
 }
 

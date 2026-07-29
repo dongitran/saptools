@@ -1,22 +1,20 @@
 import type { Db } from '../db/connection.js';
 import { implementationHintSuggestionProjection } from '../trace/implementation-hints.js';
 import {
-  boundedImplementationEvidence,
-  boundedImplementationTargetIds,
+  boundedImplementationEvidence, boundedImplementationTargetIds,
   displayImplementationCandidates,
   selectedHandlerProvenance,
 } from './implementation-evidence-projection.js';
-import {
-  implementationMethodSignal,
+import { implementationMethodSignal,
   type ImplementationSelectionBasis,
 } from './implementation-method-selection.js';
 import {
   cachedCanonicalImplementationEvidence,
   resetCanonicalImplementationEvidence,
+  seedCanonicalImplementationEvidence,
 } from './implementation-evidence-cache.js';
 
-export { resetCanonicalImplementationEvidence } from
-  './implementation-evidence-cache.js';
+export { resetCanonicalImplementationEvidence } from './implementation-evidence-cache.js';
 
 interface ImplementationCandidate extends Record<string, unknown> {
   methodId: number;
@@ -50,6 +48,9 @@ export function linkImplementations(
   let unresolvedCount = 0;
   for (const operation of operations) {
     const decision = implementationDecision(db, workspaceId, operation, true);
+    // Seed before the skip so operations without candidates remain covered.
+    seedCanonicalImplementationEvidence(
+      db, String(operation.operationId), decision.evidenceWithHints);
     if (decision.candidates.length === 0) continue;
     const status = decision.unique ? 'resolved' : decision.accepted.length > 0
       ? 'ambiguous'

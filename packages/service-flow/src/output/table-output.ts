@@ -65,6 +65,7 @@ function evidenceSummary(evidence: Record<string, unknown>): string {
       ? `scope=${evidence.dispatchScope}` : undefined,
     typeof evidence.dispatchCertainty === 'string'
       ? `certainty=${evidence.dispatchCertainty}` : undefined,
+    receiverProofLabel(evidence),
     typeof evidence.selectionBasis === 'string'
       ? `basis=${evidence.selectionBasis}` : undefined,
     numberValue(evidence.rejectedCandidateCount) > 0
@@ -74,6 +75,20 @@ function evidenceSummary(evidence: Record<string, unknown>): string {
   return labels.length > 0
     ? `${location(evidence)} [${labels.join(',')}]`
     : location(evidence);
+}
+
+function receiverProofLabel(
+  evidence: Record<string, unknown>,
+): string | undefined {
+  if (evidence.dispatchCertainty !== 'receiver_unproven') return undefined;
+  const outbound = isRecord(evidence.outboundEvidence)
+    ? evidence.outboundEvidence : evidence;
+  const proof = outbound.receiverProof;
+  const receiver = outbound.rootReceiver ?? outbound.receiver;
+  if (typeof proof !== 'string') return undefined;
+  return typeof receiver === 'string'
+    ? `proof=${proof}(${receiver})`
+    : `proof=${proof}`;
 }
 
 function diagnosticLines(diagnostic: Record<string, unknown>): string[] {

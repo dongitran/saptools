@@ -31,6 +31,7 @@ interface StoredMethodCall {
   path: string | null;
   method: string | null;
   dynamicMethodDefaulted: number | null;
+  methodDefaulted: number | null;
   evidenceValid: number;
   evidenceLength: number;
 }
@@ -154,6 +155,7 @@ function workspaceState(db: Db): LifecycleWorkspaceState {
   }));
   const methods = records(db.prepare(`SELECT operation_path_expr path,method,
     json_extract(evidence_json,'$.dynamicMethodDefaulted') dynamicMethodDefaulted,
+    json_extract(evidence_json,'$.methodDefaulted') methodDefaulted,
     json_valid(evidence_json) evidenceValid,length(evidence_json) evidenceLength
     FROM outbound_calls WHERE call_type='remote_action'
     ORDER BY source_line,id`).all()).map((row): StoredMethodCall => ({
@@ -163,6 +165,10 @@ function workspaceState(db: Db): LifecycleWorkspaceState {
       || row.dynamicMethodDefaulted === undefined
       ? null
       : numeric(row.dynamicMethodDefaulted),
+    methodDefaulted: row.methodDefaulted === null
+      || row.methodDefaulted === undefined
+      ? null
+      : numeric(row.methodDefaulted),
     evidenceValid: numeric(row.evidenceValid),
     evidenceLength: numeric(row.evidenceLength),
   }));
@@ -258,18 +264,22 @@ function expectLifecycleWorkspaceState(state: LifecycleWorkspaceState): void {
     path: row.path,
     method: row.method,
     dynamicMethodDefaulted: row.dynamicMethodDefaulted,
+    methodDefaulted: row.methodDefaulted,
     evidenceValid: row.evidenceValid,
   }))).toEqual([
     {
       path: '/dynamic', method: 'POST', dynamicMethodDefaulted: 1,
+      methodDefaulted: null,
       evidenceValid: 1,
     },
     {
       path: '/static', method: 'PATCH', dynamicMethodDefaulted: null,
+      methodDefaulted: null,
       evidenceValid: 1,
     },
     {
       path: '/default', method: 'POST', dynamicMethodDefaulted: null,
+      methodDefaulted: 1,
       evidenceValid: 1,
     },
   ]);
@@ -367,6 +377,8 @@ describe('object send method fallback evidence', () => {
     expect(calls.map((call) => call.method)).toEqual(['POST', 'POST', 'PATCH', 'POST']);
     expect(calls.map((call) => call.evidence?.dynamicMethodDefaulted))
       .toEqual([true, true, undefined, undefined]);
+    expect(calls.map((call) => call.evidence?.methodDefaulted))
+      .toEqual([undefined, undefined, undefined, true]);
     expect(calls.every((call) => call.method !== 'method'
       && call.method !== 'chooseMethod()')).toBe(true);
   });

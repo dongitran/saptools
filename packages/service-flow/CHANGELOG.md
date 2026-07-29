@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.80
+
+- Publishes each canonical implementation decision into the per-database cache
+  during implementation linking, including operations with no candidates.
+  Later ownership checks reuse the exact decision instead of deriving it
+  again; the existing phase-start reset keeps same-process relinks fresh.
+- Remote `.send({ query })` facts now record the structural CQL `queryRoot`
+  when available. An absent `method` property is disclosed separately as
+  `methodDefaulted: true`; a present but unresolved method retains
+  `dynamicMethodDefaulted: true`.
+- Table traces surface `proof=<strategy>(<receiver>)` only for
+  `dispatchCertainty=receiver_unproven`, making the existing JSON receiver
+  evidence visible without changing other certainty tiers.
+- Package/CLI is `0.1.80`; SQLite remains schema `15`, compact remains
+  `service-flow/compact-graph@1`, and detailed JSON remains
+  `service-flow/detailed-trace@3`. Analyzer compatibility advances to
+  `0.1.80-facts.1`; existing workspaces require `index --force` followed by
+  `link --force`.
+
 ## 0.1.79
 
 - Added covering graph-edge lookup indexes and three repository/name symbol
