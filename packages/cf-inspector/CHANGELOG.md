@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 - 2026-07-30
+
+### CDP request reliability
+
+- Increased the default timeout for individual Chrome DevTools Protocol requests from 15 seconds
+  to 60 seconds for main and worker inspector sessions. Explicit `requestTimeoutMs` overrides and
+  command-level breakpoint/exception wait timeouts remain unchanged.
+
 ## 0.8.0 - 2026-07-23
 
 ### Machine-readable debugger readiness

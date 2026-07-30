@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { CfInspectorError } from "../types.js";
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export interface CdpTransportEventMap {
   readonly message: (data: string) => void;

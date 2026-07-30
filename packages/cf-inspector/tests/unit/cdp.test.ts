@@ -75,6 +75,27 @@ describe("CdpClient", () => {
     client.dispose();
   });
 
+  it("uses a 60-second request timeout by default", async () => {
+    const transport = new MockTransport();
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const client = await CdpClient.connect({
+      url: "ws://test",
+      transportFactory: async (): Promise<CdpTransport> => transport as unknown as CdpTransport,
+    });
+
+    try {
+      const request = client.send("Debugger.enable");
+      const parsed = JSON.parse(transport.sent[0] ?? "{}") as { id: number };
+      transport.receive({ id: parsed.id, result: { ok: true } });
+
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 60_000);
+      await expect(request).resolves.toEqual({ ok: true });
+    } finally {
+      client.dispose();
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it("emits subscribed events to listeners", async () => {
     const { client, transport } = await connect();
     const handler = vi.fn();
