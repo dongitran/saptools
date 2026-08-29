@@ -100,7 +100,16 @@ function parseCountResponse(value: unknown): number {
  * scheme is present; pass an explicit endpoint through unchanged.
  */
 function normalizeDashboardsEndpoint(rawEndpoint: string): string {
-  const trimmed = rawEndpoint.replace(/\/+$/, "");
+  // Trim trailing slashes with a manual scan rather than a `/+$/` regex: a
+  // regex anchored at the end backtracks quadratically over a long run of
+  // slashes that isn't actually followed by the end of input, and this
+  // endpoint comes straight from a service-key/binding payload we don't
+  // control the shape of.
+  let end = rawEndpoint.length;
+  while (end > 0 && rawEndpoint.charAt(end - 1) === "/") {
+    end -= 1;
+  }
+  const trimmed = rawEndpoint.slice(0, end);
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 

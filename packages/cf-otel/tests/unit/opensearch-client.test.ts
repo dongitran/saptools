@@ -89,6 +89,24 @@ describe("createOpenSearchClient", () => {
     expect(capturedUrl.startsWith("https://dashboards-sf-example.003.br10.cls.services.cloud.sap/")).toBe(true);
   });
 
+  it("strips multiple trailing slashes", async () => {
+    let capturedUrl = "";
+    const fetchImpl = vi.fn(async (url: string) => {
+      capturedUrl = url;
+      return new Response(JSON.stringify({ hits: { total: { value: 0 }, hits: [] } }), { status: 200 });
+    });
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com///",
+      username: "u",
+      password: "p",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.search("idx", {});
+
+    expect(capturedUrl.startsWith("https://dash.example.com/api/console/proxy")).toBe(true);
+  });
+
   it("leaves an already-schemed endpoint unchanged", async () => {
     let capturedUrl = "";
     const fetchImpl = vi.fn(async (url: string) => {
