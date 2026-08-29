@@ -36,6 +36,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/sharepoint-excel`](./packages/sharepoint-excel) | Create, read, append, and update SharePoint-hosted Excel workbooks with app-only Microsoft Graph access | [![npm](https://img.shields.io/npm/v/@saptools/sharepoint-excel.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/sharepoint-excel) |
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
 | [`@saptools/jira`](./packages/jira) | Jira Cloud CLI and typed API that reuse the JiraOps OAuth token store | [![npm](https://img.shields.io/npm/v/@saptools/jira.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/jira) |
+| [`@saptools/cf-otel`](./packages/cf-otel) | Query and analyze OpenTelemetry trace spans already ingested into SAP Cloud Logging's OpenSearch backend | [![npm](https://img.shields.io/npm/v/@saptools/cf-otel.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-otel) |
 
 ---
 
@@ -203,6 +204,16 @@ Turns the JiraOps OAuth session into a scriptable Jira Cloud CLI and TypeScript 
 
 Docs → [`packages/jira/README.md`](./packages/jira/README.md)
 
+### 🔭 `@saptools/cf-otel`
+
+Read-only CLI for OpenTelemetry trace spans already ingested into SAP Cloud Logging's OpenSearch backend.
+
+- 🔍 twelve commands — `sample`, `mapping`, `find`, `top`, `count`, `spans`, `span`, `fields`, `selftime`, `gaps`, `detached`, `diff`
+- 🔐 credential discovery via existing service keys and bindings first; a SAML toggle only as an explicit, opt-in last resort
+- 🧭 `--region`/`--org`/`--space` targeting with ambient `cf target` fallback
+
+Docs → [`packages/cf-otel/README.md`](./packages/cf-otel/README.md)
+
 ---
 
 ## 🧱 Monorepo Tooling
@@ -251,7 +262,8 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── cf-hana/
 │   ├── sharepoint-excel/
 │   ├── gitport/
-│   └── jira/
+│   ├── jira/
+│   └── cf-otel/
 ├── package.json
 ├── pnpm-workspace.yaml
 └── turbo.json

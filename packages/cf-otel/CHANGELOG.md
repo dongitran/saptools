@@ -2,6 +2,29 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.1.2 - 2026-08-29
+
+- Fixed `searchAfterAll`'s pagination tiebreaker: it sorted by OpenSearch's
+  `_id` meta-field, which is documented as restricted from sorting (falls
+  back to fielddata, a deprecated path outside this tool's control). Now
+  sorts by `spanId`, a mandatory OpenTelemetry field mapped as a plain
+  `keyword` with doc_values on. `span` and `fields` now share the same
+  tiebreaker constant instead of duplicating the sort array.
+- Fixed `mintDashboardsCredential`'s last-resort SAML restore
+  (`--allow-mint-credential`): it used to hard-code `saml.enabled=true` on
+  restore regardless of the instance's actual original value, permanently
+  turning SSO on for an instance that never had it. Now writes the original
+  params blob back verbatim, and the critical-failure error message's
+  "broken for ALL users" framing only appears when SAML was genuinely on
+  beforehand.
+- Fixed `top`/`detached`'s `by_trace` terms aggregation: it had no explicit
+  `order`, defaulting to OpenSearch's `_count`-desc bucket selection even
+  when sorting by duration — on a window with more than 10,000 distinct
+  traces, a long-but-low-span-count trace could be silently dropped before
+  the client-side sort ever saw it. Both commands now order by the same
+  metric they sort by, and warn when that 10,000-bucket cap is actually hit.
+- Added regression tests covering every fix above.
+
 ## 0.1.1 - 2026-08-29
 
 - Fixed `--attr` filters (e.g. `--attr 'http@status_code>=400'`): bare attribute keys were never
