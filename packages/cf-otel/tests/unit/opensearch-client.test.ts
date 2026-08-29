@@ -151,6 +151,20 @@ describe("searchAfterAll", () => {
     expect(client.search).toHaveBeenCalledTimes(2);
   });
 
+  it("ties startTime with spanId, not _id, so pagination never depends on OpenSearch's restricted-for-sort _id meta-field", async () => {
+    let capturedSort: unknown;
+    const client: OpenSearchClient = {
+      search: async (_index, body) => {
+        capturedSort = body["sort"];
+        return { totalHits: 0, hits: [] };
+      },
+      count: async () => 0,
+      getMapping: async () => ({}),
+    };
+    await searchAfterAll(client, "idx", {}, 10, 100);
+    expect(capturedSort).toEqual([{ startTime: "asc" }, { spanId: "asc" }]);
+  });
+
   it("always requests track_total_hits, so OpenSearch's default 10000 total-hits cap never applies", async () => {
     // Without this, hits.total.value silently freezes at 10000 once real
     // matches exceed it — independent of search_after paging, which still

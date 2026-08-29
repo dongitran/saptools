@@ -55,6 +55,11 @@ function withSamlEnabled(params: unknown, enabled: boolean): Record<string, unkn
   return { ...params, saml: { ...saml, enabled } };
 }
 
+/** Read the instance's current `saml.enabled`, defaulting to `false` for an absent/malformed `saml` block. */
+function readSamlEnabled(params: unknown): boolean {
+  return isRecord(params) && isRecord(params["saml"]) && params["saml"]["enabled"] === true;
+}
+
 async function writeSecureTempParamsFile(params: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "cf-otel-saml-"));
   try {
@@ -71,25 +76,31 @@ async function writeSecureTempParamsFile(params: unknown): Promise<string> {
 }
 
 /**
- * Issue the `saml.enabled = enabled` mutation itself. Single-attempt/never
+ * Write an exact params blob via `cf update-service`. Single-attempt/never
  * retried (see {@link cfUpdateService}): retrying a mutation whose completion
  * is unknown risks double-applying it or racing an update already in flight.
  * Deliberately does NOT wait for confirmation — callers decide separately
  * what a confirmation failure should mean for this specific call site (see
  * the split between the disable and restore paths in
  * {@link mintDashboardsCredential} below).
+ *
+ * Takes the fully-prepared params object rather than a boolean to flip: the
+ * restore path must write back exactly what {@link mintDashboardsCredential}
+ * read at the start, byte for byte, not a value reconstructed from a single
+ * boolean — an original `saml.enabled` that was absent, or present in some
+ * shape other than a literal `true`, would otherwise get silently rewritten
+ * into a `saml.enabled: false` block that didn't exist before.
  */
 async function issueSamlUpdate(
   instance: string,
-  baseParams: unknown,
-  enabled: boolean,
+  nextParams: unknown,
+  logLabel: string,
   ctx: CfExecContext,
   report: StepReporter,
 ): Promise<void> {
-  const nextParams = withSamlEnabled(baseParams, enabled);
   const tempFilePath = await writeSecureTempParamsFile(nextParams);
   try {
-    report(`cf update-service ${instance} -c <redacted params> (saml.enabled=${String(enabled)})`);
+    report(`cf update-service ${instance} -c <redacted params> (${logLabel})`);
     await cfUpdateService(instance, tempFilePath, ctx);
   } finally {
     await rm(dirname(tempFilePath), { recursive: true, force: true });
@@ -155,11 +166,12 @@ async function confirmThenMint(
 async function restoreCatchingError(
   instance: string,
   originalParams: unknown,
+  originalSamlEnabled: boolean,
   ctx: CfExecContext,
   report: StepReporter,
 ): Promise<Outcome<undefined>> {
   try {
-    await issueSamlUpdate(instance, originalParams, true, ctx, report);
+    await issueSamlUpdate(instance, originalParams, `saml.enabled=${String(originalSamlEnabled)} (restored)`, ctx, report);
     await confirmSamlUpdate(instance, ctx, report);
     return { ok: true, value: undefined };
   } catch (error) {
@@ -186,9 +198,10 @@ export async function mintDashboardsCredential(
   const report = options.report ?? ((message) => void message);
   const originalParams = parseCredentialJson(await cfServiceParams(instance, ctx), `params blob for "${instance}"`);
   report(`read params for "${instance}": ${JSON.stringify(redactForLog(originalParams))}`);
+  const originalSamlEnabled = readSamlEnabled(originalParams);
 
   try {
-    await issueSamlUpdate(instance, originalParams, false, ctx, report);
+    await issueSamlUpdate(instance, withSamlEnabled(originalParams, false), "saml.enabled=false", ctx, report);
   } catch (disableError) {
     // The update-service CALL ITSELF never succeeded (as opposed to a later
     // confirmation-polling failure, handled below) — SAML was never actually
@@ -206,20 +219,27 @@ export async function mintDashboardsCredential(
   // (confirmation polling, key creation/reading) — the restore below always
   // runs regardless of what happens in confirmThenMint.
   const mintResult = await confirmThenMint(instance, ctx, report);
-  const restoreResult = await restoreCatchingError(instance, originalParams, ctx, report);
+  const restoreResult = await restoreCatchingError(instance, originalParams, originalSamlEnabled, ctx, report);
 
   if (!restoreResult.ok) {
     const context = mintResult.ok
       ? ""
       : ` The credential-minting step had also failed: ${errorMessage(mintResult.error)}.`;
-    throw new SamlRestoreFailedError(
-      `CRITICAL: failed to restore saml.enabled=true on Cloud Logging instance "${instance}".${context} ` +
+    // The disable step already succeeded by this point, so the instance's
+    // live saml.enabled is currently `false`. When the true original was
+    // also `false`, a failed restore leaves it exactly where it already
+    // was — there is no SSO capability to lose, unlike the true-original
+    // case where a failed restore leaves it stuck wrong.
+    const message = originalSamlEnabled
+      ? `CRITICAL: failed to restore saml.enabled=true on Cloud Logging instance "${instance}".${context} ` +
         "SSO dashboards login for this instance is broken for ALL users until this is fixed manually. " +
         `Recover with: cf service ${instance} --params (get the full params blob), set saml.enabled to ` +
         `true while keeping every other field unchanged, then cf update-service ${instance} -c <file>, ` +
-        `and verify with cf service ${instance}.`,
-      { cause: restoreResult.error },
-    );
+        `and verify with cf service ${instance}.`
+      : `Failed to re-confirm saml.enabled=false on Cloud Logging instance "${instance}" after a credential ` +
+        `mint attempt.${context} SAML was already disabled before this run, so no SSO capability was lost, ` +
+        `but verify the instance's params still match what they were before: cf service ${instance} --params.`;
+    throw new SamlRestoreFailedError(message, { cause: restoreResult.error });
   }
   if (!mintResult.ok) {
     throw mintResult.error;

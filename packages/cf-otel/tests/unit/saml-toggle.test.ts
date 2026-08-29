@@ -249,6 +249,86 @@ describe("mintDashboardsCredential", () => {
     expect(restoreWritten).toEqual(originalParams);
   });
 
+  it("restores saml.enabled to its true original value, not hard-coded true — instance had SAML off to begin with", async () => {
+    // Regression test: a freshly provisioned instance with saml.enabled
+    // already false (or no saml block at all) reaches this last-resort path
+    // whenever it simply has zero service keys/bound apps yet — nothing here
+    // implies SAML was ever on. A restore that force-writes enabled=true
+    // would permanently turn SSO on for an instance that never had it.
+    const originalParams = { saml: { enabled: false, sp: { entity_id: "urn:example:sp" } }, plan: "standard" };
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue(JSON.stringify(originalParams));
+    const writtenPayloads: unknown[] = [];
+    vi.spyOn(cf, "cfUpdateService").mockImplementation(async (_instance, paramsFilePath) => {
+      writtenPayloads.push(JSON.parse(await readFile(paramsFilePath, "utf8")));
+    });
+    stubServiceShowSucceeded();
+    vi.spyOn(cf, "cfCreateServiceKey").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{"dashboards-endpoint":"https://x","dashboards-username":"u","dashboards-password":"p"}',
+    );
+
+    await mintDashboardsCredential("cloud-logging", { cfHome: "/tmp/fake" }, { confirmDisruptive: true });
+
+    const [disableWritten, restoreWritten] = writtenPayloads;
+    expect(disableWritten).toEqual({ ...originalParams, saml: { ...originalParams.saml, enabled: false } });
+    expect(restoreWritten).toEqual(originalParams);
+  });
+
+  it("restores saml.enabled to false when the instance never had a saml block at all", async () => {
+    const originalParams = { plan: "standard", unrelated: true };
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue(JSON.stringify(originalParams));
+    const writtenPayloads: unknown[] = [];
+    vi.spyOn(cf, "cfUpdateService").mockImplementation(async (_instance, paramsFilePath) => {
+      writtenPayloads.push(JSON.parse(await readFile(paramsFilePath, "utf8")));
+    });
+    stubServiceShowSucceeded();
+    vi.spyOn(cf, "cfCreateServiceKey").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{"dashboards-endpoint":"https://x","dashboards-username":"u","dashboards-password":"p"}',
+    );
+
+    await mintDashboardsCredential("cloud-logging", { cfHome: "/tmp/fake" }, { confirmDisruptive: true });
+
+    // Verbatim restore: writing originalParams back byte-for-byte means an
+    // instance that never had a saml block at all doesn't get one injected.
+    const [, restoreWritten] = writtenPayloads;
+    expect(restoreWritten).toEqual(originalParams);
+  });
+
+  it("downgrades a restore failure to non-critical when SAML was already off, and never discards the minted credential's real risk profile", async () => {
+    // Regression test: the disable step already succeeded and set
+    // saml.enabled=false before restore ever runs, so when the original was
+    // ALSO false, a failed restore leaves the instance exactly where it
+    // started — there is no SSO outage to raise a CRITICAL alarm about.
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue('{"saml":{"enabled":false}}');
+    let updateCall = 0;
+    vi.spyOn(cf, "cfUpdateService").mockImplementation(async () => {
+      updateCall += 1;
+      if (updateCall === 1) {
+        return;
+      }
+      throw new Error("restore failed");
+    });
+    stubServiceShowSucceeded();
+    vi.spyOn(cf, "cfCreateServiceKey").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{"dashboards-endpoint":"https://x","dashboards-username":"u","dashboards-password":"p"}',
+    );
+
+    const caught: unknown = await mintDashboardsCredential(
+      "cloud-logging",
+      { cfHome: "/tmp/fake" },
+      { confirmDisruptive: true },
+    ).catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(SamlRestoreFailedError);
+    const message = (caught as Error).message;
+    expect(message).toContain("saml.enabled=false");
+    expect(message).not.toContain("saml.enabled=true");
+    expect(message).not.toContain("CRITICAL");
+    expect(message).not.toContain("broken for ALL users");
+  });
+
   it("never leaks a secret value quoted inside a JSON parse error for a malformed params blob", async () => {
     // A malformed payload where the syntax error sits right next to a secret
     // value -- confirms the thrown message never repeats V8's raw parser text.

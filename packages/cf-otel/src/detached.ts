@@ -104,6 +104,21 @@ function parseMinStart(minStartAgg: unknown): string {
  * filters it out server-side, but this keeps that guarantee independently
  * testable without mocking a full search response).
  */
+/**
+ * Whether a `by_trace` terms aggregation had to drop some distinct traceId
+ * buckets to stay within its `size` cap. Shared with `top`, which builds the
+ * identical aggregation shape — `sum_other_doc_count` is OpenSearch's own
+ * signal for "more terms existed than fit in `size`", independent of which
+ * metric the terms were ordered by.
+ */
+export function hasTruncatedCandidateBuckets(aggregations: unknown): boolean {
+  if (!isRecord(aggregations)) {
+    return false;
+  }
+  const byTrace = aggregations["by_trace"];
+  return isRecord(byTrace) && typeof byTrace["sum_other_doc_count"] === "number" && byTrace["sum_other_doc_count"] > 0;
+}
+
 export function parseDetachedCandidates(
   aggregations: unknown,
   referenceTraceId: string,
@@ -181,6 +196,7 @@ export async function findDetachedCandidates(
       candidates: [],
       totalCandidateTraceCount: 0,
       totalCandidateSpanCount: 0,
+      candidateBucketsTruncated: false,
     };
   }
   const paddingNanos = BigInt(options.paddingSeconds) * 1_000_000_000n;
@@ -197,7 +213,16 @@ export async function findDetachedCandidates(
     },
     aggs: {
       by_trace: {
-        terms: { field: "traceId", size: 10_000 },
+        // `order` picks which 10,000 traceId buckets OpenSearch returns at
+        // all, not just their display order — leaving it at the `_count`
+        // default would mean a long-but-low-span-count candidate could be
+        // truncated away before the client-side duration sort ever sees it.
+        // Ordering by a sub-aggregation makes bucket selection shard-local,
+        // so a candidate's own doc_count/max_duration can be a shard-partial
+        // undercount if its spans land on multiple shards — an accepted,
+        // inherent terms-aggregation trade-off, not something this fix can
+        // close without a fundamentally different (per-trace) query shape.
+        terms: { field: "traceId", size: 10_000, order: options.sortBy === "duration" ? { max_duration: "desc" } : { _count: "desc" } },
         aggs: {
           min_start: { min: { field: "startTime" } },
           max_duration: { max: { field: "durationInNanos" } },
@@ -224,5 +249,6 @@ export async function findDetachedCandidates(
     // spec's own worked example headlines this ("2,896 candidate spans found
     // across 190 other traceIds"), distinct from totalCandidateTraceCount.
     totalCandidateSpanCount: response.totalHits,
+    candidateBucketsTruncated: hasTruncatedCandidateBuckets(response.aggregations),
   };
 }

@@ -140,6 +140,8 @@ export interface DetachedResult {
   readonly totalCandidateTraceCount: number;
   /** Total candidate spans across every trace found, before the by-trace grouping — distinct from `totalCandidateTraceCount`. */
   readonly totalCandidateSpanCount: number;
+  /** True when more than 10,000 distinct candidate traceIds existed and some were dropped before ranking. */
+  readonly candidateBucketsTruncated: boolean;
 }
 
 export type DiffSort = "delta" | "pct" | "selfA" | "selfB";

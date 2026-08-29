@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findDetachedCandidates, parseDetachedCandidates, sortDetachedCandidates } from "../../src/detached.js";
+import { findDetachedCandidates, hasTruncatedCandidateBuckets, parseDetachedCandidates, sortDetachedCandidates } from "../../src/detached.js";
 import type { OpenSearchClient, SearchResponse } from "../../src/opensearch-client.js";
 import type { DetachedCandidate } from "../../src/types.js";
 
@@ -47,6 +47,22 @@ describe("parseDetachedCandidates", () => {
     expect(parseDetachedCandidates(undefined, "x")).toEqual([]);
     expect(parseDetachedCandidates({}, "x")).toEqual([]);
     expect(parseDetachedCandidates({ by_trace: {} }, "x")).toEqual([]);
+  });
+});
+
+describe("hasTruncatedCandidateBuckets", () => {
+  it("is true when OpenSearch reports other buckets beyond the size cap", () => {
+    expect(hasTruncatedCandidateBuckets({ by_trace: { buckets: [], sum_other_doc_count: 3 } })).toBe(true);
+  });
+
+  it("is false when every distinct traceId fit within the cap", () => {
+    expect(hasTruncatedCandidateBuckets({ by_trace: { buckets: [], sum_other_doc_count: 0 } })).toBe(false);
+  });
+
+  it("is false for a malformed or missing aggregation", () => {
+    expect(hasTruncatedCandidateBuckets(undefined)).toBe(false);
+    expect(hasTruncatedCandidateBuckets({})).toBe(false);
+    expect(hasTruncatedCandidateBuckets({ by_trace: {} })).toBe(false);
   });
 });
 
@@ -197,6 +213,47 @@ describe("findDetachedCandidates", () => {
 
     expect(searchCalled).toBe(false);
     expect(result).toMatchObject({ referenceServiceName: "", candidates: [], totalCandidateTraceCount: 0, totalCandidateSpanCount: 0 });
+  });
+
+  it("orders the terms aggregation by the requested metric, not just re-sorting client-side", async () => {
+    // Regression test: OpenSearch's terms `order` clause decides which
+    // 10,000 buckets come back at all, not just their display order. Without
+    // an explicit `order` matching sortBy, a long-but-low-span-count
+    // candidate could be truncated away before the client ever sees it.
+    let capturedTerms: unknown;
+    const client: OpenSearchClient = {
+      search: async (_index, body) => {
+        const aggs = body["aggs"] as { by_trace: { terms: unknown } };
+        capturedTerms = aggs.by_trace.terms;
+        return aggResponse([]);
+      },
+      count: async () => 0,
+      getMapping: async () => ({}),
+    };
+    const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
+
+    await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, { paddingSeconds: 0, limit: 10, sortBy: "duration" });
+    expect(capturedTerms).toMatchObject({ order: { max_duration: "desc" } });
+
+    await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, { paddingSeconds: 0, limit: 10, sortBy: "spanCount" });
+    expect(capturedTerms).toMatchObject({ order: { _count: "desc" } });
+  });
+
+  it("surfaces candidateBucketsTruncated when OpenSearch dropped buckets beyond the size cap", async () => {
+    const client: OpenSearchClient = {
+      search: async () => ({
+        totalHits: 0,
+        hits: [],
+        aggregations: { by_trace: { buckets: [], sum_other_doc_count: 5 } },
+      }),
+      count: async () => 0,
+      getMapping: async () => ({}),
+    };
+    const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
+
+    const result = await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, { paddingSeconds: 0, limit: 10, sortBy: "spanCount" });
+
+    expect(result.candidateBucketsTruncated).toBe(true);
   });
 
   it("reports the true total candidate span count (response.totalHits), distinct from the trace count", async () => {
