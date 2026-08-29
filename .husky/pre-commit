@@ -81,6 +81,10 @@ if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^pack
   fi
 fi
 
+if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^packages/cf-otel/'; then
+  run_package_checks '@saptools/cf-otel' 'packages/cf-otel'
+fi
+
 if [ "$ran_checks" -eq 0 ]; then
   echo "pre-commit: no tracked package changes detected, skipping package checks"
 fi
