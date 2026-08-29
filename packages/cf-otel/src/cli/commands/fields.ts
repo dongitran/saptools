@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { listFlatAttributeKeys } from "../../attributes.js";
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
+import { SPANS_SORT_TIEBREAKER } from "../../opensearch-client.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { FieldsOpts } from "../commandTypes.js";
 import { emitRows, parseFormat, printNotice } from "../output.js";
@@ -31,7 +32,7 @@ async function runFields(traceId: string, spanId: string | undefined, opts: Fiel
     const response = await client.search(DEFAULT_INDEX_PATTERN, {
       size: 1,
       query: { bool: { filter } },
-      sort: [{ startTime: "asc" }, { spanId: "asc" }],
+      sort: SPANS_SORT_TIEBREAKER,
     });
     return response.hits[0];
   });

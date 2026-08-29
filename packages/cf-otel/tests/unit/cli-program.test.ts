@@ -224,6 +224,30 @@ describe("top", () => {
     await runCli(["top", "--service", "service-a", "--sort", "spanCount", "--format", "json"], client);
     expect(capturedTerms).toMatchObject({ order: { _count: "desc" } });
   });
+
+  it("warns when more than 10,000 distinct traceIds existed and some were dropped before ranking", async () => {
+    const client = fakeClient({
+      search: async () => ({
+        totalHits: 0,
+        hits: [],
+        aggregations: { by_trace: { buckets: [], sum_other_doc_count: 42 } },
+      }),
+    });
+    const text = await runCli(["top", "--service", "service-a", "--format", "json"], client);
+    expect(text).toContain("WARNING: more than 10,000 distinct traceIds");
+  });
+
+  it("does not warn when every distinct traceId fit within the aggregation's bucket cap", async () => {
+    const client = fakeClient({
+      search: async () => ({
+        totalHits: 0,
+        hits: [],
+        aggregations: { by_trace: { buckets: [], sum_other_doc_count: 0 } },
+      }),
+    });
+    const text = await runCli(["top", "--service", "service-a", "--format", "json"], client);
+    expect(text).not.toContain("WARNING");
+  });
 });
 
 describe("count", () => {
@@ -539,6 +563,21 @@ describe("detached", () => {
   it("rejects a negative --padding", async () => {
     const client = fakeClient();
     await expect(runCli(["detached", "ref", "--padding", "-1"], client)).rejects.toThrow(/non-negative integer/);
+  });
+
+  it("warns when more than 10,000 distinct candidate traceIds existed and some were dropped before ranking", async () => {
+    let call = 0;
+    const client = fakeClient({
+      search: async () => {
+        call += 1;
+        if (call === 1) {
+          return { totalHits: 1, hits: [hit("1", { traceId: "ref", spanId: "s1", serviceName: "a", startTime: "2026-08-28T03:00:00.000000000Z", durationInNanos: 1_000_000 })] };
+        }
+        return { totalHits: 0, hits: [], aggregations: { by_trace: { buckets: [], sum_other_doc_count: 7 } } };
+      },
+    });
+    const text = await runCli(["detached", "ref", "--format", "json"], client);
+    expect(text).toContain("WARNING: more than 10,000 distinct candidate traceIds");
   });
 });
 

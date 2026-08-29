@@ -289,11 +289,17 @@ describe("mintDashboardsCredential", () => {
 
     await mintDashboardsCredential("cloud-logging", { cfHome: "/tmp/fake" }, { confirmDisruptive: true });
 
-    const [, restoreWritten] = writtenPayloads as [unknown, { saml: { enabled: boolean } }];
-    expect(restoreWritten.saml.enabled).toBe(false);
+    // Verbatim restore: writing originalParams back byte-for-byte means an
+    // instance that never had a saml block at all doesn't get one injected.
+    const [, restoreWritten] = writtenPayloads;
+    expect(restoreWritten).toEqual(originalParams);
   });
 
-  it("names the true original value, not a hard-coded true, in a critical restore-failure error", async () => {
+  it("downgrades a restore failure to non-critical when SAML was already off, and never discards the minted credential's real risk profile", async () => {
+    // Regression test: the disable step already succeeded and set
+    // saml.enabled=false before restore ever runs, so when the original was
+    // ALSO false, a failed restore leaves the instance exactly where it
+    // started — there is no SSO outage to raise a CRITICAL alarm about.
     vi.spyOn(cf, "cfServiceParams").mockResolvedValue('{"saml":{"enabled":false}}');
     let updateCall = 0;
     vi.spyOn(cf, "cfUpdateService").mockImplementation(async () => {
@@ -318,8 +324,9 @@ describe("mintDashboardsCredential", () => {
     expect(caught).toBeInstanceOf(SamlRestoreFailedError);
     const message = (caught as Error).message;
     expect(message).toContain("saml.enabled=false");
-    expect(message).toContain("set saml.enabled to false");
     expect(message).not.toContain("saml.enabled=true");
+    expect(message).not.toContain("CRITICAL");
+    expect(message).not.toContain("broken for ALL users");
   });
 
   it("never leaks a secret value quoted inside a JSON parse error for a malformed params blob", async () => {

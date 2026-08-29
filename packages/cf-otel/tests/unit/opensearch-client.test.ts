@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll, SPANS_SORT_TIEBREAKER } from "../../src/opensearch-client.js";
+import { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll } from "../../src/opensearch-client.js";
 import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
 describe("encodeConsoleProxyPath", () => {
@@ -162,7 +162,6 @@ describe("searchAfterAll", () => {
       getMapping: async () => ({}),
     };
     await searchAfterAll(client, "idx", {}, 10, 100);
-    expect(capturedSort).toEqual(SPANS_SORT_TIEBREAKER);
     expect(capturedSort).toEqual([{ startTime: "asc" }, { spanId: "asc" }]);
   });
 

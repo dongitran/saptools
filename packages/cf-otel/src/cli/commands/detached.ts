@@ -62,6 +62,12 @@ async function runDetached(traceId: string, opts: DetachedOpts): Promise<void> {
   printNotice(
     `${String(result.totalCandidateSpanCount)} candidate spans found across ${String(result.totalCandidateTraceCount)} other traceId(s) in this window.`,
   );
+  if (result.candidateBucketsTruncated) {
+    printNotice(
+      "WARNING: more than 10,000 distinct candidate traceIds exist in this window — the lowest-ranked ones by " +
+        "--sort were dropped before this list was built",
+    );
+  }
 
   await emitRows({
     command: "detached",

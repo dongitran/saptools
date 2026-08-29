@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { searchAfterAll } from "../../opensearch-client.js";
+import { SPANS_SORT_TIEBREAKER, searchAfterAll } from "../../opensearch-client.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { SpanOpts } from "../commandTypes.js";
 import { emitRows, parseFormat, printNotice } from "../output.js";
@@ -41,7 +41,7 @@ async function runSpan(traceId: string, spanId: string | undefined, opts: SpanOp
       const response = await client.search(DEFAULT_INDEX_PATTERN, {
         size: 1,
         query: { bool: { filter } },
-        sort: [{ startTime: "asc" }, { spanId: "asc" }],
+        sort: SPANS_SORT_TIEBREAKER,
       });
       return { docs: response.hits.map((hit) => hit._source), truncated: false };
     }
