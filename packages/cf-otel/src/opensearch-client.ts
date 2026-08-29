@@ -172,7 +172,17 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
   };
 }
 
-export const SPANS_SORT_TIEBREAKER = [{ startTime: "asc" }, { _id: "asc" }] as const;
+/**
+ * `spanId`, not `_id`: OpenSearch documents `_id` as restricted from sorting
+ * (falls back to fielddata, which is off by default on Elasticsearch 8+ and
+ * only on by default on OpenSearch today because of a dynamic cluster
+ * setting an operator can flip). `spanId` is a mandatory OpenTelemetry field
+ * — every span has one — mapped as a plain `keyword` with doc_values on by
+ * default in Data Prepper's own `otel-v1-apm-span-*` index template, so it
+ * sorts natively with no fielddata fallback and no dependence on a setting
+ * outside this tool's control.
+ */
+export const SPANS_SORT_TIEBREAKER = [{ startTime: "asc" }, { spanId: "asc" }] as const;
 
 export interface PagedSearchResult {
   readonly hits: readonly SearchHit[];

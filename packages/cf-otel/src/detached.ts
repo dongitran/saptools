@@ -197,7 +197,11 @@ export async function findDetachedCandidates(
     },
     aggs: {
       by_trace: {
-        terms: { field: "traceId", size: 10_000 },
+        // `order` picks which 10,000 traceId buckets OpenSearch returns at
+        // all, not just their display order — leaving it at the `_count`
+        // default would mean a long-but-low-span-count candidate could be
+        // truncated away before the client-side duration sort ever sees it.
+        terms: { field: "traceId", size: 10_000, order: options.sortBy === "duration" ? { max_duration: "desc" } : { _count: "desc" } },
         aggs: {
           min_start: { min: { field: "startTime" } },
           max_duration: { max: { field: "durationInNanos" } },

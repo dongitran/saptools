@@ -55,6 +55,11 @@ function withSamlEnabled(params: unknown, enabled: boolean): Record<string, unkn
   return { ...params, saml: { ...saml, enabled } };
 }
 
+/** Read the instance's current `saml.enabled`, defaulting to `false` for an absent/malformed `saml` block. */
+function readSamlEnabled(params: unknown): boolean {
+  return isRecord(params) && isRecord(params["saml"]) && params["saml"]["enabled"] === true;
+}
+
 async function writeSecureTempParamsFile(params: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "cf-otel-saml-"));
   try {
@@ -155,11 +160,12 @@ async function confirmThenMint(
 async function restoreCatchingError(
   instance: string,
   originalParams: unknown,
+  originalSamlEnabled: boolean,
   ctx: CfExecContext,
   report: StepReporter,
 ): Promise<Outcome<undefined>> {
   try {
-    await issueSamlUpdate(instance, originalParams, true, ctx, report);
+    await issueSamlUpdate(instance, originalParams, originalSamlEnabled, ctx, report);
     await confirmSamlUpdate(instance, ctx, report);
     return { ok: true, value: undefined };
   } catch (error) {
@@ -186,6 +192,7 @@ export async function mintDashboardsCredential(
   const report = options.report ?? ((message) => void message);
   const originalParams = parseCredentialJson(await cfServiceParams(instance, ctx), `params blob for "${instance}"`);
   report(`read params for "${instance}": ${JSON.stringify(redactForLog(originalParams))}`);
+  const originalSamlEnabled = readSamlEnabled(originalParams);
 
   try {
     await issueSamlUpdate(instance, originalParams, false, ctx, report);
@@ -206,17 +213,17 @@ export async function mintDashboardsCredential(
   // (confirmation polling, key creation/reading) — the restore below always
   // runs regardless of what happens in confirmThenMint.
   const mintResult = await confirmThenMint(instance, ctx, report);
-  const restoreResult = await restoreCatchingError(instance, originalParams, ctx, report);
+  const restoreResult = await restoreCatchingError(instance, originalParams, originalSamlEnabled, ctx, report);
 
   if (!restoreResult.ok) {
     const context = mintResult.ok
       ? ""
       : ` The credential-minting step had also failed: ${errorMessage(mintResult.error)}.`;
     throw new SamlRestoreFailedError(
-      `CRITICAL: failed to restore saml.enabled=true on Cloud Logging instance "${instance}".${context} ` +
+      `CRITICAL: failed to restore saml.enabled=${String(originalSamlEnabled)} on Cloud Logging instance "${instance}".${context} ` +
         "SSO dashboards login for this instance is broken for ALL users until this is fixed manually. " +
         `Recover with: cf service ${instance} --params (get the full params blob), set saml.enabled to ` +
-        `true while keeping every other field unchanged, then cf update-service ${instance} -c <file>, ` +
+        `${String(originalSamlEnabled)} while keeping every other field unchanged, then cf update-service ${instance} -c <file>, ` +
         `and verify with cf service ${instance}.`,
       { cause: restoreResult.error },
     );

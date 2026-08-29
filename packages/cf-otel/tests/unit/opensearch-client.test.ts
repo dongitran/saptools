@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll } from "../../src/opensearch-client.js";
+import { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll, SPANS_SORT_TIEBREAKER } from "../../src/opensearch-client.js";
 import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
 describe("encodeConsoleProxyPath", () => {
@@ -149,6 +149,21 @@ describe("searchAfterAll", () => {
     expect(result.hits.map((hit) => hit._id)).toEqual(["1", "2", "3"]);
     expect(result.truncated).toBe(false);
     expect(client.search).toHaveBeenCalledTimes(2);
+  });
+
+  it("ties startTime with spanId, not _id, so pagination never depends on OpenSearch's restricted-for-sort _id meta-field", async () => {
+    let capturedSort: unknown;
+    const client: OpenSearchClient = {
+      search: async (_index, body) => {
+        capturedSort = body["sort"];
+        return { totalHits: 0, hits: [] };
+      },
+      count: async () => 0,
+      getMapping: async () => ({}),
+    };
+    await searchAfterAll(client, "idx", {}, 10, 100);
+    expect(capturedSort).toEqual(SPANS_SORT_TIEBREAKER);
+    expect(capturedSort).toEqual([{ startTime: "asc" }, { spanId: "asc" }]);
   });
 
   it("always requests track_total_hits, so OpenSearch's default 10000 total-hits cap never applies", async () => {

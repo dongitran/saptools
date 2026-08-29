@@ -199,6 +199,30 @@ describe("findDetachedCandidates", () => {
     expect(result).toMatchObject({ referenceServiceName: "", candidates: [], totalCandidateTraceCount: 0, totalCandidateSpanCount: 0 });
   });
 
+  it("orders the terms aggregation by the requested metric, not just re-sorting client-side", async () => {
+    // Regression test: OpenSearch's terms `order` clause decides which
+    // 10,000 buckets come back at all, not just their display order. Without
+    // an explicit `order` matching sortBy, a long-but-low-span-count
+    // candidate could be truncated away before the client ever sees it.
+    let capturedTerms: unknown;
+    const client: OpenSearchClient = {
+      search: async (_index, body) => {
+        const aggs = body["aggs"] as { by_trace: { terms: unknown } };
+        capturedTerms = aggs.by_trace.terms;
+        return aggResponse([]);
+      },
+      count: async () => 0,
+      getMapping: async () => ({}),
+    };
+    const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
+
+    await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, { paddingSeconds: 0, limit: 10, sortBy: "duration" });
+    expect(capturedTerms).toMatchObject({ order: { max_duration: "desc" } });
+
+    await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, { paddingSeconds: 0, limit: 10, sortBy: "spanCount" });
+    expect(capturedTerms).toMatchObject({ order: { _count: "desc" } });
+  });
+
   it("reports the true total candidate span count (response.totalHits), distinct from the trace count", async () => {
     // The spec's own worked example headlines this distinction: "2,896
     // candidate spans found across 190 other traceIds" — spans, not traces.

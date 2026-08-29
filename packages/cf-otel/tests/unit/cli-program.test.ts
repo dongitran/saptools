@@ -203,6 +203,27 @@ describe("top", () => {
       /non-negative integer/,
     );
   });
+
+  it("orders the terms aggregation by the requested metric, not just re-sorting client-side", async () => {
+    // Regression test: OpenSearch's terms `order` clause decides which
+    // 10,000 buckets come back at all, not just their display order. Without
+    // an explicit `order` matching --sort, a long-but-low-span-count trace
+    // could be truncated away before the client ever sees it.
+    let capturedTerms: unknown;
+    const client = fakeClient({
+      search: async (_index, body) => {
+        const aggs = body["aggs"] as { by_trace: { terms: unknown } };
+        capturedTerms = aggs.by_trace.terms;
+        return { totalHits: 0, hits: [], aggregations: { by_trace: { buckets: [] } } };
+      },
+    });
+
+    await runCli(["top", "--service", "service-a", "--format", "json"], client);
+    expect(capturedTerms).toMatchObject({ order: { max_duration: "desc" } });
+
+    await runCli(["top", "--service", "service-a", "--sort", "spanCount", "--format", "json"], client);
+    expect(capturedTerms).toMatchObject({ order: { _count: "desc" } });
+  });
 });
 
 describe("count", () => {
