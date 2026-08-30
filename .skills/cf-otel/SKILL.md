@@ -1,6 +1,7 @@
 ---
 name: cf-otel
-description: Use when a task involves querying or analyzing OpenTelemetry trace spans already ingested into SAP Cloud Logging's OpenSearch backend on SAP BTP Cloud Foundry — finding slow traces, ranking self-time to find a bottleneck, analyzing gaps between sibling spans, finding detached/orphaned trace continuations, or diffing two traces before/after a fix — through the cf-otel CLI. This is read-only and post-hoc: it never instruments a running process (use cf-inspector or cf-live-trace for that) and never mutates application data.
+description: >-
+  Use when a task involves querying or analyzing OpenTelemetry trace spans already ingested into SAP Cloud Logging's OpenSearch backend on SAP BTP Cloud Foundry — finding slow traces, ranking self-time to find a bottleneck, analyzing gaps between sibling spans, finding detached/orphaned trace continuations, or diffing two traces before/after a fix — through the cf-otel CLI. This is read-only and post-hoc: it never instruments a running process (use cf-inspector or cf-live-trace for that) and never mutates application data.
 ---
 
 # CF Otel
