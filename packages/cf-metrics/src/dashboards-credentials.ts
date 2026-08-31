@@ -1,20 +1,17 @@
+import { isRecord } from "./agg-buckets.js";
 import type { CfExecContext } from "./cf.js";
+import { cfApi, cfAuth, cfCurl, cfServiceGuid, cfTargetSpace, withCfSession } from "./cf.js";
 import {
-  cfApi,
-  cfAuth,
-  cfEnv,
-  cfServiceKey,
-  cfServiceKeys,
-  cfTargetSpace,
-  extractVcapServices,
-  parseServiceKeyNames,
-  withCfSession,
-} from "./cf.js";
-import { CLI_NAME, type SapCredentials } from "./config.js";
+  BINDING_PROBE_CONCURRENCY,
+  BINDINGS_PAGE_SIZE,
+  CLI_NAME,
+  MAX_BINDING_PAGES,
+  type SapCredentials,
+} from "./config.js";
 import { extractDashboardsCredential, parseCredentialJson } from "./dashboards-payload.js";
 import { CredentialsNotFoundError, errorMessage } from "./errors.js";
 import { mintDashboardsCredential } from "./saml-toggle.js";
-import { discoverServiceInstance, findBoundApps } from "./service-discovery.js";
+import { discoverServiceInstance } from "./service-discovery.js";
 import type { DashboardsCredential, ResolvedTarget } from "./types.js";
 
 export interface CredentialDiscoveryOptions {
@@ -25,109 +22,196 @@ export interface CredentialDiscoveryOptions {
   readonly verbose: boolean;
 }
 
-function readNonEmptyString(record: Record<string, unknown>, key: string): string | undefined {
+/** One credential binding on the instance, flattened from the v3 API response. */
+interface BindingRef {
+  readonly guid: string;
+  readonly type: "key" | "app";
+  /** Service-key name, or the bound app's name — for reporting and for `--service-key`/`--fallback-binding-app` filtering. */
+  readonly label: string;
+  readonly createdAt: string;
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-/**
- * A VCAP_SERVICES entry's `name` is the *binding* name, which only equals
- * the real service instance name when no custom `--binding-name` was used;
- * `instance_name`, when present, is the authoritative instance name and
- * must be preferred (confirmed against this exact distinction already
- * handled the same way by sibling packages elsewhere in this monorepo, e.g.
- * `cf-event-mesh` and `cf-otel`). Matching on `name` alone would silently
- * miss a real, usable credential on any binding created with a custom name.
- */
-function vcapEntryMatchesInstance(record: Record<string, unknown>, instanceName: string): boolean {
-  const boundInstanceName = readNonEmptyString(record, "instance_name") ?? readNonEmptyString(record, "name");
-  return boundInstanceName === instanceName;
+function appGuidOf(resource: Record<string, unknown>): string | undefined {
+  const relationships = resource["relationships"];
+  if (!isRecord(relationships)) {
+    return undefined;
+  }
+  const app = relationships["app"];
+  const data = isRecord(app) ? app["data"] : undefined;
+  return isRecord(data) ? readString(data, "guid") : undefined;
 }
 
-function findDashboardsCredentialInVcap(
-  vcap: Record<string, unknown>,
-  instanceName: string,
-  appName: string,
-): DashboardsCredential | undefined {
-  for (const entries of Object.values(vcap)) {
-    if (!Array.isArray(entries)) {
+/** App GUID -> name, from the `include=app` sidecar, so app bindings can be named without extra requests. */
+function includedAppNames(payload: Record<string, unknown>): ReadonlyMap<string, string> {
+  const included = payload["included"];
+  const apps = isRecord(included) ? included["apps"] : undefined;
+  const names = new Map<string, string>();
+  if (!Array.isArray(apps)) {
+    return names;
+  }
+  for (const app of apps) {
+    if (!isRecord(app)) {
       continue;
     }
-    for (const entry of entries) {
-      if (typeof entry !== "object" || entry === null) {
-        continue;
-      }
-      const record = entry as Record<string, unknown>;
-      if (!vcapEntryMatchesInstance(record, instanceName)) {
-        continue;
-      }
-      const credential = extractDashboardsCredential(record["credentials"], `fallback-binding:${appName}`);
-      if (credential !== undefined) {
-        return credential;
-      }
+    const guid = readString(app, "guid");
+    const name = readString(app, "name");
+    if (guid !== undefined && name !== undefined) {
+      names.set(guid, name);
     }
   }
-  return undefined;
+  return names;
+}
+
+function parseBindingsPage(payload: Record<string, unknown>): readonly BindingRef[] {
+  const resources = payload["resources"];
+  if (!Array.isArray(resources)) {
+    return [];
+  }
+  const appNames = includedAppNames(payload);
+  const bindings: BindingRef[] = [];
+  for (const resource of resources) {
+    if (!isRecord(resource)) {
+      continue;
+    }
+    const guid = readString(resource, "guid");
+    const type = resource["type"];
+    if (guid === undefined || (type !== "key" && type !== "app")) {
+      continue;
+    }
+    const appGuid = appGuidOf(resource);
+    const label = readString(resource, "name") ?? (appGuid === undefined ? undefined : appNames.get(appGuid)) ?? guid;
+    bindings.push({ guid, type, label, createdAt: readString(resource, "created_at") ?? "" });
+  }
+  return bindings;
 }
 
 /**
- * `cf service-keys` does not expose creation timestamps (see
- * {@link parseServiceKeyNames}); reversing the platform's listing order is a
- * best-effort proxy for "newest first", not a verified guarantee.
+ * Purpose-made service keys first, then app bindings.
+ *
+ * Within each type the tiebreak differs, and deliberately so. Only credentials
+ * created *before* SAML was switched on retain a basic-auth
+ * username/password — newer ones expose the endpoint and mTLS ingest material
+ * only — so for app bindings, which nobody creates by hand, age is a real
+ * signal and the oldest is tried first (verified live: a binding from one
+ * month carried credentials, ones from the next did not). Keys are different:
+ * they are created deliberately, and one minted during an intentional
+ * SAML-off window can be *newer* than a key without credentials, so age
+ * predicts nothing there and the prior newest-first convention is kept.
+ *
+ * Ordering is only a preference, never a correctness requirement:
+ * {@link resolveFromBindings} probes candidates concurrently and still returns
+ * the highest-priority hit.
  */
-async function newestFirstKeyNames(instance: string, ctx: CfExecContext): Promise<readonly string[]> {
-  return [...parseServiceKeyNames(await cfServiceKeys(instance, ctx))].reverse();
-}
-
-async function tryServiceKeys(
-  instance: string,
-  keyNames: readonly string[],
-  ctx: CfExecContext,
-  recordAttempt: (detail: string) => void,
-): Promise<DashboardsCredential | undefined> {
-  for (const keyName of keyNames) {
-    try {
-      const payload = parseCredentialJson(await cfServiceKey(instance, keyName, ctx), `service key "${keyName}" payload`);
-      const credential = extractDashboardsCredential(payload, `service-key:${keyName}`);
-      if (credential !== undefined) {
-        return credential;
-      }
-      recordAttempt(`service key "${keyName}": payload had no dashboards-username/dashboards-password`);
-    } catch (error) {
-      recordAttempt(`service key "${keyName}": ${errorMessage(error)}`);
+function prioritize(bindings: readonly BindingRef[]): readonly BindingRef[] {
+  return [...bindings].sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === "key" ? -1 : 1;
     }
-  }
-  if (keyNames.length === 0) {
-    recordAttempt(`no service keys exist on instance "${instance}"`);
-  }
-  return undefined;
+    return a.type === "key" ? b.createdAt.localeCompare(a.createdAt) : a.createdAt.localeCompare(b.createdAt);
+  });
 }
 
-async function tryFallbackBindings(
-  instance: string,
-  apps: readonly string[],
+/**
+ * Every credential binding on the instance, in one v3 request per page.
+ *
+ * Replaces the previous "list bound apps, then `cf env` each one and search its
+ * whole environment for this instance" scan, which cost one process spawn plus
+ * two API round trips per app — ~15s across 59 apps on a real tenant, and
+ * unpredictable because it depended on where in the list a usable binding
+ * happened to sit.
+ */
+async function listCredentialBindings(instanceGuid: string, ctx: CfExecContext): Promise<readonly BindingRef[]> {
+  const bindings: BindingRef[] = [];
+  let page = 1;
+  let hasMore = true;
+  while (hasMore && page <= MAX_BINDING_PAGES) {
+    const raw = await cfCurl(
+      `/v3/service_credential_bindings?service_instance_guids=${encodeURIComponent(instanceGuid)}` +
+        `&per_page=${String(BINDINGS_PAGE_SIZE)}&page=${String(page)}&include=app`,
+      ctx,
+    );
+    const payload = parseCredentialJson(raw, `credential bindings page ${String(page)}`);
+    if (!isRecord(payload)) {
+      break;
+    }
+    bindings.push(...parseBindingsPage(payload));
+    const pagination = payload["pagination"];
+    const reported = isRecord(pagination) ? pagination["total_pages"] : undefined;
+    hasMore = page < (typeof reported === "number" && reported > 0 ? reported : 1);
+    page += 1;
+  }
+  return bindings;
+}
+
+function describe(binding: BindingRef): string {
+  return binding.type === "key" ? `service key "${binding.label}"` : `app binding "${binding.label}"`;
+}
+
+function sourceOf(binding: BindingRef): string {
+  return binding.type === "key" ? `service-key:${binding.label}` : `binding:${binding.label}`;
+}
+
+async function readBindingCredential(binding: BindingRef, ctx: CfExecContext): Promise<DashboardsCredential | undefined> {
+  const raw = await cfCurl(`/v3/service_credential_bindings/${encodeURIComponent(binding.guid)}/details`, ctx);
+  const payload = parseCredentialJson(raw, `${describe(binding)} details`);
+  const credentials = isRecord(payload) ? payload["credentials"] : undefined;
+  return extractDashboardsCredential(credentials, sourceOf(binding));
+}
+
+/**
+ * Probe candidates in {@link prioritize} order, a bounded batch at a time, and
+ * return the first hit *by priority* rather than the first to respond — so the
+ * chosen credential never depends on network timing.
+ */
+async function resolveFromBindings(
+  bindings: readonly BindingRef[],
   ctx: CfExecContext,
   recordAttempt: (detail: string) => void,
 ): Promise<DashboardsCredential | undefined> {
-  for (const app of apps) {
-    try {
-      const vcap = extractVcapServices(await cfEnv(app, ctx));
-      const credential = findDashboardsCredentialInVcap(vcap, instance, app);
-      if (credential !== undefined) {
-        return credential;
+  for (let start = 0; start < bindings.length; start += BINDING_PROBE_CONCURRENCY) {
+    const batch = bindings.slice(start, start + BINDING_PROBE_CONCURRENCY);
+    const outcomes = await Promise.all(
+      batch.map(async (binding) => {
+        try {
+          return { binding, credential: await readBindingCredential(binding, ctx) };
+        } catch (error) {
+          return { binding, error };
+        }
+      }),
+    );
+    for (const outcome of outcomes) {
+      if ("error" in outcome) {
+        recordAttempt(`${describe(outcome.binding)}: ${errorMessage(outcome.error)}`);
+        continue;
+      }
+      if (outcome.credential !== undefined) {
+        return outcome.credential;
       }
       recordAttempt(
-        `fallback binding app "${app}": bound entry had no dashboards-username/dashboards-password ` +
-          "(likely bound after SAML was enabled)",
+        `${describe(outcome.binding)}: no dashboards-username/dashboards-password ` +
+          "(created after SAML was enabled)",
       );
-    } catch (error) {
-      recordAttempt(`fallback binding app "${app}": ${errorMessage(error)}`);
     }
   }
-  if (apps.length === 0) {
-    recordAttempt(`no apps are bound to instance "${instance}"`);
-  }
   return undefined;
+}
+
+/** Keep only the candidates the caller pinned by name, when they pinned any. */
+function applyNameFilters(
+  bindings: readonly BindingRef[],
+  options: CredentialDiscoveryOptions,
+): readonly BindingRef[] {
+  const keyNames = options.serviceKeyNames;
+  const appNames = options.fallbackBindingApps;
+  return bindings.filter((binding) => {
+    const pinned = binding.type === "key" ? keyNames : appNames;
+    return pinned === undefined || pinned.includes(binding.label);
+  });
 }
 
 /**
@@ -163,18 +247,24 @@ export async function discoverDashboardsCredential(
       report(detail);
     };
 
-    const keyNames = options.serviceKeyNames ?? (await newestFirstKeyNames(instance, ctx));
-    const fromKeys = await tryServiceKeys(instance, keyNames, ctx, recordAttempt);
-    if (fromKeys !== undefined) {
-      report(`resolved dashboards credential from ${fromKeys.source}`);
-      return fromKeys;
-    }
+    const instanceGuid = await cfServiceGuid(instance, ctx);
+    const allBindings = await listCredentialBindings(instanceGuid, ctx);
+    const candidates = prioritize(applyNameFilters(allBindings, options));
+    report(`found ${String(allBindings.length)} credential binding(s) on "${instance}", ${String(candidates.length)} to try`);
 
-    const fallbackApps = options.fallbackBindingApps ?? (await findBoundApps(instance, ctx));
-    const fromFallback = await tryFallbackBindings(instance, fallbackApps, ctx, recordAttempt);
-    if (fromFallback !== undefined) {
-      report(`resolved dashboards credential from ${fromFallback.source}`);
-      return fromFallback;
+    if (candidates.length === 0) {
+      // Distinguish "nothing is bound" from "your filters excluded everything" —
+      // conflating them sends the reader looking for the wrong problem.
+      recordAttempt(
+        allBindings.length === 0
+          ? `instance "${instance}" has no service keys or app bindings to read credentials from`
+          : `all ${String(allBindings.length)} binding(s) on "${instance}" were excluded by --service-key/--fallback-binding-app`,
+      );
+    }
+    const fromBindings = await resolveFromBindings(candidates, ctx, recordAttempt);
+    if (fromBindings !== undefined) {
+      report(`resolved dashboards credential from ${fromBindings.source}`);
+      return fromBindings;
     }
 
     if (options.allowMintCredential) {

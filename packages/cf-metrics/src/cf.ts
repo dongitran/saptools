@@ -270,19 +270,39 @@ export async function cfServices(ctx: CfExecContext): Promise<string> {
   return await runCf(["services"], ctx);
 }
 
-/** List service key names on an instance, raw `cf service-keys` stdout. */
-export async function cfServiceKeys(instance: string, ctx: CfExecContext): Promise<string> {
-  return await runCf(["service-keys", instance], ctx);
-}
-
 /** Read one service key's payload, raw `cf service-key` stdout (contains embedded JSON). */
 export async function cfServiceKey(instance: string, keyName: string, ctx: CfExecContext): Promise<string> {
   return await runCf(["service-key", instance, keyName], ctx);
 }
 
-/** Read one app's environment, raw `cf env` stdout (contains VCAP_SERVICES/VCAP_APPLICATION). */
-export async function cfEnv(appName: string, ctx: CfExecContext): Promise<string> {
-  return await runCf(["env", appName], ctx);
+/**
+ * Raw `cf curl <path>` stdout — the Cloud Controller v3 API reached through the
+ * session's own credentials, so no token handling lives in this package.
+ *
+ * Used instead of scraping human-readable `cf` output where v3 answers the
+ * question directly: enumerating an instance's credential bindings is one
+ * request, versus one `cf env` per bound app (each dumping that app's entire
+ * environment) just to find which of them carries the instance.
+ */
+export async function cfCurl(path: string, ctx: CfExecContext): Promise<string> {
+  return await runCf(["curl", path], ctx);
+}
+
+const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * One service instance's GUID, needed to address it in v3 API paths.
+ *
+ * The shape is verified rather than trusted: anything else pasted into a URL
+ * would produce a confusing request-level failure far from the real cause,
+ * instead of naming the command that misbehaved.
+ */
+export async function cfServiceGuid(instance: string, ctx: CfExecContext): Promise<string> {
+  const guid = (await runCf(["service", instance, "--guid"], ctx)).trim();
+  if (!GUID_PATTERN.test(guid)) {
+    throw new Error(`cf service ${instance} --guid did not return a GUID`);
+  }
+  return guid;
 }
 
 /** Read one service instance's full params blob, raw `cf service --params` stdout. */
@@ -413,29 +433,6 @@ export function parseServicesTable(stdout: string): readonly CfServiceRow[] {
   return rows;
 }
 
-/**
- * Parses `cf service-keys <instance>` output. `cf` does not expose key
- * creation timestamps in this table, so callers that need "newest first"
- * treat the platform's default listing order as creation-ascending and
- * reverse it — a best-effort proxy, not a verified guarantee.
- */
-export function parseServiceKeyNames(stdout: string): readonly string[] {
-  const lines = stdout.split(/\r?\n/);
-  const headerIndex = lines.findIndex((line) => line.trim().toLowerCase() === "name");
-  if (headerIndex === -1) {
-    return [];
-  }
-  const names: string[] = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      break;
-    }
-    names.push(trimmed);
-  }
-  return names;
-}
-
 function findJsonObjectEnd(source: string, startIndex: number): number {
   let depth = 0;
   let inString = false;
@@ -479,34 +476,6 @@ export function extractFirstJsonObject(stdout: string): string {
     throw new Error("Malformed JSON object in command output");
   }
   return stdout.slice(openIndex, closeIndex + 1);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Extract and parse the VCAP_SERVICES JSON block from `cf env` output. */
-export function extractVcapServices(stdout: string): Record<string, unknown> {
-  const start = stdout.indexOf("VCAP_SERVICES:");
-  if (start === -1) {
-    throw new Error("VCAP_SERVICES section not found in cf env output");
-  }
-  const after = stdout.slice(start + "VCAP_SERVICES:".length);
-  const end = after.indexOf("VCAP_APPLICATION:");
-  const block = (end === -1 ? after : after.slice(0, end)).trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(block);
-  } catch {
-    // Never surface the raw SyntaxError message here: V8 can quote a verbatim
-    // snippet of the source next to the bad token, and this block is exactly
-    // the credentials of every service bound to the app, not just Cloud Logging.
-    throw new Error("VCAP_SERVICES is not valid JSON (parse error details omitted; the source may contain credentials)");
-  }
-  if (!isRecord(parsed)) {
-    throw new Error("VCAP_SERVICES must be an object");
-  }
-  return parsed;
 }
 
 /** Best-effort extraction of a `status:` field from `cf service` output. */

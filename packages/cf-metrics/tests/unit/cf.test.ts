@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractFirstJsonObject,
-  extractVcapServices,
   getApiEndpointForRegion,
   getRegionKeyForApi,
   parseCfTargetOutput,
-  parseServiceKeyNames,
   parseServiceStatus,
   parseServicesTable,
   redactSecretLikeText,
@@ -99,19 +97,6 @@ describe("parseServicesTable", () => {
   });
 });
 
-describe("parseServiceKeyNames", () => {
-  it("parses the key-name list under the 'name' header", () => {
-    const stdout = ["Getting service keys for service instance cloud-logging as user@example.com...", "", "name", "key1", "key2"].join(
-      "\n",
-    );
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
-  });
-
-  it("returns an empty list when there are no keys", () => {
-    expect(parseServiceKeyNames("No service key for service instance cloud-logging")).toEqual([]);
-  });
-});
-
 describe("extractFirstJsonObject", () => {
   it("extracts a JSON object embedded after leading prose text", () => {
     const stdout = 'Getting key key1 for service instance cloud-logging...\n\n{\n  "dashboards-endpoint": "https://x"\n}\n';
@@ -125,22 +110,6 @@ describe("extractFirstJsonObject", () => {
 
   it("throws when no JSON object is present", () => {
     expect(() => extractFirstJsonObject("no json here")).toThrow(/No JSON object found/);
-  });
-});
-
-describe("extractVcapServices", () => {
-  it("parses the VCAP_SERVICES JSON block from cf env output", () => {
-    const stdout = [
-      "VCAP_SERVICES:",
-      '{"cloud-logging":[{"name":"cloud-logging","credentials":{"dashboards-endpoint":"https://x"}}]}',
-      "VCAP_APPLICATION:{}",
-    ].join("\n");
-    const vcap = extractVcapServices(stdout);
-    expect(vcap["cloud-logging"]).toEqual([{ name: "cloud-logging", credentials: { "dashboards-endpoint": "https://x" } }]);
-  });
-
-  it("throws when VCAP_SERVICES is absent", () => {
-    expect(() => extractVcapServices("no vcap here")).toThrow(/VCAP_SERVICES section not found/);
   });
 });
 

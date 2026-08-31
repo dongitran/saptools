@@ -1,6 +1,6 @@
 export const CLI_NAME = "cf-metrics";
 /** Must equal `package.json`'s `version` — pinned by a unit test, since `--version` reports it. */
-export const CLI_VERSION = "0.2.0";
+export const CLI_VERSION = "0.3.0";
 export const ENV_PREFIX = "CF_METRICS";
 
 export const DEFAULT_INDEX_PATTERN = "metrics-*";
@@ -21,6 +21,13 @@ export const ALL_BUCKETS_TERMS_SIZE = 10_000;
  * `container.cpu.usage` carries two. Five leaves headroom without cost.
  */
 export const MAX_UNITS_PER_METRIC = 5;
+
+/** `per_page` for the v3 credential-bindings listing; CF caps this at 5000, 100 keeps one page for any realistic instance. */
+export const BINDINGS_PAGE_SIZE = 100;
+/** Hard stop on pagination, so a malformed `total_pages` can never loop forever. */
+export const MAX_BINDING_PAGES = 20;
+/** How many binding `/details` requests run at once — enough to hide latency without hammering the Cloud Controller. */
+export const BINDING_PROBE_CONCURRENCY = 5;
 
 export const DEFAULT_SAMPLE_LIMIT = 3;
 export const DEFAULT_NAMES_LIMIT = 50;

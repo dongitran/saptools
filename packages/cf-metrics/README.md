@@ -43,19 +43,29 @@ pick one explicitly.
 
 ## Credential discovery
 
-Identical mechanics to `@saptools/cf-otel` — reaching OpenSearch requires a Cloud Logging
-**dashboards** basic-auth credential, which is harder to get than it sounds once SAML is enabled
-on the instance's dashboards. `cf-metrics` tries, in order:
+Reaching OpenSearch requires a Cloud Logging **dashboards** basic-auth credential, which is harder
+to get than it sounds once SAML is enabled on the instance's dashboards: only credentials created
+*before* SAML was switched on keep a username and password — newer ones expose the endpoint and
+mTLS ingest material but nothing you can log in with.
 
-1. Existing service keys on the instance (`--service-instance`, `--service-key`, repeatable).
-2. A pre-existing app binding created before SAML was enabled (`--fallback-binding-app`,
-   repeatable) — such a binding keeps its original basic-auth credential forever.
+`cf-metrics` lists every credential binding on the instance in one Cloud Controller v3 request and
+reads their details, preferring:
+
+1. Service keys, newest first (`--service-key`, repeatable, to pin specific ones). Keys are created
+   deliberately, so age says nothing about whether one predates SAML.
+2. App bindings, oldest first (`--fallback-binding-app`, repeatable, to pin specific apps) — an app
+   bound before SAML keeps its original basic-auth credential forever, so the oldest is the best
+   bet.
 3. Only behind `--allow-mint-credential`: temporarily disable SAML, mint a new key, restore SAML
    immediately after. This is disruptive (breaks SSO dashboards login for everyone during the
    window) and is never attempted by default.
 
-Pass `--verbose` to see exactly which step succeeded and why. If every step fails, the error names
-every key and binding that was tried.
+Candidates are probed in small parallel batches, so a binding whose credential is not ultimately
+used may still be read; the one that wins is always the highest-priority match, never whichever
+request happened to return first.
+
+Pass `--verbose` to see how many bindings were found and which one succeeded. If every candidate
+fails, the error names each one that was tried.
 
 ## Commands
 

@@ -51,10 +51,13 @@ If `cf-metrics` is missing, install it from `@saptools/cf-metrics`:
 
 ## Credential Discovery
 
-Identical mechanics to `cf-otel` — every command needs a Cloud Logging **dashboards** basic-auth
-credential in addition to `SAP_EMAIL`/`SAP_PASSWORD`. Pass `--verbose` to see which step produced
-it (service keys → fallback bindings → `--allow-mint-credential` as an explicit, disruptive last
-resort — never use it without the user's go-ahead on a shared/production instance).
+Every command needs a Cloud Logging **dashboards** basic-auth credential in addition to
+`SAP_EMAIL`/`SAP_PASSWORD`. Only credentials created before SAML was enabled on the instance carry
+a usable username/password, so `cf-metrics` lists every binding on the instance in one Cloud
+Controller v3 request and prefers service keys (newest first), then app bindings (oldest first),
+then `--allow-mint-credential` as an explicit, disruptive last resort — never use that without the
+user's go-ahead on a shared/production instance. Pass `--verbose` to see how many bindings were
+found and which one succeeded.
 
 ```bash
 cf-metrics names --service my-app --region eu10 --org my-org --space my-space --verbose

@@ -35,15 +35,21 @@ test("falls back to a pre-SAML app binding end to end when the service key lacks
 test("reports every attempted step with --verbose when falling back", async () => {
   const result = await runCli(["names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", "--verbose", ...targetArgs()], envWithBrokenKey());
   expect(result.exitCode).toBe(0);
-  expect(result.stderr).toContain('service key "key1": payload had no dashboards-username/dashboards-password');
-  expect(result.stderr).toContain("resolved dashboards credential from fallback-binding:legacy-app");
+  expect(result.stderr).toContain('service key "key1": no dashboards-username/dashboards-password');
+  expect(result.stderr).toContain("resolved dashboards credential from binding:legacy-app");
 });
 
-test("tries service keys newest-first: the last-listed key is attempted, and the first-listed one is never even tried", async () => {
+/**
+ * Candidates are probed a bounded batch at a time rather than strictly one
+ * after another, so an unused key *is* read — the previous implementation's
+ * "never even tried" property is deliberately gone. What still holds, and what
+ * actually matters, is which credential gets used: the newest working key.
+ */
+test("uses the newest working service key even though lower-priority candidates are probed too", async () => {
   const traceFile = join(tmpdir(), `cf-metrics-key-order-${String(process.pid)}.jsonl`);
   await rm(traceFile, { force: true });
   try {
-    const result = await runCli(["names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", ...targetArgs()], {
+    const result = await runCli(["names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", "--verbose", ...targetArgs()], {
       ...BASE_ENV,
       CF_METRICS_FAKE_DASHBOARDS_URL: fakeOpenSearch.url,
       CF_METRICS_FAKE_DASHBOARDS_USERNAME: FAKE_USERNAME,
@@ -52,13 +58,15 @@ test("tries service keys newest-first: the last-listed key is attempted, and the
       CF_METRICS_FAKE_CF_TRACE_FILE: traceFile,
     });
     expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("resolved dashboards credential from service-key:key2");
 
     const traceLines = (await readFile(traceFile, "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const serviceKeyCalls = traceLines.filter((entry) => entry["kind"] === "service-key");
-    expect(serviceKeyCalls).toEqual([{ kind: "service-key", instance: "cloud-logging", keyName: "key2" }]);
+    // One listing request replaces the old per-app `cf env` scan entirely.
+    expect(traceLines.filter((entry) => entry["kind"] === "list-bindings")).toHaveLength(1);
+    expect(traceLines.filter((entry) => entry["kind"] === "env")).toHaveLength(0);
   } finally {
     await rm(traceFile, { force: true });
   }

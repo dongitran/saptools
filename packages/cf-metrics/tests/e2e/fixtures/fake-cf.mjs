@@ -63,74 +63,66 @@ if (cmd === "services") {
   process.exit(0);
 }
 
-if (cmd === "service-keys") {
-  trace({ kind: "service-keys", instance: args[1] });
-  // Two keys, oldest-listed first (as real `cf service-keys` lists them) —
-  // lets a test prove the CLI tries the last-listed ("newest") one first.
-  out("name");
-  out("key1");
-  out("key2");
+const INSTANCE_GUID = "11111111-2222-3333-4444-555555555555";
+// Two service keys and one pre-SAML app binding, mirroring the real v3 shape.
+// `created_at` drives ordering: keys newest-first, app bindings oldest-first.
+const BINDINGS = [
+  { guid: "key-1", type: "key", name: "key1", created_at: "2026-01-01T00:00:00Z" },
+  { guid: "key-2", type: "key", name: "key2", created_at: "2026-02-01T00:00:00Z" },
+  { guid: "bind-1", type: "app", name: null, created_at: "2025-01-01T00:00:00Z", appGuid: "app-1", appName: "legacy-app" },
+];
+
+if (cmd === "service" && args.includes("--guid")) {
+  trace({ kind: "service-guid", instance: args[1] });
+  out(INSTANCE_GUID);
   process.exit(0);
 }
 
-if (cmd === "service-key") {
-  const [, instance, keyName] = args;
-  trace({ kind: "service-key", instance, keyName });
-  // CF_METRICS_FAKE_CF_KEY1_BROKEN makes EVERY key fail (matching the original
-  // single-key fixture's behavior) to exercise the fallback-binding path.
-  // CF_METRICS_FAKE_CF_ONLY_KEY2_WORKS makes only key1 fail, so a test can
-  // prove key2 is tried before key1 rather than merely eventually succeeding.
-  const onlyKey2Works = process.env.CF_METRICS_FAKE_CF_ONLY_KEY2_WORKS === "1";
-  const broken = onlyKey2Works ? keyName !== "key2" : process.env.CF_METRICS_FAKE_CF_KEY1_BROKEN === "1";
-  if (broken) {
-    out(`{\n  "dashboards-endpoint": "${DASHBOARDS_URL}"\n}`);
-  } else {
+if (cmd === "curl") {
+  const path = args[1] ?? "";
+  const details = /service_credential_bindings\/([^/]+)\/details/.exec(path);
+
+  if (details === null) {
+    trace({ kind: "list-bindings" });
     out(
-      `{\n  "dashboards-endpoint": "${DASHBOARDS_URL}",\n  "dashboards-username": "${WORKING_USERNAME}",\n` +
-        `  "dashboards-password": "${WORKING_PASSWORD}"\n}`,
-    );
-  }
-  process.exit(0);
-}
-
-if (cmd === "env") {
-  const app = args[1];
-  trace({ kind: "env", app });
-  if (app === "legacy-app") {
-    const vcap = {
-      "cloud-logging": [
-        {
-          name: "cloud-logging",
-          credentials: {
-            "dashboards-endpoint": DASHBOARDS_URL,
-            "dashboards-username": WORKING_USERNAME,
-            "dashboards-password": WORKING_PASSWORD,
-          },
+      JSON.stringify({
+        pagination: { total_results: BINDINGS.length, total_pages: 1 },
+        resources: BINDINGS.map((b) => ({
+          guid: b.guid,
+          type: b.type,
+          name: b.name,
+          created_at: b.created_at,
+          relationships: b.appGuid ? { app: { data: { guid: b.appGuid } } } : {},
+        })),
+        included: {
+          apps: BINDINGS.filter((b) => b.appGuid).map((b) => ({ guid: b.appGuid, name: b.appName })),
         },
-      ],
-    };
-    out("VCAP_SERVICES:");
-    out(JSON.stringify(vcap));
-    out("VCAP_APPLICATION:{}");
+      }),
+    );
     process.exit(0);
   }
-  err(`App ${app} not found (fake)`);
-}
 
-if (cmd === "service" && args[2] === "--params") {
-  trace({ kind: "service-params", instance: args[1] });
-  out(JSON.stringify({ saml: { enabled: true, sp: { entity_id: "urn:example:sp" } } }));
-  process.exit(0);
-}
+  const guid = details[1];
+  const binding = BINDINGS.find((b) => b.guid === guid);
+  trace({ kind: "binding-details", guid, name: binding?.name ?? binding?.appName });
 
-if (cmd === "service") {
-  trace({ kind: "service-show", instance: args[1] });
-  out(`name:      ${args[1]}\nstatus:    update succeeded`);
-  process.exit(0);
-}
+  // CF_METRICS_FAKE_CF_KEY1_BROKEN makes EVERY key fail, to exercise the
+  // app-binding fallback. CF_METRICS_FAKE_CF_ONLY_KEY2_WORKS makes only key1
+  // fail, so a test can prove key2 is tried before key1.
+  const onlyKey2Works = process.env.CF_METRICS_FAKE_CF_ONLY_KEY2_WORKS === "1";
+  const isKey = binding?.type === "key";
+  const broken = isKey
+    ? onlyKey2Works
+      ? binding.name !== "key2"
+      : process.env.CF_METRICS_FAKE_CF_KEY1_BROKEN === "1"
+    : false;
 
-if (cmd === "update-service") {
-  trace({ kind: "update-service", instance: args[1] });
+  const credentials = { "dashboards-endpoint": DASHBOARDS_URL };
+  if (!broken) {
+    credentials["dashboards-username"] = WORKING_USERNAME;
+    credentials["dashboards-password"] = WORKING_PASSWORD;
+  }
+  out(JSON.stringify({ credentials }));
   process.exit(0);
 }
 

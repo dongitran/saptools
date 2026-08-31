@@ -2,6 +2,36 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.3.0
+
+Credential discovery now asks the Cloud Controller v3 API directly instead of scraping `cf` output.
+
+- **Root cause of the tool's slowness, now fixed.** `cf service-keys` output is a three-column
+  table, but the parser matched a header line equal to exactly `name`, so it always returned an
+  empty list and every run reported "no service keys exist" even when usable keys were there. With
+  keys apparently absent, each command fell through to a fallback scan that ran one `cf env` per
+  bound app, serially, dumping each app's entire environment just to find one binding.
+- Both steps are replaced by two requests:
+  `GET /v3/service_credential_bindings?service_instance_guids=…&include=app` lists every service
+  key and app binding on the instance in one call, and `…/<guid>/details` returns one binding's
+  credentials. Candidates are probed in bounded-parallel batches, and the winner is chosen by
+  priority rather than by whichever request returns first, so the credential used never depends on
+  network timing.
+- Measured on a real instance with 66 bindings: credential discovery went from **14.8s to 1.8s**,
+  and a full `names` command from **24.9s to 15.6s**. It is also predictable — the old scan's cost
+  depended on where a usable binding happened to sit in the app list, up to ~90s in the worst case.
+- Ordering reflects what actually predicts a usable credential. Only bindings created *before*
+  SAML was enabled keep a basic-auth username/password, so app bindings are tried oldest-first.
+  Keys keep the previous newest-first convention: they are created deliberately, and one minted
+  during an intentional SAML-off window can be newer than a key without credentials.
+- A failed `--service-key`/`--fallback-binding-app` filter now says the filters excluded every
+  binding, rather than claiming the instance has none.
+- Behaviour change worth noting: because candidates are probed concurrently, a binding whose
+  credential is not ultimately used may still be read. The previous implementation stopped at the
+  first success.
+- Removed the now-unused `cfEnv`, `cfServiceKeys`, `parseServiceKeyNames` and `extractVcapServices`
+  internals along with the old VCAP parsing path. None were part of the package's public exports.
+
 ## 0.2.0
 
 Correctness and ergonomics pass driven by verification against a real Cloud Logging backend and a
