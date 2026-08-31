@@ -1,0 +1,145 @@
+name: cf-metrics
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish @saptools/cf-metrics to npm
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - "pnpm-lock.yaml"
+      - ".github/workflows/cf-metrics.yml"
+      - "packages/cf-metrics/package.json"
+      - "packages/cf-metrics/README.md"
+      - "packages/cf-metrics/src/**"
+      - "packages/cf-metrics/tests/**"
+      - "packages/cf-metrics/playwright.config.ts"
+      - "packages/cf-metrics/tsconfig.json"
+      - "packages/cf-metrics/tsup.config.ts"
+      - "packages/cf-metrics/vitest.config.ts"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "pnpm-lock.yaml"
+      - ".github/workflows/cf-metrics.yml"
+      - "packages/cf-metrics/package.json"
+      - "packages/cf-metrics/README.md"
+      - "packages/cf-metrics/src/**"
+      - "packages/cf-metrics/tests/**"
+      - "packages/cf-metrics/playwright.config.ts"
+      - "packages/cf-metrics/tsconfig.json"
+      - "packages/cf-metrics/tsup.config.ts"
+      - "packages/cf-metrics/vitest.config.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cf-metrics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Build and verify cf-metrics
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @saptools/cf-metrics lint
+
+      - name: Typecheck
+        run: pnpm --filter @saptools/cf-metrics typecheck
+
+      - name: Build
+        run: pnpm --filter @saptools/cf-metrics build
+
+      - name: Run unit tests
+        run: pnpm --filter @saptools/cf-metrics test:unit
+
+      - name: Run fake-backed e2e tests
+        run: pnpm --filter @saptools/cf-metrics test:e2e
+
+      - name: Upload e2e diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-metrics-e2e-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: |
+            packages/cf-metrics/playwright-report/
+            packages/cf-metrics/test-results/
+
+      - name: Verify publish tarball
+        run: npm pack --dry-run
+        working-directory: packages/cf-metrics
+
+  publish:
+    name: Publish cf-metrics to npm
+    runs-on: ubuntu-latest
+    needs: ci
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm --filter @saptools/cf-metrics build
+
+      - name: Check whether version is already published
+        id: publish_check
+        working-directory: packages/cf-metrics
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${package_version} is already published. Skipping npm publish."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.publish_check.outputs.should_publish == 'true'
+        run: npm publish --provenance --access public
+        working-directory: packages/cf-metrics

@@ -37,6 +37,7 @@ This repository is organized as a monorepo under [`packages/`](./packages).
 | [`@saptools/gitport`](./packages/gitport) | Port a GitLab source MR into a destination Draft MR with sequential cherry-picks | [![npm](https://img.shields.io/npm/v/@saptools/gitport.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/gitport) |
 | [`@saptools/jira`](./packages/jira) | Jira Cloud CLI and typed API that reuse the JiraOps OAuth token store | [![npm](https://img.shields.io/npm/v/@saptools/jira.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/jira) |
 | [`@saptools/cf-otel`](./packages/cf-otel) | Query and analyze OpenTelemetry trace spans already ingested into SAP Cloud Logging's OpenSearch backend | [![npm](https://img.shields.io/npm/v/@saptools/cf-otel.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-otel) |
+| [`@saptools/cf-metrics`](./packages/cf-metrics) | Query container CPU/RAM/filesystem and custom OTel metrics already ingested into SAP Cloud Logging's OpenSearch backend | [![npm](https://img.shields.io/npm/v/@saptools/cf-metrics.svg?style=flat-square&color=CB3837&logo=npm&label=)](https://www.npmjs.com/package/@saptools/cf-metrics) |
 
 ---
 
@@ -214,6 +215,17 @@ Read-only CLI for OpenTelemetry trace spans already ingested into SAP Cloud Logg
 
 Docs → [`packages/cf-otel/README.md`](./packages/cf-otel/README.md)
 
+### 📊 `@saptools/cf-metrics`
+
+Read-only CLI for container CPU/RAM/filesystem and custom OTel metrics already ingested into SAP Cloud Logging's OpenSearch backend — the "how did resource usage look over the last N hours" tool `cf app`'s point-in-time snapshot can't answer.
+
+- 📈 kind-aware time-bucketed history for gauge, sum, and histogram metrics
+- 🔎 `sample`/`mapping`/`fields`/`names` for blind exploration, same discovery flow as `cf-otel`
+- 🏆 `top` for cross-app outlier ranking, `watch` for live polling during a deploy or incident (see the package README for a known `container.cpu.usage` unit caveat)
+- 🔐 same credential discovery as `cf-otel` — service keys and bindings first, SAML toggle only as an explicit, opt-in last resort
+
+Docs → [`packages/cf-metrics/README.md`](./packages/cf-metrics/README.md)
+
 ---
 
 ## 🧱 Monorepo Tooling
@@ -263,7 +275,8 @@ pnpm --filter @saptools/cf-sync test:unit
 │   ├── sharepoint-excel/
 │   ├── gitport/
 │   ├── jira/
-│   └── cf-otel/
+│   ├── cf-otel/
+│   └── cf-metrics/
 ├── package.json
 ├── pnpm-workspace.yaml
 └── turbo.json

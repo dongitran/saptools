@@ -58,6 +58,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# npm pack output — a local verification artifact, never part of the repo
+*.tgz
+
 # Agent implementation plans
 implementation_plan.md
 **/implementation_plan.md

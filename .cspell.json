@@ -188,7 +188,17 @@
     "fullwidth",
     "SQLSCRIPT",
     "FEFF",
-    "disqualifiers"
+    "disqualifiers",
+    "opensearch",
+    "OPENSEARCH",
+    "aggs",
+    "Aggs",
+    "misalign",
+    "unfetched",
+    "IBAAJ",
+    "dedup",
+    "mykey",
+    "pipeable"
   ],
   "ignorePaths": [
     "**/node_modules/**",
