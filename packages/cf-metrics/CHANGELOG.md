@@ -2,6 +2,23 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.3.1
+
+- **An inverted `--since`/`--until` window is now rejected instead of returning an empty table.**
+  OpenSearch accepts `{gte: <later>, lte: <earlier>}` and simply matches nothing, so
+  `--since 30m --until 2h` exited 0 with `(no rows)` — indistinguishable from a genuinely quiet
+  period, and only after a full ~20s credential round trip. It now fails in ~50ms, before any
+  network call.
+- The same guard covers a case the user could not have spotted: commands that default `--since` to
+  a recent window inverted it **without anything contradictory being typed**. `--until 3h` on its
+  own resolved to `{gte: now-2h, lte: now-3h}` and silently returned nothing. That shape gets its
+  own message naming the default as the cause, rather than blaming a value the user never wrote.
+- Windows that run forwards are unaffected: `--since 4h --until 3h` still works, an equal start and
+  end is still allowed as a legal point query, and `sample`, which leaves the start unbounded, still
+  accepts `--until` on its own.
+- Folded four near-identical per-command time-flag checks into one shared `assertValidTimeRange`,
+  so no command can validate the shape of a bound but forget the ordering.
+
 ## 0.3.0
 
 Credential discovery now asks the Cloud Controller v3 API directly instead of scraping `cf` output.

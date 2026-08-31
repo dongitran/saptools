@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assertValidTimeBoundShape, buildMetricBoolQuery, resolveTimeBound } from "../../src/query-builder.js";
+import { assertValidTimeBoundShape, assertValidTimeRange, buildMetricBoolQuery, resolveTimeBound } from "../../src/query-builder.js";
 
 describe("resolveTimeBound", () => {
   const now = new Date("2026-08-31T12:00:00.000Z");
@@ -136,5 +136,73 @@ describe("buildMetricBoolQuery", () => {
       now,
     ) as { bool: { filter: unknown[] } };
     expect(query.bool.filter).toHaveLength(3);
+  });
+});
+
+describe("assertValidTimeRange", () => {
+  const NOW = new Date("2026-09-01T12:00:00.000Z");
+
+  /**
+   * OpenSearch accepts `{gte: <later>, lte: <earlier>}` and simply matches
+   * nothing, so before this guard the command exited 0 with an empty table —
+   * indistinguishable from a genuinely quiet period.
+   */
+  it("rejects a window whose --since is later than its --until", () => {
+    expect(() => {
+      assertValidTimeRange({ since: "30m", until: "2h" }, undefined, NOW);
+    }).toThrow(/--since "30m" is later than --until "2h"/);
+  });
+
+  /**
+   * The nastier shape: the user wrote nothing contradictory. `--until 3h` alone
+   * inverted against the command's own 2h default and returned nothing.
+   */
+  it("rejects an --until older than the defaulted --since, and blames the default", () => {
+    expect(() => {
+      assertValidTimeRange({ until: "3h" }, "2h", NOW);
+    }).toThrow(/older than the default --since \("2h"\)/);
+  });
+
+  it("accepts a window in the past where --since is the older bound", () => {
+    expect(() => {
+      assertValidTimeRange({ since: "4h", until: "3h" }, "2h", NOW);
+    }).not.toThrow();
+  });
+
+  it("accepts --until alone for a command that leaves the start unbounded", () => {
+    expect(() => {
+      assertValidTimeRange({ until: "3h" }, undefined, NOW);
+    }).not.toThrow();
+  });
+
+  it("accepts an equal start and end rather than inventing an error for a legal point query", () => {
+    expect(() => {
+      assertValidTimeRange({ since: "1h", until: "1h" }, undefined, NOW);
+    }).not.toThrow();
+  });
+
+  it("compares absolute timestamps, not just relative durations", () => {
+    expect(() => {
+      assertValidTimeRange({ since: "2026-09-01T10:00:00Z", until: "2026-08-01T10:00:00Z" }, undefined, NOW);
+    }).toThrow(/is later than --until/);
+  });
+
+  it("compares a relative bound against an absolute one", () => {
+    // 30m before NOW is 11:30; the absolute --until is an hour earlier.
+    expect(() => {
+      assertValidTimeRange({ since: "30m", until: "2026-09-01T10:30:00Z" }, undefined, NOW);
+    }).toThrow(/is later than --until/);
+  });
+
+  it("still reports a malformed bound as a shape error rather than an ordering one", () => {
+    expect(() => {
+      assertValidTimeRange({ since: "yesterday", until: "3h" }, undefined, NOW);
+    }).toThrow(/Invalid --since value "yesterday"/);
+  });
+
+  it("does nothing when no --until is given", () => {
+    expect(() => {
+      assertValidTimeRange({ since: "30m" }, "2h", NOW);
+    }).not.toThrow();
   });
 });

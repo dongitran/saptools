@@ -5,7 +5,7 @@ import { CfMetricsError } from "../../errors.js";
 import type { OutputRow } from "../../format.js";
 import { queryHistory, resolveMetricKind } from "../../history.js";
 import { parseMetricKind } from "../../kind.js";
-import { assertValidTimeBoundShape } from "../../query-builder.js";
+import { assertValidTimeRange } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { HistoryOpts } from "../commandTypes.js";
 import { collectRepeatable, emitRows, parseFormat, printNotice } from "../output.js";
@@ -28,12 +28,7 @@ const INTERVAL_PATTERN = /^(\d+)(?:ms|s|m|h|d)$/;
 
 /** Fail fast on an unparseable --since/--until/--interval before any CF login or network call. */
 function checkTimeOptions(opts: { readonly since?: string; readonly until?: string; readonly interval: string }): void {
-  if (opts.since !== undefined) {
-    assertValidTimeBoundShape("--since", opts.since);
-  }
-  if (opts.until !== undefined) {
-    assertValidTimeBoundShape("--until", opts.until);
-  }
+  assertValidTimeRange(opts, DEFAULT_SINCE);
   const match = INTERVAL_PATTERN.exec(opts.interval.trim());
   if (match === null || Number(match[1]) === 0) {
     throw new CfMetricsError(

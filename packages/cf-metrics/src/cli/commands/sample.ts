@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN, DEFAULT_SAMPLE_LIMIT } from "../../config.js";
 import { CfMetricsError } from "../../errors.js";
-import { assertValidTimeBoundShape, buildMetricBoolQuery } from "../../query-builder.js";
+import { assertValidTimeRange, buildMetricBoolQuery } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { SampleOpts } from "../commandTypes.js";
 import { checkUpperLimit, emitRows, parseFormat } from "../output.js";
@@ -27,18 +27,9 @@ function checkLimit(limit: number): void {
 }
 
 /** Fail fast on an unparseable --since/--until before any CF login or network call. */
-function checkTimeRange(opts: { readonly since?: string; readonly until?: string }): void {
-  if (opts.since !== undefined) {
-    assertValidTimeBoundShape("--since", opts.since);
-  }
-  if (opts.until !== undefined) {
-    assertValidTimeBoundShape("--until", opts.until);
-  }
-}
-
 async function runSample(opts: SampleOpts): Promise<void> {
   checkLimit(opts.limit);
-  checkTimeRange(opts);
+  assertValidTimeRange(opts);
   const format = parseFormat(opts.format);
   const rows = await withOpenSearchClient(opts, async (client) => {
     const query = buildMetricBoolQuery({

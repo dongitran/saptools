@@ -136,6 +136,36 @@ test("top --unit ranks on a single series and drops the warning", async () => {
   expect(rows[0]?.["AVG"]).toBeCloseTo(0.017, 5);
 });
 
+/**
+ * An inverted window used to exit 0 with an empty table — the failure mode was
+ * indistinguishable from a quiet period, so nobody noticed the flags were
+ * backwards. These pin both shapes end to end, including the pre-network timing.
+ */
+test("top rejects an inverted --since/--until instead of returning an empty table", async () => {
+  const result = await runCli(["top", "--name", "container.cpu.usage", "--since", "30m", "--until", "2h", ...targetArgs()], env());
+
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain('--since "30m" is later than --until "2h"');
+  expect(result.stdout).not.toContain("(no rows)");
+});
+
+test("top rejects an --until older than its defaulted --since, naming the default as the cause", async () => {
+  const result = await runCli(["top", "--name", "container.cpu.usage", "--until", "3h", ...targetArgs()], env());
+
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain('older than the default --since ("2h")');
+});
+
+test("top still accepts a past window where --since is the older bound", async () => {
+  const result = await runCli(
+    ["top", "--name", "container.memory.usage", "--since", "2026-08-28T00:00:00.000Z", "--until", "2026-08-29T00:00:00.000Z", "--format", "json", ...targetArgs()],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect((JSON.parse(result.stdout) as readonly unknown[]).length).toBeGreaterThan(0);
+});
+
 test("top --since with an unparseable value fails fast with a clear error, not a raw backend error", async () => {
   const result = await runCli(["top", "--name", "container.cpu.usage", "--since", "yesterday", ...targetArgs()], env());
   expect(result.exitCode).not.toBe(0);

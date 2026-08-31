@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { DEFAULT_SINCE, DEFAULT_TOP_LIMIT } from "../../config.js";
 import { parseMetricKind } from "../../kind.js";
-import { assertValidTimeBoundShape } from "../../query-builder.js";
+import { assertValidTimeRange } from "../../query-builder.js";
 import { queryTop, resolveTopMetricKind } from "../../top.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { TopOpts } from "../commandTypes.js";
@@ -17,18 +17,9 @@ import {
 } from "../shared-options.js";
 
 /** Fail fast on an unparseable --since/--until before any CF login or network call. */
-function checkTimeRange(opts: { readonly since?: string; readonly until?: string }): void {
-  if (opts.since !== undefined) {
-    assertValidTimeBoundShape("--since", opts.since);
-  }
-  if (opts.until !== undefined) {
-    assertValidTimeBoundShape("--until", opts.until);
-  }
-}
-
 async function runTop(opts: TopOpts): Promise<void> {
   checkUpperLimit(opts.limit);
-  checkTimeRange(opts);
+  assertValidTimeRange(opts, DEFAULT_SINCE);
   const format = parseFormat(opts.format);
   const since = opts.since ?? DEFAULT_SINCE;
   // Parsed pre-network so a bad --kind fails fast, matching every other flag.

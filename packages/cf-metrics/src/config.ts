@@ -1,6 +1,6 @@
 export const CLI_NAME = "cf-metrics";
 /** Must equal `package.json`'s `version` — pinned by a unit test, since `--version` reports it. */
-export const CLI_VERSION = "0.3.0";
+export const CLI_VERSION = "0.3.1";
 export const ENV_PREFIX = "CF_METRICS";
 
 export const DEFAULT_INDEX_PATTERN = "metrics-*";

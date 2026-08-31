@@ -48,6 +48,56 @@ export function assertValidTimeBoundShape(flagName: string, value: string): void
   }
 }
 
+/**
+ * Validate a command's `--since`/`--until` pair: each one's shape, and then
+ * that the window actually runs forwards.
+ *
+ * An inverted window is not rejected by OpenSearch — `{gte: <later>, lte:
+ * <earlier>}` is a legal query that simply matches nothing — so before this
+ * check the command exited 0 with an empty table, indistinguishable from "no
+ * data in this period".
+ *
+ * `defaultSince` matters as much as the flags. Commands that default `--since`
+ * to a recent window can invert it *without the user writing anything
+ * contradictory*: `--until 3h` on its own resolved to `{gte: now-2h, lte:
+ * now-3h}` and silently returned nothing. That case gets its own message,
+ * because blaming a value the user never typed is not much better than
+ * silence. Pass `defaultSince` as `undefined` for commands (like `sample`)
+ * that leave the start unbounded.
+ */
+export function assertValidTimeRange(
+  opts: { readonly since?: string | undefined; readonly until?: string | undefined },
+  defaultSince?: string,
+  now: Date = new Date(),
+): void {
+  if (opts.since !== undefined) {
+    assertValidTimeBoundShape("--since", opts.since);
+  }
+  if (opts.until !== undefined) {
+    assertValidTimeBoundShape("--until", opts.until);
+  }
+
+  const effectiveSince = opts.since ?? defaultSince;
+  if (effectiveSince === undefined || opts.until === undefined) {
+    return;
+  }
+  const start = Date.parse(resolveTimeBound(effectiveSince, now));
+  const end = Date.parse(resolveTimeBound(opts.until, now));
+  // Unparseable values already threw above; skipping here keeps this function
+  // from inventing a second, less specific error for the same input.
+  if (Number.isNaN(start) || Number.isNaN(end) || start <= end) {
+    return;
+  }
+  throw new CfMetricsError(
+    "CONFIG",
+    opts.since === undefined
+      ? `--until "${opts.until}" is older than the default --since ("${effectiveSince}"), so the window would end before it starts and match nothing. ` +
+        "Pass --since explicitly with a start older than --until."
+      : `--since "${opts.since}" is later than --until "${opts.until}", so the window would end before it starts and match nothing. ` +
+        "For a window in the past, --since must be the older of the two.",
+  );
+}
+
 export interface MetricFilterOptions {
   readonly service?: string;
   readonly names?: readonly string[];

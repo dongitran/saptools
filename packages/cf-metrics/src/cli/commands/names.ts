@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { DEFAULT_NAMES_LIMIT, DEFAULT_SINCE } from "../../config.js";
 import { queryNames } from "../../names.js";
-import { assertValidTimeBoundShape } from "../../query-builder.js";
+import { assertValidTimeRange } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { NamesOpts } from "../commandTypes.js";
 import { checkUpperLimit, emitRows, parseFormat } from "../output.js";
@@ -17,19 +17,10 @@ import {
 } from "../shared-options.js";
 
 /** Fail fast on an unparseable --since/--until before any CF login or network call. */
-function checkTimeRange(opts: { readonly since?: string; readonly until?: string }): void {
-  if (opts.since !== undefined) {
-    assertValidTimeBoundShape("--since", opts.since);
-  }
-  if (opts.until !== undefined) {
-    assertValidTimeBoundShape("--until", opts.until);
-  }
-}
-
 async function runNames(opts: NamesOpts): Promise<void> {
   checkUpperLimit(opts.limit);
   const format = parseFormat(opts.format);
-  checkTimeRange(opts);
+  assertValidTimeRange(opts, DEFAULT_SINCE);
   const rows = await withOpenSearchClient(opts, async (client) => {
     return await queryNames(client, {
       service: opts.service,
