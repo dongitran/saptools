@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import { FAKE_PASSWORD, FAKE_USERNAME, startFakeOpenSearch } from "./fixtures/fake-opensearch.js";
-import { BASE_ENV, CLI_PATH, runCli, targetArgs } from "./helpers.js";
+import { BASE_ENV, CLI_PATH, FAKE_CF_PATH, runCli, targetArgs, waitFor } from "./helpers.js";
 
 let fakeOpenSearch: Awaited<ReturnType<typeof startFakeOpenSearch>>;
 
@@ -111,28 +111,49 @@ test("--service-instance disambiguates when more than one instance exists", asyn
  */
 test("removes the temporary CF_HOME when interrupted mid-run, instead of stranding a refresh token", async () => {
   const { spawn } = await import("node:child_process");
-  const { readdir } = await import("node:fs/promises");
+  const { readdirSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
 
   const prefix = "saptools-cf-metrics-";
-  const before = new Set((await readdir(tmpdir())).filter((entry) => entry.startsWith(prefix)));
+  // Read synchronously so the polled predicate below sees the listing as it is
+  // at that instant, rather than one resolved a tick later.
+  const listSessionDirs = (): string[] => readdirSync(tmpdir()).filter((entry) => entry.startsWith(prefix));
+  const before = new Set(listSessionDirs());
 
+  // `CF_METRICS_CF_BIN` must point at the fake `cf`, exactly as `runCli` does:
+  // without it the CLI reaches for a real `cf` binary, which fails instantly
+  // where none is installed and never opens the session window this test needs.
   const child = spawn(
     "node",
     [CLI_PATH, "names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", ...targetArgs()],
-    { env: { ...process.env, ...envWithBrokenKey(), CF_METRICS_FAKE_CF_SLOW_MS: "8000" }, stdio: "ignore" },
+    {
+      env: {
+        ...process.env,
+        CF_METRICS_CF_BIN: FAKE_CF_PATH,
+        ...envWithBrokenKey(),
+        CF_METRICS_FAKE_CF_SLOW_MS: "20000",
+      },
+      stdio: "ignore",
+    },
   );
-
-  // Let the session get far enough to have created the directory.
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // Attached before any waiting: the child can exit sooner than expected, and a
+  // listener added afterwards would miss the event and hang the test.
   const exited = new Promise<void>((resolve) => {
     child.on("exit", () => {
       resolve();
     });
   });
+
+  // Wait for the session to actually exist rather than guessing a duration —
+  // the fixed sleep this replaces was both flaky and, as it turned out, passing
+  // for the wrong reason.
+  await waitFor(
+    () => listSessionDirs().some((entry) => !before.has(entry)),
+    "the CLI to create its temporary CF_HOME",
+  );
+
   child.kill("SIGINT");
   await exited;
 
-  const after = (await readdir(tmpdir())).filter((entry) => entry.startsWith(prefix) && !before.has(entry));
-  expect(after).toEqual([]);
+  expect(listSessionDirs().filter((entry) => !before.has(entry))).toEqual([]);
 });
