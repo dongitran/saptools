@@ -1,4 +1,4 @@
-import { bucketArray } from "./agg-buckets.js";
+import { bucketArray, termsTruncated } from "./agg-buckets.js";
 import { ALL_BUCKETS_TERMS_SIZE, DEFAULT_INDEX_PATTERN } from "./config.js";
 import type { OutputRow } from "./format.js";
 import type { OpenSearchClient } from "./opensearch-client.js";
@@ -34,7 +34,13 @@ function allBucketKeys(bucket: Record<string, unknown>, aggName: string): string
 }
 
 /** Which metric names exist for one service/time-range, with their kind and unit. */
-export async function queryNames(client: OpenSearchClient, opts: NamesQueryOptions): Promise<readonly OutputRow[]> {
+export interface NamesResult {
+  readonly rows: readonly OutputRow[];
+  /** True when the `terms` aggregation dropped names — see {@link SnapshotResult.truncated} for why the sparsest go first. */
+  readonly truncated: boolean;
+}
+
+export async function queryNames(client: OpenSearchClient, opts: NamesQueryOptions): Promise<NamesResult> {
   const query = buildMetricBoolQuery({
     service: opts.service,
     since: opts.since,
@@ -53,11 +59,12 @@ export async function queryNames(client: OpenSearchClient, opts: NamesQueryOptio
       },
     },
   });
-  const buckets = bucketArray(response.aggregations?.["by_name"]);
-  return buckets.map((bucket) => ({
+  const byName = response.aggregations?.["by_name"];
+  const rows = bucketArray(byName).map((bucket) => ({
     NAME: typeof bucket["key"] === "string" ? bucket["key"] : "",
     KIND: topBucketKey(bucket, "by_kind") ?? "",
     UNIT: allBucketKeys(bucket, "by_unit"),
     DOC_COUNT: typeof bucket["doc_count"] === "number" ? bucket["doc_count"] : 0,
   }));
+  return { rows, truncated: termsTruncated(byName) };
 }

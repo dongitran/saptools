@@ -32,7 +32,7 @@ describe("queryNames", () => {
       getMapping: vi.fn(async () => ({})),
     };
 
-    const rows = await queryNames(client, { service: "app", since: "2h", limit: 50 });
+    const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
 
     expect(rows).toEqual([
       { NAME: "container.cpu.usage", KIND: "GAUGE", UNIT: "1", DOC_COUNT: 208 },
@@ -47,7 +47,7 @@ describe("queryNames", () => {
       getMapping: vi.fn(async () => ({})),
     };
 
-    await expect(queryNames(client, { service: "app", since: "2h", limit: 50 })).resolves.toEqual([]);
+    await expect(queryNames(client, { service: "app", since: "2h", limit: 50 })).resolves.toEqual({ rows: [], truncated: false });
   });
 
   it("requests every bucket (terms size 10000) when --limit is 0, matching top's 'no limit' convention", async () => {
@@ -100,7 +100,7 @@ describe("queryNames", () => {
       getMapping: vi.fn(async () => ({})),
     };
 
-    const rows = await queryNames(client, { service: "app", since: "2h", limit: 50 });
+    const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
 
     expect(rows).toEqual([{ NAME: "mystery.metric", KIND: "", UNIT: "", DOC_COUNT: 1 }]);
   });
@@ -140,7 +140,7 @@ describe("queryNames", () => {
       getMapping: vi.fn(async () => ({})),
     };
 
-    const rows = await queryNames(client, { service: "app", since: "2h", limit: 50 });
+    const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
 
     expect(rows[0]).toMatchObject({ NAME: "container.cpu.usage", UNIT: "cpu, 1" });
     // A single-unit metric must not gain a spurious separator.

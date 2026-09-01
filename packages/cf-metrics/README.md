@@ -76,8 +76,8 @@ fails, the error names each one that was tried.
 | `fields` | List every flat attribute key on a sample metric document. |
 | `names` | Which metric names exist for a service/time-range, with `kind`, `unit`, and doc count. |
 | `history` | Time-bucketed values for one or more metric names, kind-aware — the core command. |
-| `snapshot` | Latest single value per metric name for a service, point-in-time, no bucketing. |
-| `top` | Cross-app ranking for one metric name over a range. No `--service` filter; that's the point. Kind-aware like `history`. Not reliable for `container.cpu.usage` — see the unit caveat below. |
+| `snapshot` | Latest single value per metric name for a service, point-in-time, no bucketing. `--limit` bounds how many names come back (0 for all); a truncated list is flagged on stderr, as it is for `names`. |
+| `top` | Cross-app ranking for one metric name over a range. No `--service` filter; that's the point. Kind-aware like `history`. Pass `--unit` for `container.cpu.usage` — see the unit caveat below. |
 | `watch` | Poll for new metric points as they land, `--json` for NDJSON — live monitoring during a deploy or incident. `--lookback` sets the initial look-back window (default `2m`). |
 | `result show\|list\|prune\|clear` | Inspect results saved via `--save`. |
 

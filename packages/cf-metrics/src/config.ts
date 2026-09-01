@@ -1,6 +1,6 @@
 export const CLI_NAME = "cf-metrics";
 /** Must equal `package.json`'s `version` — pinned by a unit test, since `--version` reports it. */
-export const CLI_VERSION = "0.3.1";
+export const CLI_VERSION = "0.4.0";
 export const ENV_PREFIX = "CF_METRICS";
 
 export const DEFAULT_INDEX_PATTERN = "metrics-*";
@@ -31,6 +31,8 @@ export const BINDING_PROBE_CONCURRENCY = 5;
 
 export const DEFAULT_SAMPLE_LIMIT = 3;
 export const DEFAULT_NAMES_LIMIT = 50;
+/** `snapshot`'s own default, deliberately separate so tuning one command's cap never silently moves the other's. */
+export const DEFAULT_SNAPSHOT_LIMIT = 50;
 export const DEFAULT_TOP_LIMIT = 20;
 export const DEFAULT_SINCE = "2h";
 export const DEFAULT_HISTORY_INTERVAL = "10m";

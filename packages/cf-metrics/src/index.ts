@@ -34,7 +34,7 @@ export type { CreateResultSessionInput, ResultSession, ResultSessionSummary } fr
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
 export { discoverServiceInstance, findBoundApps, listCloudLoggingInstances } from "./service-discovery.js";
 export { querySnapshot } from "./snapshot.js";
-export type { SnapshotQueryOptions } from "./snapshot.js";
+export type { SnapshotQueryOptions, SnapshotResult } from "./snapshot.js";
 export { printResolvedTarget, resolveTarget } from "./target.js";
 export type { TargetOptions } from "./target.js";
 export { queryTop } from "./top.js";

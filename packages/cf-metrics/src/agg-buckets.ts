@@ -26,6 +26,24 @@ export function bucketDocCount(bucket: Record<string, unknown>): number {
 }
 
 /**
+ * Whether a `terms` aggregation had to drop buckets to stay inside its `size`.
+ *
+ * `sum_other_doc_count` is OpenSearch's own signal for "more terms existed than
+ * fit", and it is strictly better than comparing the returned bucket count
+ * against the requested size: that comparison cannot tell "we were capped" from
+ * "there happened to be exactly this many", and it says nothing at all at the
+ * `--limit 0` ceiling, where buckets can still be dropped. `@saptools/cf-otel`
+ * reads the same field for the same reason.
+ */
+export function termsTruncated(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const dropped = value["sum_other_doc_count"];
+  return typeof dropped === "number" && dropped > 0;
+}
+
+/**
  * Every distinct `unit` string from a `units` terms aggregation. `history` and
  * `top` both attach that aggregation to the query they were already sending so
  * they can detect a metric name that publishes more than one series (see

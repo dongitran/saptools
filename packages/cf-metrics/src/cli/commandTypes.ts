@@ -56,6 +56,7 @@ export interface HistoryOpts extends TargetOpts, CredentialOpts, FormatOpts, Sav
 
 export interface SnapshotOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
   readonly service: string;
+  readonly limit: number;
 }
 
 export interface TopOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {

@@ -2,6 +2,36 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.4.0
+
+- **`snapshot` no longer silently caps at 50 metric names.** It sent a `terms` aggregation with a
+  hardcoded size and exposed no `--limit`, so an app reporting more names lost the rest with no
+  warning and no way to see them. Worse, a `terms` aggregation with no explicit `order` selects
+  buckets by `doc_count` descending, so the names dropped were the **sparsest** ones — the
+  rarely-written custom metric someone is most likely hunting for, while the high-volume container
+  metrics that any command would surface anyway were always kept.
+- `snapshot` now takes `--limit`, following the same convention `names` and `top` already use
+  (`0` means all, values above OpenSearch's result-window ceiling are rejected up front).
+- **`names` gets the same treatment**, because it has the identical bug: its `terms` aggregation
+  also carries no explicit `order`, so its own default cap of 50 silently discarded the sparsest
+  names. Both commands now print a stderr notice when the aggregation actually dropped something.
+  `top` deliberately does **not** warn: its cut is an explicit `order`ed top-N ranking, so what it
+  drops is the lowest-ranked apps — the ones the command exists to let you ignore.
+- Truncation is detected from OpenSearch's own `sum_other_doc_count`, not by comparing the returned
+  row count against the requested limit. The row-count heuristic was wrong twice over: it fired
+  when an app happened to have exactly `--limit` names and nothing was lost (reproduced live on an
+  app with exactly 14 names), and it could never fire under `--limit 0` — the very flag the notice
+  tells people to reach for. `@saptools/cf-otel` already reads the same field for the same reason.
+- Scope, measured rather than assumed: real apps on the tenant tested report 6–13 metric names, so
+  the old cap of 50 was not actually being hit. This closes a latent failure and an inconsistency —
+  `snapshot` was the only row-returning command with no way to see all of its own data.
+- API change for library consumers: `querySnapshot` and `queryNames` now return `{ rows, truncated }`
+  instead of bare row arrays. `SnapshotResult` and `NamesResult` are exported.
+- Known limitation, unchanged by this release: the notice is not persisted by `--save`, so
+  `result show <ref>` on a truncated saved result gives no hint that names were dropped. The same
+  applies to `top`'s multi-unit warning; storing notices alongside rows needs a result-store schema
+  change and is deliberately left for a separate release.
+
 ## 0.3.1
 
 - **An inverted `--since`/`--until` window is now rejected instead of returning an empty table.**

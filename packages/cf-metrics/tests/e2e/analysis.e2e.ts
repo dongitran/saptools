@@ -137,6 +137,40 @@ test("top --unit ranks on a single series and drops the warning", async () => {
 });
 
 /**
+ * `snapshot` used to cap at 50 metric names with no flag to raise it and no
+ * hint that anything was dropped — and a `terms` cap discards the sparsest
+ * names first, which are the ones worth looking for.
+ */
+test("snapshot --limit bounds the metric names returned and says the list is short", async () => {
+  const result = await runCli(["snapshot", "--service", "demo-app", "--limit", "2", "--format", "json", ...targetArgs()], env());
+
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toHaveLength(2);
+  // Pin the actionable half too: two short fragments alone let the useful part
+  // of the message be rewritten into something worse without any test noticing.
+  expect(result.stderr).toContain("showing 2 of more metric names");
+  expect(result.stderr).toContain("dropped, sparsest first");
+  expect(result.stderr).toContain("Re-run with a larger --limit, or --limit 0");
+});
+
+test("snapshot --limit above OpenSearch's result-window ceiling fails fast", async () => {
+  const result = await runCli(["snapshot", "--service", "demo-app", "--limit", "10001", ...targetArgs()], env());
+
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("exceeds OpenSearch's single-page result-window ceiling of 10000");
+});
+
+test("snapshot --limit 0 returns every metric name with no truncation notice", async () => {
+  const capped = await runCli(["snapshot", "--service", "demo-app", "--limit", "2", "--format", "json", ...targetArgs()], env());
+  const all = await runCli(["snapshot", "--service", "demo-app", "--limit", "0", "--format", "json", ...targetArgs()], env());
+
+  expect(all.exitCode).toBe(0);
+  const allRows = JSON.parse(all.stdout) as readonly unknown[];
+  expect(allRows.length).toBeGreaterThan((JSON.parse(capped.stdout) as readonly unknown[]).length);
+  expect(all.stderr).not.toContain("sparsest first");
+});
+
+/**
  * An inverted window used to exit 0 with an empty table — the failure mode was
  * indistinguishable from a quiet period, so nobody noticed the flags were
  * backwards. These pin both shapes end to end, including the pre-network timing.

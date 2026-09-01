@@ -72,6 +72,20 @@ export function collectRepeatable(value: string, previous: readonly string[]): r
  * treat `0` as "no limit" (`names`/`top`) check that separately — this only
  * enforces the ceiling.
  */
+/**
+ * Wording for a `terms` cap that dropped buckets. Shared so `names` and
+ * `snapshot` cannot drift apart, and phrased around *what was lost*: because
+ * neither aggregation sets an explicit `order`, OpenSearch keeps the
+ * highest-`doc_count` buckets, so the ones missing are the sparsest — usually
+ * the rarely-written custom metric the reader came looking for.
+ */
+export function truncationNotice(noun: string, limit: number): string {
+  return (
+    `showing ${String(limit)} of more ${noun} — the rest were dropped, sparsest first. ` +
+    `Re-run with a larger --limit, or --limit 0 to see all ${noun}.`
+  );
+}
+
 export function checkUpperLimit(limit: number, flagName = "--limit"): void {
   if (limit > MAX_RESULT_WINDOW) {
     throw new CfMetricsError(

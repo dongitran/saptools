@@ -28,20 +28,23 @@ If `cf-metrics` is missing, install it from `@saptools/cf-metrics`:
    time-bucketed values, kind-aware: GAUGE → avg/min/max per bucket, SUM → per-bucket total
    (delta temporality assumed), HISTOGRAM → count/sum/derived-avg per bucket (no percentile
    approximation — see Limitations below).
-3. For "what's it doing right now" without bucketing, use `snapshot`.
+3. For "what's it doing right now" without bucketing, use `snapshot`. It shares the same
+   `--limit` convention as `names` (default 50, `0` for all) and warns on stderr when the cap
+   dropped names — a `terms` cap discards the *sparsest* metrics first, so a short list hides
+   exactly the rarely-written custom metric worth looking for.
 4. For cross-app comparison on one metric name, use `top` — deliberately has no `--service`
    filter. Kind-aware like `history`: a HISTOGRAM metric (e.g. `http.server.duration`) ranks by
    derived avg latency instead of avg/max value, and has no `MAX` column.
-   **Do not trust CPU aggregates in this release.** Cloud Foundry emits TWO series under the one
-   name `container.cpu.usage`, told apart only by `unit`: `unit="1"` is the fraction of the app's
-   CPU *entitlement* (matches `cf app`'s `cpu entitlement` column, can exceed 1.0), and
-   `unit="cpu"` is the fraction of a single CPU *core* (matches `cf app`'s `cpu` column). They
-   differ by ~17x. `history` and `top` do not filter by `unit`, so they average both series
-   together — a `history` bucket's MIN is typically the `cpu` sample and its MAX the `1` sample,
-   and the AVG is meaningless. Inspect this metric with `sample --format json` (which shows each
-   document's `unit`) rather than `history`/`top`. Even once separated, `unit="1"` ranks by "how
-   close to its own limit", not absolute CPU, since entitlement scales with the memory quota.
-   Every other metric is single-unit; memory metrics are plain bytes and match `cf app` exactly.
+   **Always pass `--unit` for CPU.** Cloud Foundry emits TWO series under the one name
+   `container.cpu.usage`, told apart only by `unit`: `unit="1"` is the fraction of the app's CPU
+   *entitlement* (matches `cf app`'s `cpu entitlement` column, can exceed 1.0), and `unit="cpu"`
+   is the fraction of a single CPU *core* (matches `cf app`'s `cpu` column). They differ by ~17x,
+   so averaging both together is meaningless — a bucket's MIN would be a `cpu` sample and its MAX
+   a `1` sample. `history` and `top` detect this and warn on stderr, but the numbers are only
+   trustworthy once `--unit cpu` or `--unit 1` narrows them to one series. Note that even then,
+   `unit="1"` ranks by "how close to its own limit", not absolute CPU, since entitlement scales
+   with the memory quota — use `--unit cpu` to compare apps by real CPU consumed. Every other
+   metric is single-unit; memory metrics are plain bytes and match `cf app` exactly.
 5. For live monitoring during a deploy or incident, use `watch` — polls and prints new points as
    they land; Ctrl-C to stop, `--json` for NDJSON, `--lookback` sets the initial look-back window
    (default `2m`).
@@ -84,9 +87,11 @@ cf-metrics names --service my-app --since 24h
 ```
 
 - `--limit` bounds how many names come back (default 50); `--limit 0` removes the cap and returns
-  every name. `top` shares this same "0 means no limit" convention for its own `--limit` (default
-  20) — unlike `sample`, where `--limit 0` is rejected as an error since it would return zero raw
-  documents.
+  every name. `snapshot` (default 50) and `top` (default 20) share this same "0 means no limit"
+  convention — unlike `sample`, where `--limit 0` is rejected as an error since it would return
+  zero raw documents. `names` and `snapshot` print a stderr notice when the cap actually dropped
+  something, so a truncated list never looks complete; `top` does not, because its cut is a
+  deliberate top-N ranking rather than an accidental loss.
 
 The core analysis command — time-bucketed, kind-aware history:
 

@@ -5,7 +5,7 @@ import { queryNames } from "../../names.js";
 import { assertValidTimeRange } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { NamesOpts } from "../commandTypes.js";
-import { checkUpperLimit, emitRows, parseFormat } from "../output.js";
+import { checkUpperLimit, emitRows, parseFormat, printNotice, truncationNotice } from "../output.js";
 import {
   withCredentialOptions,
   withFormatOption,
@@ -21,7 +21,7 @@ async function runNames(opts: NamesOpts): Promise<void> {
   checkUpperLimit(opts.limit);
   const format = parseFormat(opts.format);
   assertValidTimeRange(opts, DEFAULT_SINCE);
-  const rows = await withOpenSearchClient(opts, async (client) => {
+  const result = await withOpenSearchClient(opts, async (client) => {
     return await queryNames(client, {
       service: opts.service,
       since: opts.since ?? DEFAULT_SINCE,
@@ -29,7 +29,10 @@ async function runNames(opts: NamesOpts): Promise<void> {
       limit: opts.limit,
     });
   });
-  await emitRows({ command: "names", format, save: opts.save, rows });
+  if (result.truncated) {
+    printNotice(truncationNotice("metric names", opts.limit));
+  }
+  await emitRows({ command: "names", format, save: opts.save, rows: result.rows });
 }
 
 export function registerNamesCommand(program: Command): void {
@@ -38,7 +41,7 @@ export function registerNamesCommand(program: Command): void {
     .description("which metric names exist for a service/time-range, with kind, unit, and doc count");
   withServiceOption(command, true);
   withTimeRangeOptions(command);
-  withLimitOption(command, DEFAULT_NAMES_LIMIT);
+  withLimitOption(command, DEFAULT_NAMES_LIMIT, "maximum metric names to return (0 for all)");
   withFormatOption(command);
   withSaveOption(command);
   withTargetOptions(command);

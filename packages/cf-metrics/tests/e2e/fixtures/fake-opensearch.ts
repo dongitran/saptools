@@ -375,7 +375,13 @@ function computeTermsAgg(spec: Record<string, unknown>, docs: readonly Doc[]): u
     return orderDirection === "asc" ? cmp : -cmp;
   });
 
-  return { buckets: buckets.slice(0, size) };
+  // Real OpenSearch reports how many documents fell into buckets it had to
+  // drop; commands read that field to tell "capped" from "that is everything",
+  // so a fake that omitted it would let a broken truncation check pass.
+  const kept = buckets.slice(0, size);
+  const dropped = buckets.slice(size);
+  const sumOtherDocCount = dropped.reduce((total, bucket) => total + (bucket["doc_count"] as number), 0);
+  return { buckets: kept, sum_other_doc_count: sumOtherDocCount, doc_count_error_upper_bound: 0 };
 }
 
 function computeDateHistogramAgg(spec: Record<string, unknown>, docs: readonly Doc[]): unknown {
