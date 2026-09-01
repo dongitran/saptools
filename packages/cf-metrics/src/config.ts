@@ -1,6 +1,6 @@
 export const CLI_NAME = "cf-metrics";
 /** Must equal `package.json`'s `version` — pinned by a unit test, since `--version` reports it. */
-export const CLI_VERSION = "0.4.0";
+export const CLI_VERSION = "0.5.0";
 export const ENV_PREFIX = "CF_METRICS";
 
 export const DEFAULT_INDEX_PATTERN = "metrics-*";
@@ -28,6 +28,13 @@ export const BINDINGS_PAGE_SIZE = 100;
 export const MAX_BINDING_PAGES = 20;
 /** How many binding `/details` requests run at once — enough to hide latency without hammering the Cloud Controller. */
 export const BINDING_PROBE_CONCURRENCY = 5;
+
+/**
+ * Per-request ceiling for the OpenSearch console-proxy. Without one a stalled
+ * endpoint hangs the command forever with no output and no error — the `cf`
+ * exec layer already bounds itself the same way, at the same 60s.
+ */
+export const DEFAULT_HTTP_TIMEOUT_MS = 60_000;
 
 export const DEFAULT_SAMPLE_LIMIT = 3;
 export const DEFAULT_NAMES_LIMIT = 50;

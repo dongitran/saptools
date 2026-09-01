@@ -2,6 +2,31 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.5.0
+
+Two robustness fixes, both reproduced against the real backend before being changed.
+
+- **Every OpenSearch request now has a deadline.** `fetch` was called with no timeout at all, so a
+  Dashboards endpoint that accepted the connection and then went silent hung the command forever —
+  no output, no error, nothing to distinguish it from a slow query, and no way out but Ctrl-C.
+  Requests now carry a 60s ceiling (matching what the `cf` exec layer already enforced), overridable
+  with `CF_METRICS_HTTP_TIMEOUT_MS`, and a timeout is reported as a timeout rather than a generic
+  failure. `watch`'s own Ctrl-C signal is **combined** with the deadline rather than replacing it —
+  previously, supplying a caller signal silently opted that request out of any timeout, which is
+  precisely the long-running command that needs one.
+- **Ctrl-C no longer strands a temporary CF_HOME containing CF credentials.** Cleanup lived in a
+  `try/finally`, but Node terminates immediately on an *unhandled* SIGINT/SIGTERM, so the block
+  never ran: only `watch` registered a signal listener, and the other eight commands left the
+  directory behind. Once `cf auth` has run it holds `.cf/config.json` with the CF access token and
+  a long-lived opaque refresh token. Measured on a developer machine before the fix: 13 stranded
+  directories, 6 of them holding credentials. The session now registers its own SIGINT/SIGTERM
+  handler, removes the directory synchronously (an async unlink is not guaranteed to finish while
+  the process is exiting), and re-raises the signal with the default disposition restored so the
+  shell still sees the conventional 128+signal status. `saml-toggle`'s own temporary directory,
+  which holds the instance's full params blob, is protected the same way.
+- Directories stranded by earlier versions are not cleaned up retroactively — remove any leftover
+  `/tmp/saptools-cf-metrics-*` by hand once, and treat any CF refresh token they contain as exposed.
+
 ## 0.4.0
 
 - **`snapshot` no longer silently caps at 50 metric names.** It sent a `terms` aggregation with a

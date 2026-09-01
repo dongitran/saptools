@@ -9,6 +9,13 @@ const WORKING_USERNAME = process.env.CF_METRICS_FAKE_DASHBOARDS_USERNAME ?? "fak
 const WORKING_PASSWORD = process.env.CF_METRICS_FAKE_DASHBOARDS_PASSWORD ?? "fake-dashboards-password";
 const MULTI_INSTANCE = process.env.CF_METRICS_FAKE_CF_MULTI_INSTANCE === "1";
 
+// Hold the session open long enough for a test to interrupt the CLI while a
+// temporary CF_HOME exists, which is the only window the leak can occur in.
+const SLOW_MS = Number(process.env.CF_METRICS_FAKE_CF_SLOW_MS ?? "0");
+if (SLOW_MS > 0 && cmd === "auth") {
+  await new Promise((resolve) => setTimeout(resolve, SLOW_MS));
+}
+
 function trace(entry) {
   const file = process.env.CF_METRICS_FAKE_CF_TRACE_FILE;
   if (file) {

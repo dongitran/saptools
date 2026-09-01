@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,13 +112,86 @@ export function getRegionKeyForApi(apiEndpoint: string): string | undefined {
   return SAP_CF_API_HOSTNAME_PATTERN.exec(normalized)?.[1];
 }
 
-/** Run work inside a fresh temporary CF_HOME. Directory is always cleaned. */
+/**
+ * Temporary CF_HOME directories that must not outlive this process.
+ *
+ * A `try/finally` alone is not enough: Node's default disposition for an
+ * *unhandled* SIGINT/SIGTERM is to terminate immediately, so pressing Ctrl-C
+ * during credential discovery skipped the cleanup entirely and left the
+ * directory behind — with `.cf/config.json` inside it, holding the CF access
+ * token and a long-lived opaque refresh token. Registering a listener both
+ * suppresses that immediate termination and gives us a chance to remove the
+ * directory before going down.
+ */
+const trackedCfHomes = new Set<string>();
+let terminationHandlersInstalled = false;
+
+function removeTrackedCfHomesSync(): void {
+  for (const dir of trackedCfHomes) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort while the process is on its way out: one directory that
+      // refuses to go must not strand the others.
+    }
+  }
+  trackedCfHomes.clear();
+}
+
+/**
+ * Clean up, then re-raise with the default disposition restored, so the shell
+ * still sees the conventional 128+signal status instead of a fabricated exit
+ * code. Safe to do here because a CF session only ever spans credential
+ * discovery, which finishes before `watch` installs its own graceful-shutdown
+ * handler — the two never overlap.
+ */
+function onTerminationSignal(signal: NodeJS.Signals): void {
+  removeTrackedCfHomesSync();
+  uninstallTerminationHandlers();
+  process.kill(process.pid, signal);
+}
+
+function installTerminationHandlers(): void {
+  if (terminationHandlersInstalled) {
+    return;
+  }
+  process.on("SIGINT", onTerminationSignal);
+  process.on("SIGTERM", onTerminationSignal);
+  terminationHandlersInstalled = true;
+}
+
+function uninstallTerminationHandlers(): void {
+  if (!terminationHandlersInstalled) {
+    return;
+  }
+  process.off("SIGINT", onTerminationSignal);
+  process.off("SIGTERM", onTerminationSignal);
+  terminationHandlersInstalled = false;
+}
+
+/** Track a temporary directory for signal-time cleanup; `saml-toggle` reuses this for its own. */
+export function trackTempDir(dir: string): void {
+  trackedCfHomes.add(dir);
+  installTerminationHandlers();
+}
+
+/** Stop tracking a directory the normal path has already removed. */
+export function untrackTempDir(dir: string): void {
+  trackedCfHomes.delete(dir);
+  if (trackedCfHomes.size === 0) {
+    uninstallTerminationHandlers();
+  }
+}
+
+/** Run work inside a fresh temporary CF_HOME. Directory is always cleaned, including on Ctrl-C. */
 export async function withCfSession<T>(work: (ctx: CfExecContext) => Promise<T>): Promise<T> {
   const cfHome = await mkdtemp(join(tmpdir(), "saptools-cf-metrics-"));
+  trackTempDir(cfHome);
   const ctx: CfExecContext = { cfHome };
   try {
     return await work(ctx);
   } finally {
+    untrackTempDir(cfHome);
     await rm(cfHome, { recursive: true, force: true });
   }
 }

@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { CfExecContext } from "./cf.js";
-import { cfCreateServiceKey, cfServiceKey, cfServiceParams, cfServiceShow, cfUpdateService, parseServiceStatus } from "./cf.js";
+import {
+  cfCreateServiceKey,
+  cfServiceKey,
+  cfServiceParams,
+  cfServiceShow,
+  cfUpdateService,
+  parseServiceStatus,
+  trackTempDir,
+  untrackTempDir,
+} from "./cf.js";
 import { SAML_POLL_INTERVAL_MS, SAML_POLL_TIMEOUT_MS } from "./config.js";
 import { extractDashboardsCredential, parseCredentialJson } from "./dashboards-payload.js";
 import { CfMetricsError, SamlRestoreFailedError, errorMessage } from "./errors.js";
@@ -62,6 +71,9 @@ function readSamlEnabled(params: unknown): boolean {
 
 async function writeSecureTempParamsFile(params: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "cf-metrics-saml-"));
+  // Same reasoning as the CF_HOME dirs: this one holds the instance's full
+  // params blob, secrets included, so a Ctrl-C must not strand it on disk.
+  trackTempDir(dir);
   try {
     const filePath = join(dir, "params.json");
     await writeFile(filePath, JSON.stringify(params), { mode: 0o600 });
@@ -70,6 +82,7 @@ async function writeSecureTempParamsFile(params: unknown): Promise<string> {
     // mkdtemp already succeeded by this point, so the directory must be
     // cleaned up here — the caller's own finally block only ever runs once
     // this function has already returned a path.
+    untrackTempDir(dir);
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
@@ -103,6 +116,7 @@ async function issueSamlUpdate(
     report(`cf update-service ${instance} -c <redacted params> (${logLabel})`);
     await cfUpdateService(instance, tempFilePath, ctx);
   } finally {
+    untrackTempDir(dirname(tempFilePath));
     await rm(dirname(tempFilePath), { recursive: true, force: true });
   }
 }

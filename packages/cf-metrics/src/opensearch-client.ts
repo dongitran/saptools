@@ -1,3 +1,4 @@
+import { DEFAULT_HTTP_TIMEOUT_MS, envName, readEnv } from "./config.js";
 import { CfMetricsError, errorMessage } from "./errors.js";
 
 /**
@@ -17,6 +18,8 @@ export interface OpenSearchClientOptions {
   readonly username: string;
   readonly password: string;
   readonly fetchImpl?: typeof fetch;
+  /** Per-request ceiling in milliseconds; defaults to {@link DEFAULT_HTTP_TIMEOUT_MS}, overridable via `CF_METRICS_HTTP_TIMEOUT_MS`. */
+  readonly timeoutMs?: number;
 }
 
 export interface SearchHit {
@@ -119,10 +122,38 @@ function normalizeDashboardsEndpoint(rawEndpoint: string): string {
 }
 
 /** Create a client for OpenSearch's `_search`/`_count`/`_mapping` via the Dashboards console-proxy. */
+function resolveTimeoutMs(): number {
+  const raw = readEnv(envName("HTTP_TIMEOUT_MS"));
+  if (raw === undefined) {
+    return DEFAULT_HTTP_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  // A malformed override falls back rather than throwing: an unusable env var
+  // should not be the reason a read-only query refuses to run.
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_HTTP_TIMEOUT_MS;
+}
+
+/**
+ * The caller's cancellation signal (`watch`'s Ctrl-C) combined with a deadline,
+ * so a request is bounded whether or not the caller supplied one. Without the
+ * combination, passing a caller signal would silently opt that request out of
+ * the timeout.
+ */
+function requestSignal(caller: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return caller === undefined ? deadline : AbortSignal.any([caller, deadline]);
+}
+
+/** `AbortSignal.timeout` rejects with a `TimeoutError`; a caller's abort rejects with `AbortError`. */
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
+}
+
 export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearchClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const auth = Buffer.from(`${opts.username}:${opts.password}`).toString("base64");
   const baseUrl = normalizeDashboardsEndpoint(opts.dashboardsEndpoint);
+  const timeoutMs = opts.timeoutMs ?? resolveTimeoutMs();
 
   async function proxyRequest(path: string, method: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const url = `${baseUrl}/api/console/proxy?path=${encodeConsoleProxyPath(path)}&method=${method}`;
@@ -136,9 +167,19 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
           Authorization: `Basic ${auth}`,
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        ...(signal === undefined ? {} : { signal }),
+        signal: requestSignal(signal, timeoutMs),
       });
     } catch (error) {
+      // A timeout is worth naming: "failed" alone sends the reader looking for
+      // a query or credential problem when the endpoint simply never answered.
+      if (isTimeout(error)) {
+        throw new CfMetricsError(
+          "OPENSEARCH_REQUEST_FAILED",
+          `OpenSearch request to ${path} timed out after ${String(timeoutMs)}ms. ` +
+            "Raise CF_METRICS_HTTP_TIMEOUT_MS if the query is genuinely slow, or narrow the time range.",
+          { cause: error },
+        );
+      }
       throw new CfMetricsError(
         "OPENSEARCH_REQUEST_FAILED",
         `OpenSearch request to ${path} failed: ${errorMessage(error)}`,

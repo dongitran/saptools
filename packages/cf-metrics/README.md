@@ -191,6 +191,17 @@ Memory is used here rather than CPU deliberately: `container.memory.usage` is a 
 that agrees exactly with `cf app`, whereas `container.cpu.usage` currently blends two units — see
 the caveat above.
 
+## Timeouts and interruption
+
+Every OpenSearch request carries a 60-second deadline; override it with
+`CF_METRICS_HTTP_TIMEOUT_MS` when a query is genuinely slow. A timeout is reported as a timeout,
+not as a generic request failure.
+
+Ctrl-C is safe at any point. Each command runs its Cloud Foundry work inside a temporary
+`CF_HOME` that holds a real access token and a long-lived refresh token once `cf auth` has run;
+that directory is removed on interruption as well as on normal exit, and the process still exits
+with the conventional 128+signal status.
+
 ## Development
 
 ```bash

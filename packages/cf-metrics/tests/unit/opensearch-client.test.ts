@@ -144,10 +144,16 @@ describe("createOpenSearchClient", () => {
 
     await client.search("metrics-*", { query: { match_all: {} } }, controller.signal);
 
-    expect(capturedInit?.signal).toBe(controller.signal);
+    // The caller's signal is now combined with the request deadline rather than
+    // forwarded verbatim, so identity no longer holds — what must still hold is
+    // that aborting the caller's controller aborts the request.
+    expect(capturedInit?.signal).toBeInstanceOf(AbortSignal);
+    expect(capturedInit?.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(capturedInit?.signal?.aborted).toBe(true);
   });
 
-  it("omits signal from the fetch init when the caller doesn't pass one, so existing callers are unaffected", async () => {
+  it("still supplies a signal when the caller passes none, so no request is left unbounded", async () => {
     let capturedInit: RequestInit | undefined;
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       capturedInit = init;
@@ -162,7 +168,9 @@ describe("createOpenSearchClient", () => {
 
     await client.search("metrics-*", { query: { match_all: {} } });
 
-    expect(capturedInit?.signal).toBeUndefined();
+    // Previously this asserted `undefined` — that absence *was* the bug: a
+    // request with no signal has no deadline and can hang forever.
+    expect(capturedInit?.signal).toBeInstanceOf(AbortSignal);
   });
 });
 
@@ -246,5 +254,84 @@ describe("searchAfterAll", () => {
     const result = await searchAfterAll(client, "idx", {}, 10, 100, ARBITRARY_TIEBREAKER);
     expect(result.hits).toEqual([]);
     expect(result.truncated).toBe(false);
+  });
+});
+
+describe("request timeout", () => {
+  /**
+   * Before this, `fetch` was called with no deadline at all, so a Dashboards
+   * endpoint that accepted the connection and then went silent hung the command
+   * forever — no output, no error, nothing to distinguish it from a slow query.
+   */
+  it("aborts a request that outlives the timeout, and names the timeout in the error", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const reason: unknown = init.signal?.reason;
+            reject(reason instanceof Error ? reason : new Error("aborted"));
+          });
+        }),
+    );
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      timeoutMs: 20,
+    });
+
+    await expect(client.search("metrics-*", { size: 0 })).rejects.toThrow(/timed out after 20ms/);
+  });
+
+  it("passes a signal on every request, so no call can escape the deadline", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      seenSignal = init?.signal ?? undefined;
+      return new Response(JSON.stringify({ hits: { hits: [], total: { value: 0 } } }));
+    });
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.search("metrics-*", { size: 0 });
+
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(seenSignal?.aborted).toBe(false);
+  });
+
+  /**
+   * `watch` supplies its own Ctrl-C signal. Combining rather than replacing
+   * matters: passing a caller signal used to opt that request out of any
+   * deadline, which is exactly the long-running command that needs one.
+   */
+  it("still honours the caller's own abort signal alongside the deadline", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(
+      async (_url: string, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const reason: unknown = init.signal?.reason;
+            reject(reason instanceof Error ? reason : new Error("aborted"));
+          });
+        }),
+    );
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      timeoutMs: 60_000,
+    });
+
+    const pending = client.search("metrics-*", { size: 0 }, controller.signal);
+    controller.abort();
+
+    // Rejects on the caller's abort, well before the 60s deadline, and is not
+    // reported as a timeout.
+    await expect(pending).rejects.toThrow(/failed/);
   });
 });
