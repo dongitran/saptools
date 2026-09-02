@@ -3,6 +3,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 
 import { REGIONS } from "@saptools/cf-sync";
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 
@@ -143,13 +144,18 @@ function parseArtifactList(files: string[] | undefined): readonly ArtifactName[]
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-export");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-export", currentVersion: version, binName: "cf-export", envPrefix: "CF_EXPORT" };
   const program = new Command();
 
   program
     .name("cf-export")
     .description(
       "Export project artifacts (package.json, lockfiles, .cdsrc.json, default-env.json, .npmrc) from a running CF app",
-    );
+    )
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   addTargetOptions(
     program
@@ -186,6 +192,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         process.stdout.write(`Skipped (not found): ${result.skipped.join(", ")}\n`);
       }
     });
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

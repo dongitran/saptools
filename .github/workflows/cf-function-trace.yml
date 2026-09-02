@@ -17,6 +17,7 @@ on:
       - "cspell*.json"
       - ".github/workflows/cf-function-trace.yml"
       - "packages/cf-function-trace/**"
+      - "packages/core/**"
       - "packages/cf-debugger/**"
       - "packages/cf-inspector/**"
   pull_request:
@@ -33,6 +34,7 @@ on:
       - "cspell*.json"
       - ".github/workflows/cf-function-trace.yml"
       - "packages/cf-function-trace/**"
+      - "packages/core/**"
       - "packages/cf-debugger/**"
       - "packages/cf-inspector/**"
 

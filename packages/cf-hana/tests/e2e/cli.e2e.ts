@@ -93,7 +93,9 @@ test("User can view help that lists the commands", async () => {
 test("User can view the version", async () => {
   const result = await runCli(["--version"], fakeEnv());
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("0.5.4");
+  // The CLI reads its version from package.json at runtime, so the test must too, or every release bump breaks it.
+  const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { readonly version: string };
+  expect(result.stdout.trim()).toBe(manifest.version);
 });
 
 test("User can inspect resolved connection metadata", async () => {

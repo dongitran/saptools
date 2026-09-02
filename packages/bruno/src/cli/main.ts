@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 
 import { confirm, input, search, select } from "@inquirer/prompts";
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command, Option } from "commander";
 
 import { runBruno } from "../commands/run.js";
@@ -293,18 +294,24 @@ async function launchInteractiveMenu(program: Command): Promise<void> {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/bruno");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/bruno", currentVersion: version, binName: "bruno", envPrefix: "SAPTOOLS_BRUNO" };
   const program = new Command();
 
   program
     .name("bruno")
     .description("Smart runner for Bruno with CF-aware env metadata and automatic token injection")
+    .version(version)
     .addOption(new Option("--collection <dir>", "Bruno collection directory (default: configured root, SAPTOOLS_BRUNO_COLLECTION or cwd)"))
     .addOption(new Option("--root <dir>", "Legacy alias for --collection").hideHelp());
+  attachSelfUpdate(program, selfUpdate);
 
   registerSetupAppCommand(program);
   registerRunCommand(program);
   registerUseCommand(program);
   registerSetRootCommand(program);
+  registerSelfUpdateCommand(program, selfUpdate);
 
   if (argv.length <= 2) {
     await launchInteractiveMenu(program);

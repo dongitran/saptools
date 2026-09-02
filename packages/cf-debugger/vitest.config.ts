@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ["tests/unit/**/*.test.ts"],
     environment: "node",
+    env: { SAPTOOLS_AUTO_UPDATE: "off" },
     pool: "forks",
     poolOptions: { forks: { singleFork: true } },
     coverage: {

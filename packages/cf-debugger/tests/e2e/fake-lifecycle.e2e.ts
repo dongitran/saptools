@@ -146,7 +146,9 @@ test("CLI reports the package version", async () => {
   try {
     const result = await runCliCommand(createFakeEnv(homeDir), ["--version"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe("0.2.2");
+    // The CLI reads its version from package.json at runtime, so the test must too, or every release bump breaks it.
+    const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { readonly version: string };
+    expect(result.stdout.trim()).toBe(manifest.version);
   } finally {
     await cleanupHome(homeDir);
   }

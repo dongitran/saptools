@@ -1,9 +1,10 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { resolveApiEndpoint } from "@saptools/cf-logs";
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import {
@@ -455,25 +456,18 @@ function formatStoreEntry(entry: TailStoreEntry): string {
   ].join("\t");
 }
 
-function readPackageVersion(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const raw = readFileSync(join(here, "..", "package.json"), "utf8");
-    const parsed = JSON.parse(raw) as { readonly version?: unknown };
-    return typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
 function buildProgram(): Command {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-tail");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-tail", currentVersion: version, binName: "cf-tail", envPrefix: "CF_TAIL" };
   const program = new Command();
   program
     .name("cf-tail")
     .description(
       `Aggregate CF logs across every app in a space (cache: ${cfTailStorePath()})`,
     )
-    .version(readPackageVersion(), "-V, --version", "Print the cf-tail package version");
+    .version(version, "-V, --version", "Print the cf-tail package version");
+  attachSelfUpdate(program, selfUpdate);
 
   addAppSelectionOptions(
     addSessionOptions(
@@ -594,6 +588,7 @@ function buildProgram(): Command {
       process.stdout.write(`Cleared ${cfTailStorePath()}\n`);
     });
 
+  registerSelfUpdateCommand(program, selfUpdate);
   return program;
 }
 

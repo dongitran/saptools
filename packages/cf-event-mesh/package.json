@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-event-mesh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Listen and publish messages to SAP Event Mesh from SAP BTP Cloud Foundry",
   "type": "module",
   "publishConfig": {
@@ -55,6 +55,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

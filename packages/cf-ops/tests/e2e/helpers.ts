@@ -43,6 +43,7 @@ export function createEnv(paths: CasePaths): NodeJS.ProcessEnv {
     ...env,
     CF_OPS_CF_BIN: FAKE_CF_BIN,
     CF_OPS_FAKE_LOG_PATH: paths.logPath,
+    SAPTOOLS_AUTO_UPDATE: "off",
     SAP_EMAIL: "e2e@example.com",
     SAP_PASSWORD: "secret-password",
   };

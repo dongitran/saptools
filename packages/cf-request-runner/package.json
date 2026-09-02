@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-request-runner",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Auto-discover all API endpoints of an SAP CAP CDS service on Cloud Foundry",
   "type": "module",
   "publishConfig": {
@@ -54,6 +54,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.43.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

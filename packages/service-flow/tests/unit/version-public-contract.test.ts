@@ -48,7 +48,7 @@ type PublicFactContract = [
 describe('package, analyzer, and public compact contracts', () => {
   it('keeps package/CLI version authority separate from fact compatibility', async () => {
     expect(VERSION).toBe(packageJson.version);
-    expect(VERSION).toBe('0.1.80');
+    expect(VERSION).toBe('0.2.0');
     expect(ANALYZER_VERSION).toBe('0.1.80-facts.1');
     expect(ANALYZER_VERSION).not.toBe(VERSION);
     const source = await readFile(

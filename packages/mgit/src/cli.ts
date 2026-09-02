@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { addRepo, addRepoRecursive } from "./commands/add.js";
@@ -19,12 +20,16 @@ import { shellCommand } from "./commands/shell.js";
 import { superCommand } from "./commands/super.js";
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/mgit");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/mgit", currentVersion: version, binName: "mgit", envPrefix: "MGIT" };
   const program = new Command();
 
   program
     .name("mgit")
     .description("Manage multiple Git repositories — run commands, view status, organize into groups")
-    .version("0.1.0");
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   // ── add ─────────────────────────────────────────────────────────────────
   program
@@ -188,6 +193,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       await freeze();
     });
 
+  registerSelfUpdateCommand(program, selfUpdate);
   await program.parseAsync([...argv]);
 }
 

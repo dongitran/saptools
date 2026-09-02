@@ -1,7 +1,7 @@
 {
   "name": "@saptools/bruno",
-  "version": "0.3.6",
-  "description": "Smart runner for Bruno \u2014 CF-aware env metadata, automatic token injection, and shorthand paths",
+  "version": "0.4.0",
+  "description": "Smart runner for Bruno — CF-aware env metadata, automatic token injection, and shorthand paths",
   "type": "module",
   "publishConfig": {
     "access": "public",
@@ -59,6 +59,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

@@ -1,6 +1,8 @@
+import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
+import type { AttachSelfUpdateOptions } from "@saptools/core";
 import { Command } from "commander";
 
-import { CLI_NAME, CLI_VERSION } from "../config.js";
+import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME } from "../config.js";
 
 import { registerCountCommand } from "./commands/count.js";
 import { registerDetachedCommand } from "./commands/detached.js";
@@ -14,7 +16,17 @@ import { registerSelftimeCommand } from "./commands/selftime.js";
 import { registerSpanCommand } from "./commands/span.js";
 import { registerSpansCommand } from "./commands/spans.js";
 import { registerTopCommand } from "./commands/top.js";
+import { printNotice } from "./output.js";
 import { registerResultCommands } from "./results.js";
+
+/** Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`. */
+const SELF_UPDATE: AttachSelfUpdateOptions = {
+  packageName: PACKAGE_NAME,
+  currentVersion: CLI_VERSION,
+  binName: CLI_NAME,
+  envPrefix: ENV_PREFIX,
+  notice: printNotice,
+};
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -26,6 +38,7 @@ export function buildProgram(): Command {
         "for that) and never mutates application data.",
     )
     .version(CLI_VERSION);
+  attachSelfUpdate(program, SELF_UPDATE);
 
   registerSampleCommand(program);
   registerMappingCommand(program);
@@ -40,6 +53,7 @@ export function buildProgram(): Command {
   registerDetachedCommand(program);
   registerDiffCommand(program);
   registerResultCommands(program);
+  registerSelfUpdateCommand(program, SELF_UPDATE);
 
   return program;
 }

@@ -1,7 +1,6 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import type {
@@ -68,33 +67,36 @@ const collectStrings = (value: string, prev: readonly string[] = []): readonly s
 const READY_EVENT_DESCRIPTION =
   "Emit a versioned breakpoint-armed JSON event on stderr after every current isolate is armed";
 
-function readPackageVersion(): string {
-  let current = dirname(fileURLToPath(import.meta.url));
-  for (let depth = 0; depth < 4; depth += 1) {
-    const candidate = join(current, "package.json");
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(candidate, "utf8"));
-      if (typeof parsed === "object" && parsed !== null) {
-        const record = parsed as Record<string, unknown>;
-        if (record["name"] === "@saptools/cf-inspector" && typeof record["version"] === "string") {
-          return record["version"];
-        }
-      }
-    } catch {
-      // Keep walking toward the package root. The source path and bundled CLI
-      // live at different depths, so one failed candidate is expected.
-    }
-    current = dirname(current);
+/**
+ * Update notices go to stderr like every other diagnostic, except under
+ * `--emit-ready-event`, where stderr carries a machine-parsed JSON event and
+ * must stay clean; the update itself still happens.
+ */
+function writeUpdateNotice(argv: readonly string[], line: string): void {
+  if (argv.includes("--emit-ready-event")) {
+    return;
   }
-  throw new Error("Unable to read @saptools/cf-inspector package version");
+  process.stderr.write(`cf-inspector: ${line}\n`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-inspector");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = {
+    packageName: "@saptools/cf-inspector",
+    currentVersion: version,
+    binName: "cf-inspector",
+    envPrefix: "CF_INSPECTOR",
+    notice: (line: string): void => {
+      writeUpdateNotice(argv, line);
+    },
+  };
   const program = new Command();
   program
     .name("cf-inspector")
-    .version(readPackageVersion())
+    .version(version)
     .description("Drive a Node.js inspector from the command line — set breakpoints, capture snapshots, evaluate expressions");
+  attachSelfUpdate(program, selfUpdate);
 
   registerSnapshot(program);
   registerLog(program);
@@ -105,6 +107,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   registerListScripts(program);
   registerListTargets(program);
   registerAttach(program);
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

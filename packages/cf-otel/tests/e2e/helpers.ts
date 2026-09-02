@@ -37,9 +37,11 @@ export function runCli(args: readonly string[], env: Record<string, string>): Pr
   });
 }
 
+/** Updates are off for every test so none ever reaches the real npm registry; the dev path would skip anyway. */
 export const BASE_ENV: Record<string, string> = {
   SAP_EMAIL: "user@example.com",
   SAP_PASSWORD: "pw",
+  SAPTOOLS_AUTO_UPDATE: "off",
 };
 
 export function targetArgs(): readonly string[] {

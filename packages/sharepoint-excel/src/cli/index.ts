@@ -1,15 +1,27 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { registerCommands } from "./commands.js";
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/sharepoint-excel");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = {
+    packageName: "@saptools/sharepoint-excel",
+    currentVersion: version,
+    binName: "sharepoint-excel",
+    envPrefix: "SHAREPOINT_EXCEL",
+  };
   const program = new Command();
   program
     .name("sharepoint-excel")
-    .description("Create, read, and update SharePoint-hosted Excel workbooks");
+    .description("Create, read, and update SharePoint-hosted Excel workbooks")
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
   registerCommands(program);
+  registerSelfUpdateCommand(program, selfUpdate);
   await program.parseAsync([...argv]);
 }
 

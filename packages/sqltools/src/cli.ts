@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import {
@@ -85,12 +86,17 @@ function addSharedExportOptions(cmd: Command): Command {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/sqltools");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/sqltools", currentVersion: version, binName: "sqltools-export", envPrefix: "SQLTOOLS" };
   const program = new Command();
   program
     .name("sqltools-export")
     .description(
       "Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections",
-    );
+    )
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   addSharedExportOptions(
     program
@@ -184,6 +190,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         process.stdout.write(`${JSON.stringify(connection, null, 2)}\n`);
       },
     );
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

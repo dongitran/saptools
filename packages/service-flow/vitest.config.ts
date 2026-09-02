@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
+    env: { SAPTOOLS_AUTO_UPDATE: 'off' },
     testTimeout: 30000,
     coverage: {
       provider: 'v8',

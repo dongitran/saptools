@@ -204,7 +204,8 @@
     "reexec",
     "reexecs",
     "backoffs",
-    "npmjs"
+    "npmjs",
+    "inlines"
   ],
   "ignorePaths": [
     "**/node_modules/**",

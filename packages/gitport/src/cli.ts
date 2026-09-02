@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata } from "@saptools/core";
 import { Command } from "commander";
 
 import { maskGitportError, portGitLabMergeRequest } from "./port.js";
@@ -69,9 +70,14 @@ function addPortOptions(program: Command): void {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/gitport");
   const program = new Command();
-  program.name("gitport").description("Port GitLab merge requests into another repository");
+  program.name("gitport").description("Port GitLab merge requests into another repository").version(version);
   addPortOptions(program);
+  // Every run first checks npm (at most once an hour) and re-runs itself on a newer release (see
+  // `@saptools/core`). gitport is a single root command with required options, so it has no
+  // `self-update` subcommand; `SAPTOOLS_AUTO_UPDATE` and `GITPORT_AUTO_UPDATE` still apply.
+  attachSelfUpdate(program, { packageName: "@saptools/gitport", currentVersion: version, binName: "gitport", envPrefix: "GITPORT" });
 
   await program.parseAsync([...argv]);
 }

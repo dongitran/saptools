@@ -1,5 +1,9 @@
+import { readPackageMetadata } from "@saptools/core";
+
 export const CLI_NAME = "cf-hana";
-export const CLI_VERSION = "0.5.4";
+export const PACKAGE_NAME = "@saptools/cf-hana";
+/** Read from package.json at runtime, so `--version` and the self-updater can never drift from the manifest. */
+export const CLI_VERSION = readPackageMetadata(import.meta.url, PACKAGE_NAME).version;
 export const ENV_PREFIX = "CF_HANA";
 
 export const DEFAULT_QUERY_TIMEOUT_MS = 60_000;

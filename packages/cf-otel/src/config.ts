@@ -1,5 +1,9 @@
+import { readPackageMetadata } from "@saptools/core";
+
 export const CLI_NAME = "cf-otel";
-export const CLI_VERSION = "0.1.0";
+export const PACKAGE_NAME = "@saptools/cf-otel";
+/** Read from package.json at runtime, so `--version` and the self-updater can never drift from the manifest. */
+export const CLI_VERSION = readPackageMetadata(import.meta.url, PACKAGE_NAME).version;
 export const ENV_PREFIX = "CF_OTEL";
 
 export const DEFAULT_INDEX_PATTERN = "otel-v1-apm-span-*";

@@ -98,6 +98,35 @@ npm install @saptools/service-flow
 - Schema version 14 adds canonical event-skeleton columns, a repository environment-declaration carrier, and generated string-constant facts/indexes. Schema 15 restores the historical schema-14 default and normalizes the repository carrier to the current empty allowlist without rewriting the applied migration. Its table rebuild verifies the required SQLite pragmas, direct child counts, and repository foreign-key targets. Package `0.1.80` uses analyzer `0.1.80-facts.1`; read-only commands report bounded schema/reindex diagnostics and link preserves the last good graph until migration, force reindex, and force relink succeed.
 
 
+## Updates
+
+Every command first checks npm for a newer `@saptools/service-flow` (at most once an hour, one small request
+with a 2-second timeout) and, when one exists, installs that exact version with the package manager
+that owns the running binary and re-runs the command you typed on the new version. Both steps are
+announced on stderr; nothing is printed when the install is already current:
+
+```text
+service-flow: updating 0.2.0 -> 0.3.0 ...
+service-flow: updated to 0.3.0; re-running the command
+```
+
+If the install cannot complete, one stderr line gives the manual command and the command runs on the
+installed version; that version is not retried for a day. `service-flow self-update` forces the check and
+install now; `service-flow self-update --check` only reports.
+
+| Control | Effect |
+| --- | --- |
+| `SAPTOOLS_AUTO_UPDATE=on\|notify\|off` | `on` (default) installs and re-runs; `notify` prints the manual command once per version; `off` never checks. Applies to every `@saptools` CLI. |
+| `SERVICE_FLOW_AUTO_UPDATE` | same values, this CLI only; wins over the global variable |
+| `SAPTOOLS_UPDATE_INTERVAL_MINUTES` | minutes between checks (default `60`; `0` checks on every run) |
+| `SAPTOOLS_NPM_REGISTRY` | registry to check and install from (default: npm's configured registry, then npmjs) |
+| `SAPTOOLS_UPDATE_DEBUG=1` | explain on stderr why nothing happened |
+
+The updater switches itself off in CI (`CI` set), under `NODE_ENV=test` or `NO_UPDATE_NOTIFIER`, when
+the binary runs from a source checkout, an `npm link` or an `npx` cache, and inside the re-run itself.
+It never writes to stdout, never asks for input, never uses `sudo`, and never moves onto a prerelease.
+Its state lives in `~/.saptools/updates/`.
+
 ## 🚀 Quick Start
 
 ```bash

@@ -1,3 +1,4 @@
+import { attachSelfUpdate, registerSelfUpdateCommand } from '@saptools/core';
 import { Command, Option } from 'commander';
 import { DEFAULT_IGNORES } from './config/defaults.js';
 import {
@@ -626,8 +627,12 @@ function registerCleanCommand(program: Command): void {
     );
 }
 
+// Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+const SELF_UPDATE = { packageName: '@saptools/service-flow', currentVersion: VERSION, binName: 'service-flow', envPrefix: 'SERVICE_FLOW' };
+
 export function createProgram(): Command {
   const program = configuredProgram();
+  attachSelfUpdate(program, SELF_UPDATE);
   registerInitCommand(program);
   registerIndexCommand(program);
   registerLinkCommand(program);
@@ -637,6 +642,7 @@ export function createProgram(): Command {
   registerInspectCommands(program);
   registerDoctorCommand(program);
   registerCleanCommand(program);
+  registerSelfUpdateCommand(program, SELF_UPDATE);
   return program;
 }
 function collect(value: string, previous: string[]): string[] {
@@ -658,4 +664,4 @@ function fail(error: unknown): void {
   );
   process.exitCode = 1;
 }
-createProgram().parse(process.argv);
+await createProgram().parseAsync(process.argv);

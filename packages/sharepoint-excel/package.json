@@ -1,6 +1,6 @@
 {
   "name": "@saptools/sharepoint-excel",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Create, read, and update SharePoint-hosted Excel workbooks through Microsoft Graph with safe local credential profiles",
   "type": "module",
   "publishConfig": {
@@ -63,6 +63,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

@@ -128,6 +128,7 @@ export function createEnv(
     ...env,
     HOME: homeDir,
     CF_HOME: join(homeDir, ".cf"),
+    SAPTOOLS_AUTO_UPDATE: "off",
     SAP_EMAIL: "e2e@example.com",
     SAP_PASSWORD: "test-password",
     CF_SYNC_CF_BIN: FAKE_CF_BIN,

@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { fetchSecret, getToken, getTokenCached } from "../commands/index.js";
@@ -9,10 +10,16 @@ import { addAppRefOptions, toAppRef } from "./app-ref.js";
 import type { AppRefOptions } from "./app-ref.js";
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-xsuaa");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release (see
+  // `@saptools/core`); notices go to stderr, so a token piped from stdout stays clean.
+  const selfUpdate = { packageName: "@saptools/cf-xsuaa", currentVersion: version, binName: "cf-xsuaa", envPrefix: "CF_XSUAA" };
   const program = new Command();
   program
     .name("cf-xsuaa")
-    .description(`Manage XSUAA secrets and OAuth2 tokens in ${xsuaaDataPath()}`);
+    .description(`Manage XSUAA secrets and OAuth2 tokens in ${xsuaaDataPath()}`)
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   addAppRefOptions(program.command("fetch-secret"))
     .description("Fetch XSUAA client credentials from the app's VCAP_SERVICES and save them")
@@ -41,6 +48,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       const token = await getTokenCached(ref);
       process.stdout.write(`${token}\n`);
     });
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

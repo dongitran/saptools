@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { downloadFolder } from "./download-folder.js";
@@ -41,13 +42,18 @@ function addTargetOptions(cmd: Command): Command {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-files");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-files", currentVersion: version, binName: "saptools-cf-files", envPrefix: "CF_FILES" };
   const program = new Command();
 
   program
     .name("saptools-cf-files")
     .description(
       "Export VCAP_SERVICES to default-env.json and pull files from running CF containers",
-    );
+    )
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   addTargetOptions(
     program
@@ -167,6 +173,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         );
       },
     );
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

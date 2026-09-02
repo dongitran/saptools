@@ -130,7 +130,7 @@ export async function spawnFixture(options: SpawnFixtureOptions = {}): Promise<S
   const fixture = options.fixturePath ?? FIXTURE_PATH;
   const child = spawn(process.execPath, ["--inspect=0", fixture], {
     stdio: [options.pipeStdin === true ? "pipe" : "ignore", "pipe", "pipe"],
-    env: { ...process.env, ...options.env },
+    env: { ...process.env, SAPTOOLS_AUTO_UPDATE: "off", ...options.env },
   });
   const stderr = child.stderr;
   if (stderr === null) {
@@ -205,7 +205,7 @@ export async function runCli(
   return await new Promise<RunCliResult>((resolveOnce, rejectOnce) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env },
+      env: { ...process.env, SAPTOOLS_AUTO_UPDATE: "off", ...env },
     });
     let stdout = "";
     let stderr = "";

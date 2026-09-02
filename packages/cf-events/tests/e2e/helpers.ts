@@ -106,6 +106,7 @@ export function createEnv(paths: CasePaths): NodeJS.ProcessEnv {
   return {
     ...env,
     HOME: paths.homeDir,
+    SAPTOOLS_AUTO_UPDATE: "off",
     SAP_EMAIL: "tester@example.com",
     SAP_PASSWORD: "test-password",
     CF_EVENTS_CF_BIN: FAKE_CF_BIN,

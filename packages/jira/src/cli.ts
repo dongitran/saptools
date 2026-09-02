@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { assertNoJiraAdfBodySource, readJiraAdfBodyInput } from "./adf.js";
@@ -134,18 +134,22 @@ interface WorklogsFlags extends JsonFlags {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/jira");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/jira", currentVersion: version, binName: "jira", envPrefix: "JIRA" };
   const program = new Command();
 
   program
     .name("jira")
     .description("Jira Cloud CLI that reuses the JiraOps OAuth token store")
-    .version(readPackageVersion(), "-V, --version", "Print the jira package version")
+    .version(version, "-V, --version", "Print the jira package version")
     .option("--api-root <url>", "Jira API root for Atlassian Cloud or tests")
     .option("--token-store <path>", "Path to the shared jira-oauth-client token store")
     .option("--client-id <id>", "Atlassian OAuth app client ID")
     .option("--client-secret <secret>", "Atlassian OAuth app client secret")
     .option("--port <number>", "OAuth callback port")
     .option("--no-hints", "Suppress local custom field hint footers");
+  attachSelfUpdate(program, selfUpdate);
 
   addStatusCommand(program);
   addWhoamiCommand(program);
@@ -165,6 +169,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addWorklogCommand(program);
   addWorklogsCommand(program);
   addFieldsCommand(program);
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }
@@ -817,29 +822,6 @@ function maskSensitiveText(text: string, secrets: readonly string[]): string {
   return secrets
     .filter((secret) => secret.length > 0)
     .reduce((current, secret) => current.split(secret).join("[REDACTED]"), text);
-}
-
-interface PackageMetadata {
-  readonly version: string;
-}
-
-function readPackageVersion(): string {
-  try {
-    const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    return isPackageMetadata(parsed) ? parsed.version : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-function isPackageMetadata(value: unknown): value is PackageMetadata {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { readonly version?: unknown }).version === "string" &&
-    (value as PackageMetadata).version.length > 0
-  );
 }
 
 try {

@@ -104,7 +104,7 @@ export function runCli(
   env: Record<string, string>,
 ): Promise<CliResult> {
   return new Promise((resolve) => {
-    const child = spawn("node", [CLI_PATH, ...args], { env: { ...process.env, ...env } });
+    const child = spawn("node", [CLI_PATH, ...args], { env: { ...process.env, SAPTOOLS_AUTO_UPDATE: "off", ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {

@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-export",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Export CAP/CF project artifacts (package.json, lockfiles, .cdsrc.json, default-env.json, .npmrc) from running SAP BTP Cloud Foundry apps",
   "type": "module",
   "publishConfig": {
@@ -60,6 +60,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

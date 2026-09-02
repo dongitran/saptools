@@ -6,6 +6,7 @@ import {
   type CfExecContext,
   type CurrentCfTarget,
 } from "@saptools/cf-sync";
+import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { normalizeTarget, parseNonNegativeInteger, parsePositiveInteger } from "../cf/target.js";
@@ -305,13 +306,17 @@ function addSessionReadOptions(command: Command): Command {
 }
 
 export async function runProgram(argv: readonly string[], version: string): Promise<void> {
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-explorer", currentVersion: version, binName: "cf-explorer", envPrefix: "CF_EXPLORER" };
   const program = new Command();
   program
     .name("cf-explorer")
     .description("Safe Cloud Foundry app file explorer")
     .version(version);
+  attachSelfUpdate(program, selfUpdate);
   addDiscoveryCommands(program);
   addSessionCommands(program);
+  registerSelfUpdateCommand(program, selfUpdate);
   await program.parseAsync([...argv]);
 }
 

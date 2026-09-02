@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from '@saptools/core';
 import { Command } from 'commander';
 import ora from 'ora';
 
@@ -10,12 +11,16 @@ import { publishEventToMesh, publishEventToMeshQueue } from './eventMeshPublishC
 const require = createRequire(import.meta.url);
 
 export function buildCli(): Command {
+  const { version } = readPackageMetadata(import.meta.url, '@saptools/cf-event-mesh');
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: '@saptools/cf-event-mesh', currentVersion: version, binName: 'cf-event-mesh', envPrefix: 'CF_EVENT_MESH' };
   const program = new Command();
 
   program
     .name('cf-event-mesh')
     .description('Listen and publish messages to SAP Event Mesh from SAP BTP Cloud Foundry')
-    .version('0.1.0');
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   program
     .command('publish')
@@ -116,6 +121,7 @@ export function buildCli(): Command {
         process.exit(1);
       }
     });
+  registerSelfUpdateCommand(program, selfUpdate);
 
   return program;
 }

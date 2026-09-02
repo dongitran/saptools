@@ -1,6 +1,6 @@
 {
   "name": "@saptools/mgit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Manage multiple Git repositories from a single CLI — run commands, view status, and organize repos into groups",
   "type": "module",
   "publishConfig": {
@@ -55,6 +55,7 @@
     "ora": "^9.3.0"
   },
   "devDependencies": {
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

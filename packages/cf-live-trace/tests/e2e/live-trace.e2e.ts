@@ -202,6 +202,7 @@ function createCliEnv(
     ...env,
     HOME: paths.root,
     USERPROFILE: paths.root,
+    SAPTOOLS_AUTO_UPDATE: "off",
     CF_LIVE_TRACE_FAKE_LOG_PATH: paths.logPath,
     CF_LIVE_TRACE_TEST_INSPECTOR_PORT: inspectorPort.toString(),
   };

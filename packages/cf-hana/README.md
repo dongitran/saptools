@@ -49,6 +49,35 @@ npm install -g @saptools/cf-hana
 Requires Node.js >= 20. The pure-JavaScript [`hdb`](https://github.com/SAP/node-hdb)
 driver is bundled as a dependency — there is no native build step.
 
+## Updates
+
+Every command first checks npm for a newer `@saptools/cf-hana` (at most once an hour, one small request
+with a 2-second timeout) and, when one exists, installs that exact version with the package manager
+that owns the running binary and re-runs the command you typed on the new version. Both steps are
+announced on stderr; nothing is printed when the install is already current:
+
+```text
+cf-hana: updating 0.6.0 -> 0.7.0 ...
+cf-hana: updated to 0.7.0; re-running the command
+```
+
+If the install cannot complete, one stderr line gives the manual command and the command runs on the
+installed version; that version is not retried for a day. `cf-hana self-update` forces the check and
+install now; `cf-hana self-update --check` only reports.
+
+| Control | Effect |
+| --- | --- |
+| `SAPTOOLS_AUTO_UPDATE=on\|notify\|off` | `on` (default) installs and re-runs; `notify` prints the manual command once per version; `off` never checks. Applies to every `@saptools` CLI. |
+| `CF_HANA_AUTO_UPDATE` | same values, this CLI only; wins over the global variable |
+| `SAPTOOLS_UPDATE_INTERVAL_MINUTES` | minutes between checks (default `60`; `0` checks on every run) |
+| `SAPTOOLS_NPM_REGISTRY` | registry to check and install from (default: npm's configured registry, then npmjs) |
+| `SAPTOOLS_UPDATE_DEBUG=1` | explain on stderr why nothing happened |
+
+The updater switches itself off in CI (`CI` set), under `NODE_ENV=test` or `NO_UPDATE_NOTIFIER`, when
+the binary runs from a source checkout, an `npm link` or an `npx` cache, and inside the re-run itself.
+It never writes to stdout, never asks for input, never uses `sudo`, and never moves onto a prerelease.
+Its state lives in `~/.saptools/updates/`.
+
 ## Quick start
 
 ```ts

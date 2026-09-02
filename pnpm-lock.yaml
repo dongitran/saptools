@@ -60,10 +60,10 @@ importers:
         version: 8.5.2(@types/node@26.0.1)
       '@saptools/cf-sync':
         specifier: ^0.4.15
-        version: link:../cf-sync
+        version: 0.4.16
       '@saptools/cf-xsuaa':
         specifier: ^0.1.11
-        version: link:../cf-xsuaa
+        version: 0.1.11
       '@usebruno/cli':
         specifier: ^3.5.0
         version: 3.5.0
@@ -74,6 +74,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -93,6 +96,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -118,6 +124,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -137,6 +146,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -151,7 +163,7 @@ importers:
     dependencies:
       '@saptools/cf-sync':
         specifier: ^0.4.15
-        version: link:../cf-sync
+        version: 0.4.16
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -159,6 +171,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -173,10 +188,10 @@ importers:
     dependencies:
       '@saptools/cf-files':
         specifier: ^0.3.4
-        version: link:../cf-files
+        version: 0.3.5
       '@saptools/cf-sync':
         specifier: ^0.4.15
-        version: link:../cf-sync
+        version: 0.4.16
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -184,6 +199,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -198,7 +216,7 @@ importers:
     dependencies:
       '@saptools/cf-sync':
         specifier: ^0.4.15
-        version: link:../cf-sync
+        version: 0.4.16
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -206,6 +224,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -220,7 +241,7 @@ importers:
     dependencies:
       '@saptools/cf-inspector':
         specifier: ^0.6.2 || ^0.8.0
-        version: link:../cf-inspector
+        version: 0.8.1
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -231,6 +252,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -253,6 +277,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -267,7 +294,7 @@ importers:
     dependencies:
       '@saptools/cf-debugger':
         specifier: ^0.1.16 || ^0.2.0
-        version: link:../cf-debugger
+        version: 0.2.2
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -278,6 +305,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/ws':
         specifier: ^8.5.13
         version: 8.18.1
@@ -295,7 +325,7 @@ importers:
     dependencies:
       '@saptools/cf-inspector':
         specifier: ^0.4.8 || ^0.5.0 || ^0.8.0
-        version: link:../cf-inspector
+        version: 0.8.1
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -303,6 +333,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -322,6 +355,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -363,6 +399,9 @@ importers:
       '@playwright/test':
         specifier: 1.59.1
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: 3.2.4
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -382,6 +421,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -404,6 +446,9 @@ importers:
       '@playwright/test':
         specifier: ^1.43.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -426,6 +471,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -440,7 +488,7 @@ importers:
     dependencies:
       '@saptools/cf-logs':
         specifier: ^0.6.2
-        version: link:../cf-logs
+        version: 0.6.2
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -448,6 +496,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -484,7 +535,7 @@ importers:
     dependencies:
       '@saptools/cf-sync':
         specifier: ^0.4.15
-        version: link:../cf-sync
+        version: 0.4.16
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -492,6 +543,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -523,6 +577,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -554,6 +611,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -576,6 +636,9 @@ importers:
         specifier: ^9.3.0
         version: 9.3.0
     devDependencies:
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -601,6 +664,9 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: 3.2.4
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -620,6 +686,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -648,6 +717,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -662,7 +734,7 @@ importers:
     dependencies:
       '@saptools/cf-sync':
         specifier: ^0.4.15
-        version: link:../cf-sync
+        version: 0.4.16
       commander:
         specifier: ^13.0.0
         version: 13.1.0
@@ -670,6 +742,9 @@ importers:
       '@playwright/test':
         specifier: ^1.50.0
         version: 1.59.1
+      '@saptools/core':
+        specifier: workspace:*
+        version: link:../core
       '@vitest/coverage-v8':
         specifier: ^3.0.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.0.1)(yaml@2.9.0))
@@ -2048,6 +2123,36 @@ packages:
   '@sap/xb-msg-amqp-v100@0.9.58':
     resolution: {integrity: sha512-RDvURglGPVhaufJGy1NJ2g1RsFOHAkhJza/RZTVOf2O3YXAfqs+0yHmGD/LCP61ZN0h8LzA2qPVMAxoezDLjHw==}
     engines: {node: '>=6.9.1'}
+
+  '@saptools/cf-debugger@0.2.2':
+    resolution: {integrity: sha512-1CiEdRnalzBrlA4ZZ9rObW5wpfrbc4QudScJvLgvFfS6ScVsbjqXikA+yP48hpoCuPr2iVBZHxWWl5PAIJBgKg==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
+  '@saptools/cf-files@0.3.5':
+    resolution: {integrity: sha512-grWX/5osr9+OniGFcRLbymVw/lly9A0eNGe11sTQ3HdpgWHoFtzS1TcfPja/sAbEUIBLFcaunpzPBKaFbre0Nw==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
+  '@saptools/cf-inspector@0.8.1':
+    resolution: {integrity: sha512-WOyjLVjdfOmRTFFyZB393g8L4Qi32lBFjLR4s9KmwwDE5ClsCR7iaHU8S3jCAFL5ANAgPCVcXCUefXzMy082/Q==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
+  '@saptools/cf-logs@0.6.2':
+    resolution: {integrity: sha512-DCof+juw3prFjLS9JKaY1h77Jfgnh8xgFlIEnESnprBne3pqOxj6ucKYd7tyTn7d64RewC7TLj6NemkEZewvVQ==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
+  '@saptools/cf-sync@0.4.16':
+    resolution: {integrity: sha512-DzbeKzSOmiHFHarelOHKT+g0MAxnNxWGfrfmEXMcA9dgroFR1RGy1yWpubtRnmt0z8WUJH6Pvzr3rnG2oQfGTQ==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
+
+  '@saptools/cf-xsuaa@0.1.11':
+    resolution: {integrity: sha512-qnYw2Femr44XEut4SX27693Wsj+yWn3tpGg6huya8YfzVYeCD6b146y37+/NN4316bgir0dY6dBdAzDRGjO3Kg==}
+    engines: {node: '>=20.0.0'}
+    hasBin: true
 
   '@smithy/core@3.26.0':
     resolution: {integrity: sha512-mLUktFAn+Pa2agl1J7VgtYNFWCX8/b4GMJSK1hCu4YCvtBfM6F8Os3EP4ry+DFFlXOf3wyvlgXhuUdFoy52D3g==}
@@ -6647,6 +6752,38 @@ snapshots:
     optional: true
 
   '@sap/xb-msg-amqp-v100@0.9.58': {}
+
+  '@saptools/cf-debugger@0.2.2':
+    dependencies:
+      commander: 13.1.0
+
+  '@saptools/cf-files@0.3.5':
+    dependencies:
+      '@saptools/cf-sync': 0.4.16
+      commander: 13.1.0
+
+  '@saptools/cf-inspector@0.8.1':
+    dependencies:
+      '@saptools/cf-debugger': 0.2.2
+      commander: 13.1.0
+      ws: 8.21.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@saptools/cf-logs@0.6.2':
+    dependencies:
+      commander: 13.1.0
+
+  '@saptools/cf-sync@0.4.16':
+    dependencies:
+      commander: 13.1.0
+      ora: 9.3.0
+
+  '@saptools/cf-xsuaa@0.1.11':
+    dependencies:
+      '@saptools/cf-sync': 0.4.16
+      commander: 13.1.0
 
   '@smithy/core@3.26.0':
     dependencies:

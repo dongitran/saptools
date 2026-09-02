@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     environment: "node",
+    env: { SAPTOOLS_AUTO_UPDATE: "off" },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

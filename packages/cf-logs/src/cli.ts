@@ -1,8 +1,9 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { fetchStartedAppsViaCfCli } from "./cf.js";
@@ -489,17 +490,6 @@ function addCompactSessionOptions(command: Command): Command {
   );
 }
 
-function readPackageVersion(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const raw = readFileSync(join(here, "..", "package.json"), "utf8");
-    const parsed = JSON.parse(raw) as { readonly version?: unknown };
-    return typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
 function suppressBrokenPipe(): void {
   for (const stream of [process.stdout, process.stderr]) {
     stream.on("error", (error: NodeJS.ErrnoException): void => {
@@ -512,11 +502,15 @@ function suppressBrokenPipe(): void {
 }
 
 function buildProgram(): Command {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-logs");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-logs", currentVersion: version, binName: "cf-logs", envPrefix: "CF_LOGS" };
   const program = new Command();
   program
     .name("cf-logs")
     .description("Manage Cloud Foundry application logs")
-    .version(readPackageVersion(), "-V, --version", "Print the cf-logs package version");
+    .version(version, "-V, --version", "Print the cf-logs package version");
+  attachSelfUpdate(program, selfUpdate);
 
   addCompactSessionOptions(
     addRowFilterOptions(
@@ -626,6 +620,7 @@ function buildProgram(): Command {
       process.stdout.write(`Cleared ${cfLogsStorePath()}\n`);
     });
 
+  registerSelfUpdateCommand(program, selfUpdate);
   return program;
 }
 

@@ -114,5 +114,6 @@ export function buildBaseEnv(port: number): Record<string, string> {
   return {
     SHAREPOINT_AUTH_BASE: `http://127.0.0.1:${port.toString()}`,
     SHAREPOINT_GRAPH_BASE: `http://127.0.0.1:${port.toString()}/v1.0`,
+    SAPTOOLS_AUTO_UPDATE: "off",
   };
 }

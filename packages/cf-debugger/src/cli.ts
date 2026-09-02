@@ -2,6 +2,7 @@
 
 import nodeProcess from "node:process";
 
+import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { readCurrentCfTarget, requireCurrentCfRegion } from "./cf.js";
@@ -642,13 +643,18 @@ function registerReadCommands(program: Command): void {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const version = readPackageVersion();
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-debugger", currentVersion: version, binName: "cf-debugger", envPrefix: "CF_DEBUGGER" };
   const program = new Command()
     .name("cf-debugger")
     .description("Open an SSH debug tunnel to a SAP BTP Cloud Foundry Node.js inspector")
-    .version(readPackageVersion());
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
   registerStartCommand(program);
   registerStopCommand(program);
   registerReadCommands(program);
+  registerSelfUpdateCommand(program, selfUpdate);
   await program.parseAsync([...argv]);
 }
 

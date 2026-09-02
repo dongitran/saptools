@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import {
@@ -110,10 +111,23 @@ async function resolveDbSelector(selector: string | undefined): Promise<string |
 export async function main(argv: readonly string[]): Promise<void> {
   const program = new Command();
   const cliEntryPath = fileURLToPath(import.meta.url);
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-sync");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release (see
+  // `@saptools/core`). The detached db-sync worker is excluded: it re-executes this very file with
+  // stdio ignored, and an install swap underneath a running worker is exactly what must not happen.
+  const selfUpdate = {
+    packageName: "@saptools/cf-sync",
+    currentVersion: version,
+    binName: "cf-sync",
+    envPrefix: "CF_SYNC",
+    skipCommands: ["db-sync-worker"],
+  };
 
   program
     .name("cf-sync")
-    .description("Sync SAP BTP Cloud Foundry structure to ~/.saptools/cf-structure.json");
+    .description("Sync SAP BTP Cloud Foundry structure to ~/.saptools/cf-structure.json")
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
 
   program
     .command("sync")
@@ -273,7 +287,8 @@ export async function main(argv: readonly string[]): Promise<void> {
         {
           detached: true,
           stdio: "ignore",
-          env: process.env,
+          // The worker must never self-update: it runs unattended with no stderr to report on.
+          env: { ...process.env, SAPTOOLS_AUTO_UPDATE: "off" },
         },
       );
       child.unref();
@@ -314,6 +329,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         verbose: false,
       });
     });
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

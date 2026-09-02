@@ -53,6 +53,7 @@ export function buildEnv(homeDir: string): NodeJS.ProcessEnv {
   delete env["FORCE_COLOR"];
   delete env["NO_COLOR"];
   env["HOME"] = homeDir;
+  env["SAPTOOLS_AUTO_UPDATE"] = "off";
   return env;
 }
 

@@ -67,6 +67,7 @@ function processEnvironment(home: string, overrides: NodeJS.ProcessEnv = {}): No
     LANG: "C",
     LC_ALL: "C",
     NO_COLOR: "1",
+    SAPTOOLS_AUTO_UPDATE: "off",
     PATH: process.env["PATH"] ?? "",
     ...overrides,
   };

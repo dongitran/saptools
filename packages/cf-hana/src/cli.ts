@@ -1,3 +1,4 @@
+import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { connect } from "./api.js";
@@ -12,7 +13,9 @@ import {
   CLI_VERSION,
   DEFAULT_AUTO_LIMIT,
   DEFAULT_CELL_LIMIT,
+  ENV_PREFIX,
   MAX_CELL_LIMIT,
+  PACKAGE_NAME,
 } from "./config.js";
 import { CfHanaError, errorMessage } from "./errors.js";
 import { formatCompactCsv, formatResult, formatTable } from "./format.js";
@@ -515,15 +518,19 @@ function registerConnectionCommands(program: Command): void {
 }
 
 function buildProgram(): Command {
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: PACKAGE_NAME, currentVersion: CLI_VERSION, binName: CLI_NAME, envPrefix: ENV_PREFIX };
   const program = new Command();
   program
     .name(CLI_NAME)
     .description("Run SQL against SAP HANA Cloud databases bound to a Cloud Foundry app")
     .version(CLI_VERSION);
+  attachSelfUpdate(program, selfUpdate);
   registerQueryCommand(program);
   registerCatalogCommands(program);
   registerConnectionCommands(program);
   registerResultCommands(program);
+  registerSelfUpdateCommand(program, selfUpdate);
   return program;
 }
 

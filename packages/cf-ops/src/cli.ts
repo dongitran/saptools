@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { lifecycleCommandArgs, runLifecycle, runScale, scaleCommandArgs } from "./cf.js";
@@ -77,12 +78,17 @@ async function runScaleCommand(flags: ScaleFlags): Promise<void> {
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-ops");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release; see `@saptools/core`.
+  const selfUpdate = { packageName: "@saptools/cf-ops", currentVersion: version, binName: "cf-ops", envPrefix: "CF_OPS" };
   const program = new Command();
 
   program
     .name("cf-ops")
     .description("Operate SAP BTP Cloud Foundry apps with focused restart and scaling commands")
+    .version(version)
     .showHelpAfterError();
+  attachSelfUpdate(program, selfUpdate);
 
   addRestartStrategyOption(
     addAppOption(program.command("restart").description("Restart a CF app; use --strategy rolling for zero-downtime restart")),
@@ -113,6 +119,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     .action(async (flags: ScaleFlags): Promise<void> => {
       await runScaleCommand(flags);
     });
+  registerSelfUpdateCommand(program, selfUpdate);
 
   await program.parseAsync([...argv]);
 }

@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import { createTemporaryCfHome, removeTemporaryCfHome } from "../cf.js";
@@ -18,10 +19,25 @@ import { writeJson, writeJsonLine, writeLog, writeProgress, writeSummaryLine } f
 import { registerSessionCommands } from "./session-commands.js";
 
 export async function main(argv: readonly string[]): Promise<void> {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-live-trace");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release (see
+  // `@saptools/core`); the notice respects --quiet like the other progress messages on stderr.
+  const selfUpdate = {
+    packageName: "@saptools/cf-live-trace",
+    currentVersion: version,
+    binName: "cf-live-trace",
+    envPrefix: "CF_LIVE_TRACE",
+    notice: (line: string): void => {
+      if (!argv.includes("--quiet")) {
+        process.stderr.write(`cf-live-trace: ${line}\n`);
+      }
+    },
+  };
   const program = new Command();
   program
     .name("cf-live-trace")
     .description("Inject a runtime HTTP trace hook into a Cloud Foundry Node.js app and stream request/response events")
+    .version(version)
     .option("-r, --region <key>", "CF region key (default: current cf target)")
     .option("--api-endpoint <url>", "Explicit CF API endpoint")
     .option("-o, --org <name>", "CF org name (default: current cf target)")
@@ -44,8 +60,10 @@ export async function main(argv: readonly string[]): Promise<void> {
     .action(async (flags: CliFlags): Promise<void> => {
       await runTraceCommand(await buildRunOptionsWithCurrentTarget(flags, process.env));
     });
+  attachSelfUpdate(program, selfUpdate);
 
   registerSessionCommands(program);
+  registerSelfUpdateCommand(program, selfUpdate);
   await program.parseAsync([...argv]);
 }
 

@@ -257,7 +257,9 @@ describe('compact JSON CLI contract', () => {
   });
 
   it('reports release and subscription-link summary contracts', async () => {
-    expect(await runCliOk(['--version'])).toBe('0.1.80\n');
+    // The CLI reads its version from package.json at runtime, so the test must too, or every release bump breaks it.
+    const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { readonly version: string };
+    expect(await runCliOk(['--version'])).toBe(`${manifest.version}\n`);
     expect(linkOutput).toContain('subscription handlers resolved');
     expect(linkOutput).toContain('subscription handlers ambiguous');
     expect(linkOutput).toContain('subscription handlers unresolved');

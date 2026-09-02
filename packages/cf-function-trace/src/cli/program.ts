@@ -1,7 +1,4 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from "@saptools/core";
 import { Command } from "commander";
 
 import type { RecordCliFlags } from "./options.js";
@@ -39,26 +36,6 @@ export interface CliCommandHandlers {
   diff(run: string, flags: DiffCliFlags): Promise<void>;
   runs(flags: RunsCliFlags): Promise<void>;
   purge(run: string): Promise<void>;
-}
-
-function readPackageVersion(): string {
-  let current = dirname(fileURLToPath(import.meta.url));
-  for (let depth = 0; depth < 4; depth += 1) {
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(join(current, "package.json"), "utf8"));
-      if (typeof parsed === "object" && parsed !== null) {
-        const name: unknown = Reflect.get(parsed, "name");
-        const version: unknown = Reflect.get(parsed, "version");
-        if (name === "@saptools/cf-function-trace" && typeof version === "string") {
-          return version;
-        }
-      }
-    } catch {
-      // Source and bundled entry points live at different depths, so missing candidates are expected.
-    }
-    current = dirname(current);
-  }
-  throw new Error("Unable to read @saptools/cf-function-trace package version");
 }
 
 function addTargetOptions(command: Command): Command {
@@ -164,10 +141,24 @@ function registerQueries(program: Command, handlers: CliCommandHandlers): void {
 }
 
 export function createProgram(handlers: CliCommandHandlers): Command {
+  const { version } = readPackageMetadata(import.meta.url, "@saptools/cf-function-trace");
+  // Every command first checks npm (at most once an hour) and re-runs itself on a newer release (see
+  // `@saptools/core`). stderr carries this CLI's JSON error contract, so the updater stays silent here;
+  // `cf-function-trace self-update --check` shows what it did or would do.
+  const selfUpdate = {
+    packageName: "@saptools/cf-function-trace",
+    currentVersion: version,
+    binName: "cf-function-trace",
+    envPrefix: "CF_FUNCTION_TRACE",
+    notice: (): void => {
+      // Intentionally silent: stderr is machine-parsed (JSON errors, ready events).
+    },
+  };
   const program = new Command()
     .name("cf-function-trace")
     .description("Trace bounded runtime state changes for one loaded Node.js function")
-    .version(readPackageVersion());
+    .version(version);
+  attachSelfUpdate(program, selfUpdate);
   // Commander's `.command()` snapshots the parent's `_exitCallback` onto each
   // child at registration time (copyInheritedSettings). exitOverride() must
   // therefore run BEFORE any subcommand is registered below, or every
@@ -179,5 +170,6 @@ export function createProgram(handlers: CliCommandHandlers): Command {
   registerPlan(program, handlers);
   registerRecord(program, handlers);
   registerQueries(program, handlers);
+  registerSelfUpdateCommand(program, selfUpdate);
   return program;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@saptools/sqltools",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Export SAP HANA service bindings (VCAP_SERVICES) into VS Code SQLTools connections",
   "type": "module",
   "publishConfig": {
@@ -62,6 +62,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"
