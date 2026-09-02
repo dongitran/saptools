@@ -128,6 +128,7 @@ and the command runs on the installed version; that version is not retried for a
 | `CF_METRICS_AUTO_UPDATE` | same values, this CLI only; wins over the global variable |
 | `SAPTOOLS_UPDATE_INTERVAL_MINUTES` | minutes between checks (default `60`; `0` checks on every run) |
 | `SAPTOOLS_NPM_REGISTRY` | registry to check and install from (default: npm's configured registry, then npmjs) |
+| `SAPTOOLS_ROOT` | relocate `~/.saptools` for every `@saptools` CLI at once (`CF_METRICS_SAPTOOLS_ROOT` relocates only this CLI's files) |
 | `SAPTOOLS_UPDATE_DEBUG=1` | explain on stderr why nothing happened |
 
 The updater switches itself off in CI (`CI` set), under `NODE_ENV=test` or `NO_UPDATE_NOTIFIER`, when

@@ -2,6 +2,11 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.7.1
+
+- README: document `SAPTOOLS_ROOT` next to the other update controls. No code change; this release also
+  exercises the new self-update path on installs of 0.7.0.
+
 ## 0.7.0
 
 - **Self-updating.** Every command now checks npm for a newer `@saptools/cf-metrics` (at most once an
