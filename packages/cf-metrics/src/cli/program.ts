@@ -10,6 +10,7 @@ import { registerSampleCommand } from "./commands/sample.js";
 import { registerSnapshotCommand } from "./commands/snapshot.js";
 import { registerTopCommand } from "./commands/top.js";
 import { registerWatchCommand } from "./commands/watch.js";
+import { registerCredentialCommands } from "./credentials.js";
 import { registerResultCommands } from "./results.js";
 
 export function buildProgram(): Command {
@@ -32,6 +33,7 @@ export function buildProgram(): Command {
   registerTopCommand(program);
   registerWatchCommand(program);
   registerResultCommands(program);
+  registerCredentialCommands(program);
 
   return program;
 }

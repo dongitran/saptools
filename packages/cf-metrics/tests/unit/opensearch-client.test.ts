@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { CfMetricsError, isAuthRejection } from "../../src/errors.js";
 import { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll } from "../../src/opensearch-client.js";
 import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
@@ -54,6 +55,45 @@ describe("createOpenSearchClient", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     await expect(client.count("idx", {})).rejects.toThrow(/HTTP 404/);
+  });
+
+  /**
+   * The credential cache needs to tell "this credential is dead" from every
+   * other failure, and only an HTTP response carries that information — a
+   * timeout or a transport error must never look like a rejected credential.
+   */
+  it("carries the HTTP status on the error so a 401/403 is recognizable as an auth rejection", async () => {
+    const fetchImpl = vi.fn(async () => new Response("Unauthorized", { status: 401 }));
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const error: unknown = await client.search("idx", {}).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CfMetricsError);
+    expect((error as CfMetricsError).status).toBe(401);
+    expect(isAuthRejection(error)).toBe(true);
+  });
+
+  it("does not report a transport failure as an auth rejection", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const error: unknown = await client.search("idx", {}).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CfMetricsError);
+    expect((error as CfMetricsError).status).toBeUndefined();
+    expect(isAuthRejection(error)).toBe(false);
   });
 
   it("parses a bare numeric hits.total (older ES/OS shape) as well as the object shape", async () => {

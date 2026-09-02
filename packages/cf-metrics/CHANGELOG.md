@@ -2,6 +2,57 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.6.0
+
+Every command used to pay the full Cloud Foundry round trip on every run. Measured on a real tenant
+(61 credential bindings on the Cloud Logging instance, 39 service instances in the space) before
+anything was changed, a plain `names` command took **33.8s and 32.5s** on two consecutive runs. The
+breakdown was not what the previous release notes assumed: `cf api` + `cf auth` + `cf target` cost
+about 6s together, while **`cf services` alone took 15–38s** — the CF CLI implements it as one
+request per instance in the space — and the bindings listing plus the per-binding probes another
+6–20s. Three changes, each independently useful:
+
+- **A matching `cf` session is reused instead of logging in again.** When `cf target` already points
+  at the requested org/space (the normal state after `cf login`), the read-only discovery commands run
+  in that session as-is — the same pattern `cf-hana` uses for bare app names. The session is never
+  modified: `cf api`/`cf auth`/`cf target -o -s` refuse to run in it by construction, and the target
+  is re-read after discovery so a `cf target` in another terminal mid-run cannot hand back a credential
+  from the wrong space. **`SAP_EMAIL`/`SAP_PASSWORD` are now optional** whenever such a session
+  exists; they are still used, exactly as before, when no session matches or the session turns out to
+  be dead (not logged in, token expired), and the error says which of those it was.
+- **`cf services` is gone.** The Cloud Logging instance is found through one `cf space --guid` plus one
+  `GET /v3/service_instances?space_guids=…&fields[service_plan.service_offering]=name` (2.4s + 2.0s
+  measured), which also returns the instance GUID the bindings listing needs. A dead session is
+  recognized on the first failing command and abandoned, rather than being blamed on each of the
+  bindings one at a time.
+- **The discovered dashboards credential is cached** under `~/.saptools/cf-metrics/credentials.json`
+  (directory 0700, file 0600, written atomically), keyed by API endpoint, org, space and instance, with
+  a 7-day time-to-live. A hit is silent and costs no `cf` spawn at all — a warm `names` is the
+  OpenSearch query and nothing else. `--verbose` names the cached source; `--refresh-credential`
+  rediscovers and replaces the entry; `CF_METRICS_CREDENTIAL_CACHE=0` disables reading and writing;
+  `cf-metrics credential list` shows what is cached (target, instance, source, endpoint, expiry —
+  never the username or password) and `cf-metrics credential clear` forgets it. A cached credential
+  that OpenSearch rejects (HTTP 401/403 — its key or binding was deleted) is dropped and rediscovered
+  within the same command, which then retries once; `watch` now surfaces that rejection instead of
+  retrying it every interval forever. `--service-key`/`--fallback-binding-app` pins are honoured: a
+  cached credential from a binding the caller did not name is a miss.
+- Why cache a secret on disk at all, when `cf-hana` keeps HANA bindings live-only: this is the same
+  trade `cf-xsuaa` already makes for XSUAA client secrets in `~/.saptools/xsuaa-data.json`, with the
+  same protections, and `~/.cf/config.json` already holds a refresh token that can fetch this very
+  credential from the Cloud Controller — the cache widens nothing about who can obtain it, it only
+  saves re-obtaining it thirty seconds at a time. The opt-out and `credential clear` exist for anyone
+  who weighs it differently.
+- Fixed on the way: the `--allow-mint-credential` path read the freshly minted key with
+  `cf service-key`, whose CLI v8 output wraps the fields in a `credentials` object where v7 printed
+  them flat, so a minted key looked empty (after SAML had already been toggled). Both shapes are read.
+- API changes for library consumers: `discoverDashboardsCredential` takes `SapCredentials | undefined`
+  and the returned `DashboardsCredential` carries the resolved `instance`; `discoverServiceInstance`/
+  `listCloudLoggingInstances` take the space name and return `{ name, guid }`; `findBoundApps`,
+  `cfServices` and `parseServicesTable` are removed with the `cf services` path; the credential-cache
+  functions are exported. `CfMetricsError` gains an optional `status`, with `isAuthRejection()` to
+  test for 401/403. The test-only results-root override `CF_METRICS_RESULTS_ROOT` is renamed
+  `CF_METRICS_SAPTOOLS_ROOT`, since it now also relocates the credential cache.
+
 ## 0.5.0
 
 Two robustness fixes, both reproduced against the real backend before being changed.

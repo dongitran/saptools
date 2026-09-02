@@ -72,14 +72,81 @@ test("uses the newest working service key even though lower-priority candidates 
   }
 });
 
-test("fails with SAP_EMAIL/SAP_PASSWORD missing before ever contacting Cloud Foundry", async () => {
+/**
+ * The fake `cf target` reports a session already pointing at exactly the
+ * org/space these tests ask for — the common case for a developer who has just
+ * run `cf login`. That session is reused as-is: no isolated login, no
+ * temporary CF_HOME, no `cf services` (the v3 listing replaces it), and no
+ * SAP credentials required.
+ */
+test("reuses the current cf session when it matches: no login, no cf services, no SAP credentials needed", async () => {
+  const traceFile = join(tmpdir(), `cf-metrics-ambient-${String(process.pid)}.jsonl`);
+  await rm(traceFile, { force: true });
+  try {
+    const result = await runCli(["names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", "--verbose", ...targetArgs()], {
+      ...envWithBrokenKey(),
+      SAP_EMAIL: "",
+      SAP_PASSWORD: "",
+      CF_METRICS_FAKE_CF_TRACE_FILE: traceFile,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("reusing the current 'cf target' session");
+
+    const traceLines = (await readFile(traceFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const kinds = traceLines.map((entry) => entry["kind"]);
+    expect(kinds).not.toContain("api");
+    expect(kinds).not.toContain("auth");
+    expect(kinds).not.toContain("target-space");
+    expect(kinds).not.toContain("services");
+    expect(kinds).toContain("list-instances");
+    // Every command ran in the user's own session, never a temporary CF_HOME.
+    for (const entry of traceLines) {
+      const cfHome = entry["cfHome"];
+      expect(typeof cfHome === "string" ? cfHome : "").not.toContain("saptools-cf-metrics-");
+    }
+  } finally {
+    await rm(traceFile, { force: true });
+  }
+});
+
+test("logs in on its own when no cf session is active and SAP credentials are set", async () => {
+  const traceFile = join(tmpdir(), `cf-metrics-isolated-${String(process.pid)}.jsonl`);
+  await rm(traceFile, { force: true });
+  try {
+    const result = await runCli(["names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", "--verbose", ...targetArgs()], {
+      ...envWithBrokenKey(),
+      CF_METRICS_FAKE_CF_NO_SESSION: "1",
+      CF_METRICS_FAKE_CF_TRACE_FILE: traceFile,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("logging in to https://api.cf.eu10.hana.ondemand.com in an isolated CF_HOME");
+
+    const kinds = (await readFile(traceFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as Record<string, unknown>)["kind"]);
+    expect(kinds).toContain("api");
+    expect(kinds).toContain("auth");
+    expect(kinds).toContain("target-space");
+  } finally {
+    await rm(traceFile, { force: true });
+  }
+});
+
+test("fails clearly when no cf session is active and SAP_EMAIL/SAP_PASSWORD are missing", async () => {
   const result = await runCli(["names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", ...targetArgs()], {
     ...envWithBrokenKey(),
     SAP_EMAIL: "",
     SAP_PASSWORD: "",
+    CF_METRICS_FAKE_CF_NO_SESSION: "1",
   });
   expect(result.exitCode).not.toBe(0);
-  expect(result.stderr).toContain("SAP_EMAIL and SAP_PASSWORD environment variables are required");
+  expect(result.stderr).toContain("no 'cf target' session is active");
+  expect(result.stderr).toContain("SAP_EMAIL and SAP_PASSWORD");
+  expect(result.stderr).toContain("cf target -o example-org -s space-demo");
 });
 
 test("errors instead of guessing when more than one Cloud Logging instance exists in the space", async () => {
@@ -123,6 +190,8 @@ test("removes the temporary CF_HOME when interrupted mid-run, instead of strandi
   // `CF_METRICS_CF_BIN` must point at the fake `cf`, exactly as `runCli` does:
   // without it the CLI reaches for a real `cf` binary, which fails instantly
   // where none is installed and never opens the session window this test needs.
+  // `NO_SESSION` forces the isolated-login path — a matching ambient session
+  // would be reused instead and no temporary CF_HOME would ever exist.
   const child = spawn(
     "node",
     [CLI_PATH, "names", "--service", "demo-app", "--since", "2026-08-28T09:00:00.000Z", ...targetArgs()],
@@ -131,6 +200,7 @@ test("removes the temporary CF_HOME when interrupted mid-run, instead of strandi
         ...process.env,
         CF_METRICS_CF_BIN: FAKE_CF_PATH,
         ...envWithBrokenKey(),
+        CF_METRICS_FAKE_CF_NO_SESSION: "1",
         CF_METRICS_FAKE_CF_SLOW_MS: "20000",
       },
       stdio: "ignore",

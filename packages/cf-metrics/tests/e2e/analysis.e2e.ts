@@ -26,7 +26,7 @@ function env(): Record<string, string> {
     CF_METRICS_FAKE_DASHBOARDS_URL: fakeOpenSearch.url,
     CF_METRICS_FAKE_DASHBOARDS_USERNAME: FAKE_USERNAME,
     CF_METRICS_FAKE_DASHBOARDS_PASSWORD: FAKE_PASSWORD,
-    CF_METRICS_RESULTS_ROOT: resultsRoot,
+    CF_METRICS_SAPTOOLS_ROOT: resultsRoot,
   };
 }
 

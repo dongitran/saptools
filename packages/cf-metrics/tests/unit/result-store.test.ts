@@ -14,28 +14,28 @@ import {
 } from "../../src/result-store.js";
 
 describe("resultStoreOptionsFromEnv", () => {
-  const originalValue = process.env["CF_METRICS_RESULTS_ROOT"];
+  const originalValue = process.env["CF_METRICS_SAPTOOLS_ROOT"];
 
   afterEach(() => {
     if (originalValue === undefined) {
-      delete process.env["CF_METRICS_RESULTS_ROOT"];
+      delete process.env["CF_METRICS_SAPTOOLS_ROOT"];
     } else {
-      process.env["CF_METRICS_RESULTS_ROOT"] = originalValue;
+      process.env["CF_METRICS_SAPTOOLS_ROOT"] = originalValue;
     }
   });
 
   it("returns an empty options object when the env var is unset", () => {
-    delete process.env["CF_METRICS_RESULTS_ROOT"];
+    delete process.env["CF_METRICS_SAPTOOLS_ROOT"];
     expect(resultStoreOptionsFromEnv()).toEqual({});
   });
 
   it("returns an empty options object when the env var is blank", () => {
-    process.env["CF_METRICS_RESULTS_ROOT"] = "";
+    process.env["CF_METRICS_SAPTOOLS_ROOT"] = "";
     expect(resultStoreOptionsFromEnv()).toEqual({});
   });
 
   it("passes the env var through as saptoolsRoot when set", () => {
-    process.env["CF_METRICS_RESULTS_ROOT"] = "/tmp/some-root";
+    process.env["CF_METRICS_SAPTOOLS_ROOT"] = "/tmp/some-root";
     expect(resultStoreOptionsFromEnv()).toEqual({ saptoolsRoot: "/tmp/some-root" });
   });
 });

@@ -9,6 +9,7 @@ export interface CredentialOpts {
   readonly serviceKey: readonly string[];
   readonly fallbackBindingApp: readonly string[];
   readonly allowMintCredential: boolean;
+  readonly refreshCredential: boolean;
   readonly verbose: boolean;
 }
 

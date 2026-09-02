@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as cf from "../../src/cf.js";
+import type { CurrentCfTarget } from "../../src/cf.js";
 import { discoverDashboardsCredential } from "../../src/dashboards-credentials.js";
 import { CredentialsNotFoundError } from "../../src/errors.js";
 import * as samlToggle from "../../src/saml-toggle.js";
@@ -31,6 +32,8 @@ interface FakeBinding {
   readonly password?: string;
   /** Makes this binding's `/details` request reject, to exercise the per-candidate error path. */
   readonly detailsFails?: boolean;
+  /** The message that rejection carries; defaults to a generic per-request failure. */
+  readonly detailsError?: string;
   /** Which listing page this binding appears on, 1-based. */
   readonly page?: number;
 }
@@ -72,13 +75,34 @@ function detailsFor(binding: FakeBinding): string {
  * `delays` lets a test make a *later* candidate respond first, which is how the
  * "priority order, not response order" guarantee gets exercised.
  */
+/** The v3 service-instances listing the auto-discovery path reads: one cloud-logging instance in the space. */
+function instancesListing(): string {
+  return JSON.stringify({
+    pagination: { total_results: 1, total_pages: 1 },
+    resources: [
+      { guid: INSTANCE_GUID, name: "cloud-logging", type: "managed", relationships: { service_plan: { data: { guid: "plan-1" } } } },
+    ],
+    included: {
+      service_plans: [{ guid: "plan-1", name: "large", relationships: { service_offering: { data: { guid: "offering-1" } } } }],
+      service_offerings: [{ guid: "offering-1", name: "cloud-logging" }],
+    },
+  });
+}
+
 function stubCf(bindings: readonly FakeBinding[], opts: { totalPages?: number; delays?: Record<string, number> } = {}): void {
+  // No ambient session by default, so every existing expectation below runs
+  // through the isolated login exactly as before; the session tests override it.
+  vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(undefined);
   vi.spyOn(cf, "withCfSession").mockImplementation(async (work) => await work({ cfHome: "/tmp/fake" }));
   vi.spyOn(cf, "cfApi").mockResolvedValue(undefined);
   vi.spyOn(cf, "cfAuth").mockResolvedValue(undefined);
   vi.spyOn(cf, "cfTargetSpace").mockResolvedValue(undefined);
   vi.spyOn(cf, "cfServiceGuid").mockResolvedValue(INSTANCE_GUID);
+  vi.spyOn(cf, "cfSpaceGuid").mockResolvedValue("1af3e621-59f5-439c-9838-4508ae8be431");
   vi.spyOn(cf, "cfCurl").mockImplementation(async (path: string) => {
+    if (path.startsWith("/v3/service_instances?")) {
+      return instancesListing();
+    }
     const detailsMatch = /service_credential_bindings\/([^/]+)\/details/.exec(path);
     if (detailsMatch === null) {
       const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? "1");
@@ -90,7 +114,7 @@ function stubCf(bindings: readonly FakeBinding[], opts: { totalPages?: number; d
       throw new Error(`unexpected binding ${guid}`);
     }
     if (binding.detailsFails === true) {
-      throw new Error(`details request failed for ${guid}`);
+      throw new Error(binding.detailsError ?? `details request failed for ${guid}`);
     }
     const delay = opts.delays?.[guid];
     if (delay !== undefined) {
@@ -111,6 +135,131 @@ function discover(overrides: Partial<Parameters<typeof discoverDashboardsCredent
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+const MATCHING_SESSION: CurrentCfTarget = {
+  apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+  orgName: "example-org",
+  spaceName: "space-demo",
+  regionKey: "eu10",
+};
+
+const NOT_LOGGED_IN = "cf service cloud-logging --guid failed: FAILED\nNot logged in. Use 'cf login' or 'cf login --sso' to log in.";
+
+describe("session selection", () => {
+  it("reuses a matching 'cf target' session: no isolated login, and no SAP credentials needed", async () => {
+    stubCf([{ guid: "k1", type: "key", name: "logging-key", createdAt: "2026-01-01T00:00:00Z", password: "key-secret" }]);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(MATCHING_SESSION);
+
+    const credential = await discoverDashboardsCredential(TARGET, undefined, {
+      serviceInstance: "cloud-logging",
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential).toMatchObject({ password: "key-secret", instance: "cloud-logging" });
+    expect(cf.withCfSession).not.toHaveBeenCalled();
+    expect(cf.cfApi).not.toHaveBeenCalled();
+    expect(cf.cfAuth).not.toHaveBeenCalled();
+    expect(cf.cfTargetSpace).not.toHaveBeenCalled();
+    // Every command ran in the ambient context: no temporary CF_HOME anywhere.
+    for (const call of vi.mocked(cf.cfCurl).mock.calls) {
+      expect(call[1]).toEqual({});
+    }
+  });
+
+  it("reports the instance it resolved to, so the credential can be cached against it", async () => {
+    stubCf([{ guid: "k1", type: "key", name: "logging-key", createdAt: "2026-01-01T00:00:00Z", password: "key-secret" }]);
+
+    await expect(discover()).resolves.toMatchObject({ instance: "cloud-logging", source: "service-key:logging-key" });
+  });
+
+  it("auto-discovers the instance through the v3 listing when --service-instance is omitted", async () => {
+    stubCf([{ guid: "k1", type: "key", name: "logging-key", createdAt: "2026-01-01T00:00:00Z", password: "key-secret" }]);
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, { allowMintCredential: false, verbose: false });
+
+    expect(credential.instance).toBe("cloud-logging");
+    expect(cf.cfSpaceGuid).toHaveBeenCalledWith("space-demo", expect.anything());
+    expect(cf.cfServiceGuid).not.toHaveBeenCalled();
+  });
+
+  it("falls back to an isolated login when the matching session turns out to be dead", async () => {
+    stubCf([{ guid: "k1", type: "key", name: "logging-key", createdAt: "2026-01-01T00:00:00Z", password: "key-secret" }]);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(MATCHING_SESSION);
+    vi.spyOn(cf, "cfServiceGuid").mockImplementation(async (_instance, ctx) => {
+      if (ctx.cfHome === undefined) {
+        throw new Error(NOT_LOGGED_IN);
+      }
+      return INSTANCE_GUID;
+    });
+
+    await expect(discover()).resolves.toMatchObject({ source: "service-key:logging-key" });
+
+    expect(cf.cfApi).toHaveBeenCalledTimes(1);
+    expect(cf.cfAuth).toHaveBeenCalledTimes(1);
+    expect(cf.cfTargetSpace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back on an ordinary failure inside the ambient session", async () => {
+    stubCf([]);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue(MATCHING_SESSION);
+    vi.spyOn(cf, "cfServiceGuid").mockRejectedValue(new Error("cf service cloud-logging --guid failed: Service instance 'cloud-logging' not found."));
+
+    await expect(discover()).rejects.toThrow(/Service instance 'cloud-logging' not found/);
+    expect(cf.cfApi).not.toHaveBeenCalled();
+  });
+
+  it("explains what to do when no session is active and SAP credentials are absent", async () => {
+    stubCf([]);
+
+    const error = await discoverDashboardsCredential(TARGET, undefined, {
+      serviceInstance: "cloud-logging",
+      allowMintCredential: false,
+      verbose: false,
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CredentialsNotFoundError);
+    expect((error as Error).message).toContain("no 'cf target' session is active");
+    expect((error as Error).message).toContain("SAP_EMAIL and SAP_PASSWORD");
+    expect((error as Error).message).toContain("cf target -o example-org -s space-demo");
+    expect(cf.cfApi).not.toHaveBeenCalled();
+  });
+
+  it("names the session it refused to reuse when one is active but points elsewhere", async () => {
+    stubCf([{ guid: "k1", type: "key", name: "logging-key", createdAt: "2026-01-01T00:00:00Z", password: "key-secret" }]);
+    vi.spyOn(cf, "readCurrentCfTarget").mockResolvedValue({ ...MATCHING_SESSION, orgName: "other-org", spaceName: "other-space" });
+
+    await expect(
+      discoverDashboardsCredential(TARGET, undefined, { serviceInstance: "cloud-logging", allowMintCredential: false, verbose: false }),
+    ).rejects.toThrow(/points at other-org\/other-space/);
+
+    // With SAP credentials the same mismatch simply takes the isolated path.
+    await expect(discover()).resolves.toMatchObject({ password: "key-secret" });
+    expect(cf.cfApi).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects the result when the ambient target changed while discovery was running", async () => {
+    stubCf([{ guid: "k1", type: "key", name: "logging-key", createdAt: "2026-01-01T00:00:00Z", password: "key-secret" }]);
+    vi.spyOn(cf, "readCurrentCfTarget")
+      .mockResolvedValueOnce(MATCHING_SESSION)
+      .mockResolvedValueOnce({ ...MATCHING_SESSION, spaceName: "other-space" });
+
+    await expect(discover()).rejects.toThrow(/changed while cf-metrics was reading it/);
+    expect(cf.cfApi).not.toHaveBeenCalled();
+  });
+
+  it("stops probing on a dead session instead of blaming every binding for it", async () => {
+    stubCf([
+      { guid: "k1", type: "key", name: "first-key", createdAt: "2026-01-02T00:00:00Z", detailsFails: true, detailsError: NOT_LOGGED_IN },
+      { guid: "k2", type: "key", name: "second-key", createdAt: "2026-01-01T00:00:00Z", password: "would-work" },
+    ]);
+
+    const error = await discover().catch((e: unknown) => e);
+
+    expect(error).not.toBeInstanceOf(CredentialsNotFoundError);
+    expect((error as Error).message).toContain("Not logged in");
+  });
 });
 
 describe("discoverDashboardsCredential", () => {
@@ -280,6 +429,7 @@ describe("discoverDashboardsCredential", () => {
       username: "minted",
       password: "minted-secret",
       source: "minted:new-key",
+      instance: "cloud-logging",
     };
     vi.mocked(samlToggle.mintDashboardsCredential).mockResolvedValue(minted);
 

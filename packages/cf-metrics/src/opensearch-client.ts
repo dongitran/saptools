@@ -188,9 +188,12 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
     }
     const text = await response.text();
     if (!response.ok) {
+      // The status rides along so the credential layer can tell "this
+      // credential is dead" (401/403) from every other kind of failure.
       throw new CfMetricsError(
         "OPENSEARCH_REQUEST_FAILED",
         `OpenSearch request to ${path} failed: HTTP ${String(response.status)} ${text.slice(0, 500)}`,
+        { status: response.status },
       );
     }
     if (text.length === 0) {

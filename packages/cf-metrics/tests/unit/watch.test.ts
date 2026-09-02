@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { CfMetricsError } from "../../src/errors.js";
 import type { OpenSearchClient, SearchHit, SearchResponse } from "../../src/opensearch-client.js";
 import { WATCH_FETCH_LIMIT, advanceCursor, dedupeAgainstCursor, watchMetrics } from "../../src/watch.js";
 
@@ -235,6 +236,32 @@ describe("watchMetrics", () => {
     expect(notices.some((message) => message.includes("poll failed") && message.includes("temporary network blip"))).toBe(
       true,
     );
+  });
+
+  /**
+   * A rejected credential never recovers by waiting, and swallowing it would
+   * loop on "poll failed: HTTP 401" forever — while the command layer, which
+   * could discard a cached credential and start over, never hears about it.
+   */
+  it("lets an auth rejection propagate instead of retrying it every interval", async () => {
+    const controller = new AbortController();
+    const client: OpenSearchClient = {
+      search: vi.fn(async () => {
+        throw new CfMetricsError("OPENSEARCH_REQUEST_FAILED", "HTTP 401 Unauthorized", { status: 401 });
+      }),
+      count: vi.fn(async () => 0),
+      getMapping: vi.fn(async () => ({})),
+    };
+    const notices: string[] = [];
+
+    await expect(
+      watchMetrics(client, { service: "app", intervalMs: 5, lookback: "1m" }, () => undefined, controller.signal, (message) => {
+        notices.push(message);
+      }),
+    ).rejects.toThrow(/HTTP 401/);
+
+    expect(client.search).toHaveBeenCalledTimes(1);
+    expect(notices).toEqual([]);
   });
 
   it("threads the AbortSignal through to client.search on every poll", async () => {

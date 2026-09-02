@@ -171,7 +171,7 @@ async function confirmThenMint(
         `Minted key "${keyName}" on "${instance}" did not contain dashboards-username/dashboards-password.`,
       );
     }
-    return { ok: true, value: credential };
+    return { ok: true, value: { ...credential, instance } };
   } catch (error) {
     return { ok: false, error };
   }

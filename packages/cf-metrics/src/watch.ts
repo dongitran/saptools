@@ -1,7 +1,7 @@
 import { setTimeout as delayPromise } from "node:timers/promises";
 
 import { DEFAULT_INDEX_PATTERN } from "./config.js";
-import { errorMessage } from "./errors.js";
+import { errorMessage, isAuthRejection } from "./errors.js";
 import type { OpenSearchClient, SearchHit, SearchResponse } from "./opensearch-client.js";
 import { buildMetricBoolQuery, resolveTimeBound } from "./query-builder.js";
 
@@ -133,6 +133,12 @@ export async function watchMetrics(
         signal,
       );
     } catch (error) {
+      // A rejected credential will not fix itself by waiting: every later poll
+      // would fail the same way forever. Surface it so the command layer can
+      // discard a cached credential and start over with a fresh one.
+      if (isAuthRejection(error)) {
+        throw error;
+      }
       onNotice?.(`poll failed: ${errorMessage(error)}, retrying next interval`);
       await delay(opts.intervalMs, signal);
       continue;

@@ -14,10 +14,16 @@ export interface ResolvedTarget {
   readonly regionConfirmed: boolean;
 }
 
-export interface DashboardsCredential {
+/** The credential fields a service-key or binding payload carries, before discovery attributes them to an instance. */
+export interface DashboardsCredentialPayload {
   readonly dashboardsEndpoint: string;
   readonly username: string;
   readonly password: string;
   /** Non-secret provenance, e.g. "service-key:mykey" or "minted:cf-metrics-ab12cd34". Safe to log. */
   readonly source: string;
+}
+
+export interface DashboardsCredential extends DashboardsCredentialPayload {
+  /** Name of the Cloud Logging service instance the credential belongs to. Non-secret. */
+  readonly instance: string;
 }

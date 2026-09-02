@@ -1,9 +1,19 @@
+export {
+  clearCredentialCache,
+  credentialCacheOptionsFromEnv,
+  deleteCachedCredential,
+  listCachedCredentials,
+  readCachedCredential,
+  writeCachedCredential,
+} from "./credential-cache.js";
+export type { CachedCredentialSummary, CredentialCacheKey, CredentialCacheOptions } from "./credential-cache.js";
 export { discoverDashboardsCredential } from "./dashboards-credentials.js";
 export type { CredentialDiscoveryOptions } from "./dashboards-credentials.js";
 export {
   CfMetricsError,
   CredentialsNotFoundError,
   errorMessage,
+  isAuthRejection,
   SamlRestoreFailedError,
 } from "./errors.js";
 export type { CfMetricsErrorCode } from "./errors.js";
@@ -32,13 +42,20 @@ export {
 } from "./result-store.js";
 export type { CreateResultSessionInput, ResultSession, ResultSessionSummary } from "./result-store.js";
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
-export { discoverServiceInstance, findBoundApps, listCloudLoggingInstances } from "./service-discovery.js";
+export { discoverServiceInstance, listCloudLoggingInstances } from "./service-discovery.js";
+export type { CloudLoggingInstance } from "./service-discovery.js";
 export { querySnapshot } from "./snapshot.js";
 export type { SnapshotQueryOptions, SnapshotResult } from "./snapshot.js";
 export { printResolvedTarget, resolveTarget } from "./target.js";
 export type { TargetOptions } from "./target.js";
 export { queryTop } from "./top.js";
 export type { TopQueryOptions, TopResult } from "./top.js";
-export type { DashboardsCredential, OutputFormat, ResolvedTarget, SelectorSource } from "./types.js";
+export type {
+  DashboardsCredential,
+  DashboardsCredentialPayload,
+  OutputFormat,
+  ResolvedTarget,
+  SelectorSource,
+} from "./types.js";
 export { watchMetrics } from "./watch.js";
 export type { WatchPollOptions } from "./watch.js";

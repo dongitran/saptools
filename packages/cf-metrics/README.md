@@ -16,10 +16,19 @@ npm install -g @saptools/cf-metrics
 
 ## Auth
 
-Every command reads `SAP_EMAIL` / `SAP_PASSWORD` from the environment for the underlying
-`cf api` / `cf auth` / `cf target` login — never pass them as flags. There is no separate login
-step: each command is a complete, one-shot operation (except `watch`, which stays running until
-Ctrl-C).
+Each command is a complete, one-shot operation (except `watch`, which stays running until Ctrl-C);
+there is no separate login step. To reach the Cloud Logging credential it needs a Cloud Foundry
+session, and takes the first of these that works:
+
+1. **Your own `cf` session, when it already matches.** If `cf target` points at the requested
+   org/space, the read-only discovery commands run in that session as-is. It is never modified:
+   `cf api`, `cf auth` and `cf target -o -s` refuse to run in it by construction, and the target is
+   re-checked afterwards so a `cf target` in another terminal mid-run cannot hand back a credential
+   from the wrong space. Nothing else is needed — no `SAP_EMAIL`/`SAP_PASSWORD`.
+2. **An isolated login**, when no session matches or the session turns out to be dead (not logged
+   in, token expired). This runs `cf api` / `cf auth` / `cf target` in a temporary `CF_HOME` and
+   reads `SAP_EMAIL` / `SAP_PASSWORD` from the environment — never pass them as flags. Without
+   them, the error says which of the two situations it hit and what to do about it.
 
 ```bash
 export SAP_EMAIL=you@example.com
@@ -48,8 +57,10 @@ to get than it sounds once SAML is enabled on the instance's dashboards: only cr
 *before* SAML was switched on keep a username and password — newer ones expose the endpoint and
 mTLS ingest material but nothing you can log in with.
 
-`cf-metrics` lists every credential binding on the instance in one Cloud Controller v3 request and
-reads their details, preferring:
+`cf-metrics` finds the instance with one `cf space --guid` plus one `GET /v3/service_instances`
+(not `cf services`, which the CF CLI implements as one request per instance in the space and which
+measured 15–38 seconds on a real space), then lists every credential binding on the instance in one
+Cloud Controller v3 request and reads their details, preferring:
 
 1. Service keys, newest first (`--service-key`, repeatable, to pin specific ones). Keys are created
    deliberately, so age says nothing about whether one predates SAML.
@@ -67,6 +78,34 @@ request happened to return first.
 Pass `--verbose` to see how many bindings were found and which one succeeded. If every candidate
 fails, the error names each one that was tried.
 
+## Credential reuse
+
+Discovery is the expensive part of every command: measured on a real tenant with 61 bindings, a
+plain `names` took 33 seconds before this cache existed, almost all of it Cloud Foundry round trips
+that produced the same credential every time. So the resolved dashboards credential is kept under
+`~/.saptools/cf-metrics/credentials.json` (directory `0700`, file `0600`, written atomically), keyed
+by API endpoint, org, space and instance, for 7 days. A hit is silent and spawns no `cf` at all — a
+warm command is just the OpenSearch query.
+
+| Control | Effect |
+| --- | --- |
+| `--verbose` | names the cached credential's source and instance on a hit |
+| `--refresh-credential` | ignore the cached entry, rediscover, and replace it |
+| `CF_METRICS_CREDENTIAL_CACHE=0` | never read or write the cache (`false`/`off`/`no` also work) |
+| `cf-metrics credential list` | what is cached — target, instance, source, endpoint, expiry; never the username or password |
+| `cf-metrics credential clear` | forget every cached credential |
+
+A cached credential that OpenSearch rejects (HTTP 401/403 — typically its service key or binding
+was deleted) is dropped and rediscovered within the same command, which then retries once and says
+so on stderr. `--service-key`/`--fallback-binding-app` pins apply to the cache too: a cached
+credential from a binding you did not name is treated as a miss.
+
+On keeping a secret on disk: this is the same trade `cf-xsuaa` makes for XSUAA client secrets in
+`~/.saptools/xsuaa-data.json`, with the same file protections, and `~/.cf/config.json` already
+holds a refresh token that can fetch this very credential from the Cloud Controller. The cache
+widens nothing about who can obtain the credential; it only saves re-obtaining it. If you weigh
+that differently, set `CF_METRICS_CREDENTIAL_CACHE=0` and run `cf-metrics credential clear` once.
+
 ## Commands
 
 | Command | Purpose |
@@ -80,6 +119,7 @@ fails, the error names each one that was tried.
 | `top` | Cross-app ranking for one metric name over a range. No `--service` filter; that's the point. Kind-aware like `history`. Pass `--unit` for `container.cpu.usage` — see the unit caveat below. |
 | `watch` | Poll for new metric points as they land, `--json` for NDJSON — live monitoring during a deploy or incident. `--lookback` sets the initial look-back window (default `2m`). |
 | `result show\|list\|prune\|clear` | Inspect results saved via `--save`. |
+| `credential list\|clear` | Inspect or forget the cached dashboards credentials (see Credential reuse). |
 
 Every row-returning command supports `--format table|json|json-compact|csv` (default `table`) and
 `--save`, which prints `ref=<id>` instead of the result and stores it under
@@ -197,10 +237,11 @@ Every OpenSearch request carries a 60-second deadline; override it with
 `CF_METRICS_HTTP_TIMEOUT_MS` when a query is genuinely slow. A timeout is reported as a timeout,
 not as a generic request failure.
 
-Ctrl-C is safe at any point. Each command runs its Cloud Foundry work inside a temporary
-`CF_HOME` that holds a real access token and a long-lived refresh token once `cf auth` has run;
-that directory is removed on interruption as well as on normal exit, and the process still exits
-with the conventional 128+signal status.
+Ctrl-C is safe at any point. When a command has to log in on its own (see Auth), it does so inside
+a temporary `CF_HOME` that holds a real access token and a long-lived refresh token once `cf auth`
+has run; that directory is removed on interruption as well as on normal exit, and the process still
+exits with the conventional 128+signal status. A command that reuses your own `cf` session or a
+cached credential creates no such directory in the first place.
 
 ## Development
 

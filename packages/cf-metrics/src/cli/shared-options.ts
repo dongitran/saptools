@@ -26,6 +26,11 @@ export function withCredentialOptions(command: Command): Command {
       "last resort: temporarily disable SAML to mint a new key (disruptive to shared SSO login)",
       false,
     )
+    .option(
+      "--refresh-credential",
+      "ignore the cached dashboards credential and rediscover it (the result replaces the cached one)",
+      false,
+    )
     .option("--verbose", "print which credential-discovery step succeeded and why", false);
 }
 

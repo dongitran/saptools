@@ -1,15 +1,68 @@
-import { readSapCredentials } from "../config.js";
+import { credentialCacheEnabled, readSapCredentials } from "../config.js";
+import type { CredentialCacheKey } from "../credential-cache.js";
+import {
+  credentialCacheOptionsFromEnv,
+  deleteCachedCredential,
+  readCachedCredential,
+  writeCachedCredential,
+} from "../credential-cache.js";
 import { discoverDashboardsCredential } from "../dashboards-credentials.js";
-import { CredentialsNotFoundError } from "../errors.js";
+import { errorMessage, isAuthRejection } from "../errors.js";
 import type { OpenSearchClient } from "../opensearch-client.js";
 import { createOpenSearchClient } from "../opensearch-client.js";
 import { printResolvedTarget, resolveTarget } from "../target.js";
+import type { DashboardsCredential, ResolvedTarget } from "../types.js";
 
 import type { CredentialOpts, TargetOpts } from "./commandTypes.js";
+import { printNotice } from "./output.js";
+
+function cacheKeyFor(target: ResolvedTarget, opts: CredentialOpts): CredentialCacheKey {
+  return {
+    target,
+    ...(opts.serviceInstance === undefined ? {} : { instanceSelector: opts.serviceInstance }),
+  };
+}
 
 /**
- * Every subcommand does the full login -> target -> credential-discovery ->
- * client dance itself; there is no separate "login" step to run first.
+ * `--service-key`/`--fallback-binding-app` pin which bindings may be used, and
+ * a cached credential has to honour that too: one discovered from a binding
+ * the caller did not name is a miss, not a hit, however valid it still is.
+ */
+function pinsAllow(source: string, opts: CredentialOpts): boolean {
+  if (opts.serviceKey.length === 0 && opts.fallbackBindingApp.length === 0) {
+    return true;
+  }
+  const separator = source.indexOf(":");
+  const kind = separator === -1 ? source : source.slice(0, separator);
+  const label = separator === -1 ? "" : source.slice(separator + 1);
+  if (kind === "service-key") {
+    return opts.serviceKey.includes(label);
+  }
+  if (kind === "binding") {
+    return opts.fallbackBindingApp.includes(label);
+  }
+  return false;
+}
+
+function clientFor(credential: DashboardsCredential): OpenSearchClient {
+  return createOpenSearchClient({
+    dashboardsEndpoint: credential.dashboardsEndpoint,
+    username: credential.username,
+    password: credential.password,
+  });
+}
+
+/**
+ * Every subcommand does the full target -> credential -> client dance itself;
+ * there is no separate "login" step to run first.
+ *
+ * The credential is the expensive part (a full Cloud Foundry round trip,
+ * measured at 30+ seconds on a real tenant), so a previously discovered one is
+ * reused from the on-disk cache when there is one — silently, the way `gh` or
+ * `gcloud` reuse theirs — and discovery only runs on a miss, on
+ * `--refresh-credential`, or after OpenSearch rejects the cached credential
+ * (HTTP 401/403), in which case the stale entry is dropped and the command is
+ * retried once with a freshly discovered one.
  */
 export async function withOpenSearchClient<T>(
   opts: TargetOpts & CredentialOpts,
@@ -18,12 +71,32 @@ export async function withOpenSearchClient<T>(
   const target = await resolveTarget(opts);
   printResolvedTarget(target);
 
-  const sap = readSapCredentials();
-  if (sap === undefined) {
-    throw new CredentialsNotFoundError("SAP_EMAIL and SAP_PASSWORD environment variables are required.");
+  const cacheEnabled = credentialCacheEnabled();
+  const cacheOptions = credentialCacheOptionsFromEnv();
+  const key = cacheKeyFor(target, opts);
+
+  if (cacheEnabled && !opts.refreshCredential) {
+    const cached = await readCachedCredential(key, cacheOptions);
+    if (cached !== undefined && pinsAllow(cached.source, opts)) {
+      if (opts.verbose) {
+        printNotice(
+          `[verbose] using cached dashboards credential from ${cached.source} on "${cached.instance}" ` +
+            "(pass --refresh-credential to rediscover, or `cf-metrics credential clear` to forget it)",
+        );
+      }
+      try {
+        return await work(clientFor(cached));
+      } catch (error) {
+        if (!isAuthRejection(error)) {
+          throw error;
+        }
+        printNotice(`cached dashboards credential from ${cached.source} was rejected (${errorMessage(error)}); rediscovering`);
+        await deleteCachedCredential(key, cacheOptions);
+      }
+    }
   }
 
-  const credential = await discoverDashboardsCredential(target, sap, {
+  const credential = await discoverDashboardsCredential(target, readSapCredentials(), {
     ...(opts.serviceInstance === undefined ? {} : { serviceInstance: opts.serviceInstance }),
     ...(opts.serviceKey.length > 0 ? { serviceKeyNames: opts.serviceKey } : {}),
     ...(opts.fallbackBindingApp.length > 0 ? { fallbackBindingApps: opts.fallbackBindingApp } : {}),
@@ -31,11 +104,15 @@ export async function withOpenSearchClient<T>(
     verbose: opts.verbose,
   });
 
-  return await work(
-    createOpenSearchClient({
-      dashboardsEndpoint: credential.dashboardsEndpoint,
-      username: credential.username,
-      password: credential.password,
-    }),
-  );
+  if (cacheEnabled) {
+    try {
+      await writeCachedCredential(key, credential, cacheOptions);
+    } catch (error) {
+      // The cache only saves time; a full-disk or read-only home directory
+      // must not turn a command that already has its credential into a failure.
+      printNotice(`could not save the dashboards credential for reuse: ${errorMessage(error)}`);
+    }
+  }
+
+  return await work(clientFor(credential));
 }

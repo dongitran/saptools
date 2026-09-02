@@ -1,6 +1,16 @@
 import { isRecord } from "./agg-buckets.js";
-import type { CfExecContext } from "./cf.js";
-import { cfApi, cfAuth, cfCurl, cfServiceGuid, cfTargetSpace, withCfSession } from "./cf.js";
+import type { CfExecContext, CurrentCfTarget } from "./cf.js";
+import {
+  AMBIENT_CF_CONTEXT,
+  cfApi,
+  cfAuth,
+  cfCurl,
+  cfServiceGuid,
+  cfTargetSpace,
+  isCfAuthFailure,
+  readCurrentCfTarget,
+  withCfSession,
+} from "./cf.js";
 import {
   BINDING_PROBE_CONCURRENCY,
   BINDINGS_PAGE_SIZE,
@@ -9,8 +19,9 @@ import {
   type SapCredentials,
 } from "./config.js";
 import { extractDashboardsCredential, parseCredentialJson } from "./dashboards-payload.js";
-import { CredentialsNotFoundError, errorMessage } from "./errors.js";
+import { CfMetricsError, CredentialsNotFoundError, errorMessage } from "./errors.js";
 import { mintDashboardsCredential } from "./saml-toggle.js";
+import type { CloudLoggingInstance } from "./service-discovery.js";
 import { discoverServiceInstance } from "./service-discovery.js";
 import type { DashboardsCredential, ResolvedTarget } from "./types.js";
 
@@ -21,6 +32,8 @@ export interface CredentialDiscoveryOptions {
   readonly allowMintCredential: boolean;
   readonly verbose: boolean;
 }
+
+type StepReporter = (message: string) => void;
 
 /** One credential binding on the instance, flattened from the v3 API response. */
 interface BindingRef {
@@ -156,11 +169,16 @@ function sourceOf(binding: BindingRef): string {
   return binding.type === "key" ? `service-key:${binding.label}` : `binding:${binding.label}`;
 }
 
-async function readBindingCredential(binding: BindingRef, ctx: CfExecContext): Promise<DashboardsCredential | undefined> {
+async function readBindingCredential(
+  binding: BindingRef,
+  instance: string,
+  ctx: CfExecContext,
+): Promise<DashboardsCredential | undefined> {
   const raw = await cfCurl(`/v3/service_credential_bindings/${encodeURIComponent(binding.guid)}/details`, ctx);
   const payload = parseCredentialJson(raw, `${describe(binding)} details`);
   const credentials = isRecord(payload) ? payload["credentials"] : undefined;
-  return extractDashboardsCredential(credentials, sourceOf(binding));
+  const extracted = extractDashboardsCredential(credentials, sourceOf(binding));
+  return extracted === undefined ? undefined : { ...extracted, instance };
 }
 
 /**
@@ -170,6 +188,7 @@ async function readBindingCredential(binding: BindingRef, ctx: CfExecContext): P
  */
 async function resolveFromBindings(
   bindings: readonly BindingRef[],
+  instance: string,
   ctx: CfExecContext,
   recordAttempt: (detail: string) => void,
 ): Promise<DashboardsCredential | undefined> {
@@ -178,7 +197,7 @@ async function resolveFromBindings(
     const outcomes = await Promise.all(
       batch.map(async (binding) => {
         try {
-          return { binding, credential: await readBindingCredential(binding, ctx) };
+          return { binding, credential: await readBindingCredential(binding, instance, ctx) };
         } catch (error) {
           return { binding, error };
         }
@@ -186,6 +205,13 @@ async function resolveFromBindings(
     );
     for (const outcome of outcomes) {
       if ("error" in outcome) {
+        // A dead session is not a property of one candidate: every remaining
+        // probe would fail identically, and the caller may be able to recover
+        // by logging in afresh — so stop here rather than reporting sixty
+        // "failures" that all mean the same thing.
+        if (isCfAuthFailure(outcome.error)) {
+          throw outcome.error;
+        }
         recordAttempt(`${describe(outcome.binding)}: ${errorMessage(outcome.error)}`);
         continue;
       }
@@ -214,69 +240,172 @@ function applyNameFilters(
   });
 }
 
+async function resolveInstance(
+  target: ResolvedTarget,
+  options: CredentialDiscoveryOptions,
+  ctx: CfExecContext,
+): Promise<CloudLoggingInstance> {
+  if (options.serviceInstance !== undefined) {
+    return { name: options.serviceInstance, guid: await cfServiceGuid(options.serviceInstance, ctx) };
+  }
+  return await discoverServiceInstance(target.space, ctx);
+}
+
 /**
- * Resolve a working OpenSearch dashboards basic-auth credential following the
- * documented decision tree: existing service keys, then fallback bindings
- * that predate SAML being enabled, then (only behind an explicit opt-in) a
- * temporary SAML disable/restore. Every step is reported via `report` when
- * `--verbose` is set, and the resolved credential lives only in the returned
- * object — nothing secret is cached or written to disk.
+ * The documented decision tree, run inside whichever session `ctx` names:
+ * existing service keys, then fallback bindings that predate SAML being
+ * enabled, then (only behind an explicit opt-in) a temporary SAML
+ * disable/restore.
+ */
+async function discoverWithSession(
+  target: ResolvedTarget,
+  options: CredentialDiscoveryOptions,
+  ctx: CfExecContext,
+  report: StepReporter,
+): Promise<DashboardsCredential> {
+  const instance = await resolveInstance(target, options, ctx);
+  report(`using service instance "${instance.name}"`);
+
+  const attempts: string[] = [];
+  const recordAttempt = (detail: string): void => {
+    attempts.push(detail);
+    report(detail);
+  };
+
+  const allBindings = await listCredentialBindings(instance.guid, ctx);
+  const candidates = prioritize(applyNameFilters(allBindings, options));
+  report(`found ${String(allBindings.length)} credential binding(s) on "${instance.name}", ${String(candidates.length)} to try`);
+
+  if (candidates.length === 0) {
+    // Distinguish "nothing is bound" from "your filters excluded everything" —
+    // conflating them sends the reader looking for the wrong problem.
+    recordAttempt(
+      allBindings.length === 0
+        ? `instance "${instance.name}" has no service keys or app bindings to read credentials from`
+        : `all ${String(allBindings.length)} binding(s) on "${instance.name}" were excluded by --service-key/--fallback-binding-app`,
+    );
+  }
+  const fromBindings = await resolveFromBindings(candidates, instance.name, ctx, recordAttempt);
+  if (fromBindings !== undefined) {
+    report(`resolved dashboards credential from ${fromBindings.source}`);
+    return fromBindings;
+  }
+
+  if (options.allowMintCredential) {
+    report(
+      "no existing key or fallback binding worked; minting a new credential via --allow-mint-credential",
+    );
+    return await mintDashboardsCredential(instance.name, ctx, { confirmDisruptive: true, report });
+  }
+
+  const attemptsText = attempts.map((detail) => `  - ${detail}`).join("\n");
+  throw new CredentialsNotFoundError(
+    `Could not resolve Cloud Logging dashboards credentials for instance "${instance.name}". Tried:\n${attemptsText}\nPass --allow-mint-credential to temporarily disable SAML and mint a new key as a last resort (disruptive: breaks SSO dashboards login for all users during the window).`,
+  );
+}
+
+function normalizeEndpoint(apiEndpoint: string): string {
+  return apiEndpoint.trim().toLowerCase().replace(/\/+$/, "");
+}
+
+function sameTarget(current: CurrentCfTarget | undefined, target: ResolvedTarget): boolean {
+  return (
+    current !== undefined &&
+    normalizeEndpoint(current.apiEndpoint) === normalizeEndpoint(target.apiEndpoint) &&
+    current.orgName === target.org &&
+    current.spaceName === target.space
+  );
+}
+
+type AmbientOutcome =
+  | { readonly ok: true; readonly credential: DashboardsCredential }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Try the user's own `cf` session first, the way `cf-hana` does for bare app
+ * names: when `cf target` already points at the requested org/space, the
+ * read-only discovery commands can run there directly, which skips the
+ * isolated `cf api`/`cf auth`/`cf target` sequence (~6s measured) and means a
+ * logged-in user needs no SAP_EMAIL/SAP_PASSWORD at all. Only ever a
+ * fast path: an unusable session (not logged in, token expired) hands control
+ * back so the caller can fall through to the isolated login it always used.
+ */
+async function tryAmbientSession(
+  target: ResolvedTarget,
+  options: CredentialDiscoveryOptions,
+  report: StepReporter,
+): Promise<AmbientOutcome> {
+  const current = await readCurrentCfTarget();
+  if (!sameTarget(current, target)) {
+    return {
+      ok: false,
+      reason:
+        current === undefined
+          ? "no 'cf target' session is active"
+          : `the current 'cf target' session points at ${current.orgName}/${current.spaceName} on ${current.apiEndpoint}`,
+    };
+  }
+  report(`reusing the current 'cf target' session for ${target.org}/${target.space} (no isolated login)`);
+
+  let credential: DashboardsCredential;
+  try {
+    credential = await discoverWithSession(target, options, AMBIENT_CF_CONTEXT, report);
+  } catch (error) {
+    if (!isCfAuthFailure(error)) {
+      throw error;
+    }
+    return { ok: false, reason: `the current 'cf' session was rejected (${errorMessage(error)})` };
+  }
+
+  // The session is shared with whatever else the user is doing: a `cf target`
+  // in another terminal mid-run would have pointed the reads above at some
+  // other space, and a credential from the wrong space must not be returned
+  // (or cached) as if it were this one's.
+  if (!sameTarget(await readCurrentCfTarget(), target)) {
+    throw new CfMetricsError(
+      "TARGET_UNRESOLVED",
+      `The 'cf target' session changed while cf-metrics was reading it, so the credential it returned cannot be trusted to belong to ${target.region}/${target.org}/${target.space}. Retry, or pin --region/--org/--space.`,
+    );
+  }
+  return { ok: true, credential };
+}
+
+/**
+ * Resolve a working OpenSearch dashboards basic-auth credential: through the
+ * user's own matching `cf` session when there is one, otherwise through an
+ * isolated login with `sap` (required only on that path). Every step is
+ * reported via `report` when `--verbose` is set, and the resolved credential
+ * lives only in the returned object — this function never writes it to disk;
+ * the CLI's credential cache is a separate, opt-out layer above it.
  */
 export async function discoverDashboardsCredential(
   target: ResolvedTarget,
-  sap: SapCredentials,
+  sap: SapCredentials | undefined,
   options: CredentialDiscoveryOptions,
 ): Promise<DashboardsCredential> {
-  return await withCfSession(async (ctx) => {
-    const report = (message: string): void => {
-      if (options.verbose) {
-        process.stderr.write(`${CLI_NAME}: [verbose] ${message}\n`);
-      }
-    };
+  const report: StepReporter = (message) => {
+    if (options.verbose) {
+      process.stderr.write(`${CLI_NAME}: [verbose] ${message}\n`);
+    }
+  };
 
+  const ambient = await tryAmbientSession(target, options, report);
+  if (ambient.ok) {
+    return ambient.credential;
+  }
+  if (sap === undefined) {
+    throw new CredentialsNotFoundError(
+      `Cannot reach Cloud Foundry for ${target.region}/${target.org}/${target.space}: ${ambient.reason}, and SAP_EMAIL/SAP_PASSWORD are not set. ` +
+        `Either run \`cf login\` and \`cf target -o ${target.org} -s ${target.space}\` (a matching session is reused as-is), ` +
+        "or set SAP_EMAIL and SAP_PASSWORD so cf-metrics can log in on its own.",
+    );
+  }
+  report(`${ambient.reason}; logging in to ${target.apiEndpoint} in an isolated CF_HOME`);
+
+  return await withCfSession(async (ctx) => {
     await cfApi(target.apiEndpoint, ctx);
     await cfAuth(sap.email, sap.password, ctx);
     await cfTargetSpace(target.org, target.space, ctx);
-
-    const instance = options.serviceInstance ?? (await discoverServiceInstance(ctx));
-    report(`using service instance "${instance}"`);
-
-    const attempts: string[] = [];
-    const recordAttempt = (detail: string): void => {
-      attempts.push(detail);
-      report(detail);
-    };
-
-    const instanceGuid = await cfServiceGuid(instance, ctx);
-    const allBindings = await listCredentialBindings(instanceGuid, ctx);
-    const candidates = prioritize(applyNameFilters(allBindings, options));
-    report(`found ${String(allBindings.length)} credential binding(s) on "${instance}", ${String(candidates.length)} to try`);
-
-    if (candidates.length === 0) {
-      // Distinguish "nothing is bound" from "your filters excluded everything" —
-      // conflating them sends the reader looking for the wrong problem.
-      recordAttempt(
-        allBindings.length === 0
-          ? `instance "${instance}" has no service keys or app bindings to read credentials from`
-          : `all ${String(allBindings.length)} binding(s) on "${instance}" were excluded by --service-key/--fallback-binding-app`,
-      );
-    }
-    const fromBindings = await resolveFromBindings(candidates, ctx, recordAttempt);
-    if (fromBindings !== undefined) {
-      report(`resolved dashboards credential from ${fromBindings.source}`);
-      return fromBindings;
-    }
-
-    if (options.allowMintCredential) {
-      report(
-        "no existing key or fallback binding worked; minting a new credential via --allow-mint-credential",
-      );
-      return await mintDashboardsCredential(instance, ctx, { confirmDisruptive: true, report });
-    }
-
-    const attemptsText = attempts.map((detail) => `  - ${detail}`).join("\n");
-    throw new CredentialsNotFoundError(
-      `Could not resolve Cloud Logging dashboards credentials for instance "${instance}". Tried:\n${attemptsText}\nPass --allow-mint-credential to temporarily disable SAML and mint a new key as a last resort (disruptive: breaks SSO dashboards login for all users during the window).`,
-    );
+    return await discoverWithSession(target, options, ctx, report);
   });
 }

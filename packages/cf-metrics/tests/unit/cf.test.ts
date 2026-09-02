@@ -6,7 +6,7 @@ import {
   getRegionKeyForApi,
   parseCfTargetOutput,
   parseServiceStatus,
-  parseServicesTable,
+  isCfAuthFailure,
   redactSecretLikeText,
 } from "../../src/cf.js";
 
@@ -59,41 +59,35 @@ describe("parseCfTargetOutput", () => {
   });
 });
 
-// `cf services` pads every column to a fixed width so the header word and the
-// data below it start at the same character offset — hand-typing that
-// alignment is error-prone, so build rows from fixed column widths instead.
-function servicesRow(name: string, offering: string, plan: string, boundApps: string, lastOp: string): string {
-  return name.padEnd(17) + offering.padEnd(16) + plan.padEnd(11) + boundApps.padEnd(20) + lastOp;
-}
-
-describe("parseServicesTable", () => {
-  it("parses the v7+ 'offering' header shape, including a row with empty bound apps", () => {
-    const stdout = [
-      "Getting services in org example-org / space space-demo as user@example.com...",
-      "",
-      servicesRow("name", "offering", "plan", "bound apps", "last operation"),
-      servicesRow("cloud-logging", "cloud-logging", "standard", "app1, app2", "create succeeded"),
-      servicesRow("empty-instance", "cloud-logging", "standard", "", "create succeeded"),
-    ].join("\n");
-    const rows = parseServicesTable(stdout);
-    expect(rows).toEqual([
-      { name: "cloud-logging", offering: "cloud-logging", boundApps: ["app1", "app2"] },
-      { name: "empty-instance", offering: "cloud-logging", boundApps: [] },
-    ]);
+/**
+ * Decides whether the user's own `cf` session gets abandoned in favour of an
+ * isolated login. Too broad and every ordinary failure (typo'd instance name,
+ * network blip) triggers a pointless re-login; too narrow and a dead session
+ * surfaces as sixty identical per-binding failures.
+ */
+describe("isCfAuthFailure", () => {
+  it.each([
+    "cf space app --guid failed: FAILED\nNot logged in. Use 'cf login' or 'cf login --sso' to log in.",
+    "cf curl /v3/x failed: Authentication has expired.  Please log back in to re-authenticate.",
+    "cf curl /v3/x failed: The token expired, was revoked, or the token ID is incorrect. Please log back in to re-authenticate.",
+    "cf auth failed: Credentials were rejected, please try again.",
+    'cf curl /v3/x failed: {"errors":[{"code":1000,"title":"CF-InvalidAuthToken","detail":"Invalid Auth Token"}]} (401)',
+  ])("recognizes a dead session: %s", (message) => {
+    expect(isCfAuthFailure(new Error(message))).toBe(true);
   });
 
-  it("parses the v6 'service' header shape", () => {
-    const stdout = [
-      servicesRow("name", "service", "plan", "bound apps", "last operation"),
-      servicesRow("myapp-instance", "cloud-logging", "standard", "myapp", "create succeeded"),
-    ].join("\n");
-    expect(parseServicesTable(stdout)).toEqual([
-      { name: "myapp-instance", offering: "cloud-logging", boundApps: ["myapp"] },
-    ]);
+  it.each([
+    "cf service nope --guid failed: Service instance 'nope' not found.",
+    "cf curl /v3/x failed: Error performing request: dial tcp: connection reset",
+    "The 'cf target' session changed while cf-metrics was reading it",
+    "refresh token stored under a session directory",
+  ])("leaves an ordinary failure alone: %s", (message) => {
+    expect(isCfAuthFailure(new Error(message))).toBe(false);
   });
 
-  it("returns an empty list when there is no recognizable header", () => {
-    expect(parseServicesTable("No services found")).toEqual([]);
+  it("copes with a non-Error value", () => {
+    expect(isCfAuthFailure("not logged in")).toBe(true);
+    expect(isCfAuthFailure(42)).toBe(false);
   });
 });
 

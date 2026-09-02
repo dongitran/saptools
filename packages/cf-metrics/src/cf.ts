@@ -12,9 +12,27 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const CF_RETRY_ATTEMPTS = 3;
 const CF_RETRY_BASE_DELAY_MS = 500;
 
-/** Minimal context for an isolated CF CLI invocation. */
+/**
+ * Which `cf` session a command runs in. `cfHome` names a temporary, isolated
+ * CF_HOME created by {@link withCfSession}; when absent the command runs in
+ * the user's own session (their `~/.cf`), which is only ever done for
+ * read-only commands after `cf target` was confirmed to already point at the
+ * requested org/space — see {@link AMBIENT_CF_CONTEXT}.
+ */
 export interface CfExecContext {
-  readonly cfHome: string;
+  readonly cfHome?: string;
+}
+
+/**
+ * The user's own `cf` session. Reusing it skips `cf api`/`cf auth`/`cf target`
+ * (measured at ~6s together) and, more importantly, means a matching session
+ * needs no SAP_EMAIL/SAP_PASSWORD at all. The session-mutating commands refuse
+ * this context outright, so the user's target can never be changed under them.
+ */
+export const AMBIENT_CF_CONTEXT: CfExecContext = {};
+
+export function isAmbientContext(ctx: CfExecContext): boolean {
+  return ctx.cfHome === undefined;
 }
 
 /** Data from `cf target`. */
@@ -208,7 +226,9 @@ function buildEnv(ctx: CfExecContext, overrides: Record<string, string> = {}): N
   const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
-  env["CF_HOME"] = ctx.cfHome;
+  if (ctx.cfHome !== undefined) {
+    env["CF_HOME"] = ctx.cfHome;
+  }
   return env;
 }
 
@@ -327,21 +347,31 @@ export function redactSecretLikeText(text: string): string {
     .replace(SENSITIVE_JSON_VALUE_PATTERN, (_match, key: string) => `"${key}":"[REDACTED]"`);
 }
 
+/**
+ * The three commands that rewrite a session's state must only ever touch a
+ * temporary CF_HOME. A programming error that routed one of them at the
+ * ambient context would silently re-point the user's own `cf target`, so it
+ * fails loudly here instead.
+ */
+function assertIsolated(ctx: CfExecContext, command: string): void {
+  if (isAmbientContext(ctx)) {
+    throw new Error(`refusing to run \`cf ${command}\` in the user's own cf session; it would change their target`);
+  }
+}
+
 export async function cfApi(apiEndpoint: string, ctx: CfExecContext): Promise<void> {
+  assertIsolated(ctx, "api");
   await runCf(["api", apiEndpoint], ctx);
 }
 
 export async function cfAuth(email: string, password: string, ctx: CfExecContext): Promise<void> {
+  assertIsolated(ctx, "auth");
   await runCf(["auth"], ctx, { CF_USERNAME: email, CF_PASSWORD: password });
 }
 
 export async function cfTargetSpace(orgName: string, spaceName: string, ctx: CfExecContext): Promise<void> {
+  assertIsolated(ctx, "target");
   await runCf(["target", "-o", orgName, "-s", spaceName], ctx);
-}
-
-/** List service instances in the targeted space, raw `cf services` stdout. */
-export async function cfServices(ctx: CfExecContext): Promise<string> {
-  return await runCf(["services"], ctx);
 }
 
 /** Read one service key's payload, raw `cf service-key` stdout (contains embedded JSON). */
@@ -377,6 +407,41 @@ export async function cfServiceGuid(instance: string, ctx: CfExecContext): Promi
     throw new Error(`cf service ${instance} --guid did not return a GUID`);
   }
   return guid;
+}
+
+/** The targeted org's space GUID, needed to scope the v3 service-instances listing. Verified like {@link cfServiceGuid}. */
+export async function cfSpaceGuid(spaceName: string, ctx: CfExecContext): Promise<string> {
+  const guid = (await runCf(["space", spaceName, "--guid"], ctx)).trim();
+  if (!GUID_PATTERN.test(guid)) {
+    throw new Error(`cf space ${spaceName} --guid did not return a GUID`);
+  }
+  return guid;
+}
+
+const CF_AUTH_FAILURE_PATTERNS: readonly RegExp[] = [
+  /not logged in/i,
+  /authentication has expired/i,
+  /token (?:has )?expired/i,
+  /expired.{0,40}token/i,
+  /invalid[_ ]token/i,
+  /credentials were rejected/i,
+  /re-?authenticate/i,
+  /\bunauthorized\b/i,
+  /\b401\b/,
+];
+
+/**
+ * Whether a failed `cf` command failed because the session itself is not
+ * usable — not logged in, token expired or revoked, credentials rejected —
+ * as opposed to a bad argument, a missing instance, or a network blip.
+ *
+ * Matched against the message `runCf` builds, which already embeds the
+ * command's stderr. Deliberately narrower than matching "token" or "session"
+ * anywhere: this package's own error messages use both words.
+ */
+export function isCfAuthFailure(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return CF_AUTH_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 /** Read one service instance's full params blob, raw `cf service --params` stdout. */
@@ -452,59 +517,6 @@ export function parseCfTargetOutput(stdout: string): CurrentCfTarget | undefined
     spaceName: space,
     ...(regionKey ? { regionKey } : {}),
   };
-}
-
-export interface CfServiceRow {
-  readonly name: string;
-  readonly offering: string;
-  readonly boundApps: readonly string[];
-}
-
-/**
- * Parses `cf services` table output. Column order (name, offering/service,
- * plan, bound apps, last operation) is stable across CF CLI v6-v8 even though
- * the second header's exact word ("service" vs "offering") is not, so columns
- * are sliced by character position rather than by splitting on whitespace —
- * splitting would silently misalign columns whenever "bound apps" is blank.
- */
-export function parseServicesTable(stdout: string): readonly CfServiceRow[] {
-  const lines = stdout.split(/\r?\n/);
-  const headerIndex = lines.findIndex((line) => /^\s*name\s+\S/i.test(line));
-  if (headerIndex === -1) {
-    return [];
-  }
-  const headerLine = lines[headerIndex] ?? "";
-  const lowerHeader = headerLine.toLowerCase();
-  const nameStart = lowerHeader.indexOf("name");
-  const offeringStart = /\boffering\b/.test(lowerHeader)
-    ? lowerHeader.indexOf("offering")
-    : lowerHeader.indexOf("service");
-  const boundAppsStart = lowerHeader.indexOf("bound apps");
-  if (nameStart === -1 || offeringStart === -1 || boundAppsStart === -1) {
-    return [];
-  }
-  const planStart = lowerHeader.indexOf("plan");
-  const offeringEnd = planStart === -1 ? boundAppsStart : planStart;
-  const lastOperationStart = lowerHeader.indexOf("last operation");
-  const rows: CfServiceRow[] = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const name = line.slice(nameStart, offeringStart).trim();
-    if (name.length === 0) {
-      continue;
-    }
-    const offering = line.slice(offeringStart, offeringEnd).trim();
-    const boundAppsCell = (
-      lastOperationStart === -1 ? line.slice(boundAppsStart) : line.slice(boundAppsStart, lastOperationStart)
-    ).trim();
-    const boundApps = boundAppsCell.length === 0
-      ? []
-      : boundAppsCell.split(",").map((app) => app.trim()).filter((app) => app.length > 0);
-    rows.push({ name, offering, boundApps });
-  }
-  return rows;
 }
 
 function findJsonObjectEnd(source: string, startIndex: number): number {

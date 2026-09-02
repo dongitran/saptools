@@ -44,6 +44,41 @@ describe("cf.ts exec wrappers", () => {
     expect(targetCall?.[1]).toEqual(["target", "-o", "org", "-s", "space"]);
   });
 
+  /**
+   * The ambient context runs in the user's own `cf` session, so it must leave
+   * CF_HOME exactly as the parent process had it — and the three commands that
+   * would rewrite that session's target must refuse to run there at all.
+   */
+  it("leaves CF_HOME untouched for the ambient context instead of pointing it at a temp dir", async () => {
+    vi.stubEnv("CF_HOME", "/home/user/.cf-custom");
+    const cf = await import("../../src/cf.js");
+    ok("11111111-2222-3333-4444-555555555555\n");
+
+    await cf.cfServiceGuid("cloud-logging", cf.AMBIENT_CF_CONTEXT);
+
+    const call = execFileMock.mock.calls[0] as unknown as [string, string[], { env: Record<string, string | undefined> }];
+    expect(call[2].env["CF_HOME"]).toBe("/home/user/.cf-custom");
+  });
+
+  it("refuses to run cf api/auth/target in the ambient session, before spawning anything", async () => {
+    const cf = await import("../../src/cf.js");
+
+    await expect(cf.cfApi("https://api.cf.eu10.hana.ondemand.com", cf.AMBIENT_CF_CONTEXT)).rejects.toThrow(/refusing to run `cf api`/);
+    await expect(cf.cfAuth("user@example.com", "pw", cf.AMBIENT_CF_CONTEXT)).rejects.toThrow(/refusing to run `cf auth`/);
+    await expect(cf.cfTargetSpace("org", "space", cf.AMBIENT_CF_CONTEXT)).rejects.toThrow(/refusing to run `cf target`/);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("reads a space GUID and rejects anything that is not one", async () => {
+    const cf = await import("../../src/cf.js");
+    ok("  1af3e621-59f5-439c-9838-4508ae8be431 \n");
+    await expect(cf.cfSpaceGuid("app", { cfHome: "/tmp/fake" })).resolves.toBe("1af3e621-59f5-439c-9838-4508ae8be431");
+    expect((execFileMock.mock.calls[0] as unknown as [string, string[]])[1]).toEqual(["space", "app", "--guid"]);
+
+    ok("Space app not found\n");
+    await expect(cf.cfSpaceGuid("app", { cfHome: "/tmp/fake" })).rejects.toThrow(/did not return a GUID/);
+  });
+
   it("strips SAP_EMAIL/SAP_PASSWORD from the child environment even if set in the parent", async () => {
     vi.stubEnv("SAP_EMAIL", "leaked@example.com");
     vi.stubEnv("SAP_PASSWORD", "leaked-secret");
@@ -112,7 +147,7 @@ describe("cf.ts exec wrappers", () => {
     let captured = "";
 
     await cf.withCfSession(async (ctx) => {
-      captured = ctx.cfHome;
+      captured = ctx.cfHome ?? "";
       await expect(stat(captured)).resolves.toBeDefined();
     });
 
@@ -127,7 +162,7 @@ describe("cf.ts exec wrappers", () => {
 
     await expect(
       cf.withCfSession(async (ctx) => {
-        captured = ctx.cfHome;
+        captured = ctx.cfHome ?? "";
         await expect(stat(captured)).resolves.toBeDefined();
         throw new Error("work blew up");
       }),

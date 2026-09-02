@@ -1,6 +1,6 @@
 export const CLI_NAME = "cf-metrics";
 /** Must equal `package.json`'s `version` — pinned by a unit test, since `--version` reports it. */
-export const CLI_VERSION = "0.5.0";
+export const CLI_VERSION = "0.6.0";
 export const ENV_PREFIX = "CF_METRICS";
 
 export const DEFAULT_INDEX_PATTERN = "metrics-*";
@@ -29,6 +29,11 @@ export const MAX_BINDING_PAGES = 20;
 /** How many binding `/details` requests run at once — enough to hide latency without hammering the Cloud Controller. */
 export const BINDING_PROBE_CONCURRENCY = 5;
 
+/** `per_page` for the v3 service-instances listing that finds the Cloud Logging instance; 200 keeps one page for any realistic space. */
+export const INSTANCES_PAGE_SIZE = 200;
+/** Same role as {@link MAX_BINDING_PAGES}, for the instances listing. */
+export const MAX_INSTANCE_PAGES = 20;
+
 /**
  * Per-request ceiling for the OpenSearch console-proxy. Without one a stalled
  * endpoint hangs the command forever with no output and no error — the `cf`
@@ -50,6 +55,15 @@ export const DEFAULT_WATCH_LOOKBACK = "2m";
 export const DEFAULT_RESULT_TTL_MINUTES = 10_080;
 export const MAX_RESULT_STORE_BYTES = 256 * 1024 * 1024;
 
+/**
+ * How long a discovered dashboards credential is reused before it is
+ * rediscovered even though nothing rejected it. Service-key and binding
+ * credentials do not expire on their own, so this bounds how long a secret
+ * sits on disk unused rather than tracking any real lifetime; a credential
+ * that stops working is dropped on the first HTTP 401/403 regardless of age.
+ */
+export const DEFAULT_CREDENTIAL_TTL_MINUTES = 10_080;
+
 export const SAML_POLL_INTERVAL_MS = 3_000;
 export const SAML_POLL_TIMEOUT_MS = 180_000;
 
@@ -66,6 +80,26 @@ export function readEnv(name: string): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
+ * Root for everything this package stores locally — saved results and the
+ * credential cache — normally `~/.saptools`. `CF_METRICS_SAPTOOLS_ROOT`
+ * redirects it so tests never touch the real directory; unset in normal usage.
+ */
+export function saptoolsRootFromEnv(): string | undefined {
+  return readEnv(envName("SAPTOOLS_ROOT"));
+}
+
+/**
+ * `CF_METRICS_CREDENTIAL_CACHE=0` (or `false`/`off`/`no`) opts out of both
+ * reading and writing the on-disk dashboards-credential cache, for anyone who
+ * would rather pay the full discovery round trip than keep the credential on
+ * disk. Anything else, including unset, leaves the cache on.
+ */
+export function credentialCacheEnabled(): boolean {
+  const raw = readEnv(envName("CREDENTIAL_CACHE"));
+  return raw === undefined || !/^(?:0|false|off|no)$/i.test(raw);
 }
 
 export interface SapCredentials {

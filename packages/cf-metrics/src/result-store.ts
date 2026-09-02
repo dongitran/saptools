@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_RESULT_TTL_MINUTES, MAX_RESULT_STORE_BYTES } from "./config.js";
+import { DEFAULT_RESULT_TTL_MINUTES, MAX_RESULT_STORE_BYTES, saptoolsRootFromEnv } from "./config.js";
 import { CfMetricsError } from "./errors.js";
 import type { OutputRow } from "./format.js";
 
@@ -47,10 +47,10 @@ function resultsRoot(saptoolsRoot?: string): string {
   return join(saptoolsRoot ?? join(homedir(), ".saptools"), "cf-metrics", "results");
 }
 
-/** Read an optional results-root override from the environment (mirrors CF_METRICS_CF_BIN's test-only override hook — lets e2e tests avoid touching the real ~/.saptools directory). Unset in normal usage. */
+/** The shared `~/.saptools` root override (see `saptoolsRootFromEnv`), so tests never touch the real directory. Unset in normal usage. */
 export function resultStoreOptionsFromEnv(): ResultStoreOptions {
-  const saptoolsRoot = process.env["CF_METRICS_RESULTS_ROOT"];
-  return saptoolsRoot === undefined || saptoolsRoot.length === 0 ? {} : { saptoolsRoot };
+  const saptoolsRoot = saptoolsRootFromEnv();
+  return saptoolsRoot === undefined ? {} : { saptoolsRoot };
 }
 
 function sessionDirectory(ref: string, saptoolsRoot?: string): string {
