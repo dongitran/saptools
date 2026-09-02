@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- Accept the self-updating releases of `@saptools/cf-sync` as dependencies (range widened, no behaviour change).
+
 ## 0.5.0
 
 - **Self-updating.** Every command now checks npm for a newer `@saptools/cf-explorer` (at most once an hour)

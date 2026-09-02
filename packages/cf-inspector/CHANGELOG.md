@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Accept the self-updating releases of `@saptools/cf-debugger` as dependencies (range widened, no behaviour change).
+
 ## 0.9.0
 
 - **Self-updating.** Every command now checks npm for a newer `@saptools/cf-inspector` (at most once an hour)

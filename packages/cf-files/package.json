@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-files",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Export Cloud Foundry app env to default-env.json and pull files from running SAP BTP Cloud Foundry containers",
   "type": "module",
   "publishConfig": {
@@ -54,7 +54,7 @@
     "url": "https://github.com/dongitran/saptools/issues"
   },
   "dependencies": {
-    "@saptools/cf-sync": "^0.4.15",
+    "@saptools/cf-sync": "^0.4.15 || ^0.5.0",
     "commander": "^13.0.0"
   },
   "devDependencies": {

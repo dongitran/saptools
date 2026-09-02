@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Accept the self-updating releases of `@saptools/cf-inspector` as dependencies (range widened, no behaviour change).
+
 ## 0.3.0
 
 - **Self-updating.** Every command now checks npm for a newer `@saptools/cf-function-trace` (at most once an hour)
