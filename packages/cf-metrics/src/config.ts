@@ -1,6 +1,9 @@
+import { readPackageMetadata } from "@saptools/core";
+
 export const CLI_NAME = "cf-metrics";
-/** Must equal `package.json`'s `version` — pinned by a unit test, since `--version` reports it. */
-export const CLI_VERSION = "0.6.0";
+export const PACKAGE_NAME = "@saptools/cf-metrics";
+/** Read from package.json at runtime, so `--version` and the self-updater can never drift from the manifest. */
+export const CLI_VERSION = readPackageMetadata(import.meta.url, PACKAGE_NAME).version;
 export const ENV_PREFIX = "CF_METRICS";
 
 export const DEFAULT_INDEX_PATTERN = "metrics-*";

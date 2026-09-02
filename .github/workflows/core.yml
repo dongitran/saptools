@@ -1,0 +1,54 @@
+name: core
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "pnpm-lock.yaml"
+      - ".github/workflows/core.yml"
+      - "packages/core/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "pnpm-lock.yaml"
+      - ".github/workflows/core.yml"
+      - "packages/core/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Verify @saptools/core (private, bundled into every CLI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @saptools/core lint
+
+      - name: Typecheck
+        run: pnpm --filter @saptools/core typecheck
+
+      - name: Run unit tests
+        run: pnpm --filter @saptools/core test:unit

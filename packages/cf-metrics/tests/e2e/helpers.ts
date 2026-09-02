@@ -62,12 +62,15 @@ export async function waitFor(check: () => boolean, description: string, timeout
  * second test in a file would find the first test's credential on disk and
  * never touch the fake `cf` at all — masking exactly the discovery behaviour
  * most of these tests exist to pin. `cache.e2e.ts` turns it back on
- * deliberately, against its own temporary root.
+ * deliberately, against its own temporary root. The self-updater is off for
+ * the same reason (and so no test ever reaches the real npm registry);
+ * `self-update.e2e.ts` turns it on against a fake registry.
  */
 export const BASE_ENV: Record<string, string> = {
   SAP_EMAIL: "user@example.com",
   SAP_PASSWORD: "pw",
   CF_METRICS_CREDENTIAL_CACHE: "0",
+  SAPTOOLS_AUTO_UPDATE: "off",
 };
 
 export function targetArgs(): readonly string[] {

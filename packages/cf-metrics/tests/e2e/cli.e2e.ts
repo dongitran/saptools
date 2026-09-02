@@ -22,10 +22,10 @@ function env(): Record<string, string> {
   };
 }
 
-test("--help lists all ten commands", async () => {
+test("--help lists all eleven commands", async () => {
   const result = await runCli(["--help"], env());
   expect(result.exitCode).toBe(0);
-  for (const command of ["sample", "mapping", "fields", "names", "history", "snapshot", "top", "watch", "result", "credential"]) {
+  for (const command of ["sample", "mapping", "fields", "names", "history", "snapshot", "top", "watch", "result", "credential", "self-update"]) {
     expect(result.stdout).toContain(command);
   }
 });

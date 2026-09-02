@@ -20,6 +20,8 @@ Packages:
 - `@saptools/sharepoint-check`: `saptools-sharepoint-check` CLI for Microsoft Graph SharePoint diagnostics.
 - `@saptools/cf-files`: `saptools-cf-files` CLI for CF env generation and file transfer over `cf ssh`.
 - `@saptools/cf-logs`: `cf-logs` CLI for CF log snapshot, stream, parse, redaction, and local storage.
+- `@saptools/core`: private shared code (self-update, package metadata, `~/.saptools` paths). Never
+  published: each CLI lists it as a `workspace:*` devDependency and tsup bundles it into `dist/cli.js`.
 
 ## Required Workflow
 
@@ -78,6 +80,10 @@ Replace the package filter with the package being changed. For documentation-onl
 - `packages/cf-sync/src/structure.ts` is already near the 700-line guardrail. Do not add new responsibilities there; split by lifecycle or storage concern.
 - When parsing CLI output or VCAP payloads, prefer typed parsers and deterministic errors over ad hoc string handling.
 - Generated local state belongs under user-local paths such as `~/.saptools`, not inside the repository.
+- Every CLI attaches `@saptools/core`'s self-updater in its program factory (`attachSelfUpdate` +
+  `registerSelfUpdateCommand`), reads its version with `readPackageMetadata`, keeps
+  `SAPTOOLS_AUTO_UPDATE=off` in unit and e2e environments, and lists `packages/core/**` in its workflow
+  `paths`. A change under `packages/core/` ships only through the consuming CLIs' version bumps.
 
 ## Testing
 

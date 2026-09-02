@@ -106,6 +106,35 @@ holds a refresh token that can fetch this very credential from the Cloud Control
 widens nothing about who can obtain the credential; it only saves re-obtaining it. If you weigh
 that differently, set `CF_METRICS_CREDENTIAL_CACHE=0` and run `cf-metrics credential clear` once.
 
+## Updates
+
+Every command first checks npm for a newer `@saptools/cf-metrics` (at most once an hour: one 18-byte
+request with a 2-second timeout) and, when one exists, installs that exact version with the package
+manager that owns the running binary and re-runs the command you typed on the new version. Both steps
+are announced on stderr; nothing is printed when the install is already current:
+
+```text
+cf-metrics: updating 0.7.0 -> 0.7.1 ...
+cf-metrics: updated to 0.7.1; re-running the command
+```
+
+If the install cannot complete (offline, read-only prefix), one stderr line gives the manual command
+and the command runs on the installed version; that version is not retried for a day.
+`cf-metrics self-update` forces the check and install now; `cf-metrics self-update --check` only reports.
+
+| Control | Effect |
+| --- | --- |
+| `SAPTOOLS_AUTO_UPDATE=on\|notify\|off` | `on` (default) installs and re-runs; `notify` prints the manual command once per version; `off` never checks. Applies to every `@saptools` CLI. |
+| `CF_METRICS_AUTO_UPDATE` | same values, this CLI only; wins over the global variable |
+| `SAPTOOLS_UPDATE_INTERVAL_MINUTES` | minutes between checks (default `60`; `0` checks on every run) |
+| `SAPTOOLS_NPM_REGISTRY` | registry to check and install from (default: npm's configured registry, then npmjs) |
+| `SAPTOOLS_UPDATE_DEBUG=1` | explain on stderr why nothing happened |
+
+The updater switches itself off in CI (`CI` set), under `NODE_ENV=test` or `NO_UPDATE_NOTIFIER`, when
+the binary runs from a source checkout, an `npm link` or an `npx` cache, and inside the re-run itself.
+It never writes to stdout, never asks for input, never uses `sudo`, and never moves onto a prerelease.
+Its state lives in `~/.saptools/updates/`.
+
 ## Commands
 
 | Command | Purpose |
@@ -120,6 +149,7 @@ that differently, set `CF_METRICS_CREDENTIAL_CACHE=0` and run `cf-metrics creden
 | `watch` | Poll for new metric points as they land, `--json` for NDJSON — live monitoring during a deploy or incident. `--lookback` sets the initial look-back window (default `2m`). |
 | `result show\|list\|prune\|clear` | Inspect results saved via `--save`. |
 | `credential list\|clear` | Inspect or forget the cached dashboards credentials (see Credential reuse). |
+| `self-update [--check]` | Check npm for a newer release and install it now; every other command does this on its own (see Updates). |
 
 Every row-returning command supports `--format table|json|json-compact|csv` (default `table`) and
 `--save`, which prints `ref=<id>` instead of the result and stores it under

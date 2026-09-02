@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-metrics",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Query container CPU/RAM/filesystem and custom OTel gauge/sum/histogram metrics already ingested into SAP Cloud Logging's OpenSearch backend",
   "type": "module",
   "publishConfig": {
@@ -61,6 +61,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
+    "@saptools/core": "workspace:*",
     "@vitest/coverage-v8": "^3.0.0",
     "tsup": "^8.3.0",
     "vitest": "^3.0.0"

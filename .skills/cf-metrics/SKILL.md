@@ -16,7 +16,10 @@ Cloud Foundry's Log Cache only retains a few minutes of container-metric history
 instrumentation, use `cf-inspector` or `cf-live-trace` instead.
 
 If `cf-metrics` is missing, install it from `@saptools/cf-metrics`:
-`npm install -g @saptools/cf-metrics`.
+`npm install -g @saptools/cf-metrics`. Once installed it keeps itself current: every command checks
+npm at most once an hour and, when a newer release exists, installs it and re-runs the command,
+printing `cf-metrics: updating X -> Y ...` and `cf-metrics: updated to Y; re-running the command` on
+stderr. `SAPTOOLS_AUTO_UPDATE=off` disables that; `cf-metrics self-update --check` shows the status.
 
 ## First Steps
 
@@ -179,3 +182,11 @@ reused), or export `SAP_EMAIL` and `SAP_PASSWORD` so the CLI can log in on its o
 rediscovering"**: informational — the service key or binding behind the cached credential was
 deleted; the CLI already discovered a replacement and retried. Nothing to do unless the rediscovery
 itself failed, in which case the usual credential-discovery error follows.
+
+**stderr shows "cf-metrics: updating X -> Y ..." and the output differs from the last run**: the CLI
+upgraded itself before running the command (see Updates in the README). Check `cf-metrics --version`
+and the CHANGELOG for Y; `SAPTOOLS_AUTO_UPDATE=notify` announces a release instead of installing it.
+
+**"update to Y failed (...); continuing with X"**: the install could not complete (offline, read-only
+prefix); the command still ran on X. Run the printed `npm install -g` command by hand; the same
+version is not retried automatically for a day.

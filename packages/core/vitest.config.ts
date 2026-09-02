@@ -4,17 +4,16 @@ export default defineConfig({
   test: {
     include: ["tests/unit/**/*.test.ts"],
     environment: "node",
-    env: { SAPTOOLS_AUTO_UPDATE: "off" },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/cli.ts", "src/index.ts", "src/types.ts", "src/cli/commandTypes.ts", "src/**/*.d.ts"],
+      exclude: ["src/index.ts", "src/**/*.d.ts"],
       reporter: ["text", "html"],
       thresholds: {
-        lines: 80,
-        functions: 80,
-        branches: 80,
-        statements: 80,
+        lines: 90,
+        functions: 90,
+        branches: 85,
+        statements: 90,
       },
     },
   },

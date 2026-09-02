@@ -1,6 +1,8 @@
+import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
+import type { AttachSelfUpdateOptions } from "@saptools/core";
 import { Command } from "commander";
 
-import { CLI_NAME, CLI_VERSION } from "../config.js";
+import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME, saptoolsRootFromEnv } from "../config.js";
 
 import { registerFieldsCommand } from "./commands/fields.js";
 import { registerHistoryCommand } from "./commands/history.js";
@@ -11,7 +13,27 @@ import { registerSnapshotCommand } from "./commands/snapshot.js";
 import { registerTopCommand } from "./commands/top.js";
 import { registerWatchCommand } from "./commands/watch.js";
 import { registerCredentialCommands } from "./credentials.js";
+import { printNotice } from "./output.js";
 import { registerResultCommands } from "./results.js";
+
+/**
+ * Every command first checks npm (at most once an hour) and, when a newer
+ * release exists, installs it and re-runs itself on it; notices go through
+ * `printNotice` so they share the `cf-metrics:` stderr prefix. The test-only
+ * `CF_METRICS_SAPTOOLS_ROOT` relocates the update state along with the other
+ * stores. See `@saptools/core` for the policy switches.
+ */
+function selfUpdateOptions(): AttachSelfUpdateOptions {
+  const root = saptoolsRootFromEnv();
+  return {
+    packageName: PACKAGE_NAME,
+    currentVersion: CLI_VERSION,
+    binName: CLI_NAME,
+    envPrefix: ENV_PREFIX,
+    notice: printNotice,
+    ...(root === undefined ? {} : { saptoolsRoot: root }),
+  };
+}
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -24,6 +46,9 @@ export function buildProgram(): Command {
     )
     .version(CLI_VERSION);
 
+  const selfUpdate = selfUpdateOptions();
+  attachSelfUpdate(program, selfUpdate);
+
   registerSampleCommand(program);
   registerMappingCommand(program);
   registerFieldsCommand(program);
@@ -34,6 +59,7 @@ export function buildProgram(): Command {
   registerWatchCommand(program);
   registerResultCommands(program);
   registerCredentialCommands(program);
+  registerSelfUpdateCommand(program, selfUpdate);
 
   return program;
 }

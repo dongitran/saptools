@@ -309,11 +309,10 @@ describe("top", () => {
 });
 
 /**
- * `--version` reports the hand-maintained `CLI_VERSION` constant, not
- * `package.json`, so the two silently drift the moment someone bumps only the
- * manifest — the sibling `cf-otel` package is currently in exactly that state
- * (manifest 0.1.2, `--version` still reporting 0.1.0). This makes the next
- * release bump fail loudly instead.
+ * `CLI_VERSION` is read from `package.json` at runtime (via `/core`),
+ * so `--version` and the self-updater can never drift from the manifest the way
+ * a hand-maintained constant did. This pins that the lookup finds the right
+ * manifest from the source tree as well as from `dist/`.
  */
 describe("CLI_VERSION", () => {
   it("matches the version in package.json", async () => {

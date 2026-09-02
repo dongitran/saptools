@@ -198,7 +198,13 @@
     "IBAAJ",
     "dedup",
     "mykey",
-    "pipeable"
+    "pipeable",
+    "execve",
+    "packument",
+    "reexec",
+    "reexecs",
+    "backoffs",
+    "npmjs"
   ],
   "ignorePaths": [
     "**/node_modules/**",

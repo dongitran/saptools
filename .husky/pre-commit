@@ -89,6 +89,13 @@ if [ "$should_run_root_checks" -eq 1 ] || echo "$staged_files" | grep -Eq '^pack
   run_package_checks '@saptools/cf-metrics' 'packages/cf-metrics'
 fi
 
+# @saptools/core is bundled into every CLI, so a change there is verified together with every dependent.
+if echo "$staged_files" | grep -Eq '^packages/core/'; then
+  echo "pre-commit: lint/typecheck/test for @saptools/core and every package that bundles it"
+  pnpm turbo run lint typecheck test:unit --filter='...@saptools/core'
+  ran_checks=1
+fi
+
 if [ "$ran_checks" -eq 0 ]; then
   echo "pre-commit: no tracked package changes detected, skipping package checks"
 fi

@@ -2,6 +2,24 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.7.0
+
+- **Self-updating.** Every command now checks npm for a newer `@saptools/cf-metrics` (at most once an
+  hour: one 18-byte `dist-tags` request with a 2 s timeout, remembered under `~/.saptools/updates/`)
+  and, when one exists, installs that exact version with the package manager that owns the running
+  binary and re-runs the command on it — `cf-metrics: updating 0.7.0 -> 0.7.1 ...` and then
+  `cf-metrics: updated to 0.7.1; re-running the command` on stderr, nothing when already current. A
+  failed install prints the manual command once and the command runs on the installed version; that
+  version is not retried for a day. `SAPTOOLS_AUTO_UPDATE=on|notify|off` (per-CLI
+  `CF_METRICS_AUTO_UPDATE`), `SAPTOOLS_UPDATE_INTERVAL_MINUTES`, `SAPTOOLS_NPM_REGISTRY` and
+  `SAPTOOLS_UPDATE_DEBUG` control it; it is off by itself in CI, in tests, from a source checkout or
+  `npm link`, under `npx`, and inside the re-run. New `cf-metrics self-update [--check]` forces the
+  check and install now.
+- **`--version` reads `package.json`** at runtime instead of a hand-maintained constant. Both this and
+  the updater come from the new private `@saptools/core` package, bundled into `dist/cli.js` at build
+  time so every `@saptools` CLI can share one implementation and one test suite; the published tarball
+  gains no runtime dependency.
+
 ## 0.6.0
 
 Every command used to pay the full Cloud Foundry round trip on every run. Measured on a real tenant
