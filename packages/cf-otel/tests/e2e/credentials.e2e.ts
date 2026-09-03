@@ -200,3 +200,30 @@ test("names the orphaned key and the recovery command when the cleanup delete it
   expect(result.stderr).toContain("could not be deleted");
   expect(result.stderr).toMatch(/cf delete-service-key cloud-logging cf-otel-[0-9a-f]{8} -f/);
 });
+
+test("lists the services exactly once when auto-discovering and then falling back to a bound app", async () => {
+  // `cf services` is the most expensive command in the discovery path: the CF
+  // CLI implements it as one request per instance in the space, measured at
+  // 11.8s and 15.9s in one traced cold run on a real tenant. Instance
+  // discovery and the fallback-binding step used to fetch it separately, even
+  // though the second only needed the bound apps off the row the first already
+  // had.
+  const traceFile = join(tmpdir(), `cf-otel-services-count-${String(process.pid)}.jsonl`);
+  await rm(traceFile, { force: true });
+  try {
+    const result = await runCli(["count", "--service", "service-a", ...targetArgs()], {
+      ...envWithBrokenKey(),
+      CF_OTEL_FAKE_CF_TRACE_FILE: traceFile,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("3");
+
+    const kinds = (await readTrace(traceFile)).map((entry) => entry["kind"]);
+    expect(kinds.filter((kind) => kind === "services")).toHaveLength(1);
+    // Proof the fallback step really ran and was served from that one listing.
+    expect(kinds).toContain("env");
+  } finally {
+    await rm(traceFile, { force: true });
+  }
+});

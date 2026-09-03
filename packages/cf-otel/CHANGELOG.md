@@ -2,6 +2,37 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.3.0
+
+- **`cf services` ran twice on every auto-discovered command, and now runs once.** It is the most
+  expensive command in the credential path: the CF CLI implements it as one request per instance in
+  the space, and a traced cold `count` on a real tenant spent 11.8s and 15.9s in its two calls, 27.7s
+  of a 40.6s total. The redundancy was structural rather than accidental. Instance discovery filtered
+  the listing to the `cloud-logging` offering, required exactly one row, and then returned only that
+  row's *name*; the fallback-binding step later re-fetched the entire listing purely to read
+  `boundApps` back off that same row. Discovery now returns the row it selected, and the fallback step
+  uses the bound apps it already carries. Cloud Foundry enforces unique instance names within a
+  space, so this is the same row the second listing would have found: the value is identical, not
+  merely equivalent.
+- Call counts per path, so nothing regressed for anyone: auto-discovery with no usable service key
+  (the common case on a SAML-enabled instance) goes from two listings to **one**; auto-discovery where
+  a service key works stays at one; a pinned `--service-instance` with unpinned fallback apps stays at
+  one, since nothing has listed the services on that path; and pinning both `--service-instance` and
+  `--fallback-binding-app` stays at **zero**. Measured from the other direction on the same tenant,
+  a run with an explicit `--service-instance` (which already skipped the first listing) took 21.4s
+  against 34.3s without it.
+- An auto-discovered instance with **no** bound apps is still a real answer, not a cache miss: it
+  reports "no apps are bound to instance X" as before rather than triggering a second listing.
+- API change for library consumers: `discoverServiceInstance` now resolves to the `CfServiceRow` it
+  selected instead of a bare instance name, since that row is what carries `boundApps`. `CfServiceRow`
+  was already exported and was already the element type of `listCloudLoggingInstances`, so no new type
+  is introduced. `findBoundApps` and `listCloudLoggingInstances` keep their signatures; `findBoundApps`
+  is now only reached when the caller pinned `--service-instance`.
+- Regression tests at both levels: unit tests pin the exact `cf services` call count for all four
+  paths and for the empty-bound-apps case, and an e2e test asserts a single `services` entry in the
+  fake `cf`'s call trace for a run that falls through to the binding path. Three of them fail against
+  the previous release.
+
 ## 0.2.1
 
 Three correctness fixes for CF CLI v8, whose output shapes differ from v7's in ways this package

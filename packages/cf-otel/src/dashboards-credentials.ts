@@ -131,6 +131,31 @@ async function tryFallbackBindings(
 }
 
 /**
+ * The instance to work against, plus the apps bound to it when they are
+ * already known.
+ *
+ * `boundApps` is present exactly when the instance was auto-discovered, since
+ * the `cf services` listing that identified it reports its bound apps in the
+ * same row. It is absent only when the caller pinned `--service-instance`, the
+ * one path where no listing has been fetched at all.
+ */
+interface ResolvedInstance {
+  readonly name: string;
+  readonly boundApps?: readonly string[];
+}
+
+async function resolveInstance(
+  options: CredentialDiscoveryOptions,
+  ctx: CfExecContext,
+): Promise<ResolvedInstance> {
+  if (options.serviceInstance !== undefined) {
+    return { name: options.serviceInstance };
+  }
+  const { name, boundApps } = await discoverServiceInstance(ctx);
+  return { name, boundApps };
+}
+
+/**
  * Resolve a working OpenSearch dashboards basic-auth credential following the
  * documented decision tree: existing service keys, then fallback bindings
  * that predate SAML being enabled, then (only behind an explicit opt-in) a
@@ -154,7 +179,8 @@ export async function discoverDashboardsCredential(
     await cfAuth(sap.email, sap.password, ctx);
     await cfTargetSpace(target.org, target.space, ctx);
 
-    const instance = options.serviceInstance ?? (await discoverServiceInstance(ctx));
+    const resolved = await resolveInstance(options, ctx);
+    const instance = resolved.name;
     report(`using service instance "${instance}"`);
 
     const attempts: string[] = [];
@@ -170,7 +196,12 @@ export async function discoverDashboardsCredential(
       return fromKeys;
     }
 
-    const fallbackApps = options.fallbackBindingApps ?? (await findBoundApps(instance, ctx));
+    // `??` rather than a length check: an auto-discovered instance with zero
+    // bound apps yields `[]`, which is not nullish, so it is used as-is and
+    // still produces the "no apps are bound" attempt below. Only a pinned
+    // `--service-instance` leaves `boundApps` undefined, and that is the one
+    // case where the listing really has not been fetched yet.
+    const fallbackApps = options.fallbackBindingApps ?? resolved.boundApps ?? (await findBoundApps(instance, ctx));
     const fromFallback = await tryFallbackBindings(instance, fallbackApps, ctx, recordAttempt);
     if (fromFallback !== undefined) {
       report(`resolved dashboards credential from ${fromFallback.source}`);

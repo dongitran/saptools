@@ -29,9 +29,18 @@ describe("listCloudLoggingInstances", () => {
 });
 
 describe("discoverServiceInstance", () => {
-  it("returns the single matching instance", async () => {
-    vi.spyOn(cf, "cfServices").mockResolvedValue(SERVICES_STDOUT);
-    expect(await discoverServiceInstance({ cfHome: "/tmp/fake" })).toBe("cloud-logging");
+  it("returns the whole matching row, bound apps included", async () => {
+    // The row carries `boundApps`, and the caller needs them for the
+    // fallback-binding step. Returning only the name is what made that step
+    // run `cf services` a second time to read them back off this same row.
+    const services = vi.spyOn(cf, "cfServices").mockResolvedValue(SERVICES_STDOUT);
+
+    expect(await discoverServiceInstance({ cfHome: "/tmp/fake" })).toEqual({
+      name: "cloud-logging",
+      offering: "cloud-logging",
+      boundApps: ["app1", "app2"],
+    });
+    expect(services).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when zero instances match", async () => {

@@ -264,3 +264,130 @@ describe("discoverDashboardsCredential", () => {
     expect(allOutput).not.toContain("super-secret-password");
   });
 });
+
+/**
+ * `cf services` is the single most expensive command in the discovery path:
+ * the CF CLI implements it as one request per instance in the space, measured
+ * at 11.8s and 15.9s in one traced cold run on a real tenant. It used to run
+ * twice, because instance discovery returned only the instance's name and the
+ * fallback-binding step then re-fetched the whole listing to read that same
+ * row's bound apps back.
+ */
+describe("discoverDashboardsCredential: how often `cf services` runs", () => {
+  // `cf services` pads every column to a fixed width, so build rows from those
+  // widths rather than hand-aligning spaces.
+  function servicesRow(name: string, offering: string, plan: string, boundApps: string, lastOp: string): string {
+    return name.padEnd(17) + offering.padEnd(16) + plan.padEnd(11) + boundApps.padEnd(20) + lastOp;
+  }
+
+  function servicesStdout(boundApps: string): string {
+    return [
+      servicesRow("name", "offering", "plan", "bound apps", "last operation"),
+      servicesRow("cloud-logging", "cloud-logging", "standard", boundApps, "create succeeded"),
+      servicesRow("other-service", "xsuaa", "broker", "some-app", "create succeeded"),
+    ].join("\n");
+  }
+
+  const NO_KEYS = "Getting keys for service instance cloud-logging as user@example.com...\n\nNo service keys for service instance cloud-logging";
+  const WORKING_VCAP =
+    "VCAP_SERVICES:\n" +
+    '{"cloud-logging":[{"name":"cloud-logging","credentials":{"dashboards-endpoint":"https://dash.example.com",' +
+    '"dashboards-username":"u","dashboards-password":"pw"}}]}\n' +
+    "VCAP_APPLICATION:{}";
+
+  function stubNoUsableKeys(): void {
+    vi.spyOn(cf, "cfServiceKeys").mockResolvedValue(NO_KEYS);
+  }
+
+  it("runs exactly once when auto-discovering and then falling back to a bound app", async () => {
+    // The common case on a SAML-enabled instance: no usable service key, so the
+    // fallback-binding step runs -- and it must not re-list the services.
+    stubLogin();
+    stubNoUsableKeys();
+    const services = vi.spyOn(cf, "cfServices").mockResolvedValue(servicesStdout("legacy-app"));
+    const env = vi.spyOn(cf, "cfEnv").mockResolvedValue(WORKING_VCAP);
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, {
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential.source).toBe("fallback-binding:legacy-app");
+    expect(services).toHaveBeenCalledTimes(1);
+    expect(env).toHaveBeenCalledWith("legacy-app", { cfHome: "/tmp/fake" });
+  });
+
+  it("runs exactly once when a service key succeeds and the fallback is never reached", async () => {
+    stubLogin();
+    vi.spyOn(cf, "cfServiceKeys").mockResolvedValue(
+      ["name   last operation     message", "key1   create succeeded   "].join("\n"),
+    );
+    vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{"credentials":{"dashboards-endpoint":"https://dash.example.com","dashboards-username":"u","dashboards-password":"pw"}}',
+    );
+    const services = vi.spyOn(cf, "cfServices").mockResolvedValue(servicesStdout("legacy-app"));
+    const env = vi.spyOn(cf, "cfEnv");
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, {
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential.source).toBe("service-key:key1");
+    expect(services).toHaveBeenCalledTimes(1);
+    expect(env).not.toHaveBeenCalled();
+  });
+
+  it("does not list a second time for an auto-discovered instance that has no bound apps", async () => {
+    // An empty bound-apps cell yields `[]`, which is a real answer and must not
+    // be mistaken for "not fetched yet".
+    stubLogin();
+    stubNoUsableKeys();
+    const services = vi.spyOn(cf, "cfServices").mockResolvedValue(servicesStdout(""));
+    const env = vi.spyOn(cf, "cfEnv");
+
+    const caught: unknown = await discoverDashboardsCredential(TARGET, SAP, {
+      allowMintCredential: false,
+      verbose: false,
+    }).catch((error: unknown) => error);
+
+    expect((caught as Error).message).toContain("no apps are bound to instance");
+    expect(services).toHaveBeenCalledTimes(1);
+    expect(env).not.toHaveBeenCalled();
+  });
+
+  it("runs exactly once when the instance is pinned but the fallback apps are not", async () => {
+    // Nothing has listed the services on this path, so `findBoundApps` still
+    // has to -- once.
+    stubLogin();
+    stubNoUsableKeys();
+    const services = vi.spyOn(cf, "cfServices").mockResolvedValue(servicesStdout("legacy-app"));
+    vi.spyOn(cf, "cfEnv").mockResolvedValue(WORKING_VCAP);
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, {
+      serviceInstance: "cloud-logging",
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential.source).toBe("fallback-binding:legacy-app");
+    expect(services).toHaveBeenCalledTimes(1);
+  });
+
+  it("never runs when both the instance and the fallback apps are pinned", async () => {
+    stubLogin();
+    stubNoUsableKeys();
+    const services = vi.spyOn(cf, "cfServices");
+    vi.spyOn(cf, "cfEnv").mockResolvedValue(WORKING_VCAP);
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, {
+      serviceInstance: "cloud-logging",
+      fallbackBindingApps: ["legacy-app"],
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential.source).toBe("fallback-binding:legacy-app");
+    expect(services).not.toHaveBeenCalled();
+  });
+});
