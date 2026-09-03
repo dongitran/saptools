@@ -147,6 +147,15 @@ cf-inspector snapshot \
   --capture 'req.url, this.user'
 ```
 
+### `CF SSH permission was denied`
+
+The tunnel needs SSH. It is usually off per app while the space still allows it, and you may
+enable it yourself, so enable it and restart:
+
+```bash
+cf enable-ssh <app> && cf restart <app>
+```
+
 ### Mode 2: Existing inspector port
 
 Use this mode only when a Cloud Foundry tunnel is already listening locally. Open the tunnel with `cf-debugger` first by reading and following the `cf-debugger` skill. After the tunnel is ready, attach `cf-inspector` to the local port:

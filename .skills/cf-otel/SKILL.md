@@ -75,6 +75,17 @@ cf-otel count <traceId> --name POST
 cf-otel find --service my-app --attr 'http@status_code>=400' --errors-only
 ```
 
+`top` hunts outliers, so its `DURATION` is **the single longest span in the trace** — not the
+wall-clock envelope, not the root span; in a fan-out flow all three differ, often by an order of
+magnitude. `SPAN_COUNT` under-reports as well. Never subtract `top`'s `DURATION` from an
+external timestamp to hunt for "untraced" time: the difference is the column's meaning, not a
+gap. For the real envelope:
+
+```bash
+cf-otel spans <traceId> --fields "startTime,durationInNanos" --format csv
+# wall-clock = max(startTime + durationInNanos) - min(startTime)
+```
+
 `--attr <key><op><value>` (repeatable) supports `>=`, `<=`, `>`, `<`, `=`, and `~` (contains);
 `--errors-only` is shorthand for `status.code == 2`. Use `count` as the trust-but-verify
 companion to any ranked/capped table — a `terms` aggregation's bucket list is itself capped, so

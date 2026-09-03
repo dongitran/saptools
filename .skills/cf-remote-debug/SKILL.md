@@ -45,5 +45,7 @@ Use `cf-hana` when trace or runtime evidence points to bound HANA data, missing 
 - Use `cf-live-trace` to see which HTTP request actually fails or which payload/status/correlation ID matters.
 - Use `cf-inspector` to pause or observe the Node.js process at the exact deployed line.
 - Use `cf-hana` to confirm database facts after the failing entity, tenant, or key is known.
+- Use `cf-cost-attribution` when the slow work emits no span to break on, or when `cf-inspector`
+  cannot attach at all.
 - Do not force all tools into every investigation. Pick the smallest evidence source that can confirm or reject the current hypothesis.
 - Treat log rows, inspector captures, trace bodies, headers, HANA rows, and saved refs as sensitive; summarize findings instead of pasting raw values unless the user explicitly asks.

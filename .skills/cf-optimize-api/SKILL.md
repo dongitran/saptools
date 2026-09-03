@@ -20,11 +20,15 @@ Ensure the following tools from `@saptools` are available:
 - `cf-otel`: For querying OpenSearch spans, ranking self-time, and diffing before/after traces.
 - `cf-hana`: For analyzing SQL queries, explain plans, and index structures on SAP HANA Cloud.
 - `cf-logs`: For querying Cloud Logging / application logs for errors, memory warnings, and CPU spikes.
+- `cf-metrics`: For container CPU/RAM history beyond Log Cache's few minutes, and for reading
+  `container.cpu.usage` in **both** units to find the CPU entitlement ceiling — an app already at
+  that ceiling gains nothing from more concurrency.
 - `cf-inspector`: For inspecting Node.js heap usage, process memory, and live runtime state.
 - `cf-explorer`: For discovering and exploring Cloud Foundry space topology, apps, routes, and service bindings.
 - `cf-events`: For auditing Cloud Foundry container crash events, restart history, and lifecycle events.
 - `cf` (Cloud Foundry CLI): For inspecting app state, instances, and live logs.
 - `git` & `glab` / `gh`: For managing branches, commits, MR creation, and merge automation.
+- `cf-cost-attribution`: The escalation path when tracing cannot see the work — see Gate 2 Case A2.
 
 ---
 
@@ -190,6 +194,15 @@ Analyze the ranking:
 Evaluate if the current trace pinpointed the exact lines of code:
 - **Case A: Insufficient Data / Black-box Span** ➔ Proceed to **Step 3A**.
   *(E.g., A single monolithic span takes 1.5s with no child spans).*
+- **Case A2: The work emits NO span at all** ➔ Use the **`cf-cost-attribution`** skill.
+  *This is distinct from Case A: there is no slow span to drill into, so self-time ranking reports
+  the component as idle and you will conclude it is not the bottleneck. Database and remote calls
+  made from a detached context — `cds.spawn`, a bare `cds.tx(async () => …)`, a message handler
+  with no parent span — routinely emit nothing. Suspect it whenever the summed span time is far
+  below the observed wall-clock. `cf-cost-attribution` measures those paths directly with
+  `cf run-task` probes, needing no code change and no deploy, so prefer it over Step 3A's
+  instrumentation round-trip. Also use it when `cf-inspector` cannot attach because the space
+  disables SSH.*
 - **Case B: Clear Root Cause & Actionable Fix** ➔ Proceed to **Step 3B**.
   *(E.g., Clear N+1 loop on `cds.outbox` or unindexed table scan on HANA).*
 
