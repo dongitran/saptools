@@ -9,6 +9,8 @@ import type { OutputRow } from "./format.js";
 
 const RESULT_REF_PATTERN = /^[0-9a-f]{8}$/;
 const MANIFEST_FILE_NAME = "manifest.json";
+/** The largest absolute millisecond value a `Date` can hold; beyond it, `new Date(v)` is invalid. */
+const MAX_DATE_MILLIS = 8_640_000_000_000_000;
 
 interface StoredResultSession {
   readonly version: 1;
@@ -45,15 +47,22 @@ export interface ResultSessionSummary {
 
 /**
  * What one prune sweep did. `retained` counts sessions deliberately left
- * behind because their manifest could not be read or recognized, and `failed`
- * counts expired sessions that could not be deleted — both are silent by
+ * behind because this version could not read them — an unreadable or
+ * unrecognized manifest, or a directory whose emptiness could not be
+ * established — and `failed` counts expired sessions that could not be deleted — both are silent by
  * design everywhere except `result prune`, which is the command whose job is
  * to report on the store.
  */
 export interface PruneOutcome {
   readonly removed: number;
-  readonly retained: number;
   readonly failed: number;
+  /**
+   * Refs left in place because this version could not read them. Carried as
+   * refs rather than a count because a count is not actionable: a retained
+   * session is omitted from `result list` and no command removes one, so naming
+   * it is the only way a user can find the file and decide what to do with it.
+   */
+  readonly retainedRefs: readonly string[];
 }
 
 function resultsRoot(saptoolsRoot?: string): string {
@@ -150,26 +159,33 @@ async function readStoredSession(path: string): Promise<SessionRead> {
 }
 
 /**
- * The instant a session stops being readable, in epoch millis.
+ * The instant a session stops being readable, or `undefined` when this version
+ * cannot establish one at all.
  *
- * `createResultSession` always writes a valid `expiresAt`, so an unparseable
- * one means the manifest was damaged after it was written; `createdAt` plus
- * `ttlMinutes` is tried next. When neither is usable the session is reported
- * as already expired, and that is deliberate: the TTL is a retention promise
- * over production span data, so a record whose age cannot be established must
- * not be kept forever. Previously such a manifest was immortal, because
- * `Date.parse` returns `NaN` and `NaN <= now` is false.
+ * `createResultSession` always writes a parseable `expiresAt`, so an
+ * unparseable one means the manifest was damaged, or was written by a version
+ * that encodes timestamps differently. `createdAt` plus `ttlMinutes` is tried
+ * next, and anything still not datable returns `undefined` — which callers treat
+ * as "retain and report", never as "expired". Deleting a manifest whose expiry cannot be established
+ * would destroy rows this version can read perfectly well, and would single out
+ * the one unreadable case that *is* recoverable.
+ *
+ * The derived value is bounded by what a `Date` can hold, not by what a float can hold. A `Date`
+ * holds at most ±8.64e15 ms, while `Number.isSafeInteger` admits a `ttlMinutes`
+ * whose product reaches 5.4e20 — a finite expiry no clock can ever reach, which
+ * made such a session immortal *and* uncounted.
  */
-function resolveExpiryMillis(session: StoredResultSession): number {
+function resolveExpiryMillis(session: StoredResultSession): number | undefined {
   const explicit = Date.parse(session.expiresAt);
   if (Number.isFinite(explicit)) {
     return explicit;
   }
   const created = Date.parse(session.createdAt);
-  if (Number.isFinite(created) && Number.isFinite(session.ttlMinutes)) {
-    return created + session.ttlMinutes * 60_000;
+  if (!Number.isFinite(created) || !Number.isSafeInteger(session.ttlMinutes) || session.ttlMinutes <= 0) {
+    return undefined;
   }
-  return Number.NEGATIVE_INFINITY;
+  const derived = created + session.ttlMinutes * 60_000;
+  return Math.abs(derived) > MAX_DATE_MILLIS ? undefined : derived;
 }
 
 async function listSessionRefs(saptoolsRoot?: string): Promise<readonly string[]> {
@@ -303,7 +319,13 @@ export async function readResultSession(ref: string, options: ResultStoreOptions
   // That prune is best-effort, so an expired session in a directory that
   // cannot be unlinked would otherwise still read back indefinitely.
   const now = (options.now?.() ?? new Date()).getTime();
-  if (resolveExpiryMillis(read.session) <= now) {
+  const expiry = resolveExpiryMillis(read.session);
+  if (expiry === undefined) {
+    // Readable rows, but no expiry this version can establish — the same
+    // disposition prune gives it: reported, never served, never deleted.
+    throw readFailureError(resolvedRef, "unrecognized", options.saptoolsRoot);
+  }
+  if (expiry <= now) {
     throw new CfOtelError("RESULT_NOT_FOUND", "Saved result not found or expired");
   }
   return read.session;
@@ -319,7 +341,11 @@ export async function listResultSessions(options: ResultStoreOptions = {}): Prom
   );
   return reads
     .flatMap(({ ref, read }) => {
-      if (!read.ok || resolveExpiryMillis(read.session) <= now) {
+      if (!read.ok) {
+        return [];
+      }
+      const expiry = resolveExpiryMillis(read.session);
+      if (expiry === undefined || expiry <= now) {
         return [];
       }
       // The ref comes from the directory name, not from the manifest body:
@@ -350,20 +376,30 @@ export async function pruneResultSessions(options: ResultStoreOptions = {}): Pro
   const refs = await listSessionRefs(options.saptoolsRoot);
   const now = (options.now?.() ?? new Date()).getTime();
   let removed = 0;
-  let retained = 0;
   let failed = 0;
+  const retainedRefs: string[] = [];
   for (const ref of refs) {
     const directory = sessionDirectory(ref, options.saptoolsRoot);
     const read = await readStoredSession(manifestPath(ref, options.saptoolsRoot));
     if (!read.ok && read.failure !== "absent") {
-      retained += 1;
+      retainedRefs.push(ref);
       continue;
     }
-    if (read.ok && resolveExpiryMillis(read.session) > now) {
-      continue;
+    if (read.ok) {
+      const expiry = resolveExpiryMillis(read.session);
+      if (expiry === undefined) {
+        // Readable, but this version cannot establish an expiry: retain it like any other
+        // manifest this version cannot fully interpret, rather than deleting
+        // rows it can actually read.
+        retainedRefs.push(ref);
+        continue;
+      }
+      if (expiry > now) {
+        continue;
+      }
     }
     if (!read.ok && !(await isEmptyDirectory(directory))) {
-      retained += 1;
+      retainedRefs.push(ref);
       continue;
     }
     // Delete per session rather than letting one failure abort the sweep: a
@@ -376,7 +412,7 @@ export async function pruneResultSessions(options: ResultStoreOptions = {}): Pro
       failed += 1;
     }
   }
-  return { removed, retained, failed };
+  return { removed, failed, retainedRefs };
 }
 
 /**

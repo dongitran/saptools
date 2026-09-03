@@ -40,7 +40,7 @@ export {
   readResultSession,
   tryCreateResultSession,
 } from "./result-store.js";
-export type { CreateResultSessionInput, ResultSession, ResultSessionSummary } from "./result-store.js";
+export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary } from "./result-store.js";
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
 export { discoverServiceInstance, listCloudLoggingInstances } from "./service-discovery.js";
 export type { CloudLoggingInstance } from "./service-discovery.js";

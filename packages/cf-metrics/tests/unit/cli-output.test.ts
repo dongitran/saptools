@@ -81,7 +81,7 @@ describe("emitRows", () => {
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('"NAME": "container.cpu.usage"'));
   });
 
-  it("saves rows (never touching the real filesystem here) and prints ref=... when save is true", async () => {
+  it("forwards the env-derived store root so a save can never land in the real ~/.saptools", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const createSpy = vi.spyOn(resultStore, "createResultSession").mockResolvedValue({
       version: 1,
@@ -95,7 +95,13 @@ describe("emitRows", () => {
 
     await emitRows({ command: "names", rows: [{ NAME: "container.cpu.usage" }], format: "table", save: true });
 
-    expect(createSpy).toHaveBeenCalledWith({ command: "names", rows: [{ NAME: "container.cpu.usage" }] }, {});
+    // Asserting the forwarded options, not a literal `{}`: passing the
+    // env-derived root through is the contract that keeps a save inside
+    // whatever CF_METRICS_SAPTOOLS_ROOT points at.
+    expect(createSpy).toHaveBeenCalledWith(
+      { command: "names", rows: [{ NAME: "container.cpu.usage" }] },
+      resultStore.resultStoreOptionsFromEnv(),
+    );
     expect(stdoutSpy).toHaveBeenCalledWith("ref=deadbeef\n");
   });
 });

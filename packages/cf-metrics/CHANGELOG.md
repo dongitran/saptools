@@ -2,6 +2,81 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.8.0
+
+### Fixed
+
+- Pruning no longer deletes saved results it cannot read. `pruneResultSessions` runs at the head of
+  every save, read and list, and it treated four distinct outcomes — file absent, I/O error, invalid
+  JSON, unrecognized shape — as one "missing" answer, then `rm -rf`'d the directory. So a
+  nominally read-only `result list` destroyed a valid unexpired session whose only difference was a
+  newer `version`, and one that was merely unreadable at that moment (a permission error, with the
+  data fully intact). Because the self-updater makes mixed versions on one machine normal, that also
+  meant an older cf-metrics silently wiped a store a newer one had written.
+
+  Reads are now classified, and only an expired session or an empty ref directory is removed. A
+  manifest that cannot be read or recognized is left exactly where it is and counted as retained; a
+  ref directory holding files under names this version does not know is retained too.
+
+- A saved result with a damaged `expiresAt` is no longer immortal. `Date.parse` returns `NaN` for it
+  and `NaN <= now` is `false`, so such a session survived every prune for ever and still read back.
+  Expiry now falls back to `createdAt` plus `ttlMinutes`, and a session whose age cannot be
+  established by either route is treated as expired.
+
+- One undeletable directory no longer takes the whole store offline. Deletion is attempted per
+  session, and the housekeeping prune is best-effort, so `result show` and `result list` keep working
+  on intact sessions even when the results directory cannot be listed. `result show` also enforces
+  the TTL itself instead of relying on that prune having succeeded.
+
+- `result show` now says which of the three things went wrong. An unreadable manifest and one written
+  in a newer format used to report "Saved result not found or expired", which was untrue; both now
+  name the file, and a newer format says it was left in place. Added the `RESULT_UNREADABLE` error
+  code.
+
+- `result list` reports the ref that actually resolves. The listed ref came from inside the manifest
+  while lookup uses the directory name; when those disagreed, `list` advertised a ref that
+  `result show` rejected. Expired sessions that prune could not remove are omitted rather than shown.
+
+- Pruning no longer deletes a saved result whose expiry it cannot establish. `resolveExpiryMillis`
+  previously fell back to "treat as expired", so a manifest with damaged timestamps had its rows
+  deleted even though they were perfectly readable — and a version that changed only the *timestamp
+  encoding* (a Temporal `ZonedDateTime`, an ISO week date, epoch millis as a string, or canonical
+  ISO with surrounding whitespace, which `Date.parse` does not trim) would have had its data
+  destroyed by an older binary. Such a session is now retained and reported, like any other manifest
+  this version cannot fully interpret. One rule now covers every case: only an expired session with
+  a resolvable date, or a ref directory verified to be empty, is ever deleted.
+
+- A `ttlMinutes` too large to date no longer produces an immortal session. The bound is what a `Date` can hold, not what a float can hold: `Number.isSafeInteger` admits a value whose product with 60000
+  reaches 5.4e20, while a `Date` holds at most ±8.64e15 ms — so `createdAt + ttlMinutes` could yield
+  a *finite* expiry no clock will ever reach, which survived every prune and was not even counted.
+  A derived expiry beyond the `Date` range is now treated as unresolvable, hence retained.
+
+- `result prune` names the refs it left in place instead of only counting them. A retained session is
+  omitted from `result list` and no command removes one, so the ref is the only way to find the file.
+
+- `result prune` exits non-zero when it could not delete an expired session. It is the only
+  machine-readable health signal the store has, and reporting a partial sweep as success meant
+  `if cf-metrics result prune; then …` could never detect a store it had failed to clean.
+
+- `PruneOutcome` is now `{ removed, failed, retainedRefs }`. `retained` was a count the user could
+  not act on; the refs replace it.
+
+### Changed
+
+- `pruneResultSessions` returns `{ removed, retained, failed }` instead of a bare count.
+  `result prune` still prints `removed=N` as its only stdout line and reports retained and
+  undeletable counts on stderr.
+- The `PruneOutcome` type is exported.
+
+### Known limitations
+
+- A leftover `<ref>.tmp-<pid>` directory from an interrupted save is invisible to `result list`,
+  `result prune` and `result clear`, and no TTL reaches it. Reclaim it by hand.
+- A retained session is reported by `result prune` but not listed, and there is no `result rm`;
+  `result clear` is the only in-tool removal and it removes everything it can see.
+- `result list` omits a session it could not read without saying so. Only `result prune` reports
+  those.
+
 ## 0.7.1
 
 - README: document `SAPTOOLS_ROOT` next to the other update controls. No code change; this release also

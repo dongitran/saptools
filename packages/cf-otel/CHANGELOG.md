@@ -2,6 +2,54 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.6.0
+
+### Fixed
+
+- `result prune`'s retained notice said the sessions' "manifest could not be read or recognized",
+  but `retained` also counts a ref directory whose manifest is absent and whose emptiness could not
+  be established. It now says this version could not read them, which covers all three cases. Same
+  correction applied to the `PruneOutcome` doc comment, and to `cf-metrics` and `cf-hana`, so the
+  three CLIs report this identically.
+- A unit test asserting that `result list` omits an expired session prune could not delete passed
+  for the wrong reason: the injected clock also reached the implicit prune, which deleted the
+  fixture, so the empty result came from the absent-directory path rather than from the list-side
+  expiry filter. The test now holds the results directory read-only, and fails if that filter is
+  removed.
+- Pruning no longer deletes a saved result whose expiry it cannot establish. `resolveExpiryMillis`
+  previously fell back to "treat as expired", so a manifest with damaged timestamps had its rows
+  deleted even though they were perfectly readable — and a version that changed only the *timestamp
+  encoding* (a Temporal `ZonedDateTime`, an ISO week date, epoch millis as a string, or canonical
+  ISO with surrounding whitespace, which `Date.parse` does not trim) would have had its data
+  destroyed by an older binary. Such a session is now retained and reported, like any other manifest
+  this version cannot fully interpret. One rule now covers every case: only an expired session with
+  a resolvable date, or a ref directory verified to be empty, is ever deleted.
+- A `ttlMinutes` too large to date no longer produces an immortal session. 0.5.0 guarded
+  `Number.isFinite(ttlMinutes)`, which accepted `1e308` whose product overflows to `Infinity`; and
+  finiteness was the wrong bound anyway, since `Number.isSafeInteger` admits a value whose product
+  reaches 5.4e20 while a `Date` holds at most ±8.64e15 ms. Either way the session survived every
+  prune and was not even counted. A derived expiry beyond the `Date` range is now unresolvable,
+  hence retained.
+- `result prune` names the refs it left in place instead of only counting them. A retained session is
+  omitted from `result list` and no command removes one, so the ref is the only way to find the file.
+- `result prune` exits non-zero when it could not delete an expired session. It is the only
+  machine-readable health signal the store has, and reporting a partial sweep as success meant
+  `if cf-otel result prune; then …` could never detect a store it had failed to clean.
+
+### Changed
+
+- `PruneOutcome` is now `{ removed, failed, retainedRefs }`. `retained` was a count the user could
+  not act on; the refs replace it. This is why 0.6.0 is a minor rather than a patch.
+
+### Known limitations
+
+- A leftover `<ref>.tmp-<pid>` directory from an interrupted save is invisible to `result list`,
+  `result prune` and `result clear`, and no TTL reaches it. Reclaim it by hand.
+- A retained session is reported by `result prune` but not listed, and there is no `result rm`;
+  `result clear` is the only in-tool removal and it removes everything it can see.
+- `result list` omits a session it could not read without saying so. Only `result prune` reports
+  those.
+
 ## 0.5.0
 
 ### Fixed
@@ -57,6 +105,30 @@ All notable changes to `@saptools/cf-otel` are documented in this file.
   override — 69 of the 70 sessions found in one real store had been written by that one test, one per
   run. The config now points `CF_OTEL_RESULTS_ROOT` at a throwaway directory that is cleared as it
   loads.
+
+- Pruning no longer deletes a saved result whose expiry it cannot establish. `resolveExpiryMillis`
+  previously fell back to "treat as expired", so a manifest with damaged timestamps had its rows
+  deleted even though they were perfectly readable — and a version that changed only the *timestamp
+  encoding* (a Temporal `ZonedDateTime`, an ISO week date, epoch millis as a string, or canonical
+  ISO with surrounding whitespace, which `Date.parse` does not trim) would have had its data
+  destroyed by an older binary. Such a session is now retained and reported, like any other manifest
+  this version cannot fully interpret. One rule now covers every case: only an expired session with
+  a resolvable date, or a ref directory verified to be empty, is ever deleted.
+
+- A `ttlMinutes` too large to date no longer produces an immortal session. The bound is what a `Date` can hold, not what a float can hold: `Number.isSafeInteger` admits a value whose product with 60000
+  reaches 5.4e20, while a `Date` holds at most ±8.64e15 ms — so `createdAt + ttlMinutes` could yield
+  a *finite* expiry no clock will ever reach, which survived every prune and was not even counted.
+  A derived expiry beyond the `Date` range is now treated as unresolvable, hence retained.
+
+- `result prune` names the refs it left in place instead of only counting them. A retained session is
+  omitted from `result list` and no command removes one, so the ref is the only way to find the file.
+
+- `result prune` exits non-zero when it could not delete an expired session. It is the only
+  machine-readable health signal the store has, and reporting a partial sweep as success meant
+  `if cf-otel result prune; then …` could never detect a store it had failed to clean.
+
+- `PruneOutcome` is now `{ removed, failed, retainedRefs }`. `retained` was a count the user could
+  not act on; the refs replace it.
 
 ### Changed
 

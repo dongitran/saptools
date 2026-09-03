@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import type { Command } from "commander";
 
 import {
+  CLI_NAME,
   DEFAULT_CELL_LIMIT,
   DEFAULT_RESULT_SEARCH_LIMIT,
   MAX_CELL_LIMIT,
@@ -53,6 +54,10 @@ interface ExportOptions {
 
 function print(text: string): void {
   process.stdout.write(`${text}\n`);
+}
+
+function printNotice(text: string): void {
+  process.stderr.write(`${CLI_NAME}: ${text}\n`);
 }
 
 function parseIntOption(value: string): number {
@@ -250,7 +255,24 @@ async function runList(): Promise<void> {
 }
 
 async function runPrune(): Promise<void> {
-  print(`removed=${String(await pruneResultSessions())}`);
+  const outcome = await pruneResultSessions();
+  print(`removed=${String(outcome.removed)}`);
+  // Kept off stdout so `removed=N` stays the single machine-readable line.
+  if (outcome.retainedRefs.length > 0) {
+    // Name the refs: a retained session is omitted from `result list` and no
+    // command removes one, so the ref is the only way a user can find the file.
+    printNotice(
+      `${String(outcome.retainedRefs.length)} saved result(s) were left in place because this version ` +
+        `could not read them: ${outcome.retainedRefs.join(", ")}`,
+    );
+  }
+  if (outcome.failed > 0) {
+    printNotice(`${String(outcome.failed)} expired saved result(s) could not be deleted; check directory permissions`);
+    // The only machine-readable health signal this store has. Reporting a
+    // partial sweep as success meant `if <cli> result prune; then ...` could
+    // never detect a store it had failed to clean.
+    process.exitCode = 1;
+  }
 }
 
 async function runClear(): Promise<void> {
