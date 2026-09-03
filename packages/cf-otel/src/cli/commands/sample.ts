@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN, DEFAULT_SAMPLE_LIMIT } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { buildSpanBoolQuery } from "../../query-builder.js";
+import { assertTimeBoundsValid, buildSpanBoolQuery } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { SampleOpts } from "../commandTypes.js";
 import { emitRows, parseFormat } from "../output.js";
@@ -33,6 +33,9 @@ function checkLimit(limit: number): void {
 async function runSample(opts: SampleOpts): Promise<void> {
   checkLimit(opts.limit);
   const format = parseFormat(opts.format);
+  // Fail on a malformed --since/--until here, before the CF login and
+  // credential discovery that building the query would otherwise run first.
+  assertTimeBoundsValid(opts);
   const rows = await withOpenSearchClient(opts, async (client) => {
     const query = buildSpanBoolQuery({
       ...(opts.service === undefined ? {} : { service: opts.service }),

@@ -2,6 +2,7 @@ import type { Command } from "commander";
 
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../attr-filter.js";
 import { DEFAULT_INDEX_PATTERN, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
+import { CfOtelError } from "../../errors.js";
 import type { OutputRow } from "../../format.js";
 import { searchAfterAll } from "../../opensearch-client.js";
 import { buildSpanBoolQuery } from "../../query-builder.js";
@@ -20,17 +21,6 @@ import {
   withTargetOptions,
 } from "../shared-options.js";
 
-const DEFAULT_SPAN_FIELDS = [
-  "spanId",
-  "parentSpanId",
-  "name",
-  "kind",
-  "serviceName",
-  "startTime",
-  "durationInNanos",
-  "status.code",
-];
-
 const FIELD_COLUMN_BUILDERS: readonly { field: string; build: (span: Span) => OutputRow }[] = [
   { field: "spanId", build: (span) => ({ SPAN_ID: span.spanId }) },
   { field: "parentSpanId", build: (span) => ({ PARENT_SPAN_ID: span.parentSpanId ?? "" }) },
@@ -45,6 +35,15 @@ const FIELD_COLUMN_BUILDERS: readonly { field: string; build: (span: Span) => Ou
   { field: "status.code", build: (span) => ({ STATUS_CODE: span.statusCode ?? 0 }) },
 ];
 
+/**
+ * Every displayable field name, and also the default selection. Derived from
+ * the column builders rather than written out a second time: the two lists
+ * used to be maintained by hand, and because `buildRow` keeps only the
+ * builders whose `field` appears in the requested list, any name the builders
+ * did not know produced an empty row instead of an error.
+ */
+const SPAN_FIELD_NAMES: readonly string[] = FIELD_COLUMN_BUILDERS.map((entry) => entry.field);
+
 function buildRow(span: Span, fields: readonly string[]): OutputRow {
   let row: OutputRow = {};
   for (const entry of FIELD_COLUMN_BUILDERS) {
@@ -55,8 +54,33 @@ function buildRow(span: Span, fields: readonly string[]): OutputRow {
   return row;
 }
 
+/**
+ * Resolve `--fields`, rejecting names no column builder knows. Without this
+ * check an unknown name matched nothing and the command printed a full set of
+ * empty rows at exit 0 — and because the name is also forwarded as an
+ * OpenSearch `_source` filter, the documents really did come back without it,
+ * so there was nothing downstream that could notice.
+ */
 function parseFieldsOption(value: string | undefined): readonly string[] {
-  return value === undefined ? DEFAULT_SPAN_FIELDS : value.split(",").map((field) => field.trim()).filter((field) => field.length > 0);
+  if (value === undefined) {
+    return SPAN_FIELD_NAMES;
+  }
+  const requested = value.split(",").map((field) => field.trim()).filter((field) => field.length > 0);
+  if (requested.length === 0) {
+    throw new CfOtelError(
+      "CONFIG",
+      `--fields "${value}" names no fields; expected a comma-separated subset of: ${SPAN_FIELD_NAMES.join(", ")}`,
+    );
+  }
+  const unknown = requested.filter((field) => !SPAN_FIELD_NAMES.includes(field));
+  if (unknown.length > 0) {
+    throw new CfOtelError(
+      "CONFIG",
+      `--fields ${unknown.length === 1 ? "has an unknown field" : "has unknown fields"} ` +
+        `${unknown.map((field) => `"${field}"`).join(", ")}; expected a comma-separated subset of: ${SPAN_FIELD_NAMES.join(", ")}`,
+    );
+  }
+  return requested;
 }
 
 async function runSpans(traceId: string, opts: SpansOpts): Promise<void> {
@@ -90,7 +114,7 @@ async function runSpans(traceId: string, opts: SpansOpts): Promise<void> {
 
 export function registerSpansCommand(program: Command): void {
   const command = program.command("spans <traceId>").description("fetch every span in one trace");
-  command.option("--fields <list>", "comma-separated field list", DEFAULT_SPAN_FIELDS.join(","));
+  command.option("--fields <list>", "comma-separated field list", SPAN_FIELD_NAMES.join(","));
   withAttrOptions(command);
   withLimitOption(command, Number.MAX_SAFE_INTEGER, "maximum rows to display (default: all fetched; 0 also means all)");
   withFormatOption(command);

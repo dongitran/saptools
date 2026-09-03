@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../attr-filter.js";
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { buildSpanBoolQuery } from "../../query-builder.js";
+import { assertTimeBoundsValid, buildSpanBoolQuery } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { CountOpts } from "../commandTypes.js";
 import { parseFormat, parseTraceIds, print } from "../output.js";
@@ -23,6 +23,9 @@ async function runCount(traceId: string | undefined, opts: CountOpts): Promise<v
   // but not otherwise used: a bare integer count renders identically in
   // table/json/json-compact/csv, so there's no structural output to switch on.
   parseFormat(opts.format);
+  // Fail on a malformed --since/--until here, before the CF login and
+  // credential discovery that building the query would otherwise run first.
+  assertTimeBoundsValid(opts);
   if (traceId !== undefined && opts.traceIds !== undefined) {
     throw new CfOtelError("CONFIG", "Pass either a positional traceId or --trace-ids, not both");
   }

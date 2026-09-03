@@ -358,6 +358,103 @@ describe("spans", () => {
     );
     expect(rows[0]).toEqual({ NAME: "POST", DURATION: "1.000ms", DURATION_NANOS: 1_000_000 });
   });
+
+  it("rejects an unknown --fields name instead of printing empty rows", async () => {
+    // Before validation, an unrecognized name matched no column builder, so
+    // every row came out as `{}` at exit 0 — and because the name is also
+    // forwarded as an OpenSearch `_source` filter, the document really did
+    // come back without it, leaving nothing downstream able to notice.
+    const client = fakeClient();
+    await expect(runCli(["spans", "t1", "--fields", "duration"], client)).rejects.toThrow(
+      /unknown field "duration"/,
+    );
+  });
+
+  it("lists every valid field name in the rejection message", async () => {
+    const client = fakeClient();
+    await expect(runCli(["spans", "t1", "--fields", "nope"], client)).rejects.toThrow(
+      /spanId, parentSpanId, name, kind, serviceName, startTime, durationInNanos, status\.code/,
+    );
+  });
+
+  it("reports every unknown name at once, plurally", async () => {
+    const client = fakeClient();
+    await expect(runCli(["spans", "t1", "--fields", "name,nope,alsoNope"], client)).rejects.toThrow(
+      /unknown fields "nope", "alsoNope"/,
+    );
+  });
+
+  it("rejects traceId, which is the command's own argument and has no column", async () => {
+    const client = fakeClient();
+    await expect(runCli(["spans", "t1", "--fields", "traceId"], client)).rejects.toThrow(
+      /unknown field "traceId"/,
+    );
+  });
+
+  it.each([",", " , ", ""])("rejects a --fields value of %j that names nothing", async (value) => {
+    const client = fakeClient();
+    await expect(runCli(["spans", "t1", "--fields", value], client)).rejects.toThrow(/names no fields/);
+  });
+
+  it("fails before contacting OpenSearch, so an invalid --fields costs no credential discovery", async () => {
+    let searched = false;
+    const client = fakeClient({
+      search: async () => {
+        searched = true;
+        return { totalHits: 0, hits: [] };
+      },
+    });
+    await expect(runCli(["spans", "t1", "--fields", "nope"], client)).rejects.toThrow(/unknown field/);
+    expect(searched).toBe(false);
+  });
+
+  it("renders the full column set by default, proving the default is still derived from the builders", async () => {
+    const client = fakeClient({
+      search: async () => ({
+        totalHits: 1,
+        hits: [
+          hit("1", {
+            traceId: "t1",
+            spanId: "s2",
+            parentSpanId: "s1",
+            name: "POST",
+            kind: "SPAN_KIND_SERVER",
+            serviceName: "svc",
+            startTime: "2026-08-28T03:00:00Z",
+            durationInNanos: 1_000_000,
+            status: { code: 2 },
+          }),
+        ],
+      }),
+    });
+    const text = await runCli(["spans", "t1", "--format", "json"], client);
+    const rows: readonly Record<string, unknown>[] = JSON.parse(
+      text
+        .split("\n")
+        .filter((line) => !line.startsWith("cf-otel:"))
+        .join("\n"),
+    );
+    expect(rows[0]).toEqual({
+      SPAN_ID: "s2",
+      PARENT_SPAN_ID: "s1",
+      NAME: "POST",
+      KIND: "SPAN_KIND_SERVER",
+      SERVICE: "svc",
+      START_TIME: "2026-08-28T03:00:00Z",
+      DURATION: "1.000ms",
+      DURATION_NANOS: 1_000_000,
+      STATUS_CODE: 2,
+    });
+  });
+
+  it("accepts every valid name individually", async () => {
+    const client = fakeClient({
+      search: async () => ({ totalHits: 1, hits: [hit("1", { traceId: "t1", spanId: "s1", durationInNanos: 1000 })] }),
+    });
+    for (const field of ["spanId", "parentSpanId", "name", "kind", "serviceName", "startTime", "durationInNanos", "status.code"]) {
+      await expect(runCli(["spans", "t1", "--fields", field, "--format", "json"], client)).resolves.not.toThrow();
+    }
+  });
 });
 
 describe("span", () => {
