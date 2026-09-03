@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../attr-filter.js";
 import { DEFAULT_FIND_LIMIT, DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { buildSpanBoolQuery } from "../../query-builder.js";
+import { assertTimeBoundsValid, buildSpanBoolQuery } from "../../query-builder.js";
 import { hitToSpan } from "../../span-mapper.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { FindOpts } from "../commandTypes.js";
@@ -49,6 +49,9 @@ function checkLimit(limit: number): void {
 async function runFind(opts: FindOpts): Promise<void> {
   checkLimit(opts.limit);
   const format = parseFormat(opts.format);
+  // Fail on a malformed --since/--until here, before the CF login and
+  // credential discovery that building the query would otherwise run first.
+  assertTimeBoundsValid(opts);
   const sortField = parseSortField(opts.sort);
   const traceIds = parseTraceIds(opts.traceIds);
   const attrs = opts.attr.map(parseAttrFilter);

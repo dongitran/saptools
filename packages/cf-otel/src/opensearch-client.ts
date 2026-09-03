@@ -1,3 +1,4 @@
+import { DEFAULT_HTTP_TIMEOUT_MS, envName, readEnv } from "./config.js";
 import { CfOtelError, errorMessage } from "./errors.js";
 
 /**
@@ -16,6 +17,8 @@ export interface OpenSearchClientOptions {
   readonly username: string;
   readonly password: string;
   readonly fetchImpl?: typeof fetch;
+  /** Per-request ceiling in milliseconds; defaults to {@link DEFAULT_HTTP_TIMEOUT_MS}, overridable via `CF_OTEL_HTTP_TIMEOUT_MS`. */
+  readonly timeoutMs?: number;
 }
 
 export interface SearchHit {
@@ -91,7 +94,6 @@ function parseCountResponse(value: unknown): number {
   return isRecord(value) && typeof value["count"] === "number" ? value["count"] : 0;
 }
 
-/** Create a client for OpenSearch's `_search`/`_count`/`_mapping` via the Dashboards console-proxy. */
 /**
  * Real Cloud Logging service-key/binding payloads have been observed to
  * return `dashboards-endpoint` as a bare hostname with no scheme (e.g.
@@ -113,10 +115,87 @@ function normalizeDashboardsEndpoint(rawEndpoint: string): string {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
+/**
+ * Node's timers overflow past 2^31-1: `AbortSignal.timeout` accepts up to
+ * 2^32-1 but silently reduces anything above this to **1ms**, emitting only a
+ * `TimeoutOverflowWarning`, and throws a `RangeError` beyond 2^32-1. Both
+ * outcomes hand a caller who asked for a long ceiling the exact opposite.
+ */
+const MAX_HTTP_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Bring any configured ceiling into the range `AbortSignal.timeout` actually
+ * honors. It throws a `RangeError` for a negative or fractional delay, and
+ * that RangeError would be reported as "OpenSearch request failed" — blaming
+ * the endpoint for a bad local setting. Normalizing in one place means neither
+ * a malformed env var nor an odd explicit option can reach it, so an unusable
+ * value never becomes the reason a read-only query refuses to run.
+ */
+function normalizeTimeoutMs(value: number | undefined): number {
+  if (value === undefined || !Number.isInteger(value) || value <= 0) {
+    return DEFAULT_HTTP_TIMEOUT_MS;
+  }
+  // Clamped rather than defaulted, unlike the guard above: an over-large
+  // ceiling still expresses "wait a long time", and falling back to 60s would
+  // invert that intent instead of merely ignoring an unusable value.
+  return Math.min(value, MAX_HTTP_TIMEOUT_MS);
+}
+
+function resolveTimeoutMs(explicit: number | undefined): number {
+  if (explicit !== undefined) {
+    return normalizeTimeoutMs(explicit);
+  }
+  const raw = readEnv(envName("HTTP_TIMEOUT_MS"));
+  return normalizeTimeoutMs(raw === undefined ? undefined : Number(raw));
+}
+
+/** `AbortSignal.timeout` rejects with a `TimeoutError`, which is what separates a deadline from a transport failure. */
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
+}
+
+/**
+ * Shared by the request and the body read, because the deadline can fire at
+ * either point. A timeout is worth naming: "failed" alone sends the reader
+ * looking for a query or credential problem when the endpoint simply never
+ * answered.
+ */
+function requestFailure(path: string, timeoutMs: number, error: unknown): CfOtelError {
+  if (isTimeout(error)) {
+    return new CfOtelError(
+      "OPENSEARCH_REQUEST_FAILED",
+      `OpenSearch request to ${path} timed out after ${String(timeoutMs)}ms. ` +
+        `Raise ${envName("HTTP_TIMEOUT_MS")} if the query is genuinely slow, or narrow the time range.`,
+      { cause: error },
+    );
+  }
+  return new CfOtelError(
+    "OPENSEARCH_REQUEST_FAILED",
+    `OpenSearch request to ${path} failed: ${errorMessage(error)}`,
+    { cause: error },
+  );
+}
+
+/**
+ * Node's `fetch` applies no deadline of its own, so without this a Dashboards
+ * endpoint that accepts the connection and then never answers hangs the CLI
+ * indefinitely with no output at all.
+ *
+ * The deadline is per *request*, not per operation: `searchAfterAll` can issue
+ * up to 50 pages, so its worst case is 50 times this ceiling. That is the
+ * right semantic for a page-at-a-time fetch, where each page is an independent
+ * round trip that either answers or does not.
+ *
+ * Unlike cf-metrics, no caller-supplied `AbortSignal` is threaded through the
+ * client interface. cf-metrics needs one because its `watch` command runs until
+ * Ctrl-C; every cf-otel command is a single bounded query, so a plain deadline
+ * is enough and the extra parameter would be unused surface.
+ */
 export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearchClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const auth = Buffer.from(`${opts.username}:${opts.password}`).toString("base64");
   const baseUrl = normalizeDashboardsEndpoint(opts.dashboardsEndpoint);
+  const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
 
   async function proxyRequest(path: string, method: string, body?: Record<string, unknown>): Promise<unknown> {
     const url = `${baseUrl}/api/console/proxy?path=${encodeConsoleProxyPath(path)}&method=${method}`;
@@ -130,15 +209,22 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
           Authorization: `Basic ${auth}`,
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      throw new CfOtelError(
-        "OPENSEARCH_REQUEST_FAILED",
-        `OpenSearch request to ${path} failed: ${errorMessage(error)}`,
-        { cause: error },
-      );
+      throw requestFailure(path, timeoutMs, error);
     }
-    const text = await response.text();
+    // The body read needs the same handling as the request: headers can arrive
+    // well before the payload finishes streaming — the normal shape for a wide
+    // aggregation — so the deadline often fires here rather than above. Left
+    // outside a try, that abort escaped as a bare "The operation was aborted
+    // due to timeout" with no path, no ceiling and no hint.
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw requestFailure(path, timeoutMs, error);
+    }
     if (!response.ok) {
       throw new CfOtelError(
         "OPENSEARCH_REQUEST_FAILED",

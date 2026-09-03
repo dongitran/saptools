@@ -112,6 +112,36 @@ Every command supports `--format table|json|json-compact|csv` (default `table`);
 `--save`, which prints `ref=<id>` instead of the result and stores it under
 `~/.saptools/cf-otel/results/<ref>/` for later inspection with `cf-otel result show <ref>`.
 
+### Time bounds
+
+`find`, `top`, `count` and `sample` take `--since`/`--until`, each accepting either a relative
+duration — `30m`, `24h`, `7d`, units `s`/`m`/`h`/`d` — or an absolute ISO-8601 timestamp such as
+`2026-08-28T03:00:00Z`. A date alone (`2026-08-28`), a `±HH:MM` offset, and fractional seconds of any
+width are all accepted; nanosecond precision is passed through untouched, since `startTime` is a
+`date_nanos` field.
+
+Anything else is rejected before the CF login runs, so a typo costs milliseconds rather than a full
+credential discovery. A bare number is rejected too: `--since 24` reads just as easily as a `24h`
+missing its unit as it does epoch milliseconds, and the two are decades apart. A `--since` that
+resolves later than its `--until` is also rejected, because an inverted range would otherwise return
+zero rows indistinguishably from "no data".
+
+`top` and `count` have no default bound, so omitting `--since` scans the whole retention window —
+around 5.4M spans on a busy tenant versus ~11k for the last hour. Pass one.
+
+One limit is not checked locally: `startTime` is `date_nanos`, which stores non-negative nanoseconds
+since the epoch, so a bound before `1970-01-01` (or at/after roughly `2262-04-11`) is rejected by
+OpenSearch itself rather than by cf-otel, and currently surfaces as a raw HTTP 400. Its `reason` field
+does say so plainly. Use `1970-01-01` when you mean "everything".
+
+### Request timeouts
+
+Each Dashboards console-proxy request gets 60 seconds, overridable with
+`CF_OTEL_HTTP_TIMEOUT_MS`. The ceiling is per request, so a paginated `spans` fetch of 50 pages is
+allowed 50 × the value. A malformed override is ignored rather than fatal. This exists to stop an
+endpoint that accepts the connection and never answers; raise it if a genuinely wide aggregation
+needs longer.
+
 See `.skills/cf-otel/SKILL.md` (or the installed `~/.claude/skills/cf-otel/SKILL.md`) for the
 full command reference with worked examples.
 

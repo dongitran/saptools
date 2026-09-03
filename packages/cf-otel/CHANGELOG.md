@@ -2,6 +2,61 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.4.0
+
+### Fixed
+
+- `--since`/`--until` are validated instead of forwarded blind. Previously anything that did not match
+  `<digits><s|m|h|d>` was passed to OpenSearch verbatim, so `--since yesterday` came back as a raw
+  `HTTP 400 parse_exception` dump, and `--since 999999999d` overflowed the `Date` range and surfaced as
+  a bare `cf-otel: Invalid time value` that named no flag at all. Both now fail with a message that
+  names the flag and spells out the accepted grammar.
+
+  The check also catches dates `Date.parse` accepts but OpenSearch's `strict_date_optional_time`
+  rejects: it silently rolls `2026-02-30` over to March 2 and `2026-04-31` to May 1, so those are now
+  reported as "not a real calendar date" rather than quietly querying the wrong day. Month length is
+  probed against a fixed leap year and corrected for February rather than passing the caller's year to
+  `Date.UTC`, which maps a year below 100 into 1900-1999 and would therefore reject the real date
+  `0000-02-29`.
+
+  A `--since` resolving later than its `--until` is rejected too — an inverted range returned zero rows,
+  which on a read-only tool is indistinguishable from "no data".
+
+  Validation runs alongside the other argument checks rather than inside the query builder, which sits
+  behind `withOpenSearchClient`. A malformed bound now fails in ~125ms instead of after a full CF login
+  and credential discovery (~23s measured).
+
+  Behavior change: a bare number is no longer accepted. The index's `startTime` format is
+  `strict_date_optional_time||epoch_millis`, so a number that was never checked used to reach
+  OpenSearch and work. `--since 24` reads just as easily as a `24h` missing its unit, and as an epoch-millis lower
+  bound it would match the entire index instead of the last day, so the error names both readings.
+
+- `spans --fields` rejects a name no column builder knows. `--fields duration` (a plausible typo for
+  `durationInNanos`) used to print one empty `{}` per span at exit 0 — and because the list is also sent
+  as an OpenSearch `_source` filter, the documents genuinely came back without the field, leaving
+  nothing downstream able to notice. The valid-name list and the default selection are now derived from
+  the column builders instead of being maintained as a second hand-written list, which is what allowed
+  the two to drift.
+
+- Dashboards console-proxy requests now carry a deadline. Node's `fetch` applies none of its own, so an
+  endpoint that accepted the connection and never answered hung the CLI indefinitely with no output;
+  the e2e suite reproduces this, taking 5 minutes and a harness kill before the fix versus 1.5s after.
+  The default is 60s per request, overridable with `CF_OTEL_HTTP_TIMEOUT_MS`, and a timeout is reported
+  distinctly from a transport failure so the message points at the right cause. Ported from cf-metrics
+  so both CLIs behave the same way; unlike cf-metrics, no caller-supplied `AbortSignal` is threaded
+  through the client, because cf-otel has no long-running command that needs one.
+
+  The deadline covers the response body as well as the request. Headers can arrive well before the
+  payload finishes streaming — the normal shape for a wide aggregation — so an abort often lands on the
+  body read; left unhandled it escaped as a bare `The operation was aborted due to timeout` with no
+  path, no ceiling and no hint.
+
+  The configured value is also normalized before it reaches `AbortSignal.timeout`, which throws a
+  `RangeError` for a fractional or negative delay and, above 2^31-1, silently reduces the timer to
+  **1ms** with only a process warning — handing anyone who raised the ceiling the exact opposite. A
+  fractional, negative or non-numeric value now falls back to the default, and an over-large one is
+  clamped to 2^31-1 rather than defaulted, since it still expresses "wait a long time".
+
 ## 0.3.0
 
 - **`cf services` ran twice on every auto-discovered command, and now runs once.** It is the most

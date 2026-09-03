@@ -30,6 +30,15 @@ export const MAX_RESULT_STORE_BYTES = 256 * 1024 * 1024;
 export const SAML_POLL_INTERVAL_MS = 3_000;
 export const SAML_POLL_TIMEOUT_MS = 180_000;
 
+/**
+ * Per-request ceiling for Dashboards console-proxy calls, overridable via
+ * `CF_OTEL_HTTP_TIMEOUT_MS`. Generous on purpose: a wide aggregation over
+ * millions of spans can legitimately take tens of seconds, and this exists to
+ * stop an endpoint that never answers at all, not to cap slow-but-working
+ * queries. Matches cf-metrics so the two CLIs behave the same way.
+ */
+export const DEFAULT_HTTP_TIMEOUT_MS = 60_000;
+
 /** Build a `CF_OTEL_*` environment variable name from a suffix. */
 export function envName(suffix: string): string {
   return `${ENV_PREFIX}_${suffix}`;

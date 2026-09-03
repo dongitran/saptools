@@ -1,7 +1,48 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll } from "../../src/opensearch-client.js";
 import type { OpenSearchClient } from "../../src/opensearch-client.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+/**
+ * A `fetch` that accepts the connection and then never answers — the failure
+ * this deadline exists for. It rejects only when the signal it was handed
+ * aborts, so a client that forgot to pass one would hang the test rather than
+ * quietly pass.
+ */
+function neverAnsweringFetch(): { fetchImpl: typeof fetch; signalOf: () => AbortSignal | undefined } {
+  let captured: AbortSignal | undefined;
+  const fetchImpl = async (_url: string, init?: RequestInit): Promise<Response> => {
+    const signal = init?.signal ?? undefined;
+    captured = signal;
+    return await new Promise<Response>((_resolve, reject) => {
+      if (signal === undefined) {
+        reject(new Error("createOpenSearchClient passed no AbortSignal"));
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        // `AbortSignal.timeout` aborts with a DOMException, which in Node is
+        // an Error subclass — rejecting with it verbatim is what lets the
+        // client tell a deadline apart from a transport failure.
+        reject(signal.reason instanceof Error ? signal.reason : new Error("aborted without an Error reason"));
+      });
+    });
+  };
+  return { fetchImpl: fetchImpl as unknown as typeof fetch, signalOf: () => captured };
+}
+
+function clientWith(fetchImpl: typeof fetch, timeoutMs?: number): OpenSearchClient {
+  return createOpenSearchClient({
+    dashboardsEndpoint: "https://dash.example.com",
+    username: "user",
+    password: "pass",
+    fetchImpl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+}
 
 describe("encodeConsoleProxyPath", () => {
   it("matches the verified working encoding for otel-v1-apm-span-* + /_search", () => {
@@ -198,5 +239,227 @@ describe("searchAfterAll", () => {
     const result = await searchAfterAll(client, "idx", {}, 10, 100);
     expect(result.hits).toEqual([]);
     expect(result.truncated).toBe(false);
+  });
+});
+
+describe("createOpenSearchClient request deadline", () => {
+  it("aborts a request that never answers and names the timeout", async () => {
+    // Node's fetch applies no deadline of its own, so without this the CLI
+    // hangs indefinitely with no output at all.
+    const { fetchImpl } = neverAnsweringFetch();
+    const client = clientWith(fetchImpl, 20);
+
+    await expect(client.search("otel-v1-apm-span-*", { query: { match_all: {} } })).rejects.toThrow(
+      /timed out after 20ms/,
+    );
+  });
+
+  it("tells the reader how to raise the ceiling rather than just reporting a failure", async () => {
+    const { fetchImpl } = neverAnsweringFetch();
+    await expect(clientWith(fetchImpl, 20).count("idx", {})).rejects.toThrow(/CF_OTEL_HTTP_TIMEOUT_MS/);
+  });
+
+  it("reports a timeout distinctly from a transport failure", async () => {
+    const failing = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    await expect(clientWith(failing as unknown as typeof fetch).getMapping("idx")).rejects.toThrow(
+      /failed: ECONNREFUSED/,
+    );
+
+    const { fetchImpl } = neverAnsweringFetch();
+    await expect(clientWith(fetchImpl, 20).getMapping("idx")).rejects.toThrow(/timed out/);
+  });
+
+  it("applies the deadline to every verb, not just search", async () => {
+    for (const call of [
+      async (client: OpenSearchClient) => await client.search("idx", {}),
+      async (client: OpenSearchClient) => await client.count("idx", {}),
+      async (client: OpenSearchClient) => await client.getMapping("idx"),
+    ]) {
+      const { fetchImpl } = neverAnsweringFetch();
+      await expect(call(clientWith(fetchImpl, 20))).rejects.toThrow(/timed out after 20ms/);
+    }
+  });
+
+  it("honors CF_OTEL_HTTP_TIMEOUT_MS", async () => {
+    vi.stubEnv("CF_OTEL_HTTP_TIMEOUT_MS", "35");
+    const { fetchImpl } = neverAnsweringFetch();
+    await expect(clientWith(fetchImpl).search("idx", {})).rejects.toThrow(/timed out after 35ms/);
+  });
+
+  it("lets an explicit timeoutMs option win over the environment", async () => {
+    vi.stubEnv("CF_OTEL_HTTP_TIMEOUT_MS", "999999");
+    const { fetchImpl } = neverAnsweringFetch();
+    await expect(clientWith(fetchImpl, 20).search("idx", {})).rejects.toThrow(/timed out after 20ms/);
+  });
+
+  it.each(["not-a-number", "0", "-5", "", "1.5", "-1", "1e3000", "Infinity"])(
+    "falls back to the 60s default when the override is %j, rather than refusing to run",
+    async (raw) => {
+      // An unusable env var must not be the reason a read-only query fails.
+      vi.stubEnv("CF_OTEL_HTTP_TIMEOUT_MS", raw);
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 7 }), { status: 200 }));
+      await expect(clientWith(fetchImpl as unknown as typeof fetch).count("idx", {})).resolves.toBe(7);
+    },
+  );
+
+  it("passes a live, un-aborted signal on a request that answers normally", async () => {
+    let signal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Response(JSON.stringify({ count: 1 }), { status: 200 });
+    });
+
+    await clientWith(fetchImpl as unknown as typeof fetch).count("idx", {});
+
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it("gives each request its own deadline, so a long paged fetch is not capped in aggregate", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal ?? undefined;
+      if (signal !== undefined) {
+        signals.push(signal);
+      }
+      return new Response(JSON.stringify({ count: 0 }), { status: 200 });
+    });
+    const client = clientWith(fetchImpl as unknown as typeof fetch, 20);
+
+    await client.count("idx", {});
+    await client.count("idx", {});
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).not.toBe(signals[1]);
+  });
+});
+
+describe("createOpenSearchClient deadline normalization", () => {
+  /**
+   * `AbortSignal.timeout` throws a RangeError for a fractional or negative
+   * delay. Reaching it would report a bad local setting as an OpenSearch
+   * failure, so every unusable value must fall back to the default instead.
+   */
+  it.each([1.5, -1, 0, Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to the default rather than letting timeoutMs %j reach AbortSignal.timeout",
+    async (timeoutMs) => {
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 3 }), { status: 200 }));
+      const client = createOpenSearchClient({
+        dashboardsEndpoint: "https://dash.example.com",
+        username: "user",
+        password: "pass",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        timeoutMs,
+      });
+
+      await expect(client.count("idx", {})).resolves.toBe(3);
+    },
+  );
+
+  it.each([2_147_483_648, 4_294_967_296, 1e20])(
+    "clamps an over-large timeoutMs of %j instead of letting Node reduce it to 1ms",
+    async (timeoutMs) => {
+      // Above 2^31-1 Node silently sets the timer to 1ms; above 2^32-1 it
+      // throws. Either way a request would fail almost immediately while the
+      // caller believed they had raised the ceiling.
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 9 }), { status: 200 }));
+      const client = createOpenSearchClient({
+        dashboardsEndpoint: "https://dash.example.com",
+        username: "user",
+        password: "pass",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        timeoutMs,
+      });
+
+      await expect(client.count("idx", {})).resolves.toBe(9);
+    },
+  );
+
+  it("clamps an over-large CF_OTEL_HTTP_TIMEOUT_MS the same way", async () => {
+    vi.stubEnv("CF_OTEL_HTTP_TIMEOUT_MS", "9999999999");
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 4 }), { status: 200 }));
+    await expect(clientWith(fetchImpl as unknown as typeof fetch).count("idx", {})).resolves.toBe(4);
+  });
+
+  it("does not let an over-large timeoutMs collapse into Node's 1ms overflow", async () => {
+    // Unclamped, Node reduces a 2^31 delay to a 1ms timer, so this response
+    // would be aborted rather than returned — the caller having asked for a
+    // *longer* ceiling, not a shorter one.
+    const slowFetch = (async (_url: string, init?: RequestInit) => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 120);
+      });
+      if (init?.signal?.aborted === true) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response(JSON.stringify({ count: 11 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(clientWith(slowFetch, 2_147_483_648).count("idx", {})).resolves.toBe(11);
+  });
+
+  it("aborts that same slow response when the ceiling really is small", async () => {
+    // The control for the test above: same 120ms response, a 20ms ceiling.
+    const slowFetch = (async (_url: string, init?: RequestInit) => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 120);
+      });
+      if (init?.signal?.aborted === true) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response(JSON.stringify({ count: 11 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(clientWith(slowFetch, 20).count("idx", {})).rejects.toThrow(/timed out after 20ms/);
+  });
+
+  it("still honors a valid explicit timeoutMs", async () => {
+    const { fetchImpl } = neverAnsweringFetch();
+    await expect(clientWith(fetchImpl, 25).count("idx", {})).rejects.toThrow(/timed out after 25ms/);
+  });
+});
+
+describe("createOpenSearchClient body-read deadline", () => {
+  /** Headers arrive, then the payload never finishes — where the deadline actually lands on a wide aggregation. */
+  function stalledBodyFetch(): typeof fetch {
+    return (async () => ({
+      ok: true,
+      status: 200,
+      text: async (): Promise<string> => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      },
+    })) as unknown as typeof fetch;
+  }
+
+  it("names the timeout when it fires while the body is still streaming", async () => {
+    // Left unhandled, this abort escaped as a bare "The operation was aborted
+    // due to timeout" with no path, no ceiling and no hint.
+    await expect(clientWith(stalledBodyFetch(), 40).count("idx", {})).rejects.toThrow(
+      /OpenSearch request to idx\/_count timed out after 40ms/,
+    );
+    await expect(clientWith(stalledBodyFetch(), 40).count("idx", {})).rejects.toThrow(
+      /CF_OTEL_HTTP_TIMEOUT_MS/,
+    );
+  });
+
+  it("still reports a non-timeout body failure as a plain request failure", async () => {
+    const brokenBody = (async () => ({
+      ok: true,
+      status: 200,
+      text: async (): Promise<string> => {
+        throw new Error("socket hang up");
+      },
+    })) as unknown as typeof fetch;
+
+    await expect(clientWith(brokenBody, 40).search("idx", {})).rejects.toThrow(/failed: socket hang up/);
+  });
+
+  it("wraps the body failure as a CfOtelError with the OpenSearch code", async () => {
+    await expect(clientWith(stalledBodyFetch(), 40).getMapping("idx")).rejects.toMatchObject({
+      name: "CfOtelError",
+      code: "OPENSEARCH_REQUEST_FAILED",
+    });
   });
 });

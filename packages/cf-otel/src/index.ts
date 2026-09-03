@@ -24,7 +24,7 @@ export {
   searchAfterAll,
 } from "./opensearch-client.js";
 export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./opensearch-client.js";
-export { buildSpanBoolQuery, resolveTimeBound } from "./query-builder.js";
+export { assertTimeBoundsValid, buildSpanBoolQuery, resolveTimeBound } from "./query-builder.js";
 export {
   clearResultSessions,
   createResultSession,
