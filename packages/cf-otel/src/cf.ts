@@ -133,6 +133,15 @@ function buildEnv(ctx: CfExecContext, overrides: Record<string, string> = {}): N
   const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
+  // Everything this package reads back from `cf` is parsed, and the table
+  // parsers locate columns by character position. An inherited `CF_COLOR=true`
+  // makes `cf` style its table headers with ANSI escapes even when stdout is a
+  // pipe, which shifts every index: measured against a real tenant on cf
+  // 8.18.0, `cf services` went from 42 parsed rows to 0 and `cf service-keys`
+  // from 54 parsed names to 0, i.e. instance discovery and key discovery both
+  // failed outright. A child-level "false" overrides an exported "true".
+  // `stripAnsi` below covers the same ground for callers outside this package.
+  env["CF_COLOR"] = "false";
   env["CF_HOME"] = ctx.cfHome;
   return env;
 }
@@ -313,11 +322,29 @@ export async function cfCreateServiceKey(instance: string, keyName: string, ctx:
   await runCf(["create-service-key", instance, keyName], ctx, {}, { maxAttempts: 1 });
 }
 
+/**
+ * Delete a service key. Never retried — see {@link cfUpdateService}.
+ *
+ * `-f` is not optional: without it CF CLI v8 asks for confirmation on stdin,
+ * which here is a pipe nobody is attached to, so the command would block until
+ * the exec timeout killed it. Deleting a key that no longer exists is not an
+ * error either — v8 reports "does not exist" and still exits 0 — which is what
+ * makes this safe to call when it is unclear whether the key was ever created.
+ */
+export async function cfDeleteServiceKey(instance: string, keyName: string, ctx: CfExecContext): Promise<void> {
+  await runCf(["delete-service-key", instance, keyName, "-f"], ctx, {}, { maxAttempts: 1 });
+}
+
 export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined> {
   const { bin, argsPrefix } = resolveCfBin();
   const env = { ...process.env };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
+  // `cf target` was measured not to colorize its output at all, even with
+  // CF_COLOR=true, so this is uniformity rather than a fix: every `cf` this
+  // package runs does so with color off. This path builds its own env because
+  // it deliberately runs in the user's own CF_HOME rather than a temporary one.
+  env["CF_COLOR"] = "false";
   try {
     const stdout = await execWithRetries(bin, [...argsPrefix, "target"], env);
     return parseCfTargetOutput(stdout);
@@ -326,9 +353,30 @@ export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined
   }
 }
 
+/**
+ * Remove ANSI escape sequences from `cf` output before parsing it.
+ *
+ * `buildEnv` already forces `CF_COLOR=false` for every invocation this package
+ * makes, so this is defense in depth for the parsers themselves — they are
+ * exported, and locating columns by character position is silently wrong the
+ * moment a styled header shifts those positions. Verified against a real
+ * tenant: with `CF_COLOR=true`, `cf service-keys` yielded 0 of 54 key names and
+ * `cf services` 0 of 42 rows, and stripping the sequences reproduced the
+ * uncolored output byte for byte — CF pads its columns by visible width, so
+ * removing the escapes restores the exact layout rather than shifting it.
+ *
+ * Built from a character code because a control character written directly
+ * into a regular expression is what `no-control-regex` exists to catch.
+ */
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, "g");
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE_PATTERN, "");
+}
+
 function parseTargetFields(stdout: string): Map<string, string> {
   const map = new Map<string, string>();
-  for (const line of stdout.split(/\r?\n/)) {
+  for (const line of stripAnsi(stdout).split(/\r?\n/)) {
     const idx = line.indexOf(":");
     if (idx < 0) {
       continue;
@@ -373,7 +421,7 @@ export interface CfServiceRow {
  * splitting would silently misalign columns whenever "bound apps" is blank.
  */
 export function parseServicesTable(stdout: string): readonly CfServiceRow[] {
-  const lines = stdout.split(/\r?\n/);
+  const lines = stripAnsi(stdout).split(/\r?\n/);
   const headerIndex = lines.findIndex((line) => /^\s*name\s+\S/i.test(line));
   if (headerIndex === -1) {
     return [];
@@ -413,24 +461,58 @@ export function parseServicesTable(stdout: string): readonly CfServiceRow[] {
 }
 
 /**
- * Parses `cf service-keys <instance>` output. `cf` does not expose key
- * creation timestamps in this table, so callers that need "newest first"
- * treat the platform's default listing order as creation-ascending and
- * reverse it — a best-effort proxy, not a verified guarantee.
+ * Start of the column following `name` in a table header, or -1 when `name` is
+ * the only column. Located by scanning for the next non-space run rather than
+ * by matching the literal header text, so a renamed, added or reordered second
+ * column cannot silently turn each whole row back into a "key name".
+ */
+function columnAfterName(headerLine: string, nameStart: number): number {
+  const afterName = nameStart + "name".length;
+  const match = /\S/.exec(headerLine.slice(afterName));
+  return match === null ? -1 : afterName + match.index;
+}
+
+/**
+ * Parses `cf service-keys <instance>` output.
+ *
+ * Two header shapes exist and both are accepted. CF CLI v6/v7 printed a single
+ * `name` column; v8 prints a three-column table — `name`, `last operation`,
+ * `message`, rendered by `DisplayTableWithHeader` — so requiring the header
+ * line to equal "name" found nothing at all on v8. That reported "no service
+ * keys exist" for an instance that has them, and forced every run down the far
+ * slower per-app `cf env` scan.
+ *
+ * Cells are sliced by column position rather than split on whitespace, for the
+ * same reason {@link parseServicesTable} does it: `message` is routinely blank
+ * and `last operation` contains a space, so splitting would read
+ * `key1   create succeeded` as three columns and take the wrong one.
+ *
+ * `cf` does not expose key creation timestamps in this table, so callers that
+ * need "newest first" treat the platform's default listing order as
+ * creation-ascending and reverse it — a best-effort proxy, not a verified
+ * guarantee.
  */
 export function parseServiceKeyNames(stdout: string): readonly string[] {
-  const lines = stdout.split(/\r?\n/);
-  const headerIndex = lines.findIndex((line) => line.trim().toLowerCase() === "name");
+  const lines = stripAnsi(stdout).split(/\r?\n/);
+  // Anchored at the line start, so neither the flavor line ("Getting keys for
+  // service instance X as ...") nor the empty-result line ("No service keys
+  // for service instance X") can be mistaken for a header.
+  const headerIndex = lines.findIndex((line) => /^\s*name(?:\s|$)/i.test(line));
   if (headerIndex === -1) {
     return [];
   }
+  const headerLine = lines[headerIndex] ?? "";
+  const nameStart = headerLine.toLowerCase().indexOf("name");
+  const nameEnd = columnAfterName(headerLine, nameStart);
   const names: string[] = [];
   for (const line of lines.slice(headerIndex + 1)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
+    if (line.trim().length === 0) {
       break;
     }
-    names.push(trimmed);
+    const name = (nameEnd === -1 ? line.slice(nameStart) : line.slice(nameStart, nameEnd)).trim();
+    if (name.length > 0) {
+      names.push(name);
+    }
   }
   return names;
 }

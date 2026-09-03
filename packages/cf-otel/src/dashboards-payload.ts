@@ -34,7 +34,24 @@ export function parseCredentialJson(
   }
 }
 
-/** Narrow an arbitrary parsed service-key payload to a usable dashboards credential. */
+/**
+ * Narrow an arbitrary parsed service-key payload to a usable dashboards
+ * credential.
+ *
+ * Two shapes are accepted. The credential fields can sit at the top level,
+ * which is what `cf service-key` printed through CLI v7 and what a
+ * VCAP_SERVICES entry's `credentials` object holds once the caller has
+ * unwrapped it; or they can be nested under a `credentials` key, which is how
+ * CLI v8 prints them (`DisplayJSON` of a struct whose only field is
+ * `credentials`). Both `tryServiceKeys` and the minting path read
+ * `cf service-key` directly, so without the second shape every `--service-key`
+ * lookup came back empty and a freshly minted key looked empty too — the
+ * latter only after SAML had already been disabled on a shared instance.
+ *
+ * The top level wins when it carries the fields, so an already-unwrapped
+ * payload is never re-interpreted through a `credentials` key that happens to
+ * mean something else.
+ */
 export function extractDashboardsCredential(
   payload: unknown,
   source: string,
@@ -42,9 +59,11 @@ export function extractDashboardsCredential(
   if (!isRecord(payload)) {
     return undefined;
   }
-  const endpoint = payload["dashboards-endpoint"];
-  const username = payload["dashboards-username"];
-  const password = payload["dashboards-password"];
+  const nested = payload["credentials"];
+  const fields = payload["dashboards-endpoint"] === undefined && isRecord(nested) ? nested : payload;
+  const endpoint = fields["dashboards-endpoint"];
+  const username = fields["dashboards-username"];
+  const password = fields["dashboards-password"];
   if (typeof endpoint !== "string" || typeof username !== "string" || typeof password !== "string") {
     return undefined;
   }

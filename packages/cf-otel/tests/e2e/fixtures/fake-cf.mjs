@@ -63,9 +63,20 @@ if (cmd === "service-keys") {
   trace({ kind: "service-keys", instance: args[1] });
   // Two keys, oldest-listed first (as real `cf service-keys` lists them) —
   // lets a test prove the CLI tries the last-listed ("newest") one first.
-  out("name");
-  out("key1");
-  out("key2");
+  // CF_OTEL_FAKE_CF_SERVICE_KEYS_SHAPE=v6 prints the single-column table CF
+  // CLI v6/v7 emitted; the default is v8's three-column table, because that
+  // is what a current `cf` actually prints and what the parser regressed on.
+  if (process.env.CF_OTEL_FAKE_CF_SERVICE_KEYS_SHAPE === "v6") {
+    out("name");
+    out("key1");
+    out("key2");
+    process.exit(0);
+  }
+  out(`Getting keys for service instance ${args[1]} as user@example.com...`);
+  out("");
+  out("name   last operation     message");
+  out("key1   create succeeded   ");
+  out("key2   create succeeded   ");
   process.exit(0);
 }
 
@@ -76,16 +87,27 @@ if (cmd === "service-key") {
   // single-key fixture's behavior) to exercise the fallback-binding path.
   // CF_OTEL_FAKE_CF_ONLY_KEY2_WORKS makes only key1 fail, so a test can prove
   // key2 is tried before key1 rather than merely eventually succeeding.
+  // CF_OTEL_FAKE_CF_MINTED_KEY_WORKS exempts a freshly minted `cf-otel-*` key
+  // from both, so a test can drive the mint path to success while every
+  // pre-existing key still fails.
   const onlyKey2Works = process.env.CF_OTEL_FAKE_CF_ONLY_KEY2_WORKS === "1";
-  const broken = onlyKey2Works ? keyName !== "key2" : process.env.CF_OTEL_FAKE_CF_KEY1_BROKEN === "1";
-  if (broken) {
-    out(`{\n  "dashboards-endpoint": "${DASHBOARDS_URL}"\n}`);
-  } else {
-    out(
-      `{\n  "dashboards-endpoint": "${DASHBOARDS_URL}",\n  "dashboards-username": "${WORKING_USERNAME}",\n` +
-        `  "dashboards-password": "${WORKING_PASSWORD}"\n}`,
-    );
+  const isMinted = (keyName ?? "").startsWith("cf-otel-");
+  const mintedWorks = isMinted && process.env.CF_OTEL_FAKE_CF_MINTED_KEY_WORKS === "1";
+  const broken = mintedWorks
+    ? false
+    : onlyKey2Works
+      ? keyName !== "key2"
+      : process.env.CF_OTEL_FAKE_CF_KEY1_BROKEN === "1";
+  const fields = { "dashboards-endpoint": DASHBOARDS_URL };
+  if (!broken) {
+    fields["dashboards-username"] = WORKING_USERNAME;
+    fields["dashboards-password"] = WORKING_PASSWORD;
   }
+  // CF CLI v8 nests the fields under `credentials`; v7 printed them flat.
+  // The wrapper is the default because that is what a current `cf` emits, and
+  // reading only the top level is exactly what used to break here.
+  const payload = process.env.CF_OTEL_FAKE_CF_KEY_SHAPE === "flat" ? fields : { credentials: fields };
+  out(JSON.stringify(payload, null, 2));
   process.exit(0);
 }
 
@@ -132,6 +154,19 @@ if (cmd === "update-service") {
 
 if (cmd === "create-service-key") {
   trace({ kind: "create-service-key", instance: args[1], keyName: args[2] });
+  process.exit(0);
+}
+
+if (cmd === "delete-service-key") {
+  const [, instance, keyName] = args;
+  // `forced` is traced so a test can pin the -f flag: without it a real `cf`
+  // prompts on stdin and the command would hang until the exec timeout.
+  trace({ kind: "delete-service-key", instance, keyName, forced: args.includes("-f") });
+  if (process.env.CF_OTEL_FAKE_CF_DELETE_KEY_FAILS === "1") {
+    err("Server error, status code: 502, error code: 0, message: ");
+  }
+  out(`Deleting key ${keyName} for service instance ${instance} as user@example.com...`);
+  out("OK");
   process.exit(0);
 }
 

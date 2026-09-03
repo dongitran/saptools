@@ -52,6 +52,63 @@ describe("discoverDashboardsCredential", () => {
     });
   });
 
+  it("resolves a service key whose payload uses CF CLI v8's credentials wrapper", async () => {
+    // The shape a real `cf service-key` returns on CLI v8. Reading only the
+    // top level made --service-key resolve nothing at all, and the reported
+    // reason ("payload had no dashboards-username/dashboards-password") sent
+    // the reader looking for a SAML problem that did not exist.
+    stubLogin();
+    vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{\n  "credentials": {\n    "dashboards-endpoint": "https://dash.example.com",\n' +
+        '    "dashboards-username": "u",\n    "dashboards-password": "real-secret-v8"\n  }\n}',
+    );
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, {
+      serviceInstance: "cloud-logging",
+      serviceKeyNames: ["key1"],
+      fallbackBindingApps: [],
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential).toMatchObject({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "real-secret-v8",
+      source: "service-key:key1",
+    });
+  });
+
+  it("discovers key names from the CF CLI v8 service-keys table, newest listed first", async () => {
+    // parseServiceKeyNames feeds this path when --service-key is not passed:
+    // on the v8 three-column table it used to return nothing, so discovery
+    // reported "no service keys exist" and skipped straight to the per-app
+    // `cf env` scan even on an instance that had usable keys.
+    stubLogin();
+    vi.spyOn(cf, "cfServiceKeys").mockResolvedValue(
+      [
+        "Getting keys for service instance cloud-logging as user@example.com...",
+        "",
+        "name   last operation     message",
+        "key1   create succeeded   ",
+        "key2   create succeeded   ",
+      ].join("\n"),
+    );
+    const serviceKey = vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{"credentials":{"dashboards-endpoint":"https://dash.example.com","dashboards-username":"u","dashboards-password":"pw"}}',
+    );
+
+    const credential = await discoverDashboardsCredential(TARGET, SAP, {
+      serviceInstance: "cloud-logging",
+      fallbackBindingApps: [],
+      allowMintCredential: false,
+      verbose: false,
+    });
+
+    expect(credential.source).toBe("service-key:key2");
+    expect(serviceKey).toHaveBeenCalledWith("cloud-logging", "key2", { cfHome: "/tmp/fake" });
+  });
+
   it("falls through to a later key on the same instance when the first key lacks dashboards fields", async () => {
     stubLogin();
     vi.spyOn(cf, "cfServiceKey").mockImplementation(async (_instance: string, keyName: string) => {
