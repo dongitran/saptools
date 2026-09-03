@@ -9,7 +9,9 @@ export type CfOtelErrorCode =
   | "OPENSEARCH_REQUEST_FAILED"
   | "MAPPING_LOOKUP_FAILED"
   | "TRACE_NOT_FOUND"
-  | "RESULT_NOT_FOUND";
+  | "RESULT_NOT_FOUND"
+  | "RESULT_UNREADABLE"
+  | "RESULT_STORE_NOT_WRITABLE";
 
 export interface CfOtelErrorOptions {
   readonly cause?: unknown;

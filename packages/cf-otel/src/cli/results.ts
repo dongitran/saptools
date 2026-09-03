@@ -10,7 +10,7 @@ import {
   resultStoreOptionsFromEnv,
 } from "../result-store.js";
 
-import { parseFormat, parseIntOption, print } from "./output.js";
+import { parseFormat, parseIntOption, print, printNotice } from "./output.js";
 import { withFormatOption } from "./shared-options.js";
 
 interface ShowOptions {
@@ -48,7 +48,18 @@ async function runList(): Promise<void> {
 }
 
 async function runPrune(): Promise<void> {
-  print(`removed=${String(await pruneResultSessions(resultStoreOptionsFromEnv()))}`);
+  const outcome = await pruneResultSessions(resultStoreOptionsFromEnv());
+  print(`removed=${String(outcome.removed)}`);
+  // Kept off stdout so `removed=N` stays the single machine-readable line.
+  if (outcome.retained > 0) {
+    printNotice(
+      `${String(outcome.retained)} saved result(s) were left in place because their manifest could not be ` +
+        "read or recognized; none were deleted",
+    );
+  }
+  if (outcome.failed > 0) {
+    printNotice(`${String(outcome.failed)} expired saved result(s) could not be deleted; check directory permissions`);
+  }
 }
 
 async function runClear(): Promise<void> {

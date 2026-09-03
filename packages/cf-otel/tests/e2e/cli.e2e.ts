@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -84,6 +84,59 @@ test("--save then result show round-trips the exact same rows end to end", async
 
     const cleared = await runCli(["result", "clear"], saveEnv);
     expect(cleared.stdout.trim()).toBe("removed=1");
+  } finally {
+    await rm(resultsRoot, { recursive: true, force: true });
+  }
+});
+
+test("--save on a store that cannot be written fails before any query runs", async () => {
+  // A plain file where the results root belongs: everything under it is ENOTDIR.
+  const directory = await mkdtemp(join(tmpdir(), "cf-otel-blocked-store-"));
+  const blocked = join(directory, "not-a-directory");
+  await writeFile(blocked, "", "utf8");
+  try {
+    const result = await runCli(
+      ["find", "--service", "service-b", "--save", ...targetArgs()],
+      { ...env(), CF_OTEL_RESULTS_ROOT: blocked },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("--save cannot write to the saved-result store");
+    expect(result.stdout).toBe("");
+    // Proof it failed pre-flight rather than after the work: the resolved-target
+    // notice every command prints on its way to the tenant never appeared.
+    expect(result.stderr).not.toContain("target eu10/example-org/space-demo");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("result prune reports retained sessions on stderr and deletes nothing it cannot read", async () => {
+  const resultsRoot = await mkdtemp(join(tmpdir(), "cf-otel-retain-"));
+  try {
+    const directory = join(resultsRoot, "cf-otel", "results", "00000001");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const manifest = join(directory, "manifest.json");
+    // Valid, unexpired, and written by a newer format version.
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        version: 2,
+        ref: "00000001",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        ttlMinutes: 10_080,
+        command: "find",
+        rowCount: 1,
+      }),
+      "utf8",
+    );
+
+    const pruned = await runCli(["result", "prune"], { ...env(), CF_OTEL_RESULTS_ROOT: resultsRoot });
+    expect(pruned.exitCode).toBe(0);
+    expect(pruned.stdout.trim()).toBe("removed=0");
+    expect(pruned.stderr).toContain("left in place");
+    expect(pruned.stderr).toContain("none were deleted");
+    await expect(readFile(manifest, "utf8")).resolves.toContain('"version":2');
   } finally {
     await rm(resultsRoot, { recursive: true, force: true });
   }

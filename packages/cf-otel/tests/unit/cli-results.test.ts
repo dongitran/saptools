@@ -32,6 +32,15 @@ function captureStdout(): { text: () => string } {
   return { text: () => buffer };
 }
 
+function captureStderr(): { text: () => string } {
+  let buffer = "";
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    buffer += String(chunk);
+    return true;
+  });
+  return { text: () => buffer };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -79,10 +88,21 @@ describe("result list/prune/clear", () => {
   });
 
   it("prints removed=N for prune", async () => {
-    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue(2);
+    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 2, retained: 0, failed: 0 });
     const output = captureStdout();
     await buildTestProgram().parseAsync(["node", "cf-otel", "result", "prune"]);
     expect(output.text()).toBe("removed=2\n");
+  });
+
+  it("keeps removed=N the only stdout line, reporting retained and failed counts on stderr", async () => {
+    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 1, retained: 2, failed: 3 });
+    const output = captureStdout();
+    const notices = captureStderr();
+    await buildTestProgram().parseAsync(["node", "cf-otel", "result", "prune"]);
+    expect(output.text()).toBe("removed=1\n");
+    expect(notices.text()).toContain("2 saved result(s) were left in place");
+    expect(notices.text()).toContain("none were deleted");
+    expect(notices.text()).toContain("3 expired saved result(s) could not be deleted");
   });
 
   it("prints removed=N for clear", async () => {
