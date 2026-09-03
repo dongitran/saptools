@@ -156,6 +156,21 @@ Every row-returning command supports `--format table|json|json-compact|csv` (def
 `--save`, which prints `ref=<id>` instead of the result and stores it under
 `~/.saptools/cf-metrics/results/<ref>/` for later inspection with `cf-metrics result show <ref>`.
 
+### Saved results
+
+A saved result is kept for **7 days**, then removed by the next `cf-metrics` command that touches the
+store (or immediately by `cf-metrics result prune`). Nothing else expires it and nothing caps how many
+accumulate. Files are written 0600 inside 0700 directories.
+
+Pruning only ever removes a result that has expired, or a ref directory it has verified is empty. One this version cannot read — a permission
+error, a partial write, or a format a newer `cf-metrics` wrote — is deliberately left on disk and
+reported by `cf-metrics result prune` on stderr, so a downgrade or a stale global install cannot destroy
+saved results it merely fails to understand. `cf-metrics result show` says which of those happened
+rather than reporting a readable file as missing.
+
+The trade-off is that a result this version cannot read is then kept indefinitely: no TTL reaches it,
+and the only way to reclaim it today is `cf-metrics result clear`, which removes every saved result it can see — it does not reclaim a leftover `<ref>.tmp-<pid>` directory from an interrupted save.
+
 See `.skills/cf-metrics/SKILL.md` (or the installed `~/.claude/skills/cf-metrics/SKILL.md`) for the
 full command reference with worked examples.
 

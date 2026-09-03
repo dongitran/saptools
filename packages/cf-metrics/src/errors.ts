@@ -9,7 +9,8 @@ export type CfMetricsErrorCode =
   | "OPENSEARCH_REQUEST_FAILED"
   | "MAPPING_LOOKUP_FAILED"
   | "METRIC_NOT_FOUND"
-  | "RESULT_NOT_FOUND";
+  | "RESULT_NOT_FOUND"
+  | "RESULT_UNREADABLE";
 
 export interface CfMetricsErrorOptions {
   readonly cause?: unknown;

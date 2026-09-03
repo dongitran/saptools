@@ -34,6 +34,15 @@ function captureStdout(): { text: () => string } {
   return { text: () => buffer };
 }
 
+function captureStderr(): { text: () => string } {
+  let buffer = "";
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    buffer += String(chunk);
+    return true;
+  });
+  return { text: () => buffer };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -86,10 +95,49 @@ describe("result list/prune/clear", () => {
   });
 
   it("prints removed=N for prune", async () => {
-    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue(2);
+    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 2, failed: 0, retainedRefs: [] });
     const output = captureStdout();
     await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
     expect(output.text()).toBe("removed=2\n");
+  });
+
+  it("exits non-zero when a sweep could not delete something, so a script can tell", async () => {
+    const original = process.exitCode;
+    try {
+      vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 0, failed: 2, retainedRefs: [] });
+      captureStdout();
+      captureStderr();
+
+      await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
+
+      expect(process.exitCode).toBe(1);
+    } finally {
+      // Restore explicitly: an exit code set inside a test outlives it, and
+      // would otherwise mark the whole suite failed on a runner that honours it.
+      process.exitCode = original;
+    }
+  });
+
+  it("leaves the exit code alone on a clean sweep", async () => {
+    const original = process.exitCode;
+    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 1, failed: 0, retainedRefs: [] });
+    captureStdout();
+
+    await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
+
+    expect(process.exitCode).toBe(original);
+  });
+
+  it("keeps removed=N the only stdout line, reporting retained and failed counts on stderr", async () => {
+    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 1, failed: 3, retainedRefs: ["ref0", "ref1"] });
+    const output = captureStdout();
+    const notices = captureStderr();
+    await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
+    expect(output.text()).toBe("removed=1\n");
+    expect(notices.text()).toContain("2 saved result(s) were left in place");
+    // The refs must be named, not just counted.
+    expect(notices.text()).toContain("ref0, ref1");
+    expect(notices.text()).toContain("3 expired saved result(s) could not be deleted");
   });
 
   it("prints removed=N for clear", async () => {

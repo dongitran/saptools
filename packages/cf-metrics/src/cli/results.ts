@@ -10,7 +10,7 @@ import {
   resultStoreOptionsFromEnv,
 } from "../result-store.js";
 
-import { parseFormat, print } from "./output.js";
+import { parseFormat, print, printNotice } from "./output.js";
 import { withFormatOption } from "./shared-options.js";
 
 function parseRowNumber(value: string): number {
@@ -56,7 +56,24 @@ async function runList(): Promise<void> {
 }
 
 async function runPrune(): Promise<void> {
-  print(`removed=${String(await pruneResultSessions(resultStoreOptionsFromEnv()))}`);
+  const outcome = await pruneResultSessions(resultStoreOptionsFromEnv());
+  print(`removed=${String(outcome.removed)}`);
+  // Kept off stdout so `removed=N` stays the single machine-readable line.
+  if (outcome.retainedRefs.length > 0) {
+    // Name the refs: a retained session is omitted from `result list` and no
+    // command removes one, so the ref is the only way a user can find the file.
+    printNotice(
+      `${String(outcome.retainedRefs.length)} saved result(s) were left in place because this version ` +
+        `could not read them: ${outcome.retainedRefs.join(", ")}`,
+    );
+  }
+  if (outcome.failed > 0) {
+    printNotice(`${String(outcome.failed)} expired saved result(s) could not be deleted; check directory permissions`);
+    // The only machine-readable health signal this store has. Reporting a
+    // partial sweep as success meant `if <cli> result prune; then ...` could
+    // never detect a store it had failed to clean.
+    process.exitCode = 1;
+  }
 }
 
 async function runClear(): Promise<void> {

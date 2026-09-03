@@ -8,7 +8,8 @@ export type CfHanaErrorCode =
   | "READ_ONLY_VIOLATION"
   | "DESTRUCTIVE_BLOCKED"
   | "TIMEOUT"
-  | "POOL_CLOSED";
+  | "POOL_CLOSED"
+  | "RESULT_UNREADABLE";
 
 export interface CfHanaErrorOptions {
   readonly cause?: unknown;

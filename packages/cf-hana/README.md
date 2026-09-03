@@ -223,6 +223,22 @@ cf-hana result clear
 hard failure if the result cannot be stored. The programmatic API keeps
 returning full-fidelity `QueryResult` values and does not write result refs.
 
+
+### Saved results
+
+A saved result is kept for **7 days**, then removed by the next `cf-hana` command that touches the
+store (or immediately by `cf-hana result prune`). Nothing else expires it and nothing caps how many
+accumulate. Files are written 0600 inside 0700 directories.
+
+Pruning only ever removes a result that has expired, or a ref directory it has verified is empty. One this version cannot read — a permission
+error, a partial write, or a format a newer `cf-hana` wrote — is deliberately left on disk and
+reported by `cf-hana result prune` on stderr, so a downgrade or a stale global install cannot destroy
+saved results it merely fails to understand. `cf-hana result show` says which of those happened
+rather than reporting a readable file as missing.
+
+The trade-off is that a result this version cannot read is then kept indefinitely: no TTL reaches it,
+and the only way to reclaim it today is `cf-hana result clear`, which removes every saved result it can see — it does not reclaim a leftover `<ref>.tmp-<pid>` directory from an interrupted save.
+
 ## Insufficient-privilege guidance
 
 When HANA reports error code 258, or the equivalent `insufficient privilege`

@@ -80,7 +80,7 @@ describe("result-store", () => {
     const past = new Date(Date.now() - 10 * 60_000);
     await createResultSession({ command: "find", rows: [], ttlMinutes: 1 }, { saptoolsRoot: root, now: () => past });
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 1, retained: 0, failed: 0 });
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 1, failed: 0, retainedRefs: [] });
 
     const active = await createResultSession({ command: "find", rows: [] }, { saptoolsRoot: root });
     await expect(readResultSession(active.ref, { saptoolsRoot: root })).resolves.toBeDefined();
@@ -148,14 +148,14 @@ describe("prune never deletes what it cannot read", () => {
   it("retains a manifest written by a newer version instead of deleting it", async () => {
     const directory = await plant("00000002", manifestJson({ version: 2 }));
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 1, failed: 0 });
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 0, retainedRefs: ["00000002"] });
     expect(await exists(join(directory, "manifest.json"))).toBe(true);
   });
 
   it("retains a manifest that is not valid JSON", async () => {
     const directory = await plant("00000003", '{"version":1,"rows":[');
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 1, failed: 0 });
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 0, retainedRefs: ["00000003"] });
     expect(await exists(join(directory, "manifest.json"))).toBe(true);
   });
 
@@ -164,7 +164,7 @@ describe("prune never deletes what it cannot read", () => {
     const manifest = join(directory, "manifest.json");
     await chmod(manifest, 0o000);
     try {
-      expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 1, failed: 0 });
+      expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 0, retainedRefs: ["00000004"] });
       expect(await readdir(directory)).toEqual(["manifest.json"]);
     } finally {
       await chmod(manifest, 0o600);
@@ -174,7 +174,7 @@ describe("prune never deletes what it cannot read", () => {
   it("removes a ref directory that holds nothing at all", async () => {
     await plant("00000005", undefined);
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 1, retained: 0, failed: 0 });
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 1, failed: 0, retainedRefs: [] });
     expect(await readdir(resultsDir())).toEqual([]);
   });
 
@@ -185,7 +185,7 @@ describe("prune never deletes what it cannot read", () => {
     const directory = await plant("00000010", undefined);
     await chmod(directory, 0o100);
     try {
-      expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 1, failed: 0 });
+      expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 0, retainedRefs: ["00000010"] });
     } finally {
       await chmod(directory, 0o700);
     }
@@ -197,7 +197,7 @@ describe("prune never deletes what it cannot read", () => {
     // binary still installed on the same machine.
     const directory = await plant("00000006", undefined, "meta.json");
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 1, failed: 0 });
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 0, retainedRefs: ["00000006"] });
     expect(await exists(join(directory, "meta.json"))).toBe(true);
   });
 });
@@ -206,17 +206,54 @@ describe("expiry can always be resolved", () => {
   it("falls back to createdAt + ttlMinutes when expiresAt is unparseable", async () => {
     await plant("00000007", manifestJson({ expiresAt: "not-a-date", createdAt: new Date().toISOString(), ttlMinutes: 60 }));
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 0, failed: 0 });
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 0, retainedRefs: [] });
     await expect(readResultSession("00000007", { saptoolsRoot: root })).resolves.toBeDefined();
   });
 
-  it("treats a session with no resolvable expiry as expired rather than immortal", async () => {
-    // `Date.parse` returns NaN and `NaN <= now` is false, so this manifest used
-    // to survive every prune for ever and still read back.
+  it("retains a session whose ttlMinutes is too large to add, rather than dating it", async () => {
+    // `Number.isFinite(1e308)` is true, but `1e308 * 60_000` overflows to
+    // `Infinity`. A `Date` also cannot hold anything past ±8.64e15 ms, so a
+    // merely-finite product is not enough — the expiry has to be representable.
+    await plant("00000011", manifestJson({ expiresAt: "not-a-date", createdAt: "2026-09-01T00:00:00.000Z", ttlMinutes: 1e308 }));
+
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({
+      removed: 0,
+      failed: 0,
+      retainedRefs: ["00000011"],
+    });
+    await expect(readResultSession("00000011", { saptoolsRoot: root })).rejects.toThrow(
+      /not in a format this version of/,
+    );
+  });
+
+  it("retains a session whose ttlMinutes is a safe integer but dates past any clock", async () => {
+    // The bound is what a `Date` can hold, not what a float can hold: `Number.isSafeInteger`
+    // admits a ttlMinutes whose product reaches 5.4e20 — a *finite*
+    // expiry no clock can ever reach — immortal, and previously uncounted.
+    await plant("00000011", manifestJson({ expiresAt: "not-a-date", createdAt: "2026-09-01T00:00:00.000Z", ttlMinutes: 1_000_000_000_000 }));
+
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({
+      removed: 0,
+      failed: 0,
+      retainedRefs: ["00000011"],
+    });
+    expect(await listResultSessions({ saptoolsRoot: root })).toEqual([]);
+  });
+
+  it("retains a session with no resolvable expiry, rather than deleting readable rows", async () => {
+    // Deleting this would destroy rows the store can read perfectly well, and
+    // would single out the one unreadable case that *is* recoverable — for
+    // instance a newer version that changed only the timestamp encoding.
     await plant("00000008", manifestJson({ expiresAt: "not-a-date", createdAt: "also-not-a-date" }));
 
-    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 1, retained: 0, failed: 0 });
-    await expect(readResultSession("00000008", { saptoolsRoot: root })).rejects.toThrow(/not found or expired/);
+    expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({
+      removed: 0,
+      failed: 0,
+      retainedRefs: ["00000008"],
+    });
+    await expect(readResultSession("00000008", { saptoolsRoot: root })).rejects.toThrow(
+      /not in a format this version of/,
+    );
   });
 
   it.skipIf(!asUnprivilegedUser)("expires a stale session on read even when prune could not remove it", async () => {
@@ -245,7 +282,7 @@ describe("a broken store never blocks the operation the user asked for", () => {
     await plant("0000000a", manifestJson({ expiresAt: "2020-01-01T00:00:00.000Z" }));
     await chmod(resultsDir(), 0o500);
     try {
-      expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, retained: 0, failed: 1 });
+      expect(await pruneResultSessions({ saptoolsRoot: root })).toEqual({ removed: 0, failed: 1, retainedRefs: [] });
       // The point of per-session isolation: one undeletable directory used to
       // fail every save, read and list, because all three prune first.
       await expect(readResultSession(live.ref, { saptoolsRoot: root })).resolves.toBeDefined();
@@ -310,14 +347,23 @@ describe("listResultSessions", () => {
     await expect(readResultSession("0000000e", { saptoolsRoot: root })).resolves.toBeDefined();
   });
 
-  it("omits an expired session it was unable to delete", async () => {
+  it.skipIf(!asUnprivilegedUser)("omits an expired session it was unable to delete", async () => {
+    // The read-only results directory is what makes this test test anything: the
+    // injected `now` also reaches the implicit prune, so without it the fixture
+    // would simply be deleted and the empty result would come from there rather
+    // than from the list-side expiry filter.
     await plant("0000000f", manifestJson({ expiresAt: "2020-01-01T00:00:00.000Z" }));
-
-    const summaries = await listResultSessions({
-      saptoolsRoot: root,
-      now: () => new Date("2020-01-02T00:00:00.000Z"),
-    });
-    expect(summaries).toEqual([]);
+    await chmod(resultsDir(), 0o500);
+    try {
+      const summaries = await listResultSessions({
+        saptoolsRoot: root,
+        now: () => new Date("2020-01-02T00:00:00.000Z"),
+      });
+      expect(summaries).toEqual([]);
+      expect(await exists(join(resultsDir(), "0000000f", "manifest.json"))).toBe(true);
+    } finally {
+      await chmod(resultsDir(), 0o700);
+    }
   });
 });
 

@@ -119,7 +119,7 @@ store (or immediately by `cf-otel result prune`). Nothing else expires it and no
 accumulate, so `result list` is worth checking if you save often; `result clear` removes them all.
 Files are written 0600 inside 0700 directories.
 
-Pruning only ever removes a result that has expired. One whose manifest cannot be read — a permission
+Pruning only ever removes a result that has expired, or a ref directory it has verified is empty. One whose manifest cannot be read — a permission
 error, a partial write, or a format a newer `cf-otel` wrote — is deliberately left on disk and
 reported by `result prune` on stderr, so a downgrade or a stale global install cannot destroy saved
 results it merely fails to understand. `result show` says which of those happened rather than

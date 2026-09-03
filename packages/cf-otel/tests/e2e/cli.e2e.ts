@@ -135,7 +135,6 @@ test("result prune reports retained sessions on stderr and deletes nothing it ca
     expect(pruned.exitCode).toBe(0);
     expect(pruned.stdout.trim()).toBe("removed=0");
     expect(pruned.stderr).toContain("left in place");
-    expect(pruned.stderr).toContain("none were deleted");
     await expect(readFile(manifest, "utf8")).resolves.toContain('"version":2');
   } finally {
     await rm(resultsRoot, { recursive: true, force: true });

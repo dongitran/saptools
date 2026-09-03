@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -503,4 +503,64 @@ test("User cannot combine structured query output with result refs or writes", a
   expect(write.stderr).toContain("--format is only available for SELECT/WITH statements");
   await expect(readFakeTraceEntries(home)).resolves.toEqual([]);
   await expect(readBackupFiles(home)).resolves.toEqual([]);
+});
+
+test("User keeps a saved result that cf-hana cannot read, and prune says so", async () => {
+  // The unit tests cover `result prune`'s reporting against a mocked store;
+  // this is the only test that exercises it through the real binary and a real
+  // on-disk store, which is what catches a wrong stdout/stderr split.
+  const results = join(home, ".saptools", "cf-hana", "results");
+  const body = {
+    info: {
+      selector: "placeholder/org/space/app",
+      appName: "app",
+      host: "db.example.internal",
+      schema: "S",
+      role: "runtime",
+      driver: "fake",
+      credentialSource: "live",
+    },
+    result: {
+      columns: [{ name: "ID", typeName: "INTEGER" }],
+      rows: [[{ kind: "number", value: 1 }]],
+      rowCount: 1,
+      statement: "select",
+      truncated: false,
+      elapsedMs: 1,
+    },
+  };
+  const plant = async (ref: string, overrides: Record<string, unknown>): Promise<string> => {
+    const directory = join(results, ref);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const manifest = join(directory, "manifest.json");
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        version: 1,
+        ref,
+        createdAt: "2026-09-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        ttlMinutes: 10_080,
+        ...body,
+        ...overrides,
+      }),
+      "utf8",
+    );
+    return manifest;
+  };
+
+  const newerFormat = await plant("q00000002", { version: 2 });
+  await plant("q00000004", { expiresAt: "2020-01-01T00:00:00.000Z" });
+
+  const pruned = await runCli(["result", "prune"], fakeEnv());
+
+  expect(pruned.exitCode).toBe(0);
+  // Only the expired session goes; the newer-format one is reported, not deleted.
+  expect(pruned.stdout.trim()).toBe("removed=1");
+  expect(pruned.stderr).toContain("left in place");
+  await expect(readFile(newerFormat, "utf8")).resolves.toContain('"version":2');
+
+  const shown = await runCli(["result", "show", "q00000002"], fakeEnv());
+  expect(shown.exitCode).toBe(1);
+  expect(shown.stderr).toContain("not in a format this version of cf-hana understands");
 });
