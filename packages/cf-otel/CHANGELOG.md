@@ -2,6 +2,72 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.5.0
+
+### Fixed
+
+- Pruning no longer deletes saved results it cannot read. `pruneResultSessions` runs at the head of
+  every save, read and list, and it treated four distinct outcomes — file absent, I/O error, invalid
+  JSON, unrecognized shape — as one "missing" answer, then `rm -rf`'d the directory. A single
+  nominally read-only `result list` was measured destroying a valid unexpired manifest whose only
+  difference was `version: 2`, and a manifest that was merely unreadable at that moment
+  (`chmod 000`) with its data fully intact. Because the self-updater makes mixed versions on one
+  machine normal, that meant an older cf-otel silently wiped a store a newer one had written.
+
+  Reads are now classified, and only an expired session or an empty ref directory is removed. A
+  manifest that cannot be read or recognized is left exactly where it is and counted as retained; a
+  ref directory holding files under names this version does not know is retained too, so a future
+  manifest filename cannot be mistaken for a crashed save and reclaimed.
+
+- A saved result with a damaged `expiresAt` is no longer immortal. `Date.parse` returns `NaN` for it
+  and `NaN <= now` is `false`, so such a session survived every prune for ever and still read back —
+  the TTL failing in the direction that keeps production span data past its retention window. Expiry
+  now falls back to `createdAt` plus `ttlMinutes`, and a session whose age cannot be established by
+  either route is treated as expired.
+
+- One undeletable directory no longer takes the whole store offline. Deletion is now attempted per
+  session, so a results directory that cannot be written no longer fails every save, read and list
+  outright; and because the housekeeping prune is best-effort, `result show` and `result list` keep
+  working on intact sessions even when the directory cannot be listed at all. `result show` also
+  enforces the TTL itself instead of relying on that prune having succeeded.
+
+- `result show` now says which of the three things went wrong. An unreadable manifest and one written
+  in a newer format used to report "Saved result not found or expired", which was simply untrue; both
+  now name the file and, for a newer format, say it was left in place. Two error codes were added:
+  `RESULT_UNREADABLE` and `RESULT_STORE_NOT_WRITABLE`.
+
+- `result list` prints the ref that actually resolves. The listed ref came from inside the manifest
+  while lookup uses the directory name; when those disagreed, `list` advertised a ref that
+  `result show` then rejected as invalid. Expired sessions that prune could not remove are omitted
+  rather than displayed.
+
+- `--save` no longer discards a completed query when the store cannot be written. The store is now
+  probed while arguments are validated — before the CF login and credential discovery every `--save`
+  command otherwise pays for first — so a store that cannot be written fails in ~120ms instead of after ~20s of
+  tenant work. One hook on the root program covers all eleven `--save` commands, so the check cannot
+  drift out of one of them.
+
+  For the failures that cannot be known in advance (a full disk, the per-result byte cap), the rows
+  are printed in the requested `--format` with a diagnostic on stderr, and the exit code is non-zero.
+  Exiting 0 was not an option: `ref=` is a machine contract, and in `ref=$(cf-otel find --save …)` a
+  zero exit with a table on stdout would bind a table row as if it were a ref.
+
+- The unit test suite no longer writes into the developer's own `~/.saptools`. `mapping --save` in the
+  CLI tests fakes the OpenSearch client but not the store, and the vitest config set no store
+  override — 69 of the 70 sessions found in one real store had been written by that one test, one per
+  run. The config now points `CF_OTEL_RESULTS_ROOT` at a throwaway directory that is cleared as it
+  loads.
+
+### Changed
+
+- `pruneResultSessions` returns `{ removed, retained, failed }` instead of a bare count.
+  `result prune` still prints `removed=N` as its only stdout line and reports retained and
+  undeletable counts on stderr.
+- `tryCreateResultSession` was removed. It had no caller, and it could not become one: it discards
+  the error a diagnostic needs, and its `ResultSession | undefined` return makes the caller decide
+  what to print — the decision now made explicitly in `emitRows`.
+- `assertResultStoreWritable` and the `PruneOutcome` type are exported.
+
 ## 0.4.0
 
 ### Fixed

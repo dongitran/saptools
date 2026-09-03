@@ -112,6 +112,26 @@ Every command supports `--format table|json|json-compact|csv` (default `table`);
 `--save`, which prints `ref=<id>` instead of the result and stores it under
 `~/.saptools/cf-otel/results/<ref>/` for later inspection with `cf-otel result show <ref>`.
 
+### Saved results
+
+A saved result is kept for **7 days**, then removed by the next `cf-otel` command that touches the
+store (or immediately by `cf-otel result prune`). Nothing else expires it and nothing caps how many
+accumulate, so `result list` is worth checking if you save often; `result clear` removes them all.
+Files are written 0600 inside 0700 directories.
+
+Pruning only ever removes a result that has expired. One whose manifest cannot be read — a permission
+error, a partial write, or a format a newer `cf-otel` wrote — is deliberately left on disk and
+reported by `result prune` on stderr, so a downgrade or a stale global install cannot destroy saved
+results it merely fails to understand. `result show` says which of those happened rather than
+reporting a readable file as missing.
+
+`--save` checks that the store is writable while it validates the rest of the arguments, so a broken
+store costs milliseconds instead of a full credential discovery. If the save fails anyway — a full
+disk, or a result past the per-result byte cap — the rows are printed in the requested `--format`
+with a diagnostic on stderr and the exit code is non-zero, rather than a completed query being
+thrown away. Scripts of the shape `ref=$(cf-otel find --save …)` therefore fail loudly instead of
+binding a table row as if it were a ref.
+
 ### Time bounds
 
 `find`, `top`, `count` and `sample` take `--since`/`--until`, each accepting either a relative

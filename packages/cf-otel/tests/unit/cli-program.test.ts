@@ -1,5 +1,9 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as clientBootstrap from "../../src/cli/client-bootstrap.js";
 import { buildProgram } from "../../src/cli/program.js";
@@ -113,6 +117,44 @@ describe("mapping", () => {
     });
     const text = await runCli(["mapping", "--save"], client);
     expect(text.trim()).toMatch(/^ref=/);
+  });
+});
+
+describe("--save pre-flight", () => {
+  let blocked: string;
+
+  beforeEach(async () => {
+    // A plain file where the results root belongs: every path under it fails
+    // with ENOTDIR, which is what a store that cannot be written looks like in practice.
+    const directory = await mkdtemp(join(tmpdir(), "cf-otel-preflight-"));
+    blocked = join(directory, "not-a-directory");
+    await writeFile(blocked, "", "utf8");
+    vi.stubEnv("CF_OTEL_RESULTS_ROOT", blocked);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(blocked, { force: true });
+  });
+
+  it("fails before the CF login and credential discovery that --save would otherwise pay for first", async () => {
+    const client = fakeClient();
+    vi.mocked(clientBootstrap.withOpenSearchClient).mockImplementation(async (_opts, work) => await work(client));
+    captureOutput();
+
+    await expect(
+      buildTestProgram().parseAsync(["node", "cf-otel", "mapping", "--save"]),
+    ).rejects.toThrow(/--save cannot write to the saved-result store/);
+
+    expect(clientBootstrap.withOpenSearchClient).not.toHaveBeenCalled();
+  });
+
+  it("does not run the check for a command invoked without --save", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({ idx: { mappings: { properties: { name: { type: "keyword" } } } } }),
+    });
+    const text = await runCli(["mapping"], client);
+    expect(text).toContain("name");
   });
 });
 

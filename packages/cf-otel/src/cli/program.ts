@@ -3,7 +3,9 @@ import type { AttachSelfUpdateOptions } from "@saptools/core";
 import { Command } from "commander";
 
 import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME } from "../config.js";
+import { assertResultStoreWritable, resultStoreOptionsFromEnv } from "../result-store.js";
 
+import type { SaveOpts } from "./commandTypes.js";
 import { registerCountCommand } from "./commands/count.js";
 import { registerDetachedCommand } from "./commands/detached.js";
 import { registerDiffCommand } from "./commands/diff.js";
@@ -54,6 +56,18 @@ export function buildProgram(): Command {
   registerDiffCommand(program);
   registerResultCommands(program);
   registerSelfUpdateCommand(program, SELF_UPDATE);
+
+  // Check the saved-result store before the action runs, for the same reason
+  // --since/--until are validated ahead of the network: every --save command's
+  // first act is a CF login and credential discovery costing tens of seconds,
+  // and a store that cannot be written fails just as surely after them as
+  // before. One hook on the root program covers all eleven --save commands, so
+  // the check cannot drift out of one of them.
+  program.hook("preAction", async (_program, actionCommand) => {
+    if (actionCommand.opts<Partial<SaveOpts>>().save === true) {
+      await assertResultStoreWritable(resultStoreOptionsFromEnv());
+    }
+  });
 
   return program;
 }

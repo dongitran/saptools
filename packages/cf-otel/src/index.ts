@@ -26,14 +26,14 @@ export {
 export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./opensearch-client.js";
 export { assertTimeBoundsValid, buildSpanBoolQuery, resolveTimeBound } from "./query-builder.js";
 export {
+  assertResultStoreWritable,
   clearResultSessions,
   createResultSession,
   listResultSessions,
   pruneResultSessions,
   readResultSession,
-  tryCreateResultSession,
 } from "./result-store.js";
-export type { CreateResultSessionInput, ResultSession, ResultSessionSummary } from "./result-store.js";
+export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary } from "./result-store.js";
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
 export { computeSelftime } from "./selftime.js";
 export { discoverServiceInstance, findBoundApps, listCloudLoggingInstances } from "./service-discovery.js";

@@ -1,7 +1,8 @@
 import { CLI_NAME } from "../config.js";
-import { CfOtelError } from "../errors.js";
+import { CfOtelError, errorMessage } from "../errors.js";
 import type { OutputRow } from "../format.js";
 import { formatResult } from "../format.js";
+import type { ResultSession } from "../result-store.js";
 import { createResultSession, resultStoreOptionsFromEnv } from "../result-store.js";
 import type { OutputFormat } from "../types.js";
 
@@ -69,12 +70,37 @@ export interface EmitRowsOptions {
   readonly compactColumn?: string;
 }
 
+/**
+ * Save rows and print a `ref=...` line, falling back to printing them.
+ *
+ * The rows are the product of a query that can take tens of seconds against a
+ * real tenant, so discarding them because the store cannot be written throws away
+ * the expensive half of the work. Failing quietly is not an option either:
+ * `ref=` is a machine-readable contract, and in `ref=$(cf-otel find --save)`
+ * an exit code of 0 with a table on stdout would bind a table row as if it
+ * were a ref. Printing the data and still failing the exit code keeps the
+ * result available to a human and the failure visible to a script.
+ */
+async function saveRowsOrWarn(opts: EmitRowsOptions): Promise<ResultSession | undefined> {
+  try {
+    return await createResultSession({ command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
+  } catch (error) {
+    printNotice(`--save failed (${errorMessage(error)}); printing the result instead`);
+    // Set the exit code instead of throwing: the top-level handler in cli.ts
+    // would print this message and exit without ever reaching the rows below.
+    process.exitCode = 1;
+    return undefined;
+  }
+}
+
 /** Either print rows in the requested format, or save them and print a `ref=...` line. */
 export async function emitRows(opts: EmitRowsOptions): Promise<void> {
   if (opts.save) {
-    const session = await createResultSession({ command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
-    print(`ref=${session.ref}`);
-    return;
+    const session = await saveRowsOrWarn(opts);
+    if (session !== undefined) {
+      print(`ref=${session.ref}`);
+      return;
+    }
   }
   print(formatResult(opts.rows, opts.format, opts.compactColumn));
 }
