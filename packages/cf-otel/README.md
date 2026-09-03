@@ -78,7 +78,14 @@ username/password, only an endpoint). `cf-otel` tries, in order:
    repeatable) — such a binding keeps its original basic-auth credential forever.
 3. Only behind `--allow-mint-credential`: temporarily disable SAML, mint a new key, restore
    SAML immediately after. This is disruptive (breaks SSO dashboards login for everyone during
-   the window) and is never attempted by default.
+   the window) and is never attempted by default. If the minted key turns out to be unusable, it
+   is deleted again once SAML has been restored, so a retry never leaves a trail of `cf-otel-*`
+   keys on the instance; when the deletion itself fails, the error names the key and the exact
+   `cf delete-service-key` command to run.
+
+Both service-key payload shapes are read: the fields nested under `credentials`, which is what
+CF CLI v8 prints, and the flat fields v7 printed. The same applies to `cf service-keys`, whose
+table gained two columns in v8.
 
 Pass `--verbose` to see exactly which step succeeded and why. If every step fails, the error
 names every key and binding that was tried.

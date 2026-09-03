@@ -12,6 +12,15 @@ import {
   redactSecretLikeText,
 } from "../../src/cf.js";
 
+// The exact sequences a real `cf 8.18.0` emits with CF_COLOR=true: every table
+// header cell is wrapped in bold-on/bold-off, and flavour text is cyan. Kept as
+// named constants rather than inlined so the escape does not run into the word
+// after it and read as one unpronounceable token.
+const BOLD_ON = "\u001b[1m";
+const BOLD_OFF = "\u001b[22m";
+const CYAN_ON = "\u001b[36;1m";
+const CYAN_OFF = "\u001b[0;22m";
+
 describe("region <-> API endpoint mapping", () => {
   it("resolves a known region key", () => {
     expect(getApiEndpointForRegion("eu10")).toBe("https://api.cf.eu10.hana.ondemand.com");
@@ -48,6 +57,24 @@ describe("parseCfTargetOutput", () => {
       "org:            example-org",
       "space:          space-demo",
     ].join("\n");
+    expect(parseCfTargetOutput(stdout)).toEqual({
+      apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
+      orgName: "example-org",
+      spaceName: "space-demo",
+      regionKey: "eu10",
+    });
+  });
+
+  it("reads clean values when CF_COLOR styled them", () => {
+    // `cf target` was measured not to colorize at all, but the same styling
+    // appears in other commands' flavour text, and splitting on the first ":"
+    // would otherwise carry the escape into the org/space name.
+    const stdout = [
+      `API endpoint:   ${CYAN_ON}https://api.cf.eu10.hana.ondemand.com${CYAN_OFF}`,
+      `org:            ${CYAN_ON}example-org${CYAN_OFF}`,
+      `space:          ${CYAN_ON}space-demo${CYAN_OFF}`,
+    ].join("\n");
+
     expect(parseCfTargetOutput(stdout)).toEqual({
       apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
       orgName: "example-org",
@@ -97,18 +124,96 @@ describe("parseServicesTable", () => {
   it("returns an empty list when there is no recognizable header", () => {
     expect(parseServicesTable("No services found")).toEqual([]);
   });
+
+  it("still parses the table when CF_COLOR styled the header", () => {
+    // Same failure mode as the service-keys table: measured on a real tenant,
+    // a styled header took `cf services` from 42 parsed rows to 0, which makes
+    // instance discovery report that no Cloud Logging instance exists at all.
+    const stdout = [
+      `${BOLD_ON}name${BOLD_OFF}            ${BOLD_ON}offering${BOLD_OFF}        ${BOLD_ON}plan${BOLD_OFF}       ` +
+        `${BOLD_ON}bound apps${BOLD_OFF}    ${BOLD_ON}last operation${BOLD_OFF}`,
+      "cloud-logging   cloud-logging   standard   legacy-app    create succeeded",
+    ].join("\n");
+
+    expect(parseServicesTable(stdout)).toEqual([
+      { name: "cloud-logging", offering: "cloud-logging", boundApps: ["legacy-app"] },
+    ]);
+  });
 });
 
 describe("parseServiceKeyNames", () => {
-  it("parses the key-name list under the 'name' header", () => {
+  it("parses the CF CLI v6/v7 single-column shape", () => {
     const stdout = ["Getting service keys for service instance cloud-logging as user@example.com...", "", "name", "key1", "key2"].join(
       "\n",
     );
     expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
   });
 
+  it("parses the CF CLI v8 three-column table, taking the name column only", () => {
+    // Regression test against the real v8 shape: the table is
+    // {"name", "last operation", "message"} rendered by DisplayTableWithHeader,
+    // so a parser that required the header line to equal "name" returned []
+    // and claimed the instance had no service keys. Taking whole rows instead
+    // would have produced "key1   create succeeded" as a key name.
+    const stdout = [
+      "Getting keys for service instance cloud-logging as user@example.com...",
+      "",
+      "name   last operation     message",
+      "key1   create succeeded   ",
+      "key2   update succeeded   broker note here",
+    ].join("\n");
+
+    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
+  });
+
+  it("handles v8 rows whose trailing columns are absent rather than padded", () => {
+    const stdout = ["name   last operation     message", "key1   create succeeded", "key2"].join("\n");
+
+    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
+  });
+
+  it("locates the end of the name column without matching the literal 'last operation' header", () => {
+    // The boundary is the next non-space run after "name", so a renamed or
+    // reordered second column cannot silently reintroduce whole-row names.
+    const stdout = ["name   status   note", "key1   ok       fine"].join("\n");
+
+    expect(parseServiceKeyNames(stdout)).toEqual(["key1"]);
+  });
+
+  it("returns an empty list for v8's no-keys message, which prints no header at all", () => {
+    const stdout = [
+      "Getting keys for service instance cloud-logging as user@example.com...",
+      "",
+      "No service keys for service instance cloud-logging",
+    ].join("\n");
+
+    expect(parseServiceKeyNames(stdout)).toEqual([]);
+  });
+
   it("returns an empty list when there are no keys", () => {
     expect(parseServiceKeyNames("No service key for service instance cloud-logging")).toEqual([]);
+  });
+
+  it("still parses the table when CF_COLOR styled the header", () => {
+    // The escape sequences here are the ones a real `cf 8.18.0` emits with
+    // CF_COLOR=true: each header cell is wrapped in bold-on/bold-off, and the
+    // data rows are left unstyled. Measured against a real tenant, a styled
+    // header shifted every column index and turned 54 real keys into 0 --
+    // `buildEnv` forces the variable off, and `stripAnsi` covers callers that
+    // hand this parser output it collected some other way.
+    const stdout = [
+      `${BOLD_ON}name${BOLD_OFF}   ${BOLD_ON}last operation${BOLD_OFF}     ${BOLD_ON}message${BOLD_OFF}`,
+      "key1   create succeeded   ",
+      "key2   create succeeded   ",
+    ].join("\n");
+
+    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
+  });
+
+  it("stops at the first blank line after the rows and skips a row with an empty name cell", () => {
+    const stdout = ["name   last operation", "key1   create succeeded", "       stray continuation", "", "OK"].join("\n");
+
+    expect(parseServiceKeyNames(stdout)).toEqual(["key1"]);
   });
 });
 

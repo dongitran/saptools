@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { CfExecContext } from "./cf.js";
-import { cfCreateServiceKey, cfServiceKey, cfServiceParams, cfServiceShow, cfUpdateService, parseServiceStatus } from "./cf.js";
+import {
+  cfCreateServiceKey,
+  cfDeleteServiceKey,
+  cfServiceKey,
+  cfServiceParams,
+  cfServiceShow,
+  cfUpdateService,
+  parseServiceStatus,
+} from "./cf.js";
 import { SAML_POLL_INTERVAL_MS, SAML_POLL_TIMEOUT_MS } from "./config.js";
 import { extractDashboardsCredential, parseCredentialJson } from "./dashboards-payload.js";
 import { CfOtelError, SamlRestoreFailedError, errorMessage } from "./errors.js";
@@ -139,14 +147,28 @@ async function confirmSamlUpdate(instance: string, ctx: CfExecContext, report: S
  */
 type Outcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
+interface MintAttempt {
+  readonly outcome: Outcome<DashboardsCredential>;
+  /**
+   * The generated key name, recorded as soon as `cf create-service-key` is
+   * ATTEMPTED rather than after it returns: a create that times out may still
+   * have been applied by the broker, and that orphan would otherwise never be
+   * cleaned up. The name is unique to this run, so acting on it can never
+   * touch a key anyone else created.
+   */
+  readonly createdKeyName?: string;
+}
+
 async function confirmThenMint(
   instance: string,
   ctx: CfExecContext,
   report: StepReporter,
-): Promise<Outcome<DashboardsCredential>> {
+): Promise<MintAttempt> {
+  let createdKeyName: string | undefined;
   try {
     await confirmSamlUpdate(instance, ctx, report);
     const keyName = `cf-otel-${randomBytes(4).toString("hex")}`;
+    createdKeyName = keyName;
     report(`cf create-service-key ${instance} ${keyName}`);
     await cfCreateServiceKey(instance, keyName, ctx);
     const payload = parseCredentialJson(await cfServiceKey(instance, keyName, ctx), `service key payload for "${keyName}"`);
@@ -157,10 +179,79 @@ async function confirmThenMint(
         `Minted key "${keyName}" on "${instance}" did not contain dashboards-username/dashboards-password.`,
       );
     }
-    return { ok: true, value: credential };
+    return { outcome: { ok: true, value: credential }, createdKeyName: keyName };
   } catch (error) {
-    return { ok: false, error };
+    return { outcome: { ok: false, error }, ...(createdKeyName === undefined ? {} : { createdKeyName }) };
   }
+}
+
+/**
+ * Remove the key this run created but could not use, and describe the orphan
+ * if even that fails.
+ *
+ * Best effort by design: the minting failure the caller is about to report is
+ * the useful error, so a cleanup problem must never replace it. Returns a
+ * sentence to append to that error when the key is still there, because an
+ * orphaned key on a shared instance is worth saying without `--verbose` — and
+ * every retry of this path would otherwise leave another one behind.
+ */
+async function cleanUpUnusableKey(
+  instance: string,
+  attempt: MintAttempt,
+  ctx: CfExecContext,
+  report: StepReporter,
+): Promise<string | undefined> {
+  const keyName = attempt.createdKeyName;
+  // A successful mint's key IS the credential being returned, and a failure
+  // that happened before any name was generated left nothing behind.
+  if (attempt.outcome.ok || keyName === undefined) {
+    return undefined;
+  }
+  report(`cf delete-service-key ${instance} ${keyName} -f (removing the key this run could not use)`);
+  try {
+    await cfDeleteServiceKey(instance, keyName, ctx);
+    return undefined;
+  } catch (error) {
+    report(`could not delete the minted key "${keyName}": ${errorMessage(error)}`);
+    return (
+      ` The service key "${keyName}" created during this attempt could not be deleted ` +
+      `(${errorMessage(error)}), so it is still on the instance; remove it with: ` +
+      `cf delete-service-key ${instance} ${keyName} -f`
+    );
+  }
+}
+
+/**
+ * Re-raise a minting failure with the orphaned-key sentence appended, keeping
+ * the original error's code so callers can still branch on it.
+ */
+function withKeyNote(error: unknown, note: string | undefined): unknown {
+  if (note === undefined) {
+    return error;
+  }
+  if (error instanceof CfOtelError) {
+    return new CfOtelError(error.code, `${error.message}${note}`, { cause: error });
+  }
+  return new Error(`${errorMessage(error)}${note}`, { cause: error });
+}
+
+/**
+ * A mint that succeeded while the restore failed is the one failure branch
+ * where the key is deliberately NOT deleted: it holds a working dashboards
+ * credential that this run is about to throw away by raising, so removing it
+ * too would destroy the only thing the attempt actually achieved. Name it
+ * instead, so it is not left behind silently.
+ */
+function retainedKeyNote(instance: string, attempt: MintAttempt): string {
+  const keyName = attempt.createdKeyName;
+  if (!attempt.outcome.ok || keyName === undefined) {
+    return "";
+  }
+  return (
+    ` The key "${keyName}" minted during this run was kept rather than deleted, because it holds a ` +
+    `working dashboards credential; remove it with cf delete-service-key ${instance} ${keyName} -f ` +
+    "once it is no longer needed."
+  );
 }
 
 async function restoreCatchingError(
@@ -220,11 +311,16 @@ export async function mintDashboardsCredential(
   // runs regardless of what happens in confirmThenMint.
   const mintResult = await confirmThenMint(instance, ctx, report);
   const restoreResult = await restoreCatchingError(instance, originalParams, originalSamlEnabled, ctx, report);
+  // Deliberately after the restore, never before it: a cleanup call that hangs
+  // would extend the window in which SSO is disabled for every user of this
+  // instance, and waiting for the restore's own confirmation also guarantees
+  // no broker operation is still in flight when the delete is issued.
+  const orphanNote = await cleanUpUnusableKey(instance, mintResult, ctx, report);
 
   if (!restoreResult.ok) {
-    const context = mintResult.ok
+    const context = mintResult.outcome.ok
       ? ""
-      : ` The credential-minting step had also failed: ${errorMessage(mintResult.error)}.`;
+      : ` The credential-minting step had also failed: ${errorMessage(mintResult.outcome.error)}.`;
     // The disable step already succeeded by this point, so the instance's
     // live saml.enabled is currently `false`. When the true original was
     // also `false`, a failed restore leaves it exactly where it already
@@ -239,10 +335,12 @@ export async function mintDashboardsCredential(
       : `Failed to re-confirm saml.enabled=false on Cloud Logging instance "${instance}" after a credential ` +
         `mint attempt.${context} SAML was already disabled before this run, so no SSO capability was lost, ` +
         `but verify the instance's params still match what they were before: cf service ${instance} --params.`;
-    throw new SamlRestoreFailedError(message, { cause: restoreResult.error });
+    throw new SamlRestoreFailedError(`${message}${orphanNote ?? ""}${retainedKeyNote(instance, mintResult)}`, {
+      cause: restoreResult.error,
+    });
   }
-  if (!mintResult.ok) {
-    throw mintResult.error;
+  if (!mintResult.outcome.ok) {
+    throw withKeyNote(mintResult.outcome.error, orphanNote);
   }
-  return mintResult.value;
+  return mintResult.outcome.value;
 }

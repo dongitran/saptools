@@ -2,6 +2,63 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.2.1
+
+Three correctness fixes for CF CLI v8, whose output shapes differ from v7's in ways this package
+never handled. All three were verified against the CF CLI v8.18.0 source and, where possible, against
+a real tenant.
+
+- **`--service-key` never worked, and `--allow-mint-credential` failed after disabling SAML.**
+  `cf service-key` nests the credential fields under a `credentials` object on CLI v8, where v7
+  printed them flat, and only the top level was read. Confirmed live: a real `cf service-key` on a
+  current CLI returns exactly one top-level key, `credentials`. Both shapes are now accepted, with
+  the top level preferred when it carries the fields, so the already-unwrapped VCAP payload keeps
+  working. The minting path reads `cf service-key` directly, so the same bug made every freshly
+  minted key look empty — after SAML had already been switched off on a shared instance, and with a
+  message ("did not contain dashboards-username/dashboards-password") that pointed at SAML rather
+  than at the parser.
+- **`cf service-keys` was never parsed at all on v8.** v8 renders a three-column table (`name`,
+  `last operation`, `message`) through `DisplayTableWithHeader`, and the parser required the header
+  line to equal `name`, so it always returned no keys. Every run therefore reported "no service keys
+  exist on instance X" for instances that have them, and fell through to the far slower per-app
+  `cf env` scan (measured at 16s on a real tenant). Both header shapes are now read, and cells are
+  sliced by column position rather than split on whitespace — `message` is routinely blank and
+  `last operation` contains a space, so splitting took the wrong field. The column boundary is found
+  by scanning for the next column in the header instead of matching the literal text `last
+  operation`, so a renamed column cannot silently reintroduce whole-row key names.
+- **A failed mint no longer leaves its service key behind.** `--allow-mint-credential` created
+  `cf-otel-<hex>` and, on any later failure, discarded the name along with the error, leaving an
+  unusable key on a shared instance and adding another on every retry. The key is now deleted
+  (`cf delete-service-key … -f`; `-f` is required, or v8 prompts on stdin and the command hangs
+  until the exec timeout). The delete runs *after* the SAML restore, never before, so cleanup can
+  never extend the window in which SSO is disabled for everyone, and it is attempted even when
+  `cf create-service-key` itself failed, since a create killed by a timeout may still have been
+  applied by the broker. A cleanup failure never replaces the error being reported: the orphaned key
+  and the exact recovery command are appended to it instead. A *successful* mint keeps its key —
+  that key is the returned credential — and the one branch where a working key is deliberately kept
+  despite a failure (mint succeeded, restore did not) now names it rather than leaving it silently.
+- **A styled table header silently broke both parsers, and now cannot.** Measured against a real
+  tenant on cf 8.18.0: with `CF_COLOR=true` exported, `cf` styles each table header cell with ANSI
+  escapes *even when stdout is a pipe*, which shifts every column index — `cf services` went from 42
+  parsed rows to 0 (so instance discovery reported that the space has no Cloud Logging instance at
+  all) and `cf service-keys` from 54 parsed key names to 0. Two independent guards now: every `cf`
+  invocation runs with `CF_COLOR=false`, and the parsers strip escape sequences themselves, which is
+  provably safe because CF pads its columns by visible width — stripping reproduced the uncolored
+  output byte for byte. `cf target` was measured not to colorize at all; it gets the same treatment
+  for uniformity, not because it was broken.
+- Regression tests for every item above, at both levels: the unit tests cover both service-key
+  payload shapes, both `service-keys` header shapes, styled headers using the exact escape sequences
+  a real `cf` emits, and each cleanup branch; and the fake `cf` used by the e2e suite now emits the
+  v8 shapes by default with switches for the v7/v6 ones, so the end-to-end tests exercise the real
+  shapes rather than pinning the old ones.
+- Every fix above was also verified against a real tenant rather than only against fixtures: the
+  patched extractor pulls a working credential out of a real binding's `{"credentials": {...}}`
+  payload that the previous code returned nothing for, and that credential authenticates against the
+  real OpenSearch; the patched parser returns exactly the 54 key names the Cloud Controller reports
+  for a real 54-key instance (including a 132-character key name, against a 135-wide name column)
+  where the previous code returned none; and `cf delete-service-key … -f` was confirmed to exit 0 for
+  a key that does not exist, while the same call without `-f` prompts and fails.
+
 ## 0.2.0
 
 - **Self-updating.** Every command now checks npm for a newer `@saptools/cf-otel` (at most once an hour)
