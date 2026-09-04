@@ -15,11 +15,37 @@ function hit(id: string, source: Record<string, unknown>): SearchHit {
   return { _id: id, _source: source };
 }
 
+/**
+ * A mapping shaped like a real one: nested on the "." segments, carrying the
+ * few fields these tests filter on. An empty mapping would be unrealistic in a
+ * way that matters now — an `--attr` key that resolves to no field at all draws
+ * a "this filter can only return an empty result" notice, which is the point.
+ */
+const FAKE_MAPPING = {
+  "otel-v1-apm-span-000001": {
+    mappings: {
+      properties: {
+        span: {
+          properties: {
+            attributes: {
+              properties: {
+                "http@status_code": { type: "keyword", ignore_above: 256 },
+                "http@response@status_code": { type: "integer" },
+                "http@request@header@x-vcap-request-id": { type: "keyword", ignore_above: 2048 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 function fakeClient(overrides: Partial<OpenSearchClient> = {}): OpenSearchClient {
   return {
     search: async (): Promise<SearchResponse> => ({ totalHits: 0, hits: [] }),
     count: async () => 0,
-    getMapping: async () => ({}),
+    getMapping: async () => FAKE_MAPPING,
     ...overrides,
   };
 }
@@ -292,6 +318,30 @@ describe("top", () => {
   });
 });
 
+describe("find request-id lookup", () => {
+  it("names the missing field instead of reporting an empty result", async () => {
+    // A tenant whose collector does not export HTTP request headers.
+    const client = fakeClient({ getMapping: async () => ({ idx: { mappings: { properties: {} } } }) });
+
+    await expect(
+      runCli(["find", "--vcap-request-id", "0f386888-da32-42b2-7c48-c6200a2894fa"], client),
+    ).rejects.toThrow(/x-vcap-request-id" is not present/);
+  });
+
+  it("emits a bare trace id array for --format json-compact", async () => {
+    const client = fakeClient({
+      search: async () => ({
+        totalHits: 1,
+        hits: [{ _id: "1", _source: { traceId: "abc123", spanId: "s1", name: "GET", serviceName: "svc", startTime: "2026-08-28T04:00:00Z", durationInNanos: 5 } }],
+      }),
+    });
+
+    const text = await runCli(["find", "--service", "svc", "--format", "json-compact"], client);
+
+    expect(JSON.parse(text.trim())).toEqual(["abc123"]);
+  });
+});
+
 describe("count", () => {
   it("prints a bare count", async () => {
     const client = fakeClient({ count: async () => 178 });
@@ -305,10 +355,16 @@ describe("count", () => {
     expect(text.trim()).toBe("3");
   });
 
+  it("rejects an empty --vcap-request-id before paying for credential discovery", async () => {
+    const client = fakeClient({ count: async () => 0 });
+
+    await expect(runCli(["count", "--vcap-request-id", "   "], client)).rejects.toThrow(/--vcap-request-id was empty/);
+  });
+
   it("supports the full filter set (service/since/until/attr/errors-only)", async () => {
     const client = fakeClient({ count: async () => 0 });
     const text = await runCli(
-      ["count", "t1", "--service", "svc", "--since", "24h", "--until", "1h", "--attr", "http@status_code>=400", "--errors-only"],
+      ["count", "t1", "--service", "svc", "--since", "24h", "--until", "1h", "--attr", "http@response@status_code>=400", "--errors-only"],
       client,
     );
     expect(text.trim()).toBe("0");

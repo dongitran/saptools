@@ -178,6 +178,90 @@ function numericAttrValue(attr: AttrFilter): number {
   return parsed;
 }
 
+/**
+ * Where the gorouter request id lands on a span. Captured at ingress, so it is
+ * only ever present on `SPAN_KIND_SERVER` spans — the same value `@saptools/cf-logs`
+ * reports as `ParsedLogRow.vcapRequestId`.
+ */
+export const VCAP_REQUEST_ID_FIELD = "span.attributes.http@request@header@x-vcap-request-id";
+
+/**
+ * An allowlist, not a denylist, and deliberately so. A type listed here parses
+ * its terms as plain text, so an extra array-rendered candidate can only ever
+ * add matches. Anything else — mapped, unmapped, or a type nobody here thought
+ * of — falls back to a single plain `term`, which at worst misses the array
+ * encoding. The inverse mistake is not symmetric: `["500"]` at an `integer`
+ * field is not a miss, it is a `query_shard_exception` that takes the search
+ * down with it.
+ *
+ * `token_count` is excluded on purpose despite the textual name — it indexes a
+ * number.
+ */
+const TEXTUAL_MAPPING_TYPES: ReadonlySet<string> = new Set([
+  "keyword",
+  "text",
+  "wildcard",
+  "constant_keyword",
+  "match_only_text",
+  "version",
+  "search_as_you_type",
+  "annotated_text",
+]);
+
+/** A hex UUID in the shape Cloud Foundry emits, in either case. */
+const HEX_REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Trim, and lower-case a hex request id.
+ *
+ * `keyword` matching is exact, and every one of 2,000 hop ids and 500
+ * correlation ids sampled from a live index was lower-case dashed hex with no
+ * exception — so an id pasted in upper case matched nothing and reported
+ * `(no rows)` at exit 0, which is precisely the silent miss this command exists
+ * to remove. Only a value that is already hex-shaped is folded: anything else
+ * is passed through untouched rather than guessing that some other tenant's
+ * identifier is case-insensitive.
+ */
+function normalizeRequestId(value: string): string {
+  const trimmed = value.trim();
+  return HEX_REQUEST_ID_PATTERN.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+}
+
+/**
+ * `=` has to match a value stored in either of two encodings.
+ *
+ * Confirmed against a real Cloud Logging instance: an OTel attribute whose
+ * value is an array reaches the index as the JSON array *rendered to text*, so
+ * the keyword token for an HTTP request header is literally
+ * `["0f386888-da32-42b2-7c48-c6200a2894fa"]` — brackets and quotes included.
+ * The whole `span.attributes.http@request@header@*` family is stored this way —
+ * 46 such fields in the mapping, and every one observed carrying a real value
+ * except the redacted `authorization`. A plain `term` on the bare value matched
+ * none of them: `(no rows)` at exit 0, indistinguishable from "that value never
+ * occurred". Over 60 real hop ids the bare term matched 0; both encodings
+ * matched all 60, each to exactly one trace.
+ *
+ * Both encodings are offered rather than one being chosen, because nothing can
+ * reliably choose. An array is a property of the document, never of the
+ * mapping, and here the stored value is a *string* that merely looks like an
+ * array — so `keyword` is all the mapping ever says. Sampling a document would
+ * pick one shape at the moment `otel-v1-apm-span-*` can straddle an ingest
+ * change across its 14 backing indices, and return a silently partial result.
+ *
+ * `JSON.stringify` produces the alternative, not string concatenation: the
+ * stored form is JSON, so a value containing `"` or `\` must be escaped the
+ * same way the ingest pipeline escaped it.
+ *
+ * A document matches a filter clause at most once, so the disjunction cannot
+ * double-count in `count`.
+ */
+function equalityClause(attr: AttrFilter): Record<string, unknown> {
+  if (attr.mappedType === undefined || !TEXTUAL_MAPPING_TYPES.has(attr.mappedType)) {
+    return { term: { [attr.key]: attr.value } };
+  }
+  return { terms: { [attr.key]: [attr.value, JSON.stringify([attr.value])] } };
+}
+
 function buildAttrClause(attr: AttrFilter): Record<string, unknown> {
   switch (attr.operator) {
     case ">=":
@@ -189,7 +273,7 @@ function buildAttrClause(attr: AttrFilter): Record<string, unknown> {
     case "<":
       return { range: { [attr.key]: { lt: numericAttrValue(attr) } } };
     case "=":
-      return { term: { [attr.key]: attr.value } };
+      return equalityClause(attr);
     case "~":
       return { wildcard: { [attr.key]: { value: `*${attr.value}*` } } };
   }
@@ -245,6 +329,19 @@ export function buildSpanBoolQuery(opts: SpanFilterOptions, now: Date = new Date
   }
   if (opts.traceIds !== undefined && opts.traceIds.length > 0) {
     filter.push({ terms: { traceId: opts.traceIds } });
+  }
+  if (opts.vcapRequestId !== undefined) {
+    // Routed through `equalityClause` rather than repeating its two-encoding
+    // logic: a second copy of the JSON escaping is a copy that can drift, and
+    // this field is always one of the array-rendered ones.
+    filter.push(
+      equalityClause({
+        key: VCAP_REQUEST_ID_FIELD,
+        operator: "=",
+        value: normalizeRequestId(opts.vcapRequestId),
+        mappedType: "keyword",
+      }),
+    );
   }
   if (opts.errorsOnly === true) {
     filter.push({ term: { "status.code": 2 } });

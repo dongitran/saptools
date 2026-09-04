@@ -96,7 +96,7 @@ names every key and binding that was tried.
 | --- | --- |
 | `sample` | Dump the N most recent full documents, unfiltered — start here when you know nothing yet. |
 | `mapping` | Field-type discovery (`keyword` vs `text`) before aggregating on any field. |
-| `find` | Locate trace(s) matching a service/name/time/attribute filter. |
+| `find` | Locate trace(s) matching a service/name/time/attribute filter, or resolve one request id from a log row. |
 | `top` | Outlier hunting across a time range without a starting traceId. |
 | `count` | Fast existence/frequency check — the trust-but-verify companion to `selftime`. |
 | `spans <traceId>` | Fetch every span in one trace, paginated past 10000 automatically. |
@@ -131,6 +131,56 @@ disk, or a result past the per-result byte cap — the rows are printed in the r
 with a diagnostic on stderr and the exit code is non-zero, rather than a completed query being
 thrown away. Scripts of the shape `ref=$(cf-otel find --save …)` therefore fail loudly instead of
 binding a table row as if it were a ref.
+
+### Attribute filters
+
+`--attr <key><op><value>` (repeatable) supports `>=`, `<=`, `>`, `<`, `=` and `~` (contains). A bare
+key is resolved against `span.attributes.` and then `resource.attributes.`, so
+`--attr 'http@status_code=200'` finds the real field.
+
+`=` matches the **whole** value, in either encoding it may be stored in. An OTel attribute whose
+value is an array reaches this index as the JSON array *rendered to text* — the stored keyword for
+an HTTP request header is literally `["0f386888-da32-42b2-7c48-c6200a2894fa"]`, brackets and quotes
+included, and the whole `span.attributes.http@request@header@*` family (46 fields) is like this. `=`
+sends both forms, so you write the plain value and it matches either way. The array form is never
+sent at a numeric, date or ip field, where an unparseable extra term would fail the whole search
+rather than merely not match.
+
+Two limits worth knowing. `~` compiles to a leading-wildcard scan over every backing index, so
+prefer `=` where it will do. Matching is case-sensitive, and stored ids are lower-case hex — the
+`--vcap-request-id` flag folds case for you, `--attr` does not. And every attribute field has an `ignore_above` ceiling that varies by
+field (256 to 2048 on a real tenant): a longer value is kept in `_source` but never indexed, so no
+operator can find it. Check a specific field with `cf-otel mapping --field <name>`.
+
+### Joining a log row to a trace
+
+`@saptools/cf-logs` reports two identifiers on every parsed row, and only one of them can pin a
+trace:
+
+| cf-logs field | span attribute | Grain |
+| --- | --- | --- |
+| `vcapRequestId` | `span.attributes.http@request@header@x-vcap-request-id` | **One trace.** Measured 1:1 over 1,504 server spans |
+| `correlationId` | `span.attributes.http@request@header@x-correlation-id` | One business transaction — a single value has been measured covering 6,796 traces over a full retention window. Read it from a full `cf-logs snapshot --json`; compact rows do not carry it |
+
+Pass the hop id straight through. It needs neither `--service` nor `--since`, because the value is
+unique across the whole retention window — and the trace it finds often has its root in a
+*different* service than the one that served the request:
+
+```bash
+cf-logs snapshot --app demo-app --compact --json | jq -r '.rows[] | select(.vcapRequestId) | .vcapRequestId'
+cf-otel find --vcap-request-id <id>
+cf-otel selftime <traceId>
+```
+
+A log line is queryable before its trace is. Spans reach the index a few seconds behind the request
+(measured at 6-10s on a live tenant), so running the lookup the instant a row appears can report
+`(no rows)` for a trace that does exist. Wait and retry before concluding the id is wrong.
+
+These headers are captured at ingress, so they exist only on `SPAN_KIND_SERVER` spans — find one
+with `cf-otel span <traceId> --name '*' --kind SPAN_KIND_SERVER`. To go the other way, from a span
+back to its logs, read the id off that span and pass it to
+`cf-logs snapshot --app <app> --search <id>`. Strip the brackets and quotes first: `span` prints the
+raw stored value, so the id shows as `["<id>"]` and pasting that verbatim matches nothing.
 
 ### Time bounds
 

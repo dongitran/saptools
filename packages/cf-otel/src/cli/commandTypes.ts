@@ -28,6 +28,7 @@ export interface FilterOpts {
   readonly attr: readonly string[];
   readonly errorsOnly: boolean;
   readonly traceIds?: string;
+  readonly vcapRequestId?: string;
 }
 
 export interface SampleOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
@@ -43,8 +44,6 @@ export interface MappingOpts extends TargetOpts, CredentialOpts, FormatOpts, Sav
 }
 
 export interface FindOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts, FilterOpts {
-  /** Required for `find` (enforced by `.requiredOption`), unlike the optional base in {@link FilterOpts}. */
-  readonly service: string;
   readonly limit: number;
   readonly sort: string;
 }

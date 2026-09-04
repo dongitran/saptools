@@ -1,5 +1,5 @@
 export { getFlatAttribute, listFlatAttributeKeys, pickIdentifyingAttribute } from "./attributes.js";
-export { parseAttrFilter } from "./attr-filter.js";
+export { parseAttrFilter, resolveAndValidateAttrFilters } from "./attr-filter.js";
 export { discoverDashboardsCredential } from "./dashboards-credentials.js";
 export type { CredentialDiscoveryOptions } from "./dashboards-credentials.js";
 export { findDetachedCandidates, parseDetachedCandidates, sortDetachedCandidates } from "./detached.js";
@@ -24,7 +24,12 @@ export {
   searchAfterAll,
 } from "./opensearch-client.js";
 export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./opensearch-client.js";
-export { assertTimeBoundsValid, buildSpanBoolQuery, resolveTimeBound } from "./query-builder.js";
+export {
+  assertTimeBoundsValid,
+  buildSpanBoolQuery,
+  resolveTimeBound,
+  VCAP_REQUEST_ID_FIELD,
+} from "./query-builder.js";
 export {
   assertResultStoreWritable,
   clearResultSessions,

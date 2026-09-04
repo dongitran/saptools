@@ -104,3 +104,18 @@ export async function emitRows(opts: EmitRowsOptions): Promise<void> {
   }
   print(formatResult(opts.rows, opts.format, opts.compactColumn));
 }
+
+/**
+ * Rejected here rather than at the query, because an empty id costs a full CF
+ * login and credential discovery — tens of seconds — before returning an empty
+ * result that reads exactly like "not found". {@link parseTraceIds} drops an
+ * all-empty list for the same reason.
+ */
+export function assertRequestIdUsable(value: string | undefined): void {
+  if (value?.trim().length === 0) {
+    throw new CfOtelError(
+      "CONFIG",
+      "--vcap-request-id was empty; pass the id from a log row's vcapRequestId field.",
+    );
+  }
+}

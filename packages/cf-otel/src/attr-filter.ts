@@ -66,10 +66,12 @@ async function resolveAttrKey(
       return { key: candidate, mapping };
     }
   }
-  // Found under neither bag — fall back to the bare key as typed (e.g. a
-  // genuinely top-level field, or a dynamically-unmapped attribute that
-  // legitimately doesn't appear in the mapping at all).
-  return { key, mapping: undefined };
+  // Found under neither bag — fall back to the bare key as typed, but look it
+  // up too. `status.code`, `kind` and `serviceName` are real top-level fields,
+  // and skipping the lookup left them with no resolved type at all, which in
+  // turn denied `=` the information it needs. The lookup is free: every
+  // `getMapping` on one client is served from the same memoized response.
+  return { key, mapping: await getFieldMapping(client, index, key) };
 }
 
 /**
@@ -90,6 +92,7 @@ export async function resolveAndValidateAttrFilters(
   client: OpenSearchClient,
   index: string,
   attrs: readonly AttrFilter[],
+  onNotice?: (message: string) => void,
 ): Promise<readonly AttrFilter[]> {
   const resolved: AttrFilter[] = [];
   for (const attr of attrs) {
@@ -100,7 +103,19 @@ export async function resolveAndValidateAttrFilters(
         `--attr "${key}${attr.operator}${attr.value}" uses a numeric comparison, but "${key}" is mapped as "${mapping.type}", not a numeric type — this would silently compare as text instead of as numbers. Check with "cf-otel mapping --field ${key}".`,
       );
     }
-    resolved.push({ ...attr, key });
+    if (mapping === undefined) {
+      // Not in any of the pattern's indices, so this clause cannot match
+      // anything — and an empty result would read exactly like "that value
+      // never occurred". Say so rather than let the run look conclusive. A
+      // notice, not an error: a field can legitimately be absent from the
+      // mapping while still being the key the caller meant.
+      onNotice?.(
+        `--attr "${key}" matches no field in ${index}; this filter can only return an empty result. ` +
+          `Check the spelling with "cf-otel fields <traceId>" or "cf-otel mapping --field ${key}".`,
+      );
+    }
+    // Spread-guarded: `exactOptionalPropertyTypes` rejects an explicit `undefined`.
+    resolved.push({ ...attr, key, ...(mapping === undefined ? {} : { mappedType: mapping.type }) });
   }
   return resolved;
 }

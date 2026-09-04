@@ -3,12 +3,13 @@ import type { Command } from "commander";
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../attr-filter.js";
 import { DEFAULT_FIND_LIMIT, DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { assertTimeBoundsValid, buildSpanBoolQuery } from "../../query-builder.js";
+import { assertFieldExists } from "../../mapping.js";
+import { assertTimeBoundsValid, buildSpanBoolQuery, VCAP_REQUEST_ID_FIELD } from "../../query-builder.js";
 import { hitToSpan } from "../../span-mapper.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { FindOpts } from "../commandTypes.js";
 import { formatDurationNanos } from "../display.js";
-import { emitRows, parseFormat, parseTraceIds } from "../output.js";
+import { assertRequestIdUsable, emitRows, parseFormat, parseTraceIds, printNotice } from "../output.js";
 import {
   withAttrOptions,
   withCredentialOptions,
@@ -20,6 +21,7 @@ import {
   withTargetOptions,
   withTimeRangeOptions,
   withTraceIdsOption,
+  withVcapRequestIdOption,
 } from "../shared-options.js";
 
 function parseSortField(value: string | undefined): "startTime" | "durationInNanos" {
@@ -52,19 +54,24 @@ async function runFind(opts: FindOpts): Promise<void> {
   // Fail on a malformed --since/--until here, before the CF login and
   // credential discovery that building the query would otherwise run first.
   assertTimeBoundsValid(opts);
+  assertRequestIdUsable(opts.vcapRequestId);
   const sortField = parseSortField(opts.sort);
   const traceIds = parseTraceIds(opts.traceIds);
   const attrs = opts.attr.map(parseAttrFilter);
 
   const spans = await withOpenSearchClient(opts, async (client) => {
-    const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs);
+    if (opts.vcapRequestId !== undefined) {
+      await assertFieldExists(client, DEFAULT_INDEX_PATTERN, VCAP_REQUEST_ID_FIELD, "no request id can be resolved");
+    }
+    const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs, printNotice);
     const query = buildSpanBoolQuery({
-      service: opts.service,
+      ...(opts.service === undefined ? {} : { service: opts.service }),
       ...(opts.name === undefined ? {} : { namePattern: opts.name }),
       ...(opts.since === undefined ? {} : { since: opts.since }),
       ...(opts.until === undefined ? {} : { until: opts.until }),
       attrs: resolvedAttrs,
       errorsOnly: opts.errorsOnly,
+      ...(opts.vcapRequestId === undefined ? {} : { vcapRequestId: opts.vcapRequestId }),
       ...(traceIds === undefined ? {} : { traceIds }),
     });
     const response = await client.search(DEFAULT_INDEX_PATTERN, {
@@ -79,6 +86,7 @@ async function runFind(opts: FindOpts): Promise<void> {
     command: "find",
     format,
     save: opts.save,
+    compactColumn: "TRACE_ID",
     rows: spans.map((span) => ({
       TRACE_ID: span.traceId,
       NAME: span.name,
@@ -91,11 +99,14 @@ async function runFind(opts: FindOpts): Promise<void> {
 }
 
 export function registerFindCommand(program: Command): void {
-  const command = program.command("find").description("locate trace(s) matching criteria");
-  withServiceOption(command, true);
+  const command = program
+    .command("find")
+    .description("locate trace(s) matching criteria, or resolve one request id to its trace");
+  withServiceOption(command, false);
   withNameOption(command);
   withTimeRangeOptions(command);
   withAttrOptions(command);
+  withVcapRequestIdOption(command);
   withTraceIdsOption(command);
   withLimitOption(command, DEFAULT_FIND_LIMIT);
   command.option("--sort <field>", "startTime or durationInNanos", "startTime");

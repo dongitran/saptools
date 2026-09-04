@@ -278,8 +278,9 @@ only ever been populated from router lines. The compact projection still fills i
 ### Joining a log row to an OpenTelemetry trace
 
 `vcapRequestId` is the field to join on. Measured against a live tenant over 1,504 server spans,
-it resolved to exactly one trace every time; `correlationId` averaged 13.29 traces per value and
-reached 777, because it identifies the whole transaction rather than one request.
+it resolved to exactly one trace every time; within that same sample `correlationId` averaged 13.29
+traces per value and reached 777, and over a full retention window a single value has been measured
+covering 6,796 traces — because it identifies the whole transaction rather than one request.
 
 The matching span attribute is `span.attributes.http@request@header@x-vcap-request-id`:
 
@@ -288,13 +289,15 @@ The matching span attribute is `span.attributes.http@request@header@x-vcap-reque
 cf-logs snapshot --app demo-app --compact --json | jq -r '.rows[] | select(.vcapRequestId) | .vcapRequestId'
 
 # 2. resolve it to a trace, then analyze that trace
-cf-otel find --service demo-app --attr 'http@request@header@x-vcap-request-id~<id>'
+cf-otel find --vcap-request-id <id>
 cf-otel selftime <traceId>
 ```
 
 > [!NOTE]
-> Use `~` rather than `=` in that filter. The attribute is stored as a JSON array rendered to
-> text (`["<id>"]`), so an exact `=` term matches nothing.
+> Spans reach the trace index a few seconds after the log line, so a lookup run immediately can
+> report no rows for a trace that exists. Needs `@saptools/cf-otel` 0.7.0 or newer. On older versions the flag does not exist and `=` does
+> not match this field, because the attribute is stored as a JSON array rendered to text
+> (`["<id>"]`) — use `--service <app> --attr 'http@request@header@x-vcap-request-id~<id>'` there.
 
 In compact output `vcapRequestId` is printed whenever the row has one, even when it repeats
 `requestId`. Suppressing the duplicate saved a few characters but made two rows carrying
