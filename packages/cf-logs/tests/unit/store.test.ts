@@ -113,6 +113,8 @@ describe("store", () => {
         tenant: "",
         clientIp: "",
         requestId: "",
+        correlationId: "",
+        vcapRequestId: "",
         message: "sample",
         rawBody: "sample",
         jsonPayload: null,

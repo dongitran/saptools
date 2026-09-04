@@ -25,6 +25,8 @@ function buildRow(overrides: Partial<TailLogRow>): TailLogRow {
     tenant: "",
     clientIp: "",
     requestId: "",
+    correlationId: "",
+    vcapRequestId: "",
     message: "ready",
     rawBody: "ready",
     jsonPayload: null,

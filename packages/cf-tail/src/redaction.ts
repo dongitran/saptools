@@ -97,6 +97,8 @@ export function redactLogRow(row: ParsedLogRow, rules: readonly RedactionRule[])
     tenant: redactText(row.tenant, rules),
     clientIp: redactText(row.clientIp, rules),
     requestId: redactText(row.requestId, rules),
+    correlationId: redactText(row.correlationId, rules),
+    vcapRequestId: redactText(row.vcapRequestId, rules),
     message: redactText(row.message, rules),
     rawBody: redactText(row.rawBody, rules),
     jsonPayload,

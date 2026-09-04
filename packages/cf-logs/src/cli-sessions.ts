@@ -81,6 +81,8 @@ function formatFullSavedRow(result: {
     `stream=${row.stream}`,
     row.logger.length === 0 ? "" : `logger=${row.logger}`,
     row.requestId.length === 0 ? "" : `requestId=${row.requestId}`,
+    row.correlationId.length === 0 ? "" : `correlationId=${row.correlationId}`,
+    row.vcapRequestId.length === 0 ? "" : `vcapRequestId=${row.vcapRequestId}`,
     row.status.length === 0 ? "" : `status=${row.status}`,
     row.latency.length === 0 ? "" : `latency=${row.latency}`,
     "",

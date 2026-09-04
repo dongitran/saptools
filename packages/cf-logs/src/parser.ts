@@ -24,6 +24,17 @@ const RTR_VCAP_REQUEST_ID_PATTERN = /\bvcap_request_id:"(?<vcapRequestId>[^"]*)"
 const RTR_TRUE_CLIENT_IP_PATTERN = /\bx_cf_true_client_ip:"(?<clientIp>[^"]*)"/;
 const RTR_LEGACY_TRUE_CLIENT_IP_PATTERN = /\btrue_client_ip:"(?<clientIp>[^"]*)"/;
 const RTR_X_FORWARDED_FOR_PATTERN = /\bx_forwarded_for:"(?<forwardedFor>[^"]*)"/;
+/**
+ * CAP's `sap-cf-logging` emits the same two identifiers under several aliases
+ * depending on emitter and version. Confirmed against live payloads on a real
+ * tenant, where `correlation_id`, `x_correlation_id` and `x_correlationid` all
+ * held one identical value while `x_vcap_request_id` and `request_id` held a
+ * different, identical one — which is why the two lists are kept apart rather
+ * than collapsed into one "request id" chain. First match wins, so the canonical
+ * spelling leads each list.
+ */
+const JSON_CORRELATION_ID_KEYS = ["correlation_id", "x_correlation_id", "x_correlationid"] as const;
+const JSON_VCAP_REQUEST_ID_KEYS = ["x_vcap_request_id", "request_id"] as const;
 const LOG_LEVEL_SEVERITY = {
   trace: 0,
   debug: 1,
@@ -218,6 +229,8 @@ function buildTextRow(input: {
     tenant: routerInfo?.tenantId ?? "",
     clientIp: routerInfo?.clientIp ?? "",
     requestId: routerInfo?.requestId ?? "",
+    correlationId: routerInfo?.correlationId ?? "",
+    vcapRequestId: routerInfo?.vcapRequestId ?? "",
     message,
     rawBody: input.body,
     jsonPayload: null,
@@ -255,7 +268,12 @@ function buildJsonRow(input: {
     latency: "",
     tenant: "",
     clientIp: "",
+    // Deliberately left empty for JSON rows: this field has never carried a
+    // value here, and some callers read "" as "this is not a router row".
+    // The payload's own ids go to the two typed fields below instead.
     requestId: "",
+    correlationId: readFirstString(input.payload, JSON_CORRELATION_ID_KEYS),
+    vcapRequestId: readFirstString(input.payload, JSON_VCAP_REQUEST_ID_KEYS),
     message,
     rawBody: input.body,
     jsonPayload: input.payload,
@@ -335,6 +353,8 @@ function extractRouterAccessInfo(source: string, message: string): {
   readonly tenantId: string;
   readonly clientIp: string;
   readonly requestId: string;
+  readonly correlationId: string;
+  readonly vcapRequestId: string;
 } | undefined {
   if (!/^rtr\b/i.test(source)) {
     return undefined;
@@ -344,8 +364,15 @@ function extractRouterAccessInfo(source: string, message: string): {
   const target = decodeRequestTarget(readNamedGroup(match, "target"));
   const statusMatch = readNamedGroup(match, "status");
   const statusCode = /^\d{3}$/.test(statusMatch) ? statusMatch : "";
+  const correlationId = resolveCorrelationId(message);
+  const vcapRequestId = resolveVcapRequestId(message);
 
   return {
+    correlationId,
+    vcapRequestId,
+    // Derived from the two above rather than re-scanning the line, so the
+    // legacy field can never disagree with the pair that replaced it.
+    requestId: correlationId.length > 0 ? correlationId : vcapRequestId,
     host: normalizeMetadataValue(readNamedGroup(execPattern(RTR_HOST_PATTERN, message), "host")),
     method,
     request: buildRequestSummary(method, target),
@@ -353,7 +380,6 @@ function extractRouterAccessInfo(source: string, message: string): {
     latency: formatLatency(readNamedGroup(execPattern(RTR_RESPONSE_TIME_PATTERN, message), "responseTime")),
     tenantId: normalizeMetadataValue(readNamedGroup(execPattern(RTR_TENANT_ID_PATTERN, message), "tenantId")),
     clientIp: resolveClientIp(message),
-    requestId: resolveRequestId(message),
   };
 }
 
@@ -390,16 +416,32 @@ function decodeUriComponentSafely(value: string): string {
   }
 }
 
-function resolveRequestId(message: string): string {
-  const correlationId = normalizeMetadataValue(
+function resolveCorrelationId(message: string): string {
+  return normalizeMetadataValue(
     readNamedGroup(execPattern(RTR_CORRELATION_ID_PATTERN, message), "correlationId"),
   );
-  if (correlationId.length > 0) {
-    return correlationId;
-  }
+}
+
+function resolveVcapRequestId(message: string): string {
   return normalizeMetadataValue(
     readNamedGroup(execPattern(RTR_VCAP_REQUEST_ID_PATTERN, message), "vcapRequestId"),
   );
+}
+
+/**
+ * First usable value among `keys`. Blank strings and the `"-"` sentinel are
+ * both treated as absent, matching how the router path already normalizes them:
+ * a typed field that positively asserts `"-"` is an identifier would defeat
+ * every `if (row.correlationId)` guard and pollute `searchableText`.
+ */
+function readFirstString(payload: Record<string, unknown>, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = normalizeMetadataValue(readString(payload[key]));
+    if (value.length > 0) {
+      return value;
+    }
+  }
+  return "";
 }
 
 function resolveClientIp(message: string): string {
@@ -464,6 +506,8 @@ function buildSearchableText(row: Omit<ParsedLogRow, "searchableText">): string 
     row.tenant,
     row.clientIp,
     row.requestId,
+    row.correlationId,
+    row.vcapRequestId,
     row.message,
     `time=${row.timestamp}`,
     `timestamp=${row.timestampRaw}`,
@@ -482,6 +526,13 @@ function buildSearchableText(row: Omit<ParsedLogRow, "searchableText">): string 
     `latency=${row.latency}`,
     `tenant=${row.tenant}`,
     `requestId=${row.requestId}`,
+    // Snake_case on purpose. Matching (`searchableText.includes`) is a plain
+    // substring test, so a camelCase `vcapRequestId=<v>` token would *contain*
+    // `requestId=<v>` — a search for `requestId=<v>` would then silently match
+    // rows where `<v>` is the hop id and `requestId` is something else. These
+    // spellings also match how the ids appear in the raw log line.
+    `correlation_id=${row.correlationId}`,
+    `vcap_request_id=${row.vcapRequestId}`,
   ].join(" ").toLowerCase();
 }
 

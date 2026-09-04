@@ -14,6 +14,8 @@
     "ondemand",
     "sapcloud",
     "vcap",
+    "gorouter",
+    "selftime",
     "uaa",
     "jwks",
     "btp",

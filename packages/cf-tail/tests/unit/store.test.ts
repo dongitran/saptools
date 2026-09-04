@@ -34,6 +34,8 @@ function buildApp(name: string, rowCount: number): AppSnapshotResult {
       tenant: "",
       clientIp: "",
       requestId: "",
+      correlationId: "",
+      vcapRequestId: "",
       message: "ready",
       rawBody: "ready",
       jsonPayload: null,
