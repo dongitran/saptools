@@ -140,7 +140,7 @@ key is resolved against `span.attributes.` and then `resource.attributes.`, so
 
 `=` matches the **whole** value, in either encoding it may be stored in. An OTel attribute whose
 value is an array reaches this index as the JSON array *rendered to text* — the stored keyword for
-an HTTP request header is literally `["0f386888-da32-42b2-7c48-c6200a2894fa"]`, brackets and quotes
+an HTTP request header is literally `["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]`, brackets and quotes
 included, and the whole `span.attributes.http@request@header@*` family (46 fields) is like this. `=`
 sends both forms, so you write the plain value and it matches either way. The array form is never
 sent at a numeric, date or ip field, where an unparseable extra term would fail the whole search
@@ -160,7 +160,12 @@ trace:
 | cf-logs field | span attribute | Grain |
 | --- | --- | --- |
 | `vcapRequestId` | `span.attributes.http@request@header@x-vcap-request-id` | **One trace.** Measured 1:1 over 1,504 server spans |
-| `correlationId` | `span.attributes.http@request@header@x-correlation-id` | One business transaction — a single value has been measured covering 6,796 traces over a full retention window. Read it from a full `cf-logs snapshot --json`; compact rows do not carry it |
+| `correlationId` | `…@x-correlationid` from a router row, `…@x-correlation-id` from a JSON application row | One business transaction — measured 11.5 and 29.1 traces per value, and up to 778. Read it from a full `cf-logs snapshot --json`; compact rows do not carry it |
+
+The two correlation spellings are not synonyms. A router line's `x_correlationid` reaches the span
+as `…@x-correlationid`, while a value the caller supplied in an `X-Correlation-Id` header reaches it
+as `…@x-correlation-id`; measured over 551 server spans carrying both, they differed on 69 of them.
+Query whichever one the row you started from actually holds, or try both.
 
 Pass the hop id straight through. It needs neither `--service` nor `--since`, because the value is
 unique across the whole retention window — and the trace it finds often has its root in a

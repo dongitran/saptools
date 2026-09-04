@@ -2,6 +2,17 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.7.1
+
+### Fixed
+
+- The log-to-trace guide named only `…@x-correlation-id` for a cf-logs `correlationId`. The two
+  spellings are not synonyms: a router line's `x_correlationid` arrives as `…@x-correlationid`,
+  while a caller-supplied `X-Correlation-Id` header arrives as `…@x-correlation-id`. Measured over
+  551 live server spans carrying both, they held different values on 69. Following the old wording
+  with an id taken from a router row would silently match nothing. Both are documented now, with
+  which row type produces which.
+
 ## 0.7.0
 
 ### Fixed

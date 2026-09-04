@@ -77,7 +77,7 @@ function buildDataset(): readonly Doc[] {
     status: { code: 1 },
     // Stored exactly as a real Cloud Logging instance stores an array-valued
     // attribute: the JSON array rendered to text, brackets and quotes included.
-    "span.attributes.http@request@header@x-vcap-request-id": '["0f386888-da32-42b2-7c48-c6200a2894fa"]',
+    "span.attributes.http@request@header@x-vcap-request-id": '["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]',
   });
 
   // A big trace (>10000 spans) to exercise search_after pagination end to end.

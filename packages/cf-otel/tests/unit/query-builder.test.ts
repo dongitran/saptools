@@ -237,7 +237,7 @@ describe("buildSpanBoolQuery", () => {
         attrs: [{
           key: "span.attributes.http@request@header@x-vcap-request-id",
           operator: "=",
-          value: "0f386888-da32-42b2-7c48-c6200a2894fa",
+          value: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
           mappedType,
         }],
       }) as { bool: { filter: unknown[] } };
@@ -245,8 +245,8 @@ describe("buildSpanBoolQuery", () => {
       expect(query.bool.filter, mappedType).toContainEqual({
         terms: {
           "span.attributes.http@request@header@x-vcap-request-id": [
-            "0f386888-da32-42b2-7c48-c6200a2894fa",
-            '["0f386888-da32-42b2-7c48-c6200a2894fa"]',
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            '["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]',
           ],
         },
       });
@@ -295,15 +295,15 @@ describe("buildSpanBoolQuery", () => {
   it("folds a hex request id to lower case and trims it", () => {
     // keyword matching is exact and every stored id sampled from a live index
     // was lower-case hex, so an id pasted in upper case used to match nothing.
-    const query = buildSpanBoolQuery({ vcapRequestId: "  0F386888-DA32-42B2-7C48-C6200A2894FA \n" }) as {
+    const query = buildSpanBoolQuery({ vcapRequestId: "  AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE \n" }) as {
       bool: { filter: unknown[] };
     };
 
     expect(query.bool.filter).toContainEqual({
       terms: {
         "span.attributes.http@request@header@x-vcap-request-id": [
-          "0f386888-da32-42b2-7c48-c6200a2894fa",
-          '["0f386888-da32-42b2-7c48-c6200a2894fa"]',
+          "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          '["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]',
         ],
       },
     });
@@ -320,15 +320,15 @@ describe("buildSpanBoolQuery", () => {
   });
 
   it("resolves a Cloud Foundry request id in both stored encodings", () => {
-    const query = buildSpanBoolQuery({ vcapRequestId: "421b9396-c661-466d-6ffa-d7b5d2c5a31c" }) as {
+    const query = buildSpanBoolQuery({ vcapRequestId: "11111111-2222-4333-8444-555555555555" }) as {
       bool: { filter: unknown[] };
     };
 
     expect(query.bool.filter).toContainEqual({
       terms: {
         "span.attributes.http@request@header@x-vcap-request-id": [
-          "421b9396-c661-466d-6ffa-d7b5d2c5a31c",
-          '["421b9396-c661-466d-6ffa-d7b5d2c5a31c"]',
+          "11111111-2222-4333-8444-555555555555",
+          '["11111111-2222-4333-8444-555555555555"]',
         ],
       },
     });

@@ -324,7 +324,7 @@ describe("find request-id lookup", () => {
     const client = fakeClient({ getMapping: async () => ({ idx: { mappings: { properties: {} } } }) });
 
     await expect(
-      runCli(["find", "--vcap-request-id", "0f386888-da32-42b2-7c48-c6200a2894fa"], client),
+      runCli(["find", "--vcap-request-id", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"], client),
     ).rejects.toThrow(/x-vcap-request-id" is not present/);
   });
 
