@@ -131,3 +131,40 @@ describe("resolveAggregatableField", () => {
     await expect(resolveAggregatableField(client, "idx", "missing")).rejects.toThrow(/was not found in the mapping/);
   });
 });
+
+describe("mapping disagreement across backing indices", () => {
+  const straddling = {
+    "otel-v1-apm-span-000001": {
+      mappings: { properties: { span: { properties: { attributes: { properties: { "http@x": { type: "keyword" } } } } } } },
+    },
+    "otel-v1-apm-span-000014": {
+      mappings: { properties: { span: { properties: { attributes: { properties: { "http@x": { type: "long" } } } } } } },
+    },
+  };
+
+  it("reports no type when the backing indices disagree", () => {
+    // The query runs against the whole pattern, so a type sampled from one
+    // index is not a fact about the others. Reporting the first index's
+    // opinion let `=` send an array-rendered term that a long-mapped shard
+    // rejects, turning a query that worked into a shard exception.
+    expect(findFieldInMapping(straddling, "span.attributes.http@x")).toBeUndefined();
+  });
+
+  it("still reports the type when every index that has the field agrees", () => {
+    const agreeing = {
+      a: { mappings: { properties: { span: { properties: { attributes: { properties: { "http@x": { type: "keyword" } } } } } } } },
+      b: { mappings: { properties: { span: { properties: { attributes: { properties: { "http@x": { type: "keyword" } } } } } } } },
+    };
+
+    expect(findFieldInMapping(agreeing, "span.attributes.http@x")).toMatchObject({ type: "keyword" });
+  });
+
+  it("ignores indices that simply do not have the field", () => {
+    const partial = {
+      a: { mappings: { properties: {} } },
+      b: { mappings: { properties: { span: { properties: { attributes: { properties: { "http@x": { type: "keyword" } } } } } } } },
+    };
+
+    expect(findFieldInMapping(partial, "span.attributes.http@x")).toMatchObject({ type: "keyword" });
+  });
+});

@@ -53,8 +53,28 @@ export function withTimeRangeOptions(command: Command): Command {
 
 export function withAttrOptions(command: Command): Command {
   return command
-    .option("--attr <expr>", "filter by attribute value, e.g. 'http@status_code>=400' (repeatable)", collectRepeatable, [])
+    .option(
+      "--attr <expr>",
+      // The older `http@status_code` is keyword-mapped, so a numeric comparison
+      // against it is rejected — an example a reader copies must be one that runs.
+      "filter by attribute value, e.g. 'http@response@status_code>=400' (repeatable)",
+      collectRepeatable,
+      [],
+    )
     .option("--errors-only", "shorthand for status.code == 2", false);
+}
+
+/**
+ * A cf-logs row reports this as `vcapRequestId`. It is offered as its own flag
+ * rather than left to `--attr` because the field path is not guessable, the
+ * value is stored in an encoding the user cannot see, and it is the single
+ * highest-signal way into a trace from a log line.
+ */
+export function withVcapRequestIdOption(command: Command): Command {
+  return command.option(
+    "--vcap-request-id <id>",
+    "resolve one Cloud Foundry request id (cf-logs 'vcapRequestId') to its trace",
+  );
 }
 
 export function withTraceIdsOption(command: Command): Command {

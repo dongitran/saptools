@@ -55,12 +55,14 @@ drill-down is needed to read it:
 
 ```bash
 cf-logs snapshot --app app-demo --compact --json | jq -r '.rows[] | select(.vcapRequestId) | .vcapRequestId'
-cf-otel find --service app-demo --attr 'http@request@header@x-vcap-request-id~<id>'
+cf-otel find --vcap-request-id <id>
 cf-otel selftime <traceId>
 ```
 
-Use `~` and not `=` in that filter. The span attribute is stored as a JSON array rendered to
-text (`["<id>"]`), so an exact `=` term matches nothing and reports no rows rather than an error.
+Needs `@saptools/cf-otel` 0.7.0 or newer. Before that the flag does not exist and `=` cannot match
+this field — the span attribute is stored as a JSON array rendered to text (`["<id>"]`) — so on an
+older version use `--service <app> --attr 'http@request@header@x-vcap-request-id~<id>'`, which
+reports no rows rather than an error when it fails.
 
 Always create refs for later full-row drill-down when collecting logs:
 

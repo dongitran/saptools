@@ -93,7 +93,7 @@ async function runSpans(traceId: string, opts: SpansOpts): Promise<void> {
   const fetchFields = [...new Set([...fields, "traceId", "spanId"])];
 
   const { spans, totalHits, truncated } = await withOpenSearchClient(opts, async (client) => {
-    const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs);
+    const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs, printNotice);
     const query = buildSpanBoolQuery({ traceIds: [traceId], attrs: resolvedAttrs, errorsOnly: opts.errorsOnly });
     const paged = await searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query, _source: fetchFields }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED);
     return { spans: paged.hits.map(hitToSpan), totalHits: paged.totalHits, truncated: paged.truncated };

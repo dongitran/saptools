@@ -29,7 +29,24 @@ function findFieldDefinition(mappingResponse: unknown, field: string): Record<st
   if (!isRecord(mappingResponse)) {
     return undefined;
   }
+  return findFieldDefinitions(mappingResponse, field)[0];
+}
+
+/**
+ * Every index entry's definition of `field`, in response order.
+ *
+ * The index *pattern* covers many backing indices, and dynamic mapping can give
+ * the same path different types in different ones after an ingest change. A
+ * caller that only needs a shape can take the first; a caller whose decision
+ * would be unsafe if the indices disagree must compare them all — see
+ * {@link findFieldInMapping}.
+ */
+function findFieldDefinitions(mappingResponse: unknown, field: string): Record<string, unknown>[] {
+  if (!isRecord(mappingResponse)) {
+    return [];
+  }
   const segments = field.split(".");
+  const found: Record<string, unknown>[] = [];
   for (const indexEntry of Object.values(mappingResponse)) {
     if (!isRecord(indexEntry)) {
       continue;
@@ -50,15 +67,30 @@ function findFieldDefinition(mappingResponse: unknown, field: string): Record<st
       properties = node["properties"];
     }
     if (fieldDef !== undefined) {
-      return fieldDef;
+      found.push(fieldDef);
     }
   }
-  return undefined;
+  return found;
 }
 
+/**
+ * The field's mapping, reported only when every backing index that has the
+ * field agrees on its type.
+ *
+ * Reporting the first index's opinion was safe while callers only wanted to
+ * know whether a field exists, and unsafe as soon as one used the type to
+ * decide what terms are legal to send: the query runs against the whole
+ * pattern, so a type sampled from one index can be wrong for another's shards.
+ * A disagreement therefore reports `undefined` — "no reliable type" — which
+ * every caller already treats conservatively.
+ */
 export function findFieldInMapping(mappingResponse: unknown, field: string): FieldMapping | undefined {
-  const fieldDef = findFieldDefinition(mappingResponse, field);
+  const definitions = findFieldDefinitions(mappingResponse, field);
+  const [fieldDef] = definitions;
   if (fieldDef === undefined || typeof fieldDef["type"] !== "string") {
+    return undefined;
+  }
+  if (definitions.some((definition) => definition["type"] !== fieldDef["type"])) {
     return undefined;
   }
   const ignoreAbove = fieldDef["ignore_above"];
@@ -108,5 +140,31 @@ export async function resolveAggregatableField(
   throw new CfOtelError(
     "MAPPING_LOOKUP_FAILED",
     `Field "${field}" is text-mapped and has no .keyword sub-field to aggregate on.`,
+  );
+}
+
+/**
+ * Fail loudly when a field a command depends on is absent from the index.
+ *
+ * A tenant only has the HTTP request-header attributes if its OpenTelemetry
+ * collector is configured to export them. Where it is not, a filter on one of
+ * them matches nothing and the command reports an empty result at exit 0 —
+ * indistinguishable from "that value is not in this window", which is exactly
+ * the silent miss these lookups exist to remove. One mapping lookup, shared
+ * with any other lookup the same client makes, buys a definite answer.
+ */
+export async function assertFieldExists(
+  client: OpenSearchClient,
+  index: string,
+  field: string,
+  why: string,
+): Promise<void> {
+  if (await getFieldMapping(client, index, field) !== undefined) {
+    return;
+  }
+  throw new CfOtelError(
+    "MAPPING_LOOKUP_FAILED",
+    `"${field}" is not present in ${index}, so ${why}. ` +
+      "This tenant's OpenTelemetry collector is not exporting HTTP request headers.",
   );
 }

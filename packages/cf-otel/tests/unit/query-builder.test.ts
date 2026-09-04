@@ -222,6 +222,118 @@ describe("buildSpanBoolQuery", () => {
     expect(query.bool.filter).toContainEqual({ range: { "http@status_code": { lt: 500 } } });
   });
 
+  it("offers both encodings for = at every text-like mapped type", () => {
+    for (const mappedType of [
+      "keyword",
+      "text",
+      "wildcard",
+      "constant_keyword",
+      "match_only_text",
+      "version",
+      "search_as_you_type",
+      "annotated_text",
+    ]) {
+      const query = buildSpanBoolQuery({
+        attrs: [{
+          key: "span.attributes.http@request@header@x-vcap-request-id",
+          operator: "=",
+          value: "0f386888-da32-42b2-7c48-c6200a2894fa",
+          mappedType,
+        }],
+      }) as { bool: { filter: unknown[] } };
+
+      expect(query.bool.filter, mappedType).toContainEqual({
+        terms: {
+          "span.attributes.http@request@header@x-vcap-request-id": [
+            "0f386888-da32-42b2-7c48-c6200a2894fa",
+            '["0f386888-da32-42b2-7c48-c6200a2894fa"]',
+          ],
+        },
+      });
+    }
+  });
+
+  it("escapes the array-rendered alternative as JSON rather than by concatenation", () => {
+    const query = buildSpanBoolQuery({
+      attrs: [{ key: "k", operator: "=", value: 'a"b\\c', mappedType: "keyword" }],
+    }) as { bool: { filter: Record<string, { k: string[] }>[] } };
+
+    const values = query.bool.filter[0]?.["terms"]?.k;
+    // The concrete string, not a round trip through the same function that
+    // produced it — otherwise the assertion could not fail.
+    expect(values?.[1]).toBe('["a\\"b\\\\c"]');
+    // What naive `\`["${value}"]\`` concatenation would have produced. Sending
+    // that would be a different term and would silently match nothing.
+    expect(values?.[1]).not.toBe('["a"b\\c"]');
+  });
+
+  it("never sends the array-rendered alternative at a numeric field", () => {
+    // Not a style choice: an extra ["500"] term at an integer field fails the
+    // whole search with HTTP 400 instead of simply not matching.
+    for (const mappedType of ["integer", "long", "date", "date_nanos", "ip", "boolean", "float", "token_count"]) {
+      const query = buildSpanBoolQuery({
+        attrs: [{ key: "span.attributes.http@response@status_code", operator: "=", value: "500", mappedType }],
+      }) as { bool: { filter: unknown[] } };
+
+      expect(query.bool.filter, mappedType).toContainEqual({
+        term: { "span.attributes.http@response@status_code": "500" },
+      });
+      expect(query.bool.filter, mappedType).not.toContainEqual({
+        terms: { "span.attributes.http@response@status_code": ["500", '["500"]'] },
+      });
+    }
+  });
+
+  it("stays on a plain term when the field is unmapped", () => {
+    const query = buildSpanBoolQuery({
+      attrs: [{ key: "custom@thing", operator: "=", value: "x" }],
+    }) as { bool: { filter: unknown[] } };
+
+    expect(query.bool.filter).toContainEqual({ term: { "custom@thing": "x" } });
+  });
+
+  it("folds a hex request id to lower case and trims it", () => {
+    // keyword matching is exact and every stored id sampled from a live index
+    // was lower-case hex, so an id pasted in upper case used to match nothing.
+    const query = buildSpanBoolQuery({ vcapRequestId: "  0F386888-DA32-42B2-7C48-C6200A2894FA \n" }) as {
+      bool: { filter: unknown[] };
+    };
+
+    expect(query.bool.filter).toContainEqual({
+      terms: {
+        "span.attributes.http@request@header@x-vcap-request-id": [
+          "0f386888-da32-42b2-7c48-c6200a2894fa",
+          '["0f386888-da32-42b2-7c48-c6200a2894fa"]',
+        ],
+      },
+    });
+  });
+
+  it("leaves a non-hex identifier's case alone rather than guessing", () => {
+    const query = buildSpanBoolQuery({ vcapRequestId: " MixedCaseId " }) as { bool: { filter: unknown[] } };
+
+    expect(query.bool.filter).toContainEqual({
+      terms: {
+        "span.attributes.http@request@header@x-vcap-request-id": ["MixedCaseId", '["MixedCaseId"]'],
+      },
+    });
+  });
+
+  it("resolves a Cloud Foundry request id in both stored encodings", () => {
+    const query = buildSpanBoolQuery({ vcapRequestId: "421b9396-c661-466d-6ffa-d7b5d2c5a31c" }) as {
+      bool: { filter: unknown[] };
+    };
+
+    expect(query.bool.filter).toContainEqual({
+      terms: {
+        "span.attributes.http@request@header@x-vcap-request-id": [
+          "421b9396-c661-466d-6ffa-d7b5d2c5a31c",
+          '["421b9396-c661-466d-6ffa-d7b5d2c5a31c"]',
+        ],
+      },
+    });
+  });
+
   it("builds a term clause for an = attr filter", () => {
     const query = buildSpanBoolQuery({ attrs: [{ key: "http@method", operator: "=", value: "POST" }] }) as {
       bool: { filter: unknown[] };

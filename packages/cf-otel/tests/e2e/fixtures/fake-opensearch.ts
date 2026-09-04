@@ -61,7 +61,7 @@ function buildDataset(): readonly Doc[] {
     startTime: "2026-08-28T03:00:00.500000000Z",
     durationInNanos: 300_000_000,
     status: { code: 2 },
-    "span.attributes.http@status_code": 500,
+    "span.attributes.http@status_code": "500",
     "span.attributes.http@target": "/widgets",
   });
 
@@ -75,6 +75,9 @@ function buildDataset(): readonly Doc[] {
     startTime: "2026-08-28T04:00:00.000000000Z",
     durationInNanos: 5_000_000_000,
     status: { code: 1 },
+    // Stored exactly as a real Cloud Logging instance stores an array-valued
+    // attribute: the JSON array rendered to text, brackets and quotes included.
+    "span.attributes.http@request@header@x-vcap-request-id": '["0f386888-da32-42b2-7c48-c6200a2894fa"]',
   });
 
   // A big trace (>10000 spans) to exercise search_after pagination end to end.
@@ -367,6 +370,21 @@ function handleMapping(): unknown {
     startTime: { type: "date" },
     durationInNanos: { type: "long" },
     "status.code": { type: "long" },
+    // A real Cloud Logging mapping nests on the "." segments even though the
+    // document keys are flat, so an attribute lookup has to walk the tree. The
+    // `=` operator reads the resolved type from here to decide whether the
+    // array-rendered encoding is safe to send.
+    span: {
+      properties: {
+        attributes: {
+          properties: {
+            "http@request@header@x-vcap-request-id": { type: "keyword", ignore_above: 2048 },
+            "http@status_code": { type: "keyword", ignore_above: 256 },
+            "http@response@status_code": { type: "integer" },
+          },
+        },
+      },
+    },
   };
   return { [INDEX_ALIAS]: { mappings: { properties } } };
 }

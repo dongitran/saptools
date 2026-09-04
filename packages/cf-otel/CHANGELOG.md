@@ -2,6 +2,66 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.7.0
+
+### Fixed
+
+- `--attr <key>=<value>` never matched an array-valued attribute. An OTel attribute whose value is
+  an array reaches `otel-v1-apm-span-*` as the JSON array rendered to text, so the stored keyword
+  for an HTTP request header is literally `["<id>"]` — brackets and quotes included — and a plain
+  `term` on the bare value matched none of the `span.attributes.http@request@header@*` family.
+  The command printed `(no rows)` and exited 0, indistinguishable from "that value never occurred".
+  `=` now sends both encodings. Measured against a live tenant, 0 of 60 real request ids matched
+  before and 60 of 60 match now, each resolving to exactly one trace. This is the sequel to the
+  0.1.1 fix, which resolved the attribute *key* but left the *value* encoding wrong.
+  The array form is withheld at numeric, date and ip fields, where an extra unparseable term fails
+  the entire search rather than simply not matching.
+- A query that failed on only some shards was reported as a complete result. `otel-v1-apm-span-*`
+  spans 14 backing indices over 28 shards, and OpenSearch answers a partial failure with HTTP 200,
+  the count in `_shards.failed`, and whatever the surviving shards found — which this client read as
+  the whole answer. The same applies to a search OpenSearch marks `timed_out`. Every command now
+  fails loudly instead of returning a short result at exit 0. Set
+  `CF_OTEL_ALLOW_PARTIAL_SHARDS=1` to accept a partial answer when a shard is persistently down.
+- A field's mapping type was taken from whichever backing index reported it first, even though the
+  query runs against all of them. Dynamic mapping can give one path different types in different
+  indices after an ingest change, and the `=` encoding above depends on that type being right —
+  a wrong answer there would send a term that some shards reject. The type is now reported only
+  when every index holding the field agrees, and treated as unknown otherwise.
+- `--attr` on a key that matches no field in the index printed an empty result with no explanation.
+  It now says so on stderr. Top-level fields (`status.code`, `kind`, `serviceName`) also resolve
+  their real mapping type now instead of none.
+- `_mapping` was re-fetched once per attribute-prefix candidate and again per command. It is now
+  fetched at most once per client, which is the whole lifetime of one command. Measured: four
+  `--attr` filters went from five HTTP round trips to one.
+- The `--attr` help text's example, `http@status_code>=400`, names a keyword-mapped field, so
+  copying it verbatim was rejected as a numeric comparison against text.
+
+### Added
+
+- `find --vcap-request-id <id>` and `count --vcap-request-id <id>` resolve one Cloud Foundry
+  gorouter request id — what `@saptools/cf-logs` 0.8.0 reports as `ParsedLogRow.vcapRequestId` — to
+  its trace. Measured 1:1 with a trace over 1,504 server spans. A hex id is trimmed and lower-cased,
+  because keyword matching is exact and every stored id sampled was lower case. If the tenant's
+  collector does not export request headers the command says so by name rather than returning
+  nothing.
+- `AttrFilter` gains `mappedType`, the resolved OpenSearch mapping type, and
+  `resolveAndValidateAttrFilters` and `VCAP_REQUEST_ID_FIELD` are now exported, so a library
+  consumer gets the same `=` behaviour as the CLI rather than the pre-0.7.0 broken path.
+
+### Changed
+
+- **`find --format json-compact` now emits the trace id column** instead of silently falling back to
+  full JSON. It returns one entry per matching *span*, so a trace with several matching spans
+  appears more than once; pipe through `sort -u` when feeding it to another command.
+- **Commands can now fail where they previously returned a short result at exit 0.** That is the
+  point of the shard and timeout checks above, but it is a behaviour change for any script that
+  treated exit 0 as "the query ran".
+- `find --service` is no longer required. A request id is unique on its own, and the trace it
+  finds frequently has its root in a different service than the one that served the request, so
+  demanding a service both blocked the lookup and pointed the investigation the wrong way. As with
+  `count`, an unfiltered `find` now reaches across the whole retention window; pass `--since`.
+  (`top` still requires `--service`, because its aggregation is not meaningful unscoped.)
+
 ## 0.6.0
 
 ### Fixed

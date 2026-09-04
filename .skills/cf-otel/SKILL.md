@@ -20,18 +20,29 @@ If `cf-otel` is missing, install it from `@saptools/cf-otel`: `npm install -g @s
 
 1. If nothing is known yet (no traceId, no field names), start with `sample` to see real
    documents unfiltered, then `fields` on a real span to discover queryable attribute keys.
-2. Once a service and rough name/time range are known but not a traceId, use `find` (name known)
+2. If a cf-logs row is in hand, go straight to its trace — no service or time range needed:
+   `cf-otel find --vcap-request-id <the row's vcapRequestId>`. That id is 1:1 with a trace.
+   Its sibling `correlationId` is not: one value has been measured spanning 6,796 traces, so use it
+   only to ask what else happened in the same transaction, via
+   `--attr 'http@request@header@x-correlation-id=<id>'` — and read it from a full
+   `cf-logs snapshot --json`, since compact rows carry only `requestId` and `vcapRequestId`.
+   Both headers exist only on `SPAN_KIND_SERVER` spans; if a tenant's collector does not export
+   request headers, `--vcap-request-id` says so outright and `--attr` prints a notice on stderr.
+   Spans land in the index a few seconds after the log line (6-10s measured), so a lookup run
+   immediately can report `(no rows)` for a trace that exists — wait and retry before concluding
+   the id is wrong.
+3. Once a service and rough name/time range are known but not a traceId, use `find` (name known)
    or `top` (outlier hunting, no name needed).
-3. Once a traceId is known, `selftime` is almost always the next command — it ranks spans by
+4. Once a traceId is known, `selftime` is almost always the next command — it ranks spans by
    self-time descending, which is what actually finds a bottleneck (not inclusive/raw duration).
-4. If `selftime`'s numbers don't add up to the root duration, run `detached` on the same traceId
+5. If `selftime`'s numbers don't add up to the root duration, run `detached` on the same traceId
    — the missing time is very often a detached/orphaned continuation with its own fresh traceId
    in the same service and time window.
-5. To understand *why* a specific parent's children are slow (flat overhead vs. an O(n) or worse
+6. To understand *why* a specific parent's children are slow (flat overhead vs. an O(n) or worse
    growth pattern), use `gaps` on that parent span.
-6. To compare before/after a fix, use `diff` on the two traceIds rather than eyeballing two
+7. To compare before/after a fix, use `diff` on the two traceIds rather than eyeballing two
    `selftime` tables side by side.
-7. `--region`/`--org`/`--space` fall back to the ambient `cf target` session when omitted; watch
+8. `--region`/`--org`/`--space` fall back to the ambient `cf target` session when omitted; watch
    the stderr notice to see which was actually used, and pin explicitly for anything you'll
    re-run. There is no `--app` — `--service <name>` is a plain filter on `serviceName`, not a
    target.
@@ -87,7 +98,13 @@ cf-otel spans <traceId> --fields "startTime,durationInNanos" --format csv
 ```
 
 `--attr <key><op><value>` (repeatable) supports `>=`, `<=`, `>`, `<`, `=`, and `~` (contains);
-`--errors-only` is shorthand for `status.code == 2`. Use `count` as the trust-but-verify
+`--errors-only` is shorthand for `status.code == 2`. `=` matches the whole value and covers both
+encodings a value may be stored in — array-valued attributes (every `http@request@header@*`) reach
+the index as JSON text like `["<id>"]`, and `=` sends both forms. The second form goes only to
+text-like mapped fields; at a numeric or date field `=` stays a plain term, because an unparseable
+extra term fails the whole search. Prefer `=` over `~`, which compiles to a leading-wildcard scan
+across every backing index. Each field also has an `ignore_above` ceiling (256-2048 on a real
+tenant); a longer value is stored but never indexed, so no operator can match it. Use `count` as the trust-but-verify
 companion to any ranked/capped table — a `terms` aggregation's bucket list is itself capped, so
 an exact `count --name <name>` can reveal occurrences a ranked table's cutoff hid.
 

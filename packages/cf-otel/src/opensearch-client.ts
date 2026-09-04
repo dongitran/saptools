@@ -94,6 +94,72 @@ function parseCountResponse(value: unknown): number {
   return isRecord(value) && typeof value["count"] === "number" ? value["count"] : 0;
 }
 
+/** First failure reason OpenSearch reported, for a message that names the cause rather than only the count. */
+function firstShardFailureReason(shards: Record<string, unknown>): string {
+  const failures: unknown = shards["failures"];
+  const first: unknown = Array.isArray(failures) ? (failures as readonly unknown[])[0] : undefined;
+  if (!isRecord(first)) {
+    return "";
+  }
+  const reason = first["reason"];
+  if (typeof reason === "string") {
+    return reason;
+  }
+  if (isRecord(reason) && typeof reason["reason"] === "string") {
+    return reason["reason"];
+  }
+  return "";
+}
+
+/**
+ * A query that fails on *every* shard comes back as an HTTP error and is
+ * already reported. One that fails on *some* of them does not: OpenSearch
+ * answers HTTP 200, puts the count in `_shards.failed`, and returns whatever
+ * the surviving shards found. Reading only `hits`/`count` therefore turns a
+ * partly-executed query into a short result at exit 0 — the same silent
+ * wrong-answer this tool keeps having to design against.
+ *
+ * The window is real here: `otel-v1-apm-span-*` spans 14 backing indices over
+ * 28 shards (measured), and a field can be dynamically mapped one way in an
+ * older index and another way in a newer one after an ingest change. Every
+ * caller is better off being told the number is incomplete than believing it.
+ */
+function assertNoShardFailures(path: string, value: unknown): void {
+  if (!isRecord(value)) {
+    return;
+  }
+  // A persistently red shard would otherwise make every command unusable on a
+  // tenant whose data the caller can still mostly read. The override is loud by
+  // construction: it only exists as an env var, and the caller has to have seen
+  // the error first to know it is there.
+  if (readEnv(envName("ALLOW_PARTIAL_SHARDS")) !== undefined) {
+    return;
+  }
+  if (value["timed_out"] === true) {
+    // Same class as a shard failure: OpenSearch answers 200 with whatever it
+    // collected before the deadline, and reading only `hits` calls that partial
+    // set the answer.
+    throw new CfOtelError(
+      "OPENSEARCH_REQUEST_FAILED",
+      `OpenSearch timed out serving ${path} and returned a partial result. ` +
+        "Narrow the query, or raise the cluster-side search timeout.",
+    );
+  }
+  const shards = value["_shards"];
+  if (!isRecord(shards) || typeof shards["failed"] !== "number" || shards["failed"] === 0) {
+    return;
+  }
+  const total = typeof shards["total"] === "number" ? shards["total"] : undefined;
+  const failed = String(shards["failed"]);
+  const scope = total === undefined ? failed : `${failed} of ${String(total)}`;
+  const reason = firstShardFailureReason(shards);
+  throw new CfOtelError(
+    "OPENSEARCH_REQUEST_FAILED",
+    `OpenSearch answered ${path} from only some shards: ${scope} failed, so the result is incomplete` +
+      `${reason.length === 0 ? "" : ` (${reason})`}. Retry: a shard may be recovering. If it persists, narrow the query so it touches fewer indices.`,
+  );
+}
+
 /**
  * Real Cloud Logging service-key/binding payloads have been observed to
  * return `dashboards-endpoint` as a bare hostname with no scheme (e.g.
@@ -234,8 +300,9 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
     if (text.length === 0) {
       return undefined;
     }
+    let parsed: unknown;
     try {
-      return JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch (error) {
       throw new CfOtelError(
         "OPENSEARCH_REQUEST_FAILED",
@@ -243,7 +310,21 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
         { cause: error },
       );
     }
+    assertNoShardFailures(path, parsed);
+    return parsed;
   }
+
+  /**
+   * One `_mapping` fetch of `otel-v1-apm-span-*` returns every field of all 14
+   * backing indices and costs over a second, yet `resolveAttrKey` asks for it
+   * once per prefix candidate per `--attr`, and the request-id guard asks again.
+   * Memoizing per client instance collapses that to one call.
+   *
+   * Safe precisely because the lifetime is one client: every command builds its
+   * own inside `withOpenSearchClient` for a single bounded operation, so there
+   * is no long-running process that could hold a mapping past a rollover.
+   */
+  const mappingCache = new Map<string, Promise<unknown>>();
 
   return {
     async search(index, body) {
@@ -253,7 +334,20 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
       return parseCountResponse(await proxyRequest(`${index}/_count`, "GET", body));
     },
     async getMapping(index) {
-      return await proxyRequest(`${index}/_mapping`, "GET");
+      const cached = mappingCache.get(index);
+      if (cached !== undefined) {
+        return await cached;
+      }
+      // Cache the promise, not the result, so concurrent callers share one request.
+      const pending = proxyRequest(`${index}/_mapping`, "GET");
+      mappingCache.set(index, pending);
+      try {
+        return await pending;
+      } catch (error) {
+        // A failed fetch must not be remembered as the answer.
+        mappingCache.delete(index);
+        throw error;
+      }
     },
   };
 }

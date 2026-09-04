@@ -35,6 +35,37 @@ test("sample dumps full unfiltered documents end to end", async () => {
   expect(docs[0]).toMatchObject({ traceId: "trace-findable", serviceName: "service-b" });
 });
 
+test("find resolves a cf-logs request id to its trace, with no --service", async () => {
+  const result = await runCli(
+    ["find", "--vcap-request-id", "0f386888-da32-42b2-7c48-c6200a2894fa", "--format", "json", ...targetArgs()],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  const rows = JSON.parse(result.stdout) as { TRACE_ID: string }[];
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ TRACE_ID: "trace-findable" });
+});
+
+test("find matches an array-rendered attribute through the = operator end to end", async () => {
+  const result = await runCli(
+    [
+      "find",
+      "--attr",
+      "http@request@header@x-vcap-request-id=0f386888-da32-42b2-7c48-c6200a2894fa",
+      "--format",
+      "json",
+      ...targetArgs(),
+    ],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect((JSON.parse(result.stdout) as { TRACE_ID: string }[])[0]).toMatchObject({
+    TRACE_ID: "trace-findable",
+  });
+});
+
 test("find locates a trace by service and name pattern end to end", async () => {
   const result = await runCli(
     ["find", "--service", "service-b", "--name", "*SyncBatchAction*", "--format", "json", ...targetArgs()],

@@ -147,7 +147,12 @@ describe("resolveAndValidateAttrFilters", () => {
     const [resolved] = await resolveAndValidateAttrFilters(client, "idx", [
       { key: "http@response@status_code", operator: ">=", value: "400" },
     ]);
-    expect(resolved).toEqual({ key: "span.attributes.http@response@status_code", operator: ">=", value: "400" });
+    expect(resolved).toEqual({
+      key: "span.attributes.http@response@status_code",
+      operator: ">=",
+      value: "400",
+      mappedType: "integer",
+    });
   });
 
   it("ignores non-numeric operators for the type check, but still resolves the key", async () => {
@@ -167,5 +172,19 @@ describe("resolveAndValidateAttrFilters", () => {
     await expect(
       resolveAndValidateAttrFilters(client, "idx", [{ key: "custom@thing", operator: ">", value: "1" }]),
     ).resolves.toEqual([{ key: "custom@thing", operator: ">", value: "1" }]);
+  });
+  it("carries the resolved mapping type so = can gate its array-rendered encoding", async () => {
+    const client = fakeClientWithMapping(REAL_SHAPED_MAPPING);
+
+    const [keyword] = await resolveAndValidateAttrFilters(client, "idx", [
+      { key: "http@status_code", operator: "=", value: "200" },
+    ]);
+    const [unmapped] = await resolveAndValidateAttrFilters(client, "idx", [
+      { key: "custom@thing", operator: "=", value: "x" },
+    ]);
+
+    expect(keyword?.mappedType).toBe("keyword");
+    // No mapping means no claim about the type, so `=` must stay conservative.
+    expect(unmapped?.mappedType).toBeUndefined();
   });
 });

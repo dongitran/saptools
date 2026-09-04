@@ -3,10 +3,11 @@ import type { Command } from "commander";
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../attr-filter.js";
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { assertTimeBoundsValid, buildSpanBoolQuery } from "../../query-builder.js";
+import { assertFieldExists } from "../../mapping.js";
+import { assertTimeBoundsValid, buildSpanBoolQuery, VCAP_REQUEST_ID_FIELD } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { CountOpts } from "../commandTypes.js";
-import { parseFormat, parseTraceIds, print } from "../output.js";
+import { assertRequestIdUsable, parseFormat, parseTraceIds, print, printNotice } from "../output.js";
 import {
   withAttrOptions,
   withCredentialOptions,
@@ -16,6 +17,7 @@ import {
   withTargetOptions,
   withTimeRangeOptions,
   withTraceIdsOption,
+  withVcapRequestIdOption,
 } from "../shared-options.js";
 
 async function runCount(traceId: string | undefined, opts: CountOpts): Promise<void> {
@@ -26,13 +28,17 @@ async function runCount(traceId: string | undefined, opts: CountOpts): Promise<v
   // Fail on a malformed --since/--until here, before the CF login and
   // credential discovery that building the query would otherwise run first.
   assertTimeBoundsValid(opts);
+  assertRequestIdUsable(opts.vcapRequestId);
   if (traceId !== undefined && opts.traceIds !== undefined) {
     throw new CfOtelError("CONFIG", "Pass either a positional traceId or --trace-ids, not both");
   }
   const traceIds = parseTraceIds(opts.traceIds) ?? (traceId === undefined ? undefined : [traceId]);
   const attrs = opts.attr.map(parseAttrFilter);
   const count = await withOpenSearchClient(opts, async (client) => {
-    const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs);
+    if (opts.vcapRequestId !== undefined) {
+      await assertFieldExists(client, DEFAULT_INDEX_PATTERN, VCAP_REQUEST_ID_FIELD, "no request id can be resolved");
+    }
+    const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs, printNotice);
     const query = buildSpanBoolQuery({
       ...(opts.service === undefined ? {} : { service: opts.service }),
       ...(opts.name === undefined ? {} : { namePattern: opts.name }),
@@ -40,6 +46,7 @@ async function runCount(traceId: string | undefined, opts: CountOpts): Promise<v
       ...(opts.until === undefined ? {} : { until: opts.until }),
       attrs: resolvedAttrs,
       errorsOnly: opts.errorsOnly,
+      ...(opts.vcapRequestId === undefined ? {} : { vcapRequestId: opts.vcapRequestId }),
       ...(traceIds === undefined ? {} : { traceIds }),
     });
     return await client.count(DEFAULT_INDEX_PATTERN, { query });
@@ -57,6 +64,7 @@ export function registerCountCommand(program: Command): void {
   withNameOption(command);
   withTimeRangeOptions(command);
   withAttrOptions(command);
+  withVcapRequestIdOption(command);
   withTraceIdsOption(command);
   withFormatOption(command);
   withTargetOptions(command);

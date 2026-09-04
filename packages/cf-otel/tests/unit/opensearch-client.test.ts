@@ -55,6 +55,109 @@ describe("encodeConsoleProxyPath", () => {
   });
 });
 
+describe("mapping memoization", () => {
+  it("fetches the mapping once per client and shares it", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ idx: { mappings: { properties: {} } } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = clientWith(fetchImpl);
+
+    await Promise.all([client.getMapping("idx"), client.getMapping("idx")]);
+    await client.getMapping("idx");
+
+    expect(calls).toBe(1);
+  });
+
+  it("does not remember a failed mapping fetch", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response("nope", { status: 500 })
+        : new Response(JSON.stringify({ idx: {} }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const client = clientWith(fetchImpl);
+
+    await expect(client.getMapping("idx")).rejects.toThrow();
+    await expect(client.getMapping("idx")).resolves.toBeDefined();
+    expect(calls).toBe(2);
+  });
+});
+
+describe("partial shard failures", () => {
+  const jsonFetch = (payload: unknown): typeof fetch =>
+    (async () =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+
+  it("refuses a search answered by only some shards", async () => {
+    // OpenSearch reports a partial failure as HTTP 200 with the count in
+    // `_shards.failed` and whatever the surviving shards found. Reading only
+    // `hits` would report that short list as the complete answer.
+    const client = clientWith(
+      jsonFetch({
+        _shards: {
+          total: 28,
+          successful: 21,
+          failed: 7,
+          failures: [{ index: "otel-v1-apm-span-000009", reason: { type: "query_shard_exception", reason: "failed to create query" } }],
+        },
+        hits: { total: { value: 3 }, hits: [] },
+      }),
+    );
+
+    await expect(client.search("idx", {})).rejects.toThrow(/only some shards: 7 of 28 failed/);
+    await expect(client.search("idx", {})).rejects.toThrow(/failed to create query/);
+  });
+
+  it("refuses a count answered by only some shards", async () => {
+    const client = clientWith(jsonFetch({ _shards: { total: 28, successful: 27, failed: 1 }, count: 42 }));
+
+    await expect(client.count("idx", {})).rejects.toThrow(/result is incomplete/);
+  });
+
+  it("refuses a response OpenSearch marks as timed out", async () => {
+    // Same class as a shard failure, one field away: 200 with whatever was
+    // collected before the deadline.
+    const client = clientWith(
+      jsonFetch({ timed_out: true, _shards: { total: 28, successful: 28, failed: 0 }, hits: { total: { value: 2 }, hits: [] } }),
+    );
+
+    await expect(client.search("idx", {})).rejects.toThrow(/timed out serving .* partial result/);
+  });
+
+  it("honours CF_OTEL_ALLOW_PARTIAL_SHARDS as a deliberate override", async () => {
+    const client = clientWith(jsonFetch({ _shards: { total: 28, successful: 20, failed: 8 }, count: 7 }));
+    process.env["CF_OTEL_ALLOW_PARTIAL_SHARDS"] = "1";
+    try {
+      await expect(client.count("idx", {})).resolves.toBe(7);
+    } finally {
+      delete process.env["CF_OTEL_ALLOW_PARTIAL_SHARDS"];
+    }
+  });
+
+  it("accepts a fully successful response untouched", async () => {
+    const client = clientWith(
+      jsonFetch({ _shards: { total: 28, successful: 28, failed: 0 }, hits: { total: { value: 1 }, hits: [] } }),
+    );
+
+    await expect(client.search("idx", {})).resolves.toMatchObject({ totalHits: 1 });
+  });
+
+  it("accepts a response with no _shards block, such as a mapping fetch", async () => {
+    const client = clientWith(jsonFetch({ "otel-v1-apm-span-000014": { mappings: { properties: {} } } }));
+
+    await expect(client.getMapping("idx")).resolves.toBeDefined();
+  });
+});
+
 describe("createOpenSearchClient", () => {
   it("POSTs to the console proxy with osd-xsrf, basic auth, and the real verb as ?method=", async () => {
     let capturedUrl = "";

@@ -53,6 +53,18 @@ export interface AttrFilter {
   readonly key: string;
   readonly operator: AttrOperator;
   readonly value: string;
+  /**
+   * The field's resolved OpenSearch mapping type, when it was found. Set by
+   * `resolveAndValidateAttrFilters`, which already fetches the mapping; absent
+   * for an unmapped field and for a filter built by hand.
+   *
+   * `buildAttrClause` reads it to decide whether the array-rendered encoding of
+   * `=` is safe to send. That gate is not cosmetic: an extra `["500"]` term
+   * against a numeric-, date- or ip-mapped field fails the whole search with
+   * HTTP 400 rather than simply not matching (confirmed against a real Cloud
+   * Logging instance on `integer`, `long` and `date_nanos` fields).
+   */
+  readonly mappedType?: string;
 }
 
 export interface SpanFilterOptions {
@@ -63,6 +75,13 @@ export interface SpanFilterOptions {
   readonly attrs?: readonly AttrFilter[];
   readonly errorsOnly?: boolean;
   readonly traceIds?: readonly string[];
+  /**
+   * A Cloud Foundry gorouter request id, as `@saptools/cf-logs` reports it in
+   * `ParsedLogRow.vcapRequestId`. Measured 1:1 with a trace over 1,504 live
+   * server spans, which makes it the one identifier on a log row that pins a
+   * single trace — unlike the SAP correlation id, which spans thousands.
+   */
+  readonly vcapRequestId?: string;
 }
 
 /** One ranked row, grouped either by span `name` or by `serviceName` (see {@link SelftimeResult}). */
