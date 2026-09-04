@@ -54,6 +54,8 @@ function createRow(id: number, message: string): ParsedLogRow {
     tenant: "",
     clientIp: "",
     requestId: "",
+    correlationId: "",
+    vcapRequestId: "",
     message,
     rawBody: message,
     jsonPayload: null,
@@ -155,5 +157,53 @@ describe("compact session store", () => {
 
     expect(removed).toBe(1);
     expect(await listCompactSessions({ sessionsDir })).toEqual([]);
+  });
+  it("backfills the split identifier fields on rows written before they existed", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const legacyRow = createRow(1, "legacy");
+    // Simulate a session file written by <=0.7.0: the two fields simply are not there.
+    const { correlationId, vcapRequestId, ...withoutSplitIds } = legacyRow;
+    void correlationId;
+    void vcapRequestId;
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    await writeFile(
+      join(sessionsDir, "legacy01.json"),
+      JSON.stringify({
+        version: 1,
+        sessionId: "legacy01",
+        createdAt: "2026-04-12T02:00:00.000Z",
+        updatedAt: "2026-04-12T02:00:00.000Z",
+        expiresAt,
+        ttlMinutes: 60,
+        rows: [withoutSplitIds],
+      }),
+      "utf8",
+    );
+
+    const found = await readCompactSessionRef("legacy01:1", { sessionsDir });
+
+    expect(found.row.correlationId).toBe("");
+    expect(found.row.vcapRequestId).toBe("");
+    expect(found.row.message).toBe("legacy");
+  });
+  it("survives a session file whose rows array holds a non-object", async () => {
+    const sessionsDir = await makeSessionsDir();
+    await writeFile(
+      join(sessionsDir, "abcdef02.json"),
+      JSON.stringify({
+        version: 1,
+        sessionId: "abcdef02",
+        createdAt: "2026-04-12T02:00:00.000Z",
+        updatedAt: "2026-04-12T02:00:00.000Z",
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        ttlMinutes: 60,
+        rows: [null],
+      }),
+      "utf8",
+    );
+
+    // Every store command prunes first, so a throw here would take them all down.
+    await expect(listCompactSessions({ sessionsDir })).resolves.toHaveLength(1);
+    await expect(pruneExpiredCompactSessions({ sessionsDir })).resolves.toBe(0);
   });
 });

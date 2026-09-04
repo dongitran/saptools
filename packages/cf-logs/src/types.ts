@@ -55,7 +55,34 @@ export interface ParsedLogRow {
   readonly latency: string;
   readonly tenant: string;
   readonly clientIp: string;
+  /**
+   * Whichever of {@link ParsedLogRow.correlationId} / {@link ParsedLogRow.vcapRequestId}
+   * the router line carried, correlation first — the single pre-0.8.0 field, kept
+   * byte-for-byte so existing callers and stored rows keep working. Prefer the two
+   * fields below, which say *which* identifier they hold.
+   */
   readonly requestId: string;
+  /**
+   * The SAP end-to-end correlation id (`x_correlationid` on a router line,
+   * `correlation_id` in a CAP JSON payload), constant across every hop of one
+   * business transaction.
+   *
+   * Coarse on purpose: one value spans many requests, and therefore many
+   * OpenTelemetry traces. It answers "what else happened in this transaction?"
+   * and cannot pin a single request — use {@link ParsedLogRow.vcapRequestId} for
+   * that. See the README for the measured ratios.
+   */
+  readonly correlationId: string;
+  /**
+   * The Cloud Foundry gorouter request id for this one hop (`vcap_request_id` on a
+   * router line, `x_vcap_request_id`/`request_id` in a CAP JSON payload). A fresh
+   * value per hop, so unlike {@link ParsedLogRow.correlationId} it is not shared
+   * with the caller.
+   *
+   * This is the field to join on: it maps one-to-one onto an OpenTelemetry server
+   * span via `span.attributes.http@request@header@x-vcap-request-id`.
+   */
+  readonly vcapRequestId: string;
   readonly message: string;
   readonly rawBody: string;
   readonly jsonPayload: Record<string, unknown> | null;
@@ -161,6 +188,12 @@ export interface CompactLogRow {
   readonly tenant?: string;
   readonly clientIp?: string;
   readonly requestId?: string;
+  /**
+   * Present whenever the row has a hop id, including when it repeats `requestId`.
+   * The duplicate is deliberate: a bare `requestId=<x>` cannot say which of the two
+   * identifiers it holds, and this is the one to join a trace on.
+   */
+  readonly vcapRequestId?: string;
   readonly ref?: string;
 }
 

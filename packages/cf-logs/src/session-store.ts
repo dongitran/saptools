@@ -191,7 +191,7 @@ async function readAllSessions(sessionsDir: string): Promise<readonly CompactSes
 async function readSessionFile(path: string): Promise<CompactSession | undefined> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isCompactSession(parsed) ? parsed : undefined;
+    return isCompactSession(parsed) ? withBackfilledRows(parsed) : undefined;
   } catch (error) {
     if (readErrorCode(error) === "ENOENT") {
       return undefined;
@@ -253,6 +253,46 @@ function toSummary(session: CompactSession): CompactSessionSummary {
     ttlMinutes: session.ttlMinutes,
     rowCount: session.rows.length,
     ...(session.target === undefined ? {} : { target: session.target }),
+  };
+}
+
+/**
+ * Sessions are validated shallowly — `rows` is only checked to be an array — so a
+ * file written before `correlationId`/`vcapRequestId` existed still loads, and its
+ * rows would then be missing two fields the type declares as `string`. Anything
+ * that reads `.length` off them — `formatFullSavedRow`, `compactLogRows` — would
+ * throw on such a row. Backfill them to "" on the way in.
+ *
+ * "" rather than a value recovered from `jsonPayload`: the identifier genuinely
+ * was not captured for that row, and the projections that can recover it already
+ * fall back to the payload themselves.
+ *
+ * The reverse direction needs nothing — an older binary ignores unknown row keys.
+ */
+function withBackfilledRows(session: CompactSession): CompactSession {
+  return { ...session, rows: session.rows.map(backfillRow) };
+}
+
+function backfillRow(row: ParsedLogRow): ParsedLogRow {
+  // `isCompactSession` never inspected the array's contents, so an entry here can
+  // be any JSON value at all. Hand a non-object straight back rather than reading
+  // through it: throwing would escape `readSessionFile` (the catch only swallows
+  // ENOENT) and, because every store command prunes first, one malformed file
+  // would take down list, show, create and append alike.
+  if (!isRecord(row)) {
+    return row;
+  }
+  // Read through a Partial view: `isCompactSession` never inspected a row, so the
+  // declared `string` on these two is a claim about freshly parsed rows, not about
+  // what a file on disk actually holds.
+  const stored: Partial<ParsedLogRow> = row;
+  if (typeof stored.correlationId === "string" && typeof stored.vcapRequestId === "string") {
+    return row;
+  }
+  return {
+    ...row,
+    correlationId: typeof stored.correlationId === "string" ? stored.correlationId : "",
+    vcapRequestId: typeof stored.vcapRequestId === "string" ? stored.vcapRequestId : "",
   };
 }
 

@@ -60,7 +60,17 @@ export function formatCompactRows(rows: readonly CompactLogRow[]): string {
 
 function compactLogRow(row: ParsedLogRow, messageLimit: number, ref?: string): CompactLogRow {
   const source = sourceFamily(row.source);
+  // Unchanged from 0.7.0, deliberately. Routing this through the new typed
+  // fields looked tidier but changed the slot's meaning twice over: it let
+  // `x_vcap_request_id` — a key the old chain never consulted — outrank
+  // `request_id` and `reqID`, and it made the projection depend on the parser
+  // having filled those fields, so a row rehydrated from a stored session (or
+  // built by any other caller) silently lost an id that is still sitting in
+  // its own `jsonPayload`. Reading the payload here keeps `compactLogRows`
+  // self-sufficient for any row shape. The hop id gets its own key below
+  // rather than competing for this one.
   const requestId = row.requestId || readJsonRequestId(row);
+  const vcapRequestId = readVcapRequestId(row);
   return {
     id: row.id,
     time: row.timestamp,
@@ -74,6 +84,14 @@ function compactLogRow(row: ParsedLogRow, messageLimit: number, ref?: string): C
     ...(row.tenant.length === 0 ? {} : { tenant: row.tenant }),
     ...(row.clientIp.length === 0 ? {} : { clientIp: row.clientIp }),
     ...(requestId.length === 0 ? {} : { requestId }),
+    // Always emitted when present, even when it duplicates `requestId`.
+    // Suppressing the duplicate saved ~40 characters but made two different
+    // rows print identically: `requestId=<x>` alone means a correlation id on
+    // one row and a hop id on the next, with nothing to tell them apart. Since
+    // this is the documented key to join a log row to a trace, a reader has to
+    // be able to find it without inferring which identifier landed in the
+    // shared slot.
+    ...(vcapRequestId.length === 0 ? {} : { vcapRequestId }),
     ...(ref === undefined ? {} : { ref }),
   };
 }
@@ -112,6 +130,7 @@ function formatCompactRow(row: CompactLogRow): string {
   appendToken(tokens, "tenant", row.tenant);
   appendToken(tokens, "clientIp", row.clientIp);
   appendToken(tokens, "requestId", row.requestId);
+  appendToken(tokens, "vcapRequestId", row.vcapRequestId);
   appendToken(tokens, "message", row.message);
   return tokens.join(" ");
 }
@@ -123,6 +142,7 @@ function appendToken(tokens: string[], key: string, value: string | undefined): 
   tokens.push(`${key}=${escapeInline(value)}`);
 }
 
+/** The 0.7.0 key chain, preserved verbatim so this slot's value can never shift. */
 function readJsonRequestId(row: ParsedLogRow): string {
   const payload = row.jsonPayload;
   if (payload === null) {
@@ -135,6 +155,27 @@ function readJsonRequestId(row: ParsedLogRow): string {
     readString(payload["request_id"]) ||
     readString(payload["reqID"])
   );
+}
+
+/**
+ * Prefer the typed field, then fall back to the payload, for the same reason
+ * {@link readJsonRequestId} reads the payload at all: a row that reached here
+ * without going through the current parser — rehydrated from a stored session,
+ * or constructed by a caller — still carries the id in `jsonPayload`.
+ *
+ * The field is read through a `Partial` view because such a row genuinely may
+ * not have it, whatever the declared type says.
+ */
+function readVcapRequestId(row: ParsedLogRow): string {
+  const stored: Partial<ParsedLogRow> = row;
+  if (typeof stored.vcapRequestId === "string" && stored.vcapRequestId.length > 0) {
+    return stored.vcapRequestId;
+  }
+  const payload = row.jsonPayload;
+  if (payload === null) {
+    return "";
+  }
+  return readString(payload["x_vcap_request_id"]) || readString(payload["request_id"]);
 }
 
 function countBy(

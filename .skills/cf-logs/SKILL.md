@@ -31,13 +31,36 @@ Bare app names are resolved automatically from the current `cf target`. The CLI 
 
 ## Compact Workflow
 
-Use compact output for long log snapshots or streams. Compact rows keep high-signal fields such as time, level, source, logger, request, status, latency, tenant, client IP, request ID, message, and optional `ref`.
+Use compact output for long log snapshots or streams. Compact rows keep high-signal fields such as time, level, source, logger, request, status, latency, tenant, client IP, `requestId`, `vcapRequestId`, message, and optional `ref`.
 
 Compact output:
 
 - caps message/body text at 500 characters by default
 - normalizes multiline messages into one terminal line
 - omits full `rawBody`, `jsonPayload`, `searchableText`, and raw snapshot text
+
+## Joining a Log Row to an OpenTelemetry Trace
+
+A row carries two different identifiers. Pick the right one:
+
+- `vcapRequestId` — the Cloud Foundry hop id. **One value, one trace.** This is the join key.
+- `correlationId` — the SAP end-to-end correlation id. One value spans many requests and
+  therefore many traces (measured on a live tenant: 13.29 traces per value, up to 777). Use it
+  to ask "what else happened in this transaction?", never to pin a single trace.
+- `requestId` — the pre-0.8.0 slot holding whichever of the two the row had, correlation first.
+  Kept for compatibility; it cannot tell you which identifier it holds, so prefer the two above.
+
+`vcapRequestId` is always present in compact output when the row has one, so no full-row
+drill-down is needed to read it:
+
+```bash
+cf-logs snapshot --app app-demo --compact --json | jq -r '.rows[] | select(.vcapRequestId) | .vcapRequestId'
+cf-otel find --service app-demo --attr 'http@request@header@x-vcap-request-id~<id>'
+cf-otel selftime <traceId>
+```
+
+Use `~` and not `=` in that filter. The span attribute is stored as a JSON array rendered to
+text (`["<id>"]`), so an exact `=` term matches nothing and reports no rows rather than an error.
 
 Always create refs for later full-row drill-down when collecting logs:
 

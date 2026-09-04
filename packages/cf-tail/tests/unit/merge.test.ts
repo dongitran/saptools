@@ -29,6 +29,8 @@ function buildRow(overrides: Partial<ParsedLogRow>): ParsedLogRow {
     tenant: "",
     clientIp: "",
     requestId: "",
+    correlationId: "",
+    vcapRequestId: "",
     message: "ready",
     rawBody: "ready",
     jsonPayload: null,

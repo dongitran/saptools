@@ -22,7 +22,7 @@ Fetch snapshots, stream live output, normalize plain-text and JSON rows, emit co
 
 - 📥 **Recent snapshots** — run `cf logs --recent`, normalize the result, and optionally persist it
 - 📡 **Live streams** — wrap `cf logs <app>` with batching, reconnection, bounded in-memory state, and typed events
-- 🧠 **Log normalization** — handle plain text, JSON logs, multiline continuations, and router access metadata such as method, request, status, latency, tenant, client IP, and request ID
+- 🧠 **Log normalization** — handle plain text, JSON logs, multiline continuations, and router access metadata such as method, request, status, latency, tenant, client IP, and separate correlation & hop request IDs
 - 🪶 **Compact output** — project logs into concise rows with optional refs back to full saved rows
 - 🗃️ **Bounded local store** — write snapshots to `~/.saptools/cf-logs-store.json` with atomic file updates and locking
 - 🧩 **CLI and typed API** — use the package from shell scripts, VSCode extensions, Node services, or test runners
@@ -253,6 +253,53 @@ Print the installed `@saptools/cf-logs` semantic version.
 ```bash
 cf-logs --version
 ```
+
+---
+
+## 🔗 Request Identifiers
+
+A parsed row exposes three identifier fields. They are not interchangeable, and picking the
+wrong one is the difference between finding a request and finding a few hundred.
+
+| Field | Source | Grain |
+| --- | --- | --- |
+| `correlationId` | `x_correlationid` on a router line; `correlation_id`, `x_correlation_id` or `x_correlationid` in a JSON payload | One **business transaction** — constant across every hop |
+| `vcapRequestId` | `vcap_request_id` on a router line; `x_vcap_request_id` or `request_id` in a JSON payload | One **HTTP hop** — a fresh value per request |
+| `requestId` | router lines only — whichever of the two that line carried, correlation first | Legacy single slot, unchanged since 0.7.0 |
+
+`requestId` predates the split and is kept byte-for-byte so existing callers keep working. It
+cannot tell you *which* identifier it holds, which is why the two typed fields exist.
+
+One wrinkle worth knowing: on a **JSON application row** `requestId` is always empty — it has
+only ever been populated from router lines. The compact projection still fills its own
+`requestId` slot from the payload, exactly as it did in 0.7.0. `correlationId` and
+`vcapRequestId` are populated on both row kinds, which is the point of having them.
+
+### Joining a log row to an OpenTelemetry trace
+
+`vcapRequestId` is the field to join on. Measured against a live tenant over 1,504 server spans,
+it resolved to exactly one trace every time; `correlationId` averaged 13.29 traces per value and
+reached 777, because it identifies the whole transaction rather than one request.
+
+The matching span attribute is `span.attributes.http@request@header@x-vcap-request-id`:
+
+```bash
+# 1. read the hop id off the log row (compact keeps it, so no full snapshot needed)
+cf-logs snapshot --app demo-app --compact --json | jq -r '.rows[] | select(.vcapRequestId) | .vcapRequestId'
+
+# 2. resolve it to a trace, then analyze that trace
+cf-otel find --service demo-app --attr 'http@request@header@x-vcap-request-id~<id>'
+cf-otel selftime <traceId>
+```
+
+> [!NOTE]
+> Use `~` rather than `=` in that filter. The attribute is stored as a JSON array rendered to
+> text (`["<id>"]`), so an exact `=` term matches nothing.
+
+In compact output `vcapRequestId` is printed whenever the row has one, even when it repeats
+`requestId`. Suppressing the duplicate saved a few characters but made two rows carrying
+different kinds of identifier print identically, which defeats the point of joining on it.
+`requestId` itself is byte-for-byte what 0.7.0 emitted.
 
 ---
 
