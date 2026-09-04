@@ -233,7 +233,7 @@ function normalizeRequestId(value: string): string {
  * Confirmed against a real Cloud Logging instance: an OTel attribute whose
  * value is an array reaches the index as the JSON array *rendered to text*, so
  * the keyword token for an HTTP request header is literally
- * `["0f386888-da32-42b2-7c48-c6200a2894fa"]` — brackets and quotes included.
+ * `["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]` — brackets and quotes included.
  * The whole `span.attributes.http@request@header@*` family is stored this way —
  * 46 such fields in the mapping, and every one observed carrying a real value
  * except the redacted `authorization`. A plain `term` on the bare value matched

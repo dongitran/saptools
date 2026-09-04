@@ -37,7 +37,7 @@ test("sample dumps full unfiltered documents end to end", async () => {
 
 test("find resolves a cf-logs request id to its trace, with no --service", async () => {
   const result = await runCli(
-    ["find", "--vcap-request-id", "0f386888-da32-42b2-7c48-c6200a2894fa", "--format", "json", ...targetArgs()],
+    ["find", "--vcap-request-id", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--format", "json", ...targetArgs()],
     env(),
   );
 
@@ -52,7 +52,7 @@ test("find matches an array-rendered attribute through the = operator end to end
     [
       "find",
       "--attr",
-      "http@request@header@x-vcap-request-id=0f386888-da32-42b2-7c48-c6200a2894fa",
+      "http@request@header@x-vcap-request-id=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       "--format",
       "json",
       ...targetArgs(),

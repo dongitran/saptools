@@ -163,36 +163,36 @@ describe("parser", () => {
     // a single x_correlationid but minted a fresh vcap_request_id.
     const rows = parseRecentLogs(
       [
-        '2026-04-12T09:14:41.00+0700 [RTR/2] OUT app.example.test - [2026-04-12T02:14:41.000Z] "GET /a HTTP/1.1" 200 0 532 "-" "axios/1.20.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"0f386888-da32-42b2-7c48-c6200a2894fa" x_correlationid:"629b4bc4-b745-48ed-bcfc-3b6b4c31570d" response_time:0.017',
-        '2026-04-12T09:14:42.00+0700 [RTR/3] OUT app.example.test - [2026-04-12T02:14:42.000Z] "GET /b HTTP/1.1" 200 0 532 "-" "axios/1.20.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"11ff7ee2-ab3f-4bdd-5df1-d159e01e3bfb" x_correlationid:"629b4bc4-b745-48ed-bcfc-3b6b4c31570d" response_time:0.030',
+        '2026-04-12T09:14:41.00+0700 [RTR/2] OUT app.example.test - [2026-04-12T02:14:41.000Z] "GET /a HTTP/1.1" 200 0 532 "-" "axios/1.20.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" x_correlationid:"cccccccc-dddd-4eee-8fff-000000000000" response_time:0.017',
+        '2026-04-12T09:14:42.00+0700 [RTR/3] OUT app.example.test - [2026-04-12T02:14:42.000Z] "GET /b HTTP/1.1" 200 0 532 "-" "axios/1.20.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"22222222-3333-4444-8555-666666666666" x_correlationid:"cccccccc-dddd-4eee-8fff-000000000000" response_time:0.030',
       ].join("\n"),
     );
 
     expect(rows.map((row) => row.correlationId)).toEqual([
-      "629b4bc4-b745-48ed-bcfc-3b6b4c31570d",
-      "629b4bc4-b745-48ed-bcfc-3b6b4c31570d",
+      "cccccccc-dddd-4eee-8fff-000000000000",
+      "cccccccc-dddd-4eee-8fff-000000000000",
     ]);
     expect(rows.map((row) => row.vcapRequestId)).toEqual([
-      "0f386888-da32-42b2-7c48-c6200a2894fa",
-      "11ff7ee2-ab3f-4bdd-5df1-d159e01e3bfb",
+      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "22222222-3333-4444-8555-666666666666",
     ]);
     // The legacy field still resolves correlation-first, exactly as before.
     expect(rows.map((row) => row.requestId)).toEqual([
-      "629b4bc4-b745-48ed-bcfc-3b6b4c31570d",
-      "629b4bc4-b745-48ed-bcfc-3b6b4c31570d",
+      "cccccccc-dddd-4eee-8fff-000000000000",
+      "cccccccc-dddd-4eee-8fff-000000000000",
     ]);
   });
 
   it("keeps requestId empty on json rows while typing both payload ids", () => {
     const rows = parseRecentLogs(
-      '2026-04-12T09:14:45.25+0700 [APP/PROC/WEB/0] OUT {"level":"info","logger":"odata","timestamp":"2026-04-12T02:14:45.255Z","msg":"GET /GlobalSetting","type":"log","correlation_id":"629b4bc4-b745-48ed-bcfc-3b6b4c31570d","x_correlation_id":"629b4bc4-b745-48ed-bcfc-3b6b4c31570d","x_vcap_request_id":"2eeacec4-e211-4057-7266-ad6ed25f29b6","request_id":"2eeacec4-e211-4057-7266-ad6ed25f29b6"}',
+      '2026-04-12T09:14:45.25+0700 [APP/PROC/WEB/0] OUT {"level":"info","logger":"odata","timestamp":"2026-04-12T02:14:45.255Z","msg":"GET /GlobalSetting","type":"log","correlation_id":"cccccccc-dddd-4eee-8fff-000000000000","x_correlation_id":"cccccccc-dddd-4eee-8fff-000000000000","x_vcap_request_id":"99999999-8888-4777-8666-444444444444","request_id":"99999999-8888-4777-8666-444444444444"}',
     );
 
     expect(rows[0]).toMatchObject({
       format: "json",
       requestId: "",
-      correlationId: "629b4bc4-b745-48ed-bcfc-3b6b4c31570d",
-      vcapRequestId: "2eeacec4-e211-4057-7266-ad6ed25f29b6",
+      correlationId: "cccccccc-dddd-4eee-8fff-000000000000",
+      vcapRequestId: "99999999-8888-4777-8666-444444444444",
     });
   });
 
@@ -210,15 +210,15 @@ describe("parser", () => {
 
   it("makes both ids searchable as key=value tokens", () => {
     const rows = parseRecentLogs(
-      '2026-04-12T09:14:41.00+0700 [RTR/2] OUT app.example.test - [2026-04-12T02:14:41.000Z] "GET /a HTTP/1.1" 200 0 532 "-" "agent/1.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"0f386888-da32-42b2-7c48-c6200a2894fa" x_correlationid:"corr-1" response_time:0.017',
+      '2026-04-12T09:14:41.00+0700 [RTR/2] OUT app.example.test - [2026-04-12T02:14:41.000Z] "GET /a HTTP/1.1" 200 0 532 "-" "agent/1.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" x_correlationid:"corr-1" response_time:0.017',
     );
 
-    expect(filterRows(rows, { searchTerm: "vcap_request_id=0f386888-da32-42b2-7c48-c6200a2894fa" })).toHaveLength(1);
+    expect(filterRows(rows, { searchTerm: "vcap_request_id=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" })).toHaveLength(1);
     expect(filterRows(rows, { searchTerm: "correlation_id=corr-1" })).toHaveLength(1);
     expect(filterRows(rows, { searchTerm: "vcap_request_id=nope" })).toHaveLength(0);
     // The token names must not let a requestId= search match the hop id: a
     // camelCase "vcapRequestId=<v>" would contain "requestId=<v>" as a substring.
-    expect(filterRows(rows, { searchTerm: "requestId=0f386888-da32-42b2-7c48-c6200a2894fa" })).toHaveLength(0);
+    expect(filterRows(rows, { searchTerm: "requestId=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" })).toHaveLength(0);
     expect(filterRows(rows, { searchTerm: "requestId=corr-1" })).toHaveLength(1);
   });
   it("treats a \"-\" sentinel in a json payload as no identifier", () => {

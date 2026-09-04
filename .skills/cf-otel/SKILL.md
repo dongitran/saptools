@@ -24,7 +24,9 @@ If `cf-otel` is missing, install it from `@saptools/cf-otel`: `npm install -g @s
    `cf-otel find --vcap-request-id <the row's vcapRequestId>`. That id is 1:1 with a trace.
    Its sibling `correlationId` is not: one value has been measured spanning 6,796 traces, so use it
    only to ask what else happened in the same transaction, via
-   `--attr 'http@request@header@x-correlation-id=<id>'` — and read it from a full
+   `--attr 'http@request@header@x-correlationid=<id>'` for an id off a router row, or
+   `…@x-correlation-id` (dashed) for one off a JSON application row — the two spellings are not
+   synonyms and differed on 69 of 551 spans carrying both — and read it from a full
    `cf-logs snapshot --json`, since compact rows carry only `requestId` and `vcapRequestId`.
    Both headers exist only on `SPAN_KIND_SERVER` spans; if a tenant's collector does not export
    request headers, `--vcap-request-id` says so outright and `--attr` prints a notice on stderr.

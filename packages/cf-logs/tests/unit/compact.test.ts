@@ -121,14 +121,14 @@ describe("compact logs", () => {
 
   it("keeps the hop id when the correlation id takes the requestId slot", () => {
     const compact = compactLogRows(parseRecentLogs(
-      '2026-04-12T09:00:01.00+0700 [RTR/2] OUT app.example.test - [2026-04-12T02:00:01.000Z] "GET /both HTTP/1.1" 200 0 532 "-" "agent/1.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"0f386888-da32-42b2-7c48-c6200a2894fa" x_correlationid:"corr-both" response_time:0.017',
+      '2026-04-12T09:00:01.00+0700 [RTR/2] OUT app.example.test - [2026-04-12T02:00:01.000Z] "GET /both HTTP/1.1" 200 0 532 "-" "agent/1.0" "10.0.1.1:1001" "10.0.2.1:2001" vcap_request_id:"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" x_correlationid:"corr-both" response_time:0.017',
     ));
     expect(compact[0]).toMatchObject({
       requestId: "corr-both",
-      vcapRequestId: "0f386888-da32-42b2-7c48-c6200a2894fa",
+      vcapRequestId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     });
     expect(formatCompactRows(compact)).toContain(
-      "requestId=corr-both vcapRequestId=0f386888-da32-42b2-7c48-c6200a2894fa",
+      "requestId=corr-both vcapRequestId=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     );
   });
 
