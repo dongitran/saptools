@@ -133,17 +133,53 @@ describe("withOpenSearchClient", () => {
   });
 
   /**
-   * `--service-key`/`--fallback-binding-app` say which bindings may be used.
-   * A cached credential from some other binding is still valid, but it is not
-   * what the caller asked for.
+   * `--service-key`/`--fallback-binding-app` say which bindings may be used,
+   * and each one restricts only its own candidate type — `applyNameFilters`
+   * leaves the other type unfiltered during discovery, so running with
+   * `--service-key key1` can legitimately *return* an app-binding credential
+   * once the pinned keys turn out to be unusable. Rejecting that from the
+   * cache made those runs rediscover from scratch every time and arrive at the
+   * same answer. `--refresh-credential` is the way to force a fresh look.
    */
-  it("treats a cached credential from an unpinned binding as a miss", async () => {
+  it("accepts a cached app-binding credential when only service keys were pinned", async () => {
     vi.mocked(credentialCache.readCachedCredential).mockResolvedValue(CACHED);
     const discover = stubDiscovery();
 
     await withOpenSearchClient({ ...BASE_OPTS, serviceKey: ["key1"] }, async () => undefined);
 
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("still treats a cached credential from a binding the caller excluded as a miss", async () => {
+    vi.mocked(credentialCache.readCachedCredential).mockResolvedValue(CACHED);
+    const discover = stubDiscovery();
+
+    // CACHED came from `binding:legacy-app`, and this run pins a different app.
+    await withOpenSearchClient({ ...BASE_OPTS, fallbackBindingApp: ["other-app"] }, async () => undefined);
+
     expect(discover).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Minting disables SAML on the shared Cloud Logging instance to create its
+   * key, so re-minting is never free. A minted credential is the product of
+   * the same flags this run carries — discovery already honoured them before
+   * minting — so treating it as unpinned sent every `--allow-mint-credential`
+   * invocation back through a fresh mint, breaking SSO for everyone each time.
+   */
+  it("reuses a cached minted credential instead of minting again on every run", async () => {
+    vi.mocked(credentialCache.readCachedCredential).mockResolvedValue({
+      ...CACHED,
+      source: "minted:cf-metrics-ab12cd34",
+    });
+    const discover = stubDiscovery();
+
+    await withOpenSearchClient(
+      { ...BASE_OPTS, serviceKey: ["key1"], allowMintCredential: true },
+      async () => undefined,
+    );
+
+    expect(discover).not.toHaveBeenCalled();
   });
 
   it("accepts a cached credential whose source matches a pin", async () => {

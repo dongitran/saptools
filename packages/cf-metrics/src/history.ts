@@ -82,16 +82,42 @@ export async function queryHistory(client: OpenSearchClient, opts: HistoryQueryO
   return { rows, cumulativeWarning, units: readUnitKeys(aggResponse.aggregations) };
 }
 
+/** The window a kind lookup should cover: the caller's own, so it sees the data the caller will. */
+export interface KindLookupWindow {
+  readonly since?: string;
+  readonly until?: string;
+}
+
 /**
  * Resolve a metric name's kind with one cheap terms-agg lookup, when the
  * caller didn't already know it. `service` is optional so callers with no
  * per-service scope (e.g. `top`, which ranks cross-app by design) can still
  * resolve a name's kind without a service term filter.
+ *
+ * `window` is not optional in spirit even though it is in the type: without
+ * it this scanned the whole retention period on every run, across all 40
+ * backing indices, and answered with the kind that dominated *all time* rather
+ * than the one the caller is about to chart. A name whose instrumentation
+ * changed — GAUGE for a month, HISTOGRAM since yesterday — then shaped a
+ * "last 2h" query with GAUGE sub-aggregations, which read a `value` field
+ * HISTOGRAM documents do not carry, and returned real doc counts beside
+ * all-null values. It also made the ambiguity warning's own words untrue: it
+ * says "in this window" while looking at every window there has ever been.
  */
-export async function resolveMetricKind(client: OpenSearchClient, service: string | undefined, name: string): Promise<KindResolution> {
+export async function resolveMetricKind(
+  client: OpenSearchClient,
+  service: string | undefined,
+  name: string,
+  window: KindLookupWindow = {},
+): Promise<KindResolution> {
   const response = await client.search(DEFAULT_INDEX_PATTERN, {
     size: 0,
-    query: buildMetricBoolQuery({ ...(service === undefined ? {} : { service }), names: [name] }),
+    query: buildMetricBoolQuery({
+      ...(service === undefined ? {} : { service }),
+      names: [name],
+      ...(window.since === undefined ? {} : { since: window.since }),
+      ...(window.until === undefined ? {} : { until: window.until }),
+    }),
     aggs: { by_kind: { terms: { field: "kind", size: KIND_TERMS_SIZE } } },
   });
   const buckets = bucketArray(response.aggregations?.["by_kind"]);

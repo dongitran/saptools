@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -265,12 +265,44 @@ export async function listCachedCredentials(options: CredentialCacheOptions = {}
     );
 }
 
-/** Remove the whole cache file. Returns how many live entries it held. */
+/**
+ * Remove the whole cache file, and any half-written temp file beside it.
+ * Returns how many live entries it held.
+ *
+ * The temp sweep is the part that matters: `writeStore` writes
+ * `credentials.json.tmp-<pid>` before renaming it into place, so an
+ * interruption in that window strands a file holding the basic-auth password
+ * in cleartext. Nothing reclaimed it — a later run writes under its own pid —
+ * and `credential list` reads only the real file, so the CLI reported the
+ * credential as gone while the secret sat on disk indefinitely.
+ */
 export async function clearCredentialCache(options: CredentialCacheOptions = {}): Promise<number> {
   const path = cachePath(options.saptoolsRoot);
   const store = await readStore(path);
   const nowMs = (options.now?.() ?? new Date()).getTime();
   const count = liveEntries(store, nowMs).length;
   await rm(path, { force: true });
+  await removeStrandedTempFiles(path);
   return count;
+}
+
+/** Delete every `<cache>.tmp-*` left behind by an interrupted write. */
+async function removeStrandedTempFiles(path: string): Promise<void> {
+  const directory = dirname(path);
+  const prefix = `${CACHE_FILE_NAME}.tmp-`;
+  let names: readonly string[];
+  try {
+    names = await readdir(directory);
+  } catch {
+    // No directory at all is the normal "nothing cached" case, and an
+    // unreadable one must not turn a successful clear into a failure.
+    return;
+  }
+  await Promise.all(
+    names
+      .filter((name) => name.startsWith(prefix))
+      .map(async (name) => {
+        await rm(join(directory, name), { force: true });
+      }),
+  );
 }

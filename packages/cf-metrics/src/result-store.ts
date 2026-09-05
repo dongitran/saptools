@@ -8,6 +8,8 @@ import { CfMetricsError } from "./errors.js";
 import type { OutputRow } from "./format.js";
 
 const RESULT_REF_PATTERN = /^[0-9a-f]{8}$/;
+/** A `<ref>.tmp-<pid>` directory from a `--save` interrupted before its rename. */
+const TEMP_REF_PATTERN = /^[0-9a-f]{8}\.tmp-\d+$/;
 const MANIFEST_FILE_NAME = "manifest.json";
 /** The largest absolute millisecond value a `Date` can hold; beyond it, `new Date(v)` is invalid. */
 const MAX_DATE_MILLIS = 8_640_000_000_000_000;
@@ -392,7 +394,41 @@ export async function pruneResultSessions(options: ResultStoreOptions = {}): Pro
       failed += 1;
     }
   }
-  return { removed, failed, retainedRefs };
+  const strandedRemoved = await removeStrandedTempDirectories(options.saptoolsRoot);
+  return { removed: removed + strandedRemoved, failed, retainedRefs };
+}
+
+/**
+ * Delete `<ref>.tmp-<pid>` directories left behind when a `--save` was
+ * interrupted between `mkdir` and `rename`.
+ *
+ * They are invisible to everything else: `listSessionRefs` filters names
+ * through `RESULT_REF_PATTERN`, which a `.tmp-` suffix never matches, so
+ * `prune` did not count them even as retained, `list` never showed them, and
+ * `result clear` walked straight past them. The self-cleanup inside
+ * `createResultSession` only fires for a colliding *same* random ref, which in
+ * practice never recurs. Nothing else would ever reclaim the space.
+ */
+async function removeStrandedTempDirectories(saptoolsRoot?: string): Promise<number> {
+  const root = resultsRoot(saptoolsRoot);
+  let names: readonly string[];
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    names = entries.filter((entry) => entry.isDirectory() && TEMP_REF_PATTERN.test(entry.name)).map((entry) => entry.name);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    try {
+      await rm(join(root, name), { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // Same reasoning as the sweep above: one undeletable leftover must not
+      // abort the rest of the prune.
+    }
+  }
+  return removed;
 }
 
 /**

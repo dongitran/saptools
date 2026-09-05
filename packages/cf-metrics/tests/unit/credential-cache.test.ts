@@ -189,6 +189,27 @@ describe("credential cache", () => {
   });
 
   /**
+   * Writes go through `credentials.json.tmp-<pid>` before the rename, so a
+   * Ctrl-C in that window strands a file holding the basic-auth password in
+   * cleartext. Nothing reclaimed it — the next run writes under its own pid —
+   * and `credential list` reads only the real file, so the CLI reported the
+   * credential gone while the secret stayed on disk.
+   */
+  it("also removes a temp file stranded by an interrupted write, not just the cache file", async () => {
+    await writeCachedCredential(AUTO_KEY, CREDENTIAL, options());
+    const strandedPath = join(root, "cf-metrics", "credentials.json.tmp-99999");
+    await writeFile(strandedPath, JSON.stringify({ entries: [{ password: "dash-secret" }] }), { mode: 0o600 });
+
+    await clearCredentialCache(options());
+
+    await expect(stat(strandedPath)).rejects.toThrow();
+  });
+
+  it("does not fail when there is nothing cached and no directory at all", async () => {
+    await expect(clearCredentialCache(options())).resolves.toBe(0);
+  });
+
+  /**
    * The cache is an accelerator. A corrupted file must read as "nothing
    * cached" and be overwritten by the next write, never fail the command.
    */

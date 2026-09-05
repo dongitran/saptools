@@ -52,6 +52,23 @@ async function runCli(args: readonly string[], client: OpenSearchClient): Promis
   return output.text();
 }
 
+/**
+ * The retry `withOpenSearchClient` really performs when a cached credential is
+ * rejected mid-run: the work callback is abandoned partway and run again from
+ * the top against a freshly discovered credential. The plain `runCli` above
+ * calls it once, which is why nothing caught a command accumulating its rows
+ * outside the callback.
+ */
+async function runCliWithCredentialRetry(args: readonly string[], client: OpenSearchClient): Promise<string> {
+  vi.mocked(clientBootstrap.withOpenSearchClient).mockImplementation(async (_opts, work) => {
+    await work(client);
+    return await work(client);
+  });
+  const output = captureOutput();
+  await buildTestProgram().parseAsync(["node", "cf-metrics", ...args]);
+  return output.text();
+}
+
 function stripNotices(text: string): string {
   return text
     .split("\n")
@@ -304,6 +321,32 @@ describe("history", () => {
     const client: OpenSearchClient = { search, count: async () => 0, getMapping: async () => ({}) };
     await runCli(["history", "--service", "app", "--name", "container.cpu.usage", "--kind", "GAUGE", "--format", "json"], client);
     expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A cached credential rejected partway through re-runs the whole callback
+   * against a fresh one. With the row accumulator outside that callback, every
+   * name fetched before the rejection was emitted twice — at exit 0, and
+   * persisted that way under `--save`.
+   */
+  it("does not duplicate rows when a rejected credential makes the client bootstrap re-run the work", async () => {
+    const client = fakeClient({
+      search: async (_index, body) =>
+        body["aggs"] !== undefined && "by_kind" in (body["aggs"] as Record<string, unknown>)
+          ? { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "GAUGE" }] } } }
+          : {
+              totalHits: 0,
+              hits: [],
+              aggregations: { over_time: { buckets: [{ key_as_string: "t1", doc_count: 5, avg_value: { value: 1 }, min_value: { value: 1 }, max_value: { value: 1 } }] } },
+            },
+    });
+
+    const text = await runCliWithCredentialRetry(
+      ["history", "--service", "app", "--name", "container.cpu.usage", "--format", "json"],
+      client,
+    );
+
+    expect(JSON.parse(stripNotices(text))).toEqual([{ TIME: "t1", AVG: 1, MIN: 1, MAX: 1, DOC_COUNT: 5 }]);
   });
 
   it("requires at least one --name", async () => {

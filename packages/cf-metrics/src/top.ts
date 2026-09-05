@@ -2,7 +2,7 @@ import { aggValue, bucketArray, bucketDocCount, readUnitKeys } from "./agg-bucke
 import { ALL_BUCKETS_TERMS_SIZE, DEFAULT_INDEX_PATTERN, MAX_UNITS_PER_METRIC } from "./config.js";
 import { CfMetricsError } from "./errors.js";
 import type { OutputRow } from "./format.js";
-import type { KindResolution } from "./history.js";
+import type { KindLookupWindow, KindResolution } from "./history.js";
 import { resolveMetricKind } from "./history.js";
 import { buildKindSubAggs } from "./kind.js";
 import type { MetricKind } from "./kind.js";
@@ -123,9 +123,13 @@ async function queryTopHistogram(client: OpenSearchClient, query: Record<string,
  * signal; a hard error here would only regress the previously-working
  * behavior for an unknown `--name` from an empty table to a crash.
  */
-export async function resolveTopMetricKind(client: OpenSearchClient, name: string): Promise<KindResolution | undefined> {
+export async function resolveTopMetricKind(
+  client: OpenSearchClient,
+  name: string,
+  window: KindLookupWindow = {},
+): Promise<KindResolution | undefined> {
   try {
-    return await resolveMetricKind(client, undefined, name);
+    return await resolveMetricKind(client, undefined, name, window);
   } catch (error) {
     if (error instanceof CfMetricsError && error.code === "METRIC_NOT_FOUND") {
       return undefined;

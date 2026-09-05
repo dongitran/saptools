@@ -152,6 +152,42 @@ describe("resolveMetricKind", () => {
     });
   });
 
+  /**
+   * Without the window this scanned the whole retention period and answered
+   * with the all-time dominant kind — which, for a name whose instrumentation
+   * changed, is not the kind of the data the caller is about to chart. It also
+   * made the ambiguity warning's "in this window" wording untrue.
+   */
+  it("scopes the lookup to the caller's own window rather than all of retention", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const client = fakeClient(async (_index, body) => {
+      capturedBody = body;
+      return { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "GAUGE" }] } } };
+    });
+
+    await resolveMetricKind(client, "app", "container.cpu.usage", { since: "2h", until: "30m" });
+
+    const query = capturedBody["query"] as { bool: { filter: Record<string, unknown>[] } };
+    const range = query.bool.filter.find((clause) => "range" in clause) as
+      | { range: { time: { gte?: string; lte?: string } } }
+      | undefined;
+    expect(range?.range.time.gte).toBeDefined();
+    expect(range?.range.time.lte).toBeDefined();
+  });
+
+  it("still resolves with no window at all, for callers that have none", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const client = fakeClient(async (_index, body) => {
+      capturedBody = body;
+      return { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "SUM" }] } } };
+    });
+
+    await expect(resolveMetricKind(client, "app", "queue.incoming_messages")).resolves.toMatchObject({ kind: "SUM" });
+
+    const query = capturedBody["query"] as { bool: { filter: Record<string, unknown>[] } };
+    expect(query.bool.filter.some((clause) => "range" in clause)).toBe(false);
+  });
+
   it("throws a clear error when no documents match the metric name", async () => {
     const client = fakeClient(async () => ({ totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [] } } }));
 

@@ -28,7 +28,12 @@ async function runTop(opts: TopOpts): Promise<void> {
   const result = await withOpenSearchClient(opts, async (client) => {
     let kind: MetricKind | undefined = overrideKind;
     if (kind === undefined) {
-      const resolution = await resolveTopMetricKind(client, opts.name);
+      // Scoped to the ranking's own window: an all-time lookup answers with the
+      // kind that dominated history rather than the one being ranked now.
+      const resolution = await resolveTopMetricKind(client, opts.name, {
+        since,
+        ...(opts.until === undefined ? {} : { until: opts.until }),
+      });
       kind = resolution?.kind;
       // Same anomaly `history` warns about: more than one kind for this name
       // means the terms agg silently discarded a whole other series before

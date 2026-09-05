@@ -35,13 +35,23 @@ function pinsAllow(source: string, opts: CredentialOpts): boolean {
   const separator = source.indexOf(":");
   const kind = separator === -1 ? source : source.slice(0, separator);
   const label = separator === -1 ? "" : source.slice(separator + 1);
+  // Each pin restricts only its own candidate type, exactly as
+  // `applyNameFilters` treats them during discovery: an empty list there means
+  // "no restriction on this type", not "reject this type". Reading it the other
+  // way meant `--fallback-binding-app x` alone rejected every cached
+  // service-key credential (and vice versa), so those runs paid the full ~30s
+  // rediscovery every single time while the cache sat there valid.
   if (kind === "service-key") {
-    return opts.serviceKey.includes(label);
+    return opts.serviceKey.length === 0 || opts.serviceKey.includes(label);
   }
   if (kind === "binding") {
-    return opts.fallbackBindingApp.includes(label);
+    return opts.fallbackBindingApp.length === 0 || opts.fallbackBindingApp.includes(label);
   }
-  return false;
+  // A minted credential is the product of the very run these pins were given
+  // to — discovery already honoured them before minting. Rejecting it sent
+  // `--allow-mint-credential` back through minting on every invocation, and
+  // each mint disables SAML on the shared instance to do its work.
+  return kind === "minted";
 }
 
 function clientFor(credential: DashboardsCredential): OpenSearchClient {
