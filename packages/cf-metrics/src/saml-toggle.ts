@@ -21,7 +21,17 @@ import type { DashboardsCredential } from "./types.js";
 
 export type StepReporter = (message: string) => void;
 
-const REDACT_KEY_SUBSTRINGS = ["private", "password", "signature"];
+/**
+ * Substrings that mark a key as secret-bearing. This dumps a service
+ * instance's entire params blob to stderr under `--verbose`, so the list has
+ * to cover what a Cloud Logging instance actually carries, not just the SAML
+ * fields this file was written for: `clientSecret` and `apiToken` on the
+ * ingest block were both printed in full before `secret`/`token` were added.
+ * Kept in step with `cf.ts`'s `SENSITIVE_JSON_VALUE_PATTERN`, which redacts
+ * the same classes on the exec layer's own output — two lists that disagree
+ * mean whichever path a secret takes decides whether it leaks.
+ */
+const REDACT_KEY_SUBSTRINGS = ["private", "password", "signature", "secret", "token", "credential", "key"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

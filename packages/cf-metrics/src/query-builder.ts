@@ -2,22 +2,99 @@ import { CfMetricsError } from "./errors.js";
 
 const RELATIVE_DURATION_PATTERN = /^(\d+)(s|m|h|d)$/;
 const UNIT_MILLIS: Readonly<Record<string, number>> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
-// Anchored to ISO-8601's date/date-time shape — the format --since/--until's absolute-timestamp
-// path documents, and the only shape OpenSearch's `strict_date_optional_time` mapping accepts.
-// Deliberately narrower than JS's `Date.parse`, which leniently accepts non-ISO formats (e.g.
-// "8/31/2026", or "yesterday" on some engines) under implementation-defined, often-local-timezone
-// semantics that would silently query the wrong window instead of failing loudly.
-const ABSOLUTE_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+/**
+ * Anchored to ISO-8601's date/date-time shape — the format --since/--until's absolute-timestamp
+ * path documents. Deliberately narrower than JS's `Date.parse`, which leniently accepts non-ISO
+ * formats (e.g. "8/31/2026", or "yesterday" on some engines) under implementation-defined,
+ * often-local-timezone semantics that would silently query the wrong window instead of failing
+ * loudly.
+ *
+ * Every boundary here was measured against a real Cloud Logging instance's
+ * `strict_date_optional_time||epoch_millis` mapping rather than inferred, because both kinds of
+ * mistake cost the user something: a shape this accepts but OpenSearch rejects becomes an HTTP 400
+ * dump after a full login round trip, and a shape this rejects but OpenSearch accepts is a
+ * capability silently taken away. Measured rejected, and therefore rejected here: a space instead
+ * of `T`, hour 24 (legal end-of-day in ISO-8601, but `java.time` resolves `HOUR_OF_DAY` strictly
+ * 0-23), minute or second 60, and a tenth fractional digit (the mapping caps nanosecond precision
+ * at nine). Measured accepted, and allowed here: date-only values, `T03:00` with seconds omitted,
+ * one to nine fractional digits, and offsets in `Z`, `+07:00`, `+0700` and `+14:00` forms.
+ *
+ * Three shapes the backend accepts are still rejected here, deliberately: hour-only (`2026-08-30T03`),
+ * the same with a zone, and a comma as the fraction separator. `Date.parse` returns `NaN` for all
+ * three, and `assertValidTimeRange` compares bounds through `Date.parse` — so accepting them would
+ * not widen what works, it would silently switch off the inverted-window check for whoever used
+ * them. A refusal naming the shape beats a check that quietly stops applying.
+ */
+const ABSOLUTE_ISO_PATTERN =
+  /^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 
-/** Resolve `--since`/`--until` as either a relative duration ("24h") or an absolute ISO-8601 timestamp. */
-export function resolveTimeBound(value: string, now: Date = new Date()): string {
-  const match = RELATIVE_DURATION_PATTERN.exec(value.trim());
+/** Proleptic Gregorian, the calendar both `Date` and OpenSearch's `java.time` formatter use. */
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * Days in a 1-based month. February is answered from {@link isLeapYear} rather than by probing
+ * `Date.UTC` with the caller's own year: `Date.UTC` maps a year below 100 into 1900-1999, which
+ * would report 28 days for February of year 0 — a real leap year — and reject a valid date.
+ */
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    return isLeapYear(year) ? 29 : 28;
+  }
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+/**
+ * The instant a relative duration reaches back to, or `undefined` when the value
+ * is not a relative duration at all. An out-of-range magnitude yields an
+ * *invalid* Date rather than `undefined`: the multiplication itself stays finite
+ * (`999999999999d` is ~8.6e19 ms, a perfectly good float), and only `Date`
+ * refuses it — so the check has to look at the date, not the arithmetic. Shared
+ * so the flag-level check and the resolver agree on what "resolvable" means.
+ */
+function resolveRelativeInstant(trimmed: string, now: Date): Date | undefined {
+  const match = RELATIVE_DURATION_PATTERN.exec(trimmed);
   if (match === null) {
-    return value.trim();
+    return undefined;
   }
   const amount = Number(match[1]);
   const unitMillis = UNIT_MILLIS[match[2] ?? ""] ?? 0;
-  return new Date(now.getTime() - amount * unitMillis).toISOString();
+  return new Date(now.getTime() - amount * unitMillis);
+}
+
+/** The message for a bound that is neither a relative duration nor an ISO-8601 timestamp. */
+function invalidBoundMessage(flagName: string, value: string): string {
+  const base = `Invalid ${flagName} value "${value}" (expected a relative duration like "24h"/"30m"/"2d", or an absolute ISO-8601 timestamp like "2026-08-30T03:00:00Z")`;
+  // A bare number is the one ambiguous case worth naming: the backend would take
+  // it as epoch millis (the mapping is `strict_date_optional_time||epoch_millis`,
+  // measured), while in a CLI time flag it is far more often a duration that lost
+  // its unit. Rejecting it is deliberate — but saying only "expected a duration"
+  // leaves someone who really meant epoch millis with no idea why it was refused.
+  return /^\d+$/.test(value.trim())
+    ? `${base}. A bare number is ambiguous here: write "${value.trim()}m"/"${value.trim()}h" for a duration, or an ISO-8601 timestamp for an instant.`
+    : base;
+}
+
+/** Resolve `--since`/`--until` as either a relative duration ("24h") or an absolute ISO-8601 timestamp. */
+export function resolveTimeBound(value: string, now: Date = new Date()): string {
+  const trimmed = value.trim();
+  const resolved = resolveRelativeInstant(trimmed, now);
+  if (resolved === undefined) {
+    return trimmed;
+  }
+  // Guarded only on the relative branch. The absolute branch also carries
+  // `watch`'s polling cursor — a raw document `time` value re-fed on every
+  // iteration — so a check there would turn a shape this pattern happens not to
+  // cover into a fatal crash of a long-running loop. A cursor is never a
+  // relative duration, so this cannot reach one.
+  if (Number.isNaN(resolved.getTime())) {
+    throw new CfMetricsError(
+      "CONFIG",
+      `Relative duration "${trimmed}" reaches beyond the range of a real date; use a smaller one.`,
+    );
+  }
+  return resolved.toISOString();
 }
 
 /**
@@ -38,12 +115,35 @@ export function resolveTimeBound(value: string, now: Date = new Date()): string 
 export function assertValidTimeBoundShape(flagName: string, value: string): void {
   const trimmed = value.trim();
   if (RELATIVE_DURATION_PATTERN.test(trimmed)) {
+    // A duration whose magnitude cannot land on a real date is a shape problem too,
+    // and catching it here is what puts the flag name in the message: left to
+    // `resolveTimeBound`, it surfaced as a bare "Invalid time value" RangeError
+    // naming neither the flag nor the value — and for a command with no `--until`,
+    // only after the full login round trip this check exists to precede.
+    if (Number.isNaN(resolveRelativeInstant(trimmed, new Date())?.getTime() ?? Number.NaN)) {
+      throw new CfMetricsError(
+        "CONFIG",
+        `Invalid ${flagName} value "${value}" — that duration reaches beyond the range of a real date; use a smaller one.`,
+      );
+    }
     return;
   }
   if (!ABSOLUTE_ISO_PATTERN.test(trimmed) || Number.isNaN(Date.parse(trimmed))) {
+    throw new CfMetricsError("CONFIG", invalidBoundMessage(flagName, value));
+  }
+  // `Date.parse` rejects month 13 and day 00, but not a day past its own month's
+  // end: it rolls "2026-02-30" forward to March 2 and reports success. Forwarding
+  // that costs the user twice — OpenSearch rejects it outright (measured), so the
+  // window never runs, and until it gets there the rolled-forward instant is what
+  // `assertValidTimeRange` compares, which turned a typo into a confident "--since
+  // is later than --until" pointing at the wrong flag entirely.
+  const year = Number(trimmed.slice(0, 4));
+  const month = Number(trimmed.slice(5, 7));
+  const maxDay = daysInMonth(year, month);
+  if (Number(trimmed.slice(8, 10)) > maxDay) {
     throw new CfMetricsError(
       "CONFIG",
-      `Invalid ${flagName} value "${value}" (expected a relative duration like "24h"/"30m"/"2d", or an absolute ISO-8601 timestamp like "2026-08-30T03:00:00Z")`,
+      `Invalid ${flagName} value "${value}" — not a real calendar date: month ${trimmed.slice(5, 7)} of ${trimmed.slice(0, 4)} has ${String(maxDay)} days.`,
     );
   }
 }

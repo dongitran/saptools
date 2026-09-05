@@ -92,6 +92,23 @@ describe("cf.ts exec wrappers", () => {
     expect(call[2].env["SAP_PASSWORD"]).toBeUndefined();
   });
 
+  /**
+   * `CF_COLOR=true` makes the CLI emit ANSI escapes even when piped, and every
+   * parser here keys off literal text. `parseServiceStatus`'s reader feeds the
+   * SAML restore check, so a styled `status:` label would report a restore
+   * that actually succeeded as "SSO broken for ALL users".
+   */
+  it("forces CF_COLOR off so a styled label can never break a parser", async () => {
+    vi.stubEnv("CF_COLOR", "true");
+    const cf = await import("../../src/cf.js");
+    ok("");
+    await cf.withCfSession(async (ctx) => {
+      await cf.cfApi("https://api.cf.eu10.hana.ondemand.com", ctx);
+    });
+    const call = execFileMock.mock.calls[0] as unknown as [string, string[], { env: Record<string, string | undefined> }];
+    expect(call[2].env["CF_COLOR"]).toBe("false");
+  });
+
   it("retries a transient network failure and eventually succeeds", async () => {
     const cf = await import("../../src/cf.js");
     fail({ message: "connection reset" });

@@ -56,13 +56,25 @@ async function runHistory(opts: HistoryOpts): Promise<void> {
   // while still exiting 0, and `--format csv` grew a second header row midway.
   // With more than one name a NAME column keeps the combined rows attributable.
   const multiple = opts.name.length > 1;
-  const collected: OutputRow[] = [];
 
-  await withOpenSearchClient(opts, async (client) => {
+  // Accumulated *inside* the callback and returned, never into a variable that
+  // outlives it: `withOpenSearchClient` deliberately re-runs this whole
+  // function when a cached credential turns out to be rejected (HTTP 401/403),
+  // so an accumulator declared outside would keep the rows from the abandoned
+  // first attempt and emit every already-fetched name twice, at exit 0 — and
+  // persist the duplicates under `--save`.
+  const collected = await withOpenSearchClient(opts, async (client) => {
+    const rows: OutputRow[] = [];
     for (const name of opts.name) {
       let kind: MetricKind;
       if (overrideKind === undefined) {
-        const resolution = await resolveMetricKind(client, opts.service, name);
+        // Same window the chart below uses, so the kind that shapes the query
+        // is the kind the charted data actually has — and so the warning's own
+        // "in this window" is true of what it looked at.
+        const resolution = await resolveMetricKind(client, opts.service, name, {
+          since,
+          ...(opts.until === undefined ? {} : { until: opts.until }),
+        });
         kind = resolution.kind;
         // A name reporting more than one kind is not the expected multi-unit
         // case `units` already warns about below — it means the terms agg
@@ -107,11 +119,12 @@ async function runHistory(opts: HistoryOpts): Promise<void> {
       }
       if (multiple) {
         printNotice(`${name} (${kind}): ${String(result.rows.length)} buckets`);
-        collected.push(...result.rows.map((row) => ({ NAME: name, ...row })));
+        rows.push(...result.rows.map((row) => ({ NAME: name, ...row })));
       } else {
-        collected.push(...result.rows);
+        rows.push(...result.rows);
       }
     }
+    return rows;
   });
 
   await emitRows({

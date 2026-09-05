@@ -226,6 +226,13 @@ function buildEnv(ctx: CfExecContext, overrides: Record<string, string> = {}): N
   const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
+  // An inherited `CF_COLOR=true` makes the CLI emit ANSI escapes even when its
+  // output is piped, and every parser here keys off literal text — `status:`
+  // in particular, whose reader feeds the SAML restore check. A styled label
+  // never matches, so a successful restore would be reported as
+  // `SamlRestoreFailedError`: "SSO broken for ALL users". Forcing it off costs
+  // nothing and removes the whole class.
+  env["CF_COLOR"] = "false";
   if (ctx.cfHome !== undefined) {
     env["CF_HOME"] = ctx.cfHome;
   }
@@ -478,6 +485,9 @@ export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined
   const env = { ...process.env };
   delete env["SAP_EMAIL"];
   delete env["SAP_PASSWORD"];
+  // Same reason as `buildEnv`: `parseTargetFields` splits on a literal `:` and
+  // lowercases the key, which a styled label never matches.
+  env["CF_COLOR"] = "false";
   try {
     const stdout = await execWithRetries(bin, [...argsPrefix, "target"], env);
     return parseCfTargetOutput(stdout);

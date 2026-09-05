@@ -1,5 +1,5 @@
 import { CLI_NAME, MAX_RESULT_WINDOW } from "../config.js";
-import { CfMetricsError } from "../errors.js";
+import { CfMetricsError, errorMessage } from "../errors.js";
 import type { OutputRow } from "../format.js";
 import { formatResult } from "../format.js";
 import { createResultSession, resultStoreOptionsFromEnv } from "../result-store.js";
@@ -103,12 +103,37 @@ export interface EmitRowsOptions {
   readonly compactColumn?: string;
 }
 
+/**
+ * Save the rows, or explain why not and let the caller print them instead.
+ *
+ * A store that cannot be written — a read-only or full home directory, a
+ * permissions change — used to throw straight out of `emitRows`, which meant
+ * the rows were never printed either: the ~30s credential round trip and the
+ * query were both thrown away over a caching problem. The exit code carries
+ * the failure so `ref=$(cf-metrics … --save)` cannot silently bind a table
+ * row, while the data itself still reaches the user.
+ */
+async function saveRowsOrWarn(opts: EmitRowsOptions): Promise<string | undefined> {
+  try {
+    const session = await createResultSession({ command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
+    return session.ref;
+  } catch (error) {
+    printNotice(`--save failed (${errorMessage(error)}); printing the result instead`);
+    // Set the exit code rather than rethrowing: the top-level handler in
+    // `cli.ts` would print and exit without ever reaching the rows below.
+    process.exitCode = 1;
+    return undefined;
+  }
+}
+
 /** Either print rows in the requested format, or save them and print a `ref=...` line. */
 export async function emitRows(opts: EmitRowsOptions): Promise<void> {
   if (opts.save) {
-    const session = await createResultSession({ command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
-    print(`ref=${session.ref}`);
-    return;
+    const ref = await saveRowsOrWarn(opts);
+    if (ref !== undefined) {
+      print(`ref=${ref}`);
+      return;
+    }
   }
   print(formatResult(opts.rows, opts.format, opts.compactColumn));
 }

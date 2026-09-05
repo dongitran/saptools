@@ -104,4 +104,30 @@ describe("emitRows", () => {
     );
     expect(stdoutSpy).toHaveBeenCalledWith("ref=deadbeef\n");
   });
+
+  /**
+   * A store that cannot be written used to throw straight out of here, so the
+   * rows were never printed either — a caching problem discarded the ~30s
+   * credential round trip and the query result with it.
+   */
+  it("prints the rows anyway, with a non-zero exit code, when the save fails", async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(resultStore, "createResultSession").mockRejectedValue(new Error("EACCES: permission denied"));
+    const previousExitCode = process.exitCode;
+
+    try {
+      await emitRows({ command: "names", rows: [{ NAME: "container.cpu.usage" }], format: "json", save: true });
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('"NAME": "container.cpu.usage"'));
+      expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("--save failed"));
+      // Not thrown, so the rows above are reached — but the run is still a
+      // failure, so `ref=$(… --save)` cannot bind a table row and look fine.
+      expect(process.exitCode).toBe(1);
+      // The ref line must not be printed when there is no ref.
+      expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("ref="));
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
 });

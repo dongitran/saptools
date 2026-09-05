@@ -2,6 +2,68 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.10.0
+
+### Fixed
+
+- `history` emitted every already-fetched row twice when a cached credential turned out to be
+  rejected partway through. The client bootstrap deliberately re-runs the whole work callback
+  against a freshly discovered credential, and the row accumulator lived outside it, so a run that
+  hit an HTTP 401 on its second `--name` printed the first name's rows again — at exit 0, and
+  persisted that way under `--save`. Nothing caught it because no test drove a command through the
+  real retry; one does now.
+
+- A pin flag defeated the credential cache entirely, and with `--allow-mint-credential` re-minted on
+  every run. `--service-key`/`--fallback-binding-app` each restrict only their own candidate type
+  during discovery, but the cache read them as restricting both, so `--fallback-binding-app x` alone
+  rejected every cached service-key credential (and vice versa) and paid the full ~30s rediscovery
+  every time. A cached *minted* credential matched no pin at all, so `--allow-mint-credential` went
+  back through minting on every invocation — and minting disables SAML on the shared Cloud Logging
+  instance to do its work, breaking SSO for every user of that instance each time.
+
+- `credential clear` left the password on disk. Writes go through `credentials.json.tmp-<pid>`
+  before the rename, so an interruption in that window stranded a file holding the basic-auth
+  password in cleartext; nothing reclaimed it, and `credential list` reads only the real file, so
+  the CLI reported the credential gone while the secret stayed. The clear now sweeps those too.
+
+- The kind lookup ignored `--since`/`--until` and scanned all of retention. It answered with the
+  kind that dominated *all time* rather than the window being charted, so a name whose
+  instrumentation changed shaped a recent query with the wrong sub-aggregations and returned real
+  document counts beside all-null values. It also made 0.9.0's ambiguity warning say "in this
+  window" about data from every window there has ever been. One unbounded 80-shard scan per
+  `--name` per run is gone with it.
+
+- `--save` threw away the whole result when the store could not be written. A read-only or full home
+  directory discarded the ~30s credential round trip and the query with it; the rows are now printed
+  instead, with a notice and a non-zero exit so `ref=$(… --save)` cannot silently bind a table row.
+
+- Calendar-invalid dates were accepted and forwarded. `Date.parse` rolls `2026-02-30` to March 2
+  rather than rejecting it, so the bound reached OpenSearch — which rejects it (measured) — as a
+  parse-exception dump after a full login. Worse, the ordering check compares *resolved* instants,
+  so a typo came back as a confident "--since is later than --until", pointing at the flag that was
+  never wrong. Also rejected now, each verified against a real instance rather than assumed: a space
+  instead of `T`, hour 24, minute or second 60, and more than nine fractional digits. A relative
+  duration too large to land on a real date is named with its flag instead of surfacing as a bare
+  `RangeError: Invalid time value`, and a bare number now explains both readings it could have had.
+
+- An interrupted `--save` stranded a `<ref>.tmp-<pid>` directory that `prune`, `list` and `clear`
+  all walked past, because the ref pattern they filter on never matches it. They accumulated
+  permanently; `prune` now removes them.
+
+- `--verbose` printed a service instance's `clientSecret` and `apiToken` in full. The redaction list
+  in `saml-toggle.ts` covered only `private`/`password`/`signature` while the exec layer's own
+  covered more; both now cover the same classes.
+
+- `CF_COLOR` is forced off for every `cf` invocation. An inherited `CF_COLOR=true` makes the CLI
+  emit ANSI escapes even when piped, and these parsers key off literal text — including the
+  `status:` reader behind the SAML restore check, where a styled label would report a restore that
+  actually succeeded as "SSO broken for ALL users".
+
+### Changed
+
+- `resolveMetricKind`/`resolveTopMetricKind` take an optional lookup window; `KindLookupWindow` is
+  exported alongside `KindResolution`.
+
 ## 0.9.0
 
 ### Fixed
