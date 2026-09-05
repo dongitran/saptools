@@ -107,6 +107,15 @@ export function advanceCursor(
  * single hiccup would kill the whole watch session. Only a failure before
  * the loop starts (target/credential resolution, handled by the CLI layer
  * that calls this function) is still fatal, as before.
+ *
+ * This also closes what would otherwise be a permanent, silent gap: a
+ * partial-shard failure on one poll now surfaces as a thrown error (see
+ * `opensearch-client.ts`'s `assertNoShardFailures`) instead of a
+ * quietly-truncated page. Falling into the same catch below means the cursor
+ * is *not* advanced past the affected window, so the retry on the next
+ * interval re-queries it — the failed shard's points are delayed, not lost
+ * the way they would be if the cursor had already moved past their
+ * timestamp and the `since: cursor` filter excluded them forever.
  */
 export async function watchMetrics(
   client: OpenSearchClient,

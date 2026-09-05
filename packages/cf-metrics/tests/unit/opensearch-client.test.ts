@@ -214,6 +214,151 @@ describe("createOpenSearchClient", () => {
   });
 });
 
+describe("partial shard failures", () => {
+  function clientWith(fetchImpl: typeof fetch): OpenSearchClient {
+    return createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl,
+    });
+  }
+  const jsonFetch = (payload: unknown): typeof fetch =>
+    (async () =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+
+  it("refuses a search answered by only some shards", async () => {
+    // OpenSearch reports a partial failure as HTTP 200 with the count in
+    // `_shards.failed` and whatever the surviving shards found. Reading only
+    // `hits`/`aggregations` would report that short/skewed result as complete
+    // — measured live, `metrics-*` spans 80 shards across 40 indices.
+    const client = clientWith(
+      jsonFetch({
+        _shards: {
+          total: 80,
+          successful: 60,
+          failed: 20,
+          failures: [{ index: "metrics-otel-v1-000031", reason: { type: "query_shard_exception", reason: "failed to create query" } }],
+        },
+        hits: { total: { value: 3 }, hits: [] },
+      }),
+    );
+
+    await expect(client.search("idx", {})).rejects.toThrow(/only some shards: 20 of 80 failed/);
+    await expect(client.search("idx", {})).rejects.toThrow(/failed to create query/);
+  });
+
+  it("refuses a count answered by only some shards", async () => {
+    const client = clientWith(jsonFetch({ _shards: { total: 80, successful: 79, failed: 1 }, count: 42 }));
+
+    await expect(client.count("idx", {})).rejects.toThrow(/result is incomplete/);
+  });
+
+  it("refuses a response OpenSearch marks as timed out", async () => {
+    // Same class as a shard failure, one field away: 200 with whatever was
+    // collected before the deadline.
+    const client = clientWith(
+      jsonFetch({ timed_out: true, _shards: { total: 80, successful: 80, failed: 0 }, hits: { total: { value: 2 }, hits: [] } }),
+    );
+
+    await expect(client.search("idx", {})).rejects.toThrow(/timed out serving .* partial result/);
+  });
+
+  it("honours CF_METRICS_ALLOW_PARTIAL_SHARDS as a deliberate override", async () => {
+    const client = clientWith(jsonFetch({ _shards: { total: 80, successful: 60, failed: 20 }, count: 7 }));
+    process.env["CF_METRICS_ALLOW_PARTIAL_SHARDS"] = "1";
+    try {
+      await expect(client.count("idx", {})).resolves.toBe(7);
+    } finally {
+      delete process.env["CF_METRICS_ALLOW_PARTIAL_SHARDS"];
+    }
+  });
+
+  it("accepts a fully successful response untouched", async () => {
+    const client = clientWith(
+      jsonFetch({ _shards: { total: 80, successful: 80, failed: 0 }, hits: { total: { value: 1 }, hits: [] } }),
+    );
+
+    await expect(client.search("idx", {})).resolves.toMatchObject({ totalHits: 1 });
+  });
+
+  it("accepts a response with no _shards block, such as a mapping fetch", async () => {
+    const client = clientWith(jsonFetch({ "metrics-otel-v1-000042": { mappings: { properties: {} } } }));
+
+    await expect(client.getMapping("idx")).resolves.toBeDefined();
+  });
+
+  it("accepts an aggregation-only response (size:0, no hits) once shards are healthy", async () => {
+    // The commands this bug hits hardest (`names`/`snapshot`/`top`/`history`)
+    // never read `hits` at all — only this shape.
+    const client = clientWith(
+      jsonFetch({
+        _shards: { total: 80, successful: 80, failed: 0 },
+        hits: { total: { value: 0 }, hits: [] },
+        aggregations: { by_name: { buckets: [{ key: "container.cpu.usage", doc_count: 5 }] } },
+      }),
+    );
+
+    await expect(client.search("idx", { size: 0 })).resolves.toMatchObject({
+      aggregations: { by_name: { buckets: [{ key: "container.cpu.usage", doc_count: 5 }] } },
+    });
+  });
+});
+
+describe("body-read failure", () => {
+  function clientWith(fetchImpl: typeof fetch, timeoutMs?: number): OpenSearchClient {
+    return createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "u",
+      password: "p",
+      fetchImpl,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    });
+  }
+
+  /** Headers arrive, then the payload never finishes — where the deadline actually lands on a wide aggregation. */
+  function stalledBodyFetch(): typeof fetch {
+    return (async () => ({
+      ok: true,
+      status: 200,
+      text: async (): Promise<string> => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      },
+    })) as unknown as typeof fetch;
+  }
+
+  it("names the timeout when it fires while the body is still streaming", async () => {
+    // Left unhandled, this abort escaped as a bare "The operation was aborted
+    // due to timeout" with no path, no ceiling, and no hint.
+    await expect(clientWith(stalledBodyFetch(), 40).count("idx", {})).rejects.toThrow(
+      /OpenSearch request to idx\/_count timed out after 40ms/,
+    );
+    await expect(clientWith(stalledBodyFetch(), 40).count("idx", {})).rejects.toThrow(/CF_METRICS_HTTP_TIMEOUT_MS/);
+  });
+
+  it("still reports a non-timeout body failure as a plain request failure", async () => {
+    const brokenBody = (async () => ({
+      ok: true,
+      status: 200,
+      text: async (): Promise<string> => {
+        throw new Error("socket hang up");
+      },
+    })) as unknown as typeof fetch;
+
+    await expect(clientWith(brokenBody, 40).search("idx", {})).rejects.toThrow(/failed: socket hang up/);
+  });
+
+  it("wraps the body failure as a CfMetricsError with the OpenSearch code", async () => {
+    await expect(clientWith(stalledBodyFetch(), 40).getMapping("idx")).rejects.toMatchObject({
+      name: "CfMetricsError",
+      code: "OPENSEARCH_REQUEST_FAILED",
+    });
+  });
+});
+
 function fakeClient(pages: readonly { totalHits: number; hits: readonly { _id: string; sort: number[] }[] }[]): OpenSearchClient {
   let call = 0;
   return {
@@ -373,5 +518,111 @@ describe("request timeout", () => {
     // Rejects on the caller's abort, well before the 60s deadline, and is not
     // reported as a timeout.
     await expect(pending).rejects.toThrow(/failed/);
+  });
+});
+
+describe("deadline normalization", () => {
+  /**
+   * `AbortSignal.timeout` throws a RangeError for a fractional or negative
+   * delay. Reaching it would report a bad local setting as an OpenSearch
+   * failure, so every unusable value must fall back to the default instead.
+   */
+  it.each([1.5, -1, 0, Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to the default rather than letting timeoutMs %j reach AbortSignal.timeout",
+    async (timeoutMs) => {
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 3 }), { status: 200 }));
+      const client = createOpenSearchClient({
+        dashboardsEndpoint: "https://dash.example.com",
+        username: "user",
+        password: "pass",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        timeoutMs,
+      });
+
+      await expect(client.count("idx", {})).resolves.toBe(3);
+    },
+  );
+
+  it.each([2_147_483_648, 4_294_967_296, 1e20])(
+    "clamps an over-large timeoutMs of %j instead of letting Node reduce it to 1ms",
+    async (timeoutMs) => {
+      // Above 2^31-1 Node silently sets the timer to 1ms; above 2^32-1 it
+      // throws. Either way a request would fail almost immediately while the
+      // caller believed they had raised the ceiling.
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 9 }), { status: 200 }));
+      const client = createOpenSearchClient({
+        dashboardsEndpoint: "https://dash.example.com",
+        username: "user",
+        password: "pass",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        timeoutMs,
+      });
+
+      await expect(client.count("idx", {})).resolves.toBe(9);
+    },
+  );
+
+  it("clamps an over-large CF_METRICS_HTTP_TIMEOUT_MS the same way", async () => {
+    vi.stubEnv("CF_METRICS_HTTP_TIMEOUT_MS", "9999999999");
+    try {
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ count: 4 }), { status: 200 }));
+      const client = createOpenSearchClient({
+        dashboardsEndpoint: "https://dash.example.com",
+        username: "user",
+        password: "pass",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.count("idx", {})).resolves.toBe(4);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not let an over-large timeoutMs collapse into Node's 1ms overflow", async () => {
+    // Unclamped, Node reduces a 2^31 delay to a 1ms timer, so this response
+    // would be aborted rather than returned — the caller having asked for a
+    // *longer* ceiling, not a shorter one.
+    const slowFetch = (async (_url: string, init?: RequestInit) => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 120);
+      });
+      if (init?.signal?.aborted === true) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response(JSON.stringify({ count: 11 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "user",
+      password: "pass",
+      fetchImpl: slowFetch,
+      timeoutMs: 2_147_483_648,
+    });
+
+    await expect(client.count("idx", {})).resolves.toBe(11);
+  });
+
+  it("aborts that same slow response when the ceiling really is small", async () => {
+    // The control for the test above: same 120ms response, a 20ms ceiling.
+    const slowFetch = (async (_url: string, init?: RequestInit) => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 120);
+      });
+      if (init?.signal?.aborted === true) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response(JSON.stringify({ count: 11 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const client = createOpenSearchClient({
+      dashboardsEndpoint: "https://dash.example.com",
+      username: "user",
+      password: "pass",
+      fetchImpl: slowFetch,
+      timeoutMs: 20,
+    });
+
+    await expect(client.count("idx", {})).rejects.toThrow(/timed out after 20ms/);
   });
 });

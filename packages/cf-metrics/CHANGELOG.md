@@ -2,6 +2,63 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.9.0
+
+### Fixed
+
+- A query that failed on only some shards was reported as a complete result. `metrics-*` spans 40
+  backing indices over 80 shards (measured), and OpenSearch answers a partial failure with HTTP 200,
+  the count in `_shards.failed`, and whatever the surviving shards found — which this client read as
+  the whole answer. The same applies to a search OpenSearch marks `timed_out`. That is worse here
+  than in a client that reads raw documents: `names`, `snapshot`, `top` and `history` never read
+  `hits` at all, so a partial failure does not shorten a list, it silently changes the numbers and
+  the ranking, and the result still looks entirely plausible. Every command now fails loudly instead
+  of returning a wrong answer at exit 0. Set `CF_METRICS_ALLOW_PARTIAL_SHARDS=1` to accept a partial
+  answer when a shard is persistently down.
+
+- `watch` could drop points permanently rather than merely late. Its cursor only advances past
+  documents a poll actually returned, so a failed poll is retried — but a partial-shard answer was
+  not a failure, it was a short page, so the cursor moved past whatever the missing shards held and
+  the `since: cursor` filter then excluded those points for good once the shard recovered. With the
+  check above they are delayed by one interval instead of lost.
+
+- A metric name reporting more than one `kind` silently lost all but the most common one.
+  `resolveMetricKind` asked for a single `terms` bucket, so a second kind — an instrumentation
+  change mid-rollout, or two emitters sharing a name — was not merely ignored, it was invisible even
+  to detect. `history` and `top` now warn and name every kind found (pass `--kind` to pick one), and
+  `names` lists them the way it already listed multiple units.
+
+- `mapping --field` could not resolve any field whose name contains a dot. The `_source` key is one
+  flat string on every document, but the mapping tree still nests on the `.` segments, so the
+  single-level lookup found nothing for the whole `resource.attributes.*` family — the fields most
+  worth checking with a command whose purpose is "check keyword vs. text before aggregating on any
+  field". Each segment is now walked in turn.
+
+- A field's mapping type was taken from whichever backing index reported it first, even though the
+  query runs against all of them. Dynamic mapping can give one path different types in different
+  indices after an ingest change, so a type sampled from one index can be wrong for another's
+  shards. The type is now reported only when every index holding the field agrees.
+
+- A timeout that fired while the response body was still streaming escaped unwrapped. Headers can
+  arrive well before a wide aggregation finishes streaming, so the deadline often lands on the body
+  read rather than the request — where it surfaced as a bare "The operation was aborted due to
+  timeout" with no path, no ceiling and no hint, instead of this package's own message.
+
+- `CF_METRICS_HTTP_TIMEOUT_MS` above Node's timer ceiling silently did the opposite of what it says.
+  `AbortSignal.timeout` reduces any delay past 2^31-1 to **1ms** (emitting only a
+  `TimeoutOverflowWarning`) and throws a `RangeError` past 2^32-1, so raising the ceiling too far
+  aborted requests almost immediately while the resulting error still claimed to have waited the
+  full configured time. The value is now clamped, and a fractional or negative one falls back to the
+  default rather than reaching the timer at all.
+
+### Changed
+
+- **Commands can now fail where they previously returned a result at exit 0.** That is the point of
+  the shard and timeout checks above, but it is a behaviour change for any script that treated exit
+  0 as "the query ran".
+- `resolveMetricKind` returns `{ kind, otherKinds }` instead of a bare kind string, so a caller can
+  see the ambiguity the CLI warns about. `KindResolution` is exported alongside it.
+
 ## 0.8.0
 
 ### Fixed

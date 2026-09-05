@@ -158,6 +158,69 @@ describe("mapping", () => {
     const text = await runCli(["mapping", "--field", "exemplars", "--format", "json"], client);
     expect(JSON.parse(text)).toEqual([{ FIELD: "exemplars", TYPE: "nested", IGNORE_ABOVE: "" }]);
   });
+
+  /**
+   * The `_source` key is one flat string on every document, but the mapping
+   * tree still nests on the `.` segments — confirmed live against the real
+   * backend, the same shape `@saptools/cf-otel` already found for its own
+   * span index. A single-level `properties[field]` lookup found nothing for
+   * this whole family.
+   */
+  it("resolves a dotted field by walking nested properties one segment at a time", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx: {
+          mappings: {
+            properties: {
+              resource: { properties: { attributes: { properties: { "sap@cf@app_name": { type: "keyword", ignore_above: 256 } } } } },
+            },
+          },
+        },
+      }),
+    });
+    const text = await runCli(["mapping", "--field", "resource.attributes.sap@cf@app_name", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "resource.attributes.sap@cf@app_name", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+  });
+
+  it("fails closed when a middle segment of a dotted field resolves to a non-object leaf", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx: { mappings: { properties: { resource: { type: "keyword" } } } },
+      }),
+    });
+    await expect(runCli(["mapping", "--field", "resource.attributes.sap@cf@app_name"], client)).rejects.toThrow(
+      /was not found in the mapping/,
+    );
+  });
+
+  /**
+   * `metrics-*` spans 40 backing indices (measured live) — reporting whichever
+   * one happened to be checked first was safe while this command only
+   * reported existence, and unsafe as soon as its type decided what terms are
+   * legal to send. Mirrors the identical fix already shipped in
+   * `@saptools/cf-otel`'s own `mapping.ts`.
+   */
+  it("refuses to answer when backing indices disagree on a field's type", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx1: { mappings: { properties: { unit: { type: "keyword", ignore_above: 256 } } } },
+        idx2: { mappings: { properties: { unit: { type: "text" } } } },
+      }),
+    });
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.toThrow(/was not found in the mapping/);
+  });
+
+  it("still answers when every index that has the field agrees, even alongside indices that lack it entirely", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx1: { mappings: { properties: { unit: { type: "keyword", ignore_above: 256 } } } },
+        idx2: { mappings: { properties: {} } },
+        idx3: { mappings: { properties: { unit: { type: "keyword", ignore_above: 256 } } } },
+      }),
+    });
+    const text = await runCli(["mapping", "--field", "unit", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "unit", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+  });
 });
 
 describe("fields", () => {

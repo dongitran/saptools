@@ -186,12 +186,28 @@ describe("resolveTopMetricKind", () => {
       return { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "HISTOGRAM", doc_count: 12 }] } } };
     });
 
-    await expect(resolveTopMetricKind(client, "http.server.duration")).resolves.toBe("HISTOGRAM");
+    await expect(resolveTopMetricKind(client, "http.server.duration")).resolves.toEqual({
+      kind: "HISTOGRAM",
+      otherKinds: [],
+    });
     const query = capturedBody["query"] as { bool?: { filter: Record<string, unknown>[] } };
     // buildMetricBoolQuery always wraps its filters in `{bool: {filter: [...]}}`
     // once at least one is present (here, the `terms: {name: [...]}` clause) —
     // this just confirms that array holds no `term` (service) clause.
     expect(query.bool?.filter.some((clause) => "term" in clause) ?? false).toBe(false);
+  });
+
+  it("forwards otherKinds so a cross-app ranking can warn about a name reporting more than one kind", async () => {
+    const client = fakeClient(async () => ({
+      totalHits: 0,
+      hits: [],
+      aggregations: { by_kind: { buckets: [{ key: "GAUGE", doc_count: 9 }, { key: "SUM", doc_count: 2 }] } },
+    }));
+
+    await expect(resolveTopMetricKind(client, "container.cpu.usage")).resolves.toEqual({
+      kind: "GAUGE",
+      otherKinds: ["SUM"],
+    });
   });
 
   it("degrades to undefined (not a thrown error) when no documents match the name at all", async () => {

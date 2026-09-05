@@ -130,6 +130,26 @@ function buildDataset(): readonly Doc[] {
   push(gauge("", "dual-app", "container.cpu.usage", "cpu", "2026-08-28T09:03:00.000Z", 0.016));
   push(gauge("", "dual-app", "container.cpu.usage", "cpu", "2026-08-28T09:07:00.000Z", 0.018));
 
+  // A metric name reporting more than one `kind` — unlike the multi-unit case
+  // above, this is a data anomaly (e.g. an instrumentation change mid-rollout)
+  // rather than an expected shape, and `resolveMetricKind`'s terms agg used to
+  // request only 1 bucket, so the second kind was invisible even to detect.
+  // Deliberately its own app/name so no existing single-kind expectation shifts.
+  push(gauge("", "mixed-kind-app", "custom.migrating.metric", "1", "2026-08-28T09:03:00.000Z", 0.5));
+  push({
+    _id: "",
+    _source: {
+      name: "custom.migrating.metric",
+      kind: "HISTOGRAM",
+      count: 2,
+      sum: 1,
+      unit: "1",
+      time: "2026-08-28T09:07:00.000Z",
+      [APP_FIELD]: "mixed-kind-app",
+      serviceName: "mixed-kind-app",
+    },
+  });
+
   // A `watch`-only future point, added lazily by the server on a delay — see
   // `scheduleWatchArrival` below; not part of the static dataset.
 
@@ -462,8 +482,15 @@ function handleCount(body: Record<string, unknown>): unknown {
   return { count: DATASET.filter((doc) => matchesQuery(doc._source, body["query"])).length };
 }
 
+const SECOND_INDEX_ALIAS = "metrics-otel-v1-000002";
+
+/**
+ * Two backing indices, deliberately disagreeing on one nested field's type —
+ * exercises the same cross-index-unanimity guard `@saptools/cf-otel` already
+ * has for its own `mapping` command.
+ */
 function handleMapping(): unknown {
-  const properties = {
+  const baseProperties = {
     name: { type: "keyword", ignore_above: 256 },
     kind: { type: "keyword", ignore_above: 256 },
     value: { type: "double" },
@@ -473,7 +500,6 @@ function handleMapping(): unknown {
     time: { type: "date" },
     "@timestamp": { type: "text" },
     aggregationTemporality: { type: "keyword", ignore_above: 256 },
-    [APP_FIELD]: { type: "keyword", ignore_above: 256 },
     serviceName: { type: "keyword", ignore_above: 256 },
     // Real OpenSearch/Elasticsearch mappings never write an explicit
     // "type": "object" — it's only ever implicit from a nested `properties`
@@ -486,7 +512,30 @@ function handleMapping(): unknown {
       },
     },
   };
-  return { [INDEX_ALIAS]: { mappings: { properties } } };
+  // The `_source` key `resource.attributes.sap@cf@app_name` (via APP_FIELD)
+  // is one flat string on every document, but the mapping tree nests on the
+  // `.` segments regardless — confirmed live against the real backend, the
+  // same shape cf-otel already found for its own span index. `org_name`
+  // agrees across both indices (the ordinary case); `app_name` deliberately
+  // does not (the disagreement case).
+  function resource(appNameType: string): Record<string, unknown> {
+    return {
+      resource: {
+        properties: {
+          attributes: {
+            properties: {
+              "sap@cf@app_name": { type: appNameType, ignore_above: 256 },
+              "sap@cf@org_name": { type: "keyword", ignore_above: 256 },
+            },
+          },
+        },
+      },
+    };
+  }
+  return {
+    [INDEX_ALIAS]: { mappings: { properties: { ...baseProperties, ...resource("keyword") } } },
+    [SECOND_INDEX_ALIAS]: { mappings: { properties: { ...baseProperties, ...resource("text") } } },
+  };
 }
 
 export interface FakeOpenSearch {

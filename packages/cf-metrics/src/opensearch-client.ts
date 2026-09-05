@@ -100,6 +100,75 @@ function parseCountResponse(value: unknown): number {
   return isRecord(value) && typeof value["count"] === "number" ? value["count"] : 0;
 }
 
+/** First failure reason OpenSearch reported, for a message that names the cause rather than only the count. */
+function firstShardFailureReason(shards: Record<string, unknown>): string {
+  const failures: unknown = shards["failures"];
+  const first: unknown = Array.isArray(failures) ? (failures as readonly unknown[])[0] : undefined;
+  if (!isRecord(first)) {
+    return "";
+  }
+  const reason = first["reason"];
+  if (typeof reason === "string") {
+    return reason;
+  }
+  if (isRecord(reason) && typeof reason["reason"] === "string") {
+    return reason["reason"];
+  }
+  return "";
+}
+
+/**
+ * A query that fails on *every* shard comes back as an HTTP error and is
+ * already reported. One that fails on *some* of them does not: OpenSearch
+ * answers HTTP 200, puts the count in `_shards.failed`, and returns whatever
+ * the surviving shards found. Reading only `hits`/`count`/`aggregations`
+ * therefore turns a partly-executed query into a short — or, for the
+ * aggregation-only commands (`names`, `snapshot`, `top`, `history`), a
+ * plausible-looking but wrong — result at exit 0.
+ *
+ * The window is real here: `metrics-*` spans 40 backing indices over 80
+ * shards (measured live), nearly 3x `@saptools/cf-otel`'s own 14/28, and a
+ * field can be dynamically mapped one way in an older index and another way
+ * in a newer one after an ingest change. Every caller is better off being
+ * told the number is incomplete than believing it — this mirrors cf-otel's
+ * `assertNoShardFailures` exactly, ported after the same gap was found here.
+ */
+function assertNoShardFailures(path: string, value: unknown): void {
+  if (!isRecord(value)) {
+    return;
+  }
+  // A persistently red shard would otherwise make every command unusable on a
+  // tenant whose data the caller can still mostly read. The override is loud by
+  // construction: it only exists as an env var, and the caller has to have seen
+  // the error first to know it is there.
+  if (readEnv(envName("ALLOW_PARTIAL_SHARDS")) !== undefined) {
+    return;
+  }
+  if (value["timed_out"] === true) {
+    // Same class as a shard failure: OpenSearch answers 200 with whatever it
+    // collected before the deadline, and reading only `hits` calls that partial
+    // set the answer.
+    throw new CfMetricsError(
+      "OPENSEARCH_REQUEST_FAILED",
+      `OpenSearch timed out serving ${path} and returned a partial result. ` +
+        "Narrow the query, or raise the cluster-side search timeout.",
+    );
+  }
+  const shards = value["_shards"];
+  if (!isRecord(shards) || typeof shards["failed"] !== "number" || shards["failed"] === 0) {
+    return;
+  }
+  const total = typeof shards["total"] === "number" ? shards["total"] : undefined;
+  const failed = String(shards["failed"]);
+  const scope = total === undefined ? failed : `${failed} of ${String(total)}`;
+  const reason = firstShardFailureReason(shards);
+  throw new CfMetricsError(
+    "OPENSEARCH_REQUEST_FAILED",
+    `OpenSearch answered ${path} from only some shards: ${scope} failed, so the result is incomplete` +
+      `${reason.length === 0 ? "" : ` (${reason})`}. Retry: a shard may be recovering. If it persists, narrow the query so it touches fewer indices.`,
+  );
+}
+
 /**
  * Real Cloud Logging service-key/binding payloads have been observed to
  * return `dashboards-endpoint` as a bare hostname with no scheme (e.g.
@@ -121,17 +190,43 @@ function normalizeDashboardsEndpoint(rawEndpoint: string): string {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
-/** Create a client for OpenSearch's `_search`/`_count`/`_mapping` via the Dashboards console-proxy. */
-function resolveTimeoutMs(): number {
-  const raw = readEnv(envName("HTTP_TIMEOUT_MS"));
-  if (raw === undefined) {
+/**
+ * Node's timers overflow past 2^31-1: `AbortSignal.timeout` accepts up to
+ * 2^32-1 but silently reduces anything above this to **1ms**, emitting only a
+ * `TimeoutOverflowWarning`, and throws a `RangeError` beyond 2^32-1. Both
+ * outcomes hand a caller who asked for a long ceiling the exact opposite —
+ * confirmed live: an over-large `CF_METRICS_HTTP_TIMEOUT_MS` aborted in under
+ * 1ms while the resulting error still claimed to have waited that many ms.
+ */
+const MAX_HTTP_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Bring any configured ceiling into the range `AbortSignal.timeout` actually
+ * honors. It throws a `RangeError` for a negative or fractional delay, and
+ * that RangeError would be reported as "OpenSearch request failed" — blaming
+ * the endpoint for a bad local setting. Normalizing in one place means neither
+ * a malformed env var nor an odd explicit option can reach it, so an unusable
+ * value never becomes the reason a read-only query refuses to run.
+ */
+function normalizeTimeoutMs(value: number | undefined): number {
+  if (value === undefined || !Number.isInteger(value) || value <= 0) {
     return DEFAULT_HTTP_TIMEOUT_MS;
   }
-  const parsed = Number(raw);
-  // A malformed override falls back rather than throwing: an unusable env var
-  // should not be the reason a read-only query refuses to run.
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_HTTP_TIMEOUT_MS;
+  // Clamped rather than defaulted, unlike the guard above: an over-large
+  // ceiling still expresses "wait a long time", and falling back to 60s would
+  // invert that intent instead of merely ignoring an unusable value.
+  return Math.min(value, MAX_HTTP_TIMEOUT_MS);
 }
+
+function resolveTimeoutMs(explicit: number | undefined): number {
+  if (explicit !== undefined) {
+    return normalizeTimeoutMs(explicit);
+  }
+  const raw = readEnv(envName("HTTP_TIMEOUT_MS"));
+  return normalizeTimeoutMs(raw === undefined ? undefined : Number(raw));
+}
+
+/** Create a client for OpenSearch's `_search`/`_count`/`_mapping` via the Dashboards console-proxy. */
 
 /**
  * The caller's cancellation signal (`watch`'s Ctrl-C) combined with a deadline,
@@ -149,11 +244,33 @@ function isTimeout(error: unknown): boolean {
   return error instanceof Error && error.name === "TimeoutError";
 }
 
+/**
+ * Shared by the request and the body read, because the deadline can fire at
+ * either point (see the body-read comment in `proxyRequest`). A timeout is
+ * worth naming: "failed" alone sends the reader looking for a query or
+ * credential problem when the endpoint simply never answered.
+ */
+function requestFailure(path: string, timeoutMs: number, error: unknown): CfMetricsError {
+  if (isTimeout(error)) {
+    return new CfMetricsError(
+      "OPENSEARCH_REQUEST_FAILED",
+      `OpenSearch request to ${path} timed out after ${String(timeoutMs)}ms. ` +
+        "Raise CF_METRICS_HTTP_TIMEOUT_MS if the query is genuinely slow, or narrow the time range.",
+      { cause: error },
+    );
+  }
+  return new CfMetricsError(
+    "OPENSEARCH_REQUEST_FAILED",
+    `OpenSearch request to ${path} failed: ${errorMessage(error)}`,
+    { cause: error },
+  );
+}
+
 export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearchClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const auth = Buffer.from(`${opts.username}:${opts.password}`).toString("base64");
   const baseUrl = normalizeDashboardsEndpoint(opts.dashboardsEndpoint);
-  const timeoutMs = opts.timeoutMs ?? resolveTimeoutMs();
+  const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
 
   async function proxyRequest(path: string, method: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const url = `${baseUrl}/api/console/proxy?path=${encodeConsoleProxyPath(path)}&method=${method}`;
@@ -170,23 +287,20 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
         signal: requestSignal(signal, timeoutMs),
       });
     } catch (error) {
-      // A timeout is worth naming: "failed" alone sends the reader looking for
-      // a query or credential problem when the endpoint simply never answered.
-      if (isTimeout(error)) {
-        throw new CfMetricsError(
-          "OPENSEARCH_REQUEST_FAILED",
-          `OpenSearch request to ${path} timed out after ${String(timeoutMs)}ms. ` +
-            "Raise CF_METRICS_HTTP_TIMEOUT_MS if the query is genuinely slow, or narrow the time range.",
-          { cause: error },
-        );
-      }
-      throw new CfMetricsError(
-        "OPENSEARCH_REQUEST_FAILED",
-        `OpenSearch request to ${path} failed: ${errorMessage(error)}`,
-        { cause: error },
-      );
+      throw requestFailure(path, timeoutMs, error);
     }
-    const text = await response.text();
+    // The body read needs the same handling as the request: headers can
+    // arrive well before the payload finishes streaming — the normal shape
+    // for a wide aggregation, and this package's indices run wider than
+    // cf-otel's — so the deadline/an abort often fires here rather than
+    // above. Left outside a try, that escaped as a bare "The operation was
+    // aborted due to timeout" with no path, no ceiling, no hint.
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw requestFailure(path, timeoutMs, error);
+    }
     if (!response.ok) {
       // The status rides along so the credential layer can tell "this
       // credential is dead" (401/403) from every other kind of failure.
@@ -199,8 +313,9 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
     if (text.length === 0) {
       return undefined;
     }
+    let parsed: unknown;
     try {
-      return JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch (error) {
       throw new CfMetricsError(
         "OPENSEARCH_REQUEST_FAILED",
@@ -208,6 +323,8 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
         { cause: error },
       );
     }
+    assertNoShardFailures(path, parsed);
+    return parsed;
   }
 
   return {

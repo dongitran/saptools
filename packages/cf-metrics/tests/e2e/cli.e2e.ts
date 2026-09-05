@@ -78,6 +78,35 @@ test("mapping --field on a field with nested properties but no explicit type rep
   expect(rows).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "" }]);
 });
 
+/**
+ * `resource.attributes.sap@cf@org_name` is a single flat `_source` key on
+ * every document, but the fixture's mapping tree nests it under
+ * `resource.properties.attributes.properties["sap@cf@org_name"]` — matching
+ * the real backend. A single-level `properties[field]` lookup found nothing
+ * for this whole family, silently breaking the command for most of what is
+ * worth checking with it.
+ */
+test("mapping --field resolves a dotted field nested in the mapping tree, even though the matching _source key is flat", async () => {
+  const result = await runCli(
+    ["mapping", "--field", "resource.attributes.sap@cf@org_name", "--format", "json", ...targetArgs()],
+    env(),
+  );
+  expect(result.exitCode).toBe(0);
+  const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
+  expect(rows).toEqual([{ FIELD: "resource.attributes.sap@cf@org_name", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+});
+
+/**
+ * The fixture's two backing indices deliberately disagree on this field
+ * (keyword vs. text) — refusing to answer, the same way an unknown field
+ * does, beats reporting whichever index happened to be checked first.
+ */
+test("mapping --field refuses to answer when backing indices disagree on a field's type", async () => {
+  const result = await runCli(["mapping", "--field", "resource.attributes.sap@cf@app_name", ...targetArgs()], env());
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("was not found in the mapping");
+});
+
 test("fields lists every flat attribute key on a sample document, without guessing", async () => {
   const result = await runCli(["fields", "--service", "demo-app", "--name", "container.cpu.usage", "--format", "json-compact", ...targetArgs()], env());
   expect(result.exitCode).toBe(0);
@@ -106,6 +135,21 @@ test("names reports every metric name with its kind, unit, and doc count", async
   expect(byName.get("container.cpu.usage")).toMatchObject({ KIND: "GAUGE", UNIT: "1", DOC_COUNT: 4 });
   expect(byName.get("queue.incoming_messages")).toMatchObject({ KIND: "SUM", UNIT: "each", DOC_COUNT: 3 });
   expect(byName.get("http.server.duration")).toMatchObject({ KIND: "HISTOGRAM", UNIT: "ms", DOC_COUNT: 3 });
+});
+
+/**
+ * Same anomaly `history`/`top` warn about, but `names` is the discovery
+ * command this codebase's own error messages point users to *first* — it
+ * used to silently show only the most common kind here.
+ */
+test("names lists every kind a metric name reports, not just the most common one", async () => {
+  const result = await runCli(
+    ["names", "--service", "mixed-kind-app", "--since", "2026-08-28T09:00:00.000Z", "--until", "2026-08-28T09:20:00.000Z", "--format", "json", ...targetArgs()],
+    env(),
+  );
+  expect(result.exitCode).toBe(0);
+  const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
+  expect(rows).toEqual([{ NAME: "custom.migrating.metric", KIND: "GAUGE, HISTOGRAM", UNIT: "1", DOC_COUNT: 2 }]);
 });
 
 test("names --since that is neither a relative duration nor an ISO-8601 timestamp fails fast with a clear error, not a raw backend dump", async () => {

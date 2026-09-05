@@ -33,28 +33,82 @@ function mappedType(entry: Record<string, unknown>): string {
   return isRecord(entry["properties"]) ? "object" : "unknown";
 }
 
-function findFieldInMapping(mappingResponse: unknown, field: string): FieldMapping | undefined {
+/**
+ * Every index entry's definition of `field`, in response order, walking
+ * nested `properties` one `.`-separated segment at a time.
+ *
+ * A flat `_source` key like `resource.attributes.sap@cf@app_name` is a single
+ * literal key on every *document* (metric documents never nest — see
+ * `fields.ts`) — but confirmed live against the real backend, the *mapping
+ * tree* for this index pattern still nests on the `.` segments
+ * (`properties.resource.properties.attributes.properties["sap@cf@app_name"]`),
+ * the same discovery `@saptools/cf-otel` already made for its own span index.
+ * A single top-level `properties[field]` lookup found nothing for the entire
+ * `resource.*` family — silently breaking `mapping --field` for most of what
+ * is worth checking. `@` within one segment never nests further, so splitting
+ * only on `.` still resolves a plain, undotted field name in one step,
+ * unchanged from before.
+ */
+function findFieldDefinitions(mappingResponse: unknown, field: string): Record<string, unknown>[] {
   if (!isRecord(mappingResponse)) {
-    return undefined;
+    return [];
   }
+  const segments = field.split(".");
+  const found: Record<string, unknown>[] = [];
   for (const indexEntry of Object.values(mappingResponse)) {
     if (!isRecord(indexEntry)) {
       continue;
     }
     const mappings = indexEntry["mappings"];
-    const properties = isRecord(mappings) ? mappings["properties"] : undefined;
-    const entry = isRecord(properties) ? properties[field] : undefined;
-    if (!isRecord(entry)) {
+    if (!isRecord(mappings)) {
       continue;
     }
-    const ignoreAbove = entry["ignore_above"];
-    return {
-      field,
-      type: mappedType(entry),
-      ...(typeof ignoreAbove === "number" ? { ignoreAbove } : {}),
-    };
+    let properties: unknown = mappings["properties"];
+    let fieldDef: Record<string, unknown> | undefined;
+    for (const segment of segments) {
+      const node = isRecord(properties) ? properties[segment] : undefined;
+      if (!isRecord(node)) {
+        fieldDef = undefined;
+        break;
+      }
+      fieldDef = node;
+      properties = node["properties"];
+    }
+    if (fieldDef !== undefined) {
+      found.push(fieldDef);
+    }
   }
-  return undefined;
+  return found;
+}
+
+/**
+ * The field's mapping, reported only when every backing index that has the
+ * field agrees on its (resolved — see `mappedType`) type.
+ *
+ * Reporting the first index's opinion was safe while this command only
+ * reported existence, and unsafe as soon as a caller used the type to decide
+ * what terms are legal to send: `metrics-*` spans 40 backing indices
+ * (measured live), and a type sampled from one can be wrong for another's
+ * shards. Mirrors the identical fix already shipped in `@saptools/cf-otel`'s
+ * own `mapping.ts`, after it hit this for real (a stale, first-matched type
+ * let an already-mapped field send a term shape a newer shard rejected).
+ */
+function findFieldInMapping(mappingResponse: unknown, field: string): FieldMapping | undefined {
+  const definitions = findFieldDefinitions(mappingResponse, field);
+  const [fieldDef] = definitions;
+  if (fieldDef === undefined) {
+    return undefined;
+  }
+  const type = mappedType(fieldDef);
+  if (definitions.some((definition) => mappedType(definition) !== type)) {
+    return undefined;
+  }
+  const ignoreAbove = fieldDef["ignore_above"];
+  return {
+    field,
+    type,
+    ...(typeof ignoreAbove === "number" ? { ignoreAbove } : {}),
+  };
 }
 
 function listAllFieldNames(mappingResponse: unknown): readonly string[] {

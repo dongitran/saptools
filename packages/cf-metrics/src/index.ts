@@ -20,7 +20,7 @@ export type { CfMetricsErrorCode } from "./errors.js";
 export { formatCsv, formatJson, formatJsonCompact, formatResult, formatTable } from "./format.js";
 export type { OutputRow } from "./format.js";
 export { queryHistory, resolveMetricKind } from "./history.js";
-export type { HistoryQueryOptions, HistoryResult } from "./history.js";
+export type { HistoryQueryOptions, HistoryResult, KindResolution } from "./history.js";
 export { buildKindSubAggs, isCumulativeTemporality, parseMetricKind, shapeHistoryBucket } from "./kind.js";
 export type { MetricKind } from "./kind.js";
 export { queryNames } from "./names.js";

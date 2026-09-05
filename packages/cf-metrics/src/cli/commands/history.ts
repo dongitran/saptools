@@ -5,6 +5,7 @@ import { CfMetricsError } from "../../errors.js";
 import type { OutputRow } from "../../format.js";
 import { queryHistory, resolveMetricKind } from "../../history.js";
 import { parseMetricKind } from "../../kind.js";
+import type { MetricKind } from "../../kind.js";
 import { assertValidTimeRange } from "../../query-builder.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { HistoryOpts } from "../commandTypes.js";
@@ -59,7 +60,23 @@ async function runHistory(opts: HistoryOpts): Promise<void> {
 
   await withOpenSearchClient(opts, async (client) => {
     for (const name of opts.name) {
-      const kind = overrideKind ?? (await resolveMetricKind(client, opts.service, name));
+      let kind: MetricKind;
+      if (overrideKind === undefined) {
+        const resolution = await resolveMetricKind(client, opts.service, name);
+        kind = resolution.kind;
+        // A name reporting more than one kind is not the expected multi-unit
+        // case `units` already warns about below — it means the terms agg
+        // above silently discarded a whole other series. See KindResolution.
+        if (resolution.otherKinds.length > 0) {
+          printNotice(
+            `WARNING: "${name}" reports more than one kind in this window ` +
+              `(${[resolution.kind, ...resolution.otherKinds].join(", ")}) — using ${resolution.kind} ` +
+              "(the most common); pass --kind to force a different one.",
+          );
+        }
+      } else {
+        kind = overrideKind;
+      }
       const result = await queryHistory(client, {
         service: opts.service,
         name,

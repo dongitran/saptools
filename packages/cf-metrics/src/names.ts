@@ -12,19 +12,16 @@ export interface NamesQueryOptions {
   readonly limit: number;
 }
 
-function topBucketKey(bucket: Record<string, unknown>, aggName: string): string | undefined {
-  const agg = bucket[aggName];
-  const first = bucketArray(agg)[0];
-  const key = first?.["key"];
-  return typeof key === "string" ? key : undefined;
-}
-
 /**
- * Every unit a metric name reports, not just the most common one. Showing only
- * the top bucket hid the fact that `container.cpu.usage` publishes two series
+ * Every value a metric name reports for one sub-aggregation, not just the
+ * most common one. Showing only the top bucket hid two distinct anomalies
+ * this command exists to surface: `container.cpu.usage` publishing two units
  * (`unit="1"` and `unit="cpu"`, differing by ~17x) while its DOC_COUNT counted
- * both — the discovery command was actively concealing the one thing a user
- * needs to know before aggregating it. See `query-builder.ts`'s `unit` filter.
+ * both (see `query-builder.ts`'s `unit` filter) — and, the same way, a name
+ * reporting more than one `kind` (GAUGE/SUM/HISTOGRAM), a data anomaly rather
+ * than an expected shape (see `history.ts`'s `KindResolution`). Either way,
+ * the discovery command was actively concealing the one thing a user needs to
+ * know before aggregating on the name.
  */
 function allBucketKeys(bucket: Record<string, unknown>, aggName: string): string {
   return bucketArray(bucket[aggName])
@@ -62,7 +59,7 @@ export async function queryNames(client: OpenSearchClient, opts: NamesQueryOptio
   const byName = response.aggregations?.["by_name"];
   const rows = bucketArray(byName).map((bucket) => ({
     NAME: typeof bucket["key"] === "string" ? bucket["key"] : "",
-    KIND: topBucketKey(bucket, "by_kind") ?? "",
+    KIND: allBucketKeys(bucket, "by_kind"),
     UNIT: allBucketKeys(bucket, "by_unit"),
     DOC_COUNT: typeof bucket["doc_count"] === "number" ? bucket["doc_count"] : 0,
   }));

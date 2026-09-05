@@ -31,6 +31,24 @@ export interface HistoryResult {
   readonly units: readonly string[];
 }
 
+export interface KindResolution {
+  readonly kind: MetricKind;
+  /**
+   * Every other kind bucket also found for this metric name/scope, when more
+   * than one exists. Unlike `units` (an expected multi-series case, e.g.
+   * `container.cpu.usage`), a name reporting more than one `kind` is a data
+   * anomaly — usually an instrumentation change mid-rollout, or two unrelated
+   * emitters sharing a name — and the terms agg below silently keeps only the
+   * most common one. Empty when there is exactly one kind.
+   */
+  readonly otherKinds: readonly string[];
+}
+
+// The full MetricKind enum has exactly 3 members, so sizing the terms agg to
+// all of them costs nothing extra and is what makes a second kind visible as
+// `otherKinds` instead of silently vanishing the way `size: 1` did.
+const KIND_TERMS_SIZE = 3;
+
 /** One metric name's time-bucketed history, shaped according to its kind. */
 export async function queryHistory(client: OpenSearchClient, opts: HistoryQueryOptions): Promise<HistoryResult> {
   const query = buildMetricBoolQuery({
@@ -70,16 +88,22 @@ export async function queryHistory(client: OpenSearchClient, opts: HistoryQueryO
  * per-service scope (e.g. `top`, which ranks cross-app by design) can still
  * resolve a name's kind without a service term filter.
  */
-export async function resolveMetricKind(client: OpenSearchClient, service: string | undefined, name: string): Promise<MetricKind> {
+export async function resolveMetricKind(client: OpenSearchClient, service: string | undefined, name: string): Promise<KindResolution> {
   const response = await client.search(DEFAULT_INDEX_PATTERN, {
     size: 0,
     query: buildMetricBoolQuery({ ...(service === undefined ? {} : { service }), names: [name] }),
-    aggs: { by_kind: { terms: { field: "kind", size: 1 } } },
+    aggs: { by_kind: { terms: { field: "kind", size: KIND_TERMS_SIZE } } },
   });
   const buckets = bucketArray(response.aggregations?.["by_kind"]);
   const key = buckets[0]?.["key"];
   if (key === "GAUGE" || key === "SUM" || key === "HISTOGRAM") {
-    return key;
+    return {
+      kind: key,
+      otherKinds: buckets
+        .slice(1)
+        .map((bucket) => bucket["key"])
+        .filter((otherKey): otherKey is string => typeof otherKey === "string"),
+    };
   }
   const scope = service === undefined ? "" : ` on service "${service}"`;
   throw new CfMetricsError(

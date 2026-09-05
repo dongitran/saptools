@@ -137,6 +137,33 @@ test("top --unit ranks on a single series and drops the warning", async () => {
 });
 
 /**
+ * Mirrors the multi-unit guard but flags a data anomaly (a name reporting
+ * more than one `kind`) rather than an expected shape. `resolveTopMetricKind`
+ * used to request only 1 kind bucket, so a second kind was invisible even to
+ * detect — this branch had no coverage until now.
+ */
+test("top warns when the ranked metric name reports several kinds", async () => {
+  const result = await runCli(
+    ["top", "--name", "custom.migrating.metric", "--format", "json", ...WINDOW, ...targetArgs()],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toContain("more than one kind");
+  expect(result.stderr).toContain("GAUGE, HISTOGRAM");
+});
+
+test("top --kind skips auto-resolution and drops the kind-ambiguity warning", async () => {
+  const result = await runCli(
+    ["top", "--name", "custom.migrating.metric", "--kind", "GAUGE", "--format", "json", ...WINDOW, ...targetArgs()],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).not.toContain("more than one kind");
+});
+
+/**
  * `snapshot` used to cap at 50 metric names with no flag to raise it and no
  * hint that anything was dropped — and a `terms` cap discards the sparsest
  * names first, which are the ones worth looking for.
