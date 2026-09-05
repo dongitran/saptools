@@ -2,6 +2,34 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.11.0
+
+### Fixed
+
+- `mapping --field` on a field alias reported `alias`, which is true and useless. `metrics-*` maps
+  nine of them (measured): short names like `app_name` pointing at
+  `resource.attributes.sap@cf@app_name`. OpenSearch resolves an alias in queries and aggregations
+  alike — measured, an aggregation on the alias and on its target return identical buckets — so the
+  type that governs whether the field is safe to aggregate on is the target's, and that is what is
+  now reported, alongside the target path in a new `ALIAS_OF` column. An alias whose target is
+  missing, malformed, or itself an alias still reports `alias`, now naming what it points at; an
+  alias chain is never followed, which OpenSearch forbids anyway and a self-reference would spin on.
+
+- A field present in every backing index but mapped inconsistently was reported as "was not found in
+  the mapping" — introduced in 0.9.0 along with the agreement check itself, and misleading in the
+  way that costs the most time: it sends the reader hunting for a typo that is not there. The two
+  cases are now distinct, and the listing shows `ambiguous` rather than `unknown` for a field the
+  indices disagree about.
+
+- A divergent `ignore_above` across backing indices is no longer reported as whichever index
+  answered first. A `keyword` longer than its cap is stored but never indexed, so the same term
+  matches on one shard and not another; the cap is omitted when the indices disagree. The type still
+  answers — withholding it over an advisory column would suppress what the caller came for.
+
+### Changed
+
+- `mapping` output carries a fourth column, `ALIAS_OF`, empty for a concrete field.
+
 ## 0.10.0
 
 ### Fixed

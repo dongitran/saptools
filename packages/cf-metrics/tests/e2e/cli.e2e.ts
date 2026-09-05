@@ -62,7 +62,7 @@ test("mapping --field reports the mapped type", async () => {
   const result = await runCli(["mapping", "--field", "name", "--format", "json", ...targetArgs()], env());
   expect(result.exitCode).toBe(0);
   const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
-  expect(rows).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+  expect(rows).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
 });
 
 test("mapping --field on an unknown field fails with MAPPING_LOOKUP_FAILED", async () => {
@@ -75,7 +75,7 @@ test("mapping --field on a field with nested properties but no explicit type rep
   const result = await runCli(["mapping", "--field", "instrumentationScope", "--format", "json", ...targetArgs()], env());
   expect(result.exitCode).toBe(0);
   const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
-  expect(rows).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "" }]);
+  expect(rows).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "", ALIAS_OF: "" }]);
 });
 
 /**
@@ -93,18 +93,22 @@ test("mapping --field resolves a dotted field nested in the mapping tree, even t
   );
   expect(result.exitCode).toBe(0);
   const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
-  expect(rows).toEqual([{ FIELD: "resource.attributes.sap@cf@org_name", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+  expect(rows).toEqual([{ FIELD: "resource.attributes.sap@cf@org_name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
 });
 
 /**
  * The fixture's two backing indices deliberately disagree on this field
- * (keyword vs. text) — refusing to answer, the same way an unknown field
- * does, beats reporting whichever index happened to be checked first.
+ * (keyword vs. text). Refusing to answer beats reporting whichever index was
+ * checked first — but the refusal has to say which of the two reasons it is:
+ * calling a field that exists in every index "not found" sends the reader
+ * hunting for a typo that isn't there.
  */
-test("mapping --field refuses to answer when backing indices disagree on a field's type", async () => {
+test("mapping --field says the indices disagree, rather than calling a present field missing", async () => {
   const result = await runCli(["mapping", "--field", "resource.attributes.sap@cf@app_name", ...targetArgs()], env());
   expect(result.exitCode).not.toBe(0);
-  expect(result.stderr).toContain("was not found in the mapping");
+  expect(result.stderr).toContain("mapped inconsistently");
+  expect(result.stderr).toContain("keyword, text");
+  expect(result.stderr).not.toContain("was not found in the mapping");
 });
 
 test("fields lists every flat attribute key on a sample document, without guessing", async () => {

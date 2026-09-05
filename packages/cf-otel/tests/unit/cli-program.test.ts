@@ -110,7 +110,7 @@ describe("mapping", () => {
       getMapping: async () => ({ idx: { mappings: { properties: { name: { type: "keyword", ignore_above: 1024 } } } } }),
     });
     const text = await runCli(["mapping", "--field", "name", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024 }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "" }]);
   });
 
   it("lists every field's type when --field is omitted", async () => {
@@ -128,8 +128,8 @@ describe("mapping", () => {
     });
     const text = await runCli(["mapping", "--format", "json"], client);
     const rows: readonly Record<string, unknown>[] = JSON.parse(text);
-    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024 });
-    expect(rows).toContainEqual({ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: "" });
+    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "" });
+    expect(rows).toContainEqual({ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "" });
   });
 
   it("fails clearly for an unknown field", async () => {

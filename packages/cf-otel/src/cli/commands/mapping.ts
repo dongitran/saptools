@@ -35,7 +35,15 @@ function listAllFieldNames(mappingResponse: unknown): readonly string[] {
 
 function fieldRow(name: string, mappingResponse: unknown): Record<string, string | number> {
   const found = findFieldInMapping(mappingResponse, name);
-  return { FIELD: name, TYPE: found?.type ?? "unknown", IGNORE_ABOVE: found?.ignoreAbove ?? "" };
+  return {
+    FIELD: name,
+    TYPE: found?.type ?? "unknown",
+    IGNORE_ABOVE: found?.ignoreAbove ?? "",
+    // A field alias reports the type of what it points at, since that is what
+    // a query against it compares — naming the target keeps that honest, and
+    // gives the reader the concrete path to use everywhere else.
+    ALIAS_OF: found?.aliasOf ?? "",
+  };
 }
 
 async function runMapping(opts: MappingOpts): Promise<void> {
