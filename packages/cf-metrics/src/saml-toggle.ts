@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { CfExecContext } from "./cf.js";
 import {
   cfCreateServiceKey,
+  cfDeleteServiceKey,
   cfServiceKey,
   cfServiceParams,
   cfServiceShow,
@@ -163,15 +164,29 @@ async function confirmSamlUpdate(instance: string, ctx: CfExecContext, report: S
  */
 type Outcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
-async function confirmThenMint(
-  instance: string,
-  ctx: CfExecContext,
-  report: StepReporter,
-): Promise<Outcome<DashboardsCredential>> {
+/**
+ * A mint attempt's result plus the key it created, if it got that far.
+ *
+ * The name has to survive the failure: it is generated inside the attempt, and
+ * every step after `create-service-key` can fail (reading the key back, a
+ * payload with no dashboards fields, the broker timing out). Losing the name
+ * with the error is what left an unusable key on a shared instance after every
+ * failed attempt, invisible to the user and accumulating one per retry.
+ */
+interface MintAttempt {
+  readonly outcome: Outcome<DashboardsCredential>;
+  readonly createdKeyName?: string;
+}
+
+async function confirmThenMint(instance: string, ctx: CfExecContext, report: StepReporter): Promise<MintAttempt> {
+  let createdKeyName: string | undefined;
   try {
     await confirmSamlUpdate(instance, ctx, report);
     const keyName = `cf-metrics-${randomBytes(4).toString("hex")}`;
     report(`cf create-service-key ${instance} ${keyName}`);
+    // Recorded before the call, not after: a create that times out client-side
+    // may still have created the key server-side.
+    createdKeyName = keyName;
     await cfCreateServiceKey(instance, keyName, ctx);
     const payload = parseCredentialJson(await cfServiceKey(instance, keyName, ctx), `service key payload for "${keyName}"`);
     const credential = extractDashboardsCredential(payload, `minted:${keyName}`);
@@ -181,10 +196,57 @@ async function confirmThenMint(
         `Minted key "${keyName}" on "${instance}" did not contain dashboards-username/dashboards-password.`,
       );
     }
-    return { ok: true, value: { ...credential, instance } };
+    // Reaching here means the key was created, so the name is always known.
+    return { outcome: { ok: true, value: { ...credential, instance } }, createdKeyName };
   } catch (error) {
-    return { ok: false, error };
+    return { outcome: { ok: false, error }, ...(createdKeyName === undefined ? {} : { createdKeyName }) };
   }
+}
+
+/**
+ * Remove the key a failed attempt created, so a shared instance does not
+ * collect one unusable key per retry.
+ *
+ * Called *after* the SAML restore, never before: cleanup must not extend the
+ * window in which SSO is disabled for everyone. Returns a sentence to append
+ * to the original error when the deletion itself fails, so the key is at least
+ * named rather than left silently behind.
+ */
+async function cleanUpUnusableKey(
+  instance: string,
+  attempt: MintAttempt,
+  ctx: CfExecContext,
+  report: StepReporter,
+): Promise<string | undefined> {
+  const keyName = attempt.createdKeyName;
+  // A successful mint's key IS the credential being returned, and a failure
+  // before any name was generated left nothing behind.
+  if (attempt.outcome.ok || keyName === undefined) {
+    return undefined;
+  }
+  report(`cf delete-service-key ${instance} ${keyName} -f (removing the key this run could not use)`);
+  try {
+    await cfDeleteServiceKey(instance, keyName, ctx);
+    return undefined;
+  } catch (error) {
+    report(`could not delete the minted key "${keyName}": ${errorMessage(error)}`);
+    return (
+      ` The service key "${keyName}" created during this attempt could not be deleted ` +
+      `(${errorMessage(error)}), so it is still on the instance; remove it with: ` +
+      `cf delete-service-key ${instance} ${keyName} -f`
+    );
+  }
+}
+
+/** Re-raise a minting failure with the orphaned-key sentence appended, keeping the original error's code so callers can still branch on it. */
+function withKeyNote(error: unknown, note: string | undefined): unknown {
+  if (note === undefined) {
+    return error;
+  }
+  if (error instanceof CfMetricsError) {
+    return new CfMetricsError(error.code, `${error.message}${note}`, { cause: error });
+  }
+  return new CfMetricsError("CREDENTIALS_NOT_FOUND", `${errorMessage(error)}${note}`, { cause: error });
 }
 
 async function restoreCatchingError(
@@ -242,8 +304,12 @@ export async function mintDashboardsCredential(
   // SAML may now be disabled server-side even if a later step fails
   // (confirmation polling, key creation/reading) — the restore below always
   // runs regardless of what happens in confirmThenMint.
-  const mintResult = await confirmThenMint(instance, ctx, report);
+  const attempt = await confirmThenMint(instance, ctx, report);
+  const mintResult = attempt.outcome;
   const restoreResult = await restoreCatchingError(instance, originalParams, originalSamlEnabled, ctx, report);
+  // Strictly after the restore: deleting a key is a round trip, and doing it
+  // first would hold SSO down for everyone that much longer.
+  const keyNote = await cleanUpUnusableKey(instance, attempt, ctx, report);
 
   if (!restoreResult.ok) {
     const context = mintResult.ok
@@ -263,10 +329,10 @@ export async function mintDashboardsCredential(
       : `Failed to re-confirm saml.enabled=false on Cloud Logging instance "${instance}" after a credential ` +
         `mint attempt.${context} SAML was already disabled before this run, so no SSO capability was lost, ` +
         `but verify the instance's params still match what they were before: cf service ${instance} --params.`;
-    throw new SamlRestoreFailedError(message, { cause: restoreResult.error });
+    throw new SamlRestoreFailedError(`${message}${keyNote ?? ""}`, { cause: restoreResult.error });
   }
   if (!mintResult.ok) {
-    throw mintResult.error;
+    throw withKeyNote(mintResult.error, keyNote);
   }
   return mintResult.value;
 }

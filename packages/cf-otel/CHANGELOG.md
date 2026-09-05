@@ -20,11 +20,23 @@ All notable changes to `@saptools/cf-otel` are documented in this file.
   attributes that really are stored array-rendered; an alias onto one still needs the resolved type
   to reach it.
 
-- An alias pointing at different targets in different backing indices is now treated as the
-  disagreement it is, rather than resolved from whichever index answered first.
+- `resolveAggregatableField` built `<alias>.keyword`, a name that does not exist. A field alias
+  registers only its own full name; the target's multi-fields are not reachable through it, and a
+  `terms` aggregation on an unmapped field returns empty buckets with **no error** — the exact
+  silent failure that function exists to prevent. It now names the target's sub-field.
 
-- A divergent `ignore_above` across backing indices is no longer reported as whichever index
-  answered first; the cap is omitted when they disagree, while the type still answers.
+- A divergent alias target, and a divergent `ignore_above`, are now reported *alongside* the agreed
+  type rather than instead of it, as `(varies)` in the relevant column. Withholding the type looked
+  safer and was not: three callers read "no type" as "field absent", and each then does something
+  worse than reporting a type with a caveat — the `--attr` numeric guard is skipped entirely (so
+  `>=` on a keyword becomes a silently lexicographic `range`), `assertFieldExists` blames the
+  tenant's collector configuration, and `mapping --field` calls a field present in every index
+  missing. A blank `ignore_above` was its own trap: it reads as "no cap", the safe interpretation,
+  while divergence is the hazardous one.
+
+- A field present in every backing index but mapped inconsistently is no longer reported as "was not
+  found in the mapping", in `mapping --field` or in `assertFieldExists`; the listing shows
+  `ambiguous` rather than `unknown`.
 
 ### Changed
 

@@ -16,8 +16,19 @@ interface FieldMapping {
   /** The resolved type — for a field alias, the type of the field it points at, since that is what a query against it compares. */
   readonly type: string;
   readonly ignoreAbove?: number;
-  /** Set when `field` is an alias: the concrete path it resolves to. */
+  /**
+   * True when the backing indices report different `ignore_above` caps.
+   *
+   * Surfaced rather than omitted: a `keyword` longer than its cap is stored
+   * but never indexed, so it produces no term and cannot match a `term` query
+   * or appear in a bucket. A *blank* cap reads as "no cap at all", which is
+   * the safe interpretation, exactly inverting the hazard.
+   */
+  readonly ignoreAboveVaries?: boolean;
+  /** Set when `field` is an alias: the concrete path it resolves to, from the first index that declared it. */
   readonly aliasOf?: string;
+  /** True when indices point the same alias at different targets — surfaced, never used to withhold the type. */
+  readonly aliasVaries?: boolean;
 }
 
 /**
@@ -37,8 +48,7 @@ function mappedType(entry: Record<string, unknown>): string {
 }
 
 /**
- * Every index entry's definition of `field`, in response order, walking
- * nested `properties` one `.`-separated segment at a time.
+ * Walk one index entry's own mapping tree for a `.`-separated field path.
  *
  * A flat `_source` key like `resource.attributes.sap@cf@app_name` is a single
  * literal key on every *document* (metric documents never nest — see
@@ -49,10 +59,12 @@ function mappedType(entry: Record<string, unknown>): string {
  * A single top-level `properties[field]` lookup found nothing for the entire
  * `resource.*` family — silently breaking `mapping --field` for most of what
  * is worth checking. `@` within one segment never nests further, so splitting
- * only on `.` still resolves a plain, undotted field name in one step,
- * unchanged from before.
+ * only on `.` still resolves a plain, undotted field name in one step.
+ *
+ * Only `properties` is descended, never a field's `fields` block, so a path
+ * naming a multi-field does not resolve here — an alias onto one degrades to
+ * reporting `alias`, the documented fallback rather than a wrong answer.
  */
-/** Walk one index entry's own mapping tree for a `.`-separated field path. */
 function walkIndexProperties(mappings: Record<string, unknown>, field: string): Record<string, unknown> | undefined {
   let properties: unknown = mappings["properties"];
   let fieldDef: Record<string, unknown> | undefined;
@@ -127,18 +139,6 @@ function findFieldDefinitions(mappingResponse: unknown, field: string): IndexDef
 }
 
 /**
- * The field's mapping, reported only when every backing index that has the
- * field agrees on its (resolved — see `mappedType`) type.
- *
- * Reporting the first index's opinion was safe while this command only
- * reported existence, and unsafe as soon as a caller used the type to decide
- * what terms are legal to send: `metrics-*` spans 40 backing indices
- * (measured live), and a type sampled from one can be wrong for another's
- * shards. Mirrors the identical fix already shipped in `@saptools/cf-otel`'s
- * own `mapping.ts`, after it hit this for real (a stale, first-matched type
- * let an already-mapped field send a term shape a newer shard rejected).
- */
-/**
  * Why a field has no single answer. The two cases used to be one `undefined`,
  * and `runMapping` reported both as "was not found in the mapping" — untrue,
  * and misleading, for a field that is present in every index and simply
@@ -150,6 +150,16 @@ type FieldLookup =
   | { readonly status: "disagrees"; readonly types: readonly string[] }
   | { readonly status: "absent" };
 
+/**
+ * The field's answer across every backing index.
+ *
+ * Reporting the first index's opinion was safe while this command only
+ * reported existence, and unsafe as soon as a caller used the type to decide
+ * what terms are legal to send: `metrics-*` spans 40 backing indices
+ * (measured live), and a type sampled from one can be wrong for another's
+ * shards. Mirrors the fix already shipped in `@saptools/cf-otel`'s own
+ * `mapping.ts`, after it hit this for real.
+ */
 function lookUpField(mappingResponse: unknown, field: string): FieldLookup {
   const definitions = findFieldDefinitions(mappingResponse, field);
   const [first] = definitions;
@@ -161,22 +171,23 @@ function lookUpField(mappingResponse: unknown, field: string): FieldLookup {
   if (types.length > 1) {
     return { status: "disagrees", types };
   }
-  // An alias pointing at different targets in different indices is a real
-  // disagreement even when the resolved types coincide.
-  if (definitions.some((entry) => entry.aliasOf !== first.aliasOf)) {
-    return { status: "disagrees", types: [type] };
-  }
+  // Neither a divergent alias target nor a divergent `ignore_above` withholds
+  // the type: "no answer" makes `mapping --field` call a field present in
+  // every index missing, which is the very message the absent/disagrees split
+  // below exists to stop producing. An agreed type with a caveat beside it is
+  // strictly more useful than silence.
   const ignoreAbove = first.definition["ignore_above"];
-  // Deliberately not part of the agreement gate: a divergent cap is reported
-  // as unknown rather than suppressing a correct type over an advisory column.
   const capsAgree = definitions.every((entry) => entry.definition["ignore_above"] === ignoreAbove);
+  const aliasAgrees = definitions.every((entry) => entry.aliasOf === first.aliasOf);
   return {
     status: "found",
     mapping: {
       field,
       type,
       ...(typeof ignoreAbove === "number" && capsAgree ? { ignoreAbove } : {}),
+      ...(capsAgree ? {} : { ignoreAboveVaries: true }),
       ...(first.aliasOf === undefined ? {} : { aliasOf: first.aliasOf }),
+      ...(aliasAgrees ? {} : { aliasVaries: true }),
     },
   };
 }
@@ -202,6 +213,17 @@ function listAllFieldNames(mappingResponse: unknown): readonly string[] {
   return [...names].sort();
 }
 
+/** `(varies)` rather than a blank: an empty cell reads as "none", the safe reading, while divergence is the hazardous one. */
+const VARIES = "(varies)";
+
+function ignoreAboveCell(mapping: FieldMapping): string | number {
+  return mapping.ignoreAboveVaries === true ? VARIES : (mapping.ignoreAbove ?? "");
+}
+
+function aliasCell(mapping: FieldMapping): string {
+  return mapping.aliasVaries === true ? VARIES : (mapping.aliasOf ?? "");
+}
+
 function fieldRow(name: string, mappingResponse: unknown): Record<string, string | number> {
   const lookup = lookUpField(mappingResponse, name);
   // "ambiguous" rather than "unknown": in a listing the two look alike but mean
@@ -211,11 +233,11 @@ function fieldRow(name: string, mappingResponse: unknown): Record<string, string
   return {
     FIELD: name,
     TYPE: type,
-    IGNORE_ABOVE: lookup.status === "found" ? (lookup.mapping.ignoreAbove ?? "") : "",
+    IGNORE_ABOVE: lookup.status === "found" ? ignoreAboveCell(lookup.mapping) : "",
     // A field alias reports the type of what it points at, since that is what a
     // query against it compares — naming the target keeps that honest, and
     // hands the reader the concrete path to use everywhere else.
-    ALIAS_OF: lookup.status === "found" ? (lookup.mapping.aliasOf ?? "") : "",
+    ALIAS_OF: lookup.status === "found" ? aliasCell(lookup.mapping) : "",
   };
 }
 

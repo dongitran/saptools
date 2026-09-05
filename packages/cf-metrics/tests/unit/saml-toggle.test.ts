@@ -345,3 +345,84 @@ describe("mintDashboardsCredential", () => {
     expect((caught as Error).message).toContain("parse error details omitted");
   });
 });
+
+/**
+ * Every step after `create-service-key` can fail — reading the key back, a
+ * payload with no dashboards fields, the broker timing out — and the key name
+ * used to be lost with the error, leaving an unusable key on a shared
+ * instance, invisible, one per retry.
+ */
+describe("mintDashboardsCredential key cleanup", () => {
+  it("deletes the key it created when a later step fails, and only after restoring SAML", async () => {
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue('{"saml":{"enabled":true,"sp":{"entity_id":"x"}}}');
+    const order: string[] = [];
+    vi.spyOn(cf, "cfUpdateService").mockImplementation(async () => {
+      order.push("update-service");
+    });
+    stubServiceShowSucceeded();
+    vi.spyOn(cf, "cfCreateServiceKey").mockResolvedValue(undefined);
+    // The key exists server-side, but reading it back fails.
+    vi.spyOn(cf, "cfServiceKey").mockRejectedValue(new Error("cf service-key failed: broker timeout"));
+    const deleteKey = vi.spyOn(cf, "cfDeleteServiceKey").mockImplementation(async () => {
+      order.push("delete-service-key");
+    });
+
+    await expect(
+      mintDashboardsCredential("cloud-logging", { cfHome: "/tmp/fake" }, { confirmDisruptive: true }),
+    ).rejects.toThrow(/broker timeout/);
+
+    expect(deleteKey).toHaveBeenCalledTimes(1);
+    expect(deleteKey.mock.calls[0]?.[1]).toMatch(/^cf-metrics-[0-9a-f]{8}$/);
+    // Cleanup is a round trip; doing it before the restore would hold SSO down
+    // for every user of the instance that much longer.
+    expect(order).toEqual(["update-service", "update-service", "delete-service-key"]);
+  });
+
+  it("names the key in the error when the cleanup itself fails, so it can be removed by hand", async () => {
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue('{"saml":{"enabled":true,"sp":{"entity_id":"x"}}}');
+    vi.spyOn(cf, "cfUpdateService").mockResolvedValue(undefined);
+    stubServiceShowSucceeded();
+    vi.spyOn(cf, "cfCreateServiceKey").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfServiceKey").mockRejectedValue(new Error("cf service-key failed: broker timeout"));
+    vi.spyOn(cf, "cfDeleteServiceKey").mockRejectedValue(new Error("insufficient scope"));
+
+    const caught: unknown = await mintDashboardsCredential(
+      "cloud-logging",
+      { cfHome: "/tmp/fake" },
+      { confirmDisruptive: true },
+    ).catch((error: unknown) => error);
+
+    // The original failure survives, with the orphan named alongside it.
+    expect((caught as Error).message).toMatch(/broker timeout/);
+    expect((caught as Error).message).toMatch(/cf delete-service-key cloud-logging cf-metrics-[0-9a-f]{8} -f/);
+  });
+
+  it("deletes nothing when the mint succeeded, since that key is the credential being returned", async () => {
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue('{"saml":{"enabled":true,"sp":{"entity_id":"x"}}}');
+    vi.spyOn(cf, "cfUpdateService").mockResolvedValue(undefined);
+    stubServiceShowSucceeded();
+    vi.spyOn(cf, "cfCreateServiceKey").mockResolvedValue(undefined);
+    vi.spyOn(cf, "cfServiceKey").mockResolvedValue(
+      '{"dashboards-endpoint":"https://dash.example.com","dashboards-username":"u","dashboards-password":"minted-pw"}',
+    );
+    const deleteKey = vi.spyOn(cf, "cfDeleteServiceKey").mockResolvedValue(undefined);
+
+    await mintDashboardsCredential("cloud-logging", { cfHome: "/tmp/fake" }, { confirmDisruptive: true });
+
+    expect(deleteKey).not.toHaveBeenCalled();
+  });
+
+  it("deletes nothing when the failure happened before any key was created", async () => {
+    vi.spyOn(cf, "cfServiceParams").mockResolvedValue('{"saml":{"enabled":true,"sp":{"entity_id":"x"}}}');
+    vi.spyOn(cf, "cfUpdateService").mockResolvedValue(undefined);
+    // The confirmation step fails outright, so minting never reaches a create.
+    vi.spyOn(cf, "cfServiceShow").mockRejectedValue(new Error("cf service failed: not authorized"));
+    const deleteKey = vi.spyOn(cf, "cfDeleteServiceKey").mockResolvedValue(undefined);
+
+    await expect(
+      mintDashboardsCredential("cloud-logging", { cfHome: "/tmp/fake" }, { confirmDisruptive: true }),
+    ).rejects.toThrow();
+
+    expect(deleteKey).not.toHaveBeenCalled();
+  });
+});

@@ -23,8 +23,17 @@ All notable changes to `@saptools/cf-metrics` are documented in this file.
 
 - A divergent `ignore_above` across backing indices is no longer reported as whichever index
   answered first. A `keyword` longer than its cap is stored but never indexed, so the same term
-  matches on one shard and not another; the cap is omitted when the indices disagree. The type still
-  answers — withholding it over an advisory column would suppress what the caller came for.
+  matches on one shard and not another. It reports `(varies)` rather than blank: an empty cap reads
+  as "no cap at all", which is the safe interpretation, exactly inverting the hazard. The type still
+  answers — withholding it would only make `mapping --field` call the field missing.
+
+- A failed `--allow-mint-credential` abandoned the service key it had already created. Every step
+  after `cf create-service-key` can fail — reading the key back, a payload without the dashboards
+  fields, the broker timing out — and the generated name was lost with the error, so an unusable key
+  stayed on the shared Cloud Logging instance, invisible to the user and accumulating one per retry.
+  The key is now deleted, strictly *after* the SAML restore so cleanup cannot extend the window in
+  which SSO is disabled for everyone, and if the deletion itself fails the key is named in the error
+  with the command to remove it.
 
 ### Changed
 

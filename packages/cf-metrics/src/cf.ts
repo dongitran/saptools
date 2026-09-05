@@ -480,6 +480,19 @@ export async function cfCreateServiceKey(instance: string, keyName: string, ctx:
   await runCf(["create-service-key", instance, keyName], ctx, {}, { maxAttempts: 1 });
 }
 
+/**
+ * Delete a service key. Never retried, like every other mutation here.
+ *
+ * `-f` is not optional: without it CF CLI v8 asks for confirmation on stdin,
+ * which here is a pipe nobody is attached to, so the command would block until
+ * the exec timeout killed it. Deleting a key that no longer exists is not an
+ * error either — v8 reports "does not exist" and still exits 0 — which is what
+ * makes this safe to call when it is unclear whether the key was ever created.
+ */
+export async function cfDeleteServiceKey(instance: string, keyName: string, ctx: CfExecContext): Promise<void> {
+  await runCf(["delete-service-key", instance, keyName, "-f"], ctx, {}, { maxAttempts: 1 });
+}
+
 export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined> {
   const { bin, argsPrefix } = resolveCfBin();
   const env = { ...process.env };

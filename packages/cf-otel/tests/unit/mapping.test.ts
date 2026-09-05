@@ -130,6 +130,70 @@ describe("resolveAggregatableField", () => {
     const client = fakeClientWithMapping(SAMPLE_MAPPING);
     await expect(resolveAggregatableField(client, "idx", "missing")).rejects.toThrow(/was not found in the mapping/);
   });
+
+  /**
+   * A field alias registers only its own full name; the target's multi-fields
+   * are not reachable through it. So `<alias>.keyword` is unmapped — and a
+   * `terms` aggregation on an unmapped field returns empty buckets with no
+   * error, which is exactly the silent failure this function exists to
+   * prevent. The sub-field has to be named on the target.
+   */
+  it("builds the .keyword sub-field on an alias's target, not on the alias name", async () => {
+    const client = fakeClientWithMapping({
+      idx: {
+        mappings: {
+          properties: {
+            app_name: { type: "alias", path: "resource.attributes.sap@cf@app_name" },
+            resource: {
+              properties: {
+                attributes: {
+                  properties: {
+                    "sap@cf@app_name": { type: "text", fields: { keyword: { type: "keyword", ignore_above: 256 } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(await resolveAggregatableField(client, "idx", "app_name")).toBe(
+      "resource.attributes.sap@cf@app_name.keyword",
+    );
+  });
+
+  it("returns an alias's target for a keyword-mapped target, which OpenSearch resolves either way", async () => {
+    const client = fakeClientWithMapping({
+      idx: {
+        mappings: {
+          properties: {
+            app_name: { type: "alias", path: "resource.attributes.sap@cf@app_name" },
+            resource: { properties: { attributes: { properties: { "sap@cf@app_name": { type: "keyword" } } } } },
+          },
+        },
+      },
+    });
+
+    expect(await resolveAggregatableField(client, "idx", "app_name")).toBe("resource.attributes.sap@cf@app_name");
+  });
+
+  it("names the alias and its target when the target is text with no .keyword to fall back to", async () => {
+    const client = fakeClientWithMapping({
+      idx: {
+        mappings: {
+          properties: {
+            body: { type: "alias", path: "rawMessage" },
+            rawMessage: { type: "text" },
+          },
+        },
+      },
+    });
+
+    await expect(resolveAggregatableField(client, "idx", "body")).rejects.toThrow(
+      /is an alias onto "rawMessage", which is text-mapped/,
+    );
+  });
 });
 
 describe("mapping disagreement across backing indices", () => {
@@ -240,7 +304,16 @@ describe("field aliases", () => {
     expect(findFieldInMapping(malformed, "app_id")).toMatchObject({ type: "alias" });
   });
 
-  it("refuses to answer when two indices point the same alias at different targets", () => {
+  /**
+   * Divergence is reported *alongside* the type, never instead of it.
+   * `undefined` from this function does not mean "be careful" — three callers
+   * read it as "the field is absent", and each then does something worse than
+   * reporting a type with a caveat: the `--attr` numeric guard is skipped
+   * entirely (so `>=` on a keyword becomes a silently lexicographic `range`),
+   * `assertFieldExists` blames the tenant's collector config, and
+   * `mapping --field` calls a field present in every index missing.
+   */
+  it("still reports the agreed type when two indices point the same alias at different targets", () => {
     const divergent = {
       ...aliased("keyword", "resource.attributes.sap@cf@app_id"),
       "otel-v1-apm-span-000002": {
@@ -253,11 +326,10 @@ describe("field aliases", () => {
       },
     };
 
-    // Same resolved type in both, so only the target comparison can catch this.
-    expect(findFieldInMapping(divergent, "app_id")).toBeUndefined();
+    expect(findFieldInMapping(divergent, "app_id")).toMatchObject({ type: "keyword", aliasVaries: true });
   });
 
-  it("agrees when an alias and a concrete field of the same type straddle two indices", () => {
+  it("answers for an alias-and-concrete straddle, which no query can tell apart anyway", () => {
     const straddle = {
       a: { mappings: { properties: { app_id: { type: "keyword" } } } },
       b: {
@@ -270,9 +342,10 @@ describe("field aliases", () => {
       },
     };
 
-    // Types match, but one was reached through an alias and one was not — the
-    // target check has to treat that as a disagreement it cannot resolve.
-    expect(findFieldInMapping(straddle, "app_id")).toBeUndefined();
+    // OpenSearch resolves the alias per index at query time and both sides are
+    // keyword, so every encoding decision downstream is identical. Withholding
+    // the type here would buy nothing and cost the guards above.
+    expect(findFieldInMapping(straddle, "app_id")).toMatchObject({ type: "keyword", aliasVaries: true });
   });
 });
 
@@ -293,12 +366,30 @@ describe("ignore_above across backing indices", () => {
    * as the pattern's. The type still answers — withholding it over an advisory
    * column would suppress what the caller came for.
    */
-  it("omits the cap when the indices disagree, rather than reporting whichever answered first", () => {
-    expect(findFieldInMapping(withCaps(256, 32_766), "unit")).toEqual({ field: "unit", type: "keyword" });
-    expect(findFieldInMapping(withCaps(32_766, 256), "unit")).toEqual({ field: "unit", type: "keyword" });
+  it("flags a divergent cap rather than reporting whichever index answered first", () => {
+    // Not simply omitted: a blank cap reads as "no cap at all", which is the
+    // safe interpretation, while divergence is the hazardous one.
+    expect(findFieldInMapping(withCaps(256, 32_766), "unit")).toEqual({
+      field: "unit",
+      type: "keyword",
+      ignoreAboveVaries: true,
+    });
+    expect(findFieldInMapping(withCaps(32_766, 256), "unit")).toEqual({
+      field: "unit",
+      type: "keyword",
+      ignoreAboveVaries: true,
+    });
   });
 
   it("treats an absent cap as its own value, not as a match for any number", () => {
-    expect(findFieldInMapping(withCaps(256, undefined), "unit")).toEqual({ field: "unit", type: "keyword" });
+    expect(findFieldInMapping(withCaps(256, undefined), "unit")).toEqual({
+      field: "unit",
+      type: "keyword",
+      ignoreAboveVaries: true,
+    });
+  });
+
+  it("reports no cap, and no divergence, when no index sets one", () => {
+    expect(findFieldInMapping(withCaps(undefined, undefined), "unit")).toEqual({ field: "unit", type: "keyword" });
   });
 });

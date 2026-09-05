@@ -287,7 +287,7 @@ describe("mapping", () => {
    * pattern's — but the *type* still answers, since withholding it over an
    * advisory column would suppress what the caller came for.
    */
-  it("omits a divergent ignore_above instead of reporting whichever index answered first", async () => {
+  it("flags a divergent ignore_above instead of reporting whichever index answered first", async () => {
     const client = fakeClient({
       getMapping: async () => ({
         idx1: { mappings: { properties: { unit: { type: "keyword", ignore_above: 256 } } } },
@@ -295,7 +295,9 @@ describe("mapping", () => {
       }),
     });
     const text = await runCli(["mapping", "--field", "unit", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "unit", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "" }]);
+    // Not blank: an empty cell reads as "no cap at all", the safe reading,
+    // while divergence is the hazardous one.
+    expect(JSON.parse(text)).toEqual([{ FIELD: "unit", TYPE: "keyword", IGNORE_ABOVE: "(varies)", ALIAS_OF: "" }]);
   });
 
   it("still answers when every index that has the field agrees, even alongside indices that lack it entirely", async () => {
