@@ -289,3 +289,35 @@ test("history with a single --name keeps its original shape, with no NAME column
     expect(Object.keys(row)).not.toContain("NAME");
   }
 });
+
+/**
+ * The kind-ambiguity guard mirrors the multi-unit one above but flags a data
+ * anomaly rather than an expected shape: `resolveMetricKind`'s terms agg used
+ * to request only 1 bucket, so a second kind for the same name was invisible
+ * — this branch had no coverage until now, the same way the multi-unit one
+ * didn't before the fixture went single-unit-only.
+ */
+test("history warns, without failing, when one metric name reports several kinds", async () => {
+  const result = await runCli(
+    ["history", "--service", "mixed-kind-app", "--name", "custom.migrating.metric", "--interval", "10m", "--format", "json", ...WINDOW, ...targetArgs()],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toContain("more than one kind");
+  expect(result.stderr).toContain("GAUGE, HISTOGRAM");
+  // Advisory only: rows are still produced, shaped as the resolved (most
+  // common — first bucket, a GAUGE/HISTOGRAM tie breaks on doc order) kind.
+  const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
+  expect(rows.length).toBeGreaterThan(0);
+});
+
+test("history --kind skips auto-resolution and drops the kind-ambiguity warning", async () => {
+  const result = await runCli(
+    ["history", "--service", "mixed-kind-app", "--name", "custom.migrating.metric", "--kind", "GAUGE", "--interval", "10m", "--format", "json", ...WINDOW, ...targetArgs()],
+    env(),
+  );
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).not.toContain("more than one kind");
+});

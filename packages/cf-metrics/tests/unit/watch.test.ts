@@ -238,6 +238,56 @@ describe("watchMetrics", () => {
     );
   });
 
+  it("does not advance the cursor past a poll that failed with a shard error, so the window is retried rather than lost", async () => {
+    // Regression test for the permanent-data-loss bug closed by porting
+    // `assertNoShardFailures` (opensearch-client.ts) into this package: before
+    // that guard, a partial-shard response looked like an ordinary short page
+    // — the cursor would advance past it here, and once the failed shard
+    // recovered, its points would fall before the (already-advanced) cursor
+    // and the `since: cursor` filter would exclude them forever. Now the same
+    // response throws, lands in the catch below, and the cursor holds still.
+    const controller = new AbortController();
+    const bodies: Record<string, unknown>[] = [];
+    let call = 0;
+    const client: OpenSearchClient = {
+      search: vi.fn(async (_index, body) => {
+        call += 1;
+        bodies.push(body);
+        if (call === 1) {
+          throw new CfMetricsError(
+            "OPENSEARCH_REQUEST_FAILED",
+            "OpenSearch answered idx/_search from only some shards: 20 of 80 failed, so the result is incomplete",
+          );
+        }
+        controller.abort();
+        return { totalHits: 0, hits: [] };
+      }),
+      count: vi.fn(async () => 0),
+      getMapping: vi.fn(async () => ({})),
+    };
+    const notices: string[] = [];
+
+    await watchMetrics(
+      client,
+      { service: "app", intervalMs: 5, lookback: "1m" },
+      () => undefined,
+      controller.signal,
+      (message) => {
+        notices.push(message);
+      },
+    );
+
+    expect(call).toBe(2);
+    const rangeOf = (body: Record<string, unknown> | undefined): unknown => {
+      const query = body?.["query"] as { bool: { filter: Record<string, unknown>[] } } | undefined;
+      return query?.bool.filter.find((clause) => "range" in clause);
+    };
+    // Same window queried on both polls — the failed poll must not have moved
+    // the cursor forward, unlike a real, cursor-advancing failed page.
+    expect(rangeOf(bodies[1])).toEqual(rangeOf(bodies[0]));
+    expect(notices.some((message) => message.includes("only some shards"))).toBe(true);
+  });
+
   /**
    * A rejected credential never recovers by waiting, and swallowing it would
    * loop on "poll failed: HTTP 401" forever — while the command layer, which

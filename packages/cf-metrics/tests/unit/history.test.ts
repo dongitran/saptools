@@ -108,14 +108,48 @@ describe("queryHistory", () => {
 });
 
 describe("resolveMetricKind", () => {
-  it("resolves the kind from a terms aggregation's top bucket", async () => {
+  it("resolves the kind from a terms aggregation's top bucket, with no other kinds", async () => {
     const client = fakeClient(async () => ({
       totalHits: 0,
       hits: [],
       aggregations: { by_kind: { buckets: [{ key: "HISTOGRAM", doc_count: 30 }] } },
     }));
 
-    await expect(resolveMetricKind(client, "app", "http.server.duration")).resolves.toBe("HISTOGRAM");
+    await expect(resolveMetricKind(client, "app", "http.server.duration")).resolves.toEqual({
+      kind: "HISTOGRAM",
+      otherKinds: [],
+    });
+  });
+
+  it("requests all 3 kind buckets, not just 1, so a second kind is visible instead of silently discarded", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const client = fakeClient(async (_index, body) => {
+      capturedBody = body;
+      return { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "GAUGE", doc_count: 5 }] } } };
+    });
+
+    await resolveMetricKind(client, "app", "container.cpu.usage");
+
+    const aggs = capturedBody["aggs"] as { by_kind: { terms: { size: number } } };
+    expect(aggs.by_kind.terms.size).toBe(3);
+  });
+
+  it("surfaces every other kind found for the name as otherKinds — a data anomaly, not the expected multi-unit case", async () => {
+    // A metric name reporting more than one kind (e.g. an instrumentation
+    // change mid-rollout) used to vanish silently: `size: 1` meant the
+    // second kind's documents were never even visible in the response.
+    const client = fakeClient(async () => ({
+      totalHits: 0,
+      hits: [],
+      aggregations: {
+        by_kind: { buckets: [{ key: "HISTOGRAM", doc_count: 30 }, { key: "GAUGE", doc_count: 4 }] },
+      },
+    }));
+
+    await expect(resolveMetricKind(client, "app", "http.server.duration")).resolves.toEqual({
+      kind: "HISTOGRAM",
+      otherKinds: ["GAUGE"],
+    });
   });
 
   it("throws a clear error when no documents match the metric name", async () => {
@@ -131,7 +165,10 @@ describe("resolveMetricKind", () => {
       return { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "GAUGE", doc_count: 5 }] } } };
     });
 
-    await expect(resolveMetricKind(client, undefined, "container.cpu.usage")).resolves.toBe("GAUGE");
+    await expect(resolveMetricKind(client, undefined, "container.cpu.usage")).resolves.toEqual({
+      kind: "GAUGE",
+      otherKinds: [],
+    });
     const query = capturedBody["query"] as { bool?: { filter: Record<string, unknown>[] } };
     expect(query.bool?.filter.some((clause) => "term" in clause) ?? false).toBe(false);
   });

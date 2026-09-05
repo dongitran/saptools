@@ -2,6 +2,7 @@ import type { Command } from "commander";
 
 import { DEFAULT_SINCE, DEFAULT_TOP_LIMIT } from "../../config.js";
 import { parseMetricKind } from "../../kind.js";
+import type { MetricKind } from "../../kind.js";
 import { assertValidTimeRange } from "../../query-builder.js";
 import { queryTop, resolveTopMetricKind } from "../../top.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
@@ -25,7 +26,21 @@ async function runTop(opts: TopOpts): Promise<void> {
   // Parsed pre-network so a bad --kind fails fast, matching every other flag.
   const overrideKind = opts.kind === undefined ? undefined : parseMetricKind(opts.kind);
   const result = await withOpenSearchClient(opts, async (client) => {
-    const kind = overrideKind ?? (await resolveTopMetricKind(client, opts.name));
+    let kind: MetricKind | undefined = overrideKind;
+    if (kind === undefined) {
+      const resolution = await resolveTopMetricKind(client, opts.name);
+      kind = resolution?.kind;
+      // Same anomaly `history` warns about: more than one kind for this name
+      // means the terms agg silently discarded a whole other series before
+      // ranking ever saw it.
+      if (resolution !== undefined && resolution.otherKinds.length > 0) {
+        printNotice(
+          `WARNING: "${opts.name}" reports more than one kind in this window ` +
+            `(${[resolution.kind, ...resolution.otherKinds].join(", ")}) — ranking as ${resolution.kind} ` +
+            "(the most common); pass --kind to force a different one.",
+        );
+      }
+    }
     return await queryTop(client, {
       name: opts.name,
       since,

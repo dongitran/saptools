@@ -176,8 +176,11 @@ full command reference with worked examples.
 
 ## `history`'s kind-aware behavior
 
-Every metric name has one fixed `kind`, resolved automatically (or pass `--kind` to skip the
-lookup when already known):
+A metric name normally has one fixed `kind`, resolved automatically (or pass `--kind` to skip the
+lookup when already known). A name reporting more than one — an instrumentation change mid-rollout,
+or two emitters sharing a name — is a data anomaly rather than an expected shape: `history` and
+`top` use the most common kind and warn, naming every kind found, and `names` lists them all in its
+`KIND` column the way it already lists multiple units.
 
 - **GAUGE** (container CPU/memory/filesystem, DB pool stats, most queue metrics) — reports
   avg/min/max per time bucket.
@@ -281,7 +284,15 @@ the caveat above.
 
 Every OpenSearch request carries a 60-second deadline; override it with
 `CF_METRICS_HTTP_TIMEOUT_MS` when a query is genuinely slow. A timeout is reported as a timeout,
-not as a generic request failure.
+not as a generic request failure, whether it fires while connecting or while the response body is
+still streaming. A value beyond what Node's timers hold is clamped rather than silently collapsing
+to a 1ms deadline, and an unusable one falls back to the default.
+
+An OpenSearch query that fails on only some shards comes back as HTTP 200 carrying whatever the
+surviving shards found. Because `names`, `snapshot`, `top` and `history` are pure aggregations, that
+would change the numbers and the ranking rather than visibly shorten a list, so every command fails
+instead of reporting it. Set `CF_METRICS_ALLOW_PARTIAL_SHARDS=1` to accept a partial answer when a
+shard is persistently down.
 
 Ctrl-C is safe at any point. When a command has to log in on its own (see Auth), it does so inside
 a temporary `CF_HOME` that holds a real access token and a long-lived refresh token once `cf auth`

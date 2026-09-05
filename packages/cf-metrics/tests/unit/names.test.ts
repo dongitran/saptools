@@ -146,4 +146,38 @@ describe("queryNames", () => {
     // A single-unit metric must not gain a spurious separator.
     expect(rows[1]).toMatchObject({ NAME: "container.memory.usage", UNIT: "By" });
   });
+
+  /**
+   * Unlike multi-unit (an expected shape for some names), a name reporting
+   * more than one `kind` is a data anomaly — see `history.ts`'s
+   * `KindResolution`. `names` used to show only the most common kind here,
+   * silently hiding the exact anomaly a user needs to see before running
+   * `history`/`top` on the name.
+   */
+  it("lists every kind a metric name reports, not just the most common one", async () => {
+    const client: OpenSearchClient = {
+      search: vi.fn(async () => ({
+        totalHits: 0,
+        hits: [],
+        aggregations: {
+          by_name: {
+            buckets: [
+              {
+                key: "custom.migrating.metric",
+                doc_count: 2,
+                by_kind: { buckets: [{ key: "GAUGE" }, { key: "HISTOGRAM" }] },
+                by_unit: { buckets: [{ key: "1" }] },
+              },
+            ],
+          },
+        },
+      })),
+      count: vi.fn(async () => 0),
+      getMapping: vi.fn(async () => ({})),
+    };
+
+    const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
+
+    expect(rows[0]).toMatchObject({ NAME: "custom.migrating.metric", KIND: "GAUGE, HISTOGRAM" });
+  });
 });
