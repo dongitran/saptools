@@ -2,6 +2,76 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.11.0
+
+### Fixed
+
+- `mapping --field` on a field alias reported `alias`, which is true and useless. `metrics-*` maps
+  nine of them (measured): short names like `app_name` pointing at
+  `resource.attributes.sap@cf@app_name`. OpenSearch resolves an alias in queries and aggregations
+  alike — measured, an aggregation on the alias and on its target return identical buckets — so the
+  type that governs whether the field is safe to aggregate on is the target's, and that is what is
+  now reported, alongside the target path in a new `ALIAS_OF` column. An alias whose target is
+  missing, malformed, or itself an alias still reports `alias`, now naming what it points at; an
+  alias chain is never followed, which OpenSearch forbids anyway and a self-reference would spin on.
+
+- A field present in every backing index but mapped inconsistently was reported as "was not found in
+  the mapping" — introduced in 0.9.0 along with the agreement check itself, and misleading in the
+  way that costs the most time: it sends the reader hunting for a typo that is not there. The two
+  cases are now distinct, and the listing shows `ambiguous` rather than `unknown` for a field the
+  indices disagree about.
+
+- A divergent `ignore_above` across backing indices is no longer reported as whichever index
+  answered first. A `keyword` longer than its cap is stored but never indexed, so the same term
+  matches on one shard and not another. It reports `(varies)` rather than blank: an empty cap reads
+  as "no cap at all", which is the safe interpretation, exactly inverting the hazard. The type still
+  answers — withholding it would only make `mapping --field` call the field missing.
+
+- A failed `--allow-mint-credential` abandoned the service key it had already created. Every step
+  after `cf create-service-key` can fail — reading the key back, a payload without the dashboards
+  fields, the broker timing out — and the generated name was lost with the error, so an unusable key
+  stayed on the shared Cloud Logging instance, invisible to the user and accumulating one per retry.
+  The key is now deleted, strictly *after* the SAML restore so cleanup cannot extend the window in
+  which SSO is disabled for everyone, and if the deletion itself fails the key is named in the error
+  with the command to remove it.
+
+- The temp-directory sweep added in 0.10.0 deleted directories belonging to *other* processes. It
+  runs from the housekeeping prune, which fires at the start of every save, read and list, so one
+  process's routine `result list` could delete the directory another was mid-way through writing —
+  measured: two concurrent saves lost one in twenty-four, and a save racing a prune loop failed
+  every time. It now skips any directory whose owning process is still alive, and no longer counts
+  a removal it did not perform.
+
+- The windowed kind lookup added in 0.10.0 turned "this metric was quiet in the requested window"
+  into a hard failure whose message blamed the metric name. `history` now falls back to an
+  unwindowed lookup before failing, so a metric that exists but produced nothing in the window
+  charts as an empty table at exit 0 the way it did before, and the error is reserved for a name
+  that matches nothing anywhere.
+
+- A month outside 1-12 and a day of `00` were reported as a shape problem ("expected a relative
+  duration or an ISO-8601 timestamp") rather than as the calendar errors they are, because
+  `Date.parse` rejected them before the calendar check ran. A bare eight-digit value is now pointed
+  at its punctuated form instead of being offered a duration suffix.
+
+- Warnings printed from inside the work callback appeared once per attempt when a rejected cached
+  credential made the bootstrap re-run it — the same defect as the duplicated rows, one layer over.
+  `history` and `top` now collect their warnings and print them after the callback returns.
+
+- `watch` replayed its whole `--lookback` window as duplicate output when a mid-session credential
+  rejection restarted it, and announced the session a second time.
+
+- A cached *minted* credential is no longer reused by a run that did not pass
+  `--allow-mint-credential`. Reusing it disrupts nothing by itself, but the flag is the only record
+  that anyone consented to that credential existing.
+
+- The redaction key list is now shared between `saml-toggle.ts` and `cf.ts` rather than restated in
+  each. 0.10.0 claimed to have brought them into line and had not: `cf.ts` still covered a narrower
+  set, so `apiToken` was redacted on one path and printed in full on the other.
+
+### Changed
+
+- `mapping` output carries a fourth column, `ALIAS_OF`, empty for a concrete field.
+
 ## 0.10.0
 
 ### Fixed

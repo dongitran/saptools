@@ -132,8 +132,8 @@ describe("mapping", () => {
     });
     const text = await runCli(["mapping", "--format", "json"], client);
     const rows: readonly Record<string, unknown>[] = JSON.parse(text);
-    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 256 });
-    expect(rows).toContainEqual({ FIELD: "value", TYPE: "double", IGNORE_ABOVE: "" });
+    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" });
+    expect(rows).toContainEqual({ FIELD: "value", TYPE: "double", IGNORE_ABOVE: "", ALIAS_OF: "" });
   });
 
   it("fails clearly for an unknown --field", async () => {
@@ -163,7 +163,7 @@ describe("mapping", () => {
       }),
     });
     const text = await runCli(["mapping", "--field", "instrumentationScope", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "" }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "", ALIAS_OF: "" }]);
   });
 
   it("still reports an explicit nested type as nested, not object", async () => {
@@ -173,7 +173,7 @@ describe("mapping", () => {
       }),
     });
     const text = await runCli(["mapping", "--field", "exemplars", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "exemplars", TYPE: "nested", IGNORE_ABOVE: "" }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "exemplars", TYPE: "nested", IGNORE_ABOVE: "", ALIAS_OF: "" }]);
   });
 
   /**
@@ -196,7 +196,7 @@ describe("mapping", () => {
       }),
     });
     const text = await runCli(["mapping", "--field", "resource.attributes.sap@cf@app_name", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "resource.attributes.sap@cf@app_name", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "resource.attributes.sap@cf@app_name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
   });
 
   it("fails closed when a middle segment of a dotted field resolves to a non-object leaf", async () => {
@@ -224,7 +224,80 @@ describe("mapping", () => {
         idx2: { mappings: { properties: { unit: { type: "text" } } } },
       }),
     });
-    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.toThrow(/was not found in the mapping/);
+    // Not "was not found": the field is present in every index, and saying it
+    // is missing sends the reader looking for a typo that isn't there.
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.toThrow(/mapped inconsistently/);
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.toThrow(/keyword, text/);
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.not.toThrow(/was not found/);
+  });
+
+  /**
+   * `metrics-*` maps nine field aliases (measured live) — short names like
+   * `app_name` pointing at `resource.attributes.sap@cf@app_name`. Reporting
+   * the pointer's own type answered `"alias"`: true, and no help at all to
+   * someone asking whether the field is safe to aggregate on. OpenSearch
+   * resolves the alias in queries and aggregations alike (measured: identical
+   * buckets either way), so the type that governs is the target's.
+   */
+  it("reports an alias with its target's type and names the target", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx: {
+          mappings: {
+            properties: {
+              app_name: { type: "alias", path: "resource.attributes.sap@cf@app_name" },
+              resource: { properties: { attributes: { properties: { "sap@cf@app_name": { type: "keyword", ignore_above: 256 } } } } },
+            },
+          },
+        },
+      }),
+    });
+    const text = await runCli(["mapping", "--field", "app_name", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([
+      { FIELD: "app_name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "resource.attributes.sap@cf@app_name" },
+    ]);
+  });
+
+  it("keeps reporting an alias whose target is missing, rather than inventing a type", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx: { mappings: { properties: { app_name: { type: "alias", path: "resource.attributes.gone" } } } },
+      }),
+    });
+    const text = await runCli(["mapping", "--field", "app_name", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([
+      { FIELD: "app_name", TYPE: "alias", IGNORE_ABOVE: "", ALIAS_OF: "resource.attributes.gone" },
+    ]);
+  });
+
+  it("does not follow an alias chain, which OpenSearch forbids and a self-reference would spin on", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx: { mappings: { properties: { one: { type: "alias", path: "two" }, two: { type: "alias", path: "one" } } } },
+      }),
+    });
+    const text = await runCli(["mapping", "--field", "one", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "one", TYPE: "alias", IGNORE_ABOVE: "", ALIAS_OF: "two" }]);
+  });
+
+  /**
+   * A `keyword` longer than `ignore_above` is stored but never indexed, so a
+   * divergent cap means the same term matches on one shard and not another.
+   * Reporting whichever index answered first stated one shard's fact as the
+   * pattern's — but the *type* still answers, since withholding it over an
+   * advisory column would suppress what the caller came for.
+   */
+  it("flags a divergent ignore_above instead of reporting whichever index answered first", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx1: { mappings: { properties: { unit: { type: "keyword", ignore_above: 256 } } } },
+        idx2: { mappings: { properties: { unit: { type: "keyword", ignore_above: 32_766 } } } },
+      }),
+    });
+    const text = await runCli(["mapping", "--field", "unit", "--format", "json"], client);
+    // Not blank: an empty cell reads as "no cap at all", the safe reading,
+    // while divergence is the hazardous one.
+    expect(JSON.parse(text)).toEqual([{ FIELD: "unit", TYPE: "keyword", IGNORE_ABOVE: "(varies)", ALIAS_OF: "" }]);
   });
 
   it("still answers when every index that has the field agrees, even alongside indices that lack it entirely", async () => {
@@ -236,7 +309,7 @@ describe("mapping", () => {
       }),
     });
     const text = await runCli(["mapping", "--field", "unit", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "unit", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "unit", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
   });
 });
 
@@ -347,6 +420,25 @@ describe("history", () => {
     );
 
     expect(JSON.parse(stripNotices(text))).toEqual([{ TIME: "t1", AVG: 1, MIN: 1, MAX: 1, DOC_COUNT: 5 }]);
+  });
+
+  it("does not print its warnings twice when the client bootstrap re-runs the work", async () => {
+    // Warnings written from inside the retried callback appeared once per
+    // attempt, so a rejected credential doubled every one of them.
+    const client = fakeClient({
+      search: async (_index, body) =>
+        body["aggs"] !== undefined && "by_kind" in (body["aggs"] as Record<string, unknown>)
+          ? { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "GAUGE" }, { key: "HISTOGRAM" }] } } }
+          : { totalHits: 0, hits: [], aggregations: { over_time: { buckets: [] } } },
+    });
+
+    const text = await runCliWithCredentialRetry(
+      ["history", "--service", "app", "--name", "custom.migrating.metric", "--format", "json"],
+      client,
+    );
+
+    const warnings = text.split("\n").filter((line) => line.includes("reports more than one kind"));
+    expect(warnings).toHaveLength(1);
   });
 
   it("requires at least one --name", async () => {

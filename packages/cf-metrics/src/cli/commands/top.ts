@@ -25,7 +25,11 @@ async function runTop(opts: TopOpts): Promise<void> {
   const since = opts.since ?? DEFAULT_SINCE;
   // Parsed pre-network so a bad --kind fails fast, matching every other flag.
   const overrideKind = opts.kind === undefined ? undefined : parseMetricKind(opts.kind);
+  // Collected, not printed, inside the callback: a rejected cached credential
+  // re-runs it, and a notice written from in here appears once per attempt.
+  const kindWarnings: string[] = [];
   const result = await withOpenSearchClient(opts, async (client) => {
+    kindWarnings.length = 0;
     let kind: MetricKind | undefined = overrideKind;
     if (kind === undefined) {
       // Scoped to the ranking's own window: an all-time lookup answers with the
@@ -39,7 +43,7 @@ async function runTop(opts: TopOpts): Promise<void> {
       // means the terms agg silently discarded a whole other series before
       // ranking ever saw it.
       if (resolution !== undefined && resolution.otherKinds.length > 0) {
-        printNotice(
+        kindWarnings.push(
           `WARNING: "${opts.name}" reports more than one kind in this window ` +
             `(${[resolution.kind, ...resolution.otherKinds].join(", ")}) — ranking as ${resolution.kind} ` +
             "(the most common); pass --kind to force a different one.",
@@ -55,6 +59,9 @@ async function runTop(opts: TopOpts): Promise<void> {
       ...(kind === undefined ? {} : { kind }),
     });
   });
+  for (const warning of kindWarnings) {
+    printNotice(warning);
+  }
   // See the same guard in `history`: a name that publishes several units ranks
   // apps on a blend of incommensurable series, which looks perfectly plausible.
   if (opts.unit === undefined && result.units.length > 1) {

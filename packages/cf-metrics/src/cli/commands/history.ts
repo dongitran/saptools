@@ -57,14 +57,15 @@ async function runHistory(opts: HistoryOpts): Promise<void> {
   // With more than one name a NAME column keeps the combined rows attributable.
   const multiple = opts.name.length > 1;
 
-  // Accumulated *inside* the callback and returned, never into a variable that
-  // outlives it: `withOpenSearchClient` deliberately re-runs this whole
-  // function when a cached credential turns out to be rejected (HTTP 401/403),
-  // so an accumulator declared outside would keep the rows from the abandoned
-  // first attempt and emit every already-fetched name twice, at exit 0 — and
-  // persist the duplicates under `--save`.
+  // Rows *and* warnings are accumulated inside the callback and returned, never
+  // into variables that outlive it. `withOpenSearchClient` deliberately re-runs
+  // this whole function when a cached credential turns out to be rejected (HTTP
+  // 401/403), so anything kept outside would carry over from the abandoned first
+  // attempt: rows emitted twice at exit 0 and saved that way under `--save`, and
+  // every warning printed once per attempt.
   const collected = await withOpenSearchClient(opts, async (client) => {
     const rows: OutputRow[] = [];
+    const warnings: string[] = [];
     for (const name of opts.name) {
       let kind: MetricKind;
       if (overrideKind === undefined) {
@@ -80,7 +81,7 @@ async function runHistory(opts: HistoryOpts): Promise<void> {
         // case `units` already warns about below — it means the terms agg
         // above silently discarded a whole other series. See KindResolution.
         if (resolution.otherKinds.length > 0) {
-          printNotice(
+          warnings.push(
             `WARNING: "${name}" reports more than one kind in this window ` +
               `(${[resolution.kind, ...resolution.otherKinds].join(", ")}) — using ${resolution.kind} ` +
               "(the most common); pass --kind to force a different one.",
@@ -105,33 +106,36 @@ async function runHistory(opts: HistoryOpts): Promise<void> {
       // physical meaning, and the blend looks entirely plausible — hence a
       // loud warning rather than a footnote.
       if (opts.unit === undefined && result.units.length > 1) {
-        printNotice(
+        warnings.push(
           `WARNING: "${name}" reports ${String(result.units.length)} different units in this window ` +
             `(${result.units.join(", ")}) — the values below average incommensurable series and are NOT meaningful. ` +
             `Re-run with --unit <${result.units[0] ?? "unit"}> to pick one.`,
         );
       }
       if (result.cumulativeWarning) {
-        printNotice(
+        warnings.push(
           `WARNING: "${name}" reports AGGREGATION_TEMPORALITY_CUMULATIVE — the SUM column below is the raw ` +
             "per-bucket sum, not delta-corrected (v1 limitation, see kind.ts)",
         );
       }
       if (multiple) {
-        printNotice(`${name} (${kind}): ${String(result.rows.length)} buckets`);
+        warnings.push(`${name} (${kind}): ${String(result.rows.length)} buckets`);
         rows.push(...result.rows.map((row) => ({ NAME: name, ...row })));
       } else {
         rows.push(...result.rows);
       }
     }
-    return rows;
+    return { rows, warnings };
   });
+  for (const warning of collected.warnings) {
+    printNotice(warning);
+  }
 
   await emitRows({
     command: multiple ? "history" : `history:${opts.name[0] ?? ""}`,
     format,
     save: opts.save,
-    rows: collected,
+    rows: collected.rows,
   });
 }
 

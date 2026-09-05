@@ -201,6 +201,29 @@ describe("assertValidTimeBoundShape", () => {
     }).toThrow(/--lookback[\s\S]*beyond the range of a real date/);
   });
 
+  it.each(["2026-13-01", "2026-00-10"])("rejects %s as a bad month, not as a bad shape", (value) => {
+    // These reach `Date.parse` as NaN, so before the calendar check ran first
+    // they were reported as "expected a relative duration or an ISO timestamp"
+    // — a shape complaint about a value whose shape is fine.
+    expect(() => {
+      assertValidTimeBoundShape("--since", value);
+    }).toThrow(/there is no month/);
+  });
+
+  it.each(["2026-01-00", "2026-01-32"])("rejects %s as a bad day of the month", (value) => {
+    expect(() => {
+      assertValidTimeBoundShape("--since", value);
+    }).toThrow(/not a real calendar date/);
+  });
+
+  it("points a compact date at its punctuated form rather than at a duration suffix", () => {
+    // Suggesting `20260830h` for what is plainly a date reads as the tool not
+    // understanding the question.
+    expect(() => {
+      assertValidTimeBoundShape("--since", "20260830");
+    }).toThrow(/write it as 2026-08-30/);
+  });
+
   it("explains both readings of a bare number instead of only naming durations", () => {
     // The mapping is `strict_date_optional_time||epoch_millis` (measured), so a
     // bare number is genuinely ambiguous rather than simply wrong.

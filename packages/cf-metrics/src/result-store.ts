@@ -399,29 +399,62 @@ export async function pruneResultSessions(options: ResultStoreOptions = {}): Pro
 }
 
 /**
+ * Whether the process that owns a `<ref>.tmp-<pid>` directory is still running.
+ *
+ * Signal 0 performs the permission and existence checks without delivering
+ * anything. `EPERM` means the pid exists and belongs to someone else, which is
+ * still "alive" for our purposes; only `ESRCH` proves it is gone. A
+ * malformed or out-of-range pid is treated as alive, because the whole point
+ * of this check is to never delete on a guess.
+ */
+function isOwnerAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
  * Delete `<ref>.tmp-<pid>` directories left behind when a `--save` was
- * interrupted between `mkdir` and `rename`.
+ * interrupted between `mkdir` and `rename` — but only those whose owning
+ * process is gone.
  *
  * They are invisible to everything else: `listSessionRefs` filters names
  * through `RESULT_REF_PATTERN`, which a `.tmp-` suffix never matches, so
  * `prune` did not count them even as retained, `list` never showed them, and
- * `result clear` walked straight past them. The self-cleanup inside
- * `createResultSession` only fires for a colliding *same* random ref, which in
- * practice never recurs. Nothing else would ever reclaim the space.
+ * `result clear` walked straight past them. Nothing else would ever reclaim
+ * the space.
+ *
+ * The liveness check is not optional. This sweep runs from `pruneBestEffort`,
+ * which fires at the *start* of every save, read and list — so without it, one
+ * process's routine `result list` deletes the directory another process is
+ * mid-way through writing, and that save dies on `rename` with `ENOENT`.
+ * Measured before the guard: two concurrent saves lost one in twenty-four, and
+ * a save racing a tight prune loop failed every single time.
  */
 async function removeStrandedTempDirectories(saptoolsRoot?: string): Promise<number> {
   const root = resultsRoot(saptoolsRoot);
   let names: readonly string[];
   try {
     const entries = await readdir(root, { withFileTypes: true });
-    names = entries.filter((entry) => entry.isDirectory() && TEMP_REF_PATTERN.test(entry.name)).map((entry) => entry.name);
+    names = entries
+      .filter((entry) => entry.isDirectory() && TEMP_REF_PATTERN.test(entry.name))
+      .filter((entry) => !isOwnerAlive(Number(entry.name.slice(entry.name.lastIndexOf("-") + 1))))
+      .map((entry) => entry.name);
   } catch {
     return 0;
   }
   let removed = 0;
   for (const name of names) {
     try {
-      await rm(join(root, name), { recursive: true, force: true });
+      // `force` would swallow an ENOENT and still count a removal, inflating
+      // `result prune`'s report with directories that were never there.
+      await rm(join(root, name), { recursive: true });
       removed += 1;
     } catch {
       // Same reasoning as the sweep above: one undeletable leftover must not

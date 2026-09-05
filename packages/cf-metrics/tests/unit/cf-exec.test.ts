@@ -109,6 +109,20 @@ describe("cf.ts exec wrappers", () => {
     expect(call[2].env["CF_COLOR"]).toBe("false");
   });
 
+  it("forces CF_COLOR off for readCurrentCfTarget too, which builds its own environment", async () => {
+    // `readCurrentCfTarget` does not go through `buildEnv`, and its consumer
+    // `parseTargetFields` splits on a literal `:` and lowercases the key — a
+    // styled label matches nothing, so ambient targeting silently fails.
+    vi.stubEnv("CF_COLOR", "true");
+    const cf = await import("../../src/cf.js");
+    ok("api endpoint:   https://api.cf.eu10.hana.ondemand.com\norg:   o\nspace:   s\n");
+
+    await cf.readCurrentCfTarget();
+
+    const call = execFileMock.mock.calls[0] as unknown as [string, string[], { env: Record<string, string | undefined> }];
+    expect(call[2].env["CF_COLOR"]).toBe("false");
+  });
+
   it("retries a transient network failure and eventually succeeds", async () => {
     const cf = await import("../../src/cf.js");
     fail({ message: "connection reset" });

@@ -329,8 +329,17 @@ async function runCf(
 // backslash plus any one character" — matches a JSON string's contents
 // correctly regardless of embedded escapes.
 const JSON_STRING_CONTENTS = String.raw`(?:[^"\\]|\\.)*`;
+/**
+ * Key substrings that mark a JSON value as secret-bearing, shared with
+ * `saml-toggle.ts`'s `redactForLog` so the two redaction paths cannot drift
+ * apart — which they had: `clientSecret` and `apiToken` on a Cloud Logging
+ * instance's ingest block were covered by neither at one point and by only one
+ * at another, and which path a secret takes is not something the caller
+ * chooses.
+ */
+export const SECRET_KEY_SUBSTRINGS = ["password", "secret", "private", "signature", "token", "credential", "key"] as const;
 const SENSITIVE_JSON_VALUE_PATTERN = new RegExp(
-  `"(${JSON_STRING_CONTENTS}(?:password|secret|private|signature)${JSON_STRING_CONTENTS})"\\s*:\\s*"(${JSON_STRING_CONTENTS})"`,
+  `"(${JSON_STRING_CONTENTS}(?:${SECRET_KEY_SUBSTRINGS.join("|")})${JSON_STRING_CONTENTS})"\\s*:\\s*"(${JSON_STRING_CONTENTS})"`,
   "gi",
 );
 const PEM_BLOCK_PATTERN = /-----BEGIN[^-]*-----[\s\S]*?-----END[^-]*-----/gi;
@@ -478,6 +487,19 @@ export async function cfUpdateService(
 /** Create a new service key. Never retried — see {@link cfUpdateService}. */
 export async function cfCreateServiceKey(instance: string, keyName: string, ctx: CfExecContext): Promise<void> {
   await runCf(["create-service-key", instance, keyName], ctx, {}, { maxAttempts: 1 });
+}
+
+/**
+ * Delete a service key. Never retried, like every other mutation here.
+ *
+ * `-f` is not optional: without it CF CLI v8 asks for confirmation on stdin,
+ * which here is a pipe nobody is attached to, so the command would block until
+ * the exec timeout killed it. Deleting a key that no longer exists is not an
+ * error either — v8 reports "does not exist" and still exits 0 — which is what
+ * makes this safe to call when it is unclear whether the key was ever created.
+ */
+export async function cfDeleteServiceKey(instance: string, keyName: string, ctx: CfExecContext): Promise<void> {
+  await runCf(["delete-service-key", instance, keyName, "-f"], ctx, {}, { maxAttempts: 1 });
 }
 
 export async function readCurrentCfTarget(): Promise<CurrentCfTarget | undefined> {

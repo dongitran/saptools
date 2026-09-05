@@ -47,11 +47,16 @@ function pinsAllow(source: string, opts: CredentialOpts): boolean {
   if (kind === "binding") {
     return opts.fallbackBindingApp.length === 0 || opts.fallbackBindingApp.includes(label);
   }
-  // A minted credential is the product of the very run these pins were given
-  // to — discovery already honoured them before minting. Rejecting it sent
+  // A minted credential is the product of a run these pins were given to —
+  // discovery honoured them before minting — so rejecting it sent
   // `--allow-mint-credential` back through minting on every invocation, and
   // each mint disables SAML on the shared instance to do its work.
-  return kind === "minted";
+  //
+  // Gated on the flag rather than accepted outright: minting is opt-in because
+  // it is disruptive, and a run that did not opt in should not silently inherit
+  // the result of one that did. Reusing it is harmless in itself, but the flag
+  // is the only record that anyone consented to this credential existing.
+  return kind === "minted" && opts.allowMintCredential;
 }
 
 function clientFor(credential: DashboardsCredential): OpenSearchClient {

@@ -110,7 +110,29 @@ describe("mapping", () => {
       getMapping: async () => ({ idx: { mappings: { properties: { name: { type: "keyword", ignore_above: 1024 } } } } }),
     });
     const text = await runCli(["mapping", "--field", "name", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024 }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "" }]);
+  });
+
+  /**
+   * The two reasons a lookup can fail used to render identically. Telling a
+   * user a field present in every backing index "was not found" sends them
+   * hunting for a typo that is not there.
+   */
+  it("says the indices disagree rather than calling a present field missing", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        idx1: { mappings: { properties: { unit: { type: "keyword" } } } },
+        idx2: { mappings: { properties: { unit: { type: "text" } } } },
+      }),
+    });
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.toThrow(/mapped inconsistently/);
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.toThrow(/keyword, text/);
+    await expect(runCli(["mapping", "--field", "unit"], client)).rejects.not.toThrow(/was not found/);
+  });
+
+  it("still reports a genuinely absent field as not found", async () => {
+    const client = fakeClient({ getMapping: async () => ({ idx: { mappings: { properties: {} } } }) });
+    await expect(runCli(["mapping", "--field", "nope"], client)).rejects.toThrow(/was not found in the mapping/);
   });
 
   it("lists every field's type when --field is omitted", async () => {
@@ -128,8 +150,8 @@ describe("mapping", () => {
     });
     const text = await runCli(["mapping", "--format", "json"], client);
     const rows: readonly Record<string, unknown>[] = JSON.parse(text);
-    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024 });
-    expect(rows).toContainEqual({ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: "" });
+    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "" });
+    expect(rows).toContainEqual({ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "" });
   });
 
   it("fails clearly for an unknown field", async () => {

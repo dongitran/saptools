@@ -79,7 +79,7 @@ test("find locates a trace by service and name pattern end to end", async () => 
 test("mapping reports a real keyword field's type end to end", async () => {
   const result = await runCli(["mapping", "--field", "serviceName", "--format", "json", ...targetArgs()], env());
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([{ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: 256 }]);
+  expect(JSON.parse(result.stdout)).toEqual([{ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
 });
 
 test("prints the resolved-target notice to stderr for an explicit target", async () => {

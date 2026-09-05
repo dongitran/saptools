@@ -2,7 +2,8 @@ import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { findFieldInMapping } from "../../mapping.js";
+import { lookUpField } from "../../mapping.js";
+import type { FieldLookup } from "../../mapping.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { MappingOpts } from "../commandTypes.js";
 import { emitRows, parseFormat } from "../output.js";
@@ -33,9 +34,37 @@ function listAllFieldNames(mappingResponse: unknown): readonly string[] {
   return [...names].sort();
 }
 
+/** `(varies)` rather than a blank: an empty cap reads as "no cap", the safe reading, while divergence is the hazardous one. */
+const VARIES = "(varies)";
+
 function fieldRow(name: string, mappingResponse: unknown): Record<string, string | number> {
-  const found = findFieldInMapping(mappingResponse, name);
-  return { FIELD: name, TYPE: found?.type ?? "unknown", IGNORE_ABOVE: found?.ignoreAbove ?? "" };
+  const lookup = lookUpField(mappingResponse, name);
+  const found = lookup.status === "found" ? lookup.mapping : undefined;
+  return {
+    FIELD: name,
+    // "ambiguous" rather than "unknown": in a listing the two look alike but
+    // mean opposite things — one is unreadable, the other is a field whose
+    // backing indices disagree about it.
+    TYPE: found?.type ?? (lookup.status === "disagrees" ? "ambiguous" : "unknown"),
+    IGNORE_ABOVE: found?.ignoreAboveVaries === true ? VARIES : (found?.ignoreAbove ?? ""),
+    // A field alias reports the type of what it points at, since that is what
+    // a query against it compares — naming the target keeps that honest, and
+    // gives the reader the concrete path to use everywhere else.
+    ALIAS_OF: found?.aliasVaries === true ? VARIES : (found?.aliasOf ?? ""),
+  };
+}
+
+/** The error for a field with no single type, saying which of the two reasons it is. */
+function lookupFailure(field: string, index: string, lookup: FieldLookup): CfOtelError {
+  if (lookup.status === "disagrees") {
+    return new CfOtelError(
+      "MAPPING_LOOKUP_FAILED",
+      `Field "${field}" is mapped inconsistently across the backing indices of ${index} ` +
+        `(${lookup.types.join(", ")}), so no single type is safe to assume for a query spanning them. ` +
+        "Narrow the query to one index, or use a field the indices agree on.",
+    );
+  }
+  return new CfOtelError("MAPPING_LOOKUP_FAILED", `Field "${field}" was not found in the mapping for ${index}`);
 }
 
 async function runMapping(opts: MappingOpts): Promise<void> {
@@ -43,11 +72,9 @@ async function runMapping(opts: MappingOpts): Promise<void> {
   await withOpenSearchClient(opts, async (client) => {
     const mappingResponse = await client.getMapping(opts.index);
     if (opts.field !== undefined) {
-      if (findFieldInMapping(mappingResponse, opts.field) === undefined) {
-        throw new CfOtelError(
-          "MAPPING_LOOKUP_FAILED",
-          `Field "${opts.field}" was not found in the mapping for ${opts.index}`,
-        );
+      const lookup = lookUpField(mappingResponse, opts.field);
+      if (lookup.status !== "found") {
+        throw lookupFailure(opts.field, opts.index, lookup);
       }
       await emitRows({ command: "mapping", format, save: opts.save, rows: [fieldRow(opts.field, mappingResponse)] });
       return;
