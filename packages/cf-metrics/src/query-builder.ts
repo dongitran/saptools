@@ -71,9 +71,18 @@ function invalidBoundMessage(flagName: string, value: string): string {
   // measured), while in a CLI time flag it is far more often a duration that lost
   // its unit. Rejecting it is deliberate — but saying only "expected a duration"
   // leaves someone who really meant epoch millis with no idea why it was refused.
-  return /^\d+$/.test(value.trim())
-    ? `${base}. A bare number is ambiguous here: write "${value.trim()}m"/"${value.trim()}h" for a duration, or an ISO-8601 timestamp for an instant.`
-    : base;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return base;
+  }
+  // Which reading to suggest depends on the magnitude. Offering `20260830h` for
+  // what is plainly a compact date reads as the tool not understanding the
+  // question; eight digits is a date someone forgot to punctuate, two or three
+  // is a duration that lost its unit.
+  const looksLikeCompactDate = /^\d{8}$/.test(trimmed);
+  return looksLikeCompactDate
+    ? `${base}. "${trimmed}" looks like a date without its separators: write it as ${trimmed.slice(0, 4)}-${trimmed.slice(4, 6)}-${trimmed.slice(6, 8)}.`
+    : `${base}. A bare number is ambiguous here: write "${trimmed}m"/"${trimmed}h" for a duration, or an ISO-8601 timestamp for an instant.`;
 }
 
 /** Resolve `--since`/`--until` as either a relative duration ("24h") or an absolute ISO-8601 timestamp. */
@@ -128,22 +137,44 @@ export function assertValidTimeBoundShape(flagName: string, value: string): void
     }
     return;
   }
-  if (!ABSOLUTE_ISO_PATTERN.test(trimmed) || Number.isNaN(Date.parse(trimmed))) {
+  if (!ABSOLUTE_ISO_PATTERN.test(trimmed)) {
     throw new CfMetricsError("CONFIG", invalidBoundMessage(flagName, value));
   }
-  // `Date.parse` rejects month 13 and day 00, but not a day past its own month's
-  // end: it rolls "2026-02-30" forward to March 2 and reports success. Forwarding
-  // that costs the user twice — OpenSearch rejects it outright (measured), so the
-  // window never runs, and until it gets there the rolled-forward instant is what
-  // `assertValidTimeRange` compares, which turned a typo into a confident "--since
-  // is later than --until" pointing at the wrong flag entirely.
-  const year = Number(trimmed.slice(0, 4));
-  const month = Number(trimmed.slice(5, 7));
-  const maxDay = daysInMonth(year, month);
-  if (Number(trimmed.slice(8, 10)) > maxDay) {
+  // The calendar check runs *before* `Date.parse`, not after. `Date.parse`
+  // rejects month 13 and day 00 by returning NaN, which would land them in the
+  // generic "expected a duration or an ISO timestamp" message — a month typo
+  // reported as a shape problem, when the shape is fine and the date is not.
+  // It also does not reject a day past its own month's end at all: it rolls
+  // "2026-02-30" forward to March 2 and reports success. Forwarding that costs
+  // twice over — OpenSearch rejects it outright (measured), and until the query
+  // gets there the rolled-forward instant is what `assertValidTimeRange`
+  // compares, turning a typo into a confident "--since is later than --until"
+  // aimed at the wrong flag.
+  assertRealCalendarDate(flagName, value, trimmed);
+  if (Number.isNaN(Date.parse(trimmed))) {
+    throw new CfMetricsError("CONFIG", invalidBoundMessage(flagName, value));
+  }
+}
+
+/** Reject a month or day outside the calendar, naming which part is wrong. */
+function assertRealCalendarDate(flagName: string, value: string, trimmed: string): void {
+  const yearText = trimmed.slice(0, 4);
+  const monthText = trimmed.slice(5, 7);
+  const dayText = trimmed.slice(8, 10);
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (month < 1 || month > 12) {
     throw new CfMetricsError(
       "CONFIG",
-      `Invalid ${flagName} value "${value}" — not a real calendar date: month ${trimmed.slice(5, 7)} of ${trimmed.slice(0, 4)} has ${String(maxDay)} days.`,
+      `Invalid ${flagName} value "${value}" — not a real calendar date: there is no month ${monthText}.`,
+    );
+  }
+  const maxDay = daysInMonth(year, month);
+  if (day < 1 || day > maxDay) {
+    throw new CfMetricsError(
+      "CONFIG",
+      `Invalid ${flagName} value "${value}" — not a real calendar date: month ${monthText} of ${yearText} has ${String(maxDay)} days.`,
     );
   }
 }

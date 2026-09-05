@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -341,6 +341,57 @@ describe("listResultSessions", () => {
       expect(await exists(join(resultsDir(), "0000000f", "manifest.json"))).toBe(true);
     } finally {
       await chmod(resultsDir(), 0o700);
+    }
+  });
+});
+
+/**
+ * The sweep runs from `pruneBestEffort`, which fires at the start of every
+ * save, read and list — so without a liveness check one process's routine
+ * `result list` deletes the directory another is mid-way through writing.
+ * Measured before the guard: two concurrent saves lost one in twenty-four.
+ */
+describe("stranded temp directories", () => {
+  it("removes a temp directory whose owning process is gone", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cf-metrics-temp-sweep-"));
+    try {
+      const stranded = join(root, "cf-metrics", "results", "deadbeef.tmp-999999");
+      await mkdir(stranded, { recursive: true });
+      await writeFile(join(stranded, "manifest.json"), "{}");
+
+      const outcome = await pruneResultSessions({ saptoolsRoot: root });
+
+      expect(outcome.removed).toBe(1);
+      await expect(stat(stranded)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a temp directory alone while its owning process is still running", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cf-metrics-temp-sweep-"));
+    try {
+      // This very process owns it, so it is by definition still in flight.
+      const live = join(root, "cf-metrics", "results", `deadbeef.tmp-${String(process.pid)}`);
+      await mkdir(live, { recursive: true });
+
+      const outcome = await pruneResultSessions({ saptoolsRoot: root });
+
+      expect(outcome.removed).toBe(0);
+      await expect(stat(live)).resolves.toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a real ref directory alone, since only the .tmp- suffix marks a stranding", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cf-metrics-temp-sweep-"));
+    try {
+      const session = await createResultSession({ command: "names", rows: [{ NAME: "a" }] }, { saptoolsRoot: root });
+      await pruneResultSessions({ saptoolsRoot: root });
+      await expect(readResultSession(session.ref, { saptoolsRoot: root })).resolves.toMatchObject({ ref: session.ref });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

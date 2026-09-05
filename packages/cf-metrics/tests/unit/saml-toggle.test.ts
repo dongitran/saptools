@@ -52,6 +52,33 @@ describe("redactForLog", () => {
     expect(redacted.certs[0].password).toBe("[REDACTED]");
   });
 
+  /**
+   * `--verbose` dumps a service instance's entire params blob, and a real
+   * Cloud Logging instance carries `clientSecret` and `apiToken` on its ingest
+   * block. The list here covered only `private`/`password`/`signature`, so
+   * both were printed in full; it is now shared with `cf.ts` so the two
+   * redaction paths cannot disagree about what a secret is.
+   */
+  it("redacts the secret-bearing keys a real instance carries beyond the SAML ones", () => {
+    const redacted = redactForLog({
+      ingest: { clientSecret: "CLIENT-SECRET", apiToken: "TOKEN", apiKey: "KEY", endpoint: "https://ingest.example.com" },
+    }) as { ingest: Record<string, unknown> };
+
+    expect(redacted.ingest["clientSecret"]).toBe("[REDACTED]");
+    expect(redacted.ingest["apiToken"]).toBe("[REDACTED]");
+    expect(redacted.ingest["apiKey"]).toBe("[REDACTED]");
+    // Non-secret fields still have to survive, or the dump loses its purpose.
+    expect(redacted.ingest["endpoint"]).toBe("https://ingest.example.com");
+  });
+
+  it("redacts a whole block whose own name marks it secret, rather than descending into it", () => {
+    // A container called `credentials` matches on its own key, so nothing
+    // inside is examined or printed. Coarser than per-leaf redaction and
+    // deliberately so: the cost is one less structural hint in a --verbose
+    // dump, against never having to be right about every key inside it.
+    expect(redactForLog({ credentials: { anything: "at all" } })).toEqual({ credentials: "[REDACTED]" });
+  });
+
   it("leaves non-sensitive primitive values untouched", () => {
     expect(redactForLog({ a: 1, b: "text", c: true, d: null })).toEqual({ a: 1, b: "text", c: true, d: null });
   });

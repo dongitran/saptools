@@ -147,3 +147,55 @@ describe("watch command wiring", () => {
     await expect(buildTestProgram().parseAsync(["node", "cf-metrics", "watch"])).rejects.toThrow();
   });
 });
+
+/**
+ * `watchMetrics` re-seeds its cursor from `--lookback` every time it is
+ * entered, and `withOpenSearchClient` re-enters it when a cached credential is
+ * rejected mid-session — so a 401 an hour into a watch replayed the whole
+ * lookback window as duplicate output, and announced the session twice.
+ */
+describe("watch across a credential retry", () => {
+  it("does not replay points it already printed, and announces the session once", async () => {
+    const fakeOpenSearchClient = {} as OpenSearchClient;
+    vi.mocked(clientBootstrap.withOpenSearchClient).mockImplementation(async (_opts, work) => {
+      await work(fakeOpenSearchClient);
+      return await work(fakeOpenSearchClient);
+    });
+    vi.mocked(watch.watchMetrics).mockImplementation(async (_client, _opts, onPoint) => {
+      onPoint({ time: "2026-08-31T12:00:00.000Z", name: "m", value: 1, unit: "1" });
+      onPoint({ time: "2026-08-31T12:00:05.000Z", name: "m", value: 2, unit: "1" });
+    });
+    const output = captureOutput();
+
+    await buildTestProgram().parseAsync(["node", "cf-metrics", "watch", "--service", "app", "--json"]);
+
+    const printed = output.text().split("\n").filter((line) => line.startsWith("{"));
+    expect(printed).toHaveLength(2);
+    expect(output.text().split("\n").filter((line) => line.includes("press Ctrl+C to stop"))).toHaveLength(1);
+  });
+
+  it("still prints a point newer than anything seen before the retry", async () => {
+    const fakeOpenSearchClient = {} as OpenSearchClient;
+    let attempt = 0;
+    vi.mocked(clientBootstrap.withOpenSearchClient).mockImplementation(async (_opts, work) => {
+      await work(fakeOpenSearchClient);
+      return await work(fakeOpenSearchClient);
+    });
+    vi.mocked(watch.watchMetrics).mockImplementation(async (_client, _opts, onPoint) => {
+      attempt += 1;
+      onPoint({ time: "2026-08-31T12:00:00.000Z", name: "m", value: 1, unit: "1" });
+      if (attempt === 2) {
+        onPoint({ time: "2026-08-31T12:00:09.000Z", name: "m", value: 3, unit: "1" });
+      }
+    });
+    const output = captureOutput();
+
+    await buildTestProgram().parseAsync(["node", "cf-metrics", "watch", "--service", "app", "--json"]);
+
+    const printed = output.text().split("\n").filter((line) => line.startsWith("{"));
+    // The replayed point is dropped; the genuinely new one still gets through.
+    expect(printed).toHaveLength(2);
+    expect(printed[1]).toContain("12:00:09");
+  });
+});
+

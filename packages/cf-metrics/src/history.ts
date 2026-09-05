@@ -110,6 +110,30 @@ export async function resolveMetricKind(
   name: string,
   window: KindLookupWindow = {},
 ): Promise<KindResolution> {
+  const windowed = await lookUpKind(client, service, name, window);
+  if (windowed !== undefined) {
+    return windowed;
+  }
+  // Nothing in the window is not the same fact as nothing at all, and the two
+  // deserve opposite outcomes: a metric that exists but was quiet should chart
+  // as an empty table at exit 0, the way it did before this lookup carried a
+  // window, while a name that exists nowhere is worth failing on. Only the
+  // empty case pays for this second query.
+  const everywhere =
+    window.since === undefined && window.until === undefined ? undefined : await lookUpKind(client, service, name, {});
+  if (everywhere !== undefined) {
+    return everywhere;
+  }
+  throw notFoundError(service, name, window);
+}
+
+/** One kind lookup, scoped as asked; `undefined` when nothing matched. */
+async function lookUpKind(
+  client: OpenSearchClient,
+  service: string | undefined,
+  name: string,
+  window: KindLookupWindow,
+): Promise<KindResolution | undefined> {
   const response = await client.search(DEFAULT_INDEX_PATTERN, {
     size: 0,
     query: buildMetricBoolQuery({
@@ -131,10 +155,17 @@ export async function resolveMetricKind(
         .filter((otherKey): otherKey is string => typeof otherKey === "string"),
     };
   }
+  return undefined;
+}
+
+/** Only reached when the name matched nothing at all, window or no window. */
+function notFoundError(service: string | undefined, name: string, window: KindLookupWindow): CfMetricsError {
   const scope = service === undefined ? "" : ` on service "${service}"`;
-  throw new CfMetricsError(
+  const windowNote =
+    window.since === undefined && window.until === undefined ? "" : " (in this window or any other)";
+  return new CfMetricsError(
     "METRIC_NOT_FOUND",
-    `Could not resolve a kind for metric "${name}"${scope} — no matching documents found; ` +
+    `Could not resolve a kind for metric "${name}"${scope} — no matching documents found${windowNote}; ` +
       "check the name with `cf-metrics names --service <app>` first, or pass --kind explicitly.",
   );
 }

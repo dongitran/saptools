@@ -182,6 +182,21 @@ describe("withOpenSearchClient", () => {
     expect(discover).not.toHaveBeenCalled();
   });
 
+  it("does not reuse a minted credential for a run that did not opt into minting", async () => {
+    // Reusing it would not itself disrupt anything, but the flag is the only
+    // record that anyone consented to this credential existing — a run without
+    // it should not inherit the result of one that had it.
+    vi.mocked(credentialCache.readCachedCredential).mockResolvedValue({
+      ...CACHED,
+      source: "minted:cf-metrics-ab12cd34",
+    });
+    const discover = stubDiscovery();
+
+    await withOpenSearchClient({ ...BASE_OPTS, serviceKey: ["key1"] }, async () => undefined);
+
+    expect(discover).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts a cached credential whose source matches a pin", async () => {
     vi.mocked(credentialCache.readCachedCredential).mockResolvedValue(CACHED);
     const discover = stubDiscovery();

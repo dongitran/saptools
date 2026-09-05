@@ -43,12 +43,33 @@ async function runWatch(opts: WatchOpts): Promise<void> {
     controller.abort();
   });
 
+  // Survives a retry on purpose. `watchMetrics` re-seeds its cursor from
+  // `--lookback` every time it is entered, and `withOpenSearchClient` re-enters
+  // it when a cached credential is rejected mid-session — so without this, a
+  // 401 an hour into a watch replays the whole lookback window as duplicate
+  // output. `watchMetrics`'s own dedup set only covers ties at its current
+  // cursor, which a fresh start discards.
+  let lastPrintedTime = "";
+  let started = false;
+  // Only ever true while catching back up after a retry. In steady state
+  // `watchMetrics` dedups by document id, so two genuinely distinct points
+  // sharing a timestamp must both print; filtering on time alone would drop
+  // the second one. This narrows that filter to the replayed window.
+  let replaying = false;
+
   try {
     await withOpenSearchClient(opts, async (client) => {
       // Printed only once target/credential resolution has actually
       // succeeded — printing it earlier would claim "watching" right before
-      // an unrelated target/credential failure aborts the command.
-      printNotice(`watching ${opts.service}${opts.name === undefined ? "" : ` (${opts.name})`} — press Ctrl+C to stop`);
+      // an unrelated target/credential failure aborts the command. On a retry
+      // the session is already announced, so saying it again reads as a second
+      // watch starting.
+      if (started) {
+        replaying = true;
+      } else {
+        printNotice(`watching ${opts.service}${opts.name === undefined ? "" : ` (${opts.name})`} — press Ctrl+C to stop`);
+        started = true;
+      }
       await watchMetrics(
         client,
         {
@@ -58,6 +79,19 @@ async function runWatch(opts: WatchOpts): Promise<void> {
           lookback: opts.lookback,
         },
         (source) => {
+          const time = typeof source["time"] === "string" ? source["time"] : "";
+          if (replaying) {
+            // `<=` rather than `<`: a point sharing the newest printed
+            // timestamp was already emitted by the abandoned attempt, and the
+            // re-fetch cannot tell the two apart. Erring toward one dropped
+            // duplicate beats erring toward a replayed window.
+            if (time !== "" && time <= lastPrintedTime) {
+              return;
+            }
+            // Past the replayed window; dedup goes back to `watchMetrics`.
+            replaying = false;
+          }
+          lastPrintedTime = time > lastPrintedTime ? time : lastPrintedTime;
           if (opts.json) {
             print(JSON.stringify(source));
             return;

@@ -422,6 +422,25 @@ describe("history", () => {
     expect(JSON.parse(stripNotices(text))).toEqual([{ TIME: "t1", AVG: 1, MIN: 1, MAX: 1, DOC_COUNT: 5 }]);
   });
 
+  it("does not print its warnings twice when the client bootstrap re-runs the work", async () => {
+    // Warnings written from inside the retried callback appeared once per
+    // attempt, so a rejected credential doubled every one of them.
+    const client = fakeClient({
+      search: async (_index, body) =>
+        body["aggs"] !== undefined && "by_kind" in (body["aggs"] as Record<string, unknown>)
+          ? { totalHits: 0, hits: [], aggregations: { by_kind: { buckets: [{ key: "GAUGE" }, { key: "HISTOGRAM" }] } } }
+          : { totalHits: 0, hits: [], aggregations: { over_time: { buckets: [] } } },
+    });
+
+    const text = await runCliWithCredentialRetry(
+      ["history", "--service", "app", "--name", "custom.migrating.metric", "--format", "json"],
+      client,
+    );
+
+    const warnings = text.split("\n").filter((line) => line.includes("reports more than one kind"));
+    expect(warnings).toHaveLength(1);
+  });
+
   it("requires at least one --name", async () => {
     const client = fakeClient();
     await expect(runCli(["history", "--service", "app"], client)).rejects.toThrow(/At least one --name is required/);

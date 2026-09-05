@@ -35,6 +35,39 @@ All notable changes to `@saptools/cf-metrics` are documented in this file.
   which SSO is disabled for everyone, and if the deletion itself fails the key is named in the error
   with the command to remove it.
 
+- The temp-directory sweep added in 0.10.0 deleted directories belonging to *other* processes. It
+  runs from the housekeeping prune, which fires at the start of every save, read and list, so one
+  process's routine `result list` could delete the directory another was mid-way through writing —
+  measured: two concurrent saves lost one in twenty-four, and a save racing a prune loop failed
+  every time. It now skips any directory whose owning process is still alive, and no longer counts
+  a removal it did not perform.
+
+- The windowed kind lookup added in 0.10.0 turned "this metric was quiet in the requested window"
+  into a hard failure whose message blamed the metric name. `history` now falls back to an
+  unwindowed lookup before failing, so a metric that exists but produced nothing in the window
+  charts as an empty table at exit 0 the way it did before, and the error is reserved for a name
+  that matches nothing anywhere.
+
+- A month outside 1-12 and a day of `00` were reported as a shape problem ("expected a relative
+  duration or an ISO-8601 timestamp") rather than as the calendar errors they are, because
+  `Date.parse` rejected them before the calendar check ran. A bare eight-digit value is now pointed
+  at its punctuated form instead of being offered a duration suffix.
+
+- Warnings printed from inside the work callback appeared once per attempt when a rejected cached
+  credential made the bootstrap re-run it — the same defect as the duplicated rows, one layer over.
+  `history` and `top` now collect their warnings and print them after the callback returns.
+
+- `watch` replayed its whole `--lookback` window as duplicate output when a mid-session credential
+  rejection restarted it, and announced the session a second time.
+
+- A cached *minted* credential is no longer reused by a run that did not pass
+  `--allow-mint-credential`. Reusing it disrupts nothing by itself, but the flag is the only record
+  that anyone consented to that credential existing.
+
+- The redaction key list is now shared between `saml-toggle.ts` and `cf.ts` rather than restated in
+  each. 0.10.0 claimed to have brought them into line and had not: `cf.ts` still covered a narrower
+  set, so `apiToken` was redacted on one path and printed in full on the other.
+
 ### Changed
 
 - `mapping` output carries a fourth column, `ALIAS_OF`, empty for a concrete field.

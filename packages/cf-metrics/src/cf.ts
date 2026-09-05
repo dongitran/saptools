@@ -329,8 +329,17 @@ async function runCf(
 // backslash plus any one character" — matches a JSON string's contents
 // correctly regardless of embedded escapes.
 const JSON_STRING_CONTENTS = String.raw`(?:[^"\\]|\\.)*`;
+/**
+ * Key substrings that mark a JSON value as secret-bearing, shared with
+ * `saml-toggle.ts`'s `redactForLog` so the two redaction paths cannot drift
+ * apart — which they had: `clientSecret` and `apiToken` on a Cloud Logging
+ * instance's ingest block were covered by neither at one point and by only one
+ * at another, and which path a secret takes is not something the caller
+ * chooses.
+ */
+export const SECRET_KEY_SUBSTRINGS = ["password", "secret", "private", "signature", "token", "credential", "key"] as const;
 const SENSITIVE_JSON_VALUE_PATTERN = new RegExp(
-  `"(${JSON_STRING_CONTENTS}(?:password|secret|private|signature)${JSON_STRING_CONTENTS})"\\s*:\\s*"(${JSON_STRING_CONTENTS})"`,
+  `"(${JSON_STRING_CONTENTS}(?:${SECRET_KEY_SUBSTRINGS.join("|")})${JSON_STRING_CONTENTS})"\\s*:\\s*"(${JSON_STRING_CONTENTS})"`,
   "gi",
 );
 const PEM_BLOCK_PATTERN = /-----BEGIN[^-]*-----[\s\S]*?-----END[^-]*-----/gi;
