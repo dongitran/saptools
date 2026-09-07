@@ -31,8 +31,8 @@ export async function fetchJiraCurrentUserProfile(
   options: JiraRequestOptions,
 ): Promise<JiraCurrentUserProfile> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(buildJiraCurrentUserUrl(options.cloudId, options.apiRoot), {
-    headers: readJiraHeaders(options.accessToken),
+  const response = await fetchImpl(buildJiraCurrentUserUrl(options.baseUrl), {
+    headers: readJiraHeaders(options.authorization),
   });
   assertJiraResponseOk(response, "Jira current user could not be loaded.");
   try {

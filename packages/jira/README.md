@@ -2,9 +2,9 @@
 
 # 🧭 `@saptools/jira`
 
-**Jira Cloud CLI and typed API that reuse the same OAuth token store as JiraOps.**
+**Jira Cloud CLI and typed API that authenticate with a static Atlassian API token or the shared JiraOps OAuth token store.**
 
-Use the JiraOps browser login once, then script Jira reads and focused write actions from the terminal without copying tokens between tools.
+Export one API token for CI and containers, or reuse the JiraOps browser login, then script Jira reads and focused write actions from the terminal without copying tokens between tools.
 
 [![npm version](https://img.shields.io/npm/v/@saptools/jira.svg?style=flat&color=CB3837&logo=npm)](https://www.npmjs.com/package/@saptools/jira)
 [![license](https://img.shields.io/npm/l/@saptools/jira.svg?style=flat&color=blue)](./LICENSE)
@@ -19,6 +19,7 @@ Use the JiraOps browser login once, then script Jira reads and focused write act
 
 ## ✨ Features
 
+- 🔑 **Atlassian API token** — HTTP Basic auth from `JIRA_API_TOKEN`, taking priority over OAuth whenever it is set: no browser, no refresh, no token store.
 - 🔁 **Shared JiraOps token** — reads and refreshes `~/.jira-oauth/tokens.json`, the default `jira-oauth-client` store used by JiraOps.
 - 🪪 **Connected identity** — reads the current Jira account profile without exposing its bearer token.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
@@ -46,7 +47,7 @@ npm install @saptools/jira
 ```
 
 > [!NOTE]
-> Requires **Node.js ≥ 20** and a Jira Cloud account. This package targets Atlassian Cloud's `api.atlassian.com/ex/jira` API, not Jira Data Center.
+> Requires **Node.js ≥ 20** and a Jira Cloud account. This package targets Atlassian Cloud — both the `api.atlassian.com/ex/jira` gateway and your `your-domain.atlassian.net` site — not Jira Data Center.
 
 ---
 
@@ -58,8 +59,8 @@ that owns the running binary and re-runs the command you typed on the new versio
 announced on stderr; nothing is printed when the install is already current:
 
 ```text
-jira: updating 0.7.0 -> 0.8.0 ...
-jira: updated to 0.8.0; re-running the command
+jira: updating 0.8.0 -> 0.9.0 ...
+jira: updated to 0.9.0; re-running the command
 ```
 
 If the install cannot complete, one stderr line gives the manual command and the command runs on the
@@ -81,7 +82,63 @@ Its state lives in `~/.saptools/updates/`.
 
 ## 🔐 Authentication
 
-`@saptools/jira` intentionally uses the same token store as JiraOps and `jira-oauth-client`:
+Two credentials are supported. **An Atlassian API token wins whenever the environment supplies
+one**; otherwise the CLI falls back to the shared JiraOps OAuth token store.
+
+```bash
+jira status   # always names the credential in use, without calling Jira
+```
+
+### Option 1 — Atlassian API token (HTTP Basic)
+
+Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>, then export it
+with the account email that owns it and the site it belongs to:
+
+```bash
+export JIRA_API_TOKEN="your-atlassian-api-token"
+export JIRA_EMAIL="fred@example.com"
+export JIRA_SITE_URL="https://your-domain.atlassian.net"
+
+jira issues
+```
+
+Every request then sends `Authorization: Basic base64(email:token)`. No browser login, no token
+store, no refresh — which makes this the right choice for CI, containers, and cron jobs.
+
+> [!IMPORTANT]
+> Atlassian issues **two flavours of API token from that one page, and they need different base
+> URLs**. A *classic* token answers only on your site (`https://your-domain.atlassian.net`); a
+> *scoped* token answers only on the Atlassian gateway
+> (`https://api.atlassian.com/ex/jira/<cloud-id>`). Using the wrong one returns `401`.
+
+| Token flavour | Set this | Resulting base URL |
+| --- | --- | --- |
+| Classic (unscoped) | `JIRA_SITE_URL` | `https://your-domain.atlassian.net` |
+| Scoped | `JIRA_CLOUD_ID` (no site URL) | `https://api.atlassian.com/ex/jira/<cloud-id>` |
+
+Find your cloud ID at `https://your-domain.atlassian.net/_edge/tenant_info`. Setting
+`JIRA_CLOUD_ID` alongside `JIRA_SITE_URL` keeps the site base URL and only makes the local state
+directory match the one OAuth mode uses, so pinned custom fields carry across both credentials.
+
+**Variables**
+
+| Purpose | Names, first non-empty wins | Required |
+| --- | --- | --- |
+| API token | `JIRA_API_TOKEN`, `ATLASSIAN_API_TOKEN` | yes — presence is what selects this mode |
+| Account email | `JIRA_EMAIL`, `ATLASSIAN_EMAIL` | yes |
+| Site URL | `JIRA_SITE_URL`, `JIRA_BASE_URL` | one of these two |
+| Cloud ID | `JIRA_CLOUD_ID` | one of these two |
+
+`--site-url` and `--cloud-id` override the last two. The token itself is deliberately **not** a
+flag: command-line arguments show up in `ps` output and shell history.
+
+If `JIRA_API_TOKEN` is set but its companions are missing or malformed, the command **fails with
+the exact variable named** rather than quietly falling back to OAuth and acting as a different
+Jira identity.
+
+### Option 2 — shared JiraOps OAuth token store
+
+`@saptools/jira` reads the same store as JiraOps and `jira-oauth-client`:
 
 ```text
 ~/.jira-oauth/tokens.json
@@ -92,6 +149,14 @@ If JiraOps already connected successfully, this CLI can read the same stored acc
 ```bash
 jira status
 jira issues
+```
+
+### Choosing explicitly
+
+```bash
+jira --auth oauth issues       # ignore JIRA_API_TOKEN even when it is exported
+jira --auth api-token issues   # fail rather than fall back to the OAuth store
+jira --auth auto issues        # default: API token when configured, else OAuth
 ```
 
 When the token expires, refresh and connect flows need the Atlassian OAuth app credentials in the CLI environment:
@@ -133,12 +198,23 @@ jira --token-store ./tmp/jira-tokens.json status
 
 ### `jira status`
 
-Show whether a shared Jira token is present and still usable.
+Show which credential is active. This never calls Jira.
 
 ```bash
 jira status
 jira status --json
 ```
+
+```text
+Connected to your-domain.atlassian.net with an Atlassian API token as fred@example.com
+Base URL: https://your-domain.atlassian.net
+```
+
+`--json` adds `authMode` (`api-token` or `oauth`), `baseUrl`, `email`, and `siteUrl` to the
+existing `connected` / `cloudId` / `cloudName` / `usable` fields. No credential is ever printed.
+
+Under API token auth, `usable` only reports that the credential is well-formed — an Atlassian
+token can still be expired or revoked. Run `jira whoami` to verify it against Jira.
 
 ### `jira whoami`
 
@@ -162,6 +238,9 @@ jira connect
 jira connect --json
 ```
 
+If an Atlassian API token is configured, `connect` still writes the OAuth tokens but prints a
+stderr note: later commands keep using the API token until you pass `--auth oauth` or unset it.
+
 ### `jira disconnect`
 
 Delete the shared token file.
@@ -180,7 +259,7 @@ jira logout
 
 ### `jira token`
 
-Print the current access token for scripts.
+Print the current OAuth access token for scripts.
 
 ```bash
 jira token
@@ -188,6 +267,15 @@ jira token
 
 > [!IMPORTANT]
 > `jira token` prints a live bearer token. Do not paste it into tickets, logs, commits, shell history captures, or screenshots.
+
+Under API token auth this command **refuses** rather than echoing a static secret that is already
+in your environment. Authenticate scripts directly instead:
+
+```bash
+curl -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$JIRA_SITE_URL/rest/api/3/myself"
+```
+
+Use `jira --auth oauth token` when a script genuinely needs a stored bearer token.
 
 ### `jira issues`
 
@@ -547,9 +635,11 @@ E2E tests pre-seed a temp `HOME/.jira-oauth/tokens.json` and run the built `dist
 
 ## 🔒 Security
 
+- The Atlassian API token is read from the environment only. It is never accepted as a flag, never written to disk by this package, and never printed — `jira status`, `jira connect`, and `jira whoami` all omit it, and it is masked out of error output along with its base64 Basic encoding.
 - OAuth app credentials come from `JIRA_CLIENT_ID`, `JIRA_CLIENT_SECRET`, or explicit flags.
 - Access and refresh tokens are stored only in the shared token file, with owner-only permissions when this package writes it.
-- Jira HTTP errors are reported as neutral messages and do not include response bodies.
+- Jira HTTP errors report the status line (for example `(HTTP 403 Forbidden)`) and never the response body.
+- Attachment and inline-image downloads that follow a signed media redirect drop the `Authorization` header before requesting the signed URL, under both credentials.
 - Downloaded issue attachments can contain sensitive ticket data. Prefer a controlled `--attachment-dir` and remove files after use.
 - Comment backups contain the full original comment and remain under the private cloud-scoped `~/.saptools/jira/` tree, including when Jira rejects a delete.
 - Custom field snapshots and pinned-field configs under `~/.saptools/jira/clouds/<cloudId>/` store only normalized metadata, never credentials, Authorization headers, raw Jira responses, or field values.

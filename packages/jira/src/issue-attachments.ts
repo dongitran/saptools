@@ -50,12 +50,11 @@ async function hydrateOneAttachment(
   }
 
   const saved = await saveJiraIssueAttachmentFile({
-    accessToken: options.accessToken,
     attachment,
-    cloudId: options.cloudId,
+    authorization: options.authorization,
+    baseUrl: options.baseUrl,
     issueKey: options.issueKey,
     outputDir,
-    ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     ...(options.maxAttachmentBytes === undefined
       ? {}

@@ -11,10 +11,36 @@ export interface JiraTokens {
   readonly issuedAt: number;
 }
 
+/** How the CLI authenticates: a static Atlassian API token, or the shared OAuth token store. */
+export type JiraAuthMode = "api-token" | "oauth";
+
+/** `auto` prefers an API token when the environment supplies one, then falls back to OAuth. */
+export type JiraAuthModeSelection = JiraAuthMode | "auto";
+
+export interface JiraCredential {
+  readonly authMode: JiraAuthMode;
+  /** Complete `Authorization` header value: `Basic …` for API tokens, `Bearer …` for OAuth. */
+  readonly authorization: string;
+  /** REST root without a trailing slash: everything before `/rest/api/3`. */
+  readonly baseUrl: string;
+  /**
+   * Key for per-site local state. The real Atlassian cloud ID under OAuth and whenever it is
+   * configured; the site host when only a site URL is known.
+   */
+  readonly cloudId: string;
+  readonly cloudName: string;
+  readonly email: string | null;
+  readonly siteUrl: string | null;
+}
+
 export interface JiraConnectionStatus {
+  readonly authMode: JiraAuthMode | null;
+  readonly baseUrl: string | null;
   readonly connected: boolean;
   readonly cloudId: string | null;
   readonly cloudName: string | null;
+  readonly email: string | null;
+  readonly siteUrl: string | null;
   readonly usable: boolean;
 }
 
@@ -51,13 +77,28 @@ export type JiraOAuthClientFactory = (
   options: JiraOAuthClientOptions,
 ) => JiraOAuthClientLike | Promise<JiraOAuthClientLike>;
 
+export type JiraEnvironment = Readonly<Record<string, string | undefined>>;
+
+/** Explicit overrides for the API token credential; each one wins over its environment variable. */
+export interface JiraApiTokenOptions {
+  readonly apiToken?: string;
+  readonly cloudId?: string;
+  readonly email?: string;
+  readonly env?: JiraEnvironment;
+  readonly siteUrl?: string;
+}
+
 export interface JiraAuthOptions extends JiraOAuthClientOptions {
+  /** Gateway root before the cloud ID; defaults to `https://api.atlassian.com/ex/jira`. */
+  readonly apiRoot?: string;
+  readonly apiToken?: JiraApiTokenOptions;
+  readonly authMode?: JiraAuthModeSelection;
   readonly clientFactory?: JiraOAuthClientFactory;
 }
 
 export interface JiraRequestOptions {
-  readonly accessToken: string;
-  readonly apiRoot?: string;
+  readonly authorization: string;
+  readonly baseUrl: string;
   readonly cloudId: string;
   readonly fetchImpl?: typeof fetch;
 }

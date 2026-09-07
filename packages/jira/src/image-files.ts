@@ -17,10 +17,9 @@ import {
 export const DEFAULT_JIRA_IMAGE_MAX_BYTES = 10_000_000;
 
 export interface SaveJiraIssueImageFileOptions {
-  readonly accessToken: string;
-  readonly apiRoot?: string;
   readonly attachment: JiraIssueAttachment;
-  readonly cloudId: string;
+  readonly authorization: string;
+  readonly baseUrl: string;
   readonly commentId?: string;
   readonly fetchImpl?: typeof fetch;
   readonly issueKey: string;
@@ -74,13 +73,13 @@ async function fetchJiraAttachmentImage(
   options: SaveJiraIssueImageFileOptions,
 ): Promise<FetchedImage | null> {
   const contentImage = await fetchImageEndpoint(
-    buildJiraAttachmentContentUrl(options.cloudId, options.attachment.id, options.apiRoot),
+    buildJiraAttachmentContentUrl(options.baseUrl, options.attachment.id),
     options,
   );
   return (
     contentImage ??
     (await fetchImageEndpoint(
-      buildJiraAttachmentThumbnailUrl(options.cloudId, options.attachment.id, options.apiRoot),
+      buildJiraAttachmentThumbnailUrl(options.baseUrl, options.attachment.id),
       options,
     ))
   );
@@ -92,7 +91,7 @@ async function fetchImageEndpoint(
 ): Promise<FetchedImage | null> {
   try {
     const fetchImpl = options.fetchImpl ?? fetch;
-    const response = await fetchImpl(url, jiraAttachmentRequest(options.accessToken));
+    const response = await fetchImpl(url, jiraAttachmentRequest(options.authorization));
     if (isRedirectResponse(response)) {
       return await fetchSignedImage(toAbsoluteRedirectUrl(response.headers.get("location"), url), options);
     }
@@ -139,11 +138,11 @@ async function responseToImage(
   return contentType === null ? null : { bytes, contentType };
 }
 
-function jiraAttachmentRequest(accessToken: string): RequestInit {
+function jiraAttachmentRequest(authorization: string): RequestInit {
   return {
     headers: {
       Accept: "*/*",
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: authorization,
     },
     redirect: "manual",
   };

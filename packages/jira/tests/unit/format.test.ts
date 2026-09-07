@@ -28,9 +28,13 @@ import type {
 describe("CLI text formatters", () => {
   it("formats connection status without token values", () => {
     const status: JiraConnectionStatus = {
+      authMode: "oauth",
+      baseUrl: "https://api.atlassian.com/ex/jira/cloud-1",
       connected: true,
       cloudId: "cloud-1",
       cloudName: "Example Jira",
+      email: null,
+      siteUrl: null,
       usable: true,
     };
 
@@ -40,12 +44,39 @@ describe("CLI text formatters", () => {
     );
     expect(
       formatConnectionStatus({
+        authMode: null,
+        baseUrl: null,
         connected: false,
         cloudId: null,
         cloudName: null,
+        email: null,
+        siteUrl: null,
         usable: false,
       }),
     ).toBe("Not connected to Jira.");
+  });
+
+  it("formats API token status with the account and base URL, never the credential", () => {
+    const status: JiraConnectionStatus = {
+      authMode: "api-token",
+      baseUrl: "https://acme.atlassian.net",
+      connected: true,
+      cloudId: "acme.atlassian.net",
+      cloudName: "acme.atlassian.net",
+      email: "fred@example.com",
+      siteUrl: "https://acme.atlassian.net",
+      usable: true,
+    };
+
+    expect(formatConnectionStatus(status)).toBe(
+      [
+        "Connected to acme.atlassian.net with an Atlassian API token as fred@example.com",
+        "Base URL: https://acme.atlassian.net",
+      ].join("\n"),
+    );
+    expect(formatConnectionStatus({ ...status, email: null })).toContain(
+      "Connected to acme.atlassian.net with an Atlassian API token\n",
+    );
   });
 
   it("formats issue lists for terminal use", () => {

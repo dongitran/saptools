@@ -10,14 +10,13 @@ import type {
 } from "./types.js";
 
 export function formatConnectionStatus(status: JiraConnectionStatus): string {
-  if (status.connected) {
-    const cloudName = status.cloudName ?? "Unknown Jira";
-    const cloudId = status.cloudId ?? "unknown-cloud";
-    const suffix = status.usable ? "" : " (refresh required)";
-    return `Connected to ${cloudName} (${cloudId})${suffix}`;
+  if (!status.connected) {
+    return "Not connected to Jira.";
   }
 
-  return "Not connected to Jira.";
+  return status.authMode === "api-token"
+    ? formatApiTokenConnection(status)
+    : formatOAuthConnection(status);
 }
 
 export function formatIssues(issues: readonly JiraIssueSummary[]): string {
@@ -93,6 +92,22 @@ export function formatJiraIssueCommentDeleted(
   backupPath: string,
 ): string {
   return `Deleted comment ${commentId} on ${issueKey}. Backup saved to ${backupPath}`;
+}
+
+function formatOAuthConnection(status: JiraConnectionStatus): string {
+  const cloudName = status.cloudName ?? "Unknown Jira";
+  const cloudId = status.cloudId ?? "unknown-cloud";
+  const suffix = status.usable ? "" : " (refresh required)";
+  return `Connected to ${cloudName} (${cloudId})${suffix}`;
+}
+
+function formatApiTokenConnection(status: JiraConnectionStatus): string {
+  const cloudName = status.cloudName ?? "Unknown Jira";
+  const account = status.email === null ? "" : ` as ${status.email}`;
+  return [
+    `Connected to ${cloudName} with an Atlassian API token${account}`,
+    `Base URL: ${status.baseUrl ?? "unknown"}`,
+  ].join("\n");
 }
 
 function formatIssueSummaryLine(issue: JiraIssueSummary): string {

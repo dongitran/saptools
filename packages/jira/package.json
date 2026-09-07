@@ -1,7 +1,7 @@
 {
   "name": "@saptools/jira",
-  "version": "0.7.0",
-  "description": "Jira Cloud CLI and typed API that reuses the JiraOps OAuth token store",
+  "version": "0.8.0",
+  "description": "Jira Cloud CLI and typed API that authenticate with an Atlassian API token or the shared JiraOps OAuth token store",
   "type": "module",
   "publishConfig": {
     "access": "public",
@@ -38,6 +38,8 @@
   "keywords": [
     "jira",
     "atlassian",
+    "api-token",
+    "basic-auth",
     "oauth",
     "cli",
     "saptools"

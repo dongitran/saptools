@@ -12,6 +12,8 @@ import {
 import type { JiraIssueAttachment } from "../../src/types.js";
 
 const fileBytes = new TextEncoder().encode("<values><value>Example</value></values>");
+const authorization = "Bearer secret-access-token";
+const baseUrl = "https://jira-api.example.com/ex/jira/cloud-1";
 const tempDirs: string[] = [];
 type FetchInput = Parameters<typeof fetch>[0];
 
@@ -40,10 +42,9 @@ describe("Jira issue attachment files", () => {
     ));
 
     const saved = await saveJiraIssueAttachmentFile({
-      accessToken: "secret-access-token",
-      apiRoot: "https://jira-api.example.com/ex/jira",
+      authorization,
       attachment: attachment(),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
       maxBytes: 100,
@@ -80,10 +81,9 @@ describe("Jira issue attachment files", () => {
     });
 
     await expect(fetchJiraAttachmentContent({
-      accessToken: "secret-access-token",
-      apiRoot: "https://jira-api.example.com/ex/jira",
+      authorization,
       attachment: attachment(),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: fetchMock,
       maxBytes: 100,
     })).resolves.toMatchObject({ bytes: fileBytes, error: null });
@@ -104,9 +104,9 @@ describe("Jira issue attachment files", () => {
   it("rejects metadata and response bodies over the configured byte limit", async () => {
     const metadataFetch = vi.fn(async () => await Promise.resolve(new Response(fileBytes)));
     await expect(fetchJiraAttachmentContent({
-      accessToken: "secret-access-token",
+      authorization,
       attachment: attachment({ size: 101 }),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: metadataFetch,
       maxBytes: 100,
     })).resolves.toMatchObject({
@@ -120,9 +120,9 @@ describe("Jira issue attachment files", () => {
       status: 200,
     })));
     await expect(fetchJiraAttachmentContent({
-      accessToken: "secret-access-token",
+      authorization,
       attachment: attachment({ size: 0 }),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: headerFetch,
       maxBytes: 100,
     })).resolves.toMatchObject({
@@ -134,9 +134,9 @@ describe("Jira issue attachment files", () => {
       new Response(new Uint8Array(101), { status: 200 }),
     ));
     await expect(fetchJiraAttachmentContent({
-      accessToken: "secret-access-token",
+      authorization,
       attachment: attachment({ size: 0 }),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: streamedFetch,
       maxBytes: 100,
     })).resolves.toMatchObject({
@@ -167,9 +167,9 @@ describe("Jira issue attachment files", () => {
 
     for (const testCase of cases) {
       await expect(fetchJiraAttachmentContent({
-        accessToken: "secret-access-token",
+        authorization,
         attachment: attachment({ size: 0 }),
-        cloudId: "cloud-1",
+        baseUrl,
         fetchImpl: testCase.fetchImpl,
         maxBytes: 100,
       })).resolves.toEqual({ bytes: null, error: testCase.expected });
@@ -183,9 +183,9 @@ describe("Jira issue attachment files", () => {
     const fetchMock = vi.fn(async () => await Promise.resolve(new Response(fileBytes)));
 
     await expect(saveJiraIssueAttachmentFile({
-      accessToken: "secret-access-token",
+      authorization,
       attachment: attachment(),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
       outputDir: join(blockedPath, "nested"),

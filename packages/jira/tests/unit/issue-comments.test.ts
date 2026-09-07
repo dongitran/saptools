@@ -6,7 +6,8 @@ import {
   parseJiraIssueCommentDetail,
 } from "../../src/issue-comments.js";
 
-const apiRoot = "https://jira-api.example.com/ex/jira";
+const baseUrl = "https://jira-api.example.com/ex/jira/cloud-1";
+const authorization = "Bearer secret-access-token";
 const commentBody = {
   type: "doc" as const,
   version: 1,
@@ -27,8 +28,8 @@ describe("Jira issue comment client", () => {
     });
 
     await expect(fetchJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       commentId: "10098",
       fetchImpl: fetchMock,
@@ -66,8 +67,8 @@ describe("Jira issue comment client", () => {
     });
 
     await expect(fetchJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       commentId: "missing",
       fetchImpl: fetchMock,
@@ -78,8 +79,8 @@ describe("Jira issue comment client", () => {
       return await Promise.resolve(new Response("private comment detail", { status: 200 }));
     });
     await expect(fetchJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       commentId: "missing",
       fetchImpl: invalidJsonFetch,
@@ -99,8 +100,8 @@ describe("Jira issue comment client", () => {
     });
 
     await expect(fetchJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       commentId: "10098",
       fetchImpl: fetchMock,
@@ -114,8 +115,8 @@ describe("Jira issue comment client", () => {
     });
 
     await expect(deleteJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       commentId: "10098",
       fetchImpl: fetchMock,
@@ -140,8 +141,8 @@ describe("Jira issue comment client", () => {
     });
 
     await expect(deleteJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       commentId: "10098",
       fetchImpl: fetchMock,

@@ -4,6 +4,7 @@ import { attachSelfUpdate, readPackageMetadata, registerSelfUpdateCommand } from
 import { Command } from "commander";
 
 import { assertNoJiraAdfBodySource, readJiraAdfBodyInput } from "./adf.js";
+import { jiraApiTokenSecrets } from "./api-token.js";
 import {
   JiraAssigneeAmbiguityError,
   resolveAssignableUserByAccountId,
@@ -13,14 +14,18 @@ import {
   connectJira,
   disconnectJira,
   getJiraConnectionStatus,
+  isJiraApiTokenPreferred,
+  toJiraConnectionStatus,
+  toJiraOAuthCredential,
 } from "./auth.js";
 import {
   parseOptionalPositiveInteger,
+  resolveCredential,
   resolveTokens,
   toAuthOptions,
   toIssueRequestOptions,
   toRequestOptions,
-  toRequestOptionsFromTokens,
+  toRequestOptionsFromCredential,
   writeOutput,
   writeOutputWithOptionalHint,
 } from "./cli-shared.js";
@@ -65,6 +70,7 @@ import { addIssueCommand } from "./issue-command.js";
 import type {
   AddJiraIssueWorklogOptions,
   FetchAssignedJiraIssuesOptions,
+  JiraAuthOptions,
   JiraRequestOptions,
   JiraAssigneeResolution,
 } from "./types.js";
@@ -141,8 +147,11 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   program
     .name("jira")
-    .description("Jira Cloud CLI that reuses the JiraOps OAuth token store")
+    .description("Jira Cloud CLI that uses an Atlassian API token or the JiraOps OAuth token store")
     .version(version, "-V, --version", "Print the jira package version")
+    .option("--auth <mode>", "Credential selection: auto, api-token, or oauth", "auto")
+    .option("--site-url <url>", "Atlassian site URL for API token auth, e.g. https://your-domain.atlassian.net")
+    .option("--cloud-id <id>", "Atlassian cloud ID for a scoped API token on api.atlassian.com")
     .option("--api-root <url>", "Jira API root for Atlassian Cloud or tests")
     .option("--token-store <path>", "Path to the shared jira-oauth-client token store")
     .option("--client-id <id>", "Atlassian OAuth app client ID")
@@ -177,7 +186,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 function addStatusCommand(program: Command): void {
   program
     .command("status")
-    .description("Show shared Jira token connection status")
+    .description("Show which Jira credential is active without calling Jira")
     .option("--json", "Print JSON output", false)
     .action(async (flags: JsonFlags): Promise<void> => {
       const status = await getJiraConnectionStatus(toAuthOptions(program));
@@ -195,13 +204,13 @@ function addConnectCommand(program: Command): void {
     .description("Run Jira OAuth and save tokens to the shared token store")
     .option("--json", "Print JSON output", false)
     .action(async (flags: JsonFlags): Promise<void> => {
-      const tokens = await connectJira(toAuthOptions(program));
-      const status = {
-        connected: true,
-        cloudId: tokens.cloudId,
-        cloudName: tokens.cloudName,
-        usable: true,
-      };
+      const authOptions = toAuthOptions(program);
+      const tokens = await connectJira(authOptions);
+      const status = toJiraConnectionStatus(
+        toJiraOAuthCredential(tokens, authOptions.apiRoot),
+        true,
+      );
+      warnWhenApiTokenOverridesOAuth(authOptions);
       await writeOutputWithOptionalHint(
         program,
         tokens.cloudId,
@@ -209,6 +218,19 @@ function addConnectCommand(program: Command): void {
         flags.json === true,
       );
     });
+}
+
+/**
+ * `connect` still manages the OAuth store, but those tokens stay unused while an API token is
+ * configured. Saying so once prevents debugging a command that authenticates as someone else.
+ */
+function warnWhenApiTokenOverridesOAuth(authOptions: JiraAuthOptions): void {
+  if (!isJiraApiTokenPreferred(authOptions)) {
+    return;
+  }
+  process.stderr.write(
+    "Note: an Atlassian API token is configured, so Jira commands keep using it. Pass --auth oauth to use these OAuth tokens.\n",
+  );
 }
 
 function addDisconnectCommand(program: Command): void {
@@ -234,8 +256,15 @@ function addLogoutCommand(program: Command): void {
 function addTokenCommand(program: Command): void {
   program
     .command("token")
-    .description("Print the current access token for scripts")
+    .description("Print the current OAuth access token for scripts")
     .action(async (): Promise<void> => {
+      // A static API token is already in the caller's environment; echoing it back would only
+      // add another copy to shell history and process output.
+      if (isJiraApiTokenPreferred(toAuthOptions(program))) {
+        throw new Error(
+          "`jira token` prints an OAuth access token, and Atlassian API token auth is active. Authenticate scripts with `curl -u \"$JIRA_EMAIL:$JIRA_API_TOKEN\"`, or pass --auth oauth to print a stored OAuth token.",
+        );
+      }
       const tokens = await resolveTokens(program);
       process.stdout.write(`${tokens.accessToken}\n`);
     });
@@ -558,12 +587,11 @@ function addFieldsCommand(program: Command): void {
     .option("--search <query>", "Filter displayed fields after saving the full snapshot")
     .option("--json", "Print JSON output", false)
     .action(async (flags: FieldsDiscoverFlags): Promise<void> => {
-      const tokens = await resolveTokens(program);
-      const requestOptions = toRequestOptionsFromTokens(program, tokens);
-      const discovered = await fetchJiraCustomFields(requestOptions);
+      const credential = await resolveCredential(program);
+      const discovered = await fetchJiraCustomFields(toRequestOptionsFromCredential(credential));
       const snapshot = createCustomFieldSnapshot({
-        cloudId: tokens.cloudId,
-        cloudName: tokens.cloudName,
+        cloudId: credential.cloudId,
+        cloudName: credential.cloudName,
         fields: discovered.fields,
         totalFromApi: discovered.totalFromApi,
       });
@@ -579,8 +607,8 @@ function addFieldsCommand(program: Command): void {
     .argument("<query>", "Search query")
     .option("--json", "Print JSON output", false)
     .action(async (query: string, flags: JsonFlags): Promise<void> => {
-      const tokens = await resolveTokens(program);
-      const snapshot = await requireSnapshot(tokens.cloudId);
+      const credential = await resolveCredential(program);
+      const snapshot = await requireSnapshot(credential.cloudId);
       const matches = searchCustomFields(snapshot.fields, query);
       writeOutput(flags.json === true ? matches : formatCustomFieldRows(matches));
     });
@@ -589,11 +617,11 @@ function addFieldsCommand(program: Command): void {
     .description("List pinned Jira custom fields")
     .option("--json", "Print JSON output", false)
     .action(async (flags: JsonFlags): Promise<void> => {
-      const tokens = await resolveTokens(program);
-      const pinned = await readPinnedCustomFields(tokens.cloudId);
+      const credential = await resolveCredential(program);
+      const pinned = await readPinnedCustomFields(credential.cloudId);
       writeOutput(
         flags.json === true
-          ? (pinned ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName))
+          ? (pinned ?? emptyPinnedConfig(credential.cloudId, credential.cloudName))
           : formatPinnedCustomFields(pinned),
       );
     });
@@ -602,14 +630,14 @@ function addFieldsCommand(program: Command): void {
     .description("Pin a custom field by exact Jira display name")
     .argument("<field-name>", "Jira field display name")
     .action(async (fieldName: string): Promise<void> => {
-      const tokens = await resolveTokens(program);
-      const snapshot = await requireSnapshot(tokens.cloudId);
+      const credential = await resolveCredential(program);
+      const snapshot = await requireSnapshot(credential.cloudId);
       const matches = resolveFieldByDisplayName(snapshot.fields, fieldName);
       if (matches.length !== 1) {
         throw fieldResolutionError(fieldName, matches.length, "custom field snapshot");
       }
-      const current = await readPinnedCustomFields(tokens.cloudId)
-        ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName);
+      const current = await readPinnedCustomFields(credential.cloudId)
+        ?? emptyPinnedConfig(credential.cloudId, credential.cloudName);
       const field = firstResolvedField(matches, fieldName);
       if (current.fields.some((item) => item.id === field.id)) {
         process.stdout.write(`Custom field "${field.name}" is already pinned.\n`);
@@ -627,9 +655,9 @@ function addFieldsCommand(program: Command): void {
     .description("Unpin a custom field by exact Jira display name")
     .argument("<field-name>", "Pinned Jira field display name")
     .action(async (fieldName: string): Promise<void> => {
-      const tokens = await resolveTokens(program);
-      const current = await readPinnedCustomFields(tokens.cloudId)
-        ?? emptyPinnedConfig(tokens.cloudId, tokens.cloudName);
+      const credential = await resolveCredential(program);
+      const current = await readPinnedCustomFields(credential.cloudId)
+        ?? emptyPinnedConfig(credential.cloudId, credential.cloudName);
       const matches = resolveFieldByDisplayName(current.fields, fieldName);
       if (matches.length !== 1) {
         throw new Error(
@@ -831,6 +859,7 @@ try {
   const secrets = [
     process.env["JIRA_CLIENT_SECRET"] ?? "",
     process.env["JIRA_CLIENT_ID"] ?? "",
+    ...jiraApiTokenSecrets(process.env),
   ];
   process.stderr.write(`Error: ${maskSensitiveText(message, secrets)}\n`);
   process.exit(1);

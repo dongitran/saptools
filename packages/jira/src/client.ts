@@ -183,8 +183,8 @@ export async function fetchJiraCustomFields(
   let startAt = 0;
   let done = false;
   while (!done) {
-    const response = await fetchImpl(buildJiraFieldSearchUrl(options.cloudId, startAt, maxResults, options.apiRoot), {
-      headers: readJiraHeaders(options.accessToken),
+    const response = await fetchImpl(buildJiraFieldSearchUrl(options.baseUrl, startAt, maxResults), {
+      headers: readJiraHeaders(options.authorization),
     });
     assertJiraResponseOk(response, "Jira custom fields could not be loaded.");
     const page = parseCustomFieldPage(await response.json());
@@ -202,8 +202,8 @@ export async function fetchJiraIssueEditMetadata(
   options: JiraIssueKeyRequestOptions,
 ): Promise<ReadonlyMap<string, JiraIssueEditableField>> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(buildJiraIssueEditMetaUrl(options.cloudId, options.issueKey, options.apiRoot), {
-    headers: readJiraHeaders(options.accessToken),
+  const response = await fetchImpl(buildJiraIssueEditMetaUrl(options.baseUrl, options.issueKey), {
+    headers: readJiraHeaders(options.authorization),
   });
   assertJiraResponseOk(response, "Jira issue edit metadata could not be loaded.");
   const parsed = JiraIssueEditMetadataSchema.safeParse(await response.json());
@@ -220,15 +220,10 @@ export async function fetchJiraIssueEditMetadata(
 export async function updateJiraIssueFields(options: UpdateJiraIssueFieldsOptions): Promise<void> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueUpdateUrl(
-      options.cloudId,
-      options.issueKey,
-      updateUrlOptions(options),
-      options.apiRoot,
-    ),
+    buildJiraIssueUpdateUrl(options.baseUrl, options.issueKey, updateUrlOptions(options)),
     {
       body: JSON.stringify({ fields: options.fields }),
-      headers: jsonJiraHeaders(options.accessToken),
+      headers: jsonJiraHeaders(options.authorization),
       method: "PUT",
     },
   );
@@ -240,8 +235,8 @@ export async function fetchJiraIssueDescriptionAdf(
 ): Promise<JiraAdfDocument | null> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueDescriptionUrl(options.cloudId, options.issueKey, options.apiRoot),
-    { headers: readJiraHeaders(options.accessToken) },
+    buildJiraIssueDescriptionUrl(options.baseUrl, options.issueKey),
+    { headers: readJiraHeaders(options.authorization) },
   );
   assertJiraResponseOk(response, "Jira issue description could not be loaded.");
   const parsed = JiraIssueDescriptionResponseSchema.safeParse(await response.json());
@@ -286,10 +281,10 @@ export async function addJiraIssueComment(
 ): Promise<JiraIssueCommentResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueCommentCreateUrl(options.cloudId, options.issueKey, options.apiRoot),
+    buildJiraIssueCommentCreateUrl(options.baseUrl, options.issueKey),
     {
       body: JSON.stringify({ body: options.body }),
-      headers: jsonJiraHeaders(options.accessToken),
+      headers: jsonJiraHeaders(options.authorization),
       method: "POST",
     },
   );
@@ -350,8 +345,8 @@ function appendAdfDocument(
 
 export async function fetchJiraCurrentUser(options: JiraRequestOptions): Promise<JiraAssignableUser> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const response = await fetchImpl(buildJiraCurrentUserUrl(options.cloudId, options.apiRoot), {
-    headers: readJiraHeaders(options.accessToken),
+  const response = await fetchImpl(buildJiraCurrentUserUrl(options.baseUrl), {
+    headers: readJiraHeaders(options.authorization),
   });
   assertJiraResponseOk(response, "Jira current user could not be loaded.");
   return parseJiraCurrentUser(await response.json());
@@ -363,12 +358,11 @@ export async function searchJiraAssignableUsers(
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
     buildJiraAssignableUserSearchUrl(
-      options.cloudId,
+      options.baseUrl,
       options.issueKey,
       assignableSearchUrlOptions(options),
-      options.apiRoot,
     ),
-    { headers: readJiraHeaders(options.accessToken) },
+    { headers: readJiraHeaders(options.authorization) },
   );
   assertJiraResponseOk(response, "Jira assignable users could not be loaded.");
   return parseJiraAssignableUsers(await response.json());
@@ -386,10 +380,10 @@ function assignableSearchUrlOptions(
 export async function assignJiraIssue(options: AssignJiraIssueOptions): Promise<void> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueAssigneeUrl(options.cloudId, options.issueKey, options.apiRoot),
+    buildJiraIssueAssigneeUrl(options.baseUrl, options.issueKey),
     {
       body: JSON.stringify({ accountId: options.accountId }),
-      headers: jsonJiraHeaders(options.accessToken),
+      headers: jsonJiraHeaders(options.authorization),
       method: "PUT",
     },
   );
@@ -401,10 +395,10 @@ export async function fetchAssignedJiraIssues(
 ): Promise<JiraIssueSummary[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildAssignedIssuesSearchUrl(options.cloudId, options.apiRoot),
+    buildAssignedIssuesSearchUrl(options.baseUrl),
     {
       body: JSON.stringify(buildAssignedIssuesSearchBody(options.maxResults)),
-      headers: jsonJiraHeaders(options.accessToken),
+      headers: jsonJiraHeaders(options.authorization),
       method: "POST",
     },
   );
@@ -418,8 +412,8 @@ export async function fetchJiraIssueDetail(
 ): Promise<JiraIssueDetail> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueDetailUrl(options.cloudId, options.issueKey, options.apiRoot),
-    { headers: readJiraHeaders(options.accessToken) },
+    buildJiraIssueDetailUrl(options.baseUrl, options.issueKey),
+    { headers: readJiraHeaders(options.authorization) },
   );
   assertJiraResponseOk(response, "Jira issue detail could not be loaded.");
   const responseBody: unknown = await response.json();
@@ -444,8 +438,8 @@ export async function fetchJiraIssueRemoteLinks(
 ): Promise<JiraIssueRemoteLink[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueRemoteLinksUrl(options.cloudId, options.issueKey, options.apiRoot),
-    { headers: readJiraHeaders(options.accessToken) },
+    buildJiraIssueRemoteLinksUrl(options.baseUrl, options.issueKey),
+    { headers: readJiraHeaders(options.authorization) },
   );
   assertJiraResponseOk(response, "Jira remote links could not be loaded.");
   const responseBody: unknown = await response.json();
@@ -457,8 +451,8 @@ export async function fetchJiraIssueTransitions(
 ): Promise<JiraIssueTransition[]> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueTransitionsUrl(options.cloudId, options.issueKey, options.apiRoot),
-    { headers: readJiraHeaders(options.accessToken) },
+    buildJiraIssueTransitionsUrl(options.baseUrl, options.issueKey),
+    { headers: readJiraHeaders(options.authorization) },
   );
   assertJiraResponseOk(response, "Jira issue transitions could not be loaded.");
   const responseBody: unknown = await response.json();
@@ -470,10 +464,10 @@ export async function transitionJiraIssue(
 ): Promise<void> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueTransitionsUrl(options.cloudId, options.issueKey, options.apiRoot),
+    buildJiraIssueTransitionsUrl(options.baseUrl, options.issueKey),
     {
       body: JSON.stringify({ transition: { id: options.transitionId } }),
-      headers: jsonJiraHeaders(options.accessToken),
+      headers: jsonJiraHeaders(options.authorization),
       method: "POST",
     },
   );
@@ -489,10 +483,10 @@ export async function addJiraIssueWorklog(
 
   const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl(
-    buildJiraIssueWorklogUrl(options.cloudId, options.issueKey, options.apiRoot),
+    buildJiraIssueWorklogUrl(options.baseUrl, options.issueKey),
     {
       body: JSON.stringify(buildWorklogRequestBody(options)),
-      headers: jsonJiraHeaders(options.accessToken),
+      headers: jsonJiraHeaders(options.authorization),
       method: "POST",
     },
   );
@@ -600,13 +594,12 @@ async function fetchPaginatedIssueCommentsOrThrow(
   while (!isComplete) {
     const response = await fetchImpl(
       buildJiraIssueCommentsUrl(
-        options.cloudId,
+        options.baseUrl,
         options.issueKey,
         startAt,
         JIRA_COMMENTS_PAGE_SIZE,
-        options.apiRoot,
       ),
-      { headers: readJiraHeaders(options.accessToken) },
+      { headers: readJiraHeaders(options.authorization) },
     );
     if (!response.ok) {
       throw new Error("Jira issue comments could not be loaded.");

@@ -15,6 +15,8 @@ import type { JiraIssueAttachment } from "../../src/types.js";
 const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const gifBytes = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
 const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+const authorization = "Bearer secret-access-token";
+const baseUrl = "https://jira-api.example.com/ex/jira/cloud-1";
 const tempDirs: string[] = [];
 type FetchInput = Parameters<typeof fetch>[0];
 
@@ -56,10 +58,9 @@ describe("Jira issue image files", () => {
     });
 
     const saved = await saveJiraIssueImageFile({
-      accessToken: "secret-access-token",
-      apiRoot: "https://jira-api.example.com/ex/jira",
+      authorization,
       attachment: attachment({ filename: "preview" }),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
       maxBytes: 64,
@@ -93,9 +94,9 @@ describe("Jira issue image files", () => {
     });
 
     const saved = await saveJiraIssueImageFile({
-      accessToken: "secret-access-token",
+      authorization,
       attachment: attachment({ filename: "fallback.gif", mimeType: "text/plain" }),
-      cloudId: "cloud-1",
+      baseUrl,
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
       maxBytes: 64,
@@ -133,9 +134,9 @@ describe("Jira issue image files", () => {
 
     await expect(
       saveJiraIssueImageFile({
-        accessToken: "secret-access-token",
+        authorization,
         attachment: attachment(),
-        cloudId: "cloud-1",
+        baseUrl,
         fetchImpl: fetchMock,
         issueKey: "OPS-123",
         maxBytes: 64,
@@ -145,7 +146,7 @@ describe("Jira issue image files", () => {
     ).resolves.toMatchObject({ mimeType: "image/png", source: "comment" });
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/attachment/signed/media.png",
+      "https://jira-api.example.com/ex/jira/cloud-1/rest/api/3/attachment/signed/media.png",
       { headers: { Accept: "image/*" } },
     );
   });
@@ -169,9 +170,9 @@ describe("Jira issue image files", () => {
 
     await expect(
       saveJiraIssueImageFile({
-        accessToken: "secret-access-token",
+        authorization,
         attachment: attachment(),
-        cloudId: "cloud-1",
+        baseUrl,
         fetchImpl: redirectFetch,
         issueKey: "OPS-123",
         outputDir,
@@ -180,9 +181,9 @@ describe("Jira issue image files", () => {
     ).resolves.toBeNull();
     await expect(
       saveJiraIssueImageFile({
-        accessToken: "secret-access-token",
+        authorization,
         attachment: attachment(),
-        cloudId: "cloud-1",
+        baseUrl,
         fetchImpl: oversizedFetch,
         issueKey: "OPS-123",
         maxBytes: 3,
@@ -213,9 +214,9 @@ describe("Jira issue image files", () => {
 
     await expect(
       saveJiraIssueImageFile({
-        accessToken: "secret-access-token",
+        authorization,
         attachment: attachment({ filename: "preview" }),
-        cloudId: "cloud-1",
+        baseUrl,
         fetchImpl: webpFetch,
         issueKey: "OPS-123",
         outputDir,
@@ -224,9 +225,9 @@ describe("Jira issue image files", () => {
     ).resolves.toMatchObject({ mimeType: "image/webp" });
     await expect(
       saveJiraIssueImageFile({
-        accessToken: "secret-access-token",
+        authorization,
         attachment: attachment(),
-        cloudId: "cloud-1",
+        baseUrl,
         fetchImpl: invalidRedirectFetch,
         issueKey: "OPS-123",
         outputDir,
