@@ -1,6 +1,6 @@
 ---
 name: jira
-description: Use when working with Jira Cloud through the jira CLI, including connected-account identity, assigned issue lists, issue details with local attachments and inline images, remote links, transitions, safe issue assignment, worklogs, descriptions, summaries, comment creation, and backup-first comment deletion.
+description: Use when working with Jira Cloud through the jira CLI, including Atlassian API token or OAuth authentication, connected-account identity, assigned issue lists, issue details with local attachments and inline images, remote links, transitions, safe issue assignment, worklogs, descriptions, summaries, comment creation, and backup-first comment deletion.
 ---
 
 # Jira
@@ -15,17 +15,35 @@ If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptool
 
 1. Identify whether the user needs auth status or identity, assigned issues, one issue detail, remote links, transitions, a transition write, a content write, a comment deletion, or a worklog write.
 2. Use plain human-readable output by default, including when an agent will read the result and act on it directly. Use `--json` only when a deterministic script, `jq` pipeline, or another tool must parse fields programmatically.
-3. Reuse the default token store at `~/.jira-oauth/tokens.json` when available.
+3. Prefer an Atlassian API token when `JIRA_API_TOKEN` is exported; otherwise reuse the default token store at `~/.jira-oauth/tokens.json`. Run `jira status` when unsure which is active.
 4. Use write commands only when the user explicitly asks to assign or transition an issue, update issue content, add worklog time, or delete a comment.
-5. Treat access tokens, refresh tokens, Authorization headers, OAuth client secrets, and raw token-store contents as sensitive.
+5. Treat API tokens, access tokens, refresh tokens, Authorization headers, OAuth client secrets, and raw token-store contents as sensitive. Never echo `$JIRA_API_TOKEN`.
 
 ## Authentication
 
-Check whether the default Jira token is present and usable:
+`jira` uses an Atlassian API token when one is exported, otherwise the OAuth token store. Check
+which is active first; this makes no network call:
 
 ```bash
 jira status
 ```
+
+### Atlassian API token (HTTP Basic)
+
+Token from https://id.atlassian.com/manage-profile/security/api-tokens, plus the account email and
+one target:
+
+```bash
+export JIRA_API_TOKEN="..." JIRA_EMAIL="fred@example.com"
+export JIRA_SITE_URL="https://your-domain.atlassian.net"   # classic token
+# scoped token instead: JIRA_CLOUD_ID="..." (no site URL)
+```
+
+A classic token answers only on the site URL, a scoped token only on
+`https://api.atlassian.com/ex/jira/<cloud-id>`; a `401` usually means the wrong one is set. A
+missing companion variable fails with that variable named — fix it, do not unset the token.
+
+Pin one credential with `--auth api-token` (never falls back) or `--auth oauth` (ignores the token).
 
 Resolve the connected Jira account's own identity:
 
@@ -41,7 +59,9 @@ secondary pipeline:
 jira whoami --json | jq -r '.accountId'
 ```
 
-Connect through browser OAuth when no token exists or the user needs a fresh connection:
+### Shared JiraOps OAuth token store (fallback)
+
+Used when no `JIRA_API_TOKEN` is exported. Connect through browser OAuth when no token exists:
 
 ```bash
 jira connect
@@ -67,7 +87,7 @@ Log out by removing the local shared token file:
 jira logout
 ```
 
-Avoid `jira token` unless the user explicitly needs a bearer token for a script. It prints a live access token.
+Avoid `jira token` unless the user explicitly needs a bearer token for a script. It prints a live access token, and refuses under API token auth: use `curl -u "$JIRA_EMAIL:$JIRA_API_TOKEN"` instead.
 
 ## Command Choice
 

@@ -11,6 +11,8 @@ import {
 import type { JiraIssueAttachment, JiraIssueDetail } from "../../src/types.js";
 
 const fileBytes = new TextEncoder().encode("attachment body");
+const authorization = "Bearer secret-access-token";
+const baseUrl = "https://jira-api.example.com/ex/jira/cloud-1";
 const tempDirs: string[] = [];
 type FetchInput = Parameters<typeof fetch>[0];
 
@@ -42,7 +44,8 @@ describe("Jira issue attachment hydration", () => {
     }]);
 
     const hydrated = await hydrateIssueAttachments(detail, {
-      accessToken: "secret-access-token",
+      authorization,
+      baseUrl,
       attachmentOutputDir: outputDir,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
@@ -79,7 +82,8 @@ describe("Jira issue attachment hydration", () => {
     ]);
 
     const hydrated = await hydrateIssueAttachments(detail, {
-      accessToken: "secret-access-token",
+      authorization,
+      baseUrl,
       attachmentOutputDir: outputDir,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
@@ -114,7 +118,8 @@ describe("Jira issue attachment hydration", () => {
     ]);
 
     const hydrated = await hydrateIssueAttachments(detail, {
-      accessToken: "secret-access-token",
+      authorization,
+      baseUrl,
       attachmentOutputDir: outputDir,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
@@ -132,7 +137,8 @@ describe("Jira issue attachment hydration", () => {
   it("returns issue details unchanged when no attachments exist", async () => {
     const detail = issueDetail([]);
     await expect(hydrateIssueAttachments(detail, {
-      accessToken: "secret-access-token",
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       issueKey: "OPS-123",
     })).resolves.toBe(detail);

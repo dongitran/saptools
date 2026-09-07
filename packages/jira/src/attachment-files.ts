@@ -10,10 +10,9 @@ import { buildJiraAttachmentContentUrl } from "./urls.js";
 export const DEFAULT_JIRA_ATTACHMENT_MAX_BYTES = 10_000_000;
 
 export interface FetchJiraAttachmentContentOptions {
-  readonly accessToken: string;
-  readonly apiRoot?: string;
   readonly attachment: JiraIssueAttachment;
-  readonly cloudId: string;
+  readonly authorization: string;
+  readonly baseUrl: string;
   readonly fetchImpl?: typeof fetch;
   readonly maxBytes?: number;
 }
@@ -51,14 +50,10 @@ export async function fetchJiraAttachmentContent(
   }
 
   try {
-    const url = buildJiraAttachmentContentUrl(
-      options.cloudId,
-      options.attachment.id,
-      options.apiRoot,
-    );
+    const url = buildJiraAttachmentContentUrl(options.baseUrl, options.attachment.id);
     const response = await (options.fetchImpl ?? fetch)(
       url,
-      jiraAttachmentRequest(options.accessToken, maxBytes),
+      jiraAttachmentRequest(options.authorization, maxBytes),
     );
     const contentResponse = isRedirectResponse(response)
       ? await fetchSignedAttachment(response.headers.get("location"), url, options, maxBytes)
@@ -178,11 +173,11 @@ function combineChunks(chunks: readonly Uint8Array[], totalBytes: number): Uint8
   return bytes;
 }
 
-function jiraAttachmentRequest(accessToken: string, maxBytes: number): RequestInit {
+function jiraAttachmentRequest(authorization: string, maxBytes: number): RequestInit {
   return {
     headers: {
       Accept: "*/*",
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: authorization,
       Range: `bytes=0-${maxBytes.toString()}`,
     },
     redirect: "manual",

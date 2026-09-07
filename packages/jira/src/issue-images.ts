@@ -46,13 +46,12 @@ export async function hydrateIssueImages(
   const images: JiraIssueImageFile[] = [];
   for (const task of tasks.slice(0, maxImages)) {
     const image = await saveJiraIssueImageFile({
-      accessToken: options.accessToken,
       attachment: task.attachment,
-      cloudId: options.cloudId,
+      authorization: options.authorization,
+      baseUrl: options.baseUrl,
       issueKey: options.issueKey,
       outputDir,
       source: task.reference.source,
-      ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
       ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
       ...(options.maxImageBytes === undefined ? {} : { maxBytes: options.maxImageBytes }),
       ...(task.reference.commentId === undefined ? {} : { commentId: task.reference.commentId }),

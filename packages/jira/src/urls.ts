@@ -26,6 +26,19 @@ const ISSUE_DETAIL_FIELDS = [
 ] as const;
 const DEFAULT_ASSIGNED_ISSUE_LIMIT = 25;
 
+/**
+ * REST root for the Atlassian API gateway, used by OAuth tokens and by scoped API tokens.
+ * Classic API tokens address their site directly and never go through this composition.
+ */
+export function buildJiraCloudBaseUrl(cloudId: string, apiRoot = DEFAULT_JIRA_API_ROOT): string {
+  return `${trimTrailingSlash(apiRoot)}/${encodeURIComponent(cloudId)}`;
+}
+
+/** Strips every trailing slash, so a pasted `https://site//` cannot produce `//rest/api/3`. */
+export function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/u, "");
+}
+
 export function buildAssignedIssuesSearchBody(
   maxResults = DEFAULT_ASSIGNED_ISSUE_LIMIT,
 ): AssignedIssuesSearchBody {
@@ -36,77 +49,55 @@ export function buildAssignedIssuesSearchBody(
   };
 }
 
-export function buildAssignedIssuesSearchUrl(
-  cloudId: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${cloudRoot(apiRoot, cloudId)}/rest/api/3/search/jql`;
+export function buildAssignedIssuesSearchUrl(baseUrl: string): string {
+  return `${apiRoot3(baseUrl)}/search/jql`;
 }
 
-export function buildJiraIssueDetailUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
+export function buildJiraIssueDetailUrl(baseUrl: string, issueKey: string): string {
   const fields = encodeURIComponent(ISSUE_DETAIL_FIELDS.join(","));
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}?fields=${fields}&expand=renderedFields`;
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}?fields=${fields}&expand=renderedFields`;
 }
 
-export function buildJiraIssueRemoteLinksUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/remotelink`;
+export function buildJiraIssueRemoteLinksUrl(baseUrl: string, issueKey: string): string {
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}/remotelink`;
 }
 
 export function buildJiraIssueCommentsUrl(
-  cloudId: string,
+  baseUrl: string,
   issueKey: string,
   startAt: number,
   maxResults: number,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
 ): string {
-  const url = new URL(`${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/comment`);
+  const url = new URL(`${buildJiraIssueUrl(baseUrl, issueKey)}/comment`);
   url.searchParams.set("startAt", startAt.toString());
   url.searchParams.set("maxResults", maxResults.toString());
   return url.toString();
 }
 
-export function buildJiraIssueCommentCreateUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/comment`;
+export function buildJiraIssueCommentCreateUrl(baseUrl: string, issueKey: string): string {
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}/comment`;
 }
 
 export function buildJiraIssueCommentUrl(
-  cloudId: string,
+  baseUrl: string,
   issueKey: string,
   commentId: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
 ): string {
-  return `${buildJiraIssueCommentCreateUrl(cloudId, issueKey, apiRoot)}/${encodeURIComponent(commentId)}`;
+  return `${buildJiraIssueCommentCreateUrl(baseUrl, issueKey)}/${encodeURIComponent(commentId)}`;
 }
 
-export function buildJiraIssueDescriptionUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  const url = new URL(buildJiraIssueUrl(cloudId, issueKey, apiRoot));
+export function buildJiraIssueDescriptionUrl(baseUrl: string, issueKey: string): string {
+  const url = new URL(buildJiraIssueUrl(baseUrl, issueKey));
   url.searchParams.set("fields", "description");
   return url.toString();
 }
 
 export function buildJiraIssueUpdateUrl(
-  cloudId: string,
+  baseUrl: string,
   issueKey: string,
   options: { readonly notifyUsers?: boolean },
-  apiRoot = DEFAULT_JIRA_API_ROOT,
 ): string {
-  const url = new URL(buildJiraIssueUrl(cloudId, issueKey, apiRoot));
+  const url = new URL(buildJiraIssueUrl(baseUrl, issueKey));
   if (options.notifyUsers !== undefined) {
     url.searchParams.set("notifyUsers", String(options.notifyUsers));
   }
@@ -114,12 +105,11 @@ export function buildJiraIssueUpdateUrl(
 }
 
 export function buildJiraIssueTransitionsUrl(
-  cloudId: string,
+  baseUrl: string,
   issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
   options: { readonly expandFields?: boolean } = {},
 ): string {
-  const url = new URL(`${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/transitions`);
+  const url = new URL(`${buildJiraIssueUrl(baseUrl, issueKey)}/transitions`);
   if (options.expandFields === true) {
     url.searchParams.set("expand", "transitions.fields");
   }
@@ -127,48 +117,35 @@ export function buildJiraIssueTransitionsUrl(
 }
 
 export function buildJiraFieldSearchUrl(
-  cloudId: string,
+  baseUrl: string,
   startAt: number,
   maxResults: number,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
 ): string {
-  const url = new URL(`${cloudRoot(apiRoot, cloudId)}/rest/api/3/field/search`);
+  const url = new URL(`${apiRoot3(baseUrl)}/field/search`);
   url.searchParams.set("type", "custom");
   url.searchParams.set("startAt", startAt.toString());
   url.searchParams.set("maxResults", maxResults.toString());
   return url.toString();
 }
 
-export function buildJiraIssueEditMetaUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/editmeta`;
+export function buildJiraIssueEditMetaUrl(baseUrl: string, issueKey: string): string {
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}/editmeta`;
 }
 
-export function buildJiraIssueWorklogUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/worklog`;
+export function buildJiraIssueWorklogUrl(baseUrl: string, issueKey: string): string {
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}/worklog`;
 }
 
-export function buildJiraCurrentUserUrl(
-  cloudId: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${cloudRoot(apiRoot, cloudId)}/rest/api/3/myself`;
+export function buildJiraCurrentUserUrl(baseUrl: string): string {
+  return `${apiRoot3(baseUrl)}/myself`;
 }
 
 export function buildJiraAssignableUserSearchUrl(
-  cloudId: string,
+  baseUrl: string,
   issueKey: string,
   options: { readonly accountId?: string; readonly query?: string },
-  apiRoot = DEFAULT_JIRA_API_ROOT,
 ): string {
-  const url = new URL(`${cloudRoot(apiRoot, cloudId)}/rest/api/3/user/assignable/search`);
+  const url = new URL(`${apiRoot3(baseUrl)}/user/assignable/search`);
   url.searchParams.set("issueKey", issueKey);
   if (options.query !== undefined) {
     url.searchParams.set("query", options.query);
@@ -180,46 +157,22 @@ export function buildJiraAssignableUserSearchUrl(
   return url.toString();
 }
 
-export function buildJiraIssueAssigneeUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  return `${buildJiraIssueUrl(cloudId, issueKey, apiRoot)}/assignee`;
+export function buildJiraIssueAssigneeUrl(baseUrl: string, issueKey: string): string {
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}/assignee`;
 }
 
-export function buildJiraAttachmentContentUrl(
-  cloudId: string,
-  attachmentId: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  const encodedAttachmentId = encodeURIComponent(attachmentId);
-  return `${cloudRoot(apiRoot, cloudId)}/rest/api/3/attachment/content/${encodedAttachmentId}`;
+export function buildJiraAttachmentContentUrl(baseUrl: string, attachmentId: string): string {
+  return `${apiRoot3(baseUrl)}/attachment/content/${encodeURIComponent(attachmentId)}`;
 }
 
-export function buildJiraAttachmentThumbnailUrl(
-  cloudId: string,
-  attachmentId: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  const encodedAttachmentId = encodeURIComponent(attachmentId);
-  return `${cloudRoot(apiRoot, cloudId)}/rest/api/3/attachment/thumbnail/${encodedAttachmentId}`;
+export function buildJiraAttachmentThumbnailUrl(baseUrl: string, attachmentId: string): string {
+  return `${apiRoot3(baseUrl)}/attachment/thumbnail/${encodeURIComponent(attachmentId)}`;
 }
 
-export function buildJiraIssueUrl(
-  cloudId: string,
-  issueKey: string,
-  apiRoot = DEFAULT_JIRA_API_ROOT,
-): string {
-  const encodedIssueKey = encodeURIComponent(issueKey);
-  return `${cloudRoot(apiRoot, cloudId)}/rest/api/3/issue/${encodedIssueKey}`;
+export function buildJiraIssueUrl(baseUrl: string, issueKey: string): string {
+  return `${apiRoot3(baseUrl)}/issue/${encodeURIComponent(issueKey)}`;
 }
 
-function cloudRoot(apiRoot: string, cloudId: string): string {
-  const encodedCloudId = encodeURIComponent(cloudId);
-  return `${trimTrailingSlash(apiRoot)}/${encodedCloudId}`;
-}
-
-function trimTrailingSlash(value: string): string {
-  return value.endsWith("/") ? value.slice(0, -1) : value;
+function apiRoot3(baseUrl: string): string {
+  return `${trimTrailingSlash(baseUrl)}/rest/api/3`;
 }

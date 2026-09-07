@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -13,6 +14,18 @@ const execFileAsync = promisify(execFile);
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI_PATH = join(PACKAGE_DIR, "dist", "cli.js");
 const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const API_TOKEN_ENV_VARS = [
+  "JIRA_API_TOKEN",
+  "ATLASSIAN_API_TOKEN",
+  "JIRA_EMAIL",
+  "ATLASSIAN_EMAIL",
+  "JIRA_SITE_URL",
+  "JIRA_BASE_URL",
+  "JIRA_CLOUD_ID",
+] as const;
+const API_TOKEN = "e2e-static-api-token";
+const API_EMAIL = "fred@example.com";
+const EXPECTED_BASIC = `Basic ${Buffer.from(`${API_EMAIL}:${API_TOKEN}`).toString("base64")}`;
 const ATTACHMENT_BYTES = new TextEncoder().encode("<values><value>Example</value></values>");
 
 interface JiraTokensFixture {
@@ -77,6 +90,11 @@ async function prepareCliContext(
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   Reflect.deleteProperty(env, "FORCE_COLOR");
   Reflect.deleteProperty(env, "NO_COLOR");
+  // An API token exported in the developer's shell would silently outrank the token-store
+  // fixtures every other test depends on.
+  for (const name of API_TOKEN_ENV_VARS) {
+    Reflect.deleteProperty(env, name);
+  }
 
   return {
     env,
@@ -97,6 +115,17 @@ async function prepareCliContext(
       await rm(home, { recursive: true, force: true });
     },
   };
+}
+
+/** The fake server routes on `/ex/jira/cloud-1`, so a classic-token site URL keeps that prefix. */
+function siteUrlOf(ctx: CliContext): string {
+  return `${ctx.fakeJira.apiRoot}/cloud-1`;
+}
+
+function useApiToken(ctx: CliContext): void {
+  ctx.env["JIRA_API_TOKEN"] = API_TOKEN;
+  ctx.env["JIRA_EMAIL"] = API_EMAIL;
+  ctx.env["JIRA_SITE_URL"] = siteUrlOf(ctx);
 }
 
 async function startFakeJiraServer(home: string): Promise<FakeJiraServer> {
@@ -1607,14 +1636,23 @@ test.describe("Jira CLI", () => {
       ])).rejects.toMatchObject({ stderr: expect.stringContaining("no assignment was changed") });
       expect(ctx.fakeJira.requests().some((entry) => entry.method === "PUT")).toBe(false);
 
-      await expect(ctx.run([
+      const denied = ctx.run([
         "--api-root",
         ctx.fakeJira.apiRoot,
         "assign",
         "OPS-ASSIGN",
         "--account-id",
         "permission-denied",
-      ])).rejects.toMatchObject({ stderr: expect.stringContaining("Jira issue assignee could not be updated") });
+      ]);
+      await expect(denied).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "Jira issue assignee could not be updated. (HTTP 403 Forbidden) Run `jira status` to see which Jira credentials are active.",
+        ),
+      });
+      // The status line is diagnostic; the Jira response body may carry site detail and must not leak.
+      await expect(denied).rejects.toMatchObject({
+        stderr: expect.not.stringContaining("forbidden sensitive detail"),
+      });
       const puts = ctx.fakeJira.requests().filter((entry) => entry.method === "PUT");
       expect(puts).toHaveLength(1);
     } finally {
@@ -1694,6 +1732,144 @@ test.describe("Jira CLI", () => {
         customfield_10101: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "First value" }] }] },
         customfield_10102: "Second=value",
       } });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can authenticate every command with an Atlassian API token and no token store", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      useApiToken(ctx);
+      await rm(join(ctx.home, ".jira-oauth"), { recursive: true, force: true });
+
+      const status = await ctx.run(["status", "--json"]);
+      expect(JSON.parse(status.stdout)).toMatchObject({
+        authMode: "api-token",
+        baseUrl: siteUrlOf(ctx),
+        connected: true,
+        email: API_EMAIL,
+        usable: true,
+      });
+      expect(status.stdout).not.toContain(API_TOKEN);
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+
+      const whoami = await ctx.run(["whoami", "--json"]);
+      expect(JSON.parse(whoami.stdout)).toMatchObject({ accountId: "account-me" });
+
+      const issues = await ctx.run(["issues", "--json"]);
+      expect(JSON.parse(issues.stdout)).toEqual([expect.objectContaining({ key: "OPS-123" })]);
+
+      const detail = await ctx.run(["issue", "OPS-123", "--json"]);
+      const parsedDetail = JSON.parse(detail.stdout) as {
+        readonly attachments: readonly { readonly localPath?: string }[];
+        readonly images: readonly { readonly filePath: string }[];
+      };
+      expect(parsedDetail.images.length).toBeGreaterThan(0);
+      expect(parsedDetail.attachments.some((item) => item.localPath !== undefined)).toBe(true);
+
+      const authorizations = new Set(ctx.fakeJira.requests().map((entry) => entry.authorization));
+      expect([...authorizations]).toEqual([EXPECTED_BASIC]);
+      expect(ctx.fakeJira.requests().every((entry) => entry.url.startsWith("/ex/jira/cloud-1/"))).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("An API token outranks a usable stored OAuth token unless OAuth is selected", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      useApiToken(ctx);
+      await ctx.run(["issues", "--json"]);
+      expect(ctx.fakeJira.requests().at(-1)).toMatchObject({ authorization: EXPECTED_BASIC });
+
+      await ctx.run(["--auth", "oauth", "--api-root", ctx.fakeJira.apiRoot, "issues", "--json"]);
+      expect(ctx.fakeJira.requests().at(-1)).toMatchObject({
+        authorization: "Bearer e2e-access-token",
+      });
+
+      const oauthStatus = await ctx.run(["--auth", "oauth", "status", "--json"]);
+      expect(JSON.parse(oauthStatus.stdout)).toMatchObject({ authMode: "oauth", cloudId: "cloud-1" });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("A scoped API token addresses the Atlassian gateway with the cloud ID", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      ctx.env["JIRA_API_TOKEN"] = API_TOKEN;
+      ctx.env["JIRA_EMAIL"] = API_EMAIL;
+      ctx.env["JIRA_CLOUD_ID"] = "cloud-1";
+      await rm(join(ctx.home, ".jira-oauth"), { recursive: true, force: true });
+
+      const issues = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "issues", "--json"]);
+
+      expect(JSON.parse(issues.stdout)).toEqual([expect.objectContaining({ key: "OPS-123" })]);
+      expect(ctx.fakeJira.requests()[0]).toMatchObject({
+        authorization: EXPECTED_BASIC,
+        url: "/ex/jira/cloud-1/rest/api/3/search/jql",
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("A half-configured API token fails fast instead of falling back to OAuth", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      ctx.env["JIRA_API_TOKEN"] = API_TOKEN;
+
+      await expect(ctx.run(["issues"])).rejects.toMatchObject({
+        stderr: expect.stringContaining("JIRA_EMAIL is required when JIRA_API_TOKEN is set"),
+      });
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+
+      ctx.env["JIRA_EMAIL"] = API_EMAIL;
+      await expect(ctx.run(["issues"])).rejects.toMatchObject({
+        stderr: expect.stringContaining("JIRA_SITE_URL or JIRA_CLOUD_ID is required"),
+      });
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+
+      await expect(ctx.run(["--auth", "api-token", "--site-url", "nope", "issues"])).rejects.toMatchObject({
+        stderr: expect.stringContaining("must be an http(s) URL"),
+      });
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("`jira token` refuses to reprint a static API token and never echoes it", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      useApiToken(ctx);
+
+      const refusal = ctx.run(["token"]);
+      await expect(refusal).rejects.toMatchObject({
+        stderr: expect.stringContaining("Atlassian API token auth is active"),
+      });
+      await expect(refusal).rejects.toMatchObject({
+        stderr: expect.not.stringContaining(API_TOKEN),
+      });
+
+      const oauthToken = await ctx.run(["--auth", "oauth", "token"]);
+      expect(oauthToken.stdout).toBe("e2e-access-token\n");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("--auth api-token refuses to use the OAuth store when nothing is configured", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run(["--auth", "api-token", "issues"])).rejects.toMatchObject({
+        stderr: expect.stringContaining("An Atlassian API token is required."),
+      });
+      await expect(ctx.run(["--auth", "nonsense", "status"])).rejects.toMatchObject({
+        stderr: expect.stringContaining("--auth <mode> must be auto, api-token, or oauth"),
+      });
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
     } finally {
       await ctx.cleanup();
     }

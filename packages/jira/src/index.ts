@@ -1,10 +1,12 @@
 export * from "./adf-text.js";
+export * from "./api-token.js";
 export * from "./adf.js";
 export * from "./auth.js";
 export * from "./assignment.js";
 export * from "./client.js";
 export * from "./format.js";
 export * from "./image-files.js";
+export * from "./jira-http.js";
 export * from "./token-store.js";
 export type * from "./types.js";
 export * from "./urls.js";

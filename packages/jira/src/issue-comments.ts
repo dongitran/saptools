@@ -35,13 +35,8 @@ export async function fetchJiraIssueComment(
   options: JiraIssueCommentRequestOptions,
 ): Promise<JiraIssueCommentDetail> {
   const response = await (options.fetchImpl ?? fetch)(
-    buildJiraIssueCommentUrl(
-      options.cloudId,
-      options.issueKey,
-      options.commentId,
-      options.apiRoot,
-    ),
-    { headers: readJiraHeaders(options.accessToken) },
+    buildJiraIssueCommentUrl(options.baseUrl, options.issueKey, options.commentId),
+    { headers: readJiraHeaders(options.authorization) },
   );
   assertJiraResponseOk(response, "Jira issue comment could not be loaded.");
   const comment = await parseCommentResponse(response);
@@ -55,14 +50,9 @@ export async function deleteJiraIssueComment(
   options: JiraIssueCommentRequestOptions,
 ): Promise<void> {
   const response = await (options.fetchImpl ?? fetch)(
-    buildJiraIssueCommentUrl(
-      options.cloudId,
-      options.issueKey,
-      options.commentId,
-      options.apiRoot,
-    ),
+    buildJiraIssueCommentUrl(options.baseUrl, options.issueKey, options.commentId),
     {
-      headers: readJiraHeaders(options.accessToken),
+      headers: readJiraHeaders(options.authorization),
       method: "DELETE",
     },
   );

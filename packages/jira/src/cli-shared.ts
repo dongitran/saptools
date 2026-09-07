@@ -2,17 +2,27 @@ import process from "node:process";
 
 import type { Command } from "commander";
 
-import { requireStoredOrRefreshJiraTokens } from "./auth.js";
+import { requireStoredOrRefreshJiraTokens, resolveJiraCredential } from "./auth.js";
 import { readPinnedCustomFields } from "./custom-field-store.js";
 import { formatPinnedCustomFieldHint } from "./format.js";
-import type { JiraAuthOptions, JiraRequestOptions, JiraTokens } from "./types.js";
+import type {
+  JiraApiTokenOptions,
+  JiraAuthModeSelection,
+  JiraAuthOptions,
+  JiraCredential,
+  JiraRequestOptions,
+  JiraTokens,
+} from "./types.js";
 
 export interface GlobalFlags {
   readonly apiRoot?: string;
+  readonly auth?: string;
   readonly clientId?: string;
   readonly clientSecret?: string;
+  readonly cloudId?: string;
   readonly hints?: boolean;
   readonly port?: string;
+  readonly siteUrl?: string;
   readonly tokenStore?: string;
 }
 
@@ -27,21 +37,22 @@ export async function toIssueRequestOptions(
 }
 
 export async function toRequestOptions(program: Command): Promise<JiraRequestOptions> {
-  return toRequestOptionsFromTokens(program, await resolveTokens(program));
+  return toRequestOptionsFromCredential(await resolveCredential(program));
 }
 
-export function toRequestOptionsFromTokens(
-  program: Command,
-  tokens: JiraTokens,
-): JiraRequestOptions {
-  const apiRoot = resolveApiRoot(program.opts<GlobalFlags>());
+export function toRequestOptionsFromCredential(credential: JiraCredential): JiraRequestOptions {
   return {
-    accessToken: tokens.accessToken,
-    cloudId: tokens.cloudId,
-    ...(apiRoot === undefined ? {} : { apiRoot }),
+    authorization: credential.authorization,
+    baseUrl: credential.baseUrl,
+    cloudId: credential.cloudId,
   };
 }
 
+export async function resolveCredential(program: Command): Promise<JiraCredential> {
+  return await resolveJiraCredential(toAuthOptions(program));
+}
+
+/** OAuth-only path kept for `jira token`, which prints a bearer access token. */
 export async function resolveTokens(program: Command): Promise<JiraTokens> {
   return await requireStoredOrRefreshJiraTokens(toAuthOptions(program));
 }
@@ -49,12 +60,24 @@ export async function resolveTokens(program: Command): Promise<JiraTokens> {
 export function toAuthOptions(program: Command): JiraAuthOptions {
   const flags = program.opts<GlobalFlags>();
   const port = parseOptionalPositiveInteger(flags.port, "--port <number>");
+  const apiRoot = resolveApiRoot(flags);
   return {
+    apiToken: toApiTokenOptions(flags),
+    authMode: parseAuthMode(flags.auth),
+    ...(apiRoot === undefined ? {} : { apiRoot }),
     ...(flags.clientId === undefined ? {} : { clientId: flags.clientId }),
     ...(flags.clientSecret === undefined ? {} : { clientSecret: flags.clientSecret }),
     ...(port === undefined ? {} : { port }),
     ...(flags.tokenStore === undefined ? {} : { tokenStorePath: flags.tokenStore }),
   };
+}
+
+export function parseAuthMode(raw: string | undefined): JiraAuthModeSelection {
+  if (raw === undefined || raw === "auto" || raw === "api-token" || raw === "oauth") {
+    return raw ?? "auto";
+  }
+
+  throw new Error("--auth <mode> must be auto, api-token, or oauth");
 }
 
 export function parseOptionalPositiveInteger(
@@ -95,6 +118,14 @@ export function writeOutput(value: unknown): void {
   process.stdout.write(
     typeof value === "string" ? `${value}\n` : `${JSON.stringify(value, null, 2)}\n`,
   );
+}
+
+/** The API token itself is never a flag: flags leak into `ps` output and shell history. */
+function toApiTokenOptions(flags: GlobalFlags): JiraApiTokenOptions {
+  return {
+    ...(flags.cloudId === undefined ? {} : { cloudId: flags.cloudId }),
+    ...(flags.siteUrl === undefined ? {} : { siteUrl: flags.siteUrl }),
+  };
 }
 
 function resolveApiRoot(flags: GlobalFlags): string | undefined {

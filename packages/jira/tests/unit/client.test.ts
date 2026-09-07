@@ -25,7 +25,8 @@ import {
 } from "../../src/client.js";
 import { buildAssignedIssuesSearchBody } from "../../src/urls.js";
 
-const apiRoot = "https://jira-api.example.com/ex/jira";
+const baseUrl = "https://jira-api.example.com/ex/jira/cloud-1";
+const authorization = "Bearer secret-access-token";
 const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xdb]);
 const tempDirs: string[] = [];
@@ -64,8 +65,8 @@ describe("Jira REST client", () => {
 
     await expect(
       fetchAssignedJiraIssues({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
       }),
@@ -140,8 +141,8 @@ describe("Jira REST client", () => {
 
     await expect(
       fetchJiraIssueDetail({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-123",
@@ -202,8 +203,8 @@ describe("Jira REST client", () => {
     });
 
     await expect(fetchJiraIssueDetail({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS-129",
@@ -212,8 +213,8 @@ describe("Jira REST client", () => {
       descriptionText: "Readable fallback",
     });
     await expect(fetchJiraIssueDetail({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS-130",
@@ -295,8 +296,8 @@ describe("Jira REST client", () => {
     });
 
     const detail = await fetchJiraIssueDetail({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       downloadImages: true,
       fetchImpl: fetchMock,
@@ -363,8 +364,8 @@ describe("Jira REST client", () => {
     });
 
     const detail = await fetchJiraIssueDetail({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       downloadImages: true,
       fetchImpl: fetchMock,
@@ -459,8 +460,8 @@ describe("Jira REST client", () => {
     });
 
     const detail = await fetchJiraIssueDetail({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       downloadImages: true,
       fetchImpl: fetchMock,
@@ -526,8 +527,8 @@ describe("Jira REST client", () => {
 
     await expect(
       fetchJiraIssueDetail({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         downloadImages: true,
         fetchImpl: fetchMock,
@@ -558,8 +559,8 @@ describe("Jira REST client", () => {
 
     await expect(
       fetchJiraIssueRemoteLinks({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-123",
@@ -574,8 +575,8 @@ describe("Jira REST client", () => {
     ]);
     await expect(
       fetchJiraIssueTransitions({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-123",
@@ -616,8 +617,8 @@ describe("Jira REST client", () => {
 
     await expect(
       fetchJiraIssueRemoteLinks({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-124",
@@ -632,8 +633,8 @@ describe("Jira REST client", () => {
     ]);
     await expect(
       fetchJiraIssueTransitions({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-124",
@@ -641,8 +642,8 @@ describe("Jira REST client", () => {
     ).resolves.toEqual([{ id: "41", name: "Done", toStatus: "Done" }]);
     await expect(
       fetchJiraIssueDetail({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-124",
@@ -661,8 +662,8 @@ describe("Jira REST client", () => {
     const transitionFetch = vi.fn(async () => await Promise.resolve(new Response(null, { status: 204 })));
     await expect(
       transitionJiraIssue({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: transitionFetch,
         issueKey: "OPS-123",
@@ -673,8 +674,8 @@ describe("Jira REST client", () => {
     const worklogFetch = vi.fn(async () => await Promise.resolve(new Response("denied secret-access-token", { status: 403 })));
     await expect(
       addJiraIssueWorklog({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: worklogFetch,
         issueKey: "OPS-123",
@@ -684,8 +685,8 @@ describe("Jira REST client", () => {
     ).rejects.toThrow("Jira worklog could not be added.");
     await expect(
       addJiraIssueWorklog({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: worklogFetch,
         issueKey: "OPS-123",
@@ -699,8 +700,8 @@ describe("Jira REST client", () => {
 
     await expect(
       addJiraIssueWorklog({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-123",
@@ -718,8 +719,8 @@ describe("Jira REST client", () => {
 
     await expect(
       addJiraIssueWorklog({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: fetchMock,
         issueKey: "OPS-123",
@@ -738,7 +739,7 @@ describe("Jira REST client", () => {
       return await Promise.resolve(jsonResponse({ startAt: 1, maxResults: 1, total: 2, isLast: true, values: [{ id: "customfield_10102", key: "customfield_10102", name: "Custom text B", schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textfield", customId: 10102 } }] }));
     });
 
-    const result = await fetchJiraCustomFields({ accessToken: "secret-access-token", apiRoot, cloudId: "cloud-1", fetchImpl: fetchMock, maxResults: 1 });
+    const result = await fetchJiraCustomFields({ authorization, baseUrl, cloudId: "cloud-1", fetchImpl: fetchMock, maxResults: 1 });
 
     expect(result.totalFromApi).toBe(2);
     expect(result.fields.map((field) => field.name)).toEqual(["Custom text A", "Custom text B"]);
@@ -747,13 +748,13 @@ describe("Jira REST client", () => {
 
   it("maps editable custom fields and updates issue fields", async () => {
     const editFetch = vi.fn(async () => await Promise.resolve(jsonResponse({ fields: { customfield_10101: { name: "Custom text A", required: false, allowedValues: [], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101 } } } })));
-    await expect(fetchJiraIssueEditMetadata({ accessToken: "secret-access-token", apiRoot, cloudId: "cloud-1", fetchImpl: editFetch, issueKey: "OPS-123" }))
+    await expect(fetchJiraIssueEditMetadata({ authorization, baseUrl, cloudId: "cloud-1", fetchImpl: editFetch, issueKey: "OPS-123" }))
       .resolves.toEqual(new Map([["customfield_10101", { id: "customfield_10101", name: "Custom text A", required: false, allowedValues: [], schema: { type: "string", custom: "com.atlassian.jira.plugin.system.customfieldtypes:textarea", customId: 10101, items: null } }]]));
 
     const updateFetch = vi.fn(async () => await Promise.resolve(new Response(null, { status: 204 })));
     await expect(updateJiraIssueFields({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: updateFetch,
       issueKey: "OPS-123",
@@ -775,8 +776,8 @@ describe("Jira REST client", () => {
     })));
 
     await expect(fetchJiraIssueDescriptionAdf({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
@@ -797,8 +798,8 @@ describe("Jira REST client", () => {
     const fetchMock = vi.fn(async () => await Promise.resolve(jsonResponse({ id: 10101, body }, 201)));
 
     await expect(addJiraIssueComment({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       body,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
@@ -828,8 +829,8 @@ describe("Jira REST client", () => {
     });
 
     await expect(updateJiraIssueSummary({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
@@ -846,8 +847,8 @@ describe("Jira REST client", () => {
 
     const lockedFetch = vi.fn(async () => await Promise.resolve(jsonResponse({ fields: {} })));
     await expect(updateJiraIssueSummary({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: lockedFetch,
       issueKey: "OPS-123",
@@ -871,8 +872,8 @@ describe("Jira REST client", () => {
     });
 
     await expect(updateJiraIssueDescription({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       description: textToAdfDocument("Replacement"),
       fetchImpl: fetchMock,
@@ -880,8 +881,8 @@ describe("Jira REST client", () => {
       issueKey: "OPS-123",
     })).rejects.toThrow("contains media");
     await expect(updateJiraIssueDescription({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       description: textToAdfDocument("Replacement"),
       fetchImpl: fetchMock,
@@ -908,8 +909,8 @@ describe("Jira REST client", () => {
 
     const replacement = textToAdfDocument("Replacement");
     await expect(updateJiraIssueDescription({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       description: replacement,
       fetchImpl: fetchMock,
@@ -935,8 +936,8 @@ describe("Jira REST client", () => {
     });
 
     await expect(updateJiraIssueDescription({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       description: textToAdfDocument("Appendix"),
       fetchImpl: fetchMock,
@@ -971,8 +972,8 @@ describe("Jira REST client", () => {
     });
 
     await expect(updateJiraIssueDescription({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       description: rawDescription,
       fetchImpl: fetchMock,
@@ -988,16 +989,16 @@ describe("Jira REST client", () => {
 
     await expect(
       fetchAssignedJiraIssues({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: invalidFetch,
       }),
     ).rejects.toThrow("Assigned Jira issue response was not valid.");
     await expect(
       fetchJiraIssueRemoteLinks({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: invalidFetch,
         issueKey: "OPS-123",
@@ -1005,8 +1006,8 @@ describe("Jira REST client", () => {
     ).rejects.toThrow("Jira remote links response was not valid.");
     await expect(
       fetchJiraIssueTransitions({
-        accessToken: "secret-access-token",
-        apiRoot,
+        authorization,
+        baseUrl,
         cloudId: "cloud-1",
         fetchImpl: invalidFetch,
         issueKey: "OPS-123",
@@ -1028,23 +1029,23 @@ describe("Jira REST client", () => {
     });
 
     await expect(fetchJiraCurrentUser({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
     })).resolves.toMatchObject({ accountId: "account-1" });
     await expect(searchJiraAssignableUsers({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS-123",
       query: "Current",
     })).resolves.toHaveLength(1);
     await expect(assignJiraIssue({
-      accessToken: "secret-access-token",
       accountId: "account-1",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS/123",
@@ -1067,9 +1068,9 @@ describe("Jira REST client", () => {
   it.each([400, 401, 403, 404, 429, 500])("throws neutral assignment errors for HTTP %i", async (status) => {
     const fetchMock = vi.fn(async () => await Promise.resolve(new Response("sensitive body", { status })));
     await expect(assignJiraIssue({
-      accessToken: "secret-access-token",
       accountId: "account-1",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
       issueKey: "OPS-123",

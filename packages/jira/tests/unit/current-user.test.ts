@@ -5,7 +5,8 @@ import {
   parseJiraCurrentUserProfile,
 } from "../../src/current-user.js";
 
-const apiRoot = "https://jira-api.example.com/ex/jira";
+const baseUrl = "https://jira-api.example.com/ex/jira/cloud-1";
+const authorization = "Bearer secret-access-token";
 
 describe("Jira current user profile", () => {
   it("parses the whoami fields and maps private email values to null", () => {
@@ -63,8 +64,8 @@ describe("Jira current user profile", () => {
     })));
 
     await expect(fetchJiraCurrentUserProfile({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: fetchMock,
     })).resolves.toMatchObject({ accountId: "account-1" });
@@ -84,8 +85,8 @@ describe("Jira current user profile", () => {
       new Response("secret-access-token", { status: 401 }),
     ));
     await expect(fetchJiraCurrentUserProfile({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: deniedFetch,
     })).rejects.toThrow("Jira current user could not be loaded.");
@@ -97,8 +98,8 @@ describe("Jira current user profile", () => {
       }),
     ));
     await expect(fetchJiraCurrentUserProfile({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: malformedFetch,
     })).rejects.toThrow("Jira current user profile response was not valid.");
@@ -107,8 +108,8 @@ describe("Jira current user profile", () => {
       new Response("private profile response", { status: 200 }),
     ));
     await expect(fetchJiraCurrentUserProfile({
-      accessToken: "secret-access-token",
-      apiRoot,
+      authorization,
+      baseUrl,
       cloudId: "cloud-1",
       fetchImpl: invalidJsonFetch,
     })).rejects.toThrow("Jira current user profile response was not valid.");
