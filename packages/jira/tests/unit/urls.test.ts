@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_JIRA_API_ROOT,
+  trimTrailingSlash,
   buildAssignedIssuesSearchBody,
   buildAssignedIssuesSearchUrl,
   buildJiraAssignableUserSearchUrl,
@@ -116,6 +117,22 @@ describe("Jira URL builders", () => {
     ));
     expect(byAccount.searchParams.get("accountId")).toBe("acct +/&?");
     expect(byAccount.searchParams.get("maxResults")).toBe("1000");
+  });
+
+  it("trims every trailing slash in linear time", () => {
+    expect(trimTrailingSlash("https://acme.atlassian.net")).toBe("https://acme.atlassian.net");
+    expect(trimTrailingSlash("https://acme.atlassian.net/")).toBe("https://acme.atlassian.net");
+    expect(trimTrailingSlash("https://acme.atlassian.net///")).toBe("https://acme.atlassian.net");
+    expect(trimTrailingSlash("///")).toBe("");
+    expect(trimTrailingSlash("")).toBe("");
+    expect(trimTrailingSlash("https://acme.atlassian.net/ex/jira")).toBe(
+      "https://acme.atlassian.net/ex/jira",
+    );
+
+    // A backtracking `/\/+$/` needs quadratic time on this shape; the scan stays linear.
+    const started = Date.now();
+    expect(trimTrailingSlash(`${"/".repeat(200_000)}x`)).toBe(`${"/".repeat(200_000)}x`);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it("builds the assigned issue search body used by JiraOps", () => {

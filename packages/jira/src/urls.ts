@@ -34,9 +34,18 @@ export function buildJiraCloudBaseUrl(cloudId: string, apiRoot = DEFAULT_JIRA_AP
   return `${trimTrailingSlash(apiRoot)}/${encodeURIComponent(cloudId)}`;
 }
 
-/** Strips every trailing slash, so a pasted `https://site//` cannot produce `//rest/api/3`. */
+/**
+ * Strips every trailing slash, so a pasted `https://site//` cannot produce `//rest/api/3`.
+ *
+ * Scans backwards rather than matching `/\/+$/`: that pattern restarts at each slash on a string
+ * that does not end in one, which is quadratic and reads as a ReDoS risk to scanners.
+ */
 export function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/u, "");
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 export function buildAssignedIssuesSearchBody(
