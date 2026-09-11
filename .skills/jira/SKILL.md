@@ -1,19 +1,19 @@
 ---
 name: jira
-description: Use when working with Jira Cloud through the jira CLI, including Atlassian API token or OAuth authentication, connected-account identity, assigned issue lists, issue details with local attachments and inline images, remote links, transitions, safe issue assignment, worklogs, descriptions, summaries, comment creation, and backup-first comment deletion.
+description: Use when working with Jira Cloud through the jira CLI, including Atlassian API token or OAuth authentication, connected-account identity, assigned issue lists, issue details with local attachments and inline images, remote links, transitions, safe issue assignment, worklogs, descriptions, summaries, comment creation, backup-first comment deletion, and creating new tickets.
 ---
 
 # Jira
 
 ## Purpose
 
-Use `jira` to read and update Jira Cloud issues from the terminal. Prefer it when the user needs the connected account's identity, assigned tickets, one issue's description/comments/attachments, locally saved attachment or inline-image files, remote links, available transitions, safe assignee changes, description/summary/comment writes, recoverable comment deletion, status changes, logout, or worklog entries.
+Use `jira` to read, update, and create Jira Cloud issues from the terminal. Prefer it when the user needs the connected account's identity, assigned tickets, one issue's description/comments/attachments, locally saved attachment or inline-image files, remote links, available transitions, safe assignee changes, description/summary/comment writes, recoverable comment deletion, status changes, logout, worklog entries, or a brand-new ticket.
 
 If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptools/jira`.
 
 ## First Steps
 
-1. Identify whether the user needs auth status or identity, assigned issues, one issue detail, remote links, transitions, a transition write, a content write, a comment deletion, or a worklog write.
+1. Identify whether the user needs auth status or identity, assigned issues, one issue detail, a new ticket, remote links, transitions, a transition write, a content write, a comment deletion, or a worklog write.
 2. Use plain human-readable output by default, including when an agent will read the result and act on it directly. Use `--json` only when a deterministic script, `jq` pipeline, or another tool must parse fields programmatically.
 3. Prefer an Atlassian API token when `JIRA_API_TOKEN` is exported; otherwise reuse the default token store at `~/.jira-oauth/tokens.json`. Run `jira status` when unsure which is active.
 4. Use write commands only when the user explicitly asks to assign or transition an issue, update issue content, add worklog time, or delete a comment.
@@ -116,6 +116,31 @@ jira issue OPS-123
 - `--image-dir <path>`: save inline images in a specific folder instead of the OS temp directory.
 - `--max-images <number>`: cap the number of inline images saved.
 - `--max-image-bytes <number>`: cap each saved image body size.
+
+Create a new ticket only when the user explicitly asks for a new issue, not for updating an existing one:
+
+```bash
+jira create "Investigate flaky checkout test" --project OPS --type Task
+jira create "Fix login regression" --project OPS --type Bug --priority High --label ci
+jira create "Split auth work" --project OPS --type Subtask --parent OPS-100
+jira create "Onboard new service" --project OPS --type Task --assign-me
+```
+
+- `--project <key>` and `--type <name>` are always required; there is no default. `--type` is a
+  Jira issue type display name (`Task`, `Bug`, `Story`, `Subtask`, ...), matched case-insensitively.
+- Optional: `--text`/`--text-file`/`--adf-file` (at most one, same rules as `describe`/`comment`),
+  `--priority <name>`, `--label <name>` (repeatable), `--field <name=value>` (repeatable, same
+  display-name resolution as `jira fields update`, no prior `jira fields discover`/`pin` needed),
+  `--parent <key>` (required for a subtask issue type, refused otherwise).
+- The CLI validates locally before writing anything: unsupported priority/labels for that project,
+  a missing `--parent` on a subtask type, and any other project-required field not already covered —
+  each fails with the exact field name(s), never a bare Jira error.
+- `--assign-me` / `--assignee <name-or-query>` assign the new issue right after creation using the
+  same deterministic resolution as `jira assign`. If that follow-up assignment is ambiguous or
+  fails, the ticket is still created — the CLI warns instead of rolling back, then retry with
+  `jira assign <new-key> ...`.
+- Creating an issue is a write and requires explicit user intent. File attachments cannot be
+  included at creation time; this package's attachment support is read-only.
 
 Print the current raw description ADF when the user needs to inspect or safely edit a complex description:
 

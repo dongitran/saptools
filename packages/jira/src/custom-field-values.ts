@@ -100,17 +100,26 @@ export function convertFieldValue(value: string, pinned: PinnedCustomField, edit
     return value;
   }
   if (schema.type === "option" || (suffix.includes("select") && !suffix.includes("multi"))) {
-    return convertOptionValue(value, pinned, editable.allowedValues);
+    return resolveAllowedFieldOptionValue(value, pinned.name, editable.allowedValues);
   }
   if (schema.type === "array" && (schema.items === "option" || suffix.includes("multi"))) {
-    return value.split(",").map((part) => convertOptionValue(part.trim(), pinned, editable.allowedValues));
+    return value.split(",").map((part) => resolveAllowedFieldOptionValue(part.trim(), pinned.name, editable.allowedValues));
   }
   throw new Error(`Field "${pinned.name}" uses unsupported Jira custom field type ${schema.type}/${suffix || "unknown"}.`);
 }
 
-function convertOptionValue(value: string, pinned: PinnedCustomField, allowedValues: readonly unknown[]): Record<string, string> {
+/**
+ * Matches a raw string against a Jira field's `allowedValues` by id, value, or name. Shared by
+ * pinned custom field updates and issue creation (for example the `priority` system field), which
+ * both need the exact same option-resolution and ambiguity rules.
+ */
+export function resolveAllowedFieldOptionValue(
+  value: string,
+  fieldLabel: string,
+  allowedValues: readonly unknown[],
+): Record<string, string> {
   if (value.trim().length === 0) {
-    throw new Error(`Field "${pinned.name}" expects a non-empty option value.`);
+    throw new Error(`Field "${fieldLabel}" expects a non-empty option value.`);
   }
   const matches = allowedValues.filter((candidate) => optionMatches(candidate, value));
   if (matches.length === 1) {
@@ -126,7 +135,7 @@ function convertOptionValue(value: string, pinned: PinnedCustomField, allowedVal
     }
   }
   if (allowedValues.length > 0) {
-    throw new Error(`Field "${pinned.name}" option value is not allowed or is ambiguous.`);
+    throw new Error(`Field "${fieldLabel}" option value is not allowed or is ambiguous.`);
   }
   return /^\d+$/u.test(value) ? { id: value } : { value };
 }

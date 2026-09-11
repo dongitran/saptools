@@ -24,6 +24,7 @@ Export one API token for CI and containers, or reuse the JiraOps browser login, 
 - 🪪 **Connected identity** — reads the current Jira account profile without exposing its bearer token.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
 - 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text and raw ADF, paginated comments, locally downloaded attachments, and clone-linked issues.
+- 🆕 **Ticket creation** — creates a new issue with a validated project, issue type, optional description/priority/labels/parent/custom fields, and an optional create-then-assign step, failing before any write when a project-required field is missing.
 - 📝 **Issue content writes** — updates summaries, media-safe descriptions, and ADF comments.
 - 🛟 **Recoverable comment deletion** — saves a private, durable local backup before deleting one comment.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
@@ -338,6 +339,79 @@ only once.
 > Issue reads now write bounded attachment files locally by default. Use
 > `--no-attachments` for metadata-only reads, or `--attachment-dir` for a
 > controlled location. Remove sensitive downloads when they are no longer needed.
+
+### `jira create <summary>`
+
+Create a new Jira issue.
+
+```bash
+jira create "Investigate flaky checkout test" --project OPS --type Task
+jira create "Fix login regression" --project OPS --type Bug --priority High --label ci --label flaky
+jira create "Update runbook" --project OPS --type Task --text "See the linked incident for context."
+jira create "Split auth work" --project OPS --type Subtask --parent OPS-100
+jira create "Track vendor request" --project OPS --type Task --field 'Custom text A=Needs legal review'
+jira create "Onboard new service" --project OPS --type Task --assign-me
+jira create "Investigate flaky checkout test" --project OPS --type Task --json
+```
+
+`--project <key>` and `--type <name>` are required. `--type` matches a Jira issue type display name
+for that project case-insensitively (for example `Task`, `Bug`, `Story`, `Subtask`); an unmatched
+name fails with the available issue type names listed. There is no default project or issue type —
+creation is a hard-to-undo write, so both are always explicit.
+
+Description input reuses the same body flags as `describe`/`comment`: `--text`, `--text-file`, or
+`--adf-file`, and all three are optional for `create` (omit them for no description). At most one
+may be given.
+
+Before creating anything, the CLI loads that project and issue type's Jira create-issue field
+metadata (`issue/createmeta`) and validates locally:
+
+- A subtask issue type requires `--parent <key>`; a non-subtask issue type refuses one.
+- `--priority <name>` and `--label <name>` (repeatable) are refused when the project does not
+  expose that field for the issue type.
+- `--field <name=value>` / `--field-file <name=path>` (repeatable) resolve Jira display names
+  against that issue type's fields the same way `jira fields update` does, including textarea,
+  textfield, number, date, option, and multi-option conversion. A prior `jira fields discover`/`pin`
+  is not required for `create` — field names are resolved directly from the create-issue metadata.
+- Any other field the project requires for that issue type and that summary/description/priority/
+  labels/parent/`--field` does not already cover fails **before** the create request, naming every
+  missing field by display name.
+
+Optionally assign the created issue immediately, reusing the exact same deterministic resolution as
+`jira assign`:
+
+```bash
+jira create "Self-assigned task" --project OPS --type Task --assign-me
+jira create "Review needed" --project OPS --type Task --assignee "Example User"
+```
+
+`--assign-me` and `--assignee <name-or-query>` are mutually exclusive. The issue is created first;
+if the follow-up assignment is ambiguous, fails permission checks, or otherwise cannot complete, the
+CLI does **not** roll back or fail the command — it prints a warning naming the created issue key
+and leaves it unassigned, since the ticket already exists and re-running `create` would make a
+duplicate. Retry the assignment with `jira assign <key> ...` once the ambiguity is resolved.
+
+Use `--no-notify-users` only when the user explicitly wants to suppress Jira's creation
+notifications.
+
+JSON output:
+
+```json
+{
+  "id": "30001",
+  "issueKey": "OPS-456",
+  "issueType": "Task",
+  "assignee": { "accountId": "account-id", "displayName": "Example User" },
+  "assigneeResolution": "me"
+}
+```
+
+`assignee`/`assigneeResolution` are present only when an assignee selector was given and the
+assignment succeeded.
+
+Attaching files at creation time is not supported: Jira's create-issue endpoint does not accept file
+uploads, and this package's attachment support is currently read-only. Add attachments after
+creation is not available either; use the Jira web UI for that step.
 
 ### `jira describe <key>`
 

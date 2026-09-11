@@ -8,6 +8,7 @@ import {
   assertNoJiraAdfBodySource,
   parseJiraAdfDocument,
   readJiraAdfBodyInput,
+  readOptionalJiraAdfBodyInput,
   selectJiraAdfBodySource,
   textToAdfDocument,
 } from "../../src/adf.js";
@@ -105,6 +106,17 @@ describe("ADF helpers", () => {
       );
     }
     expect(() => selectJiraAdfBodySource({})).toThrow("Exactly one body source");
+  });
+
+  it("treats an absent body source as no description, for issue creation", async () => {
+    await expect(readOptionalJiraAdfBodyInput({})).resolves.toBeNull();
+    await expect(readOptionalJiraAdfBodyInput({ text: "hello" })).resolves.toEqual({
+      inputKind: "plain-text",
+      document: textToAdfDocument("hello"),
+    });
+    await expect(readOptionalJiraAdfBodyInput({ text: "x", adfFile: "body.json" })).rejects.toThrow(
+      "Exactly one body source",
+    );
   });
 
   it("reads text and raw ADF body files", async () => {

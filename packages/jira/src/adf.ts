@@ -69,6 +69,13 @@ export function assertNoJiraAdfBodySource(flags: JiraAdfBodySourceFlags): void {
   throw new Error("--print cannot be combined with --text, --text-file, or --adf-file.");
 }
 
+/** Like {@link readJiraAdfBodyInput}, but the body is optional: `null` when no source flag is set. */
+export async function readOptionalJiraAdfBodyInput(
+  flags: JiraAdfBodySourceFlags,
+): Promise<JiraAdfBodyInput | null> {
+  return collectJiraAdfBodySources(flags).length === 0 ? null : await readJiraAdfBodyInput(flags);
+}
+
 export async function readJiraAdfBodyInput(flags: JiraAdfBodySourceFlags): Promise<JiraAdfBodyInput> {
   const source = selectJiraAdfBodySource(flags);
   if (source.kind === "text") {

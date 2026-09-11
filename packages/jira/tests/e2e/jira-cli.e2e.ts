@@ -548,6 +548,100 @@ async function handleFakeJiraRequest(
     return;
   }
 
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/createmeta/OPS/issuetypes?")) {
+    writeJson(response, {
+      isLast: true,
+      startAt: 0,
+      total: 3,
+      values: [
+        { id: "1", name: "Task", subtask: false },
+        { id: "2", name: "Bug", subtask: false },
+        { id: "3", name: "Subtask", subtask: true },
+      ],
+    });
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/createmeta/NOPE/issuetypes?")) {
+    response.writeHead(404, { "content-type": "text/plain" });
+    response.end("project not found detail");
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/createmeta/OPS/issuetypes/1?")) {
+    writeJson(response, {
+      isLast: true,
+      startAt: 0,
+      total: 7,
+      values: [
+        { fieldId: "summary", name: "Summary", required: true, schema: { type: "string" } },
+        { fieldId: "issuetype", name: "Issue Type", required: true, schema: { type: "issuetype" } },
+        { fieldId: "project", name: "Project", required: true, schema: { type: "project" } },
+        { fieldId: "reporter", name: "Reporter", required: true, schema: { type: "user" } },
+        {
+          fieldId: "priority",
+          name: "Priority",
+          required: false,
+          schema: { type: "priority" },
+          allowedValues: [
+            { id: "1", name: "High" },
+            { id: "2", name: "Medium" },
+            { id: "3", name: "Low" },
+          ],
+        },
+        { fieldId: "labels", name: "Labels", required: false, schema: { type: "array", items: "string" } },
+        { fieldId: "description", name: "Description", required: false, schema: { type: "doc" } },
+      ],
+    });
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/createmeta/OPS/issuetypes/2?")) {
+    writeJson(response, {
+      isLast: true,
+      startAt: 0,
+      total: 5,
+      values: [
+        { fieldId: "summary", name: "Summary", required: true, schema: { type: "string" } },
+        { fieldId: "issuetype", name: "Issue Type", required: true, schema: { type: "issuetype" } },
+        { fieldId: "project", name: "Project", required: true, schema: { type: "project" } },
+        { fieldId: "reporter", name: "Reporter", required: true, schema: { type: "user" } },
+        {
+          fieldId: "customfield_10201",
+          name: "Steps to Reproduce",
+          required: true,
+          schema: {
+            type: "string",
+            custom: "com.atlassian.jira.plugin.system.customfieldtypes:textfield",
+            customId: 10201,
+          },
+        },
+      ],
+    });
+    return;
+  }
+
+  if (method === "GET" && url.startsWith("/ex/jira/cloud-1/rest/api/3/issue/createmeta/OPS/issuetypes/3?")) {
+    writeJson(response, {
+      isLast: true,
+      startAt: 0,
+      total: 5,
+      values: [
+        { fieldId: "summary", name: "Summary", required: true, schema: { type: "string" } },
+        { fieldId: "issuetype", name: "Issue Type", required: true, schema: { type: "issuetype" } },
+        { fieldId: "project", name: "Project", required: true, schema: { type: "project" } },
+        { fieldId: "reporter", name: "Reporter", required: true, schema: { type: "user" } },
+        { fieldId: "parent", name: "Parent", required: true, schema: { type: "issuelink" } },
+      ],
+    });
+    return;
+  }
+
+  if (method === "POST" && (url === "/ex/jira/cloud-1/rest/api/3/issue" || url.startsWith("/ex/jira/cloud-1/rest/api/3/issue?"))) {
+    writeJson(response, { id: "99001", key: "OPS-ASSIGN" }, 201);
+    return;
+  }
+
   response.writeHead(404, { "content-type": "text/plain" });
   response.end("not found");
 }
@@ -1870,6 +1964,316 @@ test.describe("Jira CLI", () => {
         stderr: expect.stringContaining("--auth <mode> must be auto, api-token, or oauth"),
       });
       expect(ctx.fakeJira.requests()).toHaveLength(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can create a Jira issue with a description, priority, and labels", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const human = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Investigate flaky test",
+        "--project",
+        "OPS",
+        "--type",
+        "task",
+        "--text",
+        "Steps: run the suite twice",
+        "--priority",
+        "high",
+        "--label",
+        "flaky",
+        "--label",
+        "ci",
+      ]);
+      expect(human.stdout).toContain("Created OPS-ASSIGN (Task).");
+
+      const createPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue";
+      });
+      const body = JSON.parse(createPost?.body ?? "{}") as {
+        readonly fields: {
+          readonly description?: { readonly content: readonly { readonly content: readonly { readonly text: string }[] }[] };
+          readonly issuetype: unknown;
+          readonly labels?: readonly string[];
+          readonly priority?: unknown;
+          readonly project: unknown;
+          readonly summary: string;
+        };
+      };
+      expect(body.fields).toMatchObject({
+        project: { key: "OPS" },
+        issuetype: { id: "1" },
+        summary: "Investigate flaky test",
+        priority: { id: "1" },
+        labels: ["flaky", "ci"],
+      });
+      expect(body.fields.description?.content[0]?.content[0]?.text).toBe("Steps: run the suite twice");
+
+      const json = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Second ticket",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--json",
+      ]);
+      expect(JSON.parse(json.stdout)).toEqual({ id: "99001", issueKey: "OPS-ASSIGN", issueType: "Task" });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create refuses an unknown issue type and lists the available ones", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Something",
+        "--project",
+        "OPS",
+        "--type",
+        "Epic",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          'Jira issue type "Epic" was not found in project OPS. Available: Bug, Subtask, Task.',
+        ),
+      });
+      expect(ctx.fakeJira.requests().some((entry) => entry.method === "POST")).toBe(false);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create enforces subtask/parent consistency in both directions", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Sub work",
+        "--project",
+        "OPS",
+        "--type",
+        "Subtask",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("is a subtask type and requires --parent"),
+      });
+
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Not a subtask",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--parent",
+        "OPS-1",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining("--parent is only valid for a subtask issue type"),
+      });
+
+      const created = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Sub work",
+        "--project",
+        "OPS",
+        "--type",
+        "Subtask",
+        "--parent",
+        "OPS-1",
+        "--json",
+      ]);
+      expect(JSON.parse(created.stdout)).toMatchObject({ issueKey: "OPS-ASSIGN" });
+      const createPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue";
+      });
+      expect(JSON.parse(createPost?.body ?? "{}")).toMatchObject({ fields: { parent: { key: "OPS-1" } } });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create fails before any write when a project-required field is missing, and succeeds once supplied", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Bug report",
+        "--project",
+        "OPS",
+        "--type",
+        "Bug",
+      ])).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "Project OPS requires additional fields for this issue type: Steps to Reproduce.",
+        ),
+      });
+      expect(ctx.fakeJira.requests().some((entry) => entry.method === "POST")).toBe(false);
+
+      const created = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Bug report",
+        "--project",
+        "OPS",
+        "--type",
+        "Bug",
+        "--field",
+        "Steps to Reproduce=Click X then Y",
+        "--json",
+      ]);
+      expect(JSON.parse(created.stdout)).toMatchObject({ issueKey: "OPS-ASSIGN" });
+      const createPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue";
+      });
+      expect(JSON.parse(createPost?.body ?? "{}")).toMatchObject({
+        fields: { customfield_10201: "Click X then Y" },
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create can assign the new issue to the connected account", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const created = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Self assigned",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--assign-me",
+        "--json",
+      ]);
+      expect(JSON.parse(created.stdout)).toEqual({
+        id: "99001",
+        issueKey: "OPS-ASSIGN",
+        issueType: "Task",
+        assignee: { accountId: "account-me", displayName: "Current User" },
+        assigneeResolution: "me",
+      });
+      const assignPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ASSIGN/assignee";
+      });
+      expect(JSON.parse(assignPut?.body ?? "{}")).toEqual({ accountId: "account-me" });
+
+      const human = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Self assigned again",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--assign-me",
+      ]);
+      expect(human.stdout).toContain("Created OPS-ASSIGN (Task).");
+      expect(human.stdout).toContain("Assigned to Current User.");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("A failed post-create assignment warns without discarding the created issue", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const result = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Ambiguous owner",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--assignee",
+        "Exam Tran",
+      ]);
+      expect(result.stdout).toContain("Created OPS-ASSIGN (Task).");
+      expect(result.stdout).not.toContain("Assigned to");
+      expect(result.stderr).toContain(
+        "Warning: Jira issue OPS-ASSIGN was created, but the assignee could not be set:",
+      );
+      expect(ctx.fakeJira.requests().some((entry) => entry.method === "PUT" && entry.url.endsWith("/assignee"))).toBe(false);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create rejects combined assignee selectors and a blank summary before any Jira request", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Something",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--assign-me",
+        "--assignee",
+        "Someone",
+      ])).rejects.toMatchObject({ stderr: expect.stringContaining("cannot be combined") });
+
+      await expect(ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "   ",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+      ])).rejects.toMatchObject({ stderr: expect.stringContaining("Summary must not be empty.") });
+
+      expect(ctx.fakeJira.requests()).toHaveLength(0);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create honors --no-notify-users on the create request", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Quiet ticket",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--no-notify-users",
+      ]);
+      expect(ctx.fakeJira.requests().some((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue?notifyUsers=false";
+      })).toBe(true);
     } finally {
       await ctx.cleanup();
     }

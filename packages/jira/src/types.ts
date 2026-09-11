@@ -1,4 +1,5 @@
 import type { JiraAdfDocument, JiraAdfInputKind } from "./adf.js";
+import type { FieldValueInput } from "./custom-field-values.js";
 
 export interface JiraTokens {
   readonly accessToken: string;
@@ -272,4 +273,29 @@ export interface FetchJiraCustomFieldsOptions extends JiraRequestOptions {
 export interface UpdateJiraIssueFieldsOptions extends JiraIssueKeyRequestOptions {
   readonly fields: Record<string, unknown>;
   readonly notifyUsers?: boolean;
+}
+
+/** One Jira issue type available for creation in a project, from the createmeta issue-types list. */
+export interface JiraCreateIssueType {
+  readonly id: string;
+  readonly name: string;
+  readonly subtask: boolean;
+}
+
+export interface JiraCreateIssueOptions extends JiraRequestOptions {
+  readonly description?: JiraAdfDocument;
+  readonly fieldValues?: readonly FieldValueInput[];
+  readonly issueTypeName: string;
+  readonly labels?: readonly string[];
+  readonly notifyUsers?: boolean;
+  readonly parentKey?: string;
+  readonly priorityName?: string;
+  readonly projectKey: string;
+  readonly summary: string;
+}
+
+export interface JiraCreateIssueResult {
+  readonly id: string;
+  readonly issueType: string;
+  readonly key: string;
 }

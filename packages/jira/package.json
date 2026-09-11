@@ -1,7 +1,7 @@
 {
   "name": "@saptools/jira",
-  "version": "0.8.0",
-  "description": "Jira Cloud CLI and typed API that authenticate with an Atlassian API token or the shared JiraOps OAuth token store",
+  "version": "0.9.0",
+  "description": "Jira Cloud CLI and typed API that authenticate with an Atlassian API token or the shared JiraOps OAuth token store, read and update issues, and create new tickets",
   "type": "module",
   "publishConfig": {
     "access": "public",

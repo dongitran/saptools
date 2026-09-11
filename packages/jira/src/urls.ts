@@ -170,6 +170,44 @@ export function buildJiraIssueAssigneeUrl(baseUrl: string, issueKey: string): st
   return `${buildJiraIssueUrl(baseUrl, issueKey)}/assignee`;
 }
 
+export function buildJiraCreateMetaIssueTypesUrl(
+  baseUrl: string,
+  projectKey: string,
+  startAt: number,
+  maxResults: number,
+): string {
+  const url = new URL(`${apiRoot3(baseUrl)}/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes`);
+  url.searchParams.set("startAt", startAt.toString());
+  url.searchParams.set("maxResults", maxResults.toString());
+  return url.toString();
+}
+
+export function buildJiraCreateMetaFieldsUrl(
+  baseUrl: string,
+  projectKey: string,
+  issueTypeId: string,
+  startAt: number,
+  maxResults: number,
+): string {
+  const url = new URL(
+    `${apiRoot3(baseUrl)}/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${encodeURIComponent(issueTypeId)}`,
+  );
+  url.searchParams.set("startAt", startAt.toString());
+  url.searchParams.set("maxResults", maxResults.toString());
+  return url.toString();
+}
+
+export function buildJiraIssueCreateUrl(
+  baseUrl: string,
+  options: { readonly notifyUsers?: boolean } = {},
+): string {
+  const url = new URL(`${apiRoot3(baseUrl)}/issue`);
+  if (options.notifyUsers !== undefined) {
+    url.searchParams.set("notifyUsers", String(options.notifyUsers));
+  }
+  return url.toString();
+}
+
 export function buildJiraAttachmentContentUrl(baseUrl: string, attachmentId: string): string {
   return `${apiRoot3(baseUrl)}/attachment/content/${encodeURIComponent(attachmentId)}`;
 }

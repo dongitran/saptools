@@ -11,7 +11,7 @@ import {
   writeCustomFieldSnapshot,
   writePinnedCustomFields,
 } from "../../src/custom-field-store.js";
-import { buildIssueFieldUpdate, parseFieldAssignment } from "../../src/custom-field-values.js";
+import { buildIssueFieldUpdate, parseFieldAssignment, resolveAllowedFieldOptionValue } from "../../src/custom-field-values.js";
 import {
   createCustomFieldSnapshot,
   customFieldTypeSuffix,
@@ -222,6 +222,18 @@ describe("custom field helpers", () => {
       values: [{ fieldName: "Missing", value: "x" }],
       editableFields: new Map([["customfield_o", editableField("customfield_o", "Choice", optionPinned.schema)]]),
     })).toThrow("was not found");
+  });
+
+  it("resolves an allowed field option directly by id, value, or name, shared with issue creation", () => {
+    expect(resolveAllowedFieldOptionValue("High", "Priority", [{ id: "2", name: "High" }])).toEqual({ id: "2" });
+    expect(resolveAllowedFieldOptionValue("77", "Choice", [])).toEqual({ id: "77" });
+    expect(resolveAllowedFieldOptionValue("Alpha", "Choice", [])).toEqual({ value: "Alpha" });
+    expect(() => resolveAllowedFieldOptionValue(" ", "Priority", [{ id: "2", name: "High" }])).toThrow(
+      'Field "Priority" expects a non-empty option value.',
+    );
+    expect(() => resolveAllowedFieldOptionValue("Medium", "Priority", [{ id: "2", name: "High" }])).toThrow(
+      'Field "Priority" option value is not allowed or is ambiguous.',
+    );
   });
 
   it("normalizes missing schemas and custom type suffix fallbacks", () => {

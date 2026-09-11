@@ -86,6 +86,14 @@ export function formatJiraIssueCommentAdded(issueKey: string): string {
   return `Comment added to ${issueKey}.`;
 }
 
+export function formatJiraIssueCreated(
+  created: { readonly issueType: string; readonly key: string },
+  assignment: { readonly assignee: { readonly displayName: string } } | null,
+): string {
+  const line = `Created ${created.key} (${created.issueType}).`;
+  return assignment === null ? line : `${line}\nAssigned to ${assignment.assignee.displayName}.`;
+}
+
 export function formatJiraIssueCommentDeleted(
   issueKey: string,
   commentId: string,

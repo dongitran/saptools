@@ -207,7 +207,10 @@
     "reexecs",
     "backoffs",
     "npmjs",
-    "inlines"
+    "inlines",
+    "createmeta",
+    "issuetypes",
+    "issuelink"
   ],
   "ignorePaths": [
     "**/node_modules/**",

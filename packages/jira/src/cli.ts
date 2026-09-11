@@ -46,6 +46,7 @@ import {
   updateJiraIssueSummary,
 } from "./client.js";
 import { addCommentCommands } from "./comment-commands.js";
+import { addCreateCommand } from "./create-command.js";
 import {
   readCustomFieldSnapshot,
   readPinnedCustomFields,
@@ -168,6 +169,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addTokenCommand(program);
   addIssuesCommand(program);
   addIssueCommand(program);
+  addCreateCommand(program);
   addLinksCommand(program);
   addTransitionsCommand(program);
   addTransitionCommand(program);
