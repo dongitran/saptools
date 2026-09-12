@@ -193,7 +193,10 @@ async function discoverWithSession(
   );
 }
 function normalizeEndpoint(apiEndpoint: string): string {
-  return apiEndpoint.trim().toLowerCase().replace(/\/+$/, "");
+  const trimmed = apiEndpoint.trim().toLowerCase();
+  let end = trimmed.length;
+  while (end > 0 && trimmed[end - 1] === "/") {end--;}
+  return trimmed.slice(0, end);
 }
 function sameTarget(current: { readonly apiEndpoint: string; readonly orgName: string; readonly spaceName: string } | undefined, target: ResolvedTarget): boolean {
   return current !== undefined && normalizeEndpoint(current.apiEndpoint) === normalizeEndpoint(target.apiEndpoint) && current.orgName === target.org && current.spaceName === target.space;
