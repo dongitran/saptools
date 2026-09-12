@@ -13,8 +13,10 @@ export {
   listResultSessions,
   printResolvedTarget,
   pruneResultSessions,
+  readCachedCredential,
   readResultSession,
   resolveTarget,
+  writeCachedCredential,
   searchAfterAll,
 } from "@saptools/core";
 export type {
