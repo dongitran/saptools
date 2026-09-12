@@ -64,7 +64,7 @@ All notable changes to `@saptools/cf-metrics` are documented in this file.
 ### Changed
 
 - The mapping lookup moved from `cli/commands/mapping.ts` into `src/mapping.ts`, and `lookUpField`,
-  `listAllFieldNames`, `assertValidTimeBoundShape`, `assertValidTimeRange` and `isRelativeDuration`
+  `listAllFieldNames`, `assertValidTimeBoundShape`, `assertValidTimeRange` and `isAbsoluteInstant`
   are now exported. `buildMetricBoolQuery` forwards an absolute bound verbatim, so without the
   validators a library consumer had no way to reject one the backend will refuse. While the mapping
   logic was module-private its only observable surface was four rendered CLI columns, which is how a
