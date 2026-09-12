@@ -1,10 +1,10 @@
 import { OpenSearchRequestError } from "@saptools/core";
 import * as core from "@saptools/core";
+import type { DashboardsCredential, ResolvedTarget } from "@saptools/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
 
 import { withOpenSearchClient } from "../../src/cli/client-bootstrap.js";
-import type { DashboardsCredential, ResolvedTarget } from "../../src/types.js";
 
 /**
  * cf-otel never had an on-disk credential cache before this migration — this

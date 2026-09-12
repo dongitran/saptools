@@ -4,7 +4,7 @@ import type { CreateResultSessionInput, ResultSession, ResultStoreOptions } from
 export { clearCredentialCache, deleteCachedCredential, discoverServiceInstance, listCachedCredentials, listCloudLoggingInstances, readCachedCredential, writeCachedCredential } from "@saptools/core";
 export type { CachedCredentialSummary, CloudLoggingInstance, CredentialCacheKey, CredentialCacheOptions } from "@saptools/core";
 export { discoverDashboardsCredential } from "@saptools/core";
-export type { CredentialDiscoveryOptions } from "@saptools/core";
+export type { CredentialDiscoveryOptions, DashboardsCredential, DashboardsCredentialPayload } from "@saptools/core";
 export { credentialCacheOptionsFromEnv, resultStoreOptionsFromEnv } from "./config.js";
 export {
   CfMetricsError,
@@ -36,16 +36,10 @@ export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
 export { querySnapshot } from "./snapshot.js";
 export type { SnapshotQueryOptions, SnapshotResult } from "./snapshot.js";
 export { printResolvedTarget, resolveTarget } from "@saptools/core";
-export type { TargetOptions } from "@saptools/core";
+export type { ResolvedTarget, SelectorSource, TargetOptions } from "@saptools/core";
 export { queryTop } from "./top.js";
 export type { TopQueryOptions, TopResult } from "./top.js";
-export type {
-  DashboardsCredential,
-  DashboardsCredentialPayload,
-  OutputFormat,
-  ResolvedTarget,
-  SelectorSource,
-} from "./types.js";
+export type { OutputFormat } from "./types.js";
 export { watchMetrics } from "./watch.js";
 export type { WatchPollOptions } from "./watch.js";
 

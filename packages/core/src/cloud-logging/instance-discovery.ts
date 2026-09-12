@@ -97,7 +97,6 @@ export async function listCloudLoggingInstances(
     instances.push(...parseInstancesPage(payload));
     const pagination = payload["pagination"];
     const reported = isRecord(pagination) ? pagination["total_pages"] : undefined;
-     
     hasMore = page < (typeof reported === "number" && reported > 0 ? reported : 1);
     page += 1;
   }

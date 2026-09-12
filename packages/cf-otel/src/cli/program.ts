@@ -17,6 +17,7 @@ import { registerSelftimeCommand } from "./commands/selftime.js";
 import { registerSpanCommand } from "./commands/span.js";
 import { registerSpansCommand } from "./commands/spans.js";
 import { registerTopCommand } from "./commands/top.js";
+import { registerCredentialCommands } from "./credentials.js";
 import { printNotice } from "./output.js";
 import { registerResultCommands } from "./results.js";
 
@@ -54,6 +55,7 @@ export function buildProgram(): Command {
   registerDetachedCommand(program);
   registerDiffCommand(program);
   registerResultCommands(program);
+  registerCredentialCommands(program);
   registerSelfUpdateCommand(program, SELF_UPDATE);
 
   // Check the saved-result store before the action runs, for the same reason

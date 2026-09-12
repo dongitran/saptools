@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { resolveSaptoolsRoot } from "../saptools-paths.js";
@@ -182,7 +182,6 @@ async function removeStrandedTempDirectories(options: ResultStoreOptions): Promi
     return 0;
   }
   let removed = 0;
-  const { stat } = await import("node:fs/promises");
   for (const name of names) {
     const match = TEMP_REF_PATTERN.exec(name);
     if (match === null) {

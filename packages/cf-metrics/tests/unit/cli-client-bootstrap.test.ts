@@ -1,6 +1,6 @@
 import { OpenSearchRequestError } from "@saptools/core";
 import * as core from "@saptools/core";
-import type { CloudLoggingCfExecutor } from "@saptools/core";
+import type { CloudLoggingCfExecutor, DashboardsCredential, ResolvedTarget } from "@saptools/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
 
@@ -9,7 +9,6 @@ import { cloudLoggingExecutor } from "../../src/cli/cloud-logging-executor.js";
 import * as configModule from "../../src/config.js";
 import { CredentialsNotFoundError } from "../../src/errors.js";
 import * as samlToggle from "../../src/saml-toggle.js";
-import type { DashboardsCredential, ResolvedTarget } from "../../src/types.js";
 
 const TARGET: ResolvedTarget = {
   apiEndpoint: "https://api.cf.eu10.hana.ondemand.com",
