@@ -394,3 +394,109 @@ describe("assertValidTimeRange", () => {
     }).toThrow(/not a real calendar date/);
   });
 });
+
+describe("time-bound shape boundaries measured against the live backend", () => {
+  it.each(["2026-09-05T00:00:00+18:00", "2026-09-05T00:00:00-18:00", "2026-09-05T00:00:00+14:00", "2026-09-05T00:00:00+0700"])(
+    "accepts the offset in %s, which OpenSearch accepts",
+    (value) => {
+      expect(() => {
+        assertValidTimeBoundShape("--since", value);
+      }).not.toThrow();
+    },
+  );
+
+  it.each(["2026-09-05T00:00:00+18:01", "2026-09-05T00:00:00+19:00", "2026-09-05T00:00:00+23:59", "2026-09-05T00:00:00-18:30", "2026-09-05T00:00:00+00:60", "2026-09-05T00:00:00+2500"])(
+    "rejects the offset in %s, which OpenSearch rejects",
+    (value) => {
+      // java.time's ZoneOffset caps at ±18:00 — measured exactly against the
+      // live instance. Forwarding these cost a full credential discovery
+      // before the backend refused them.
+      expect(() => {
+        assertValidTimeBoundShape("--since", value);
+      }).toThrow(/Invalid --since value/);
+    },
+  );
+});
+
+describe("window ordering is compared in UTC, not in the operator's local zone", () => {
+  /** Node re-reads `process.env.TZ` for each conversion, so this really does change what `Date.parse` means. */
+  function inZone<T>(zone: string, run: () => T): T {
+    const previous = process.env["TZ"];
+    process.env["TZ"] = zone;
+    try {
+      return run();
+    } finally {
+      // Assigning `undefined` would set the literal string "undefined", which
+      // Node resolves as UTC — leaving the zone changed for every later test.
+      if (previous === undefined) {
+        delete process.env["TZ"];
+      } else {
+        process.env["TZ"] = previous;
+      }
+    }
+  }
+
+  const zones = ["UTC", "Asia/Ho_Chi_Minh", "America/New_York"];
+
+  it.each(zones)("accepts a forward window written without a zone, in %s", (zone) => {
+    // OpenSearch reads an offset-less bound as UTC, so this is a forward
+    // six-hour window everywhere. Comparing through a bare `Date.parse` read
+    // it as local and refused it outright east of Greenwich.
+    inZone(zone, () => {
+      expect(() => {
+        assertValidTimeRange({ since: "2026-09-05", until: "2026-09-05T06:00" });
+      }).not.toThrow();
+    });
+  });
+
+  it.each(zones)("rejects a window the backend sees as inverted, in %s", (zone) => {
+    // 12:00Z is after 08:00Z for OpenSearch regardless of where the operator
+    // sits; read as local in UTC+7 it looked like 05:00Z and slipped through,
+    // leaving an inverted range that returns nothing at exit 0.
+    inZone(zone, () => {
+      expect(() => {
+        assertValidTimeRange({ since: "2026-09-05T12:00", until: "2026-09-05T08:00:00Z" });
+      }).toThrow(/is later than --until/);
+    });
+  });
+});
+
+describe("window ordering at the precision `time` actually stores", () => {
+  it("catches an inversion below millisecond precision", () => {
+    // `time` is `date_nanos`; `Date.parse` sees three fractional digits, so
+    // these compared equal and the inverted range reached the backend and
+    // returned nothing at exit 0.
+    expect(() => {
+      assertValidTimeRange({ since: "2026-01-01T00:00:00.000000002Z", until: "2026-01-01T00:00:00.000000001Z" });
+    }).toThrow(/is later than --until/);
+  });
+
+  it("scales a short fraction to its real magnitude rather than comparing digit strings", () => {
+    // 100 µs is genuinely later than 20 µs. Comparing the raw digits after the
+    // millisecond ("1" vs "2") reverses that and lets the inversion through.
+    expect(() => {
+      assertValidTimeRange({ since: "2026-01-01T00:00:00.0001Z", until: "2026-01-01T00:00:00.00002Z" });
+    }).toThrow(/is later than --until/);
+    expect(() => {
+      assertValidTimeRange({ since: "2026-01-01T00:00:00.00002Z", until: "2026-01-01T00:00:00.0001Z" });
+    }).not.toThrow();
+  });
+
+  it("normalizes a zone-less bound that carries a fraction", () => {
+    // The zone check has to admit the `.` or a fractional zone-less bound falls
+    // back to the local reading, which is the whole bug in miniature.
+    const previous = process.env["TZ"];
+    process.env["TZ"] = "Asia/Ho_Chi_Minh";
+    try {
+      expect(() => {
+        assertValidTimeRange({ since: "2026-09-05T12:00:00.000", until: "2026-09-05T06:00:00Z" });
+      }).toThrow(/is later than --until/);
+    } finally {
+      if (previous === undefined) {
+        delete process.env["TZ"];
+      } else {
+        process.env["TZ"] = previous;
+      }
+    }
+  });
+});

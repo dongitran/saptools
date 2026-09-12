@@ -2,216 +2,12 @@ import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfMetricsError } from "../../errors.js";
+import { listAllFieldNames, lookUpField } from "../../mapping.js";
+import type { FieldLookup, FieldMapping } from "../../mapping.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { MappingOpts } from "../commandTypes.js";
 import { emitRows, parseFormat } from "../output.js";
 import { withCredentialOptions, withFormatOption, withSaveOption, withTargetOptions } from "../shared-options.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-interface FieldMapping {
-  readonly field: string;
-  /** The resolved type — for a field alias, the type of the field it points at, since that is what a query against it compares. */
-  readonly type: string;
-  readonly ignoreAbove?: number;
-  /**
-   * True when the backing indices report different `ignore_above` caps.
-   *
-   * Surfaced rather than omitted: a `keyword` longer than its cap is stored
-   * but never indexed, so it produces no term and cannot match a `term` query
-   * or appear in a bucket. A *blank* cap reads as "no cap at all", which is
-   * the safe interpretation, exactly inverting the hazard.
-   */
-  readonly ignoreAboveVaries?: boolean;
-  /** Set when `field` is an alias: the concrete path it resolves to, from the first index that declared it. */
-  readonly aliasOf?: string;
-  /** True when indices point the same alias at different targets — surfaced, never used to withhold the type. */
-  readonly aliasVaries?: boolean;
-}
-
-/**
- * OpenSearch/Elasticsearch field mappings omit `type` entirely for an object
- * field — `object` is only ever implicit, never written out. Reporting such
- * a field as `"unknown"` (confirmed live for `instrumentationScope`, a real
- * object-typed field on metric documents) reads as a lookup failure rather
- * than a legitimate mapped type; detect the implicit case from the presence
- * of a nested `properties` block instead.
- */
-function mappedType(entry: Record<string, unknown>): string {
-  const type = entry["type"];
-  if (typeof type === "string") {
-    return type;
-  }
-  return isRecord(entry["properties"]) ? "object" : "unknown";
-}
-
-/**
- * Walk one index entry's own mapping tree for a `.`-separated field path.
- *
- * A flat `_source` key like `resource.attributes.sap@cf@app_name` is a single
- * literal key on every *document* (metric documents never nest — see
- * `fields.ts`) — but confirmed live against the real backend, the *mapping
- * tree* for this index pattern still nests on the `.` segments
- * (`properties.resource.properties.attributes.properties["sap@cf@app_name"]`),
- * the same discovery `@saptools/cf-otel` already made for its own span index.
- * A single top-level `properties[field]` lookup found nothing for the entire
- * `resource.*` family — silently breaking `mapping --field` for most of what
- * is worth checking. `@` within one segment never nests further, so splitting
- * only on `.` still resolves a plain, undotted field name in one step.
- *
- * Only `properties` is descended, never a field's `fields` block, so a path
- * naming a multi-field does not resolve here — an alias onto one degrades to
- * reporting `alias`, the documented fallback rather than a wrong answer.
- */
-function walkIndexProperties(mappings: Record<string, unknown>, field: string): Record<string, unknown> | undefined {
-  let properties: unknown = mappings["properties"];
-  let fieldDef: Record<string, unknown> | undefined;
-  for (const segment of field.split(".")) {
-    const node = isRecord(properties) ? properties[segment] : undefined;
-    if (!isRecord(node)) {
-      return undefined;
-    }
-    fieldDef = node;
-    properties = node["properties"];
-  }
-  return fieldDef;
-}
-
-/** One index's answer for a field: its definition, and the alias target it was reached through. */
-interface IndexDefinition {
-  readonly definition: Record<string, unknown>;
-  readonly aliasOf?: string;
-}
-
-/**
- * Resolve a field alias to the definition it points at, within the index that
- * declared it — an alias's target is a path in that same mapping.
- *
- * `metrics-*` maps nine of these (measured live): short names like `app_name`
- * pointing at `resource.attributes.sap@cf@app_name`. Reporting the pointer's
- * own type answers `"alias"`, which is true and useless to someone asking
- * whether the field is safe to aggregate on — the type that governs that is
- * the target's, and OpenSearch resolves the alias in queries and aggregations
- * alike (measured: identical buckets either way).
- *
- * Exactly one hop. OpenSearch requires an alias's target to be a concrete
- * field, never an object or another alias, so a chain is a malformed mapping;
- * following one would also let a self-referential `path` spin forever. A
- * target that is missing, non-string, or itself an alias leaves the alias
- * definition in place — today's answer plus the target name, never less.
- */
-function resolveAlias(mappings: Record<string, unknown>, fieldDef: Record<string, unknown>): IndexDefinition {
-  if (fieldDef["type"] !== "alias") {
-    return { definition: fieldDef };
-  }
-  const path = fieldDef["path"];
-  if (typeof path !== "string") {
-    return { definition: fieldDef };
-  }
-  const target = walkIndexProperties(mappings, path);
-  if (target === undefined || target["type"] === "alias") {
-    return { definition: fieldDef, aliasOf: path };
-  }
-  return { definition: target, aliasOf: path };
-}
-
-function findFieldDefinitions(mappingResponse: unknown, field: string): IndexDefinition[] {
-  if (!isRecord(mappingResponse)) {
-    return [];
-  }
-  const found: IndexDefinition[] = [];
-  for (const indexEntry of Object.values(mappingResponse)) {
-    if (!isRecord(indexEntry)) {
-      continue;
-    }
-    const mappings = indexEntry["mappings"];
-    if (!isRecord(mappings)) {
-      continue;
-    }
-    const fieldDef = walkIndexProperties(mappings, field);
-    if (fieldDef !== undefined) {
-      found.push(resolveAlias(mappings, fieldDef));
-    }
-  }
-  return found;
-}
-
-/**
- * Why a field has no single answer. The two cases used to be one `undefined`,
- * and `runMapping` reported both as "was not found in the mapping" — untrue,
- * and misleading, for a field that is present in every index and simply
- * mapped inconsistently. That message was introduced with the agreement check
- * itself; separating them is the other half of that fix.
- */
-type FieldLookup =
-  | { readonly status: "found"; readonly mapping: FieldMapping }
-  | { readonly status: "disagrees"; readonly types: readonly string[] }
-  | { readonly status: "absent" };
-
-/**
- * The field's answer across every backing index.
- *
- * Reporting the first index's opinion was safe while this command only
- * reported existence, and unsafe as soon as a caller used the type to decide
- * what terms are legal to send: `metrics-*` spans 40 backing indices
- * (measured live), and a type sampled from one can be wrong for another's
- * shards. Mirrors the fix already shipped in `@saptools/cf-otel`'s own
- * `mapping.ts`, after it hit this for real.
- */
-function lookUpField(mappingResponse: unknown, field: string): FieldLookup {
-  const definitions = findFieldDefinitions(mappingResponse, field);
-  const [first] = definitions;
-  if (first === undefined) {
-    return { status: "absent" };
-  }
-  const type = mappedType(first.definition);
-  const types = [...new Set(definitions.map((entry) => mappedType(entry.definition)))];
-  if (types.length > 1) {
-    return { status: "disagrees", types };
-  }
-  // Neither a divergent alias target nor a divergent `ignore_above` withholds
-  // the type: "no answer" makes `mapping --field` call a field present in
-  // every index missing, which is the very message the absent/disagrees split
-  // below exists to stop producing. An agreed type with a caveat beside it is
-  // strictly more useful than silence.
-  const ignoreAbove = first.definition["ignore_above"];
-  const capsAgree = definitions.every((entry) => entry.definition["ignore_above"] === ignoreAbove);
-  const aliasAgrees = definitions.every((entry) => entry.aliasOf === first.aliasOf);
-  return {
-    status: "found",
-    mapping: {
-      field,
-      type,
-      ...(typeof ignoreAbove === "number" && capsAgree ? { ignoreAbove } : {}),
-      ...(capsAgree ? {} : { ignoreAboveVaries: true }),
-      ...(first.aliasOf === undefined ? {} : { aliasOf: first.aliasOf }),
-      ...(aliasAgrees ? {} : { aliasVaries: true }),
-    },
-  };
-}
-
-function listAllFieldNames(mappingResponse: unknown): readonly string[] {
-  const names = new Set<string>();
-  if (!isRecord(mappingResponse)) {
-    return [];
-  }
-  for (const indexEntry of Object.values(mappingResponse)) {
-    if (!isRecord(indexEntry)) {
-      continue;
-    }
-    const mappings = indexEntry["mappings"];
-    const properties = isRecord(mappings) ? mappings["properties"] : undefined;
-    if (!isRecord(properties)) {
-      continue;
-    }
-    for (const name of Object.keys(properties)) {
-      names.add(name);
-    }
-  }
-  return [...names].sort();
-}
 
 /** `(varies)` rather than a blank: an empty cell reads as "none", the safe reading, while divergence is the hazardous one. */
 const VARIES = "(varies)";
@@ -222,6 +18,11 @@ function ignoreAboveCell(mapping: FieldMapping): string | number {
 
 function aliasCell(mapping: FieldMapping): string {
   return mapping.aliasVaries === true ? VARIES : (mapping.aliasOf ?? "");
+}
+
+/** Where a field sits inside a `nested` parent — blank means a plain filter reaches it directly. */
+function nestedCell(mapping: FieldMapping): string {
+  return mapping.nestedVaries === true ? VARIES : (mapping.nestedUnder ?? "");
 }
 
 function fieldRow(name: string, mappingResponse: unknown): Record<string, string | number> {
@@ -238,6 +39,10 @@ function fieldRow(name: string, mappingResponse: unknown): Record<string, string
     // query against it compares — naming the target keeps that honest, and
     // hands the reader the concrete path to use everywhere else.
     ALIAS_OF: lookup.status === "found" ? aliasCell(lookup.mapping) : "",
+    // A field inside a `nested` parent is stored as a separate hidden document:
+    // a plain filter or aggregation on it matches nothing and reports no error
+    // (measured live). Listing it without saying so would advertise a dead end.
+    NESTED_IN: lookup.status === "found" ? nestedCell(lookup.mapping) : "",
   };
 }
 

@@ -1,5 +1,6 @@
 import { CfOtelError } from "./errors.js";
-import { getFieldMapping } from "./mapping.js";
+import { lookUpField } from "./mapping.js";
+import type { FieldLookup } from "./mapping.js";
 import type { OpenSearchClient } from "./opensearch-client.js";
 import type { AttrFilter, AttrOperator } from "./types.js";
 
@@ -51,19 +52,46 @@ const NUMERIC_MAPPING_TYPES: ReadonlySet<string> = new Set([
 // db, net) is a span-level attribute.
 const ATTRIBUTE_BAG_PREFIXES: readonly string[] = ["span.attributes.", "resource.attributes."];
 
+/**
+ * Types that name a place in the document rather than a value in it.
+ *
+ * A `term` on either matches nothing and reports no error. `object` only
+ * started reaching this point once the lookup learned to report implicit
+ * containers instead of calling them absent — before that they fell into the
+ * "matches no field" notice, which was wrong about the reason but right about
+ * the consequence, so reporting the type without this check quietly removed
+ * the only warning the caller got. `nested` never had one: its children live
+ * in separate hidden documents, and the parent itself is not a value either.
+ * Twelve of these exist on the live span index, and the field listing now
+ * prints every one of them as a row a caller can copy straight into `--attr`.
+ */
+const CONTAINER_MAPPING_TYPES: ReadonlySet<string> = new Set(["object", "nested"]);
+
 async function resolveAttrKey(
   client: OpenSearchClient,
   index: string,
   key: string,
-): Promise<{ readonly key: string; readonly mapping: Awaited<ReturnType<typeof getFieldMapping>> }> {
+): Promise<{ readonly key: string; readonly lookup: FieldLookup }> {
   if (ATTRIBUTE_BAG_PREFIXES.some((prefix) => key.startsWith(prefix))) {
-    return { key, mapping: await getFieldMapping(client, index, key) };
+    return { key, lookup: lookUpField(await client.getMapping(index), key) };
   }
   for (const prefix of ATTRIBUTE_BAG_PREFIXES) {
     const candidate = `${prefix}${key}`;
-    const mapping = await getFieldMapping(client, index, candidate);
-    if (mapping !== undefined) {
-      return { key: candidate, mapping };
+    const lookup = lookUpField(await client.getMapping(index), candidate);
+    // "Not absent" owns the key, not "has a usable type". The probe used to
+    // ask for a resolved type, so a field the indices typed inconsistently —
+    // or, before `mappedType` landed, an object-typed one — read as "not in
+    // this bag" and the loop fell through to the bare key, which the comment
+    // above establishes is never a real field. The filter then matched
+    // nothing at exit 0 and the notice told the caller to check a spelling
+    // that was already correct.
+    if (lookup.status !== "absent") {
+      // Trade-off worth naming: a `disagrees` here also claims the key, so a
+      // clean match under `resource.attributes.` would be shadowed. Measured on
+      // the live index that cannot happen — the two bags share no key at all,
+      // and no field disagrees — and claiming the bag the field really is in
+      // beats falling through to a bare name that is never a field.
+      return { key: candidate, lookup };
     }
   }
   // Found under neither bag — fall back to the bare key as typed, but look it
@@ -71,7 +99,7 @@ async function resolveAttrKey(
   // and skipping the lookup left them with no resolved type at all, which in
   // turn denied `=` the information it needs. The lookup is free: every
   // `getMapping` on one client is served from the same memoized response.
-  return { key, mapping: await getFieldMapping(client, index, key) };
+  return { key, lookup: lookUpField(await client.getMapping(index), key) };
 }
 
 /**
@@ -96,14 +124,52 @@ export async function resolveAndValidateAttrFilters(
 ): Promise<readonly AttrFilter[]> {
   const resolved: AttrFilter[] = [];
   for (const attr of attrs) {
-    const { key, mapping } = await resolveAttrKey(client, index, attr.key);
-    if (NUMERIC_ATTR_OPERATORS.has(attr.operator) && mapping !== undefined && !NUMERIC_MAPPING_TYPES.has(mapping.type)) {
-      throw new CfOtelError(
-        "CONFIG",
-        `--attr "${key}${attr.operator}${attr.value}" uses a numeric comparison, but "${key}" is mapped as "${mapping.type}", not a numeric type — this would silently compare as text instead of as numbers. Check with "cf-otel mapping --field ${key}".`,
+    const { key, lookup } = await resolveAttrKey(client, index, attr.key);
+    if (lookup.status === "disagrees") {
+      // A field present in every index but typed inconsistently has no type
+      // that is safe to compare against, and saying "matches no field" would
+      // send the reader after a typo that is not there.
+      if (NUMERIC_ATTR_OPERATORS.has(attr.operator)) {
+        throw new CfOtelError(
+          "CONFIG",
+          `--attr "${key}${attr.operator}${attr.value}" uses a numeric comparison, but "${key}" is mapped inconsistently across the backing indices of ${index} (${lookup.types.join(", ")}), so no single type is safe to compare against — on the non-numeric ones this would silently compare as text. Narrow the query to one index, or filter on a field the indices agree on.`,
+        );
+      }
+      onNotice?.(
+        `--attr "${key}" is mapped inconsistently across the backing indices of ${index} (${lookup.types.join(", ")}); ` +
+          "this filter may match on some shards and not others. The field exists — this is a mapping-template difference, not a typo.",
       );
+      // Deliberately no `mappedType`, so `=` builds a plain `term` rather than
+      // the array-rendered disjunction. That looks like a missing case and is
+      // not one: with no agreed type the disjunction could be aimed at a
+      // numeric index, and a `terms` clause carrying `["404"]` against a `long`
+      // is a `query_shard_exception`, not a miss — measured live. A clause that
+      // may under-match beats one that turns the whole query into an error.
+      resolved.push({ ...attr, key });
+      continue;
     }
-    if (mapping === undefined) {
+    const mapping = lookup.status === "found" ? lookup.mapping : undefined;
+    // Reachability first, and as a notice rather than an error: these say the
+    // clause cannot match whatever the value is, which is worth knowing even
+    // when the numeric guard below then rejects the comparison outright.
+    if (mapping !== undefined && CONTAINER_MAPPING_TYPES.has(mapping.type)) {
+      onNotice?.(
+        `--attr "${key}" names ${mapping.type === "object" ? "an" : "a"} ${mapping.type} container, not a field that holds a value; ` +
+          "this filter can only return an empty result. Name one of the fields inside it — " +
+          `"cf-otel mapping" lists them.`,
+      );
+    } else if (mapping?.nestedUnder !== undefined) {
+      // `events.attributes.exception@type` and its siblings resolve cleanly and
+      // then match nothing: a `nested` parent stores its children as separate
+      // hidden documents, reachable only through a `nested` query scoped to
+      // that path, which no command here builds. Silence would look exactly
+      // like "that value never occurred" — and the listing now shows these
+      // fields, so a caller can reach this by following the tool's own output.
+      onNotice?.(
+        `--attr "${key}" is inside the nested "${mapping.nestedUnder}" documents, which a plain filter cannot reach; ` +
+          "this clause can only return an empty result. Filter on a top-level field instead.",
+      );
+    } else if (mapping === undefined) {
       // Not in any of the pattern's indices, so this clause cannot match
       // anything — and an empty result would read exactly like "that value
       // never occurred". Say so rather than let the run look conclusive. A
@@ -112,6 +178,12 @@ export async function resolveAndValidateAttrFilters(
       onNotice?.(
         `--attr "${key}" matches no field in ${index}; this filter can only return an empty result. ` +
           `Check the spelling with "cf-otel fields <traceId>" or "cf-otel mapping --field ${key}".`,
+      );
+    }
+    if (NUMERIC_ATTR_OPERATORS.has(attr.operator) && mapping !== undefined && !NUMERIC_MAPPING_TYPES.has(mapping.type)) {
+      throw new CfOtelError(
+        "CONFIG",
+        `--attr "${key}${attr.operator}${attr.value}" uses a numeric comparison, but "${key}" is mapped as "${mapping.type}", not a numeric type — this would silently compare as text instead of as numbers. Check with "cf-otel mapping --field ${key}".`,
       );
     }
     // Spread-guarded: `exactOptionalPropertyTypes` rejects an explicit `undefined`.

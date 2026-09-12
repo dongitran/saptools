@@ -465,3 +465,104 @@ describe("assertTimeBoundsValid", () => {
     }
   });
 });
+
+describe("absolute-timestamp boundaries measured against the live backend", () => {
+  it.each([
+    "2026-06-15T24:00:00Z",
+    "2026-06-15T24:00Z",
+    "2026-06-15T24:00",
+    "2026-06-15T12:00:00.1234567890Z",
+    "2026-06-15T12:00:00+18:01",
+    "2026-06-15T12:00:00+19:00",
+    "2026-06-15T12:00:00+00:60",
+    "2026-06-15T12:00:00+2500",
+  ])("rejects %s, which OpenSearch rejects", (value) => {
+    // Each of these used to be forwarded verbatim, so the caller paid a full
+    // credential discovery before the backend refused it. Hour 24 is legal
+    // end-of-day ISO-8601 and `Date.parse` even rolls it forward, which is
+    // exactly why the regex has to carry the bound.
+    expect(() => {
+      assertTimeBoundsValid({ since: value });
+    }).toThrow(CfOtelError);
+  });
+
+  it.each(["2026-06-15T23:59:59.123456789Z", "2026-06-15T12:00:00+18:00", "2026-06-15T12:00:00-18:00", "2026-06-15T12:00:00+0700"])(
+    "accepts %s, which OpenSearch accepts",
+    (value) => {
+      expect(() => {
+        assertTimeBoundsValid({ since: value });
+      }).not.toThrow();
+    },
+  );
+});
+
+describe("range ordering", () => {
+  /** Node re-reads `process.env.TZ` for each conversion, so this really does change what `Date.parse` means. */
+  function inZone<T>(zone: string, run: () => T): T {
+    const previous = process.env["TZ"];
+    process.env["TZ"] = zone;
+    try {
+      return run();
+    } finally {
+      // Assigning `undefined` would set the literal string "undefined", which
+      // Node resolves as UTC — leaving the zone changed for every later test.
+      if (previous === undefined) {
+        delete process.env["TZ"];
+      } else {
+        process.env["TZ"] = previous;
+      }
+    }
+  }
+
+  it.each(["UTC", "Asia/Ho_Chi_Minh", "America/New_York"])(
+    "reads an offset-less bound as UTC, like the backend does, in %s",
+    (zone) => {
+      inZone(zone, () => {
+        expect(() => {
+          assertTimeBoundsValid({ since: "2026-09-05", until: "2026-09-05T06:00" });
+        }).not.toThrow();
+        expect(() => {
+          assertTimeBoundsValid({ since: "2026-09-05T12:00", until: "2026-09-05T08:00:00Z" });
+        }).toThrow(/which is after --until/);
+      });
+    },
+  );
+
+  it("catches an inversion below millisecond precision, which startTime stores", () => {
+    // `startTime` is `date_nanos`; `Date.parse` sees three fractional digits,
+    // so these two compared equal and the inverted range reached the backend
+    // and returned nothing at exit 0.
+    expect(() => {
+      assertTimeBoundsValid({ since: "2026-01-01T00:00:00.000000002Z", until: "2026-01-01T00:00:00.000000001Z" });
+    }).toThrow(/which is after --until/);
+  });
+});
+
+describe("sub-millisecond precision and zone-less fractions", () => {
+  it("scales a short fraction to its real magnitude rather than comparing digit strings", () => {
+    // 100 µs is genuinely later than 20 µs; comparing the raw digits after the
+    // millisecond ("1" vs "2") reverses that and lets the inversion through.
+    expect(() => {
+      assertTimeBoundsValid({ since: "2026-01-01T00:00:00.0001Z", until: "2026-01-01T00:00:00.00002Z" });
+    }).toThrow(/which is after --until/);
+    expect(() => {
+      assertTimeBoundsValid({ since: "2026-01-01T00:00:00.00002Z", until: "2026-01-01T00:00:00.0001Z" });
+    }).not.toThrow();
+  });
+
+  it("normalizes a zone-less bound that carries a fraction", () => {
+    const previous = process.env["TZ"];
+    process.env["TZ"] = "Asia/Ho_Chi_Minh";
+    try {
+      expect(() => {
+        assertTimeBoundsValid({ since: "2026-09-05T12:00:00.000", until: "2026-09-05T06:00:00Z" });
+      }).toThrow(/which is after --until/);
+    } finally {
+      if (previous === undefined) {
+        delete process.env["TZ"];
+      } else {
+        process.env["TZ"] = previous;
+      }
+    }
+  });
+});

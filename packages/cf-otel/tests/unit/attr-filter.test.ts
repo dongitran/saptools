@@ -188,3 +188,103 @@ describe("resolveAndValidateAttrFilters", () => {
     expect(unmapped?.mappedType).toBeUndefined();
   });
 });
+
+describe("a key whose backing indices disagree about its type", () => {
+  function clientWithDisagreement(): OpenSearchClient {
+    const bag = (definition: Record<string, unknown>): Record<string, unknown> => ({
+      mappings: { properties: { span: { properties: { attributes: { properties: { "http@status_code": definition } } } } } },
+    });
+    return {
+      search: async () => ({ totalHits: 0, hits: [] }),
+      count: async () => 0,
+      getMapping: async () => ({ "otel-v1-apm-span-000001": bag({ type: "keyword" }), "otel-v1-apm-span-000002": bag({ type: "integer" }) }),
+    } as unknown as OpenSearchClient;
+  }
+
+  it("still resolves the key to its attribute bag instead of falling through to a bare name", async () => {
+    // The prefix probe used to ask for a resolved *type*, so a disagreement
+    // read as "not in this bag" and the loop fell through to the bare key,
+    // which is never a real document field: the filter matched nothing at
+    // exit 0 while the notice told the caller to check a spelling that was
+    // already correct.
+    const notices: string[] = [];
+    const resolved = await resolveAndValidateAttrFilters(
+      clientWithDisagreement(),
+      "otel-v1-apm-span-*",
+      [{ key: "http@status_code", operator: "=", value: "404" }],
+      (message) => notices.push(message),
+    );
+
+    expect(resolved[0]?.key).toBe("span.attributes.http@status_code");
+    expect(notices.join(" ")).toMatch(/mapped inconsistently/);
+    expect(notices.join(" ")).not.toMatch(/matches no field/);
+  });
+
+  it("refuses a numeric comparison rather than sending a range it cannot type", async () => {
+    await expect(
+      resolveAndValidateAttrFilters(clientWithDisagreement(), "otel-v1-apm-span-*", [
+        { key: "http@status_code", operator: ">=", value: "400" },
+      ]),
+    ).rejects.toThrow(/mapped inconsistently across the backing indices/);
+  });
+});
+
+describe("a key inside a nested parent", () => {
+  it("says the filter cannot reach it, instead of resolving cleanly and matching nothing", async () => {
+    const client = {
+      search: async () => ({ totalHits: 0, hits: [] }),
+      count: async () => 0,
+      getMapping: async () => ({
+        "otel-v1-apm-span-000001": {
+          mappings: { properties: { events: { type: "nested", properties: { attributes: { properties: { "exception@type": { type: "keyword" } } } } } } },
+        },
+      }),
+    } as unknown as OpenSearchClient;
+
+    // The key resolves — the mapping really has it — so nothing else in the
+    // pipeline would have complained. A `nested` parent stores its children as
+    // separate hidden documents, and no command here builds a `nested` query.
+    const notices: string[] = [];
+    const resolved = await resolveAndValidateAttrFilters(
+      client,
+      "otel-v1-apm-span-*",
+      [{ key: "events.attributes.exception@type", operator: "=", value: "TimeoutError" }],
+      (message) => notices.push(message),
+    );
+
+    expect(resolved[0]?.key).toBe("events.attributes.exception@type");
+    expect(notices.join(" ")).toMatch(/inside the nested "events" documents/);
+    expect(notices.join(" ")).not.toMatch(/matches no field/);
+  });
+});
+
+describe("a key that names a place in the document rather than a value", () => {
+  function clientWith(properties: Record<string, unknown>): OpenSearchClient {
+    return {
+      search: async () => ({ totalHits: 0, hits: [] }),
+      count: async () => 0,
+      getMapping: async () => ({ "otel-v1-apm-span-000001": { mappings: { properties } } }),
+    } as unknown as OpenSearchClient;
+  }
+
+  it.each([
+    ["resource", { resource: { properties: { attributes: { properties: { app: { type: "keyword" } } } } } }, "object"],
+    ["events", { events: { type: "nested", properties: { name: { type: "keyword" } } } }, "nested"],
+  ])("warns that %s is a %s container a filter cannot match", async (key, properties, kind) => {
+    // Measured live: both a `term` filter and a `terms` aggregation on a
+    // container return nothing with zero shard failures. Until the lookup
+    // learned to report implicit objects, these fell into the "matches no
+    // field" notice — wrong about the reason, right about the consequence — so
+    // reporting the type without this check removed the only warning there was.
+    const notices: string[] = [];
+    const resolved = await resolveAndValidateAttrFilters(
+      clientWith(properties as Record<string, unknown>),
+      "otel-v1-apm-span-*",
+      [{ key, operator: "=", value: "x" }],
+      (message) => notices.push(message),
+    );
+
+    expect(resolved[0]?.key).toBe(key);
+    expect(notices.join(" ")).toContain(`names ${kind === "object" ? "an" : "a"} ${kind} container`);
+  });
+});

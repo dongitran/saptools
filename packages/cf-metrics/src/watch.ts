@@ -3,7 +3,7 @@ import { setTimeout as delayPromise } from "node:timers/promises";
 import { DEFAULT_INDEX_PATTERN } from "./config.js";
 import { errorMessage, isAuthRejection } from "./errors.js";
 import type { OpenSearchClient, SearchHit, SearchResponse } from "./opensearch-client.js";
-import { buildMetricBoolQuery, resolveTimeBound } from "./query-builder.js";
+import { buildMetricBoolQuery, isAbsoluteInstant, resolveTimeBound } from "./query-builder.js";
 
 export interface WatchPollOptions {
   readonly service: string;
@@ -77,7 +77,7 @@ export function advanceCursor(
 ): { readonly cursor: string; readonly seenAtCursor: ReadonlySet<string> } {
   const last = hits[hits.length - 1];
   const lastTime = last?._source["time"];
-  if (typeof lastTime !== "string" || lastTime.length === 0 || lastTime === currentCursor) {
+  if (typeof lastTime !== "string" || lastTime.length === 0 || lastTime === currentCursor || !isAbsoluteInstant(lastTime)) {
     return { cursor: currentCursor, seenAtCursor };
   }
   const tiedIds = hits.filter((hit) => hit._source["time"] === lastTime).map((hit) => hit._id);

@@ -335,12 +335,13 @@ describe("watchMetrics", () => {
 
 describe("dedupeAgainstCursor / advanceCursor (watch's bounded dedup-set mechanics)", () => {
   it("keeps the dedup set bounded to only the ids tied at the current cursor across many advancing polls", () => {
-    let cursor = "t0";
+    const at = (second: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+    let cursor = at(0);
     let seenAtCursor: ReadonlySet<string> = new Set();
     let maxSetSize = 0;
 
     for (let i = 1; i <= 5_000; i += 1) {
-      const time = `t${String(i)}`;
+      const time = at(i);
       const hits: SearchHit[] = [{ _id: `id-${String(i)}`, _source: { time } }];
       const deduped = dedupeAgainstCursor(hits, seenAtCursor);
       const advanced = advanceCursor(cursor, hits, deduped.seenAtCursor);
@@ -349,7 +350,7 @@ describe("dedupeAgainstCursor / advanceCursor (watch's bounded dedup-set mechani
       maxSetSize = Math.max(maxSetSize, seenAtCursor.size);
     }
 
-    expect(cursor).toBe("t5000");
+    expect(cursor).toBe(at(5_000));
     // Every poll in this scenario advances the cursor to a brand-new
     // timestamp, so the set should never hold more than the single id tied
     // at "now" — proof it does not grow without bound over a long session.
@@ -359,8 +360,8 @@ describe("dedupeAgainstCursor / advanceCursor (watch's bounded dedup-set mechani
   it("does not re-emit an id that ties the current cursor's timestamp on the next poll, but does emit a new one at the same tie", () => {
     const seenAtCursor = new Set(["existing-id"]);
     const hits: SearchHit[] = [
-      { _id: "existing-id", _source: { time: "t1" } },
-      { _id: "new-id", _source: { time: "t1" } },
+      { _id: "existing-id", _source: { time: "2026-01-01T00:00:01.000Z" } },
+      { _id: "new-id", _source: { time: "2026-01-01T00:00:01.000Z" } },
     ];
 
     const { fresh, seenAtCursor: nextSeen } = dedupeAgainstCursor(hits, seenAtCursor);
@@ -372,20 +373,56 @@ describe("dedupeAgainstCursor / advanceCursor (watch's bounded dedup-set mechani
 
   it("advanceCursor keeps the cursor and dedup set unchanged when the page is empty", () => {
     const seenAtCursor = new Set(["a"]);
-    const result = advanceCursor("t1", [], seenAtCursor);
-    expect(result).toEqual({ cursor: "t1", seenAtCursor });
+    const result = advanceCursor("2026-01-01T00:00:01.000Z", [], seenAtCursor);
+    expect(result).toEqual({ cursor: "2026-01-01T00:00:01.000Z", seenAtCursor });
   });
 
   it("advanceCursor resets the dedup set to only ids tied at the new cursor, dropping older ones", () => {
     const hits: SearchHit[] = [
-      { _id: "old", _source: { time: "t1" } },
-      { _id: "tied-a", _source: { time: "t2" } },
-      { _id: "tied-b", _source: { time: "t2" } },
+      { _id: "old", _source: { time: "2026-01-01T00:00:01.000Z" } },
+      { _id: "tied-a", _source: { time: "2026-01-01T00:00:02.000Z" } },
+      { _id: "tied-b", _source: { time: "2026-01-01T00:00:02.000Z" } },
     ];
 
-    const result = advanceCursor("t0", hits, new Set());
+    const result = advanceCursor("2026-01-01T00:00:00.000Z", hits, new Set());
 
-    expect(result.cursor).toBe("t2");
+    expect(result.cursor).toBe("2026-01-01T00:00:02.000Z");
     expect(result.seenAtCursor).toEqual(new Set(["tied-a", "tied-b"]));
+  });
+});
+
+describe("advanceCursor accepts only a real instant as the next cursor", () => {
+  const cursor = "2026-09-05T00:00:00.000Z";
+
+  // The cursor is fed straight back in as `--since`, so anything that is not an
+  // instant changes what window every later poll asks for. Each of these was
+  // measured against the live backend. Impossible under the real `date_nanos`
+  // mapping — but this package deliberately tolerates a rotated index where
+  // `time` is unmapped, and `_source` is raw.
+  it.each([
+    // Re-resolves against `now` every poll, replaying the same window forever.
+    ["3d", "a relative duration"],
+    // Legal `epoch_millis`: the cursor silently rewinds to 1970 and the watch
+    // crawls forward through the whole index printing ancient points as live.
+    ["24", "a bare number the backend reads as epoch millis"],
+    // `parse_exception`: every later poll fails and retries forever, emitting
+    // nothing, at exit 0.
+    ["n/a", "an unparseable string"],
+    // Rolls forward to March 2 in JS and is refused outright by the backend.
+    ["2026-02-30T00:00:00Z", "a date that is not on the calendar"],
+    ["", "an empty string"],
+  ])("keeps the previous cursor when a document's time is %j (%s)", (time) => {
+    const hits: SearchHit[] = [{ _id: "a", _source: { time } }];
+
+    expect(advanceCursor(cursor, hits, new Set())).toEqual({ cursor, seenAtCursor: new Set() });
+  });
+
+  it("still advances on a real timestamp", () => {
+    const hits: SearchHit[] = [{ _id: "a", _source: { time: "2026-09-05T01:00:00Z" } }];
+
+    expect(advanceCursor(cursor, hits, new Set())).toEqual({
+      cursor: "2026-09-05T01:00:00Z",
+      seenAtCursor: new Set(["a"]),
+    });
   });
 });

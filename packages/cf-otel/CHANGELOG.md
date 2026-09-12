@@ -2,6 +2,78 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.9.0
+
+### Fixed
+
+- `--attr` on a container field lost the only warning it had. Reporting implicit objects instead of
+  calling them absent — the fix above — also took them out of the "matches no field" notice, so
+  `--attr 'resource=x'` resolved to `mappedType: "object"` and emitted a bare `term` with no notice
+  at all. Measured live, both a `term` filter and a `terms` aggregation on any of the twelve
+  containers return nothing with zero shard failures, and the new field listing prints every one of
+  them as a row a caller can copy straight into `--attr`. Containers and `nested` parents now say
+  the clause cannot match, before the numeric guard rather than after it.
+
+- `resolveAggregatableField` accepted three targets that aggregate to silence: a container, a
+  `nested` parent, and a field inside one. It also chose the `.keyword` target from the first
+  index's `fields` block while consensus-checking everything else, so with `text` in both indices
+  and `.keyword` in only one the answer flipped on `_mapping` key order — and whichever way it
+  fell, the other index's shards contributed empty buckets with no error.
+
+- The deeper listing surfaced a second silent dead end, so it now names it. `events` and `links`
+  are `nested`, which stores their children as separate hidden documents: thirteen listed fields
+  sit inside them, `events.attributes.exception@type` among them — exactly what someone chasing an
+  error would filter on, and exactly what a plain `term` fails to match while reporting nothing. A
+  new `NESTED_IN` column names the parent, and `--attr` on such a key now says the filter cannot
+  reach it instead of resolving cleanly and returning an empty result.
+
+- Every implicit-object field was reported as absent. OpenSearch never writes `"type": "object"` —
+  it is implied by a `properties` block — and a missing type was read as "no answer", so
+  `mapping --field span` answered "was not found in the mapping" for a field present in all fifteen
+  backing indices, and the listing printed `unknown`, the sentinel reserved for a field this version
+  cannot read. Twelve containers are declared that way on the live span index, `span`,
+  `span.attributes`, `resource` and `resource.attributes` among them. `@saptools/cf-metrics` has
+  handled this since it hit the same thing; the check was missed when the rest of the lookup was
+  unified in 0.8.0. The same fix removes an order-dependence that answered either "was not found" or
+  "mapped inconsistently (keyword)" — a disagreement naming one type — depending on `_mapping` key
+  order.
+
+- `--attr` treated "no reliable type" as "not in this attribute bag". A key whose backing indices
+  type it differently fell through to the bare name, which is never a real document field: the
+  filter matched nothing at exit 0, the numeric-type guard was skipped, and the notice told the
+  caller to check a spelling that was already correct. A disagreement now keeps the resolved key,
+  refuses a numeric comparison outright, and says the field exists but is typed inconsistently.
+
+- `resolveAggregatableField` took the first index's opinion where the rest of the module requires
+  consensus, so for a field mapped `text` in one index and `keyword` in another the aggregation
+  target flipped between `<field>.keyword` and `<field>` on nothing but `_mapping` key order — and
+  either way the disagreeing indices' shards returned empty buckets with no error. It also
+  substituted an alias's target for non-text types, added in 0.8.0: OpenSearch resolves an alias in
+  aggregations exactly as in queries (measured: identical buckets and hit counts), so naming the
+  target bought nothing, while a target some index does not map would silently contribute empty
+  buckets. The alias is now kept as written except for the `.keyword` case, which genuinely needs
+  the target name and is refused when the indices point the alias at different targets.
+
+- `mapping --field <name>.keyword` reported "was not found" for a multi-field the module itself
+  hands out: `resolveAggregatableField` returns `description.keyword`, and looking that name up
+  failed. Six exist on the live span index (`traceState.keyword`, `derived.*.keyword`).
+
+- Hour-24 timestamps, a tenth fractional digit, and offsets past ±18:00 were forwarded verbatim and
+  rejected by the backend after a full credential discovery. Hour 24 is legal end-of-day ISO-8601
+  and `Date.parse` even rolls it forward, but `java.time` resolves `HOUR_OF_DAY` strictly 0-23. All
+  three boundaries were measured against a live instance and now match `@saptools/cf-metrics`.
+
+- `--since`/`--until` written without a timezone were compared in the operator's local zone while
+  OpenSearch reads them as UTC, which both refused genuinely forward windows and let inverted ones
+  through to return nothing at exit 0. The skew was previously documented here as an accepted trade
+  against rejecting the date-only form; normalizing gives up neither. An inversion below millisecond
+  precision also escaped the check, though `startTime` is `date_nanos` and stores it.
+
+- `mapping` with no `--field` listed only top-level keys: 32 names for 173 leaf fields on the live
+  index, with all 111 `span.attributes.*` and 15 `resource.attributes.*` fields — the two bags
+  `--attr` resolves a key against — missing entirely. The command whose stated job is field
+  discovery showed none of the fields the package's main filter flag can use.
+
 ## 0.8.0
 
 ### Fixed
