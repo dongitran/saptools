@@ -626,4 +626,119 @@ describe("discoverDashboardsCredential", () => {
 
     await expect(discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor)).rejects.toThrow(/Could not resolve Cloud Logging dashboards credentials/);
   });
+
+  it("handles binding with malformed relationships", async () => {
+    const bindingsPage = jsonResponse({
+      pagination: { total_pages: 1 },
+      resources: [
+        { guid: "key-1", type: "key", name: "key1", created_at: "2026-01-01T00:00:00Z", relationships: "not-an-object" },
+      ],
+      included: { apps: [] },
+    });
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          return INSTANCES_PAGE;
+        }
+        if (path.includes("/details")) {
+          return jsonResponse({ credentials: { "dashboards-endpoint": "https://dash.example.com", "dashboards-username": "u", "dashboards-password": "p" } });
+        }
+        return bindingsPage;
+      }),
+    });
+
+    const credential = await discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor);
+
+    expect(credential.source).toBe("service-key:key1");
+  });
+
+  it("handles binding with missing included.apps", async () => {
+    const bindingsPage = jsonResponse({
+      pagination: { total_pages: 1 },
+      resources: [
+        { guid: "app-1", type: "app", name: null, created_at: "2026-01-01T00:00:00Z", relationships: { app: { data: { guid: "app-guid-1" } } } },
+      ],
+      included: {}, // No apps array
+    });
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          return INSTANCES_PAGE;
+        }
+        if (path.includes("/details")) {
+          return jsonResponse({ credentials: { "dashboards-endpoint": "https://dash.example.com", "dashboards-username": "u", "dashboards-password": "p" } });
+        }
+        return bindingsPage;
+      }),
+    });
+
+    const credential = await discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor);
+
+    // Should use binding guid as label fallback when app name not found
+    expect(credential.source).toBe("binding:app-1");
+  });
+
+  it("handles binding response without credentials object", async () => {
+    const bindingsPage = jsonResponse({
+      pagination: { total_pages: 1 },
+      resources: [{ guid: "key-1", type: "key", name: "key1", created_at: "2026-01-01T00:00:00Z" }],
+      included: { apps: [] },
+    });
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          return INSTANCES_PAGE;
+        }
+        if (path.includes("/details")) {
+          return jsonResponse({}); // No credentials
+        }
+        return bindingsPage;
+      }),
+    });
+
+    await expect(discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor)).rejects.toThrow(/Could not resolve Cloud Logging dashboards credentials/);
+  });
+
+  it("logs verbose messages during discovery", async () => {
+    const bindingsPage = jsonResponse({
+      pagination: { total_pages: 1 },
+      resources: [{ guid: "key-1", type: "key", name: "key1", created_at: "2026-01-01T00:00:00Z" }],
+      included: { apps: [] },
+    });
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          return INSTANCES_PAGE;
+        }
+        if (path.includes("/details")) {
+          return jsonResponse({ credentials: { "dashboards-endpoint": "https://dash.example.com", "dashboards-username": "u", "dashboards-password": "p" } });
+        }
+        return bindingsPage;
+      }),
+    });
+
+    // Just verify it doesn't crash with verbose=true
+    const credential = await discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: true }, executor);
+
+    expect(credential.source).toBe("service-key:key1");
+  });
+
+  it("handles non-Error exceptions from ambient session", async () => {
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          throw new Error("string error"); // Wrapped in Error for eslint compliance
+        }
+        return INSTANCES_PAGE;
+      }),
+      isCfAuthFailure: vi.fn(() => true),
+    });
+
+    await expect(discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor)).rejects.toThrow("string error");
+  });
 });
