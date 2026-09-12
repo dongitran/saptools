@@ -7,7 +7,7 @@ import type { MockInstance } from "vitest";
 import { isCleanDiscoveryMiss, withOpenSearchClient } from "../../src/cli/client-bootstrap.js";
 import { cloudLoggingExecutor } from "../../src/cli/cloud-logging-executor.js";
 import * as configModule from "../../src/config.js";
-import { CfMetricsError, CredentialsNotFoundError } from "../../src/errors.js";
+import { CredentialsNotFoundError } from "../../src/errors.js";
 import * as samlToggle from "../../src/saml-toggle.js";
 import type { DashboardsCredential, ResolvedTarget } from "../../src/types.js";
 
@@ -243,7 +243,7 @@ describe("withOpenSearchClient", () => {
   it("does not mistake an ordinary query failure for a stale credential", async () => {
     vi.mocked(core.readCachedCredential).mockResolvedValue(CACHED);
     const discover = stubDiscovery();
-    const failure = new CfMetricsError("OPENSEARCH_REQUEST_FAILED", "HTTP 500 shard failure", { status: 500 });
+    const failure = new OpenSearchRequestError("HTTP 500 shard failure", { status: 500 });
 
     await expect(
       withOpenSearchClient(BASE_OPTS, async () => {
@@ -257,7 +257,7 @@ describe("withOpenSearchClient", () => {
 
   it("does not retry a freshly discovered credential that gets rejected — that is a real error", async () => {
     stubDiscovery();
-    const rejection = new CfMetricsError("OPENSEARCH_REQUEST_FAILED", "HTTP 401", { status: 401 });
+    const rejection = new OpenSearchRequestError("HTTP 401", { status: 401 });
     const work = vi.fn(async () => {
       throw rejection;
     });
@@ -374,6 +374,88 @@ describe("withOpenSearchClient's mint-as-last-resort fallback", () => {
       cliName: "cf-metrics",
     });
     expect(stderr).toContain("reusing the current 'cf target' session for o/s to mint a credential");
+  });
+
+  /**
+   * `ambientSessionMatches` only compares the `cf target` *descriptor*
+   * (endpoint/org/space) — a session whose token has actually expired still
+   * "matches" it. This proves the ambient mint attempt's own auth failure
+   * falls back to the isolated SAP-credentials login instead of propagating
+   * (or, worse, silently retrying against the same dead session) — mirroring
+   * the resilience the shared discovery's own `tryAmbientSession` already has.
+   */
+  it("falls back to an isolated login when the ambient session's mint attempt itself hits an auth failure", async () => {
+    vi.stubEnv("SAP_EMAIL", "user@example.com");
+    vi.stubEnv("SAP_PASSWORD", "pw");
+    vi.spyOn(core, "discoverDashboardsCredential").mockRejectedValue(
+      new Error('Could not resolve Cloud Logging dashboards credentials for instance "cloud-logging". Tried:\n  - nothing worked'),
+    );
+    vi.spyOn(cloudLoggingExecutor, "readCurrentCfTarget").mockResolvedValue({
+      apiEndpoint: TARGET.apiEndpoint,
+      orgName: TARGET.org,
+      spaceName: TARGET.space,
+    });
+    const authFailure = new Error("token expired");
+    vi.spyOn(cloudLoggingExecutor, "isCfAuthFailure").mockImplementation((error) => error === authFailure);
+    const fakeCtx = { cfHome: "/tmp/fake-cf-home" };
+    vi.spyOn(cloudLoggingExecutor, "withCfSession").mockImplementation(async (work) => await work(fakeCtx as never));
+    vi.spyOn(cloudLoggingExecutor, "cfApi").mockResolvedValue(undefined);
+    vi.spyOn(cloudLoggingExecutor, "cfAuth").mockResolvedValue(undefined);
+    vi.spyOn(cloudLoggingExecutor, "cfTargetSpace").mockResolvedValue(undefined);
+    const minted: DashboardsCredential = { ...DISCOVERED, source: "minted:cf-metrics-ef78ab90" };
+    const mint = vi
+      .spyOn(samlToggle, "mintDashboardsCredential")
+      .mockRejectedValueOnce(authFailure)
+      .mockResolvedValueOnce(minted);
+
+    const result = await withOpenSearchClient(
+      { ...BASE_OPTS, serviceInstance: "cloud-logging", allowMintCredential: true, verbose: true },
+      async () => "ok",
+    );
+
+    expect(result).toBe("ok");
+    expect(mint).toHaveBeenCalledTimes(2);
+    // First attempt: the ambient session, which fails.
+    expect(mint).toHaveBeenNthCalledWith(1, "cloud-logging", cloudLoggingExecutor.ambientContext, {
+      confirmDisruptive: true,
+      report: expect.any(Function),
+    });
+    // Second attempt: the isolated session, which succeeds — never the same
+    // (already-proven-dead) ambient context retried a second time.
+    expect(mint).toHaveBeenNthCalledWith(2, "cloud-logging", fakeCtx, { confirmDisruptive: true, report: expect.any(Function) });
+    expect(core.writeCachedCredential).toHaveBeenCalledWith({ target: TARGET, instanceSelector: "cloud-logging" }, minted, {
+      cliName: "cf-metrics",
+    });
+    expect(stderr).toContain("the current 'cf target' session was rejected while minting (token expired); falling back to an isolated login");
+  });
+
+  /**
+   * The symmetrical counterpart of the test above: the ambient-session
+   * fallback exists specifically for *auth* failures — a genuinely different
+   * problem (e.g. the instance was deleted, or a network blip) must still
+   * propagate immediately rather than being masked by an isolated-login retry
+   * that has no chance of fixing it.
+   */
+  it("propagates the ambient mint attempt's failure immediately when it is not an auth failure", async () => {
+    vi.stubEnv("SAP_EMAIL", "user@example.com");
+    vi.stubEnv("SAP_PASSWORD", "pw");
+    vi.spyOn(core, "discoverDashboardsCredential").mockRejectedValue(
+      new Error('Could not resolve Cloud Logging dashboards credentials for instance "cloud-logging". Tried:\n  - nothing worked'),
+    );
+    vi.spyOn(cloudLoggingExecutor, "readCurrentCfTarget").mockResolvedValue({
+      apiEndpoint: TARGET.apiEndpoint,
+      orgName: TARGET.org,
+      spaceName: TARGET.space,
+    });
+    vi.spyOn(cloudLoggingExecutor, "isCfAuthFailure").mockReturnValue(false);
+    const unrelatedFailure = new Error('"cloud-logging" reported a failed update status: failed');
+    const mint = vi.spyOn(samlToggle, "mintDashboardsCredential").mockRejectedValue(unrelatedFailure);
+
+    await expect(
+      withOpenSearchClient({ ...BASE_OPTS, serviceInstance: "cloud-logging", allowMintCredential: true }, async () => "unreachable"),
+    ).rejects.toBe(unrelatedFailure);
+    // Never retried in an isolated session — that would not fix an unrelated failure.
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 
   it("refuses to mint when no ambient session matches and SAP_EMAIL/SAP_PASSWORD are unset", async () => {

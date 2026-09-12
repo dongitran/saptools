@@ -119,7 +119,11 @@ async function resolveInstanceNameForMint(
  * passed, this redoes the same ambient-vs-isolated-session decision discovery
  * itself just made (deterministic from the current `cf target` alone) and
  * mints a fresh service key in that same kind of session — mirroring exactly
- * what this package's own (now-shared) discovery used to do inline.
+ * what this package's own (now-shared) discovery used to do inline. Like the
+ * shared discovery's own `tryAmbientSession`, a `cf target` descriptor match
+ * whose token turns out to be dead falls through to the isolated
+ * SAP-credentials login rather than failing outright — see the ambient
+ * branch's own comment for why this matters specifically here.
  *
  * One deliberate, narrow behavior difference from before the migration: the
  * `--verbose` trace no longer includes the "no existing key or fallback
@@ -134,9 +138,29 @@ async function mintAsLastResort(
 ): Promise<DashboardsCredential> {
   if (await ambientSessionMatches(target)) {
     report(`reusing the current 'cf target' session for ${target.org}/${target.space} to mint a credential`);
-    const ctx = cloudLoggingExecutor.ambientContext;
-    const instanceName = await resolveInstanceNameForMint(target, opts.serviceInstance, ctx);
-    return await mintDashboardsCredential(instanceName, ctx as unknown as CfExecContext, { confirmDisruptive: true, report });
+    try {
+      const ctx = cloudLoggingExecutor.ambientContext;
+      const instanceName = await resolveInstanceNameForMint(target, opts.serviceInstance, ctx);
+      return await mintDashboardsCredential(instanceName, ctx as unknown as CfExecContext, { confirmDisruptive: true, report });
+    } catch (error) {
+      // `ambientSessionMatches` only compares the `cf target` *descriptor*
+      // (endpoint/org/space) — it says nothing about whether the session's
+      // token is actually still valid. The shared discovery's own
+      // `tryAmbientSession` already tolerates exactly this (a descriptor
+      // match whose token has expired) by falling back to an isolated login;
+      // mirroring that here matters because *this* function only runs after
+      // discovery has already run once — if discovery itself hit this same
+      // dead ambient token and fell through to an isolated SAP-credentials
+      // login to reach its "clean miss", that isolated login just proved it
+      // works, while the ambient session's token is the one actually broken.
+      // Retrying the ambient session here regardless would mint against a
+      // session already known to be unusable instead of the one just proven
+      // to work.
+      if (!cloudLoggingExecutor.isCfAuthFailure(error)) {
+        throw error;
+      }
+      report(`the current 'cf target' session was rejected while minting (${errorMessage(error)}); falling back to an isolated login`);
+    }
   }
   const sap = readSapCredentials();
   if (sap === undefined) {

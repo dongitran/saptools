@@ -10,7 +10,6 @@ export {
   CfMetricsError,
   CredentialsNotFoundError,
   errorMessage,
-  isAuthRejection,
   SamlRestoreFailedError,
 } from "./errors.js";
 export type { CfMetricsErrorCode } from "./errors.js";
@@ -24,14 +23,14 @@ export { listAllFieldNames, lookUpField } from "./mapping.js";
 export type { FieldLookup, FieldMapping } from "./mapping.js";
 export { queryNames } from "./names.js";
 export type { NamesQueryOptions } from "./names.js";
-export { createOpenSearchClient, encodeConsoleProxyPath, searchAfterAll } from "@saptools/core";
+export { createOpenSearchClient, encodeConsoleProxyPath, isAuthRejection, searchAfterAll } from "@saptools/core";
 export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "@saptools/core";
 // The validators ship alongside the builder deliberately: `buildMetricBoolQuery`
 // forwards an absolute bound verbatim, so without them a library consumer has no
 // way to reject one the backend will refuse — a gap `@saptools/cf-otel` did not
 // have, since its own `resolveTimeBound` validates as it resolves.
 export { assertValidTimeBoundShape, assertValidTimeRange, buildMetricBoolQuery, isAbsoluteInstant, resolveTimeBound } from "./query-builder.js";
-export { clearResultSessions, listResultSessions, pruneResultSessions, readResultSession } from "@saptools/core";
+export { clearResultSessions, createResultSession, listResultSessions, pruneResultSessions, readResultSession } from "@saptools/core";
 export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary } from "@saptools/core";
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
 export { querySnapshot } from "./snapshot.js";

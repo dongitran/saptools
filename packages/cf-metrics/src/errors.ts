@@ -52,18 +52,6 @@ export class SamlRestoreFailedError extends CfMetricsError {
   }
 }
 
-/**
- * True when OpenSearch (via the Dashboards console-proxy) rejected the
- * credential itself — HTTP 401 or 403 — as opposed to a bad query, a timeout,
- * or a transport failure. The distinction matters because a rejected
- * credential is the one failure worth reacting to by discarding a cached
- * credential and discovering a fresh one; retrying anything else with new
- * credentials would just repeat the same failure.
- */
-export function isAuthRejection(error: unknown): boolean {
-  return error instanceof CfMetricsError && (error.status === 401 || error.status === 403);
-}
-
 /** Narrow an unknown thrown value to a human-readable message. */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) {
