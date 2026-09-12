@@ -1,8 +1,9 @@
-import { CLI_NAME, MAX_RESULT_WINDOW } from "../config.js";
+import { createResultSession } from "@saptools/core";
+
+import { CLI_NAME, MAX_RESULT_WINDOW, resultStoreOptionsFromEnv } from "../config.js";
 import { CfMetricsError, errorMessage } from "../errors.js";
 import type { OutputRow } from "../format.js";
 import { formatResult } from "../format.js";
-import { createResultSession, resultStoreOptionsFromEnv } from "../result-store.js";
 import type { OutputFormat } from "../types.js";
 
 export function print(text: string): void {
@@ -115,7 +116,10 @@ export interface EmitRowsOptions {
  */
 async function saveRowsOrWarn(opts: EmitRowsOptions): Promise<string | undefined> {
   try {
-    const session = await createResultSession({ command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
+    const session = await createResultSession(
+      { cliName: CLI_NAME, command: opts.command, rows: opts.rows },
+      resultStoreOptionsFromEnv(),
+    );
     return session.ref;
   } catch (error) {
     printNotice(`--save failed (${errorMessage(error)}); printing the result instead`);

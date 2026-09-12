@@ -2,6 +2,12 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.13.0
+
+### Changed
+
+- Target resolution, dashboards-credential discovery, the OpenSearch console-proxy client, the credential cache, and the saved-result store now live in `packages/core`'s shared cloud-logging module group, shared with `@saptools/cf-otel` and `@saptools/cf-log-search`. No CLI-facing behavior change; verified byte-identical output against the real tenant before and after.
+
 ## 0.12.0
 
 ### Fixed

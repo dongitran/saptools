@@ -1,4 +1,5 @@
 import { readPackageMetadata } from "@saptools/core";
+import type { CredentialCacheOptions, ResultStoreOptions } from "@saptools/core";
 
 export const CLI_NAME = "cf-metrics";
 export const PACKAGE_NAME = "@saptools/cf-metrics";
@@ -92,6 +93,24 @@ export function readEnv(name: string): string | undefined {
  */
 export function saptoolsRootFromEnv(): string | undefined {
   return readEnv(envName("SAPTOOLS_ROOT"));
+}
+
+/**
+ * Root override from the environment (see {@link saptoolsRootFromEnv}), so
+ * tests never touch the real `~/.saptools`. `cliName` is deliberately not
+ * part of this: it is the one field every call site supplies itself, now that
+ * `@saptools/core`'s credential cache is scoped by `cliName` rather than by
+ * which package's own file happened to define the cache.
+ */
+export function credentialCacheOptionsFromEnv(): Omit<CredentialCacheOptions, "cliName"> {
+  const saptoolsRoot = saptoolsRootFromEnv();
+  return saptoolsRoot === undefined ? {} : { saptoolsRoot };
+}
+
+/** Same role as {@link credentialCacheOptionsFromEnv}, for the shared saved-result store. */
+export function resultStoreOptionsFromEnv(): Omit<ResultStoreOptions, "cliName"> {
+  const saptoolsRoot = saptoolsRootFromEnv();
+  return saptoolsRoot === undefined ? {} : { saptoolsRoot };
 }
 
 /**

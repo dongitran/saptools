@@ -1,7 +1,8 @@
+import * as core from "@saptools/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { collectRepeatable, emitRows, parseFormat, parseNonNegativeIntOption, parsePositiveIntOption, print, printNotice } from "../../src/cli/output.js";
-import * as resultStore from "../../src/result-store.js";
+import * as configModule from "../../src/config.js";
 
 describe("parseFormat", () => {
   it("defaults to table when no value is given", () => {
@@ -83,7 +84,7 @@ describe("emitRows", () => {
 
   it("forwards the env-derived store root so a save can never land in the real ~/.saptools", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const createSpy = vi.spyOn(resultStore, "createResultSession").mockResolvedValue({
+    const createSpy = vi.spyOn(core, "createResultSession").mockResolvedValue({
       version: 1,
       ref: "deadbeef",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -97,10 +98,12 @@ describe("emitRows", () => {
 
     // Asserting the forwarded options, not a literal `{}`: passing the
     // env-derived root through is the contract that keeps a save inside
-    // whatever CF_METRICS_SAPTOOLS_ROOT points at.
+    // whatever CF_METRICS_SAPTOOLS_ROOT points at. `cliName` is new: the
+    // shared result-store is now scoped by it rather than by which package's
+    // own file used to define the store.
     expect(createSpy).toHaveBeenCalledWith(
-      { command: "names", rows: [{ NAME: "container.cpu.usage" }] },
-      resultStore.resultStoreOptionsFromEnv(),
+      { cliName: "cf-metrics", command: "names", rows: [{ NAME: "container.cpu.usage" }] },
+      configModule.resultStoreOptionsFromEnv(),
     );
     expect(stdoutSpy).toHaveBeenCalledWith("ref=deadbeef\n");
   });
@@ -113,7 +116,7 @@ describe("emitRows", () => {
   it("prints the rows anyway, with a non-zero exit code, when the save fails", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(resultStore, "createResultSession").mockRejectedValue(new Error("EACCES: permission denied"));
+    vi.spyOn(core, "createResultSession").mockRejectedValue(new Error("EACCES: permission denied"));
     const previousExitCode = process.exitCode;
 
     try {

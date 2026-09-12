@@ -1,10 +1,10 @@
+import type { OpenSearchClient, SearchHit, SearchResponse } from "@saptools/core";
 import type { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as clientBootstrap from "../../src/cli/client-bootstrap.js";
 import { buildProgram } from "../../src/cli/program.js";
 import { CLI_VERSION } from "../../src/config.js";
-import type { OpenSearchClient, SearchHit, SearchResponse } from "../../src/opensearch-client.js";
 
 vi.mock("../../src/cli/client-bootstrap.js", () => ({ withOpenSearchClient: vi.fn() }));
 
@@ -17,6 +17,7 @@ function fakeClient(overrides: Partial<OpenSearchClient> = {}): OpenSearchClient
     search: async (): Promise<SearchResponse> => ({ totalHits: 0, hits: [] }),
     count: async () => 0,
     getMapping: async () => ({}),
+    raw: async () => undefined,
     ...overrides,
   };
 }
@@ -391,7 +392,7 @@ describe("history", () => {
 
   it("skips kind auto-resolution when --kind is given explicitly", async () => {
     const search = vi.fn(async () => ({ totalHits: 0, hits: [], aggregations: { over_time: { buckets: [] } } }));
-    const client: OpenSearchClient = { search, count: async () => 0, getMapping: async () => ({}) };
+    const client: OpenSearchClient = { search, count: async () => 0, getMapping: async () => ({}), raw: async () => undefined };
     await runCli(["history", "--service", "app", "--name", "container.cpu.usage", "--kind", "GAUGE", "--format", "json"], client);
     expect(search).toHaveBeenCalledTimes(1);
   });

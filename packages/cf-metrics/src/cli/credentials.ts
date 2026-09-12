@@ -1,6 +1,7 @@
+import { clearCredentialCache, listCachedCredentials } from "@saptools/core";
 import type { Command } from "commander";
 
-import { clearCredentialCache, credentialCacheOptionsFromEnv, listCachedCredentials } from "../credential-cache.js";
+import { CLI_NAME, credentialCacheOptionsFromEnv } from "../config.js";
 import { formatResult } from "../format.js";
 
 import { parseFormat, print } from "./output.js";
@@ -10,8 +11,12 @@ interface ListOptions {
   readonly format: string;
 }
 
+function cacheOptions(): Parameters<typeof listCachedCredentials>[0] {
+  return { ...credentialCacheOptionsFromEnv(), cliName: CLI_NAME };
+}
+
 async function runList(options: ListOptions): Promise<void> {
-  const entries = await listCachedCredentials(credentialCacheOptionsFromEnv());
+  const entries = await listCachedCredentials(cacheOptions());
   print(
     formatResult(
       entries.map((entry) => ({
@@ -28,7 +33,7 @@ async function runList(options: ListOptions): Promise<void> {
 }
 
 async function runClear(): Promise<void> {
-  print(`removed=${String(await clearCredentialCache(credentialCacheOptionsFromEnv()))}`);
+  print(`removed=${String(await clearCredentialCache(cacheOptions()))}`);
 }
 
 export function registerCredentialCommands(program: Command): void {

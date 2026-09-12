@@ -3,6 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { extractDashboardsCredential, parseCredentialJson } from "@saptools/core";
+
 import type { CfExecContext } from "./cf.js";
 import {
   SECRET_KEY_SUBSTRINGS,
@@ -17,7 +19,6 @@ import {
   untrackTempDir,
 } from "./cf.js";
 import { SAML_POLL_INTERVAL_MS, SAML_POLL_TIMEOUT_MS } from "./config.js";
-import { extractDashboardsCredential, parseCredentialJson } from "./dashboards-payload.js";
 import { CfMetricsError, SamlRestoreFailedError, errorMessage } from "./errors.js";
 import type { DashboardsCredential } from "./types.js";
 
