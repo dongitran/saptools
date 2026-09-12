@@ -775,4 +775,66 @@ describe("discoverDashboardsCredential", () => {
     expect(result.password).toBe("pass2");
     expect(credentialAttempts).toBe(1);
   });
+
+  it("paginates through multiple pages of credential bindings", async () => {
+    const page1 = jsonResponse({
+      pagination: { total_pages: 2 },
+      resources: [
+        { guid: "key-page1", type: "key", name: "key-from-page-1", created_at: "2026-01-01T00:00:00Z" },
+      ],
+      included: { apps: [] },
+    });
+    const page2 = jsonResponse({
+      pagination: { total_pages: 2 },
+      resources: [
+        { guid: "key-page2", type: "key", name: "key-from-page-2", created_at: "2026-01-02T00:00:00Z" },
+      ],
+      included: { apps: [] },
+    });
+    let pageRequested = 0;
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          return INSTANCES_PAGE;
+        }
+        if (path.includes("service_credential_bindings")) {
+          if (path.includes("page=2")) {
+            pageRequested = 2;
+          } else if (path.includes("page=1")) {
+            pageRequested = 1;
+          }
+          if (path.includes("details")) {
+            return jsonResponse({ credentials: { "dashboards-endpoint": "https://dash.example.com", "dashboards-username": "user", "dashboards-password": "pass" } });
+          }
+          return pageRequested === 2 ? page2 : page1;
+        }
+        return page1;
+      }),
+      isCfAuthFailure: vi.fn(() => false),
+    });
+
+    const result = await discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor);
+
+    // Verify the function successfully resolved a credential
+    expect(result).toBeDefined();
+    expect(result.username).toBe("user");
+
+    // Verify pagination occurred: cfCurl should have been called at least 3 times
+    // (service_instances, page 1 bindings list, page 2 bindings list, then /details)
+    const mockCfCurl = executor.cfCurl as ReturnType<typeof vi.fn>;
+    const calls = mockCfCurl.mock.calls;
+    const bindingCalls = calls.filter((call: unknown[]) => {
+      const path = typeof call[0] === "string" ? call[0] : "";
+      return path.includes("service_credential_bindings") && !path.includes("details");
+    });
+    expect(bindingCalls.length).toBeGreaterThanOrEqual(2);
+
+    // Verify page=2 was actually requested
+    const hasPage2Request = calls.some((call: unknown[]) => {
+      const path = typeof call[0] === "string" ? call[0] : "";
+      return path.includes("page=2");
+    });
+    expect(hasPage2Request).toBe(true);
+  });
 });
