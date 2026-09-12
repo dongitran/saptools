@@ -49,7 +49,7 @@ describe("temp-dir-tracking", () => {
 
   it("installs signal handlers on first trackTempDir call", () => {
     __resetTempDirTrackingForTests();
-    const processSpy = vi.spyOn(process, "once");
+    const processSpy = vi.spyOn(process, "once").mockImplementation(() => process);
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional: vitest spy mock
     const rm = vi.fn(async () => {});
 
@@ -62,7 +62,7 @@ describe("temp-dir-tracking", () => {
 
   it("does not re-install signal handlers on subsequent trackTempDir calls", () => {
     __resetTempDirTrackingForTests();
-    const processSpy = vi.spyOn(process, "once");
+    const processSpy = vi.spyOn(process, "once").mockImplementation(() => process);
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional: vitest spy mock
     const rm = vi.fn(async () => {});
 
@@ -79,7 +79,7 @@ describe("temp-dir-tracking", () => {
     __resetTempDirTrackingForTests();
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- Intentional: vitest spy mock
     const rm = vi.fn(async () => {});
-    const processSpy = vi.spyOn(process, "once");
+    const processSpy = vi.spyOn(process, "once").mockImplementation(() => process);
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
 
     trackTempDir("/tmp/test", rm);
