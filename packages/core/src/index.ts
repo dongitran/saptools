@@ -62,3 +62,39 @@ export {
   writeUpdateState,
 } from "./self-update/state.js";
 export type { InstallAttempt, UpdateLock, UpdateState } from "./self-update/state.js";
+export {
+  createOpenSearchClient,
+  encodeConsoleProxyPath,
+  isAuthRejection,
+  OpenSearchRequestError,
+  searchAfterAll,
+} from "./cloud-logging/opensearch-client.js";
+export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./cloud-logging/opensearch-client.js";
+export { discoverDashboardsCredential } from "./cloud-logging/dashboards-credentials.js";
+export type { CredentialDiscoveryOptions, SapCredentials } from "./cloud-logging/dashboards-credentials.js";
+export { discoverServiceInstance, listCloudLoggingInstances } from "./cloud-logging/instance-discovery.js";
+export { extractDashboardsCredential, parseCredentialJson } from "./cloud-logging/dashboards-payload.js";
+export { clearCredentialCache, deleteCachedCredential, listCachedCredentials, readCachedCredential, writeCachedCredential } from "./cloud-logging/credential-cache.js";
+export type { CachedCredentialSummary, CredentialCacheKey, CredentialCacheOptions } from "./cloud-logging/credential-cache.js";
+export { printResolvedTarget, resolveTarget } from "./cloud-logging/target.js";
+export type { TargetOptions } from "./cloud-logging/target.js";
+export {
+  assertResultStoreWritable,
+  clearResultSessions,
+  createResultSession,
+  listResultSessions,
+  pruneResultSessions,
+  readResultSession,
+} from "./cloud-logging/result-store.js";
+export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary, ResultStoreOptions } from "./cloud-logging/result-store.js";
+export type {
+  CfExecContext,
+  CloudLoggingCfExecutor,
+  CloudLoggingInstance,
+  CurrentCfTarget,
+  DashboardsCredential,
+  DashboardsCredentialPayload,
+  ResolvedTarget,
+  SelectorSource,
+} from "./cloud-logging/types.js";
+export { trackTempDir, untrackTempDir } from "./temp-dir-tracking.js";
