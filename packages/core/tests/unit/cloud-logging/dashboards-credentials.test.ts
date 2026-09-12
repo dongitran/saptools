@@ -730,15 +730,49 @@ describe("discoverDashboardsCredential", () => {
   it("handles non-Error exceptions from ambient session", async () => {
     const executor = fakeExecutor({
       readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
-      cfCurl: vi.fn(async (path: string) => {
-        if (path.includes("service_instances")) {
-          throw new Error("string error"); // Wrapped in Error for eslint compliance
-        }
-        return INSTANCES_PAGE;
-      }),
+      cfCurl: vi.fn().mockRejectedValueOnce("non-error rejection"),
       isCfAuthFailure: vi.fn(() => true),
     });
 
-    await expect(discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor)).rejects.toThrow("string error");
+    await expect(discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor)).rejects.toThrow();
+  });
+
+  it("handles non-Error exceptions when binding credential fetch fails", async () => {
+    const bindingsPage = jsonResponse({
+      pagination: { total_pages: 1 },
+      resources: [
+        { guid: "key-1", type: "key", name: "fail-key", created_at: "2026-01-02T00:00:00Z" },
+        { guid: "key-2", type: "key", name: "success-key", created_at: "2026-01-01T00:00:00Z" },
+      ],
+      included: { apps: [] },
+    });
+    let credentialAttempts = 0;
+    const executor = fakeExecutor({
+      readCurrentCfTarget: vi.fn(async () => ({ apiEndpoint: "e", regionKey: "br10", orgName: "o", spaceName: "s" })),
+      cfCurl: vi.fn(async (path: string) => {
+        if (path.includes("service_instances")) {
+          return INSTANCES_PAGE;
+        }
+        if (path.includes("service_credential_bindings")) {
+          if (path.includes("details")) {
+            if (path.includes("key-1")) {
+              credentialAttempts += 1;
+              // eslint-disable-next-line no-throw-literal, @typescript-eslint/only-throw-error
+              throw "non-error rejection from first binding";
+            }
+            // key-2 details
+            return jsonResponse({ credentials: { "dashboards-endpoint": "https://dash.example.com", "dashboards-username": "user2", "dashboards-password": "pass2" } });
+          }
+          return bindingsPage;
+        }
+        return bindingsPage;
+      }),
+      isCfAuthFailure: vi.fn(() => false),
+    });
+
+    const result = await discoverDashboardsCredential(TARGET, undefined, { allowMintCredential: false, verbose: false }, executor);
+    expect(result.username).toBe("user2");
+    expect(result.password).toBe("pass2");
+    expect(credentialAttempts).toBe(1);
   });
 });
