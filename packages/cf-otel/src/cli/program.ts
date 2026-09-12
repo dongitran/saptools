@@ -1,9 +1,8 @@
-import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
+import { assertResultStoreWritable, attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
 import type { AttachSelfUpdateOptions } from "@saptools/core";
 import { Command } from "commander";
 
-import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME } from "../config.js";
-import { assertResultStoreWritable, resultStoreOptionsFromEnv } from "../result-store.js";
+import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME, resultStoreOptionsFromEnv } from "../config.js";
 
 import type { SaveOpts } from "./commandTypes.js";
 import { registerCountCommand } from "./commands/count.js";
@@ -65,7 +64,7 @@ export function buildProgram(): Command {
   // the check cannot drift out of one of them.
   program.hook("preAction", async (_program, actionCommand) => {
     if (actionCommand.opts<Partial<SaveOpts>>().save === true) {
-      await assertResultStoreWritable(resultStoreOptionsFromEnv());
+      await assertResultStoreWritable({ ...resultStoreOptionsFromEnv(), cliName: CLI_NAME });
     }
   });
 

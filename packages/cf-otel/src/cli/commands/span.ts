@@ -1,8 +1,9 @@
+import { searchAfterAll } from "@saptools/core";
 import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { SPANS_SORT_TIEBREAKER, searchAfterAll } from "../../opensearch-client.js";
+import { SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { SpanOpts } from "../commandTypes.js";
 import { emitRows, parseFormat, printNotice } from "../output.js";
@@ -45,7 +46,7 @@ async function runSpan(traceId: string, spanId: string | undefined, opts: SpanOp
       });
       return { docs: response.hits.map((hit) => hit._source), truncated: false };
     }
-    const paged = await searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query: { bool: { filter } } }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED);
+    const paged = await searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query: { bool: { filter } } }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED, SPANS_SORT_TIEBREAKER);
     return { docs: paged.hits.map((hit) => hit._source), truncated: paged.truncated };
   });
 

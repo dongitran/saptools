@@ -3,6 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import type { DashboardsCredential } from "@saptools/core";
+import { extractDashboardsCredential, parseCredentialJson, trackTempDir, untrackTempDir } from "@saptools/core";
+
 import type { CfExecContext } from "./cf.js";
 import {
   cfCreateServiceKey,
@@ -14,9 +17,7 @@ import {
   parseServiceStatus,
 } from "./cf.js";
 import { SAML_POLL_INTERVAL_MS, SAML_POLL_TIMEOUT_MS } from "./config.js";
-import { extractDashboardsCredential, parseCredentialJson } from "./dashboards-payload.js";
 import { CfOtelError, SamlRestoreFailedError, errorMessage } from "./errors.js";
-import type { DashboardsCredential } from "./types.js";
 
 export type StepReporter = (message: string) => void;
 
@@ -70,6 +71,11 @@ function readSamlEnabled(params: unknown): boolean {
 
 async function writeSecureTempParamsFile(params: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "cf-otel-saml-"));
+  // This directory holds the instance's full params blob, secrets included, so
+  // a Ctrl-C must not strand it on disk — mirrors exactly how
+  // `@saptools/cf-metrics`'s `cf.ts` already tracks its own CF_HOME temp
+  // directory for the identical reason.
+  trackTempDir(dir, (p) => rm(p, { recursive: true, force: true }));
   try {
     const filePath = join(dir, "params.json");
     await writeFile(filePath, JSON.stringify(params), { mode: 0o600 });
@@ -78,6 +84,7 @@ async function writeSecureTempParamsFile(params: unknown): Promise<string> {
     // mkdtemp already succeeded by this point, so the directory must be
     // cleaned up here — the caller's own finally block only ever runs once
     // this function has already returned a path.
+    untrackTempDir(dir);
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
@@ -107,11 +114,13 @@ async function issueSamlUpdate(
   report: StepReporter,
 ): Promise<void> {
   const tempFilePath = await writeSecureTempParamsFile(nextParams);
+  const tempDir = dirname(tempFilePath);
   try {
     report(`cf update-service ${instance} -c <redacted params> (${logLabel})`);
     await cfUpdateService(instance, tempFilePath, ctx);
   } finally {
-    await rm(dirname(tempFilePath), { recursive: true, force: true });
+    untrackTempDir(tempDir);
+    await rm(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -179,7 +188,7 @@ async function confirmThenMint(
         `Minted key "${keyName}" on "${instance}" did not contain dashboards-username/dashboards-password.`,
       );
     }
-    return { outcome: { ok: true, value: credential }, createdKeyName: keyName };
+    return { outcome: { ok: true, value: { ...credential, instance } }, createdKeyName: keyName };
   } catch (error) {
     return { outcome: { ok: false, error }, ...(createdKeyName === undefined ? {} : { createdKeyName }) };
   }

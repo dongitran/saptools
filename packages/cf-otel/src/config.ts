@@ -1,4 +1,5 @@
 import { readPackageMetadata } from "@saptools/core";
+import type { ResultStoreOptions } from "@saptools/core";
 
 export const CLI_NAME = "cf-otel";
 export const PACKAGE_NAME = "@saptools/cf-otel";
@@ -52,6 +53,19 @@ export function readEnv(name: string): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
+ * Read an optional results-root override from the environment (mirrors
+ * `CF_OTEL_CF_BIN`'s test-only override hook — lets e2e tests avoid touching
+ * the real `~/.saptools` directory). Unset in normal usage. Preserved
+ * verbatim from the now-deleted local `result-store.ts`: `@saptools/core`'s
+ * shared store takes this as a plain option rather than reading the
+ * environment itself, since only the caller knows its own env var name.
+ */
+export function resultStoreOptionsFromEnv(): Omit<ResultStoreOptions, "cliName"> {
+  const saptoolsRoot = process.env["CF_OTEL_RESULTS_ROOT"];
+  return saptoolsRoot === undefined || saptoolsRoot.length === 0 ? {} : { saptoolsRoot };
 }
 
 export interface SapCredentials {

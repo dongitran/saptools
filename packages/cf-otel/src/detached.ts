@@ -1,4 +1,5 @@
-import type { OpenSearchClient } from "./opensearch-client.js";
+import type { OpenSearchClient } from "@saptools/core";
+
 import { toEpochNanos } from "./timestamps.js";
 import type { DetachedCandidate, DetachedResult, Span } from "./types.js";
 

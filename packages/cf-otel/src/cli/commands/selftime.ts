@@ -1,11 +1,11 @@
+import { searchAfterAll } from "@saptools/core";
 import type { Command } from "commander";
 
 import { pickIdentifyingAttribute } from "../../attributes.js";
 import { DEFAULT_INDEX_PATTERN, DEFAULT_SELFTIME_TOP, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { searchAfterAll } from "../../opensearch-client.js";
 import { computeSelftime } from "../../selftime.js";
-import { hitToSpan } from "../../span-mapper.js";
+import { hitToSpan, SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import type { SelftimeAggregateRow } from "../../types.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { SelftimeOpts } from "../commandTypes.js";
@@ -39,6 +39,7 @@ async function runSelftime(traceId: string, opts: SelftimeOpts): Promise<void> {
       { query: { term: { traceId } } },
       SPANS_PAGE_SIZE,
       MAX_SPANS_FETCHED,
+      SPANS_SORT_TIEBREAKER,
     );
     if (paged.hits.length === 0) {
       throw new CfOtelError("TRACE_NOT_FOUND", `Trace "${traceId}" was not found`);

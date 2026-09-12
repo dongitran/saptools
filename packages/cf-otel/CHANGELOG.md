@@ -2,6 +2,25 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.10.0
+
+### Changed
+
+- Dashboards-credential discovery now uses the Cloud Foundry v3 API (matching `@saptools/cf-metrics`) instead of parsing `cf services`/`cf service-keys`/`cf env` output, and reuses the current `cf target` session when it already matches instead of always performing an isolated login.
+
+### Added
+
+- An on-disk dashboards-credential cache (`CF_OTEL_CREDENTIAL_CACHE=0` to opt out), matching `@saptools/cf-metrics`. Discovery previously cost 10-40s on every command; a cached credential is now reused until it expires or OpenSearch rejects it.
+
+### Fixed
+
+- `saml-toggle.ts`'s temporary SAML-params directory (holding a full instance params blob, secrets included) is now tracked for cleanup on SIGINT/SIGTERM, closing the leak described in the completeness audit.
+- `cfApi`/`cfAuth`/`cfTargetSpace` now refuse to run against the user's own ambient `cf` session (matching `@saptools/cf-metrics`'s existing guard), closing a latent gap where a programming error could have silently re-pointed the user's real `cf target`.
+
+### Removed
+
+- The pre-migration `cf services`/`cf service-keys`/`cf env` table-parsing discovery primitives (`cfServices`, `cfServiceKeys`, `cfEnv`, `extractVcapServices`, `parseServicesTable`, `parseServiceKeyNames`), superseded by the v3 API discovery above.
+
 ## 0.9.0
 
 ### Fixed

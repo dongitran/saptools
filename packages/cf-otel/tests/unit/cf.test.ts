@@ -2,22 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractFirstJsonObject,
-  extractVcapServices,
   getApiEndpointForRegion,
   getRegionKeyForApi,
+  isCfAuthFailure,
   parseCfTargetOutput,
-  parseServiceKeyNames,
   parseServiceStatus,
-  parseServicesTable,
   redactSecretLikeText,
 } from "../../src/cf.js";
 
-// The exact sequences a real `cf 8.18.0` emits with CF_COLOR=true: every table
-// header cell is wrapped in bold-on/bold-off, and flavour text is cyan. Kept as
-// named constants rather than inlined so the escape does not run into the word
-// after it and read as one unpronounceable token.
-const BOLD_ON = "\u001b[1m";
-const BOLD_OFF = "\u001b[22m";
+// The exact sequence a real `cf 8.18.0` emits for flavour text with
+// CF_COLOR=true. Kept as a named constant rather than inlined so the escape
+// does not run into the word after it and read as one unpronounceable token.
 const CYAN_ON = "\u001b[36;1m";
 const CYAN_OFF = "\u001b[0;22m";
 
@@ -88,135 +83,6 @@ describe("parseCfTargetOutput", () => {
   });
 });
 
-// `cf services` pads every column to a fixed width so the header word and the
-// data below it start at the same character offset — hand-typing that
-// alignment is error-prone, so build rows from fixed column widths instead.
-function servicesRow(name: string, offering: string, plan: string, boundApps: string, lastOp: string): string {
-  return name.padEnd(17) + offering.padEnd(16) + plan.padEnd(11) + boundApps.padEnd(20) + lastOp;
-}
-
-describe("parseServicesTable", () => {
-  it("parses the v7+ 'offering' header shape, including a row with empty bound apps", () => {
-    const stdout = [
-      "Getting services in org example-org / space space-demo as user@example.com...",
-      "",
-      servicesRow("name", "offering", "plan", "bound apps", "last operation"),
-      servicesRow("cloud-logging", "cloud-logging", "standard", "app1, app2", "create succeeded"),
-      servicesRow("empty-instance", "cloud-logging", "standard", "", "create succeeded"),
-    ].join("\n");
-    const rows = parseServicesTable(stdout);
-    expect(rows).toEqual([
-      { name: "cloud-logging", offering: "cloud-logging", boundApps: ["app1", "app2"] },
-      { name: "empty-instance", offering: "cloud-logging", boundApps: [] },
-    ]);
-  });
-
-  it("parses the v6 'service' header shape", () => {
-    const stdout = [
-      servicesRow("name", "service", "plan", "bound apps", "last operation"),
-      servicesRow("myapp-instance", "cloud-logging", "standard", "myapp", "create succeeded"),
-    ].join("\n");
-    expect(parseServicesTable(stdout)).toEqual([
-      { name: "myapp-instance", offering: "cloud-logging", boundApps: ["myapp"] },
-    ]);
-  });
-
-  it("returns an empty list when there is no recognizable header", () => {
-    expect(parseServicesTable("No services found")).toEqual([]);
-  });
-
-  it("still parses the table when CF_COLOR styled the header", () => {
-    // Same failure mode as the service-keys table: measured on a real tenant,
-    // a styled header took `cf services` from 42 parsed rows to 0, which makes
-    // instance discovery report that no Cloud Logging instance exists at all.
-    const stdout = [
-      `${BOLD_ON}name${BOLD_OFF}            ${BOLD_ON}offering${BOLD_OFF}        ${BOLD_ON}plan${BOLD_OFF}       ` +
-        `${BOLD_ON}bound apps${BOLD_OFF}    ${BOLD_ON}last operation${BOLD_OFF}`,
-      "cloud-logging   cloud-logging   standard   legacy-app    create succeeded",
-    ].join("\n");
-
-    expect(parseServicesTable(stdout)).toEqual([
-      { name: "cloud-logging", offering: "cloud-logging", boundApps: ["legacy-app"] },
-    ]);
-  });
-});
-
-describe("parseServiceKeyNames", () => {
-  it("parses the CF CLI v6/v7 single-column shape", () => {
-    const stdout = ["Getting service keys for service instance cloud-logging as user@example.com...", "", "name", "key1", "key2"].join(
-      "\n",
-    );
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
-  });
-
-  it("parses the CF CLI v8 three-column table, taking the name column only", () => {
-    // Regression test against the real v8 shape: the table is
-    // {"name", "last operation", "message"} rendered by DisplayTableWithHeader,
-    // so a parser that required the header line to equal "name" returned []
-    // and claimed the instance had no service keys. Taking whole rows instead
-    // would have produced "key1   create succeeded" as a key name.
-    const stdout = [
-      "Getting keys for service instance cloud-logging as user@example.com...",
-      "",
-      "name   last operation     message",
-      "key1   create succeeded   ",
-      "key2   update succeeded   broker note here",
-    ].join("\n");
-
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
-  });
-
-  it("handles v8 rows whose trailing columns are absent rather than padded", () => {
-    const stdout = ["name   last operation     message", "key1   create succeeded", "key2"].join("\n");
-
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
-  });
-
-  it("locates the end of the name column without matching the literal 'last operation' header", () => {
-    // The boundary is the next non-space run after "name", so a renamed or
-    // reordered second column cannot silently reintroduce whole-row names.
-    const stdout = ["name   status   note", "key1   ok       fine"].join("\n");
-
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1"]);
-  });
-
-  it("returns an empty list for v8's no-keys message, which prints no header at all", () => {
-    const stdout = [
-      "Getting keys for service instance cloud-logging as user@example.com...",
-      "",
-      "No service keys for service instance cloud-logging",
-    ].join("\n");
-
-    expect(parseServiceKeyNames(stdout)).toEqual([]);
-  });
-
-  it("returns an empty list when there are no keys", () => {
-    expect(parseServiceKeyNames("No service key for service instance cloud-logging")).toEqual([]);
-  });
-
-  it("still parses the table when CF_COLOR styled the header", () => {
-    // The escape sequences here are the ones a real `cf 8.18.0` emits with
-    // CF_COLOR=true: each header cell is wrapped in bold-on/bold-off, and the
-    // data rows are left unstyled. Measured against a real tenant, a styled
-    // header shifted every column index and turned 54 real keys into 0 --
-    // `buildEnv` forces the variable off, and `stripAnsi` covers callers that
-    // hand this parser output it collected some other way.
-    const stdout = [
-      `${BOLD_ON}name${BOLD_OFF}   ${BOLD_ON}last operation${BOLD_OFF}     ${BOLD_ON}message${BOLD_OFF}`,
-      "key1   create succeeded   ",
-      "key2   create succeeded   ",
-    ].join("\n");
-
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1", "key2"]);
-  });
-
-  it("stops at the first blank line after the rows and skips a row with an empty name cell", () => {
-    const stdout = ["name   last operation", "key1   create succeeded", "       stray continuation", "", "OK"].join("\n");
-
-    expect(parseServiceKeyNames(stdout)).toEqual(["key1"]);
-  });
-});
-
 describe("extractFirstJsonObject", () => {
   it("extracts a JSON object embedded after leading prose text", () => {
     const stdout = 'Getting key key1 for service instance cloud-logging...\n\n{\n  "dashboards-endpoint": "https://x"\n}\n';
@@ -230,22 +96,6 @@ describe("extractFirstJsonObject", () => {
 
   it("throws when no JSON object is present", () => {
     expect(() => extractFirstJsonObject("no json here")).toThrow(/No JSON object found/);
-  });
-});
-
-describe("extractVcapServices", () => {
-  it("parses the VCAP_SERVICES JSON block from cf env output", () => {
-    const stdout = [
-      "VCAP_SERVICES:",
-      '{"cloud-logging":[{"name":"cloud-logging","credentials":{"dashboards-endpoint":"https://x"}}]}',
-      "VCAP_APPLICATION:{}",
-    ].join("\n");
-    const vcap = extractVcapServices(stdout);
-    expect(vcap["cloud-logging"]).toEqual([{ name: "cloud-logging", credentials: { "dashboards-endpoint": "https://x" } }]);
-  });
-
-  it("throws when VCAP_SERVICES is absent", () => {
-    expect(() => extractVcapServices("no vcap here")).toThrow(/VCAP_SERVICES section not found/);
   });
 });
 
@@ -280,5 +130,21 @@ describe("parseServiceStatus", () => {
 
   it("returns undefined when there is no status field", () => {
     expect(parseServiceStatus("name: cloud-logging")).toBeUndefined();
+  });
+});
+
+describe("isCfAuthFailure", () => {
+  it("recognizes an expired-token failure", () => {
+    expect(isCfAuthFailure(new Error("authentication has expired, please log back in"))).toBe(true);
+  });
+  it("recognizes a 401/unauthorized failure", () => {
+    expect(isCfAuthFailure(new Error("Server error, status code: 401, error code: 1000, message: Invalid Auth Token"))).toBe(true);
+  });
+  it("does not classify an unrelated cf failure as an auth failure", () => {
+    expect(isCfAuthFailure(new Error("App 'foo' not found"))).toBe(false);
+  });
+  it("copes with a non-Error value", () => {
+    expect(isCfAuthFailure("not logged in")).toBe(true);
+    expect(isCfAuthFailure(42)).toBe(false);
   });
 });

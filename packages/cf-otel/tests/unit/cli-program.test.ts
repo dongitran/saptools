@@ -2,12 +2,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { OpenSearchClient, SearchHit, SearchResponse } from "@saptools/core";
 import type { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+
 import * as clientBootstrap from "../../src/cli/client-bootstrap.js";
 import { buildProgram } from "../../src/cli/program.js";
-import type { OpenSearchClient, SearchHit, SearchResponse } from "../../src/opensearch-client.js";
 
 vi.mock("../../src/cli/client-bootstrap.js", () => ({ withOpenSearchClient: vi.fn() }));
 
@@ -46,6 +47,7 @@ function fakeClient(overrides: Partial<OpenSearchClient> = {}): OpenSearchClient
     search: async (): Promise<SearchResponse> => ({ totalHits: 0, hits: [] }),
     count: async () => 0,
     getMapping: async () => FAKE_MAPPING,
+    raw: async () => undefined,
     ...overrides,
   };
 }

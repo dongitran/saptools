@@ -1,7 +1,8 @@
+import * as core from "@saptools/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { emitRows, parseFormat, parseIntOption, parseTraceIds, print, printNotice } from "../../src/cli/output.js";
-import * as resultStore from "../../src/result-store.js";
+import * as configModule from "../../src/config.js";
 
 describe("parseFormat", () => {
   it("defaults to table when no value is given", () => {
@@ -73,7 +74,7 @@ describe("emitRows", () => {
 
   it("forwards the env-derived store root so a save can never land in the real ~/.saptools", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const createSpy = vi.spyOn(resultStore, "createResultSession").mockResolvedValue({
+    const createSpy = vi.spyOn(core, "createResultSession").mockResolvedValue({
       version: 1,
       ref: "deadbeef",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -87,10 +88,12 @@ describe("emitRows", () => {
 
     // Asserting the forwarded options, not a literal `{}`: passing the
     // env-derived root through is the contract that keeps a save inside
-    // whatever CF_OTEL_RESULTS_ROOT points at.
+    // whatever CF_OTEL_RESULTS_ROOT points at. `cliName` is new: the shared
+    // result-store is now scoped by it rather than by which package's own
+    // file used to define the store.
     expect(createSpy).toHaveBeenCalledWith(
-      { command: "find", rows: [{ NAME: "GET" }] },
-      resultStore.resultStoreOptionsFromEnv(),
+      { cliName: "cf-otel", command: "find", rows: [{ NAME: "GET" }] },
+      configModule.resultStoreOptionsFromEnv(),
     );
     expect(stdoutSpy).toHaveBeenCalledWith("ref=deadbeef\n");
   });
@@ -109,7 +112,7 @@ describe("emitRows when the save fails", () => {
   it("prints the rows in the requested format instead of discarding them", async () => {
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(resultStore, "createResultSession").mockRejectedValue(new Error("ENOSPC: no space left on device"));
+    vi.spyOn(core, "createResultSession").mockRejectedValue(new Error("ENOSPC: no space left on device"));
 
     await emitRows({ command: "find", rows: [{ NAME: "GET" }], format: "json", save: true });
 
@@ -120,7 +123,7 @@ describe("emitRows when the save fails", () => {
   it("explains the failure on stderr", async () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(resultStore, "createResultSession").mockRejectedValue(new Error("ENOSPC: no space left on device"));
+    vi.spyOn(core, "createResultSession").mockRejectedValue(new Error("ENOSPC: no space left on device"));
 
     await emitRows({ command: "find", rows: [{ NAME: "GET" }], format: "table", save: true });
 
@@ -132,7 +135,7 @@ describe("emitRows when the save fails", () => {
   it("still exits non-zero, so `ref=$(... --save)` cannot bind a table row", async () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(resultStore, "createResultSession").mockRejectedValue(new Error("EACCES: permission denied"));
+    vi.spyOn(core, "createResultSession").mockRejectedValue(new Error("EACCES: permission denied"));
 
     await emitRows({ command: "find", rows: [{ NAME: "GET" }], format: "table", save: true });
 
@@ -141,7 +144,7 @@ describe("emitRows when the save fails", () => {
 
   it("leaves the exit code untouched when the save succeeds", async () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    vi.spyOn(resultStore, "createResultSession").mockResolvedValue({
+    vi.spyOn(core, "createResultSession").mockResolvedValue({
       version: 1,
       ref: "deadbeef",
       createdAt: "2026-01-01T00:00:00.000Z",

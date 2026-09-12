@@ -20,6 +20,8 @@ export interface DashboardsCredential {
   readonly password: string;
   /** Non-secret provenance, e.g. "service-key:mykey" or "minted:cf-otel-ab12cd34". Safe to log. */
   readonly source: string;
+  /** Name of the Cloud Logging service instance the credential belongs to. Non-secret. */
+  readonly instance: string;
 }
 
 /** A single OpenTelemetry span document as read from `otel-v1-apm-span-*`. */
