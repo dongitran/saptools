@@ -249,6 +249,31 @@ describe("resolveExpiryMillis edge cases", () => {
     expect(read.expiresAt).toBeDefined();
     expect(new Date(read.expiresAt).getTime()).toBeGreaterThan(now.getTime());
   });
+
+  it("throws on readResultSession when expiry cannot be determined", async () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    const session = await createResultSession(
+      { cliName: "cf-log-search", command: "search", rows: [], ttlMinutes: 10 },
+      { saptoolsRoot: root, now: () => now }
+    );
+
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    const manifestPath = join(root, "cf-log-search", "results", session.ref, "manifest.json");
+    const manifest = {
+      version: 1,
+      ref: session.ref,
+      createdAt: "not-a-date",
+      expiresAt: "not-a-date",
+      ttlMinutes: -1,
+      command: "search",
+      rows: [],
+    };
+    await writeFileAsync(manifestPath, JSON.stringify(manifest), "utf8");
+
+    await expect(
+      readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root, now: () => now })
+    ).rejects.toThrow(/not in a format this version understands/);
+  });
 });
 
 describe("stray temp directory detection", () => {
@@ -320,5 +345,127 @@ describe("createResultSession — various row shapes", () => {
 
     const read = await readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root });
     expect(read.rows).toHaveLength(1000);
+  });
+});
+
+describe("error classification — unreadable vs absent", () => {
+  it("classifies manifest with invalid JSON as unrecognized", async () => {
+    const session = await createResultSession(
+      { cliName: "cf-log-search", command: "search", rows: [] },
+      { saptoolsRoot: root }
+    );
+
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    await writeFileAsync(
+      join(root, "cf-log-search", "results", session.ref, "manifest.json"),
+      "{ invalid json",
+      "utf8"
+    );
+
+    await expect(
+      readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root })
+    ).rejects.toThrow(/not in a format this version understands/);
+  });
+
+  it("classifies manifest with missing fields as unrecognized", async () => {
+    const session = await createResultSession(
+      { cliName: "cf-log-search", command: "search", rows: [] },
+      { saptoolsRoot: root }
+    );
+
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    await writeFileAsync(
+      join(root, "cf-log-search", "results", session.ref, "manifest.json"),
+      JSON.stringify({ version: 1, ref: session.ref }),
+      "utf8"
+    );
+
+    await expect(
+      readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root })
+    ).rejects.toThrow(/not in a format this version understands/);
+  });
+});
+
+describe("listResultSessions mixed validity", () => {
+  it("handles list with mix of valid, unreadable, and expired sessions", async () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    const valid = await createResultSession(
+      { cliName: "cf-log-search", command: "valid", rows: [], ttlMinutes: 60 },
+      { saptoolsRoot: root, now: () => now }
+    );
+
+    const expired = await createResultSession(
+      { cliName: "cf-log-search", command: "expired", rows: [], ttlMinutes: 5 },
+      { saptoolsRoot: root, now: () => now }
+    );
+
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    await writeFileAsync(
+      join(root, "cf-log-search", "results", expired.ref, "manifest.json"),
+      "corrupt",
+      "utf8"
+    );
+
+    const futureNow = new Date("2026-01-01T00:10:00Z");
+    const summaries = await listResultSessions(
+      { cliName: "cf-log-search", saptoolsRoot: root, now: () => futureNow }
+    );
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]!.ref).toBe(valid.ref);
+  });
+});
+
+describe("pruneResultSessions undetermined expiry", () => {
+  it("retains sessions with invalid createdAt but valid ttlMinutes (expiry undetermined)", async () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    const session = await createResultSession(
+      { cliName: "cf-log-search", command: "search", rows: [], ttlMinutes: 10 },
+      { saptoolsRoot: root, now: () => now }
+    );
+
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    const manifestPath = join(root, "cf-log-search", "results", session.ref, "manifest.json");
+    const manifest = {
+      version: 1,
+      ref: session.ref,
+      createdAt: "invalid-date",
+      expiresAt: "invalid-date",
+      ttlMinutes: 10,
+      command: "search",
+      rows: [],
+    };
+    await writeFileAsync(manifestPath, JSON.stringify(manifest), "utf8");
+
+    const outcome = await pruneResultSessions({ cliName: "cf-log-search", saptoolsRoot: root });
+
+    expect(outcome.retainedRefs).toContain(session.ref);
+    expect(outcome.removed).toBe(0);
+  });
+
+  it("retains sessions with non-integer ttlMinutes (expiry undetermined)", async () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    const session = await createResultSession(
+      { cliName: "cf-log-search", command: "search", rows: [], ttlMinutes: 10 },
+      { saptoolsRoot: root, now: () => now }
+    );
+
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    const manifestPath = join(root, "cf-log-search", "results", session.ref, "manifest.json");
+    const manifest = {
+      version: 1,
+      ref: session.ref,
+      createdAt: "2026-01-01T00:00:00Z",
+      expiresAt: "invalid-date",
+      ttlMinutes: 3.14,
+      command: "search",
+      rows: [],
+    };
+    await writeFileAsync(manifestPath, JSON.stringify(manifest), "utf8");
+
+    const outcome = await pruneResultSessions({ cliName: "cf-log-search", saptoolsRoot: root });
+
+    expect(outcome.retainedRefs).toContain(session.ref);
+    expect(outcome.removed).toBe(0);
   });
 });
