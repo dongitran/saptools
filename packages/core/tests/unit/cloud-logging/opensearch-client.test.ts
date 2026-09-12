@@ -269,18 +269,19 @@ describe("error handling edge cases", () => {
     });
     const client = createOpenSearchClient({ dashboardsEndpoint: "https://dash.example.com", username: "u", password: "p", fetchImpl: fetchImpl as unknown as typeof fetch });
 
-    const error = await client.search("idx", {}).catch((e) => e);
-    expect(error.message).toContain("timed out after");
+    const error: unknown = await client.search("idx", {}).catch((e: unknown) => e);
+    expect((error as Error).message).toContain("timed out after");
   });
 
   it("handles response.text() errors", async () => {
     const fetchImpl = vi.fn(async () => {
-      const response = new Response("ok");
-      const originalText = response.text.bind(response);
-      response.text = async () => {
-        throw new Error("Text parse error");
-      };
-      return response;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => {
+          throw new Error("Text parse error");
+        },
+      } as unknown as Response;
     });
     const client = createOpenSearchClient({ dashboardsEndpoint: "https://dash.example.com", username: "u", password: "p", fetchImpl: fetchImpl as unknown as typeof fetch });
 
@@ -318,8 +319,8 @@ describe("error handling edge cases", () => {
   });
 
   it("respects CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS environment variable", async () => {
-    const originalEnv = process.env.CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS;
-    process.env.CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS = "1";
+    const originalEnv = process.env["CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS"];
+    process.env["CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS"] = "1";
     try {
       const fetchImpl = vi.fn(
         async () =>
@@ -336,10 +337,10 @@ describe("error handling edge cases", () => {
       const result = await client.search("idx", {});
       expect(result.totalHits).toBe(3);
     } finally {
-      if (originalEnv !== undefined) {
-        process.env.CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS = originalEnv;
+      if (originalEnv === undefined) {
+        delete process.env["CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS"];
       } else {
-        delete process.env.CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS;
+        process.env["CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS"] = originalEnv;
       }
     }
   });

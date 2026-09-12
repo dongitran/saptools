@@ -30,7 +30,7 @@ export interface SearchResponse {
 }
 
 export class OpenSearchRequestError extends Error {
-  readonly status?: number;
+  readonly status?: number | undefined;
   constructor(message: string, options?: { readonly status?: number; readonly cause?: unknown }) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "OpenSearchRequestError";
@@ -62,19 +62,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseTotal(value: unknown): number {
-  if (typeof value === "number") return value;
-  if (isRecord(value) && typeof value["value"] === "number") return value["value"];
+  if (typeof value === "number") {return value;}
+  if (isRecord(value) && typeof value["value"] === "number") {return value["value"];}
   return 0;
 }
 
 function parseHits(hitsBlock: unknown): SearchHit[] {
-  if (!isRecord(hitsBlock) || !Array.isArray(hitsBlock["hits"])) return [];
+  if (!isRecord(hitsBlock) || !Array.isArray(hitsBlock["hits"])) {return [];}
   const result: SearchHit[] = [];
   for (const raw of hitsBlock["hits"]) {
-    if (!isRecord(raw)) continue;
+    if (!isRecord(raw)) {continue;}
     const id = raw["_id"];
     const source = raw["_source"];
-    if (typeof id !== "string" || !isRecord(source)) continue;
+    if (typeof id !== "string" || !isRecord(source)) {continue;}
     const sort = raw["sort"];
     result.push({ _id: id, _source: source, ...(Array.isArray(sort) ? { sort } : {}) });
   }
@@ -82,7 +82,7 @@ function parseHits(hitsBlock: unknown): SearchHit[] {
 }
 
 function parseSearchResponse(value: unknown): SearchResponse {
-  if (!isRecord(value)) return { totalHits: 0, hits: [] };
+  if (!isRecord(value)) {return { totalHits: 0, hits: [] };}
   const hitsBlock = value["hits"];
   const aggregations = value["aggregations"];
   return {
@@ -99,10 +99,10 @@ function parseCountResponse(value: unknown): number {
 function firstShardFailureReason(shards: Record<string, unknown>): string {
   const failures: unknown = shards["failures"];
   const first: unknown = Array.isArray(failures) ? (failures as readonly unknown[])[0] : undefined;
-  if (!isRecord(first)) return "";
+  if (!isRecord(first)) {return "";}
   const reason = first["reason"];
-  if (typeof reason === "string") return reason;
-  if (isRecord(reason) && typeof reason["reason"] === "string") return reason["reason"];
+  if (typeof reason === "string") {return reason;}
+  if (isRecord(reason) && typeof reason["reason"] === "string") {return reason["reason"];}
   return "";
 }
 
@@ -115,15 +115,15 @@ const ALLOW_PARTIAL_SHARDS_ENV = "CLOUD_LOGGING_ALLOW_PARTIAL_SHARDS";
  * plausible-looking but wrong result at exit 0.
  */
 function assertNoShardFailures(path: string, value: unknown): void {
-  if (!isRecord(value)) return;
-  if (process.env[ALLOW_PARTIAL_SHARDS_ENV] !== undefined) return;
+  if (!isRecord(value)) {return;}
+  if (process.env[ALLOW_PARTIAL_SHARDS_ENV] !== undefined) {return;}
   if (value["timed_out"] === true) {
     throw new OpenSearchRequestError(
       `OpenSearch timed out serving ${path} and returned a partial result. Narrow the query, or raise the cluster-side search timeout.`,
     );
   }
   const shards = value["_shards"];
-  if (!isRecord(shards) || typeof shards["failed"] !== "number" || shards["failed"] === 0) return;
+  if (!isRecord(shards) || typeof shards["failed"] !== "number" || shards["failed"] === 0) {return;}
   const total = typeof shards["total"] === "number" ? shards["total"] : undefined;
   const failed = String(shards["failed"]);
   const scope = total === undefined ? failed : `${failed} of ${String(total)}`;
@@ -146,7 +146,7 @@ const DEFAULT_HTTP_TIMEOUT_MS = 60_000;
 const MAX_HTTP_TIMEOUT_MS = 2_147_483_647;
 
 function normalizeTimeoutMs(value: number | undefined): number {
-  if (value === undefined || !Number.isInteger(value) || value <= 0) return DEFAULT_HTTP_TIMEOUT_MS;
+  if (value === undefined || !Number.isInteger(value) || value <= 0) {return DEFAULT_HTTP_TIMEOUT_MS;}
   return Math.min(value, MAX_HTTP_TIMEOUT_MS);
 }
 
@@ -198,7 +198,7 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
         status: response.status,
       });
     }
-    if (text.length === 0) return undefined;
+    if (text.length === 0) {return undefined;}
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
@@ -228,7 +228,7 @@ export function createOpenSearchClient(opts: OpenSearchClientOptions): OpenSearc
     },
     async getMapping(index, signal) {
       const cached = mappingCache.get(index);
-      if (cached !== undefined) return await cached;
+      if (cached !== undefined) {return await cached;}
       const pending = proxyRequest(`${index}/_mapping`, "GET", undefined, signal);
       mappingCache.set(index, pending);
       try {
