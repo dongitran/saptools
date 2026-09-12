@@ -111,18 +111,19 @@ function liveEntries(store: StoredCredentialCache, nowMs: number): readonly Stor
   return store.entries.filter((entry) => isLive(entry, nowMs));
 }
 
-export function readCachedCredential(key: CredentialCacheKey, options: CredentialCacheOptions): Promise<DashboardsCredential | undefined> {
+// eslint-disable-next-line @typescript-eslint/require-await -- async is deliberate: it converts a synchronous throw from readStore into a rejected Promise, matching this function's Promise<...> contract
+export async function readCachedCredential(key: CredentialCacheKey, options: CredentialCacheOptions): Promise<DashboardsCredential | undefined> {
   const store = readStore(cachePath(options));
   const nowMs = (options.now?.() ?? new Date()).getTime();
   const entry = liveEntries(store, nowMs).find((candidate) => matchesKey(candidate, key));
   if (entry === undefined) {
-    // eslint-disable-next-line unicorn/no-useless-undefined
-    return Promise.resolve(undefined);
+    return undefined;
   }
-  return Promise.resolve({ dashboardsEndpoint: entry.dashboardsEndpoint, username: entry.username, password: entry.password, source: entry.source, instance: entry.instance });
+  return { dashboardsEndpoint: entry.dashboardsEndpoint, username: entry.username, password: entry.password, source: entry.source, instance: entry.instance };
 }
 
-export function writeCachedCredential(key: CredentialCacheKey, credential: DashboardsCredential, options: CredentialCacheOptions): Promise<void> {
+// eslint-disable-next-line @typescript-eslint/require-await -- async is deliberate: it converts a synchronous throw from writeStore into a rejected Promise, matching this function's Promise<...> contract
+export async function writeCachedCredential(key: CredentialCacheKey, credential: DashboardsCredential, options: CredentialCacheOptions): Promise<void> {
   const path = cachePath(options);
   const store = readStore(path);
   const now = options.now?.() ?? new Date();
@@ -143,31 +144,31 @@ export function writeCachedCredential(key: CredentialCacheKey, credential: Dashb
   };
   const kept = liveEntries(store, now.getTime()).filter((candidate) => !matchesKey(candidate, key));
   writeStore(path, { version: 1, entries: [...kept, entry] });
-  return Promise.resolve();
 }
 
-export function deleteCachedCredential(key: CredentialCacheKey, options: CredentialCacheOptions): Promise<boolean> {
+// eslint-disable-next-line @typescript-eslint/require-await -- async is deliberate: it converts a synchronous throw from writeStore into a rejected Promise, matching this function's Promise<...> contract
+export async function deleteCachedCredential(key: CredentialCacheKey, options: CredentialCacheOptions): Promise<boolean> {
   const path = cachePath(options);
   const store = readStore(path);
   const kept = store.entries.filter((candidate) => !matchesKey(candidate, key));
   if (kept.length === store.entries.length) {
-    return Promise.resolve(false);
+    return false;
   }
   writeStore(path, { version: 1, entries: kept });
-  return Promise.resolve(true);
+  return true;
 }
 
-export function listCachedCredentials(options: CredentialCacheOptions): Promise<readonly CachedCredentialSummary[]> {
+// eslint-disable-next-line @typescript-eslint/require-await -- async is deliberate: it converts a synchronous throw from readStore into a rejected Promise, matching this function's Promise<...> contract
+export async function listCachedCredentials(options: CredentialCacheOptions): Promise<readonly CachedCredentialSummary[]> {
   const store = readStore(cachePath(options));
   const nowMs = (options.now?.() ?? new Date()).getTime();
-  const result = liveEntries(store, nowMs)
+  return liveEntries(store, nowMs)
     .map((entry) => {
       return { region: entry.region, org: entry.org, space: entry.space, instance: entry.instance, source: entry.source, dashboardsEndpoint: entry.dashboardsEndpoint, cachedAt: entry.cachedAt, expiresAt: entry.expiresAt };
     })
     .sort((left, right) => {
       return `${left.region}/${left.org}/${left.space}/${left.instance}`.localeCompare(`${right.region}/${right.org}/${right.space}/${right.instance}`);
     });
-  return Promise.resolve(result);
 }
 
 export async function clearCredentialCache(options: CredentialCacheOptions): Promise<number> {
