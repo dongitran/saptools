@@ -1,9 +1,10 @@
 import { OpenSearchRequestError } from "@saptools/core";
 import * as core from "@saptools/core";
+import type { CloudLoggingCfExecutor } from "@saptools/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
 
-import { withOpenSearchClient } from "../../src/cli/client-bootstrap.js";
+import { isCleanDiscoveryMiss, withOpenSearchClient } from "../../src/cli/client-bootstrap.js";
 import { cloudLoggingExecutor } from "../../src/cli/cloud-logging-executor.js";
 import * as configModule from "../../src/config.js";
 import { CfMetricsError, CredentialsNotFoundError } from "../../src/errors.js";
@@ -442,5 +443,57 @@ describe("withOpenSearchClient's mint-as-last-resort fallback", () => {
       withOpenSearchClient({ ...BASE_OPTS, allowMintCredential: true }, async () => "unreachable"),
     ).rejects.toBe(transientFailure);
     expect(mint).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `isCleanDiscoveryMiss` matches on a hardcoded prefix of `@saptools/core`'s
+   * error text. Every other test in this file mocks `discoverDashboardsCredential`
+   * outright, so none of them would notice if that package's wording ever
+   * drifted — `isCleanDiscoveryMiss` would then silently stop matching
+   * anything, and `--allow-mint-credential` would become a silent no-op with
+   * no test failure to flag it. This test drives the REAL, unmocked
+   * `discoverDashboardsCredential` from `@saptools/core` — not a hand-typed
+   * copy of its message — through a fake executor that genuinely finds zero
+   * credential bindings, catches the real rejection it throws, and asserts
+   * `isCleanDiscoveryMiss` recognizes that real error directly.
+   */
+  it("isCleanDiscoveryMiss matches the real error @saptools/core's discoverDashboardsCredential throws on a genuine clean miss", async () => {
+    const fakeExecutor: CloudLoggingCfExecutor = {
+      ambientContext: {},
+      cfCurl: async () => JSON.stringify({ resources: [], pagination: { total_pages: 1 } }),
+      cfServiceGuid: async () => "fake-guid",
+      cfSpaceGuid: async () => "fake-space-guid",
+      isCfAuthFailure: () => false,
+      withCfSession: async (work) => await work({}),
+      cfApi: async () => undefined,
+      cfAuth: async () => undefined,
+      cfTargetSpace: async () => undefined,
+      readCurrentCfTarget: async () => ({
+        apiEndpoint: TARGET.apiEndpoint,
+        orgName: TARGET.org,
+        spaceName: TARGET.space,
+      }),
+      getApiEndpointForRegion: () => undefined,
+    };
+
+    let caught: unknown;
+    try {
+      // Real function, real (fake-executor-driven) rejection — `core` here is
+      // not spied on in this test, so this is not the module-mocked stand-in
+      // every other test in this file uses.
+      await core.discoverDashboardsCredential(
+        TARGET,
+        undefined,
+        { serviceInstance: "cloud-logging", allowMintCredential: false, verbose: false },
+        fakeExecutor,
+      );
+      throw new Error("expected discoverDashboardsCredential to reject on a zero-binding instance");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("Could not resolve Cloud Logging dashboards credentials");
+    expect(isCleanDiscoveryMiss(caught)).toBe(true);
   });
 });

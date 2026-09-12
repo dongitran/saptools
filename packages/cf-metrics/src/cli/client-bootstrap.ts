@@ -95,7 +95,7 @@ async function ambientSessionMatches(target: ResolvedTarget): Promise<boolean> {
  * disruptive (it disables SAML on a shared instance), and must never fire as
  * a side effect of an unrelated, possibly transient failure.
  */
-function isCleanDiscoveryMiss(error: unknown): boolean {
+export function isCleanDiscoveryMiss(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith("Could not resolve Cloud Logging dashboards credentials for instance");
 }
 
