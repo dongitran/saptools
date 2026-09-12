@@ -62,7 +62,7 @@ test("mapping --field reports the mapped type", async () => {
   const result = await runCli(["mapping", "--field", "name", "--format", "json", ...targetArgs()], env());
   expect(result.exitCode).toBe(0);
   const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
-  expect(rows).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
+  expect(rows).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "", NESTED_IN: "" }]);
 });
 
 test("mapping --field on an unknown field fails with MAPPING_LOOKUP_FAILED", async () => {
@@ -75,7 +75,7 @@ test("mapping --field on a field with nested properties but no explicit type rep
   const result = await runCli(["mapping", "--field", "instrumentationScope", "--format", "json", ...targetArgs()], env());
   expect(result.exitCode).toBe(0);
   const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
-  expect(rows).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "", ALIAS_OF: "" }]);
+  expect(rows).toEqual([{ FIELD: "instrumentationScope", TYPE: "object", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "" }]);
 });
 
 /**
@@ -93,7 +93,7 @@ test("mapping --field resolves a dotted field nested in the mapping tree, even t
   );
   expect(result.exitCode).toBe(0);
   const rows = JSON.parse(result.stdout) as readonly Record<string, unknown>[];
-  expect(rows).toEqual([{ FIELD: "resource.attributes.sap@cf@org_name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "" }]);
+  expect(rows).toEqual([{ FIELD: "resource.attributes.sap@cf@org_name", TYPE: "keyword", IGNORE_ABOVE: 256, ALIAS_OF: "", NESTED_IN: "" }]);
 });
 
 /**

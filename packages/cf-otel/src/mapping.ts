@@ -17,14 +17,78 @@ export interface FieldMapping {
    * exactly inverting the hazard.
    */
   readonly ignoreAboveVaries?: boolean;
-  /** Set when `field` is an alias: the concrete path it resolves to, taken from the first index that declared it. */
+  /**
+   * Set when `field` is an alias: the path it points at, from the first index that declared it.
+   *
+   * Usable as a concrete field name only when `type` is something other than
+   * `alias`. `type === "alias"` is exactly the signal that the target could not
+   * be resolved — a dangling path, or a chain this refuses to follow — so there
+   * it is a lead for the reader, not a field they can query.
+   */
   readonly aliasOf?: string;
   /** True when indices point the same alias at different targets — surfaced, never used to withhold the type (see {@link findFieldInMapping}). */
   readonly aliasVaries?: boolean;
+  /**
+   * Nearest ancestor mapped `nested`, when the field sits inside one.
+   *
+   * A plain filter or aggregation on such a field matches nothing and reports
+   * no error; it needs a `nested` query scoped to this path. Listing these
+   * fields without saying so would advertise a silent dead end — see
+   * {@link WalkResult.nestedUnder}.
+   */
+  readonly nestedUnder?: string;
+  /** True when the indices disagree about which nested parent the field sits under. */
+  readonly nestedVaries?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** An own, record-valued property — `Object.hasOwn` so an inherited key like `__proto__` cannot masquerade as a mapped field. */
+function ownRecord(container: unknown, key: string): Record<string, unknown> | undefined {
+  if (!isRecord(container) || !Object.hasOwn(container, key)) {
+    return undefined;
+  }
+  const value = container[key];
+  return isRecord(value) ? value : undefined;
+}
+
+/**
+ * OpenSearch/Elasticsearch field mappings omit `type` entirely for an object
+ * field — `object` is only ever implicit, never written out. Measured against
+ * the live span index, twelve container fields are declared that way,
+ * `span`, `span.attributes`, `resource` and `resource.attributes` among them,
+ * and treating a missing `type` as "no answer" reported every one of them as
+ * absent: `mapping --field span` answered "was not found in the mapping" for a
+ * field present in all fifteen backing indices, and the listing printed
+ * `unknown`, the sentinel reserved for a field this version could not read.
+ * `@saptools/cf-metrics` has had this since it hit the same thing on
+ * `instrumentationScope`; the port was missed when the rest of the lookup was
+ * unified.
+ */
+function mappedType(entry: Record<string, unknown>): string {
+  const type = entry["type"];
+  if (typeof type === "string") {
+    return type;
+  }
+  return isRecord(entry["properties"]) ? "object" : "unknown";
+}
+
+interface WalkResult {
+  readonly definition: Record<string, unknown>;
+  /**
+   * Nearest ancestor mapped `nested`, when there is one.
+   *
+   * A `nested` parent stores its children as separate hidden documents, so a
+   * plain `term`/`range`/`terms` on a field inside one matches nothing and
+   * reports no error — measured live: `buckets.count`, `exemplars.spanId` and
+   * `quantiles.value` each return zero buckets with zero shard failures, while
+   * an ordinary sibling returns real ones. Reaching them needs a `nested`
+   * query scoped to this path, which no command here builds, so the honest
+   * answer is to say where the field lives rather than to hide it.
+   */
+  readonly nestedUnder?: string;
 }
 
 /**
@@ -43,29 +107,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * while still resolving a plain, undotted field name (`name`, `traceState`)
  * in one step.
  *
- * Only `properties` is descended, never a field's `fields` block, so a path
- * naming a multi-field (`long.keyword`) does not resolve here — an alias onto
- * one degrades to reporting `alias`, which is the documented fallback rather
- * than a wrong answer.
+ * A multi-field is the one thing that hangs off a field's own `fields` block
+ * rather than under `properties`, and only ever as the last segment — a
+ * sub-field cannot itself carry sub-fields. Descending `properties` alone made
+ * the module contradict itself: `resolveAggregatableField` hands back
+ * `description.keyword`, and `mapping --field description.keyword` then
+ * answered "was not found in the mapping" for it. The span index really does
+ * map six of these (`traceState.keyword`, `derived.*.keyword`), and they
+ * aggregate normally.
  */
-function walkIndexProperties(mappings: Record<string, unknown>, field: string): Record<string, unknown> | undefined {
+function walkIndexProperties(mappings: Record<string, unknown>, field: string): WalkResult | undefined {
+  const segments = field.split(".");
   let properties: unknown = mappings["properties"];
   let fieldDef: Record<string, unknown> | undefined;
-  for (const segment of field.split(".")) {
-    const node = isRecord(properties) ? properties[segment] : undefined;
-    if (!isRecord(node)) {
-      return undefined;
+  let nestedUnder: string | undefined;
+  let walked = "";
+  for (const [index, segment] of segments.entries()) {
+    const isLastSegment = index === segments.length - 1;
+    const node = ownRecord(properties, segment);
+    if (node === undefined) {
+      const subField = isLastSegment && fieldDef !== undefined ? ownRecord(fieldDef["fields"], segment) : undefined;
+      return subField === undefined ? undefined : { definition: subField, ...(nestedUnder === undefined ? {} : { nestedUnder }) };
+    }
+    walked = walked === "" ? segment : `${walked}.${segment}`;
+    // An ancestor's `nested` type governs its descendants, not its own row —
+    // the row for the nested field itself already reports `nested`.
+    if (!isLastSegment && node["type"] === "nested") {
+      nestedUnder = walked;
     }
     fieldDef = node;
     properties = node["properties"];
   }
-  return fieldDef;
+  return fieldDef === undefined ? undefined : { definition: fieldDef, ...(nestedUnder === undefined ? {} : { nestedUnder }) };
 }
 
 /** One index's answer for a field: its definition, and the alias target it was reached through. */
 interface IndexDefinition {
   readonly definition: Record<string, unknown>;
   readonly aliasOf?: string;
+  readonly nestedUnder?: string;
 }
 
 /**
@@ -79,19 +159,22 @@ interface IndexDefinition {
  * definition in place, which is strictly today's answer plus the target name —
  * never less than the caller had before.
  */
-function resolveAlias(mappings: Record<string, unknown>, fieldDef: Record<string, unknown>): IndexDefinition {
-  if (fieldDef["type"] !== "alias") {
-    return { definition: fieldDef };
+function resolveAlias(mappings: Record<string, unknown>, walked: WalkResult): IndexDefinition {
+  const nested = walked.nestedUnder === undefined ? {} : { nestedUnder: walked.nestedUnder };
+  if (walked.definition["type"] !== "alias") {
+    return { definition: walked.definition, ...nested };
   }
-  const path = fieldDef["path"];
+  const path = walked.definition["path"];
   if (typeof path !== "string") {
-    return { definition: fieldDef };
+    return { definition: walked.definition, ...nested };
   }
   const target = walkIndexProperties(mappings, path);
-  if (target === undefined || target["type"] === "alias") {
-    return { definition: fieldDef, aliasOf: path };
+  if (target === undefined || target.definition["type"] === "alias") {
+    return { definition: walked.definition, aliasOf: path, ...nested };
   }
-  return { definition: target, aliasOf: path };
+  // The target is what a query against the alias actually compares, so its
+  // position in the tree is the one that governs reachability.
+  return { definition: target.definition, aliasOf: path, ...(target.nestedUnder === undefined ? {} : { nestedUnder: target.nestedUnder }) };
 }
 
 /**
@@ -117,9 +200,9 @@ function findFieldDefinitions(mappingResponse: unknown, field: string): IndexDef
     if (!isRecord(mappings)) {
       continue;
     }
-    const fieldDef = walkIndexProperties(mappings, field);
-    if (fieldDef !== undefined) {
-      found.push(resolveAlias(mappings, fieldDef));
+    const walked = walkIndexProperties(mappings, field);
+    if (walked !== undefined) {
+      found.push(resolveAlias(mappings, walked));
     }
   }
   return found;
@@ -160,11 +243,12 @@ export type FieldLookup =
 export function lookUpField(mappingResponse: unknown, field: string): FieldLookup {
   const definitions = findFieldDefinitions(mappingResponse, field);
   const [first] = definitions;
-  if (first === undefined || typeof first.definition["type"] !== "string") {
+  if (first === undefined) {
     return { status: "absent" };
   }
-  const types = [...new Set(definitions.map((entry) => entry.definition["type"]).filter((type): type is string => typeof type === "string"))];
-  if (definitions.some((entry) => entry.definition["type"] !== first.definition["type"])) {
+  const type = mappedType(first.definition);
+  const types = [...new Set(definitions.map((entry) => mappedType(entry.definition)))];
+  if (types.length > 1) {
     return { status: "disagrees", types };
   }
   // Neither a divergent alias target nor a divergent `ignore_above` withholds
@@ -179,15 +263,18 @@ export function lookUpField(mappingResponse: unknown, field: string): FieldLooku
   const ignoreAbove = first.definition["ignore_above"];
   const capsAgree = definitions.every((entry) => entry.definition["ignore_above"] === ignoreAbove);
   const aliasAgrees = definitions.every((entry) => entry.aliasOf === first.aliasOf);
+  const nestingAgrees = definitions.every((entry) => entry.nestedUnder === first.nestedUnder);
   return {
     status: "found",
     mapping: {
       field,
-      type: first.definition["type"],
+      type,
       ...(typeof ignoreAbove === "number" && capsAgree ? { ignoreAbove } : {}),
       ...(capsAgree ? {} : { ignoreAboveVaries: true }),
       ...(first.aliasOf === undefined ? {} : { aliasOf: first.aliasOf }),
       ...(aliasAgrees ? {} : { aliasVaries: true }),
+      ...(first.nestedUnder === undefined ? {} : { nestedUnder: first.nestedUnder }),
+      ...(nestingAgrees ? {} : { nestedVaries: true }),
     },
   };
 }
@@ -207,6 +294,14 @@ export async function getFieldMapping(
  * a separate top-level `<field>.keyword` entry — using the wrong lookup here
  * is exactly how a `terms` aggregation silently returns empty buckets on an
  * already-`keyword` field (see the module-level note above).
+ *
+ * Routed through {@link lookUpField} rather than the first index's opinion.
+ * Sampling index `[0]` is the very hazard the rest of this module was
+ * rewritten to remove, and here it decided the aggregation target: for a field
+ * mapped `text` in one backing index and `keyword` in another, the answer
+ * flipped between `<field>.keyword` and `<field>` on nothing but `_mapping`
+ * key order, and whichever way it fell the disagreeing indices' shards
+ * returned empty buckets with no error.
  */
 export async function resolveAggregatableField(
   client: OpenSearchClient,
@@ -214,26 +309,86 @@ export async function resolveAggregatableField(
   field: string,
 ): Promise<string> {
   const mappingResponse = await client.getMapping(index);
-  const resolved = findFieldDefinitions(mappingResponse, field)[0];
-  if (resolved === undefined) {
+  const lookup = lookUpField(mappingResponse, field);
+  if (lookup.status === "absent") {
     throw new CfOtelError(
       "MAPPING_LOOKUP_FAILED",
       `Field "${field}" was not found in the mapping for ${index}`,
     );
   }
-  if (resolved.definition["type"] !== "text") {
-    return resolved.aliasOf ?? field;
+  if (lookup.status === "disagrees") {
+    throw new CfOtelError(
+      "MAPPING_LOOKUP_FAILED",
+      `Field "${field}" is mapped inconsistently across the backing indices of ${index} ` +
+        `(${lookup.types.join(", ")}), so no single aggregation target is safe: the indices that ` +
+        "disagree would contribute empty buckets with no error. Narrow the query to one index.",
+    );
   }
-  const subFields = resolved.definition["fields"];
-  if (isRecord(subFields) && isRecord(subFields["keyword"])) {
+  const { type, aliasOf, aliasVaries, nestedUnder } = lookup.mapping;
+  // Both of these aggregate to zero buckets with zero shard failures — measured
+  // live on `span`, `span.attributes`, `events`, `resource` and `exemplars` —
+  // which is exactly the silent answer this function exists to turn into a loud
+  // one. Neither was refused before; the lookup only started reporting implicit
+  // containers and nested parentage in 0.9.0, so until now there was nothing to
+  // refuse them with.
+  if (type === "object" || type === "nested") {
+    throw new CfOtelError(
+      "MAPPING_LOOKUP_FAILED",
+      `Field "${field}" is ${type === "object" ? "an" : "a"} ${type} container, not a field that holds a value, so aggregating on it ` +
+        "returns empty buckets with no error. Aggregate on one of the fields inside it instead.",
+    );
+  }
+  if (nestedUnder !== undefined) {
+    throw new CfOtelError(
+      "MAPPING_LOOKUP_FAILED",
+      `Field "${field}" is inside the nested "${nestedUnder}" documents, which a plain aggregation cannot reach: ` +
+        "it returns empty buckets with no error. Reaching it needs a nested aggregation scoped to that path.",
+    );
+  }
+  if (type !== "text") {
+    // Deliberately the field as asked for, not `aliasOf`. OpenSearch resolves
+    // an alias in aggregations exactly as it does in queries (measured:
+    // identical buckets and hit counts either way), so naming the target buys
+    // nothing — while an alias whose target this could not resolve, or one the
+    // indices point at inconsistently, would name a field that some index does
+    // not map at all, and a `terms` aggregation on an unmapped field returns
+    // empty buckets with no error.
+    return field;
+  }
+  if (aliasVaries === true) {
+    throw new CfOtelError(
+      "MAPPING_LOOKUP_FAILED",
+      `Field "${field}" is an alias pointing at different targets across the backing indices of ${index}, ` +
+        "so its .keyword sub-field cannot be named safely. Aggregate on the concrete target field instead.",
+    );
+  }
+  // `lookUpField` agrees the type across indices but says nothing about
+  // sub-fields, and `fields` is what decides the target: with `text` in both
+  // indices and `.keyword` in only one, taking index [0]'s answer flipped
+  // between `<field>.keyword` and a "no .keyword sub-field" error on nothing
+  // but `_mapping` key order — and the winning branch dropped the other
+  // index's shards into empty buckets with no error.
+  const definitions = findFieldDefinitions(mappingResponse, field);
+  const hasKeyword = (entry: IndexDefinition): boolean => {
+    const subFields = entry.definition["fields"];
+    return isRecord(subFields) && isRecord(subFields["keyword"]);
+  };
+  if (definitions.some(hasKeyword) && !definitions.every(hasKeyword)) {
+    throw new CfOtelError(
+      "MAPPING_LOOKUP_FAILED",
+      `Field "${field}" is text-mapped, and only some backing indices of ${index} give it a .keyword sub-field, ` +
+        "so no single aggregation target covers them all: the rest would contribute empty buckets with no error.",
+    );
+  }
+  if (definitions.length > 0 && definitions.every(hasKeyword)) {
     // The sub-field hangs off the *target*, not off the alias: an alias
     // registers only its own full name, so `<alias>.keyword` is unmapped — and
     // a `terms` aggregation on an unmapped field returns empty buckets with no
     // error, which is precisely the silent failure this function exists to
     // prevent. Name the target when the field reached here through one.
-    return `${resolved.aliasOf ?? field}.keyword`;
+    return `${aliasOf ?? field}.keyword`;
   }
-  const description = resolved.aliasOf === undefined ? "is text-mapped" : `is an alias onto "${resolved.aliasOf}", which is text-mapped`;
+  const description = aliasOf === undefined ? "is text-mapped" : `is an alias onto "${aliasOf}", which is text-mapped`;
   throw new CfOtelError(
     "MAPPING_LOOKUP_FAILED",
     `Field "${field}" ${description} and has no .keyword sub-field to aggregate on.`,
@@ -275,4 +430,68 @@ export async function assertFieldExists(
     `"${field}" is not present in ${index}, so ${why}. ` +
       "This tenant's OpenTelemetry collector is not exporting HTTP request headers.",
   );
+}
+
+/**
+ * OpenSearch's own `index.mapping.depth.limit` defaults to 20, so this ceiling
+ * is far above any mapping a cluster will serve — it exists so a malformed or
+ * hostile `_mapping` cannot turn a listing into an uncaught `RangeError`
+ * (measured: ~8,000 levels overflow the stack, and `JSON.parse` happily
+ * accepts 25,000). The previous top-level-only listing could not recurse at all.
+ */
+const MAX_MAPPING_DEPTH = 100;
+
+function collectFieldNames(properties: Record<string, unknown>, prefix: string, into: Set<string>, depth = 0): void {
+  if (depth >= MAX_MAPPING_DEPTH) {
+    return;
+  }
+  for (const [key, value] of Object.entries(properties)) {
+    if (!isRecord(value)) {
+      continue;
+    }
+    const path = prefix === "" ? key : `${prefix}.${key}`;
+    into.add(path);
+    const subFields = value["fields"];
+    if (isRecord(subFields)) {
+      for (const name of Object.keys(subFields)) {
+        into.add(`${path}.${name}`);
+      }
+    }
+    const nested = value["properties"];
+    if (isRecord(nested)) {
+      collectFieldNames(nested, path, into, depth + 1);
+    }
+  }
+}
+
+/**
+ * Every field name the mapping declares, container nodes included.
+ *
+ * Top-level keys alone are what `mapping` listed until 0.9.0, and against the
+ * live span index that meant 32 names for 173 leaf fields — 111 of the hidden
+ * ones under `span.attributes.` and 15 under `resource.attributes.`, which are
+ * precisely the two bags `--attr` resolves a key against. The command whose
+ * stated job is field discovery showed none of the fields the package's main
+ * filter flag can use, while `walkIndexProperties` resolved every one of them
+ * by name — a listing inconsistent with its own lookup.
+ *
+ * Containers stay listed: `object` versus `nested` is the difference between a
+ * plain filter and one that needs a `nested` query.
+ */
+export function listAllFieldNames(mappingResponse: unknown): readonly string[] {
+  const names = new Set<string>();
+  if (!isRecord(mappingResponse)) {
+    return [];
+  }
+  for (const indexEntry of Object.values(mappingResponse)) {
+    if (!isRecord(indexEntry)) {
+      continue;
+    }
+    const mappings = indexEntry["mappings"];
+    const properties = isRecord(mappings) ? mappings["properties"] : undefined;
+    if (isRecord(properties)) {
+      collectFieldNames(properties, "", names);
+    }
+  }
+  return [...names].sort();
 }

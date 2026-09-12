@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findFieldInMapping, getFieldMapping, resolveAggregatableField } from "../../src/mapping.js";
+import { findFieldInMapping, getFieldMapping, listAllFieldNames, lookUpField, resolveAggregatableField } from "../../src/mapping.js";
 import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
 const SAMPLE_MAPPING = {
@@ -163,7 +163,7 @@ describe("resolveAggregatableField", () => {
     );
   });
 
-  it("returns an alias's target for a keyword-mapped target, which OpenSearch resolves either way", async () => {
+  it("keeps the alias as written when its target needs no .keyword, since OpenSearch resolves it either way", async () => {
     const client = fakeClientWithMapping({
       idx: {
         mappings: {
@@ -175,7 +175,50 @@ describe("resolveAggregatableField", () => {
       },
     });
 
-    expect(await resolveAggregatableField(client, "idx", "app_name")).toBe("resource.attributes.sap@cf@app_name");
+    // Measured live: an aggregation on the alias and one on its target return
+    // identical buckets, so substituting the target buys nothing here — while
+    // a target that some index does not map would silently contribute empty
+    // buckets. Only the `.keyword` case genuinely needs the target name.
+    expect(await resolveAggregatableField(client, "idx", "app_name")).toBe("app_name");
+  });
+
+  it("refuses to pick an aggregation target when the indices disagree about the field", async () => {
+    const client = fakeClientWithMapping({
+      "idx-000001": { mappings: { properties: { svc: { type: "text", fields: { keyword: { type: "keyword" } } } } } },
+      "idx-000002": { mappings: { properties: { svc: { type: "keyword" } } } },
+    });
+
+    // Taking the first index's opinion made the answer depend on `_mapping`
+    // key order, and either way the disagreeing index's shards return empty
+    // buckets with no error.
+    await expect(resolveAggregatableField(client, "idx", "svc")).rejects.toThrow(
+      /mapped inconsistently across the backing indices .*\(text, keyword\)/,
+    );
+  });
+
+  it("refuses the .keyword fallback when indices point the alias at different targets", async () => {
+    const client = fakeClientWithMapping({
+      "idx-000001": {
+        mappings: {
+          properties: {
+            body: { type: "alias", path: "rawMessage" },
+            rawMessage: { type: "text", fields: { keyword: { type: "keyword" } } },
+          },
+        },
+      },
+      "idx-000002": {
+        mappings: {
+          properties: {
+            body: { type: "alias", path: "message" },
+            message: { type: "text", fields: { keyword: { type: "keyword" } } },
+          },
+        },
+      },
+    });
+
+    await expect(resolveAggregatableField(client, "idx", "body")).rejects.toThrow(
+      /pointing at different targets/,
+    );
   });
 
   it("names the alias and its target when the target is text with no .keyword to fall back to", async () => {
@@ -391,5 +434,136 @@ describe("ignore_above across backing indices", () => {
 
   it("reports no cap, and no divergence, when no index sets one", () => {
     expect(findFieldInMapping(withCaps(undefined, undefined), "unit")).toEqual({ field: "unit", type: "keyword" });
+  });
+});
+
+describe("implicit object fields", () => {
+  /** Two backing indices of one pattern, the shape `_mapping` returns. */
+  function mappingOf(...indices: readonly Record<string, unknown>[]): Record<string, unknown> {
+    return Object.fromEntries(indices.map((properties, position) => [`otel-v1-apm-span-00000${String(position + 1)}`, { mappings: { properties } }]));
+  }
+
+  it("reports a container as `object` rather than absent", () => {
+    // Measured against the live span index: twelve containers are declared
+    // with a `properties` block and no `type`, `span`, `span.attributes`,
+    // `resource` and `resource.attributes` among them. Reading a missing
+    // `type` as "no answer" made `mapping --field span` report a field present
+    // in all fifteen backing indices as not found, and printed `unknown` — the
+    // sentinel for a field this version cannot read — for each of them.
+    const spanMapping = mappingOf({ span: { properties: { attributes: { properties: { "url@path": { type: "keyword" } } } } } });
+
+    expect(lookUpField(spanMapping, "span")).toEqual({ status: "found", mapping: { field: "span", type: "object" } });
+    expect(lookUpField(spanMapping, "span.attributes")).toEqual({ status: "found", mapping: { field: "span.attributes", type: "object" } });
+  });
+
+  it("answers the same way whichever index the response lists first", () => {
+    const container = { app_id: { properties: { inner: { type: "keyword" } } } };
+    const leaf = { app_id: { type: "keyword" } };
+
+    // Order-dependence here meant the same tenant got either "was not found"
+    // or "mapped inconsistently (keyword)" — a one-type disagreement — from
+    // the same set of indices.
+    expect(lookUpField(mappingOf(container, leaf), "app_id")).toEqual({ status: "disagrees", types: ["object", "keyword"] });
+    expect(lookUpField(mappingOf(leaf, container), "app_id")).toEqual({ status: "disagrees", types: ["keyword", "object"] });
+  });
+
+  it("resolves a multi-field, which hangs off `fields` rather than `properties`", () => {
+    // The module handed out `description.keyword` from
+    // `resolveAggregatableField` while `mapping --field description.keyword`
+    // said it did not exist.
+    expect(findFieldInMapping(SAMPLE_MAPPING, "description.keyword")).toEqual({
+      field: "description.keyword",
+      type: "keyword",
+      ignoreAbove: 256,
+    });
+  });
+
+  it("stops at a multi-field instead of swallowing whatever follows it", () => {
+    // The `fields` fallback returns immediately, so without the last-segment
+    // guard `description.keyword.anything` would resolve to `description.keyword`
+    // and report a real type for a path that names nothing.
+    expect(findFieldInMapping(SAMPLE_MAPPING, "description.keyword.keyword")).toBeUndefined();
+    expect(findFieldInMapping(SAMPLE_MAPPING, "description.keyword.anything")).toBeUndefined();
+  });
+
+  it("does not treat an inherited property as a mapped field", () => {
+    expect(lookUpField(SAMPLE_MAPPING, "__proto__")).toEqual({ status: "absent" });
+  });
+
+  it("lists nested leaves and multi-fields, not just the top level", () => {
+    // 32 names for 173 leaf fields against the live index, with all 111
+    // `span.attributes.*` and 15 `resource.attributes.*` fields — the two bags
+    // `--attr` resolves against — missing from the listing entirely.
+    expect(listAllFieldNames(mappingOf({ span: { properties: { attributes: { properties: { "url@path": { type: "keyword" } } } } }, traceState: { type: "text", fields: { keyword: { type: "keyword" } } } }))).toEqual([
+      "span",
+      "span.attributes",
+      "span.attributes.url@path",
+      "traceState",
+      "traceState.keyword",
+    ]);
+  });
+});
+
+describe("fields inside a nested parent", () => {
+  function mappingOf(...indices: readonly Record<string, unknown>[]): Record<string, unknown> {
+    return Object.fromEntries(indices.map((properties, position) => [`otel-v1-apm-span-00000${String(position + 1)}`, { mappings: { properties } }]));
+  }
+
+  it("names the nested ancestor a plain filter cannot reach past", () => {
+    // `events` and `links` are the two nested parents on the live span index,
+    // holding 13 fields including `events.attributes.exception@type` — exactly
+    // what someone chasing an error would filter on, and exactly what a plain
+    // `term` silently fails to match.
+    const lookup = lookUpField(mappingOf({ events: { type: "nested", properties: { attributes: { properties: { "exception@type": { type: "keyword" } } } } } }), "events.attributes.exception@type");
+
+    expect(lookup).toEqual({
+      status: "found",
+      mapping: { field: "events.attributes.exception@type", type: "keyword", nestedUnder: "events" },
+    });
+  });
+
+  it("leaves the nested field's own row unmarked, since its type already says so", () => {
+    expect(lookUpField(mappingOf({ events: { type: "nested", properties: { name: { type: "keyword" } } } }), "events")).toEqual({
+      status: "found",
+      mapping: { field: "events", type: "nested" },
+    });
+  });
+
+  it("flags a nesting the indices disagree about rather than picking one", () => {
+    const lookup = lookUpField(
+      mappingOf({ bag: { type: "nested", properties: { leaf: { type: "long" } } } }, { bag: { properties: { leaf: { type: "long" } } } }),
+      "bag.leaf",
+    );
+
+    expect(lookup).toEqual({ status: "found", mapping: { field: "bag.leaf", type: "long", nestedUnder: "bag", nestedVaries: true } });
+  });
+});
+
+describe("resolveAggregatableField refuses targets that aggregate to silence", () => {
+  it.each([
+    ["span", { span: { properties: { attributes: { properties: { "url@path": { type: "keyword" } } } } } }, /is an object container/],
+    ["events", { events: { type: "nested", properties: { name: { type: "keyword" } } } }, /is a nested container/],
+    ["events.name", { events: { type: "nested", properties: { name: { type: "keyword" } } } }, /inside the nested "events" documents/],
+  ])("refuses %s", async (field, properties, expected) => {
+    // Each of these returns zero buckets with zero shard failures against the
+    // live index — the silent answer this function exists to turn into a loud
+    // one. None of them was refused before the lookup could see containers and
+    // nesting at all.
+    const client = fakeClientWithMapping({ idx: { mappings: { properties } } });
+
+    await expect(resolveAggregatableField(client, "idx", field)).rejects.toThrow(expected);
+  });
+
+  it("refuses a text field whose .keyword sub-field only some indices declare", async () => {
+    // `lookUpField` agrees the type but says nothing about sub-fields, and
+    // `fields` is what decides the target: index order alone used to pick
+    // between `svc.keyword` and an error, and the winning branch dropped the
+    // other index's shards into empty buckets with no error.
+    const client = fakeClientWithMapping({
+      "idx-000001": { mappings: { properties: { svc: { type: "text", fields: { keyword: { type: "keyword" } } } } } },
+      "idx-000002": { mappings: { properties: { svc: { type: "text" } } } },
+    });
+
+    await expect(resolveAggregatableField(client, "idx", "svc")).rejects.toThrow(/only some backing indices/);
   });
 });

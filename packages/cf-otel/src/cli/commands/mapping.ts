@@ -2,37 +2,12 @@ import type { Command } from "commander";
 
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { lookUpField } from "../../mapping.js";
+import { listAllFieldNames, lookUpField } from "../../mapping.js";
 import type { FieldLookup } from "../../mapping.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { MappingOpts } from "../commandTypes.js";
 import { emitRows, parseFormat } from "../output.js";
 import { withCredentialOptions, withFormatOption, withSaveOption, withTargetOptions } from "../shared-options.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function listAllFieldNames(mappingResponse: unknown): readonly string[] {
-  const names = new Set<string>();
-  if (!isRecord(mappingResponse)) {
-    return [];
-  }
-  for (const indexEntry of Object.values(mappingResponse)) {
-    if (!isRecord(indexEntry)) {
-      continue;
-    }
-    const mappings = indexEntry["mappings"];
-    const properties = isRecord(mappings) ? mappings["properties"] : undefined;
-    if (!isRecord(properties)) {
-      continue;
-    }
-    for (const name of Object.keys(properties)) {
-      names.add(name);
-    }
-  }
-  return [...names].sort();
-}
 
 /** `(varies)` rather than a blank: an empty cap reads as "no cap", the safe reading, while divergence is the hazardous one. */
 const VARIES = "(varies)";
@@ -51,6 +26,10 @@ function fieldRow(name: string, mappingResponse: unknown): Record<string, string
     // a query against it compares — naming the target keeps that honest, and
     // gives the reader the concrete path to use everywhere else.
     ALIAS_OF: found?.aliasVaries === true ? VARIES : (found?.aliasOf ?? ""),
+    // A field inside a `nested` parent is stored as a separate hidden document:
+    // a plain filter or aggregation on it matches nothing and reports no error
+    // (measured live). Listing it without saying so would advertise a dead end.
+    NESTED_IN: found?.nestedVaries === true ? VARIES : (found?.nestedUnder ?? ""),
   };
 }
 

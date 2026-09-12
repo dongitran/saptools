@@ -2,6 +2,74 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.12.0
+
+### Fixed
+
+- `watch` refused only a duration-shaped cursor, which left the two worse shapes through. Measured
+  against the live backend: `"24"` is legal `epoch_millis`, so the cursor silently rewinds to 1970
+  and the watch crawls forward through the whole index printing ancient points as if they were
+  live; `"n/a"` is a `parse_exception`, so every later poll fails and retries forever, emitting
+  nothing at exit 0. The guard now states the requirement positively — a cursor is an instant this
+  package would accept as a bound, or it is not a cursor.
+
+- The window check compared bounds in milliseconds although `time` is `date_nanos`, so
+  `--since …T00:00:00.000000002Z --until …T00:00:00.000000001Z` was accepted and returned nothing
+  at exit 0. It now compares at the precision the field stores, matching `@saptools/cf-otel`.
+
+- `assertValidTimeRange` skipped shape validation for a command's default `--since`, which was
+  unreachable in-repo but is now public API alongside the builder it guards.
+
+- The deeper listing surfaced a second silent dead end, so it now names it. A field inside a
+  `nested` parent is stored as a separate hidden document: measured live, a `terms` aggregation on
+  `buckets.count`, `exemplars.spanId` or `quantiles.value` returns zero buckets and zero shard
+  failures, while an ordinary sibling returns real ones. Fifteen of the hundred listed rows sit
+  under one of the five nested parents, and a new `NESTED_IN` column names which — listing them
+  without saying so would have advertised fields no filter this package builds can reach.
+
+- `--since`/`--until` written without a timezone were compared in the operator's *local* zone while
+  OpenSearch reads them as UTC, so the inverted-window check failed in both directions — measured
+  live in UTC+7 against a real instance. `--since 2026-09-05 --until 2026-09-05T06:00` was refused
+  as inverted although the backend sees a forward six-hour window, and
+  `--since 2026-09-05T12:00 --until 2026-09-05T08:00:00Z` was accepted although the backend sees an
+  inverted one and returns nothing at exit 0 — the exact silent-empty result the check was added to
+  remove. Which direction a user hit depended on the sign of their offset, so it was invisible to
+  anyone testing in UTC. Bounds are now compared as the backend reads them.
+
+- Timezone offsets past ±18:00 were forwarded and rejected by the backend after a full credential
+  discovery. `java.time`'s `ZoneOffset` caps there, measured exactly: `+18:00` is accepted and
+  `+18:01` upward is not, along with `+00:60` and `+2500`. Enumerating all 40,000 offset strings
+  the old pattern could match confirms the bounded form accepts exactly the backend's set — no
+  regression, no over-accept — where the unbounded one admitted 359 well-formed offsets per sign
+  per separator spelling beyond the cap, plus 8,560 malformed ones.
+
+- `mapping --field <name>.keyword` reported "was not found in the mapping" for a multi-field that
+  genuinely exists and aggregates normally — `metrics-*` maps `@timestamp.keyword` and
+  `origin.keyword` (measured live, both return real buckets). A multi-field hangs off a field's own
+  `fields` block rather than under `properties`, and only the `properties` branch was walked.
+
+- `mapping` with no `--field` listed only top-level keys: 46 names for 87 leaf fields on the live
+  pattern. `resource` appeared as a dead end while the nine `resource.attributes.sap@cf@*` fields
+  beneath it — the ones worth filtering on — appeared nowhere, even though `--field` resolved each
+  one by name. The listing now matches what the lookup already supported: 100 rows against the same
+  index, containers included, so `object` versus `nested` is visible before a filter is written.
+
+- `watch` fed a cursor read straight from a document's `time` field back in as `--since`. A value
+  shaped like a duration turned the cursor into a relative window that re-resolved against `now`
+  every poll, replaying the same range forever, and an absurd magnitude threw from a call site
+  outside the poll loop's own error handling, ending the session. Impossible under the real
+  `date_nanos` mapping, but this package deliberately tolerates a rotated index where `time` is
+  unmapped, and `_source` is raw.
+
+### Changed
+
+- The mapping lookup moved from `cli/commands/mapping.ts` into `src/mapping.ts`, and `lookUpField`,
+  `listAllFieldNames`, `assertValidTimeBoundShape`, `assertValidTimeRange` and `isAbsoluteInstant`
+  are now exported. `buildMetricBoolQuery` forwards an absolute bound verbatim, so without the
+  validators a library consumer had no way to reject one the backend will refuse. While the mapping
+  logic was module-private its only observable surface was four rendered CLI columns, which is how a
+  divergent-`ignore_above` bug and a missing implicit-object check both escaped the suite.
+
 ## 0.11.0
 
 ### Fixed

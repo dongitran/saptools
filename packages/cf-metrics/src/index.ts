@@ -23,6 +23,8 @@ export { queryHistory, resolveMetricKind } from "./history.js";
 export type { HistoryQueryOptions, HistoryResult, KindLookupWindow, KindResolution } from "./history.js";
 export { buildKindSubAggs, isCumulativeTemporality, parseMetricKind, shapeHistoryBucket } from "./kind.js";
 export type { MetricKind } from "./kind.js";
+export { listAllFieldNames, lookUpField } from "./mapping.js";
+export type { FieldLookup, FieldMapping } from "./mapping.js";
 export { queryNames } from "./names.js";
 export type { NamesQueryOptions } from "./names.js";
 export {
@@ -31,7 +33,11 @@ export {
   searchAfterAll,
 } from "./opensearch-client.js";
 export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./opensearch-client.js";
-export { buildMetricBoolQuery, resolveTimeBound } from "./query-builder.js";
+// The validators ship alongside the builder deliberately: `buildMetricBoolQuery`
+// forwards an absolute bound verbatim, so without them a library consumer has no
+// way to reject one the backend will refuse — a gap `@saptools/cf-otel` did not
+// have, since its own `resolveTimeBound` validates as it resolves.
+export { assertValidTimeBoundShape, assertValidTimeRange, buildMetricBoolQuery, isAbsoluteInstant, resolveTimeBound } from "./query-builder.js";
 export {
   clearResultSessions,
   createResultSession,

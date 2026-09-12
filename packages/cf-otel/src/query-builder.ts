@@ -8,11 +8,32 @@ const DURATION_UNITS = Object.keys(UNIT_MILLIS) as readonly DurationUnit[];
 /**
  * The `strict_date_optional_time` shape OpenSearch accepts for `startTime`
  * (mapped as `date_nanos`): a calendar date, optionally followed by a time
- * with optional seconds, fractional seconds of any width, and an optional `Z`
- * or `±HH:MM` offset.
+ * with optional seconds, up to nine fractional digits, and an optional `Z` or
+ * `±HH:MM` offset.
+ *
+ * Every boundary was measured against the live backend rather than inferred,
+ * because a shape accepted here and rejected there costs the caller a full
+ * credential-discovery round trip before failing:
+ *
+ * - **Hour 24** is legal end-of-day in ISO-8601 and `Date.parse` rolls it into
+ *   the next day, but `java.time` resolves `HOUR_OF_DAY` strictly 0-23 and
+ *   rejects it. `T24:00:00Z` used to be forwarded verbatim.
+ * - **A tenth fractional digit** exceeds the nanosecond precision the mapping
+ *   keeps; `.1234567890Z` was forwarded and rejected.
+ * - **Offsets** are capped at ±18:00, `java.time`'s `ZoneOffset` limit:
+ *   `+18:00` is accepted and `+18:01` upward is not. `+00:60` and `+2500` are
+ *   refused too, though those never reached the backend — the `Date.parse`
+ *   guard already caught them; the bound names the shape instead of blaming
+ *   the whole value.
+ *
+ * `@saptools/cf-metrics` measured and applied the same three bounds; this is
+ * the same pattern, so the two packages accept the same set.
  */
 const ISO_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  /^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:(?:0\d|1[0-7]):?[0-5]\d|18:?00))?)?$/;
+
+/** A clock-time bound that names no zone — the shape `Date.parse` reads as local and OpenSearch reads as UTC. */
+const ZONELESS_CLOCK_TIME = /T[\d:.]+$/;
 
 const TIME_BOUND_GRAMMAR =
   'a relative duration ("24h", "30m", "7d" — units s, m, h, d) or an absolute ' +
@@ -148,18 +169,40 @@ export function resolveTimeBound(value: string, now: Date = new Date(), flag?: s
 }
 
 /**
+ * The same instant OpenSearch will see, at the precision `startTime` actually
+ * stores.
+ *
+ * Two corrections over a bare `Date.parse`:
+ *
+ * - **Zone.** `Date.parse` follows ECMA-262, where a date-time string with no
+ *   zone designator is *local*, while `strict_date_optional_time` reads it as
+ *   UTC. Comparing raw strings shifted the bounds by the operator's own offset,
+ *   so the ordering check failed in both directions — refusing a genuinely
+ *   forward window, and passing an inverted one that then returns nothing at
+ *   exit 0, which is the outcome the check exists to remove. The skew was
+ *   previously documented here as an accepted trade against rejecting the
+ *   date-only form; normalizing costs nothing and gives up neither. A date-only
+ *   value already parses as UTC and is left alone.
+ * - **Precision.** `startTime` is `date_nanos` and `Date.parse` sees only
+ *   milliseconds, so `.000000002Z` and `.000000001Z` compared equal and an
+ *   inverted nanosecond range slipped through.
+ */
+function comparableInstant(bound: string): { readonly ms: number; readonly subMillis: number } {
+  const ms = Date.parse(ZONELESS_CLOCK_TIME.test(bound) ? `${bound}Z` : bound);
+  const fraction = /\.(\d+)/.exec(bound)?.[1] ?? "";
+  return { ms, subMillis: Number(fraction.slice(3).padEnd(6, "0")) };
+}
+
+/**
  * A swapped range matches nothing, which on a read-only tool is
  * indistinguishable from "this query genuinely found no spans" — the one
  * outcome worth failing loudly on instead of reporting as an empty result.
- *
- * Compared with `Date.parse` on bounds that are already validated. A bound
- * written without a timezone offset is read as local time here but as UTC by
- * OpenSearch, so this comparison can skew by the machine's offset for that one
- * form; that is accepted, because rejecting offset-less input would also reject
- * the useful date-only form.
  */
 function assertOrderedRange(since: string, until: string): void {
-  if (Date.parse(since) > Date.parse(until)) {
+  const start = comparableInstant(since);
+  const end = comparableInstant(until);
+  const inverted = start.ms > end.ms || (start.ms === end.ms && start.subMillis > end.subMillis);
+  if (inverted) {
     throw new CfOtelError(
       "CONFIG",
       `--since resolved to ${since}, which is after --until (${until}); the range would match nothing`,

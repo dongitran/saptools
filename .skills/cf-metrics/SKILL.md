@@ -16,10 +16,7 @@ Cloud Foundry's Log Cache only retains a few minutes of container-metric history
 instrumentation, use `cf-inspector` or `cf-live-trace` instead.
 
 If `cf-metrics` is missing, install it from `@saptools/cf-metrics`:
-`npm install -g @saptools/cf-metrics`. Once installed it keeps itself current: every command checks
-npm at most once an hour and, when a newer release exists, installs it and re-runs the command,
-printing `cf-metrics: updating X -> Y ...` and `cf-metrics: updated to Y; re-running the command` on
-stderr. `SAPTOOLS_AUTO_UPDATE=off` disables that; `cf-metrics self-update --check` shows the status.
+`npm install -g @saptools/cf-metrics`.
 
 ## First Steps
 
@@ -57,29 +54,16 @@ stderr. `SAPTOOLS_AUTO_UPDATE=off` disables that; `cf-metrics self-update --chec
 
 ## Credential Discovery
 
-Every command needs a Cloud Logging **dashboards** basic-auth credential. Only credentials created
-before SAML was enabled on the instance carry a usable username/password, so `cf-metrics` finds the
-instance through the v3 API, lists every binding on it in one Cloud Controller request, and prefers
-service keys (newest first), then app bindings (oldest first), then `--allow-mint-credential` as an
-explicit, disruptive last resort — never use that without the user's go-ahead on a shared/production
-instance. Pass `--verbose` to see how many bindings were found and which one succeeded.
-
-Discovery needs a Cloud Foundry session. If `cf target` already points at the requested org/space,
-that session is reused read-only and **no `SAP_EMAIL`/`SAP_PASSWORD` are needed**; otherwise (or if
-the session is dead) `cf-metrics` logs in on its own with those two variables, in a temporary
-`CF_HOME`.
-
-The resolved credential is **cached** under `~/.saptools/cf-metrics/credentials.json` (mode 0600,
-7-day TTL), so only the first command against a target pays the full round trip (~30s measured); a
-warm command spawns no `cf` at all. A cached credential OpenSearch rejects (HTTP 401/403) is dropped
-and rediscovered automatically within the same command. `--refresh-credential` forces rediscovery,
-`CF_METRICS_CREDENTIAL_CACHE=0` disables the cache, `cf-metrics credential list` shows what is
-cached without the secret, and `cf-metrics credential clear` forgets it.
+Every command needs a Cloud Logging **dashboards** basic-auth credential in addition to
+`SAP_EMAIL`/`SAP_PASSWORD`. Only credentials created before SAML was enabled on the instance carry
+a usable username/password, so `cf-metrics` lists every binding on the instance in one Cloud
+Controller v3 request and prefers service keys (newest first), then app bindings (oldest first),
+then `--allow-mint-credential` as an explicit, disruptive last resort — never use that without the
+user's go-ahead on a shared/production instance. Pass `--verbose` to see how many bindings were
+found and which one succeeded.
 
 ```bash
 cf-metrics names --service my-app --region eu10 --org my-org --space my-space --verbose
-cf-metrics credential list
-cf-metrics credential clear
 ```
 
 ## Command Choice
@@ -173,20 +157,3 @@ candidates before reaching for `--allow-mint-credential`.
 
 **"Multiple 'cloud-logging' service instances found in this space"**: pass
 `--service-instance <name>` explicitly — the CLI will not guess which one you meant.
-
-**"Cannot reach Cloud Foundry ... no 'cf target' session is active, and SAP_EMAIL/SAP_PASSWORD are
-not set"**: either `cf login` and `cf target -o <org> -s <space>` (the matching session is then
-reused), or export `SAP_EMAIL` and `SAP_PASSWORD` so the CLI can log in on its own.
-
-**A command that used to work now says "cached dashboards credential ... was rejected;
-rediscovering"**: informational — the service key or binding behind the cached credential was
-deleted; the CLI already discovered a replacement and retried. Nothing to do unless the rediscovery
-itself failed, in which case the usual credential-discovery error follows.
-
-**stderr shows "cf-metrics: updating X -> Y ..." and the output differs from the last run**: the CLI
-upgraded itself before running the command (see Updates in the README). Check `cf-metrics --version`
-and the CHANGELOG for Y; `SAPTOOLS_AUTO_UPDATE=notify` announces a release instead of installing it.
-
-**"update to Y failed (...); continuing with X"**: the install could not complete (offline, read-only
-prefix); the command still ran on X. Run the printed `npm install -g` command by hand; the same
-version is not retried automatically for a day.

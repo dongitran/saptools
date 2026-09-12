@@ -16,8 +16,8 @@ export { formatCsv, formatJson, formatJsonCompact, formatResult, formatTable } f
 export type { OutputRow } from "./format.js";
 export { computeGaps } from "./gaps.js";
 export type { ComputeGapsOptions } from "./gaps.js";
-export { findFieldInMapping, getFieldMapping, resolveAggregatableField } from "./mapping.js";
-export type { FieldMapping } from "./mapping.js";
+export { findFieldInMapping, getFieldMapping, listAllFieldNames, lookUpField, resolveAggregatableField } from "./mapping.js";
+export type { FieldLookup, FieldMapping } from "./mapping.js";
 export {
   createOpenSearchClient,
   encodeConsoleProxyPath,

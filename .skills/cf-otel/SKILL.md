@@ -77,7 +77,26 @@ Blind exploration, before you know a traceId or any field names:
 cf-otel sample --service my-app --limit 3
 cf-otel fields <traceId> --name GET
 cf-otel mapping --field name
+cf-otel mapping                      # every field, nested attributes included
 ```
+
+`mapping` prints five columns: `FIELD`, `TYPE`, `IGNORE_ABOVE`, `ALIAS_OF`, `NESTED_IN`. Four cell
+values are worth knowing before you read a result:
+
+- `TYPE: ambiguous` — the backing indices type this field differently, so no single type is safe
+  for a query spanning them. Different from `unknown`, which means the mapping could not be read.
+- `IGNORE_ABOVE: (varies)` — the indices cap this `keyword` at different lengths. A value past the
+  cap is stored but never indexed, so it matches on some shards and not others.
+- `ALIAS_OF: <path>` — the field is an alias and `TYPE` is its target's type, which is what a query
+  against it actually compares. `(varies)` there means the indices point it at different targets.
+  If `TYPE` itself reads `alias`, the target could not be resolved: treat the path as a lead, not
+  as a field to query.
+- `NESTED_IN: <path>` — the field lives inside that `nested` parent, which stores its children as
+  separate hidden documents. A plain `--attr` or aggregation on it matches nothing and reports no
+  error; reaching it needs a `nested` query, which no command here builds.
+
+`--field <name>` fails with "mapped inconsistently across the backing indices" rather than "was not
+found" when the field exists everywhere but is typed differently — those are different problems.
 
 Locate a trace once you know roughly what you're looking for:
 
@@ -165,8 +184,8 @@ cf-otel result clear
 
 **A `terms` aggregation returns no buckets for a field you know has data**: the field may be
 `text`-mapped rather than `keyword`-mapped — check with `cf-otel mapping --field <name>` before
-assuming the value doesn't occur. Commands that aggregate internally already do this
-bare-field-then-`.keyword`-fallback check automatically.
+assuming the value doesn't occur. No command does this for you: every aggregation the CLI runs
+internally is on `traceId`, and `resolveAggregatableField` is a library export only.
 
 **`selftime`'s self-time numbers don't add up to the root's own duration**: run `cf-otel detached
 <traceId>` next — this is the single most common cause, not a bug in the ranking.

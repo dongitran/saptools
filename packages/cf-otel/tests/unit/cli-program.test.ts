@@ -110,7 +110,7 @@ describe("mapping", () => {
       getMapping: async () => ({ idx: { mappings: { properties: { name: { type: "keyword", ignore_above: 1024 } } } } }),
     });
     const text = await runCli(["mapping", "--field", "name", "--format", "json"], client);
-    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "" }]);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "", NESTED_IN: "" }]);
   });
 
   /**
@@ -150,8 +150,8 @@ describe("mapping", () => {
     });
     const text = await runCli(["mapping", "--format", "json"], client);
     const rows: readonly Record<string, unknown>[] = JSON.parse(text);
-    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "" });
-    expect(rows).toContainEqual({ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "" });
+    expect(rows).toContainEqual({ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: 1024, ALIAS_OF: "", NESTED_IN: "" });
+    expect(rows).toContainEqual({ FIELD: "serviceName", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "" });
   });
 
   it("fails clearly for an unknown field", async () => {
@@ -929,5 +929,97 @@ describe("diff", () => {
       },
     });
     await expect(runCli(["diff", "A", "B"], client)).rejects.toThrow(/"B" was not found/);
+  });
+});
+
+describe("mapping divergence sentinels", () => {
+  /** Two backing indices of the pattern, as `_mapping` returns them. */
+  function twoIndices(first: Record<string, unknown>, second: Record<string, unknown>): Record<string, unknown> {
+    return { "otel-v1-apm-span-000001": { mappings: { properties: first } }, "otel-v1-apm-span-000002": { mappings: { properties: second } } };
+  }
+
+  it("renders a divergent ignore_above cap as (varies) beside the agreed type", async () => {
+    const client = fakeClient({
+      getMapping: async () => twoIndices({ name: { type: "keyword", ignore_above: 256 } }, { name: { type: "keyword", ignore_above: 1024 } }),
+    });
+
+    // Blank reads as "no cap at all", the safe interpretation, exactly
+    // inverting the hazard: a value past the cap is stored but never indexed,
+    // so it matches on one shard and not another.
+    const text = await runCli(["mapping", "--field", "name", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "name", TYPE: "keyword", IGNORE_ABOVE: "(varies)", ALIAS_OF: "", NESTED_IN: "" }]);
+  });
+
+  it("renders a divergent alias target as (varies) beside the agreed type", async () => {
+    const client = fakeClient({
+      getMapping: async () =>
+        twoIndices(
+          { app_name: { type: "alias", path: "resource.attributes.app" }, resource: { properties: { attributes: { properties: { app: { type: "keyword" } } } } } },
+          { app_name: { type: "alias", path: "resource.attributes.name" }, resource: { properties: { attributes: { properties: { name: { type: "keyword" } } } } } },
+        ),
+    });
+
+    const text = await runCli(["mapping", "--field", "app_name", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "app_name", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "(varies)", NESTED_IN: "" }]);
+  });
+
+  it("lists a container as object and shows the attribute fields beneath it", async () => {
+    const client = fakeClient({
+      getMapping: async () => twoIndices({ span: { properties: { attributes: { properties: { "url@path": { type: "keyword" } } } } } }, {}),
+    });
+
+    // Both halves used to fail at once: `span` printed `unknown`, and the
+    // `span.attributes.*` fields `--attr` resolves against did not appear.
+    const rows = JSON.parse(await runCli(["mapping", "--format", "json"], client)) as Record<string, unknown>[];
+    expect(rows).toContainEqual({ FIELD: "span", TYPE: "object", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "" });
+    expect(rows).toContainEqual({ FIELD: "span.attributes.url@path", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "" });
+  });
+
+  it("renders a field the indices type differently as ambiguous, not unknown", async () => {
+    const client = fakeClient({ getMapping: async () => twoIndices({ unit: { type: "keyword" } }, { unit: { type: "text" } }) });
+
+    const rows = JSON.parse(await runCli(["mapping", "--format", "json"], client)) as Record<string, unknown>[];
+    expect(rows).toContainEqual({ FIELD: "unit", TYPE: "ambiguous", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "" });
+  });
+});
+
+describe("mapping marks fields a plain filter cannot reach", () => {
+  it("names the nested parent in NESTED_IN and leaves ordinary fields blank", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        "otel-v1-apm-span-000001": {
+          mappings: {
+            properties: {
+              events: { type: "nested", properties: { attributes: { properties: { "exception@type": { type: "keyword" } } } } },
+              traceId: { type: "keyword" },
+            },
+          },
+        },
+      }),
+    });
+
+    const rows = JSON.parse(await runCli(["mapping", "--format", "json"], client)) as Record<string, unknown>[];
+    expect(rows).toContainEqual({
+      FIELD: "events.attributes.exception@type",
+      TYPE: "keyword",
+      IGNORE_ABOVE: "",
+      ALIAS_OF: "",
+      NESTED_IN: "events",
+    });
+    expect(rows).toContainEqual({ FIELD: "traceId", TYPE: "keyword", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "" });
+  });
+});
+
+describe("mapping renders a divergent nesting as (varies)", () => {
+  it("does not leave the cell blank, which would read as reachable", async () => {
+    const client = fakeClient({
+      getMapping: async () => ({
+        "otel-v1-apm-span-000001": { mappings: { properties: { bag: { type: "nested", properties: { leaf: { type: "long" } } } } } },
+        "otel-v1-apm-span-000002": { mappings: { properties: { bag: { properties: { leaf: { type: "long" } } } } } },
+      }),
+    });
+
+    const text = await runCli(["mapping", "--field", "bag.leaf", "--format", "json"], client);
+    expect(JSON.parse(text)).toEqual([{ FIELD: "bag.leaf", TYPE: "long", IGNORE_ABOVE: "", ALIAS_OF: "", NESTED_IN: "(varies)" }]);
   });
 });

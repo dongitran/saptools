@@ -2,6 +2,7 @@ import { CfMetricsError } from "./errors.js";
 
 const RELATIVE_DURATION_PATTERN = /^(\d+)(s|m|h|d)$/;
 const UNIT_MILLIS: Readonly<Record<string, number>> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+
 /**
  * Anchored to ISO-8601's date/date-time shape — the format --since/--until's absolute-timestamp
  * path documents. Deliberately narrower than JS's `Date.parse`, which leniently accepts non-ISO
@@ -19,6 +20,16 @@ const UNIT_MILLIS: Readonly<Record<string, number>> = { s: 1_000, m: 60_000, h: 
  * at nine). Measured accepted, and allowed here: date-only values, `T03:00` with seconds omitted,
  * one to nine fractional digits, and offsets in `Z`, `+07:00`, `+0700` and `+14:00` forms.
  *
+ * The offset is bounded to ±18:00, which is `java.time`'s `ZoneOffset` limit and was measured
+ * exactly: `+18:00` is accepted, `+18:01` and everything past it is rejected, as are `+00:60` and
+ * `+2500`. Verified by enumerating all 40,000 offset strings the old pattern could match: the
+ * bounded form accepts exactly the set the backend accepts — no regression, no over-accept. The
+ * unbounded `[+-]\d{2}:?\d{2}` admitted 359 well-formed offsets per sign per separator spelling
+ * beyond the cap; those reached the backend and cost a full credential discovery before it refused
+ * them. Its 8,560 malformed spellings per sign (`+00:60`, `+2500`) never got that far — the
+ * `Date.parse` guard below already caught them — but the bound names the shape instead of blaming
+ * the whole value.
+ *
  * Three shapes the backend accepts are still rejected here, deliberately: hour-only (`2026-08-30T03`),
  * the same with a zone, and a comma as the fraction separator. `Date.parse` returns `NaN` for all
  * three, and `assertValidTimeRange` compares bounds through `Date.parse` — so accepting them would
@@ -26,7 +37,61 @@ const UNIT_MILLIS: Readonly<Record<string, number>> = { s: 1_000, m: 60_000, h: 
  * them. A refusal naming the shape beats a check that quietly stops applying.
  */
 const ABSOLUTE_ISO_PATTERN =
-  /^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  /^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:(?:0\d|1[0-7]):?[0-5]\d|18:?00))?)?$/;
+
+/**
+ * True when `value` is an instant this package would accept as an absolute
+ * time bound — the whole requirement for `watch`'s polling cursor, stated
+ * positively.
+ *
+ * The cursor is read straight out of a document's `time` field and fed back in
+ * as `--since`. Under the real `date_nanos` mapping that is always a
+ * timestamp, but the package deliberately tolerates a rotated index where
+ * `time` is unmapped, and `_source` is raw. Rejecting only duration-shaped
+ * values left the two worse cases through, both measured against the live
+ * backend: `"24"` is legal `epoch_millis`, so the cursor silently rewinds to
+ * 1970 and the watch crawls forward through the whole index printing ancient
+ * points as if they were live; `"n/a"` is a `parse_exception`, so every
+ * subsequent poll fails and retries forever without emitting anything, at exit
+ * 0. A cursor is a point in time or it is not a cursor.
+ */
+export function isAbsoluteInstant(value: string): boolean {
+  const trimmed = value.trim();
+  return ABSOLUTE_ISO_PATTERN.test(trimmed) && calendarDateFault(trimmed) === undefined && !Number.isNaN(Date.parse(trimmed));
+}
+
+/** A clock-time bound that names no zone — the shape `Date.parse` reads as local and OpenSearch reads as UTC. */
+const ZONELESS_CLOCK_TIME = /T[\d:.]+$/;
+
+/**
+ * The same instant OpenSearch will see, as milliseconds.
+ *
+ * `Date.parse` follows ECMA-262: a date-time string with no zone designator is
+ * *local* time, while `strict_date_optional_time` reads it as UTC. Comparing
+ * the two bounds through the raw string therefore shifted them by the
+ * operator's own UTC offset, and the window check built on that comparison
+ * failed in both directions — measured live in UTC+7:
+ * `--since 2026-09-05 --until 2026-09-05T06:00` was refused as inverted
+ * although the backend sees a forward six-hour window, and
+ * `--since 2026-09-05T12:00 --until 2026-09-05T08:00:00Z` was accepted
+ * although the backend sees an inverted one and returns nothing at exit 0 —
+ * the exact silent-empty result the check exists to remove. Which direction a
+ * user hits depends on the sign of their offset, so the bug was invisible to
+ * anyone testing in UTC.
+ *
+ * A date-only value already parses as UTC under the same specification, so it
+ * is left alone. (`Date.parse("2026-06-15Z")` happens to equal
+ * `Date.parse("2026-06-15")` rather than failing — the point is that stamping
+ * it would change nothing, not that it would break.)
+ */
+function comparableInstant(bound: string): { readonly ms: number; readonly subMillis: number } {
+  const ms = Date.parse(ZONELESS_CLOCK_TIME.test(bound) ? `${bound}Z` : bound);
+  // `time` is `date_nanos` (measured), and `Date.parse` sees only milliseconds,
+  // so without this `.000000002Z` and `.000000001Z` compare equal and an
+  // inverted nanosecond range reaches the backend and returns nothing at exit 0.
+  const fraction = /\.(\d+)/.exec(bound)?.[1] ?? "";
+  return { ms, subMillis: Number(fraction.slice(3).padEnd(6, "0")) };
+}
 
 /** Proleptic Gregorian, the calendar both `Date` and OpenSearch's `java.time` formatter use. */
 function isLeapYear(year: number): boolean {
@@ -156,26 +221,25 @@ export function assertValidTimeBoundShape(flagName: string, value: string): void
   }
 }
 
-/** Reject a month or day outside the calendar, naming which part is wrong. */
-function assertRealCalendarDate(flagName: string, value: string, trimmed: string): void {
+/** Why a date is not on the calendar, or `undefined` when it is. */
+function calendarDateFault(trimmed: string): string | undefined {
   const yearText = trimmed.slice(0, 4);
   const monthText = trimmed.slice(5, 7);
   const dayText = trimmed.slice(8, 10);
-  const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
   if (month < 1 || month > 12) {
-    throw new CfMetricsError(
-      "CONFIG",
-      `Invalid ${flagName} value "${value}" — not a real calendar date: there is no month ${monthText}.`,
-    );
+    return `there is no month ${monthText}`;
   }
-  const maxDay = daysInMonth(year, month);
-  if (day < 1 || day > maxDay) {
-    throw new CfMetricsError(
-      "CONFIG",
-      `Invalid ${flagName} value "${value}" — not a real calendar date: month ${monthText} of ${yearText} has ${String(maxDay)} days.`,
-    );
+  const maxDay = daysInMonth(Number(yearText), month);
+  return day < 1 || day > maxDay ? `month ${monthText} of ${yearText} has ${String(maxDay)} days` : undefined;
+}
+
+/** Reject a month or day outside the calendar, naming which part is wrong. */
+function assertRealCalendarDate(flagName: string, value: string, trimmed: string): void {
+  const fault = calendarDateFault(trimmed);
+  if (fault !== undefined) {
+    throw new CfMetricsError("CONFIG", `Invalid ${flagName} value "${value}" — not a real calendar date: ${fault}.`);
   }
 }
 
@@ -212,11 +276,18 @@ export function assertValidTimeRange(
   if (effectiveSince === undefined || opts.until === undefined) {
     return;
   }
-  const start = Date.parse(resolveTimeBound(effectiveSince, now));
-  const end = Date.parse(resolveTimeBound(opts.until, now));
+  // In-repo `defaultSince` is always a command's own constant, but this
+  // function is exported, so the caller's value gets the same check the flags
+  // get rather than sliding into the comparison unvalidated.
+  if (opts.since === undefined) {
+    assertValidTimeBoundShape("the default --since", effectiveSince);
+  }
+  const start = comparableInstant(resolveTimeBound(effectiveSince, now));
+  const end = comparableInstant(resolveTimeBound(opts.until, now));
   // Unparseable values already threw above; skipping here keeps this function
   // from inventing a second, less specific error for the same input.
-  if (Number.isNaN(start) || Number.isNaN(end) || start <= end) {
+  const inverted = start.ms > end.ms || (start.ms === end.ms && start.subMillis > end.subMillis);
+  if (Number.isNaN(start.ms) || Number.isNaN(end.ms) || !inverted) {
     return;
   }
   throw new CfMetricsError(
