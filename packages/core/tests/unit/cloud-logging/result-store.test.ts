@@ -62,11 +62,15 @@ describe("pruneResultSessions — stray temp-directory sweep", () => {
   it("retains a manifest this version cannot parse, never deletes it", async () => {
     await createResultSession({ cliName: "cf-log-search", command: "search", rows: [] }, { saptoolsRoot: root });
     const summariesBefore = await listResultSessions({ cliName: "cf-log-search", saptoolsRoot: root });
-    const ref = summariesBefore[0]!.ref;
-    expect(ref).toBeDefined();
+    const firstSummary = summariesBefore[0];
+    expect(firstSummary).toBeDefined();
+    if (!firstSummary) {
+      return;
+    }
+    const ref = firstSummary.ref;
     // Corrupt the manifest.
-    const fs = await import("node:fs/promises");
-    await fs.writeFile(join(root, "cf-log-search", "results", ref, "manifest.json"), "not json", "utf8");
+    const { writeFile: writeFileAsync } = await import("node:fs/promises");
+    await writeFileAsync(join(root, "cf-log-search", "results", ref, "manifest.json"), "not json", "utf8");
 
     const outcome = await pruneResultSessions({ cliName: "cf-log-search", saptoolsRoot: root });
 
@@ -296,8 +300,8 @@ describe("stray temp directory detection", () => {
   });
 });
 
-describe("pruneResultSessions — unreadable directories", () => {
-  it("retains non-empty directories that cannot be read", async () => {
+describe("pruneResultSessions — non-empty directories without manifest", () => {
+  it("retains non-empty directories when manifest is absent", async () => {
     const storeDir = join(root, "cf-log-search", "results");
     mkdirSync(storeDir, { recursive: true });
     const refDir = join(storeDir, "ffffffff");
@@ -348,25 +352,7 @@ describe("createResultSession — various row shapes", () => {
   });
 });
 
-describe("error classification — unreadable vs absent", () => {
-  it("classifies manifest with invalid JSON as unrecognized", async () => {
-    const session = await createResultSession(
-      { cliName: "cf-log-search", command: "search", rows: [] },
-      { saptoolsRoot: root }
-    );
-
-    const { writeFile: writeFileAsync } = await import("node:fs/promises");
-    await writeFileAsync(
-      join(root, "cf-log-search", "results", session.ref, "manifest.json"),
-      "{ invalid json",
-      "utf8"
-    );
-
-    await expect(
-      readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root })
-    ).rejects.toThrow(/not in a format this version understands/);
-  });
-
+describe("error classification — unreadable vs absent vs unrecognized", () => {
   it("classifies manifest with missing fields as unrecognized", async () => {
     const session = await createResultSession(
       { cliName: "cf-log-search", command: "search", rows: [] },
@@ -384,10 +370,26 @@ describe("error classification — unreadable vs absent", () => {
       readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root })
     ).rejects.toThrow(/not in a format this version understands/);
   });
+
+  it("classifies read failure as unreadable when manifest path is a directory", async () => {
+    const session = await createResultSession(
+      { cliName: "cf-log-search", command: "search", rows: [] },
+      { saptoolsRoot: root }
+    );
+
+    const { rmSync: rmSync2 } = await import("node:fs");
+    const manifestDir = join(root, "cf-log-search", "results", session.ref, "manifest.json");
+    rmSync2(manifestDir, { recursive: true, force: true });
+    mkdirSync(manifestDir, { recursive: true });
+
+    await expect(
+      readResultSession(session.ref, { cliName: "cf-log-search", saptoolsRoot: root })
+    ).rejects.toThrow(/could not be read; check permissions/);
+  });
 });
 
 describe("listResultSessions mixed validity", () => {
-  it("handles list with mix of valid, unreadable, and expired sessions", async () => {
+  it("handles list with mix of valid, unrecognized, and expired sessions", async () => {
     const now = new Date("2026-01-01T00:00:00Z");
     const valid = await createResultSession(
       { cliName: "cf-log-search", command: "valid", rows: [], ttlMinutes: 60 },
