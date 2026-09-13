@@ -58,3 +58,25 @@ export interface AppsOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOp
   readonly until?: string;
   readonly limit: number;
 }
+
+export interface ErrorsOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
+  readonly app?: string;
+  readonly since?: string;
+  readonly until?: string;
+  readonly limit: number;
+}
+
+export interface LatencyOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
+  readonly app?: string;
+  readonly by: string;
+  readonly since?: string;
+  readonly until?: string;
+  readonly limit: number;
+}
+
+export interface TopRoutesOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
+  readonly app?: string;
+  readonly since?: string;
+  readonly until?: string;
+  readonly limit: number;
+}
