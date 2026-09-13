@@ -60,7 +60,7 @@ describe("latency command", () => {
     await expect(program.parseAsync(["node", "cf-log-search", "latency", "--by", "nonsense"])).rejects.toThrow(/--by must be "app" or "route"/);
   });
 
-  it("--by route switches aggregation field to 'request'", async () => {
+  it("--by route switches aggregation field to 'request.keyword'", async () => {
     const program = new Command();
     registerLatencyCommand(program);
     const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -69,7 +69,7 @@ describe("latency command", () => {
 
     const call = searchMock.mock.calls[0];
     expect(call).toBeDefined();
-    expect(call?.[1].aggs?.by_bucket?.terms?.field).toBe("request");
+    expect(call?.[1].aggs?.by_bucket?.terms?.field).toBe("request.keyword");
     logSpy.mockRestore();
   });
 

@@ -2,6 +2,12 @@
 
 All notable changes to `@saptools/cf-log-search` are documented in this file.
 
+## 0.2.0
+
+### Added
+
+- `errors`, `latency`, and `top-routes` — RTR-only analytics over `logs-cfsyslog-*`'s already-structured router-access-log fields (status codes, response times, request paths).
+
 ## 0.1.1
 
 ### Changed

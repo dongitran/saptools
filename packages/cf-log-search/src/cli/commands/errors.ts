@@ -68,7 +68,7 @@ async function runErrors(opts: ErrorsOpts): Promise<void> {
 export function registerErrorsCommand(program: Command): void {
   const command = program
     .command("errors")
-    .description(`RTR-only: HTTP status-code breakdown (>=400) by app, over a time window (${DEFAULT_INDEX_PATTERN})`)
+    .description(`RTR-only: HTTP status-code breakdown (>=400) by app, over a time window (${DEFAULT_INDEX_PATTERN}); shows up to ${String(STATUS_BUCKETS_PER_APP)} distinct status codes per app`)
     .option("--app <name>", "restrict to one CF app name")
     .option("--limit <n>", "maximum apps to break down, 0 for no limit", parseNonNegativeIntOption, DEFAULT_ERRORS_LIMIT);
   withTimeRangeOptions(command);

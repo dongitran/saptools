@@ -46,7 +46,7 @@ describe("top-routes command", () => {
     logSpy.mockRestore();
   });
 
-  it("queries the correct field 'request'", async () => {
+  it("queries the correct field 'request.keyword'", async () => {
     const program = new Command();
     registerTopRoutesCommand(program);
     const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -55,7 +55,7 @@ describe("top-routes command", () => {
 
     const call = searchMock.mock.calls[0];
     expect(call).toBeDefined();
-    expect(call?.[1].aggs?.by_route?.terms?.field).toBe("request");
+    expect(call?.[1].aggs?.by_route?.terms?.field).toBe("request.keyword");
     logSpy.mockRestore();
   });
 

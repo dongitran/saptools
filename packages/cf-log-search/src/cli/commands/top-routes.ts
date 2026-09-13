@@ -9,6 +9,7 @@ import { emitRows, parseFormat, parsePositiveIntOption } from "../output.js";
 import { withCredentialOptions, withFormatOption, withSaveOption, withTargetOptions, withTimeRangeOptions } from "../shared-options.js";
 
 const DEFAULT_TOP_ROUTES_LIMIT = 20;
+const MAX_ROUTES_LIMIT = 10_000;
 
 async function runTopRoutes(opts: TopRoutesOpts): Promise<void> {
   const format = parseFormat(opts.format);
@@ -21,7 +22,7 @@ async function runTopRoutes(opts: TopRoutesOpts): Promise<void> {
     const response = await client.search(DEFAULT_INDEX_PATTERN, {
       size: 0,
       query: { bool: { filter: clauses } },
-      aggs: { by_route: { terms: { field: "request", size: opts.limit } } },
+      aggs: { by_route: { terms: { field: "request.keyword", size: Math.min(opts.limit, MAX_ROUTES_LIMIT) } } },
     });
     const buckets = extractBuckets(response.aggregations, "by_route");
     const rows = buckets.map((bucket) => ({ ROUTE: bucket.key, DOC_COUNT: bucket.docCount }));

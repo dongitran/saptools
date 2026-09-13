@@ -24,7 +24,7 @@ describe("buildProgram", () => {
   it("registers every command this phase ships", () => {
     const program = buildProgram();
     const names = program.commands.map((command) => command.name());
-    expect(names).toEqual(expect.arrayContaining(["search", "count", "fields", "apps", "sources", "result", "credential", "self-update"]));
+    expect(names).toEqual(expect.arrayContaining(["search", "count", "fields", "apps", "sources", "errors", "latency", "top-routes", "result", "credential", "self-update"]));
   });
 
   it("reports the version read from package.json", () => {

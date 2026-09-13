@@ -15,11 +15,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function bucketField(by: string): string {
-  return by === "route" ? "request" : "app_name.keyword";
+function bucketField(by: "app" | "route"): string {
+  return by === "route" ? "request.keyword" : "app_name.keyword";
 }
 
-function parseByOption(value: string): string {
+function parseByOption(value: string): "app" | "route" {
   if (value !== "app" && value !== "route") {
     throw new Error(`--by must be "app" or "route", got "${value}"`);
   }

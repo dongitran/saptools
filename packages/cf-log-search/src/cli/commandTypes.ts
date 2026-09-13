@@ -68,7 +68,7 @@ export interface ErrorsOpts extends TargetOpts, CredentialOpts, FormatOpts, Save
 
 export interface LatencyOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
   readonly app?: string;
-  readonly by: string;
+  readonly by: "app" | "route";
   readonly since?: string;
   readonly until?: string;
   readonly limit: number;
