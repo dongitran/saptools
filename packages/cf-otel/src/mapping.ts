@@ -1,5 +1,6 @@
+import type { OpenSearchClient } from "@saptools/core";
+
 import { CfOtelError } from "./errors.js";
-import type { OpenSearchClient } from "./opensearch-client.js";
 
 export interface FieldMapping {
   readonly field: string;

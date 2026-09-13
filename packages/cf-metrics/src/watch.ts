@@ -1,8 +1,10 @@
 import { setTimeout as delayPromise } from "node:timers/promises";
 
+import { isAuthRejection } from "@saptools/core";
+import type { OpenSearchClient, SearchHit, SearchResponse } from "@saptools/core";
+
 import { DEFAULT_INDEX_PATTERN } from "./config.js";
-import { errorMessage, isAuthRejection } from "./errors.js";
-import type { OpenSearchClient, SearchHit, SearchResponse } from "./opensearch-client.js";
+import { errorMessage } from "./errors.js";
 import { buildMetricBoolQuery, isAbsoluteInstant, resolveTimeBound } from "./query-builder.js";
 
 export interface WatchPollOptions {

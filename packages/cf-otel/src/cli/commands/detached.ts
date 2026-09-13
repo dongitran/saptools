@@ -1,3 +1,4 @@
+import { searchAfterAll } from "@saptools/core";
 import type { Command } from "commander";
 
 import {
@@ -9,8 +10,7 @@ import {
 } from "../../config.js";
 import { findDetachedCandidates } from "../../detached.js";
 import { CfOtelError } from "../../errors.js";
-import { searchAfterAll } from "../../opensearch-client.js";
-import { hitToSpan } from "../../span-mapper.js";
+import { hitToSpan, SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { DetachedOpts } from "../commandTypes.js";
 import { formatDurationNanos } from "../display.js";
@@ -38,6 +38,7 @@ async function runDetached(traceId: string, opts: DetachedOpts): Promise<void> {
       { query: { term: { traceId } } },
       SPANS_PAGE_SIZE,
       MAX_SPANS_FETCHED,
+      SPANS_SORT_TIEBREAKER,
     );
     if (paged.hits.length === 0) {
       throw new CfOtelError("TRACE_NOT_FOUND", `Trace "${traceId}" was not found`);

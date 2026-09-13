@@ -1,13 +1,14 @@
+import type { OpenSearchClient, SearchResponse } from "@saptools/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { queryHistory, resolveMetricKind } from "../../src/history.js";
-import type { OpenSearchClient, SearchResponse } from "../../src/opensearch-client.js";
 
 function fakeClient(searchImpl: (index: string, body: Record<string, unknown>) => Promise<SearchResponse>): OpenSearchClient {
   return {
     search: vi.fn(searchImpl),
     count: vi.fn(async () => 0),
     getMapping: vi.fn(async () => ({})),
+    raw: vi.fn(async () => undefined),
   };
 }
 
@@ -99,7 +100,12 @@ describe("queryHistory", () => {
 
   it("does not issue a second query for GAUGE or HISTOGRAM kinds, which never need the temporality check", async () => {
     const search = vi.fn(async () => ({ totalHits: 0, hits: [], aggregations: { over_time: { buckets: [] } } }));
-    const client: OpenSearchClient = { search, count: vi.fn(async () => 0), getMapping: vi.fn(async () => ({})) };
+    const client: OpenSearchClient = {
+      search,
+      count: vi.fn(async () => 0),
+      getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
+    };
 
     await queryHistory(client, { service: "app", name: "http.server.duration", since: "2h", interval: "10m", kind: "HISTOGRAM" });
 

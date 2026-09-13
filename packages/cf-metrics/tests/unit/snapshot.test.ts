@@ -1,6 +1,6 @@
+import type { OpenSearchClient } from "@saptools/core";
 import { describe, expect, it, vi } from "vitest";
 
-import type { OpenSearchClient } from "../../src/opensearch-client.js";
 import { querySnapshot } from "../../src/snapshot.js";
 
 describe("querySnapshot", () => {
@@ -22,6 +22,7 @@ describe("querySnapshot", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await querySnapshot(client, { service: "app", limit: 50 });
@@ -47,6 +48,7 @@ describe("querySnapshot", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await querySnapshot(client, { service: "app", limit: 50 });
@@ -63,6 +65,7 @@ describe("querySnapshot", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await querySnapshot(client, { service: "app", limit: 50 });
@@ -91,6 +94,7 @@ describe("querySnapshot", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
   }
 

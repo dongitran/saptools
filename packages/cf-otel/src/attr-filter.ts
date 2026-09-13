@@ -1,7 +1,8 @@
+import type { OpenSearchClient } from "@saptools/core";
+
 import { CfOtelError } from "./errors.js";
 import { lookUpField } from "./mapping.js";
 import type { FieldLookup } from "./mapping.js";
-import type { OpenSearchClient } from "./opensearch-client.js";
 import type { AttrFilter, AttrOperator } from "./types.js";
 
 const OPERATORS: readonly AttrOperator[] = [">=", "<=", ">", "<", "=", "~"];

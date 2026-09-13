@@ -11,9 +11,31 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const CF_RETRY_ATTEMPTS = 3;
 const CF_RETRY_BASE_DELAY_MS = 500;
 
-/** Minimal context for an isolated CF CLI invocation. */
+/**
+ * Which `cf` session a command runs in. `cfHome` names a temporary, isolated
+ * CF_HOME created by {@link withCfSession}; when absent the command runs in
+ * the user's own session (their `~/.cf`), which is only ever done for
+ * read-only commands after `cf target` was confirmed to already point at the
+ * requested org/space — see {@link AMBIENT_CF_CONTEXT}.
+ */
 export interface CfExecContext {
-  readonly cfHome: string;
+  readonly cfHome?: string;
+}
+
+/**
+ * The user's own `cf` session. Reusing it skips `cf api`/`cf auth`/`cf target`
+ * and needs no SAP_EMAIL/SAP_PASSWORD at all when it already matches. The
+ * session-mutating commands refuse this context outright (see
+ * `assertIsolated` below), so the user's target can never be changed under
+ * it. Ported from `@saptools/cf-metrics`'s `cf.ts` — cf-otel had no
+ * representation of "ambient" until this task; `cfHome` was a required
+ * `string`, which is exactly why cf-otel always performed an isolated login
+ * before this migration.
+ */
+export const AMBIENT_CF_CONTEXT: CfExecContext = {};
+
+export function isAmbientContext(ctx: CfExecContext): boolean {
+  return ctx.cfHome === undefined;
 }
 
 /** Data from `cf target`. */
@@ -142,7 +164,9 @@ function buildEnv(ctx: CfExecContext, overrides: Record<string, string> = {}): N
   // failed outright. A child-level "false" overrides an exported "true".
   // `stripAnsi` below covers the same ground for callers outside this package.
   env["CF_COLOR"] = "false";
-  env["CF_HOME"] = ctx.cfHome;
+  if (ctx.cfHome !== undefined) {
+    env["CF_HOME"] = ctx.cfHome;
+  }
   return env;
 }
 
@@ -261,26 +285,34 @@ export function redactSecretLikeText(text: string): string {
     .replace(SENSITIVE_JSON_VALUE_PATTERN, (_match, key: string) => `"${key}":"[REDACTED]"`);
 }
 
+/**
+ * `cfApi`/`cfAuth`/`cfTargetSpace` mutate which `cf target` a whole CF_HOME
+ * points at. Every legitimate caller invokes them only inside
+ * `withCfSession`'s isolated callback — a programming error that routed one
+ * of them at the ambient context would silently re-point the user's own
+ * `cf target`, so it fails loudly here instead. Ported from
+ * `@saptools/cf-metrics`'s `cf.ts`, which has carried this guard on these
+ * same three functions since before this migration.
+ */
+function assertIsolated(ctx: CfExecContext, command: string): void {
+  if (isAmbientContext(ctx)) {
+    throw new Error(`refusing to run \`cf ${command}\` in the user's own cf session; it would change their target`);
+  }
+}
+
 export async function cfApi(apiEndpoint: string, ctx: CfExecContext): Promise<void> {
+  assertIsolated(ctx, "api");
   await runCf(["api", apiEndpoint], ctx);
 }
 
 export async function cfAuth(email: string, password: string, ctx: CfExecContext): Promise<void> {
+  assertIsolated(ctx, "auth");
   await runCf(["auth"], ctx, { CF_USERNAME: email, CF_PASSWORD: password });
 }
 
 export async function cfTargetSpace(orgName: string, spaceName: string, ctx: CfExecContext): Promise<void> {
+  assertIsolated(ctx, "target");
   await runCf(["target", "-o", orgName, "-s", spaceName], ctx);
-}
-
-/** List service instances in the targeted space, raw `cf services` stdout. */
-export async function cfServices(ctx: CfExecContext): Promise<string> {
-  return await runCf(["services"], ctx);
-}
-
-/** List service key names on an instance, raw `cf service-keys` stdout. */
-export async function cfServiceKeys(instance: string, ctx: CfExecContext): Promise<string> {
-  return await runCf(["service-keys", instance], ctx);
 }
 
 /** Read one service key's payload, raw `cf service-key` stdout (contains embedded JSON). */
@@ -288,9 +320,57 @@ export async function cfServiceKey(instance: string, keyName: string, ctx: CfExe
   return await runCf(["service-key", instance, keyName], ctx);
 }
 
-/** Read one app's environment, raw `cf env` stdout (contains VCAP_SERVICES/VCAP_APPLICATION). */
-export async function cfEnv(appName: string, ctx: CfExecContext): Promise<string> {
-  return await runCf(["env", appName], ctx);
+const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Raw `cf curl <path>` stdout — the Cloud Controller v3 API reached through
+ * the session's own credentials, so no token handling lives in this package.
+ * Ported from `@saptools/cf-metrics`'s `cf.ts`; cf-otel needs this for the
+ * first time as part of this migration (its old discovery mechanism parsed
+ * `cf services`/`cf service-keys` table output instead).
+ */
+export async function cfCurl(path: string, ctx: CfExecContext): Promise<string> {
+  return await runCf(["curl", path], ctx);
+}
+
+/** One service instance's GUID, needed to address it in v3 API paths. The shape is verified rather than trusted, matching `cfSpaceGuid` below. */
+export async function cfServiceGuid(instance: string, ctx: CfExecContext): Promise<string> {
+  const guid = (await runCf(["service", instance, "--guid"], ctx)).trim();
+  if (!GUID_PATTERN.test(guid)) {
+    throw new Error(`cf service ${instance} --guid did not return a GUID`);
+  }
+  return guid;
+}
+
+/** The targeted org's space GUID, needed to scope the v3 service-instances listing. Verified like {@link cfServiceGuid}. */
+export async function cfSpaceGuid(spaceName: string, ctx: CfExecContext): Promise<string> {
+  const guid = (await runCf(["space", spaceName, "--guid"], ctx)).trim();
+  if (!GUID_PATTERN.test(guid)) {
+    throw new Error(`cf space ${spaceName} --guid did not return a GUID`);
+  }
+  return guid;
+}
+
+const CF_AUTH_FAILURE_PATTERNS: readonly RegExp[] = [
+  /not logged in/i,
+  /authentication has expired/i,
+  /token (?:has )?expired/i,
+  /expired.{0,40}token/i,
+  /invalid[_ ]token/i,
+  /credentials were rejected/i,
+  /re-?authenticate/i,
+  /\bunauthorized\b/i,
+  /\b401\b/,
+];
+
+/**
+ * Whether a failed `cf` command failed because the session itself is not
+ * usable, as opposed to a bad argument, a missing instance, or a network
+ * blip. Ported from `@saptools/cf-metrics`'s `cf.ts`.
+ */
+export function isCfAuthFailure(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return CF_AUTH_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 /** Read one service instance's full params blob, raw `cf service --params` stdout. */
@@ -407,116 +487,6 @@ export function parseCfTargetOutput(stdout: string): CurrentCfTarget | undefined
   };
 }
 
-export interface CfServiceRow {
-  readonly name: string;
-  readonly offering: string;
-  readonly boundApps: readonly string[];
-}
-
-/**
- * Parses `cf services` table output. Column order (name, offering/service,
- * plan, bound apps, last operation) is stable across CF CLI v6-v8 even though
- * the second header's exact word ("service" vs "offering") is not, so columns
- * are sliced by character position rather than by splitting on whitespace —
- * splitting would silently misalign columns whenever "bound apps" is blank.
- */
-export function parseServicesTable(stdout: string): readonly CfServiceRow[] {
-  const lines = stripAnsi(stdout).split(/\r?\n/);
-  const headerIndex = lines.findIndex((line) => /^\s*name\s+\S/i.test(line));
-  if (headerIndex === -1) {
-    return [];
-  }
-  const headerLine = lines[headerIndex] ?? "";
-  const lowerHeader = headerLine.toLowerCase();
-  const nameStart = lowerHeader.indexOf("name");
-  const offeringStart = /\boffering\b/.test(lowerHeader)
-    ? lowerHeader.indexOf("offering")
-    : lowerHeader.indexOf("service");
-  const boundAppsStart = lowerHeader.indexOf("bound apps");
-  if (nameStart === -1 || offeringStart === -1 || boundAppsStart === -1) {
-    return [];
-  }
-  const planStart = lowerHeader.indexOf("plan");
-  const offeringEnd = planStart === -1 ? boundAppsStart : planStart;
-  const lastOperationStart = lowerHeader.indexOf("last operation");
-  const rows: CfServiceRow[] = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const name = line.slice(nameStart, offeringStart).trim();
-    if (name.length === 0) {
-      continue;
-    }
-    const offering = line.slice(offeringStart, offeringEnd).trim();
-    const boundAppsCell = (
-      lastOperationStart === -1 ? line.slice(boundAppsStart) : line.slice(boundAppsStart, lastOperationStart)
-    ).trim();
-    const boundApps = boundAppsCell.length === 0
-      ? []
-      : boundAppsCell.split(",").map((app) => app.trim()).filter((app) => app.length > 0);
-    rows.push({ name, offering, boundApps });
-  }
-  return rows;
-}
-
-/**
- * Start of the column following `name` in a table header, or -1 when `name` is
- * the only column. Located by scanning for the next non-space run rather than
- * by matching the literal header text, so a renamed, added or reordered second
- * column cannot silently turn each whole row back into a "key name".
- */
-function columnAfterName(headerLine: string, nameStart: number): number {
-  const afterName = nameStart + "name".length;
-  const match = /\S/.exec(headerLine.slice(afterName));
-  return match === null ? -1 : afterName + match.index;
-}
-
-/**
- * Parses `cf service-keys <instance>` output.
- *
- * Two header shapes exist and both are accepted. CF CLI v6/v7 printed a single
- * `name` column; v8 prints a three-column table — `name`, `last operation`,
- * `message`, rendered by `DisplayTableWithHeader` — so requiring the header
- * line to equal "name" found nothing at all on v8. That reported "no service
- * keys exist" for an instance that has them, and forced every run down the far
- * slower per-app `cf env` scan.
- *
- * Cells are sliced by column position rather than split on whitespace, for the
- * same reason {@link parseServicesTable} does it: `message` is routinely blank
- * and `last operation` contains a space, so splitting would read
- * `key1   create succeeded` as three columns and take the wrong one.
- *
- * `cf` does not expose key creation timestamps in this table, so callers that
- * need "newest first" treat the platform's default listing order as
- * creation-ascending and reverse it — a best-effort proxy, not a verified
- * guarantee.
- */
-export function parseServiceKeyNames(stdout: string): readonly string[] {
-  const lines = stripAnsi(stdout).split(/\r?\n/);
-  // Anchored at the line start, so neither the flavor line ("Getting keys for
-  // service instance X as ...") nor the empty-result line ("No service keys
-  // for service instance X") can be mistaken for a header.
-  const headerIndex = lines.findIndex((line) => /^\s*name(?:\s|$)/i.test(line));
-  if (headerIndex === -1) {
-    return [];
-  }
-  const headerLine = lines[headerIndex] ?? "";
-  const nameStart = headerLine.toLowerCase().indexOf("name");
-  const nameEnd = columnAfterName(headerLine, nameStart);
-  const names: string[] = [];
-  for (const line of lines.slice(headerIndex + 1)) {
-    if (line.trim().length === 0) {
-      break;
-    }
-    const name = (nameEnd === -1 ? line.slice(nameStart) : line.slice(nameStart, nameEnd)).trim();
-    if (name.length > 0) {
-      names.push(name);
-    }
-  }
-  return names;
-}
-
 function findJsonObjectEnd(source: string, startIndex: number): number {
   let depth = 0;
   let inString = false;
@@ -560,34 +530,6 @@ export function extractFirstJsonObject(stdout: string): string {
     throw new Error("Malformed JSON object in command output");
   }
   return stdout.slice(openIndex, closeIndex + 1);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Extract and parse the VCAP_SERVICES JSON block from `cf env` output. */
-export function extractVcapServices(stdout: string): Record<string, unknown> {
-  const start = stdout.indexOf("VCAP_SERVICES:");
-  if (start === -1) {
-    throw new Error("VCAP_SERVICES section not found in cf env output");
-  }
-  const after = stdout.slice(start + "VCAP_SERVICES:".length);
-  const end = after.indexOf("VCAP_APPLICATION:");
-  const block = (end === -1 ? after : after.slice(0, end)).trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(block);
-  } catch {
-    // Never surface the raw SyntaxError message here: V8 can quote a verbatim
-    // snippet of the source next to the bad token, and this block is exactly
-    // the credentials of every service bound to the app, not just Cloud Logging.
-    throw new Error("VCAP_SERVICES is not valid JSON (parse error details omitted; the source may contain credentials)");
-  }
-  if (!isRecord(parsed)) {
-    throw new Error("VCAP_SERVICES must be an object");
-  }
-  return parsed;
 }
 
 /** Best-effort extraction of a `status:` field from `cf service` output. */

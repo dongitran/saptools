@@ -1,7 +1,46 @@
+export {
+  assertResultStoreWritable,
+  clearCredentialCache,
+  clearResultSessions,
+  createOpenSearchClient,
+  createResultSession,
+  deleteCachedCredential,
+  discoverDashboardsCredential,
+  discoverServiceInstance,
+  encodeConsoleProxyPath,
+  listCachedCredentials,
+  listCloudLoggingInstances,
+  listResultSessions,
+  printResolvedTarget,
+  pruneResultSessions,
+  readCachedCredential,
+  readResultSession,
+  resolveTarget,
+  writeCachedCredential,
+  searchAfterAll,
+} from "@saptools/core";
+export type {
+  CachedCredentialSummary,
+  CreateResultSessionInput,
+  CredentialCacheKey,
+  CredentialCacheOptions,
+  CredentialDiscoveryOptions,
+  DashboardsCredential,
+  DashboardsCredentialPayload,
+  OpenSearchClient,
+  OpenSearchClientOptions,
+  PagedSearchResult,
+  PruneOutcome,
+  ResolvedTarget,
+  ResultSession,
+  ResultSessionSummary,
+  SearchHit,
+  SearchResponse,
+  SelectorSource,
+  TargetOptions,
+} from "@saptools/core";
 export { getFlatAttribute, listFlatAttributeKeys, pickIdentifyingAttribute } from "./attributes.js";
 export { parseAttrFilter, resolveAndValidateAttrFilters } from "./attr-filter.js";
-export { discoverDashboardsCredential } from "./dashboards-credentials.js";
-export type { CredentialDiscoveryOptions } from "./dashboards-credentials.js";
 export { findDetachedCandidates, parseDetachedCandidates, sortDetachedCandidates } from "./detached.js";
 export type { DetachedOptions } from "./detached.js";
 export { computeDiff } from "./diff.js";
@@ -19,37 +58,18 @@ export type { ComputeGapsOptions } from "./gaps.js";
 export { findFieldInMapping, getFieldMapping, listAllFieldNames, lookUpField, resolveAggregatableField } from "./mapping.js";
 export type { FieldLookup, FieldMapping } from "./mapping.js";
 export {
-  createOpenSearchClient,
-  encodeConsoleProxyPath,
-  searchAfterAll,
-} from "./opensearch-client.js";
-export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./opensearch-client.js";
-export {
   assertTimeBoundsValid,
   buildSpanBoolQuery,
   resolveTimeBound,
   VCAP_REQUEST_ID_FIELD,
 } from "./query-builder.js";
-export {
-  assertResultStoreWritable,
-  clearResultSessions,
-  createResultSession,
-  listResultSessions,
-  pruneResultSessions,
-  readResultSession,
-} from "./result-store.js";
-export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary } from "./result-store.js";
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
 export { computeSelftime } from "./selftime.js";
-export { discoverServiceInstance, findBoundApps, listCloudLoggingInstances } from "./service-discovery.js";
 export { hitToSpan } from "./span-mapper.js";
-export { printResolvedTarget, resolveTarget } from "./target.js";
-export type { TargetOptions } from "./target.js";
 export { parseNanoTimestamp, toEpochNanos } from "./timestamps.js";
 export type {
   AttrFilter,
   AttrOperator,
-  DashboardsCredential,
   DetachedCandidate,
   DetachedResult,
   DiffResult,
@@ -59,8 +79,6 @@ export type {
   GapsResult,
   GapStats,
   OutputFormat,
-  ResolvedTarget,
-  SelectorSource,
   SelftimeAggregateRow,
   SelftimeResult,
   Span,

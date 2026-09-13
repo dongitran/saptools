@@ -1,9 +1,8 @@
-import { attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
+import { assertResultStoreWritable, attachSelfUpdate, registerSelfUpdateCommand } from "@saptools/core";
 import type { AttachSelfUpdateOptions } from "@saptools/core";
 import { Command } from "commander";
 
-import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME } from "../config.js";
-import { assertResultStoreWritable, resultStoreOptionsFromEnv } from "../result-store.js";
+import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME, resultStoreOptionsFromEnv } from "../config.js";
 
 import type { SaveOpts } from "./commandTypes.js";
 import { registerCountCommand } from "./commands/count.js";
@@ -18,6 +17,7 @@ import { registerSelftimeCommand } from "./commands/selftime.js";
 import { registerSpanCommand } from "./commands/span.js";
 import { registerSpansCommand } from "./commands/spans.js";
 import { registerTopCommand } from "./commands/top.js";
+import { registerCredentialCommands } from "./credentials.js";
 import { printNotice } from "./output.js";
 import { registerResultCommands } from "./results.js";
 
@@ -55,6 +55,7 @@ export function buildProgram(): Command {
   registerDetachedCommand(program);
   registerDiffCommand(program);
   registerResultCommands(program);
+  registerCredentialCommands(program);
   registerSelfUpdateCommand(program, SELF_UPDATE);
 
   // Check the saved-result store before the action runs, for the same reason
@@ -65,7 +66,7 @@ export function buildProgram(): Command {
   // the check cannot drift out of one of them.
   program.hook("preAction", async (_program, actionCommand) => {
     if (actionCommand.opts<Partial<SaveOpts>>().save === true) {
-      await assertResultStoreWritable(resultStoreOptionsFromEnv());
+      await assertResultStoreWritable({ ...resultStoreOptionsFromEnv(), cliName: CLI_NAME });
     }
   });
 

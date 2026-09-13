@@ -1,14 +1,13 @@
+import * as core from "@saptools/core";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { registerCredentialCommands } from "../../src/cli/credentials.js";
-import * as credentialCache from "../../src/credential-cache.js";
 
-vi.mock("../../src/credential-cache.js", () => ({
-  listCachedCredentials: vi.fn(),
-  clearCredentialCache: vi.fn(),
-  credentialCacheOptionsFromEnv: vi.fn(() => ({})),
-}));
+vi.mock("@saptools/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof core>();
+  return { ...actual, listCachedCredentials: vi.fn(), clearCredentialCache: vi.fn() };
+});
 
 function buildTestProgram(): Command {
   const program = new Command();
@@ -38,7 +37,7 @@ afterEach(() => {
 
 describe("credential list", () => {
   it("shows target, instance, source, endpoint and expiry for each cached credential", async () => {
-    vi.mocked(credentialCache.listCachedCredentials).mockResolvedValue([
+    vi.mocked(core.listCachedCredentials).mockResolvedValue([
       {
         region: "eu10",
         org: "example-org",
@@ -67,7 +66,7 @@ describe("credential list", () => {
   });
 
   it("renders a table by default and says so when nothing is cached", async () => {
-    vi.mocked(credentialCache.listCachedCredentials).mockResolvedValue([]);
+    vi.mocked(core.listCachedCredentials).mockResolvedValue([]);
     const output = captureStdout();
 
     await buildTestProgram().parseAsync(["node", "cf-metrics", "credential", "list"]);
@@ -78,7 +77,7 @@ describe("credential list", () => {
 
 describe("credential clear", () => {
   it("reports how many credentials were removed", async () => {
-    vi.mocked(credentialCache.clearCredentialCache).mockResolvedValue(2);
+    vi.mocked(core.clearCredentialCache).mockResolvedValue(2);
     const output = captureStdout();
 
     await buildTestProgram().parseAsync(["node", "cf-metrics", "credential", "clear"]);

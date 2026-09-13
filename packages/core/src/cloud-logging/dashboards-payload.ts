@@ -1,9 +1,28 @@
-import { extractFirstJsonObject } from "./cf.js";
-import { CfMetricsError, type CfMetricsErrorCode } from "./errors.js";
-import type { DashboardsCredentialPayload } from "./types.js";
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Find the first `{...}` JSON object embedded in noisy `cf` CLI stdout
+ * (progress lines, "OK", etc. can surround the actual payload).
+ */
+function extractFirstJsonObject(stdout: string): string {
+  const start = stdout.indexOf("{");
+  if (start < 0) {
+    throw new Error("no JSON object found");
+  }
+  let depth = 0;
+  for (let i = start; i < stdout.length; i += 1) {
+    if (stdout[i] === "{") {
+      depth += 1;
+    } else if (stdout[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return stdout.slice(start, i + 1);
+      }
+    }
+  }
+  throw new Error("unterminated JSON object");
 }
 
 /**
@@ -13,42 +32,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * source text next to a malformed token, and for these specific payloads
  * that snippet can be a credential value sitting right next to it.
  */
-export function parseCredentialJson(
-  stdout: string,
-  contextLabel: string,
-  code: CfMetricsErrorCode = "CREDENTIALS_NOT_FOUND",
-): unknown {
+export function parseCredentialJson(stdout: string, contextLabel: string): unknown {
   let text: string;
   try {
     text = extractFirstJsonObject(stdout);
   } catch {
-    throw new CfMetricsError(code, `Could not find a JSON object in the ${contextLabel}.`);
+    throw new Error(`Could not find a JSON object in the ${contextLabel}.`);
   }
   try {
     return JSON.parse(text);
   } catch {
-    throw new CfMetricsError(
-      code,
+    throw new Error(
       `Could not parse the ${contextLabel} as JSON (parse error details omitted — the source may contain sensitive fields).`,
     );
   }
 }
 
 /**
- * Narrow an arbitrary parsed service-key payload to a usable dashboards
- * credential; the caller attributes it to an instance.
+ * Narrow an arbitrary parsed service-key/binding payload to a usable
+ * dashboards credential.
  *
  * Two shapes are accepted: the credential fields at the top level (what the
  * v3 `/details` endpoint's `credentials` object holds once the caller has
  * unwrapped it, and what `cf service-key` printed through CLI v7), and the
  * same fields nested under a `credentials` key, which is how CLI v8's
- * `cf service-key` prints them. The minting path reads `cf service-key`
- * directly, so without the second shape a freshly minted key looked empty.
+ * `cf service-key` prints them. The top level wins when both are present, so
+ * an already-unwrapped payload is never re-interpreted through a nested
+ * `credentials` key that happens to mean something else.
  */
 export function extractDashboardsCredential(
   payload: unknown,
   source: string,
-): DashboardsCredentialPayload | undefined {
+): { readonly dashboardsEndpoint: string; readonly username: string; readonly password: string; readonly source: string } | undefined {
   if (!isRecord(payload)) {
     return undefined;
   }

@@ -1,12 +1,12 @@
+import { searchAfterAll } from "@saptools/core";
 import type { Command } from "commander";
 
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../attr-filter.js";
 import { DEFAULT_INDEX_PATTERN, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
 import type { OutputRow } from "../../format.js";
-import { searchAfterAll } from "../../opensearch-client.js";
 import { buildSpanBoolQuery } from "../../query-builder.js";
-import { hitToSpan } from "../../span-mapper.js";
+import { hitToSpan, SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import type { Span } from "../../types.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { SpansOpts } from "../commandTypes.js";
@@ -95,7 +95,7 @@ async function runSpans(traceId: string, opts: SpansOpts): Promise<void> {
   const { spans, totalHits, truncated } = await withOpenSearchClient(opts, async (client) => {
     const resolvedAttrs = await resolveAndValidateAttrFilters(client, DEFAULT_INDEX_PATTERN, attrs, printNotice);
     const query = buildSpanBoolQuery({ traceIds: [traceId], attrs: resolvedAttrs, errorsOnly: opts.errorsOnly });
-    const paged = await searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query, _source: fetchFields }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED);
+    const paged = await searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query, _source: fetchFields }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED, SPANS_SORT_TIEBREAKER);
     return { spans: paged.hits.map(hitToSpan), totalHits: paged.totalHits, truncated: paged.truncated };
   });
 

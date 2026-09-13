@@ -1,18 +1,22 @@
-import { credentialCacheEnabled, readSapCredentials } from "../config.js";
-import type { CredentialCacheKey } from "../credential-cache.js";
+import type { CfExecContext as CoreCfExecContext, CredentialCacheKey, DashboardsCredential, OpenSearchClient, ResolvedTarget } from "@saptools/core";
 import {
-  credentialCacheOptionsFromEnv,
+  createOpenSearchClient,
   deleteCachedCredential,
+  discoverDashboardsCredential,
+  discoverServiceInstance,
+  isAuthRejection,
+  printResolvedTarget,
   readCachedCredential,
+  resolveTarget,
   writeCachedCredential,
-} from "../credential-cache.js";
-import { discoverDashboardsCredential } from "../dashboards-credentials.js";
-import { errorMessage, isAuthRejection } from "../errors.js";
-import type { OpenSearchClient } from "../opensearch-client.js";
-import { createOpenSearchClient } from "../opensearch-client.js";
-import { printResolvedTarget, resolveTarget } from "../target.js";
-import type { DashboardsCredential, ResolvedTarget } from "../types.js";
+} from "@saptools/core";
 
+import type { CfExecContext } from "../cf.js";
+import { CLI_NAME, credentialCacheEnabled, credentialCacheOptionsFromEnv, readSapCredentials } from "../config.js";
+import { errorMessage } from "../errors.js";
+import { mintDashboardsCredential } from "../saml-toggle.js";
+
+import { cloudLoggingExecutor } from "./cloud-logging-executor.js";
 import type { CredentialOpts, TargetOpts } from "./commandTypes.js";
 import { printNotice } from "./output.js";
 
@@ -67,6 +71,115 @@ function clientFor(credential: DashboardsCredential): OpenSearchClient {
   });
 }
 
+function normalizeEndpoint(apiEndpoint: string): string {
+  return apiEndpoint.trim().toLowerCase().replace(/\/+$/, "");
+}
+
+async function ambientSessionMatches(target: ResolvedTarget): Promise<boolean> {
+  const current = await cloudLoggingExecutor.readCurrentCfTarget();
+  return (
+    current !== undefined &&
+    normalizeEndpoint(current.apiEndpoint) === normalizeEndpoint(target.apiEndpoint) &&
+    current.orgName === target.org &&
+    current.spaceName === target.space
+  );
+}
+
+/**
+ * Whether `error` is specifically the shared discovery's terminal "tried every
+ * binding, nothing worked" failure — the exact, and only, condition under
+ * which the pre-migration local `discoverDashboardsCredential` used to reach
+ * its own mint branch. Anything else (a `cf curl` failure listing bindings, a
+ * bad `cf api`/`cf auth`/`cf target` during an isolated login, an auth
+ * rejection mid-probe) must still propagate as a real error — minting is
+ * disruptive (it disables SAML on a shared instance), and must never fire as
+ * a side effect of an unrelated, possibly transient failure.
+ */
+export function isCleanDiscoveryMiss(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("Could not resolve Cloud Logging dashboards credentials for instance");
+}
+
+async function resolveInstanceNameForMint(
+  target: ResolvedTarget,
+  serviceInstance: string | undefined,
+  ctx: CoreCfExecContext,
+): Promise<string> {
+  if (serviceInstance !== undefined) {
+    return serviceInstance;
+  }
+  const instance = await discoverServiceInstance({ space: target.space }, { ...cloudLoggingExecutor, ambientContext: ctx });
+  return instance.name;
+}
+
+/**
+ * `@saptools/core`'s shared `discoverDashboardsCredential` deliberately does
+ * not implement minting (see its own doc comment on `discoverWithSession`) —
+ * cf-metrics's own `saml-toggle.ts` still owns that disruptive path. When
+ * ordinary discovery finds nothing usable and `--allow-mint-credential` was
+ * passed, this redoes the same ambient-vs-isolated-session decision discovery
+ * itself just made (deterministic from the current `cf target` alone) and
+ * mints a fresh service key in that same kind of session — mirroring exactly
+ * what this package's own (now-shared) discovery used to do inline. Like the
+ * shared discovery's own `tryAmbientSession`, a `cf target` descriptor match
+ * whose token turns out to be dead falls through to the isolated
+ * SAP-credentials login rather than failing outright — see the ambient
+ * branch's own comment for why this matters specifically here.
+ *
+ * One deliberate, narrow behavior difference from before the migration: the
+ * `--verbose` trace no longer includes the "no existing key or fallback
+ * binding worked" line from inside the shared discovery attempt (that detail
+ * is now internal to `@saptools/core`) — the resolved credential, the
+ * instance minted against, and the CLI's exit behavior are all unchanged.
+ */
+async function mintAsLastResort(
+  target: ResolvedTarget,
+  opts: CredentialOpts,
+  report: (message: string) => void,
+): Promise<DashboardsCredential> {
+  if (await ambientSessionMatches(target)) {
+    report(`reusing the current 'cf target' session for ${target.org}/${target.space} to mint a credential`);
+    try {
+      const ctx = cloudLoggingExecutor.ambientContext;
+      const instanceName = await resolveInstanceNameForMint(target, opts.serviceInstance, ctx);
+      return await mintDashboardsCredential(instanceName, ctx as unknown as CfExecContext, { confirmDisruptive: true, report });
+    } catch (error) {
+      // `ambientSessionMatches` only compares the `cf target` *descriptor*
+      // (endpoint/org/space) — it says nothing about whether the session's
+      // token is actually still valid. The shared discovery's own
+      // `tryAmbientSession` already tolerates exactly this (a descriptor
+      // match whose token has expired) by falling back to an isolated login;
+      // mirroring that here matters because *this* function only runs after
+      // discovery has already run once — if discovery itself hit this same
+      // dead ambient token and fell through to an isolated SAP-credentials
+      // login to reach its "clean miss", that isolated login just proved it
+      // works, while the ambient session's token is the one actually broken.
+      // Retrying the ambient session here regardless would mint against a
+      // session already known to be unusable instead of the one just proven
+      // to work.
+      if (!cloudLoggingExecutor.isCfAuthFailure(error)) {
+        throw error;
+      }
+      report(`the current 'cf target' session was rejected while minting (${errorMessage(error)}); falling back to an isolated login`);
+    }
+  }
+  const sap = readSapCredentials();
+  if (sap === undefined) {
+    throw new Error(
+      `Cannot reach Cloud Foundry for ${target.region}/${target.org}/${target.space} to mint a credential: no ` +
+        "matching 'cf target' session is active, and SAP_EMAIL/SAP_PASSWORD are not set. Either run `cf login` " +
+        `and \`cf target -o ${target.org} -s ${target.space}\`, or set SAP_EMAIL and SAP_PASSWORD.`,
+    );
+  }
+  report(`logging in to ${target.apiEndpoint} in an isolated CF_HOME to mint a credential`);
+  return await cloudLoggingExecutor.withCfSession(async (ctx) => {
+    await cloudLoggingExecutor.cfApi(target.apiEndpoint, ctx);
+    await cloudLoggingExecutor.cfAuth(sap.email, sap.password, ctx);
+    await cloudLoggingExecutor.cfTargetSpace(target.org, target.space, ctx);
+    const instanceName = await resolveInstanceNameForMint(target, opts.serviceInstance, ctx);
+    return await mintDashboardsCredential(instanceName, ctx as unknown as CfExecContext, { confirmDisruptive: true, report });
+  });
+}
+
 /**
  * Every subcommand does the full target -> credential -> client dance itself;
  * there is no separate "login" step to run first.
@@ -83,11 +196,11 @@ export async function withOpenSearchClient<T>(
   opts: TargetOpts & CredentialOpts,
   work: (client: OpenSearchClient) => Promise<T>,
 ): Promise<T> {
-  const target = await resolveTarget(opts);
-  printResolvedTarget(target);
+  const target = await resolveTarget(opts, cloudLoggingExecutor);
+  printResolvedTarget(target, CLI_NAME);
 
   const cacheEnabled = credentialCacheEnabled();
-  const cacheOptions = credentialCacheOptionsFromEnv();
+  const cacheOptions = { ...credentialCacheOptionsFromEnv(), cliName: CLI_NAME };
   const key = cacheKeyFor(target, opts);
 
   if (cacheEnabled && !opts.refreshCredential) {
@@ -111,13 +224,31 @@ export async function withOpenSearchClient<T>(
     }
   }
 
-  const credential = await discoverDashboardsCredential(target, readSapCredentials(), {
-    ...(opts.serviceInstance === undefined ? {} : { serviceInstance: opts.serviceInstance }),
-    ...(opts.serviceKey.length > 0 ? { serviceKeyNames: opts.serviceKey } : {}),
-    ...(opts.fallbackBindingApp.length > 0 ? { fallbackBindingApps: opts.fallbackBindingApp } : {}),
-    allowMintCredential: opts.allowMintCredential,
-    verbose: opts.verbose,
-  });
+  const report = (message: string): void => {
+    if (opts.verbose) {
+      printNotice(`[verbose] ${message}`);
+    }
+  };
+  let credential: DashboardsCredential;
+  try {
+    credential = await discoverDashboardsCredential(
+      target,
+      readSapCredentials(),
+      {
+        ...(opts.serviceInstance === undefined ? {} : { serviceInstance: opts.serviceInstance }),
+        ...(opts.serviceKey.length > 0 ? { serviceKeyNames: opts.serviceKey } : {}),
+        ...(opts.fallbackBindingApp.length > 0 ? { fallbackBindingApps: opts.fallbackBindingApp } : {}),
+        allowMintCredential: false,
+        verbose: opts.verbose,
+      },
+      cloudLoggingExecutor,
+    );
+  } catch (error) {
+    if (!opts.allowMintCredential || !isCleanDiscoveryMiss(error)) {
+      throw error;
+    }
+    credential = await mintAsLastResort(target, opts, report);
+  }
 
   if (cacheEnabled) {
     try {

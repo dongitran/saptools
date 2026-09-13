@@ -1,19 +1,15 @@
-export {
-  clearCredentialCache,
-  credentialCacheOptionsFromEnv,
-  deleteCachedCredential,
-  listCachedCredentials,
-  readCachedCredential,
-  writeCachedCredential,
-} from "./credential-cache.js";
-export type { CachedCredentialSummary, CredentialCacheKey, CredentialCacheOptions } from "./credential-cache.js";
-export { discoverDashboardsCredential } from "./dashboards-credentials.js";
-export type { CredentialDiscoveryOptions } from "./dashboards-credentials.js";
+import { createResultSession } from "@saptools/core";
+import type { CreateResultSessionInput, ResultSession, ResultStoreOptions } from "@saptools/core";
+
+export { clearCredentialCache, deleteCachedCredential, discoverServiceInstance, listCachedCredentials, listCloudLoggingInstances, readCachedCredential, writeCachedCredential } from "@saptools/core";
+export type { CachedCredentialSummary, CloudLoggingInstance, CredentialCacheKey, CredentialCacheOptions } from "@saptools/core";
+export { discoverDashboardsCredential } from "@saptools/core";
+export type { CredentialDiscoveryOptions, DashboardsCredential, DashboardsCredentialPayload } from "@saptools/core";
+export { credentialCacheOptionsFromEnv, resultStoreOptionsFromEnv } from "./config.js";
 export {
   CfMetricsError,
   CredentialsNotFoundError,
   errorMessage,
-  isAuthRejection,
   SamlRestoreFailedError,
 } from "./errors.js";
 export type { CfMetricsErrorCode } from "./errors.js";
@@ -27,41 +23,41 @@ export { listAllFieldNames, lookUpField } from "./mapping.js";
 export type { FieldLookup, FieldMapping } from "./mapping.js";
 export { queryNames } from "./names.js";
 export type { NamesQueryOptions } from "./names.js";
-export {
-  createOpenSearchClient,
-  encodeConsoleProxyPath,
-  searchAfterAll,
-} from "./opensearch-client.js";
-export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "./opensearch-client.js";
+export { createOpenSearchClient, encodeConsoleProxyPath, isAuthRejection, searchAfterAll } from "@saptools/core";
+export type { OpenSearchClient, OpenSearchClientOptions, PagedSearchResult, SearchHit, SearchResponse } from "@saptools/core";
 // The validators ship alongside the builder deliberately: `buildMetricBoolQuery`
 // forwards an absolute bound verbatim, so without them a library consumer has no
 // way to reject one the backend will refuse — a gap `@saptools/cf-otel` did not
 // have, since its own `resolveTimeBound` validates as it resolves.
 export { assertValidTimeBoundShape, assertValidTimeRange, buildMetricBoolQuery, isAbsoluteInstant, resolveTimeBound } from "./query-builder.js";
-export {
-  clearResultSessions,
-  createResultSession,
-  listResultSessions,
-  pruneResultSessions,
-  readResultSession,
-  tryCreateResultSession,
-} from "./result-store.js";
-export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary } from "./result-store.js";
+export { clearResultSessions, createResultSession, listResultSessions, pruneResultSessions, readResultSession } from "@saptools/core";
+export type { CreateResultSessionInput, PruneOutcome, ResultSession, ResultSessionSummary } from "@saptools/core";
 export { mintDashboardsCredential, redactForLog } from "./saml-toggle.js";
-export { discoverServiceInstance, listCloudLoggingInstances } from "./service-discovery.js";
-export type { CloudLoggingInstance } from "./service-discovery.js";
 export { querySnapshot } from "./snapshot.js";
 export type { SnapshotQueryOptions, SnapshotResult } from "./snapshot.js";
-export { printResolvedTarget, resolveTarget } from "./target.js";
-export type { TargetOptions } from "./target.js";
+export { printResolvedTarget, resolveTarget } from "@saptools/core";
+export type { ResolvedTarget, SelectorSource, TargetOptions } from "@saptools/core";
 export { queryTop } from "./top.js";
 export type { TopQueryOptions, TopResult } from "./top.js";
-export type {
-  DashboardsCredential,
-  DashboardsCredentialPayload,
-  OutputFormat,
-  ResolvedTarget,
-  SelectorSource,
-} from "./types.js";
+export type { OutputFormat } from "./types.js";
 export { watchMetrics } from "./watch.js";
 export type { WatchPollOptions } from "./watch.js";
+
+/**
+ * Preserves cf-metrics's pre-migration `tryCreateResultSession` re-export:
+ * `@saptools/core`'s shared result-store deliberately has no equivalent (it
+ * is CLI-agnostic and does not decide whether a failed save should be
+ * swallowed — see `assertResultStoreWritable` for the pattern it offers
+ * instead), so this small wrapper is the one piece of the old local
+ * `result-store.ts` kept alive rather than deleted outright.
+ */
+export async function tryCreateResultSession<TRow>(
+  input: CreateResultSessionInput<TRow>,
+  options: Omit<ResultStoreOptions, "cliName"> = {},
+): Promise<ResultSession<TRow> | undefined> {
+  try {
+    return await createResultSession(input, options);
+  } catch {
+    return undefined;
+  }
+}

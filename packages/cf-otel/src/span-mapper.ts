@@ -1,5 +1,18 @@
-import type { SearchHit } from "./opensearch-client.js";
+import type { SearchHit } from "@saptools/core";
+
 import type { Span } from "./types.js";
+
+/**
+ * `spanId`, not `_id`: OpenSearch documents `_id` as restricted from sorting
+ * without fielddata; `spanId` is a mandatory OpenTelemetry field, mapped as a
+ * plain sortable `keyword` in Data Prepper's own index template. Moved here
+ * from the now-deleted local `opensearch-client.ts` — the shared
+ * `packages/core` client's `searchAfterAll` takes the tiebreaker as an
+ * explicit parameter instead of hardcoding one (cf-metrics's heterogeneous
+ * metric domain has no universal tiebreaker, so the shared helper cannot
+ * hardcode cf-otel's).
+ */
+export const SPANS_SORT_TIEBREAKER = [{ startTime: "asc" }, { spanId: "asc" }] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

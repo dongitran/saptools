@@ -1,10 +1,10 @@
+import { searchAfterAll } from "@saptools/core";
 import type { Command } from "commander";
 
 import { DEFAULT_GAPS_TOP, DEFAULT_INDEX_PATTERN, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
 import { computeGaps } from "../../gaps.js";
-import { searchAfterAll } from "../../opensearch-client.js";
-import { hitToSpan } from "../../span-mapper.js";
+import { hitToSpan, SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import type { GapsResult } from "../../types.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { GapsOpts } from "../commandTypes.js";
@@ -68,6 +68,7 @@ async function runGaps(traceId: string, spanId: string, opts: GapsOpts): Promise
       { query: { bool: { filter: [{ term: { traceId } }, { term: { parentSpanId: spanId } }] } } },
       SPANS_PAGE_SIZE,
       MAX_SPANS_FETCHED,
+      SPANS_SORT_TIEBREAKER,
     );
     return { parent: hitToSpan(parentHit), children: paged.hits.map(hitToSpan), truncated: paged.truncated };
   });

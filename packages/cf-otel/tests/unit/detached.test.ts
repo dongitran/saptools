@@ -1,7 +1,7 @@
+import type { OpenSearchClient, SearchResponse } from "@saptools/core";
 import { describe, expect, it } from "vitest";
 
 import { findDetachedCandidates, hasTruncatedCandidateBuckets, parseDetachedCandidates, sortDetachedCandidates } from "../../src/detached.js";
-import type { OpenSearchClient, SearchResponse } from "../../src/opensearch-client.js";
 import type { DetachedCandidate } from "../../src/types.js";
 
 import { makeSpan } from "./fixtures/spans.js";
@@ -112,6 +112,7 @@ describe("findDetachedCandidates", () => {
       },
       count: async () => 0,
       getMapping: async () => ({}),
+      raw: async () => undefined,
     };
     // Root is service-a; the overwhelming majority of spans are service-c —
     // a plurality vote would wrongly pick service-c as the search target.
@@ -147,7 +148,7 @@ describe("findDetachedCandidates", () => {
   });
 
   it("falls back to a plurality vote when there is no single root (zero or many parentless spans)", async () => {
-    const client: OpenSearchClient = { search: async () => aggResponse([]), count: async () => 0, getMapping: async () => ({}) };
+    const client: OpenSearchClient = { search: async () => aggResponse([]), count: async () => 0, getMapping: async () => ({}), raw: async () => undefined };
     // Two roots (ambiguous) — falls back to whichever serviceName is most common overall.
     const spans = [
       makeSpan({ spanId: "root-1", name: "root-1", serviceName: "service-x", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 }),
@@ -166,7 +167,7 @@ describe("findDetachedCandidates", () => {
 
   it("treats --limit 0 as 'return every candidate', not zero rows", async () => {
     const buckets = Array.from({ length: 5 }, (_unused, index) => bucketRow(`trace-${String(index)}`, index + 1));
-    const client: OpenSearchClient = { search: async () => aggResponse(buckets), count: async () => 0, getMapping: async () => ({}) };
+    const client: OpenSearchClient = { search: async () => aggResponse(buckets), count: async () => 0, getMapping: async () => ({}), raw: async () => undefined };
     const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
 
     const result = await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, {
@@ -181,7 +182,7 @@ describe("findDetachedCandidates", () => {
 
   it("still respects a real positive limit while reporting the true total candidate count", async () => {
     const buckets = Array.from({ length: 5 }, (_unused, index) => bucketRow(`trace-${String(index)}`, index + 1));
-    const client: OpenSearchClient = { search: async () => aggResponse(buckets), count: async () => 0, getMapping: async () => ({}) };
+    const client: OpenSearchClient = { search: async () => aggResponse(buckets), count: async () => 0, getMapping: async () => ({}), raw: async () => undefined };
     const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
 
     const result = await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, {
@@ -203,6 +204,7 @@ describe("findDetachedCandidates", () => {
       },
       count: async () => 0,
       getMapping: async () => ({}),
+      raw: async () => undefined,
     };
 
     const result = await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", [], {
@@ -229,6 +231,7 @@ describe("findDetachedCandidates", () => {
       },
       count: async () => 0,
       getMapping: async () => ({}),
+      raw: async () => undefined,
     };
     const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
 
@@ -248,6 +251,7 @@ describe("findDetachedCandidates", () => {
       }),
       count: async () => 0,
       getMapping: async () => ({}),
+      raw: async () => undefined,
     };
     const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
 
@@ -260,7 +264,7 @@ describe("findDetachedCandidates", () => {
     // The spec's own worked example headlines this distinction: "2,896
     // candidate spans found across 190 other traceIds" — spans, not traces.
     const buckets = [bucketRow("trace-a", 3), bucketRow("trace-b", 4)];
-    const client: OpenSearchClient = { search: async () => aggResponse(buckets, 7), count: async () => 0, getMapping: async () => ({}) };
+    const client: OpenSearchClient = { search: async () => aggResponse(buckets, 7), count: async () => 0, getMapping: async () => ({}), raw: async () => undefined };
     const spans = [makeSpan({ spanId: "root", name: "root", serviceName: "service-a", startTime: "2026-01-01T00:00:00.000000000Z", durationInNanos: 1000 })];
 
     const result = await findDetachedCandidates(client, "otel-v1-apm-span-*", "ref-trace", spans, {

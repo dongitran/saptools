@@ -1,7 +1,8 @@
+import { OpenSearchRequestError } from "@saptools/core";
+import type { OpenSearchClient, SearchHit, SearchResponse } from "@saptools/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { CfMetricsError } from "../../src/errors.js";
-import type { OpenSearchClient, SearchHit, SearchResponse } from "../../src/opensearch-client.js";
 import { WATCH_FETCH_LIMIT, advanceCursor, dedupeAgainstCursor, watchMetrics } from "../../src/watch.js";
 
 describe("watchMetrics", () => {
@@ -39,6 +40,7 @@ describe("watchMetrics", () => {
       search: vi.fn(async () => responseAt(call++)),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const seenTimes: string[] = [];
@@ -65,6 +67,7 @@ describe("watchMetrics", () => {
       search: vi.fn(async () => ({ totalHits: 0, hits: [] })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await watchMetrics(client, { service: "app", intervalMs: 5, lookback: "1m" }, () => {
@@ -85,6 +88,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await watchMetrics(
@@ -109,6 +113,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await watchMetrics(client, { service: "app", intervalMs: 5, lookback: "1m" }, () => undefined, controller.signal);
@@ -146,6 +151,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
     const notices: string[] = [];
 
@@ -187,6 +193,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
     const notices: string[] = [];
 
@@ -217,6 +224,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
     const notices: string[] = [];
 
@@ -264,6 +272,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
     const notices: string[] = [];
 
@@ -297,10 +306,14 @@ describe("watchMetrics", () => {
     const controller = new AbortController();
     const client: OpenSearchClient = {
       search: vi.fn(async () => {
-        throw new CfMetricsError("OPENSEARCH_REQUEST_FAILED", "HTTP 401 Unauthorized", { status: 401 });
+        // The real, now-shared `createOpenSearchClient` throws `OpenSearchRequestError`
+        // on an HTTP 401/403 — `isAuthRejection` (also from `@saptools/core` now)
+        // only recognizes that class, so the fixture must match it exactly.
+        throw new OpenSearchRequestError("HTTP 401 Unauthorized", { status: 401 });
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
     const notices: string[] = [];
 
@@ -325,6 +338,7 @@ describe("watchMetrics", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await watchMetrics(client, { service: "app", intervalMs: 5, lookback: "1m" }, () => undefined, controller.signal);

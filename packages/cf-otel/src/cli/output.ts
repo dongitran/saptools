@@ -1,9 +1,10 @@
-import { CLI_NAME } from "../config.js";
+import type { ResultSession } from "@saptools/core";
+import { createResultSession } from "@saptools/core";
+
+import { CLI_NAME, resultStoreOptionsFromEnv } from "../config.js";
 import { CfOtelError, errorMessage } from "../errors.js";
 import type { OutputRow } from "../format.js";
 import { formatResult } from "../format.js";
-import type { ResultSession } from "../result-store.js";
-import { createResultSession, resultStoreOptionsFromEnv } from "../result-store.js";
 import type { OutputFormat } from "../types.js";
 
 export function print(text: string): void {
@@ -81,9 +82,9 @@ export interface EmitRowsOptions {
  * were a ref. Printing the data and still failing the exit code keeps the
  * result available to a human and the failure visible to a script.
  */
-async function saveRowsOrWarn(opts: EmitRowsOptions): Promise<ResultSession | undefined> {
+async function saveRowsOrWarn(opts: EmitRowsOptions): Promise<ResultSession<OutputRow> | undefined> {
   try {
-    return await createResultSession({ command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
+    return await createResultSession({ cliName: CLI_NAME, command: opts.command, rows: opts.rows }, resultStoreOptionsFromEnv());
   } catch (error) {
     printNotice(`--save failed (${errorMessage(error)}); printing the result instead`);
     // Set the exit code instead of throwing: the top-level handler in cli.ts

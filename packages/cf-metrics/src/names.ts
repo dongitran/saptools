@@ -1,7 +1,8 @@
+import type { OpenSearchClient } from "@saptools/core";
+
 import { bucketArray, termsTruncated } from "./agg-buckets.js";
 import { ALL_BUCKETS_TERMS_SIZE, DEFAULT_INDEX_PATTERN } from "./config.js";
 import type { OutputRow } from "./format.js";
-import type { OpenSearchClient } from "./opensearch-client.js";
 import { buildMetricBoolQuery } from "./query-builder.js";
 
 export interface NamesQueryOptions {

@@ -1,17 +1,17 @@
+import { clearResultSessions, listResultSessions, pruneResultSessions, readResultSession } from "@saptools/core";
 import type { Command } from "commander";
 
+import { CLI_NAME, resultStoreOptionsFromEnv } from "../config.js";
 import { CfMetricsError } from "../errors.js";
+import type { OutputRow } from "../format.js";
 import { formatResult } from "../format.js";
-import {
-  clearResultSessions,
-  listResultSessions,
-  pruneResultSessions,
-  readResultSession,
-  resultStoreOptionsFromEnv,
-} from "../result-store.js";
 
 import { parseFormat, print, printNotice } from "./output.js";
 import { withFormatOption } from "./shared-options.js";
+
+function storeOptions(): Parameters<typeof listResultSessions>[0] {
+  return { ...resultStoreOptionsFromEnv(), cliName: CLI_NAME };
+}
 
 function parseRowNumber(value: string): number {
   const trimmed = value.trim();
@@ -27,7 +27,7 @@ interface ShowOptions {
 }
 
 async function runShow(ref: string, options: ShowOptions): Promise<void> {
-  const session = await readResultSession(ref, resultStoreOptionsFromEnv());
+  const session = await readResultSession<OutputRow>(ref, storeOptions());
   if (options.row === undefined) {
     print(formatResult(session.rows, parseFormat(options.format)));
     return;
@@ -40,7 +40,7 @@ async function runShow(ref: string, options: ShowOptions): Promise<void> {
 }
 
 async function runList(): Promise<void> {
-  const summaries = await listResultSessions(resultStoreOptionsFromEnv());
+  const summaries = await listResultSessions(storeOptions());
   print(
     formatResult(
       summaries.map((summary) => ({
@@ -56,8 +56,13 @@ async function runList(): Promise<void> {
 }
 
 async function runPrune(): Promise<void> {
-  const outcome = await pruneResultSessions(resultStoreOptionsFromEnv());
-  print(`removed=${String(outcome.removed)}`);
+  const outcome = await pruneResultSessions(storeOptions());
+  // `@saptools/core`'s `pruneResultSessions` reports stranded `.tmp-<pid>`
+  // directories (an interrupted `--save`) separately from ordinary expired
+  // sessions — cf-metrics's own pre-migration store folded both into one
+  // `removed` count, and `removed=N` is this command's one machine-readable
+  // line, so the two are summed here to keep that contract unchanged.
+  print(`removed=${String(outcome.removed + outcome.strandedRemoved)}`);
   // Kept off stdout so `removed=N` stays the single machine-readable line.
   if (outcome.retainedRefs.length > 0) {
     // Name the refs: a retained session is omitted from `result list` and no
@@ -77,7 +82,7 @@ async function runPrune(): Promise<void> {
 }
 
 async function runClear(): Promise<void> {
-  print(`removed=${String(await clearResultSessions(resultStoreOptionsFromEnv()))}`);
+  print(`removed=${String(await clearResultSessions(storeOptions()))}`);
 }
 
 export function registerResultCommands(program: Command): void {

@@ -1,16 +1,19 @@
+import * as core from "@saptools/core";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { registerResultCommands } from "../../src/cli/results.js";
-import * as resultStore from "../../src/result-store.js";
 
-vi.mock("../../src/result-store.js", () => ({
-  readResultSession: vi.fn(),
-  listResultSessions: vi.fn(),
-  pruneResultSessions: vi.fn(),
-  clearResultSessions: vi.fn(),
-  resultStoreOptionsFromEnv: vi.fn(() => ({})),
-}));
+vi.mock("@saptools/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof core>();
+  return {
+    ...actual,
+    readResultSession: vi.fn(),
+    listResultSessions: vi.fn(),
+    pruneResultSessions: vi.fn(),
+    clearResultSessions: vi.fn(),
+  };
+});
 
 function buildTestProgram(): Command {
   const program = new Command();
@@ -49,7 +52,7 @@ afterEach(() => {
 
 describe("result show", () => {
   it("prints the saved rows in the requested format", async () => {
-    vi.mocked(resultStore.readResultSession).mockResolvedValue({
+    vi.mocked(core.readResultSession).mockResolvedValue({
       version: 1,
       ref: "deadbeef",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -64,7 +67,7 @@ describe("result show", () => {
   });
 
   it("prints one row's full JSON when --row is given", async () => {
-    vi.mocked(resultStore.readResultSession).mockResolvedValue({
+    vi.mocked(core.readResultSession).mockResolvedValue({
       version: 1,
       ref: "deadbeef",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -86,7 +89,7 @@ describe("result show", () => {
 
 describe("result list/prune/clear", () => {
   it("lists active refs as a table", async () => {
-    vi.mocked(resultStore.listResultSessions).mockResolvedValue([
+    vi.mocked(core.listResultSessions).mockResolvedValue([
       { ref: "aaaa1111", command: "names", rowCount: 3, createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-01-08T00:00:00.000Z" },
     ]);
     const output = captureStdout();
@@ -95,16 +98,30 @@ describe("result list/prune/clear", () => {
   });
 
   it("prints removed=N for prune", async () => {
-    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 2, failed: 0, retainedRefs: [] });
+    vi.mocked(core.pruneResultSessions).mockResolvedValue({ removed: 2, failed: 0, retainedRefs: [], strandedRemoved: 0 });
     const output = captureStdout();
     await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
     expect(output.text()).toBe("removed=2\n");
   });
 
+  /**
+   * `@saptools/core` reports stranded `.tmp-<pid>` directories (an
+   * interrupted `--save`) separately from ordinary expired sessions —
+   * cf-metrics's own pre-migration store folded both into one `removed`
+   * count, and `removed=N` is this command's one machine-readable line, so
+   * the two must still sum to it after the migration.
+   */
+  it("folds stranded temp-directory cleanup into the same removed=N count", async () => {
+    vi.mocked(core.pruneResultSessions).mockResolvedValue({ removed: 2, failed: 0, retainedRefs: [], strandedRemoved: 3 });
+    const output = captureStdout();
+    await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
+    expect(output.text()).toBe("removed=5\n");
+  });
+
   it("exits non-zero when a sweep could not delete something, so a script can tell", async () => {
     const original = process.exitCode;
     try {
-      vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 0, failed: 2, retainedRefs: [] });
+      vi.mocked(core.pruneResultSessions).mockResolvedValue({ removed: 0, failed: 2, retainedRefs: [], strandedRemoved: 0 });
       captureStdout();
       captureStderr();
 
@@ -120,7 +137,7 @@ describe("result list/prune/clear", () => {
 
   it("leaves the exit code alone on a clean sweep", async () => {
     const original = process.exitCode;
-    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 1, failed: 0, retainedRefs: [] });
+    vi.mocked(core.pruneResultSessions).mockResolvedValue({ removed: 1, failed: 0, retainedRefs: [], strandedRemoved: 0 });
     captureStdout();
 
     await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
@@ -129,7 +146,7 @@ describe("result list/prune/clear", () => {
   });
 
   it("keeps removed=N the only stdout line, reporting retained and failed counts on stderr", async () => {
-    vi.mocked(resultStore.pruneResultSessions).mockResolvedValue({ removed: 1, failed: 3, retainedRefs: ["ref0", "ref1"] });
+    vi.mocked(core.pruneResultSessions).mockResolvedValue({ removed: 1, failed: 3, retainedRefs: ["ref0", "ref1"], strandedRemoved: 0 });
     const output = captureStdout();
     const notices = captureStderr();
     await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "prune"]);
@@ -141,7 +158,7 @@ describe("result list/prune/clear", () => {
   });
 
   it("prints removed=N for clear", async () => {
-    vi.mocked(resultStore.clearResultSessions).mockResolvedValue(5);
+    vi.mocked(core.clearResultSessions).mockResolvedValue(5);
     const output = captureStdout();
     await buildTestProgram().parseAsync(["node", "cf-metrics", "result", "clear"]);
     expect(output.text()).toBe("removed=5\n");

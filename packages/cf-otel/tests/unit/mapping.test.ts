@@ -1,7 +1,7 @@
+import type { OpenSearchClient } from "@saptools/core";
 import { describe, expect, it } from "vitest";
 
 import { findFieldInMapping, getFieldMapping, listAllFieldNames, lookUpField, resolveAggregatableField } from "../../src/mapping.js";
-import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
 const SAMPLE_MAPPING = {
   "otel-v1-apm-span-000001": {
@@ -21,6 +21,7 @@ function fakeClientWithMapping(mapping: unknown): OpenSearchClient {
     search: async () => ({ totalHits: 0, hits: [] }),
     count: async () => 0,
     getMapping: async () => mapping,
+    raw: async () => undefined,
   };
 }
 

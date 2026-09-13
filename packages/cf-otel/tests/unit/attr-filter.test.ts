@@ -1,7 +1,7 @@
+import type { OpenSearchClient } from "@saptools/core";
 import { describe, expect, it } from "vitest";
 
 import { parseAttrFilter, resolveAndValidateAttrFilters } from "../../src/attr-filter.js";
-import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
 describe("parseAttrFilter", () => {
   it("parses >=", () => {
@@ -93,7 +93,7 @@ describe("resolveAndValidateAttrFilters", () => {
   };
 
   function fakeClientWithMapping(mapping: unknown): OpenSearchClient {
-    return { search: async () => ({ totalHits: 0, hits: [] }), count: async () => 0, getMapping: async () => mapping };
+    return { search: async () => ({ totalHits: 0, hits: [] }), count: async () => 0, getMapping: async () => mapping, raw: async () => undefined };
   }
 
   it("resolves a bare --attr key to its real span.attributes.* path — a bare key matches nothing in real documents", async () => {

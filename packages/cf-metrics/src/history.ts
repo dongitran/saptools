@@ -1,10 +1,11 @@
+import type { OpenSearchClient } from "@saptools/core";
+
 import { bucketArray, readUnitKeys } from "./agg-buckets.js";
 import { DEFAULT_INDEX_PATTERN, MAX_UNITS_PER_METRIC } from "./config.js";
 import { CfMetricsError } from "./errors.js";
 import type { OutputRow } from "./format.js";
 import { buildKindSubAggs, isCumulativeTemporality, shapeHistoryBucket } from "./kind.js";
 import type { MetricKind } from "./kind.js";
-import type { OpenSearchClient } from "./opensearch-client.js";
 import { buildMetricBoolQuery } from "./query-builder.js";
 
 export interface HistoryQueryOptions {

@@ -1,7 +1,7 @@
+import type { OpenSearchClient } from "@saptools/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { queryNames } from "../../src/names.js";
-import type { OpenSearchClient } from "../../src/opensearch-client.js";
 
 describe("queryNames", () => {
   it("shapes a terms aggregation with kind/unit sub-buckets into NAME/KIND/UNIT/DOC_COUNT rows", async () => {
@@ -30,6 +30,7 @@ describe("queryNames", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
@@ -45,6 +46,7 @@ describe("queryNames", () => {
       search: vi.fn(async () => ({ totalHits: 0, hits: [], aggregations: { by_name: { buckets: [] } } })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await expect(queryNames(client, { service: "app", since: "2h", limit: 50 })).resolves.toEqual({ rows: [], truncated: false });
@@ -64,6 +66,7 @@ describe("queryNames", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await queryNames(client, { service: "app", since: "2h", limit: 0 });
@@ -81,6 +84,7 @@ describe("queryNames", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await queryNames(client, { service: "app", since: "2h", limit: 7 });
@@ -98,6 +102,7 @@ describe("queryNames", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
@@ -138,6 +143,7 @@ describe("queryNames", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });
@@ -174,6 +180,7 @@ describe("queryNames", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryNames(client, { service: "app", since: "2h", limit: 50 });

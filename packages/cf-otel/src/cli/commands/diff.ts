@@ -1,10 +1,10 @@
+import { searchAfterAll } from "@saptools/core";
 import type { Command } from "commander";
 
 import { DEFAULT_DIFF_TOP, DEFAULT_INDEX_PATTERN, MAX_SPANS_FETCHED, SPANS_PAGE_SIZE } from "../../config.js";
 import { computeDiff, sortDiffRows } from "../../diff.js";
 import { CfOtelError } from "../../errors.js";
-import { searchAfterAll } from "../../opensearch-client.js";
-import { hitToSpan } from "../../span-mapper.js";
+import { hitToSpan, SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import type { DiffSort } from "../../types.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { DiffOpts } from "../commandTypes.js";
@@ -28,8 +28,8 @@ async function runDiff(traceIdA: string, traceIdB: string, opts: DiffOpts): Prom
 
   const { spansA, spansB, truncatedA, truncatedB } = await withOpenSearchClient(opts, async (client) => {
     const [pagedA, pagedB] = await Promise.all([
-      searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query: { term: { traceId: traceIdA } } }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED),
-      searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query: { term: { traceId: traceIdB } } }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED),
+      searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query: { term: { traceId: traceIdA } } }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED, SPANS_SORT_TIEBREAKER),
+      searchAfterAll(client, DEFAULT_INDEX_PATTERN, { query: { term: { traceId: traceIdB } } }, SPANS_PAGE_SIZE, MAX_SPANS_FETCHED, SPANS_SORT_TIEBREAKER),
     ]);
     return {
       spansA: pagedA.hits.map(hitToSpan),

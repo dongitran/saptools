@@ -1,7 +1,7 @@
+import type { OpenSearchClient, SearchResponse } from "@saptools/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { CfMetricsError } from "../../src/errors.js";
-import type { OpenSearchClient, SearchResponse } from "../../src/opensearch-client.js";
 import { queryTop, resolveTopMetricKind } from "../../src/top.js";
 
 describe("queryTop", () => {
@@ -25,6 +25,7 @@ describe("queryTop", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryTop(client, { name: "container.memory.usage", since: "30m", limit: 5 });
@@ -47,6 +48,7 @@ describe("queryTop", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await queryTop(client, { name: "container.cpu.usage", limit: 0 });
@@ -64,6 +66,7 @@ describe("queryTop", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     await queryTop(client, { name: "container.cpu.usage", limit: 10 });
@@ -98,6 +101,7 @@ describe("queryTop", () => {
       }),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryTop(client, { name: "http.server.duration", limit: 10, kind: "HISTOGRAM" });
@@ -138,6 +142,7 @@ describe("queryTop", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryTop(client, { name: "http.server.duration", limit: 0, kind: "HISTOGRAM" });
@@ -166,6 +171,7 @@ describe("queryTop", () => {
       })),
       count: vi.fn(async () => 0),
       getMapping: vi.fn(async () => ({})),
+      raw: vi.fn(async () => undefined),
     };
 
     const { rows } = await queryTop(client, { name: "http.server.duration", limit: 1, kind: "HISTOGRAM" });
@@ -176,7 +182,7 @@ describe("queryTop", () => {
 
 describe("resolveTopMetricKind", () => {
   function fakeClient(searchImpl: (index: string, body: Record<string, unknown>) => Promise<SearchResponse>): OpenSearchClient {
-    return { search: vi.fn(searchImpl), count: vi.fn(async () => 0), getMapping: vi.fn(async () => ({})) };
+    return { search: vi.fn(searchImpl), count: vi.fn(async () => 0), getMapping: vi.fn(async () => ({})), raw: vi.fn(async () => undefined) };
   }
 
   it("resolves the kind without a --service filter, cross-app", async () => {

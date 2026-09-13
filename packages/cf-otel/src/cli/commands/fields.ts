@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { listFlatAttributeKeys } from "../../attributes.js";
 import { DEFAULT_INDEX_PATTERN } from "../../config.js";
 import { CfOtelError } from "../../errors.js";
-import { SPANS_SORT_TIEBREAKER } from "../../opensearch-client.js";
+import { SPANS_SORT_TIEBREAKER } from "../../span-mapper.js";
 import { withOpenSearchClient } from "../client-bootstrap.js";
 import type { FieldsOpts } from "../commandTypes.js";
 import { emitRows, parseFormat, printNotice } from "../output.js";

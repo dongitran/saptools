@@ -1,9 +1,9 @@
+import type { OpenSearchClient } from "@saptools/core";
 import type { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as clientBootstrap from "../../src/cli/client-bootstrap.js";
 import { buildProgram } from "../../src/cli/program.js";
-import type { OpenSearchClient } from "../../src/opensearch-client.js";
 import * as watch from "../../src/watch.js";
 
 vi.mock("../../src/cli/client-bootstrap.js", () => ({ withOpenSearchClient: vi.fn() }));
