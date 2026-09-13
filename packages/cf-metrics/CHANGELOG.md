@@ -2,6 +2,12 @@
 
 All notable changes to `@saptools/cf-metrics` are documented in this file.
 
+## 0.13.1
+
+### Fixed
+
+- `--service` now reads "(required)" in `--help` for `history`, `snapshot`, `watch`, and `names` — the flag was already enforced at runtime, but its description never said so.
+
 ## 0.13.0
 
 ### Changed

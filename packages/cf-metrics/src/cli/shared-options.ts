@@ -44,7 +44,7 @@ export function withSaveOption(command: Command): Command {
 
 export function withServiceOption(command: Command, required: boolean): Command {
   return required
-    ? command.requiredOption("--service <name>", "filter by CF app name")
+    ? command.requiredOption("--service <name>", "filter by CF app name (required)")
     : command.option("--service <name>", "filter by CF app name");
 }
 

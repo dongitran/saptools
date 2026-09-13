@@ -2,6 +2,12 @@
 
 All notable changes to `@saptools/cf-otel` are documented in this file.
 
+## 0.10.1
+
+### Fixed
+
+- `--service` now reads "(required)" in `--help` for `top` — the flag was already enforced at runtime, but its description never said so.
+
 ## 0.10.0
 
 ### Changed

@@ -37,7 +37,7 @@ export function withSaveOption(command: Command): Command {
 
 export function withServiceOption(command: Command, required: boolean): Command {
   return required
-    ? command.requiredOption("--service <name>", "filter by serviceName")
+    ? command.requiredOption("--service <name>", "filter by serviceName (required)")
     : command.option("--service <name>", "filter by serviceName");
 }
 
