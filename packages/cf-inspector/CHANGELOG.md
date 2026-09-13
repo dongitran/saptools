@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.3
+
+### Fixed
+
+- Suppressed the CodeQL `js/regex-injection` alert on `check-breakpoint`'s `new RegExp(urlRegex, "u")` with an inline `codeql[js/regex-injection]` comment, backed by a code comment explaining why: `--remote-root`'s raw-regex mode is an intentional, already-hardened (0.9.2) escape hatch, and CodeQL's only recognized sanitizer for this query is escaping the input — which would defeat the feature outright. No behavior change.
+
+## 0.9.2
+
+### Fixed
+
+- Hardened `--remote-root regex:...`/`/pattern/flags`: patterns are now capped at 200 characters and rejected outright if they contain a nested-quantifier shape (e.g. `(x+)+`), which can cause catastrophic regex backtracking. This mode intentionally lets an operator supply a raw regex (unlike every other path here, which already escapes user input), so the guard is defense-in-depth against a self-inflicted hang rather than a change in what the flag can express for any reasonable pattern.
+
 ## 0.9.1
 
 - Accept the self-updating releases of `@saptools/cf-debugger` as dependencies (range widened, no behaviour change).

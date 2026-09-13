@@ -6,6 +6,35 @@ const REGEX_PREFIX = "regex:";
 const REGEX_FLAGS_PATTERN = /^[dgimsuvy]*$/;
 const TS_JS_EXT_PATTERN = /\.(?:ts|js|mts|mjs|cts|cjs)$/i;
 
+/**
+ * `--remote-root regex:...`/`/pattern/flags` lets an operator supply a raw
+ * regex on purpose (unlike every other input here, which goes through
+ * `escapeRegExp`) — CodeQL correctly flags "regex built from user input" on
+ * that path. Bounding length and rejecting the classic nested-quantifier
+ * shape (`(x+)+`, `(x*)+`, `(x+)*`, ...) is defense-in-depth: this is a local
+ * CLI operated by whoever supplies the pattern, not a network-facing input,
+ * so the realistic risk is an operator DoS-ing their own debugger session,
+ * but a bad pattern should still fail fast with a clear message rather than
+ * hang the process.
+ */
+const MAX_REMOTE_ROOT_PATTERN_LENGTH = 200;
+const NESTED_QUANTIFIER_PATTERN = /\([^()]*[+*][^()]*\)[+*]/;
+
+function assertSafeRemoteRootPattern(pattern: string): void {
+  if (pattern.length > MAX_REMOTE_ROOT_PATTERN_LENGTH) {
+    throw new CfInspectorError(
+      "INVALID_REMOTE_ROOT",
+      `--remote-root regex pattern is too long (${pattern.length.toString()} chars, max ${MAX_REMOTE_ROOT_PATTERN_LENGTH.toString()}) — this bounds worst-case backtracking cost`,
+    );
+  }
+  if (NESTED_QUANTIFIER_PATTERN.test(pattern)) {
+    throw new CfInspectorError(
+      "INVALID_REMOTE_ROOT",
+      `--remote-root regex pattern "${pattern}" contains a nested quantifier (e.g. "(x+)+"), which can cause catastrophic backtracking — simplify the pattern`,
+    );
+  }
+}
+
 export function parseBreakpointSpec(input: string): BreakpointLocation {
   const idx = input.lastIndexOf(":");
   if (idx <= 0 || idx === input.length - 1) {
@@ -48,6 +77,7 @@ export function parseRemoteRoot(value: string | undefined): RemoteRootSetting {
 }
 
 function toRegex(pattern: string, flags: string): RemoteRootSetting {
+  assertSafeRemoteRootPattern(pattern);
   return { kind: "regex", pattern, flags };
 }
 
