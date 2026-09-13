@@ -2,6 +2,12 @@
 
 All notable changes to `@saptools/cf-log-search` are documented in this file.
 
+## 0.1.1
+
+### Changed
+
+- No functional changes. Version bump to verify the package's npm publish pipeline (`.github/workflows/cf-log-search.yml`) end-to-end.
+
 ## 0.1.0
 
 ### Added
