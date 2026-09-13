@@ -38,9 +38,11 @@ If `cf-metrics` is missing, install it from `@saptools/cf-metrics`:
    **Always pass `--unit` for CPU.** Cloud Foundry emits TWO series under the one name
    `container.cpu.usage`, told apart only by `unit`: `unit="1"` is the fraction of the app's CPU
    *entitlement* (matches `cf app`'s `cpu entitlement` column, can exceed 1.0), and `unit="cpu"`
-   is the fraction of a single CPU *core* (matches `cf app`'s `cpu` column). They differ by ~17x,
-   so averaging both together is meaningless — a bucket's MIN would be a `cpu` sample and its MAX
-   a `1` sample. `history` and `top` detect this and warn on stderr, but the numbers are only
+   is the fraction of a single CPU *core* (matches `cf app`'s `cpu` column). The ratio between them
+   is app-specific — it's the reciprocal of that app's own CPU entitlement in cores, so it scales
+   with memory quota (measured as a clean, exact 2x on one real app; expect it to run far higher on
+   a smaller-quota app) — never assume a fixed multiplier, and averaging both together regardless is
+   meaningless — a bucket's MIN would be a `cpu` sample and its MAX a `1` sample. `history` and `top` detect this and warn on stderr, but the numbers are only
    trustworthy once `--unit cpu` or `--unit 1` narrows them to one series. Note that even then,
    `unit="1"` ranks by "how close to its own limit", not absolute CPU, since entitlement scales
    with the memory quota — use `--unit cpu` to compare apps by real CPU consumed. Every other
