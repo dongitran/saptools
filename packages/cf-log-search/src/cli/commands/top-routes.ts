@@ -21,7 +21,7 @@ async function runTopRoutes(opts: TopRoutesOpts): Promise<void> {
     const response = await client.search(DEFAULT_INDEX_PATTERN, {
       size: 0,
       query: { bool: { filter: clauses } },
-      aggs: { by_route: { terms: { field: "request.keyword", size: opts.limit } } },
+      aggs: { by_route: { terms: { field: "request", size: opts.limit } } },
     });
     const buckets = extractBuckets(response.aggregations, "by_route");
     const rows = buckets.map((bucket) => ({ ROUTE: bucket.key, DOC_COUNT: bucket.docCount }));

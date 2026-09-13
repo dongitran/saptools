@@ -3,39 +3,41 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerLatencyCommand } from "../../src/cli/commands/latency.js";
 
-let mockSearchResult: unknown = {
-  totalHits: 0,
-  hits: [],
-  aggregations: {
-    by_bucket: {
-      buckets: [
-        { key: "acme-svc-config", doc_count: 500, latency_percentiles: { values: { "50.0": 12.5, "95.0": 88.2, "99.0": 210.7 } } },
-      ],
+interface SearchBody {
+  readonly aggs?: {
+    readonly by_bucket?: {
+      readonly terms?: { readonly field?: string; readonly size?: number };
+    };
+  };
+  readonly query?: { readonly bool?: { readonly filter?: readonly unknown[] } };
+}
+
+const searchMock = vi.fn(
+  async (
+    _index: string,
+    _body: SearchBody,
+  ): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
+    totalHits: 0,
+    hits: [],
+    aggregations: {
+      by_bucket: {
+        buckets: [
+          { key: "acme-svc-config", doc_count: 500, latency_percentiles: { values: { "50.0": 12.5, "95.0": 88.2, "99.0": 210.7 } } },
+        ],
+      },
     },
-  },
-};
+  }),
+);
 
 vi.mock("../../src/cli/client-bootstrap.js", () => ({
   withOpenSearchClient: vi.fn(async (_opts: unknown, work: (client: unknown) => Promise<void>) => {
-    await work({
-      search: vi.fn(async () => mockSearchResult),
-    });
+    await work({ search: searchMock });
   }),
 }));
 
 describe("latency command", () => {
   beforeEach(() => {
-    mockSearchResult = {
-      totalHits: 0,
-      hits: [],
-      aggregations: {
-        by_bucket: {
-          buckets: [
-            { key: "acme-svc-config", doc_count: 500, latency_percentiles: { values: { "50.0": 12.5, "95.0": 88.2, "99.0": 210.7 } } },
-          ],
-        },
-      },
-    };
+    searchMock.mockClear();
   });
 
   it("prints p50/p95/p99 per bucket", async () => {
@@ -58,8 +60,69 @@ describe("latency command", () => {
     await expect(program.parseAsync(["node", "cf-log-search", "latency", "--by", "nonsense"])).rejects.toThrow(/--by must be "app" or "route"/);
   });
 
+  it("--by route switches aggregation field to 'request'", async () => {
+    const program = new Command();
+    registerLatencyCommand(program);
+    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "latency", "--by", "route", "--format", "json"]);
+
+    const call = searchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    expect(call?.[1].aggs?.by_bucket?.terms?.field).toBe("request");
+    logSpy.mockRestore();
+  });
+
+  it("--limit reaches the query body", async () => {
+    const program = new Command();
+    registerLatencyCommand(program);
+    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "latency", "--limit", "5", "--format", "json"]);
+
+    const call = searchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    expect(call?.[1].aggs?.by_bucket?.terms?.size).toBe(5);
+    logSpy.mockRestore();
+  });
+
+  it("--limit 0 requests every bucket", async () => {
+    const program = new Command();
+    registerLatencyCommand(program);
+    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "latency", "--limit", "0", "--format", "json"]);
+
+    const call = searchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    expect(call?.[1].aggs?.by_bucket?.terms?.size).toBe(10_000);
+    logSpy.mockRestore();
+  });
+
+  it("--app reaches the query body", async () => {
+    const program = new Command();
+    registerLatencyCommand(program);
+    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "latency", "--app", "my-app", "--format", "json"]);
+
+    const call = searchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    expect(
+      call?.[1].query?.bool?.filter?.some((clause) => {
+        const term = (clause as { term?: { "app_name.keyword"?: string } }).term;
+        return term?.["app_name.keyword"] === "my-app";
+      }),
+    ).toBe(true);
+    logSpy.mockRestore();
+  });
+
   it("handles empty aggregations", async () => {
-    mockSearchResult = { totalHits: 0, hits: [], aggregations: {} };
+    searchMock.mockImplementationOnce(async (): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
+      totalHits: 0,
+      hits: [],
+      aggregations: {},
+    }));
 
     const program = new Command();
     registerLatencyCommand(program);
@@ -73,7 +136,7 @@ describe("latency command", () => {
   });
 
   it("handles missing percentile values", async () => {
-    mockSearchResult = {
+    searchMock.mockImplementationOnce(async (): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
       totalHits: 0,
       hits: [],
       aggregations: {
@@ -85,7 +148,7 @@ describe("latency command", () => {
           ],
         },
       },
-    };
+    }));
 
     const program = new Command();
     registerLatencyCommand(program);
@@ -99,42 +162,6 @@ describe("latency command", () => {
       { BUCKET: "app2", P50_MS: null, P95_MS: null, P99_MS: null, DOC_COUNT: 50 },
       { BUCKET: "app3", P50_MS: null, P95_MS: null, P99_MS: null, DOC_COUNT: 75 },
     ]);
-    logSpy.mockRestore();
-  });
-
-  it("respects --by route option", async () => {
-    const program = new Command();
-    registerLatencyCommand(program);
-    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await program.parseAsync(["node", "cf-log-search", "latency", "--by", "route", "--format", "json"]);
-
-    const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
-    expect(Array.isArray(printed)).toBe(true);
-    logSpy.mockRestore();
-  });
-
-  it("respects --limit option", async () => {
-    const program = new Command();
-    registerLatencyCommand(program);
-    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await program.parseAsync(["node", "cf-log-search", "latency", "--limit", "5", "--format", "json"]);
-
-    const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
-    expect(Array.isArray(printed)).toBe(true);
-    logSpy.mockRestore();
-  });
-
-  it("respects --app option", async () => {
-    const program = new Command();
-    registerLatencyCommand(program);
-    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await program.parseAsync(["node", "cf-log-search", "latency", "--app", "myapp", "--format", "json"]);
-
-    const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
-    expect(Array.isArray(printed)).toBe(true);
     logSpy.mockRestore();
   });
 });

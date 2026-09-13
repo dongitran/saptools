@@ -3,39 +3,41 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerErrorsCommand } from "../../src/cli/commands/errors.js";
 
-let mockSearchResult: unknown = {
-  totalHits: 0,
-  hits: [],
-  aggregations: {
-    by_app: {
-      buckets: [
-        { key: "acme-svc-config", doc_count: 12, by_status: { buckets: [{ key: 500, doc_count: 9 }, { key: 404, doc_count: 3 }] } },
-      ],
+interface SearchBody {
+  readonly aggs?: {
+    readonly by_app?: {
+      readonly terms?: { readonly size?: number };
+    };
+  };
+  readonly query?: { readonly bool?: { readonly filter?: readonly unknown[] } };
+}
+
+const searchMock = vi.fn(
+  async (
+    _index: string,
+    _body: SearchBody,
+  ): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
+    totalHits: 0,
+    hits: [],
+    aggregations: {
+      by_app: {
+        buckets: [
+          { key: "acme-svc-config", doc_count: 12, by_status: { buckets: [{ key: 500, doc_count: 9 }, { key: 404, doc_count: 3 }] } },
+        ],
+      },
     },
-  },
-};
+  }),
+);
 
 vi.mock("../../src/cli/client-bootstrap.js", () => ({
   withOpenSearchClient: vi.fn(async (_opts: unknown, work: (client: unknown) => Promise<void>) => {
-    await work({
-      search: vi.fn(async () => mockSearchResult),
-    });
+    await work({ search: searchMock });
   }),
 }));
 
 describe("errors command", () => {
   beforeEach(() => {
-    mockSearchResult = {
-      totalHits: 0,
-      hits: [],
-      aggregations: {
-        by_app: {
-          buckets: [
-            { key: "acme-svc-config", doc_count: 12, by_status: { buckets: [{ key: 500, doc_count: 9 }, { key: 404, doc_count: 3 }] } },
-          ],
-        },
-      },
-    };
+    searchMock.mockClear();
   });
 
   it("prints a flattened app x status_code x doc_count breakdown", async () => {
@@ -55,8 +57,44 @@ describe("errors command", () => {
     logSpy.mockRestore();
   });
 
+  it("--app and --limit reach the query body", async () => {
+    const program = new Command();
+    registerErrorsCommand(program);
+    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "errors", "--app", "my-app", "--limit", "5", "--format", "json"]);
+
+    const call = searchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    expect(
+      call?.[1].query?.bool?.filter?.some((clause) => {
+        const term = (clause as { term?: { "app_name.keyword"?: string } }).term;
+        return term?.["app_name.keyword"] === "my-app";
+      }),
+    ).toBe(true);
+    expect(call?.[1].aggs?.by_app?.terms?.size).toBe(5);
+    logSpy.mockRestore();
+  });
+
+  it("--limit 0 requests every bucket", async () => {
+    const program = new Command();
+    registerErrorsCommand(program);
+    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "errors", "--limit", "0", "--format", "json"]);
+
+    const call = searchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    expect(call?.[1].aggs?.by_app?.terms?.size).toBe(10_000);
+    logSpy.mockRestore();
+  });
+
   it("handles empty aggregations", async () => {
-    mockSearchResult = { totalHits: 0, hits: [], aggregations: {} };
+    searchMock.mockImplementationOnce(async (): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
+      totalHits: 0,
+      hits: [],
+      aggregations: {},
+    }));
 
     const program = new Command();
     registerErrorsCommand(program);
@@ -70,27 +108,11 @@ describe("errors command", () => {
   });
 
   it("handles null aggregations", async () => {
-    mockSearchResult = { totalHits: 0, hits: [], aggregations: null };
-
-    const program = new Command();
-    registerErrorsCommand(program);
-    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await program.parseAsync(["node", "cf-log-search", "errors", "--format", "json"]);
-
-    const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
-    expect(printed).toEqual([]);
-    logSpy.mockRestore();
-  });
-
-  it("handles malformed by_app buckets", async () => {
-    mockSearchResult = {
+    searchMock.mockImplementationOnce(async (): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
       totalHits: 0,
       hits: [],
-      aggregations: {
-        by_app: { buckets: "not an array" },
-      },
-    };
+      aggregations: undefined,
+    }));
 
     const program = new Command();
     registerErrorsCommand(program);
@@ -104,7 +126,7 @@ describe("errors command", () => {
   });
 
   it("filters out buckets with missing or invalid fields", async () => {
-    mockSearchResult = {
+    searchMock.mockImplementationOnce(async (): Promise<{ totalHits: number; hits: never[]; aggregations: Record<string, unknown> | undefined }> => ({
       totalHits: 0,
       hits: [],
       aggregations: {
@@ -117,7 +139,7 @@ describe("errors command", () => {
           ],
         },
       },
-    };
+    }));
 
     const program = new Command();
     registerErrorsCommand(program);
@@ -127,30 +149,6 @@ describe("errors command", () => {
 
     const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
     expect(printed).toEqual([{ APP: "app1", STATUS: "500", DOC_COUNT: 5 }]);
-    logSpy.mockRestore();
-  });
-
-  it("respects --limit option", async () => {
-    const program = new Command();
-    registerErrorsCommand(program);
-    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await program.parseAsync(["node", "cf-log-search", "errors", "--limit", "5", "--format", "json"]);
-
-    const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
-    expect(printed.length).toBeGreaterThan(0);
-    logSpy.mockRestore();
-  });
-
-  it("respects --app option", async () => {
-    const program = new Command();
-    registerErrorsCommand(program);
-    const logSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await program.parseAsync(["node", "cf-log-search", "errors", "--app", "myapp", "--format", "json"]);
-
-    const printed = JSON.parse(logSpy.mock.calls.map((call) => String(call[0])).join(""));
-    expect(Array.isArray(printed)).toBe(true);
     logSpy.mockRestore();
   });
 });

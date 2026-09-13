@@ -16,7 +16,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function bucketField(by: string): string {
-  return by === "route" ? "request.keyword" : "app_name.keyword";
+  return by === "route" ? "request" : "app_name.keyword";
 }
 
 function parseByOption(value: string): string {
