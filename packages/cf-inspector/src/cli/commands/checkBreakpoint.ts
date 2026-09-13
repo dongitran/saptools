@@ -29,6 +29,12 @@ export async function handleCheckBreakpoint(
   const location = parseBreakpointSpec(opts.bp);
   const remoteRoot = parseRemoteRoot(opts.remoteRoot);
   const urlRegex = buildBreakpointUrlRegex({ file: location.file, remoteRoot });
+  // --remote-root's regex mode is an intentional, documented escape hatch (see pathMapper.ts's
+  // parseRemoteRoot/toRegex): every other input path here already runs through escapeRegExp, and
+  // assertSafeRemoteRootPattern rejects patterns over 200 chars or the classic nested-quantifier
+  // ReDoS shape before urlRegex is ever built. Escaping this input — the only sanitizer shape
+  // CodeQL's js/regex-injection query recognizes — would defeat the feature's purpose.
+  // codeql[js/regex-injection]
   const matcher = new RegExp(urlRegex, "u");
   const result = await withSessions(target, async (group): Promise<BreakpointCheckResult> => {
     const checks = (await Promise.all(group.list().map(async (session) =>

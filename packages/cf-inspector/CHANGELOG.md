@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3
+
+### Fixed
+
+- Suppressed the CodeQL `js/regex-injection` alert on `check-breakpoint`'s `new RegExp(urlRegex, "u")` with an inline `codeql[js/regex-injection]` comment, backed by a code comment explaining why: `--remote-root`'s raw-regex mode is an intentional, already-hardened (0.9.2) escape hatch, and CodeQL's only recognized sanitizer for this query is escaping the input — which would defeat the feature outright. No behavior change.
+
 ## 0.9.2
 
 ### Fixed
