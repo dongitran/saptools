@@ -151,9 +151,13 @@ message lists every service key and fallback binding tried and why. Pass `--serv
 `--service-instance <name>` explicitly.
 
 **`count` and `search`'s reported total disagree slightly for what looks like the same query**:
-expected when using a relative `--since`/`--until` (the default) — each command re-resolves "now"
-independently at the moment it runs, and this tenant ingests continuously, so the window's leading
-edge has moved between two calls issued even a few seconds apart. Verified live: two back-to-back
-calls for the same filters differed by 27 out of ~33,450 (0.08%), with the later call always
-reporting the larger total. A large discrepancy, or a later call reporting *fewer* matches, is not
-this — that would be a real bug.
+expected when using a relative `--since` with no `--until` (the default) — each command
+re-resolves "now" independently at the moment it runs, so the query is really "everything from
+(now − duration) onward, with no upper bound." Both edges of that window move between two calls
+issued even a few seconds apart: the lower bound excludes slightly more old documents, while new
+ingestion adds slightly more at the top. On a continuously-ingesting tenant this can make the
+**later** call's total come out **either slightly higher or slightly lower** — it is a genuine
+two-sided drift, not a one-directional "always grows" effect. Verified live twice: back-to-back
+calls for the same filters differed by 27 out of ~33,450 (+0.08%) in one sample and by 33 out of
+~35,400 (−0.09%) in another. What indicates a real bug is a *large* discrepancy — much bigger than
+the ingest rate times the few seconds between calls — not the direction of the difference.
