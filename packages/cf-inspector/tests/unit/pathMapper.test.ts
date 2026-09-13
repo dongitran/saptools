@@ -94,6 +94,26 @@ describe("parseRemoteRoot", () => {
   it("returns literal for single-character paths and preserves trailing slash absence", () => {
     expect(parseRemoteRoot("/")).toEqual({ kind: "literal", value: "/" });
   });
+
+  it("rejects a regex: pattern longer than the length cap", () => {
+    const long = "a".repeat(201);
+    expect(() => parseRemoteRoot(`regex:${long}`)).toThrowError(CfInspectorError);
+  });
+
+  it("accepts a regex: pattern right at the length cap", () => {
+    const atCap = "a".repeat(200);
+    expect(() => parseRemoteRoot(`regex:${atCap}`)).not.toThrow();
+  });
+
+  it("rejects a nested-quantifier regex pattern (classic catastrophic backtracking shape)", () => {
+    expect(() => parseRemoteRoot("regex:(a+)+$")).toThrowError(CfInspectorError);
+    expect(() => parseRemoteRoot("regex:(a*)+$")).toThrowError(CfInspectorError);
+    expect(() => parseRemoteRoot("/(\\d+)+/i")).toThrowError(CfInspectorError);
+  });
+
+  it("still accepts a normal, non-nested-quantifier regex pattern", () => {
+    expect(() => parseRemoteRoot("regex:^/example-root-[a-z]+$")).not.toThrow();
+  });
 });
 
 describe("buildBreakpointUrlRegex", () => {
