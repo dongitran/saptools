@@ -13,10 +13,10 @@ If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptool
 
 ## First Steps
 
-1. Identify whether the user needs auth status or identity, assigned issues, one issue detail, a new ticket, remote links, transitions, a transition write, a content write, a comment deletion, or a worklog write.
+1. Identify whether the user needs auth status or identity, assigned issues, one issue detail, a new ticket, uploading/attaching a file, remote links, transitions, a transition write, a content write, a comment deletion, or a worklog write.
 2. Use plain human-readable output by default, including when an agent will read the result and act on it directly. Use `--json` only when a deterministic script, `jq` pipeline, or another tool must parse fields programmatically.
 3. Prefer an Atlassian API token when `JIRA_API_TOKEN` is exported; otherwise reuse the default token store at `~/.jira-oauth/tokens.json`. Run `jira status` when unsure which is active.
-4. Use write commands only when the user explicitly asks to assign or transition an issue, update issue content, add worklog time, or delete a comment.
+4. Use write commands only when the user explicitly asks to assign or transition an issue, update issue content, upload/attach a file, add worklog time, or delete a comment.
 5. Treat API tokens, access tokens, refresh tokens, Authorization headers, OAuth client secrets, and raw token-store contents as sensitive. Never echo `$JIRA_API_TOKEN`.
 
 ## Authentication
@@ -128,10 +128,14 @@ jira create "Onboard new service" --project OPS --type Task --assign-me
 
 - `--project <key>` and `--type <name>` are always required; there is no default. `--type` is a
   Jira issue type display name (`Task`, `Bug`, `Story`, `Subtask`, ...), matched case-insensitively.
+  Exact display names are site-specific — for example, some sites use `Sub-task` (hyphenated)
+  instead of `Subtask`. Never guess a spelling variant; if the name doesn't match, retry with the
+  exact name the CLI lists in its `Available: ...` error.
 - Optional: `--text`/`--text-file`/`--adf-file` (at most one, same rules as `describe`/`comment`),
-  `--priority <name>`, `--label <name>` (repeatable), `--field <name=value>` (repeatable, same
-  display-name resolution as `jira fields update`, no prior `jira fields discover`/`pin` needed),
-  `--parent <key>` (required for a subtask issue type, refused otherwise).
+  `--priority <name>`, `--label <name>` (repeatable), `--field <name=value>` / `--field-file
+  <name=path>` (repeatable, same display-name resolution as `jira fields update`, no prior `jira
+  fields discover`/`pin` needed), `--parent <key>` (required for a subtask issue type, refused
+  otherwise).
 - The CLI validates locally before writing anything: unsupported priority/labels for that project,
   a missing `--parent` on a subtask type, and any other project-required field not already covered —
   each fails with the exact field name(s), never a bare Jira error.
@@ -142,7 +146,10 @@ jira create "Onboard new service" --project OPS --type Task --assign-me
 - Creating an issue is a write and requires explicit user intent. Attach local files right after
   creation with repeatable `--file <path>`. The issue is created first; a failed follow-up upload
   warns on stderr instead of rolling back or failing the command — retry with `jira attach
-  <new-key> <file>`.
+  <new-key> <file>`. JSON output adds an `attachments` array (same shape as `jira attach`, below)
+  only when at least one file was attached.
+- Use `--no-notify-users` only when the user explicitly wants to suppress Jira's creation
+  notifications.
 
 Upload files or images to an existing issue, and optionally try to render one inline, only when the user explicitly asks:
 
@@ -160,6 +167,10 @@ jira attach OPS-123 ./screenshot.png --embed description
   content-endpoint redirect that Atlassian has changed before and could change again without
   notice. When the id cannot be resolved, the upload still succeeds and the command prints a
   warning instead of failing — never treat an unresolved embed as a broken upload.
+- JSON output returns `issueKey` and an `attachments` array (`id`, `filename`, `mimeType`, `size`
+  per file). With `--embed`, it also includes an `embed` object: `{ target, resolved: true,
+  commentId }` on success (`commentId` only for the `comment` target), or `{ target, resolved:
+  false, warning }` when the id could not be resolved.
 
 Print the current raw description ADF when the user needs to inspect or safely edit a complex description:
 
