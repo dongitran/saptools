@@ -7,9 +7,12 @@ import { CLI_NAME, CLI_VERSION, ENV_PREFIX, PACKAGE_NAME, saptoolsRootFromEnv } 
 import type { SaveOpts } from "./commandTypes.js";
 import { registerAppsCommand } from "./commands/apps.js";
 import { registerCountCommand } from "./commands/count.js";
+import { registerErrorsCommand } from "./commands/errors.js";
 import { registerFieldsCommand } from "./commands/fields.js";
+import { registerLatencyCommand } from "./commands/latency.js";
 import { registerSearchCommand } from "./commands/search.js";
 import { registerSourcesCommand } from "./commands/sources.js";
+import { registerTopRoutesCommand } from "./commands/top-routes.js";
 import { registerCredentialCommands } from "./credentials.js";
 import { printNotice } from "./output.js";
 import { registerResultCommands } from "./results.js";
@@ -50,6 +53,9 @@ export function buildProgram(): Command {
   registerFieldsCommand(program);
   registerAppsCommand(program);
   registerSourcesCommand(program);
+  registerErrorsCommand(program);
+  registerLatencyCommand(program);
+  registerTopRoutesCommand(program);
   registerResultCommands(program);
   registerCredentialCommands(program);
   registerSelfUpdateCommand(program, selfUpdate);

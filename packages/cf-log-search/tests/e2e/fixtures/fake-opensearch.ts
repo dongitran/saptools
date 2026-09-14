@@ -12,7 +12,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function rtrDoc(id: string, appName: string, timestamp: string, status: number, vcapRequestId: string, traceId: string): Doc {
+function rtrDoc(
+  id: string,
+  appName: string,
+  timestamp: string,
+  status: number,
+  vcapRequestId: string,
+  traceId: string,
+  responseTimeMs = 16.9,
+): Doc {
   return {
     _id: id,
     _source: {
@@ -24,7 +32,7 @@ function rtrDoc(id: string, appName: string, timestamp: string, status: number, 
       method: "GET",
       request: "/SystemConfigService/getBrokerConfig()",
       response_status: status,
-      response_time_ms: 16.9,
+      response_time_ms: responseTimeMs,
       vcap_request_id: vcapRequestId,
       correlation_id: "22222222-2222-4222-8222-222222222222",
       trace_id: traceId,
@@ -73,11 +81,15 @@ function isoOffsetFromNow(msAgo: number): string {
 function buildDataset(): readonly Doc[] {
   const rtr1Ago = 5 * 60_000;
   const rtr2Ago = rtr1Ago + 1_957;
+  const rtr3Ago = rtr1Ago + 300;
+  const rtr4Ago = rtr1Ago + 600;
   const app1Ago = rtr1Ago + 187_913;
   const app2Ago = app1Ago + 1_044;
   return [
     rtrDoc("rtr-1", "acme-svc-config", isoOffsetFromNow(rtr1Ago), 200, "11111111-1111-4111-8111-111111111111", "deaddeaddeaddeaddeaddeaddeaddead"),
     rtrDoc("rtr-2", "acme-svc-config", isoOffsetFromNow(rtr2Ago), 500, "44444444-4444-4444-8444-444444444444", "facefacefacefacefacefacefaceface"),
+    rtrDoc("rtr-3", "acme-svc-config", isoOffsetFromNow(rtr3Ago), 500, "55555555-5555-4555-8555-555555555555", "0123456789abcdef0123456789abcdef", 10),
+    rtrDoc("rtr-4", "acme-svc-config", isoOffsetFromNow(rtr4Ago), 500, "77777777-7777-4777-8777-777777777777", "abcdefabcdefabcdefabcdefabcdefab", 200),
     appLogDoc("app-1", "acme-svc-user", isoOffsetFromNow(app1Ago), "debug", "GET SystemConfigService/getBrokerConfig()", "cafecafe-babe-4bad-8bad-deadbeefcafe"),
     appLogDoc("app-2", "acme-svc-user", isoOffsetFromNow(app2Ago), "error", "connection refused talking to db", "66666666-6666-4666-8666-666666666666"),
   ];
@@ -117,10 +129,16 @@ function matchesClause(source: Record<string, unknown>, clause: Record<string, u
     if (isRecord(spec)) {
       const gte = spec["gte"];
       const lte = spec["lte"];
-      if (typeof gte === "string" && typeof value === "string" && value < gte) {
+      if (typeof value === "string" && typeof gte === "string" && value < gte) {
         return false;
       }
-      if (typeof lte === "string" && typeof value === "string" && value > lte) {
+      if (typeof value === "string" && typeof lte === "string" && value > lte) {
+        return false;
+      }
+      if (typeof value === "number" && typeof gte === "number" && value < gte) {
+        return false;
+      }
+      if (typeof value === "number" && typeof lte === "number" && value > lte) {
         return false;
       }
     }
@@ -201,27 +219,88 @@ function handlePitSearch(body: Record<string, unknown>): unknown {
   };
 }
 
+interface AggBucketGroup {
+  readonly key: string | number;
+  readonly docs: readonly Doc[];
+}
+
+function groupByTermsField(docs: readonly Doc[], field: string): readonly AggBucketGroup[] {
+  const groups = new Map<string | number, Doc[]>();
+  for (const doc of docs) {
+    const key = getField(doc._source, field);
+    if (typeof key !== "string" && typeof key !== "number") {
+      continue;
+    }
+    const bucket = groups.get(key);
+    if (bucket === undefined) {
+      groups.set(key, [doc]);
+    } else {
+      bucket.push(doc);
+    }
+  }
+  return [...groups.entries()].map(([key, bucketDocs]) => ({ key, docs: bucketDocs }));
+}
+
+function nearestRankPercentile(sortedValues: readonly number[], percent: number): number | undefined {
+  if (sortedValues.length === 0) {
+    return undefined;
+  }
+  const rank = Math.ceil((percent / 100) * sortedValues.length);
+  const index = Math.min(Math.max(rank, 1), sortedValues.length) - 1;
+  return sortedValues[index];
+}
+
+function computePercentiles(docs: readonly Doc[], field: string, percents: readonly number[]): Record<string, number> {
+  const values = docs
+    .map((doc) => getField(doc._source, field))
+    .filter((value): value is number => typeof value === "number")
+    .sort((a, b) => a - b);
+  const result: Record<string, number> = {};
+  for (const percent of percents) {
+    const value = nearestRankPercentile(values, percent);
+    if (value !== undefined) {
+      result[`${String(percent)}.0`] = value;
+    }
+  }
+  return result;
+}
+
+function buildAggregations(docs: readonly Doc[], aggs: Record<string, unknown>): Record<string, unknown> {
+  const aggregations: Record<string, unknown> = {};
+  for (const [name, spec] of Object.entries(aggs)) {
+    if (!isRecord(spec)) {
+      continue;
+    }
+    if (isRecord(spec["terms"]) && typeof spec["terms"]["field"] === "string") {
+      const field = spec["terms"]["field"].replace(/\.keyword$/, "");
+      const groups = groupByTermsField(docs, field);
+      const nestedAggs = isRecord(spec["aggs"]) ? spec["aggs"] : undefined;
+      aggregations[name] = {
+        buckets: groups.map((group) => ({
+          key: group.key,
+          doc_count: group.docs.length,
+          ...(nestedAggs === undefined ? {} : buildAggregations(group.docs, nestedAggs)),
+        })),
+      };
+      continue;
+    }
+    if (isRecord(spec["percentiles"])) {
+      const percentilesSpec = spec["percentiles"];
+      if (typeof percentilesSpec["field"] === "string" && Array.isArray(percentilesSpec["percents"])) {
+        const field = percentilesSpec["field"];
+        const percents = percentilesSpec["percents"].filter((p): p is number => typeof p === "number");
+        aggregations[name] = { values: computePercentiles(docs, field, percents) };
+      }
+    }
+  }
+  return aggregations;
+}
+
 function handlePlainSearch(body: Record<string, unknown>): unknown {
   const matches = DATASET.filter((doc) => matchesQuery(doc._source, body["query"]));
   const aggs = body["aggs"];
   if (isRecord(aggs)) {
-    const aggregations: Record<string, unknown> = {};
-    for (const [name, spec] of Object.entries(aggs)) {
-      if (!isRecord(spec) || !isRecord(spec["terms"]) || typeof spec["terms"]["field"] !== "string") {
-        continue;
-      }
-      const field = spec["terms"]["field"].replace(/\.keyword$/, "");
-      const groups = new Map<string, number>();
-      for (const doc of matches) {
-        const key = getField(doc._source, field);
-        if (typeof key !== "string") {
-          continue;
-        }
-        groups.set(key, (groups.get(key) ?? 0) + 1);
-      }
-      aggregations[name] = { buckets: [...groups.entries()].map(([key, docCount]) => ({ key, doc_count: docCount })) };
-    }
-    return { hits: { total: { value: matches.length }, hits: [] }, aggregations };
+    return { hits: { total: { value: matches.length }, hits: [] }, aggregations: buildAggregations(matches, aggs) };
   }
   return { hits: { total: { value: matches.length }, hits: [] } };
 }

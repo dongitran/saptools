@@ -106,6 +106,14 @@ Just a count, cheaper than fetching rows:
 cf-log-search count --app my-app --level error --since 24h
 ```
 
+RTR-only analytics (router access logs — meaningless on application log rows):
+
+```bash
+cf-log-search errors --since 24h
+cf-log-search latency --by route --since 1h
+cf-log-search top-routes --since 24h --limit 10
+```
+
 Saved results:
 
 ```bash
@@ -126,9 +134,8 @@ cf-log-search credential clear
 
 - **No live tail.** `cf-log-search` is historical/near-real-time (subject to OpenSearch ingest
   lag), never a replacement for `cf-logs`'s live streaming.
-- **No cross-app trace/analytics commands yet.** RTR-field analytics (error-rate breakdowns,
-  latency percentiles, busiest routes) and explicit trace-correlation commands (`trace
-  <vcap-request-id>`) are planned in later phases of this package, not in this release.
+- **No explicit trace-correlation command yet.** `trace <vcap-request-id>` is planned for a later
+  phase.
 - **Retention is not a fixed guarantee.** It is governed by ingest volume and the backend's own
   lifecycle policy; it has been observed to be tens of days but is not contractual and will shrink
   as ingestion grows.

@@ -49,7 +49,7 @@ test("count returns a plain number matching the same filter search would use", a
   const result = await runCli(["count", ...targetArgs(), "--app", "acme-svc-config"], env());
 
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.trim()).toBe("2");
+  expect(result.stdout.trim()).toBe("4");
 });
 
 test("fields with no flags never touches the fake OpenSearch server at all", async () => {
@@ -63,7 +63,7 @@ test("apps aggregates doc counts per app_name", async () => {
   const result = await runCli(["apps", ...targetArgs(), "--format", "json"], env());
 
   const rows: { APP: string; DOC_COUNT: number }[] = JSON.parse(result.stdout);
-  expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ APP: "acme-svc-config", DOC_COUNT: 2 })]));
+  expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ APP: "acme-svc-config", DOC_COUNT: 4 })]));
 });
 
 test("--save prints a ref, and result show retrieves the same rows back", async () => {

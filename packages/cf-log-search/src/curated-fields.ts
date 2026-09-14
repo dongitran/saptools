@@ -20,7 +20,7 @@ export const CURATED_FIELDS: readonly CuratedField[] = [
   { field: "trace_id", type: "text (+.keyword)", appliesTo: "all", notes: "the REAL OTel trace id only when source_type=RTR (mirrors w3c_trace-id); on every other row it is unreliable — a live sample found ~58% were a de-hyphenated correlation_id and ~42% were a real trace id anyway, with no way to tell which from the document alone — never read this field directly, always call resolveTraceId()" },
   { field: "span_id", type: "keyword", appliesTo: "RTR only", notes: "paired with trace_id's RTR-only guarantee — see resolveSpanId()" },
   { field: "method", type: "keyword", appliesTo: "RTR only", notes: "" },
-  { field: "request", type: "keyword", appliesTo: "RTR only", notes: "the request path" },
+  { field: "request", type: "text (+.keyword)", appliesTo: "RTR only", notes: "the request path — aggregate on request.keyword, not the bare field (verified live: OpenSearch rejects fielddata on the bare text field)" },
   { field: "response_status", type: "integer", appliesTo: "RTR only", notes: "a real mapped number — filter with --status, not a text match" },
   { field: "response_time_ms", type: "float", appliesTo: "RTR only", notes: "" },
   { field: "backend_time_ms", type: "float", appliesTo: "RTR only", notes: "" },
