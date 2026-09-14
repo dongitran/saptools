@@ -172,6 +172,26 @@ jira attach OPS-123 ./screenshot.png --embed description
   commentId }` on success (`commentId` only for the `comment` target), or `{ target, resolved:
   false, warning }` when the id could not be resolved.
 
+To build a description with several images and text blocks in a specific order (image, text,
+image, text, ...), alternate `jira attach <key> <file> --embed description` (each call appends one
+image to the end) with `jira describe <key> --text "..." --append` (each call appends one text
+paragraph to the end) — call them in the exact order the content should appear:
+
+```bash
+jira attach OPS-123 step-1.png --embed description
+jira describe OPS-123 --text "Explanation after step 1." --append
+jira attach OPS-123 step-2.png --embed description
+jira describe OPS-123 --text "Explanation after step 2." --append
+```
+
+- `--append` is required for every `jira describe` call in this sequence, even though the
+  description already contains media from the prior `--embed` — `--append` is the one write mode
+  that never applies the media-replacement guard described below, so it is always safe to alternate
+  this way. A plain `--text` write without `--append` would be refused once media is present.
+- The same alternation works for a mix of `--embed comment` and `--embed description` calls; each
+  targets its own body (a new comment vs. the description) independently, so interleaving them
+  does not require any particular order relative to each other.
+
 Print the current raw description ADF when the user needs to inspect or safely edit a complex description:
 
 ```bash
