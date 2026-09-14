@@ -2513,6 +2513,51 @@ test.describe("Jira CLI", () => {
     }
   });
 
+  test("Create composes --file with priority and labels in a single request", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "spec.txt");
+      await writeFile(filePath, "spec body", "utf8");
+
+      const created = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Everything at once",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--priority",
+        "high",
+        "--label",
+        "flaky",
+        "--file",
+        filePath,
+        "--json",
+      ]);
+      expect(JSON.parse(created.stdout)).toEqual({
+        id: "99001",
+        issueKey: "OPS-ASSIGN",
+        issueType: "Task",
+        attachments: [{ id: "30002", filename: "spec.txt", mimeType: "text/plain", size: 9 }],
+      });
+
+      const createPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue";
+      });
+      expect(JSON.parse(createPost?.body ?? "{}")).toMatchObject({
+        fields: { priority: { id: "1" }, labels: ["flaky"] },
+      });
+
+      expect(ctx.fakeJira.requests().some((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ASSIGN/attachments";
+      })).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test("User can log out by clearing the shared token store", async () => {
     const ctx = await prepareCliContext();
     try {
