@@ -3,9 +3,11 @@ name: cf-log-search
 description: >-
   Use when a task involves searching SAP BTP Cloud Foundry application logs further back than
   `cf logs`'s short buffer allows — full-text search, filtering by app/space/level/source type,
-  or finding router-access-log rows by status code or path — through the cf-log-search CLI.
-  Queries already-ingested history in SAP Cloud Logging's OpenSearch backend (index pattern
-  logs-cfsyslog-*). This is read-only and historical: for live/recent tailing use cf-logs instead.
+  finding router-access-log rows by status code or path, RTR-only analytics (error breakdowns,
+  latency percentiles, busiest routes), or correlating a request id to its OpenTelemetry trace —
+  through the cf-log-search CLI. Queries already-ingested history in SAP Cloud Logging's
+  OpenSearch backend (index pattern logs-cfsyslog-*). This is read-only and historical: for
+  live/recent tailing use cf-logs instead.
 ---
 
 # CF Log Search
@@ -56,10 +58,10 @@ reported as an empty string rather than that misleading value. **Never treat a n
 as available on anything but an RTR row**, and never reach for the field on an APP-log row hoping
 for a trace correlation — there isn't one at this layer (see `vcapRequestId` below instead).
 
-For cross-request correlation that works on **every** row shape, use `vcapRequestId` — the
-per-hop Cloud Foundry request id, present on both RTR and APP-log rows that were part of the same
-inbound request, and also the field an OTel span carries as
-`http@request@header@x-vcap-request-id`.
+For cross-request correlation, use `vcapRequestId` as the input to `trace <vcap-request-id>` —
+the per-hop Cloud Foundry request id. `--with-span` does not join via this field as a span
+attribute (that approach was tried and found unreliable — see "Correlate a log line to its trace"
+below); it joins through the matched RTR row's own `traceId` instead.
 
 ## Credential Discovery
 
@@ -114,6 +116,17 @@ cf-log-search latency --by route --since 1h
 cf-log-search top-routes --since 24h --limit 10
 ```
 
+Correlate a log line to its trace:
+
+```bash
+cf-log-search trace <vcap-request-id> --with-span
+```
+
+`--with-span` joins on the matched RTR row's own trace id, not on `vcap_request_id` — only an RTR
+row carries a usable trace id (see "The traceId Field" above). A `--with-span` result with no span
+rows and a stderr notice about ingestion lag is normal for a request from the last few minutes;
+retry shortly rather than assuming correlation failed.
+
 Saved results:
 
 ```bash
@@ -134,8 +147,6 @@ cf-log-search credential clear
 
 - **No live tail.** `cf-log-search` is historical/near-real-time (subject to OpenSearch ingest
   lag), never a replacement for `cf-logs`'s live streaming.
-- **No explicit trace-correlation command yet.** `trace <vcap-request-id>` is planned for a later
-  phase.
 - **Retention is not a fixed guarantee.** It is governed by ingest volume and the backend's own
   lifecycle policy; it has been observed to be tens of days but is not contractual and will shrink
   as ingestion grows.
@@ -168,3 +179,7 @@ two-sided drift, not a one-directional "always grows" effect. Verified live twic
 calls for the same filters differed by 27 out of ~33,450 (+0.08%) in one sample and by 33 out of
 ~35,400 (−0.09%) in another. What indicates a real bug is a *large* discrepancy — much bigger than
 the ingest rate times the few seconds between calls — not the direction of the difference.
+
+**`trace --with-span` finds the log row but no span**: spans lag log-document availability by a
+real, measured few minutes on this backend. Wait and retry before assuming the trace id is wrong
+or the request was not sampled.

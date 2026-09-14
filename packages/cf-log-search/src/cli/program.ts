@@ -13,6 +13,7 @@ import { registerLatencyCommand } from "./commands/latency.js";
 import { registerSearchCommand } from "./commands/search.js";
 import { registerSourcesCommand } from "./commands/sources.js";
 import { registerTopRoutesCommand } from "./commands/top-routes.js";
+import { registerTraceCommand } from "./commands/trace.js";
 import { registerCredentialCommands } from "./credentials.js";
 import { printNotice } from "./output.js";
 import { registerResultCommands } from "./results.js";
@@ -56,6 +57,7 @@ export function buildProgram(): Command {
   registerErrorsCommand(program);
   registerLatencyCommand(program);
   registerTopRoutesCommand(program);
+  registerTraceCommand(program);
   registerResultCommands(program);
   registerCredentialCommands(program);
   registerSelfUpdateCommand(program, selfUpdate);

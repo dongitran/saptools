@@ -61,7 +61,7 @@ export function registerSearchCommand(program: Command): void {
     .option("--level <level>", "filter by exact log level (debug, info, warn, error, ...) — APP-log rows only, RTR rows have none")
     .option("--source-type <type>", "filter by source type: RTR, APP/PROC/WEB, CELL, STG, API, or an APP/TASK/<id>")
     .option("--query <text>", "full-text match against the log message (APP-log rows only; RTR rows have no message field)")
-    .option("--vcap-request-id <id>", "filter by the exact per-hop request id (joins to an OTel span's x-vcap-request-id attribute)")
+    .option("--vcap-request-id <id>", "filter by the exact per-hop request id (see `trace <id> --with-span` to pull the correlated OTel spans)")
     .option("--correlation-id <id>", "filter by the coarser end-to-end business-transaction id (many requests share one)")
     .option("--status <code>", "filter RTR rows by exact HTTP response status code", parseStatusOption)
     .option("--limit <n>", "maximum rows to fetch", parseLimitOption, DEFAULT_SEARCH_LIMIT);

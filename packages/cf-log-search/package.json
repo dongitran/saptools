@@ -1,6 +1,6 @@
 {
   "name": "@saptools/cf-log-search",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Historical full-text and structured search over SAP BTP Cloud Foundry application logs, already ingested into SAP Cloud Logging's OpenSearch backend",
   "type": "module",
   "publishConfig": {

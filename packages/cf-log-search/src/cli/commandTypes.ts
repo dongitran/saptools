@@ -80,3 +80,7 @@ export interface TopRoutesOpts extends TargetOpts, CredentialOpts, FormatOpts, S
   readonly until?: string;
   readonly limit: number;
 }
+
+export interface TraceOpts extends TargetOpts, CredentialOpts, FormatOpts, SaveOpts {
+  readonly withSpan: boolean;
+}

@@ -8,6 +8,9 @@ export const ENV_PREFIX = "CF_LOG_SEARCH";
 /** Verified live 2026-09-12: 41.1M docs, ~52 days retention at the time of writing — retention is volume/ILM-governed, not a fixed guarantee. See the design doc. */
 export const DEFAULT_INDEX_PATTERN = "logs-cfsyslog-*";
 
+/** `cf-otel`'s span index, in the same OpenSearch cluster and reachable with the same dashboards credential — verified live 2026-09-12, no new credential-discovery mechanism needed. */
+export const OTEL_SPANS_INDEX_PATTERN = "otel-v1-apm-span-*";
+
 /** OpenSearch's default `index.max_result_window`; confirmed unmodified on this index (checked its real `_settings`). */
 export const MAX_RESULT_WINDOW = 10_000;
 
