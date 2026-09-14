@@ -24,7 +24,8 @@ Export one API token for CI and containers, or reuse the JiraOps browser login, 
 - 🪪 **Connected identity** — reads the current Jira account profile without exposing its bearer token.
 - 🎫 **Assigned issue list** — uses the same assigned-ticket JQL as JiraOps.
 - 📖 **Issue details** — returns summary, status, priority, assignee, ADF description text and raw ADF, paginated comments, locally downloaded attachments, and clone-linked issues.
-- 🆕 **Ticket creation** — creates a new issue with a validated project, issue type, optional description/priority/labels/parent/custom fields, and an optional create-then-assign step, failing before any write when a project-required field is missing.
+- 🆕 **Ticket creation** — creates a new issue with a validated project, issue type, optional description/priority/labels/parent/custom fields/attachments, and an optional create-then-assign step, failing before any write when a project-required field is missing.
+- 📎 **Attachment upload** — `jira attach` uploads local files to an issue, with an optional best-effort inline embed into a new comment or the description via an undocumented Jira technique.
 - 📝 **Issue content writes** — updates summaries, media-safe descriptions, and ADF comments.
 - 🛟 **Recoverable comment deletion** — saves a private, durable local backup before deleting one comment.
 - 🔗 **Remote links** — lists Jira remote links such as GitLab MRs, runbooks, or dashboard URLs.
@@ -409,9 +410,49 @@ JSON output:
 `assignee`/`assigneeResolution` are present only when an assignee selector was given and the
 assignment succeeded.
 
-Attaching files at creation time is not supported: Jira's create-issue endpoint does not accept file
-uploads, and this package's attachment support is currently read-only. Add attachments after
-creation is not available either; use the Jira web UI for that step.
+Attach local files right after creation with repeatable `--file <path>`:
+
+```bash
+jira create "Investigate flaky checkout test" --project OPS --type Task --file ./screenshot.png
+```
+
+The issue is created first; if the follow-up upload fails, the CLI does **not** roll back or fail
+the command — it warns on stderr and leaves the issue without that attachment, since the ticket
+already exists and re-running `create` would make a duplicate. Retry with `jira attach <new-key>
+<file>`.
+
+### `jira attach <key> <file...>`
+
+Upload one or more local files as Jira issue attachments.
+
+```bash
+jira attach OPS-123 ./screenshot.png
+jira attach OPS-123 ./a.txt ./b.txt
+jira attach OPS-123 ./screenshot.png --json
+```
+
+Every file in one `jira attach` call uploads as a single request, matching Jira's own multipart
+contract. Each file is capped at 10,000,000 bytes by default; a missing or oversized file fails
+before any request is sent.
+
+#### Best-effort inline embedding
+
+```bash
+jira attach OPS-123 ./screenshot.png --embed comment
+jira attach OPS-123 ./screenshot.png --embed description
+```
+
+`--embed <comment|description>` uploads the file, then tries to make it render **inline** — inside
+a new comment, or appended to the description — instead of only listed in the Attachments panel.
+
+> [!IMPORTANT]
+> This is **undocumented Jira behavior**, not a supported API contract. It works by requesting the
+> uploaded attachment's own content URL without following the redirect, then reading the Media
+> Services file id out of the `Location` header — a technique Atlassian has changed before (some
+> tenants now redirect through an opaque proxy that hides the id) and could change again without
+> notice. `--embed` is opt-in for exactly this reason. When the id cannot be resolved, the upload
+> still succeeds; the command prints a warning and skips the embed instead of failing.
+> `--embed` accepts exactly one file at a time — embed images one at a time.
 
 ### `jira describe <key>`
 
@@ -453,7 +494,7 @@ This preserves embedded images because existing `media.attrs.id` values are carr
 
 The read-edit-write flow is not transactional. If the description changes in Jira between `--print` and `--adf-file`, the later write overwrites the current server description.
 
-Native local-image inline embedding is not implemented. Jira's attachment upload API returns attachment metadata, but native ADF `media` file nodes require a Media Services ID that the public attachment endpoint does not return reliably. Use raw ADF input for image-preserving or image-bearing descriptions.
+Native local-image inline embedding has no officially supported API. See `jira attach --embed description` above for the best-effort, undocumented path, or use raw ADF input for image-preserving or image-bearing descriptions.
 
 Use `--no-notify-users` to send `notifyUsers=false` on the Jira update. By default, the CLI leaves Jira's notification behavior unchanged.
 
@@ -715,6 +756,8 @@ E2E tests pre-seed a temp `HOME/.jira-oauth/tokens.json` and run the built `dist
 - Jira HTTP errors report the status line (for example `(HTTP 403 Forbidden)`) and never the response body.
 - Attachment and inline-image downloads that follow a signed media redirect drop the `Authorization` header before requesting the signed URL, under both credentials.
 - Downloaded issue attachments can contain sensitive ticket data. Prefer a controlled `--attachment-dir` and remove files after use.
+- `jira attach` uploads with the same resolved credential as every other write; `X-Atlassian-Token: no-check` is Jira's CSRF-bypass marker, not a secret.
+- `--embed` reads a signed, time-limited Media Services URL to extract a file id (see the command's own docs above) but never logs, stores, or returns that URL or its token — only the extracted id crosses into the rest of the command.
 - Comment backups contain the full original comment and remain under the private cloud-scoped `~/.saptools/jira/` tree, including when Jira rejects a delete.
 - Custom field snapshots and pinned-field configs under `~/.saptools/jira/clouds/<cloudId>/` store only normalized metadata, never credentials, Authorization headers, raw Jira responses, or field values.
 - Do not commit `~/.jira-oauth/tokens.json`, custom token stores, access tokens, refresh tokens, or Authorization headers.

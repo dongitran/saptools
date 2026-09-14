@@ -17,3 +17,5 @@ export * from "./current-user.js";
 export * from "./issue-create.js";
 export * from "./issue-comments.js";
 export * from "./comment-backup.js";
+export * from "./attachment-upload.js";
+export * from "./media-embed.js";

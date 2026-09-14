@@ -1,13 +1,13 @@
 ---
 name: jira
-description: Use when working with Jira Cloud through the jira CLI, including Atlassian API token or OAuth authentication, connected-account identity, assigned issue lists, issue details with local attachments and inline images, remote links, transitions, safe issue assignment, worklogs, descriptions, summaries, comment creation, backup-first comment deletion, and creating new tickets.
+description: Use when working with Jira Cloud through the jira CLI, including Atlassian API token or OAuth authentication, connected-account identity, assigned issue lists, issue details with local attachments and inline images, remote links, transitions, safe issue assignment, worklogs, descriptions, summaries, comment creation, backup-first comment deletion, creating new tickets, and uploading (optionally inline-embedding) attachments.
 ---
 
 # Jira
 
 ## Purpose
 
-Use `jira` to read, update, and create Jira Cloud issues from the terminal. Prefer it when the user needs the connected account's identity, assigned tickets, one issue's description/comments/attachments, locally saved attachment or inline-image files, remote links, available transitions, safe assignee changes, description/summary/comment writes, recoverable comment deletion, status changes, logout, worklog entries, or a brand-new ticket.
+Use `jira` to read, update, and create Jira Cloud issues from the terminal. Prefer it when the user needs the connected account's identity, assigned tickets, one issue's description/comments/attachments, locally saved attachment or inline-image files, remote links, available transitions, safe assignee changes, description/summary/comment writes, recoverable comment deletion, status changes, logout, worklog entries, a brand-new ticket, or uploading a local file/image as an attachment (optionally a best-effort inline embed).
 
 If `jira` is missing, install it from `@saptools/jira`: `npm install -g @saptools/jira`.
 
@@ -139,8 +139,27 @@ jira create "Onboard new service" --project OPS --type Task --assign-me
   same deterministic resolution as `jira assign`. If that follow-up assignment is ambiguous or
   fails, the ticket is still created — the CLI warns instead of rolling back, then retry with
   `jira assign <new-key> ...`.
-- Creating an issue is a write and requires explicit user intent. File attachments cannot be
-  included at creation time; this package's attachment support is read-only.
+- Creating an issue is a write and requires explicit user intent. Attach local files right after
+  creation with repeatable `--file <path>`. The issue is created first; a failed follow-up upload
+  warns on stderr instead of rolling back or failing the command — retry with `jira attach
+  <new-key> <file>`.
+
+Upload files or images to an existing issue, and optionally try to render one inline, only when the user explicitly asks:
+
+```bash
+jira attach OPS-123 ./screenshot.png
+jira attach OPS-123 ./a.txt ./b.txt
+jira attach OPS-123 ./screenshot.png --embed comment
+jira attach OPS-123 ./screenshot.png --embed description
+```
+
+- Every file in one `jira attach` call uploads in a single request; each file is capped at
+  10,000,000 bytes by default, checked before any request is sent.
+- `--embed <comment|description>` (exactly one file at a time) is **undocumented Jira behavior**,
+  not a supported API contract: it extracts a Media Services file id from an attachment
+  content-endpoint redirect that Atlassian has changed before and could change again without
+  notice. When the id cannot be resolved, the upload still succeeds and the command prints a
+  warning instead of failing — never treat an unresolved embed as a broken upload.
 
 Print the current raw description ADF when the user needs to inspect or safely edit a complex description:
 
@@ -184,7 +203,7 @@ jira describe OPS-123 --text "Additional notes" --append
 - Plain text becomes ADF paragraphs; blank lines split paragraphs and single newlines become hard breaks.
 - `jira describe` checks Jira edit metadata before writing.
 - If the current description contains media, plain-text replacement is refused unless `--force` is passed. Prefer `--append` or a `--print` to `--adf-file` round-trip that preserves the media nodes.
-- Native local-image inline embedding is unsupported because Jira attachments do not reliably expose the Media Services ID needed for ADF `media` file nodes.
+- Native local-image inline embedding has no officially supported API. Use `jira attach <key> <file> --embed description` for the best-effort, undocumented path, or a `--print`/`--adf-file` round trip for image-preserving edits.
 - Use `--no-notify-users` only when the user explicitly wants to suppress Jira notifications.
 
 Update a summary only when the user explicitly asks for a write:

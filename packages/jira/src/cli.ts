@@ -10,6 +10,7 @@ import {
   resolveAssignableUserByAccountId,
   resolveAssignableUserByQuery,
 } from "./assignment.js";
+import { addAttachCommand } from "./attach-command.js";
 import {
   connectJira,
   disconnectJira,
@@ -170,6 +171,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   addIssuesCommand(program);
   addIssueCommand(program);
   addCreateCommand(program);
+  addAttachCommand(program);
   addLinksCommand(program);
   addTransitionsCommand(program);
   addTransitionCommand(program);
