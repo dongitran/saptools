@@ -97,6 +97,38 @@ function buildDataset(): readonly Doc[] {
 
 const DATASET: readonly Doc[] = buildDataset();
 
+interface SpanDoc {
+  readonly _id: string;
+  readonly _source: Record<string, unknown>;
+}
+
+function spanDoc(id: string, traceId: string, spanId: string, name: string, kind: string, msAgo: number, serviceName: string): SpanDoc {
+  return {
+    _id: id,
+    _source: {
+      traceId,
+      spanId,
+      name,
+      kind,
+      startTime: isoOffsetFromNow(msAgo),
+      serviceName,
+    },
+  };
+}
+
+/**
+ * At least one span shares `rtr-1`'s own `trace_id` ("deaddeaddeaddeaddeaddeaddeaddead" —
+ * reused verbatim from `buildDataset()`, never re-invented, so this stays correct if that
+ * fixture value ever changes) so `trace --with-span` on `rtr-1`'s `vcap_request_id` has a real
+ * match. Timed to start ~100-150ms after `rtr-1`'s own timestamp (a smaller `msAgo` than
+ * `rtr1Ago`, i.e. later in time), the way a real inbound request's spans start just after the
+ * router logged the request.
+ */
+const SPAN_DATASET: readonly SpanDoc[] = [
+  spanDoc("span-1", "deaddeaddeaddeaddeaddeaddeaddead", "beefbeefbeefbeef", "GET /SystemConfigService/getBrokerConfig()", "SPAN_KIND_SERVER", 5 * 60_000 - 100, "acme-svc-config"),
+  spanDoc("span-2", "deaddeaddeaddeaddeaddeaddeaddead", "cafecafecafecafe", "db - SELECT", "SPAN_KIND_CLIENT", 5 * 60_000 - 80, "acme-svc-config"),
+];
+
 function getField(source: Record<string, unknown>, field: string): unknown {
   return field in source ? source[field] : undefined;
 }
@@ -302,7 +334,20 @@ function handlePlainSearch(body: Record<string, unknown>): unknown {
   if (isRecord(aggs)) {
     return { hits: { total: { value: matches.length }, hits: [] }, aggregations: buildAggregations(matches, aggs) };
   }
-  return { hits: { total: { value: matches.length }, hits: [] } };
+  // Every existing caller of this fallback (errors/latency/top-routes/apps/sources) passes `aggs`
+  // and only reads `.aggregations` above, never `.hits` — until `trace`'s plain (non-PIT)
+  // `vcap_request_id` lookup, which needs the matched documents themselves back.
+  return { hits: { total: { value: matches.length }, hits: matches.map((doc) => ({ _id: doc._id, _source: doc._source })) } };
+}
+
+function handleSpanSearch(body: Record<string, unknown>): unknown {
+  const matches = SPAN_DATASET.filter((doc) => matchesQuery(doc._source, body["query"]));
+  return {
+    hits: {
+      total: { value: matches.length },
+      hits: matches.map((doc) => ({ _id: doc._id, _source: doc._source })),
+    },
+  };
 }
 
 function handleMapping(): unknown {
@@ -361,6 +406,8 @@ export async function startFakeOpenSearch(): Promise<FakeOpenSearch> {
         result = handleMapping();
       } else if (path.endsWith("/_count")) {
         result = { count: DATASET.filter((doc) => matchesQuery(doc._source, requestBody["query"])).length };
+      } else if (path.startsWith("otel-v1-apm-span")) {
+        result = handleSpanSearch(requestBody);
       } else {
         result = handlePlainSearch(requestBody);
       }
