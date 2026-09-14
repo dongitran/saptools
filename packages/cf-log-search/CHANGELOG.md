@@ -2,6 +2,16 @@
 
 All notable changes to `@saptools/cf-log-search` are documented in this file.
 
+## 0.3.0
+
+### Added
+
+- `trace <vcap-request-id>` — every `logs-cfsyslog-*` document sharing one exact per-hop request id, with `--with-span` to also pull the correlated `otel-v1-apm-span-*` spans (joined on the matched RTR row's own trace id — verified live to be more reliable than the originally-planned `vcap_request_id`-to-span-attribute join, which depends on an array-encoding workaround and only works on `SPAN_KIND_SERVER` spans).
+
+### Notes
+
+- Span availability lags log-document availability by a real, measured few minutes on this backend; `trace --with-span` reports this explicitly rather than treating a temporarily-empty result as a failure.
+
 ## 0.2.0
 
 ### Added

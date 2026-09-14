@@ -61,6 +61,32 @@ describe("trace command", () => {
     logSpy.mockRestore();
   });
 
+  it("--with-span finds no RTR row among APP-log-only matches and does not query the span index at all", async () => {
+    vi.resetModules();
+    const searchCalls: { index: string; body: Record<string, unknown> }[] = [];
+    vi.doMock("../../src/cli/client-bootstrap.js", () => ({
+      withOpenSearchClient: vi.fn(async (_opts: unknown, work: (client: unknown) => Promise<void>) => {
+        await work({
+          search: vi.fn(async (index: string, body: Record<string, unknown>) => {
+            searchCalls.push({ index, body });
+            return { totalHits: 1, hits: [fakeLogHit("app-1", "APP/PROC/WEB")] };
+          }),
+        });
+      }),
+    }));
+    const { registerTraceCommand } = await import("../../src/cli/commands/trace.js");
+    const program = new Command();
+    registerTraceCommand(program);
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["node", "cf-log-search", "trace", "11111111-1111-4111-8111-111111111111", "--with-span"]);
+
+    expect(errSpy.mock.calls.map((call) => String(call[0])).join("")).toMatch(/no RTR row with a real trace id/);
+    expect(searchCalls).toHaveLength(1);
+    expect(searchCalls[0]?.index).toBe("logs-cfsyslog-*");
+    errSpy.mockRestore();
+  });
+
   it("--with-span prints a lag/no-match notice, not an error, when zero spans are found", async () => {
     vi.resetModules();
     vi.doMock("../../src/cli/client-bootstrap.js", () => ({
