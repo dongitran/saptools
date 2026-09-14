@@ -46,7 +46,7 @@ const CreateIssueTypesPageSchema = z.object({
   maxResults: z.number().int().positive().optional(),
   startAt: z.number().int().nonnegative().optional(),
   total: z.number().int().nonnegative().optional(),
-  values: z.array(CreateIssueTypeSchema),
+  issueTypes: z.array(CreateIssueTypeSchema),
 });
 
 const CreateFieldMetaValueSchema = z.object({
@@ -62,7 +62,7 @@ const CreateFieldMetaPageSchema = z.object({
   maxResults: z.number().int().positive().optional(),
   startAt: z.number().int().nonnegative().optional(),
   total: z.number().int().nonnegative().optional(),
-  values: z.array(CreateFieldMetaValueSchema),
+  fields: z.array(CreateFieldMetaValueSchema),
 });
 
 const CreateIssueResponseSchema = z.object({
@@ -117,10 +117,10 @@ export async function fetchJiraCreateIssueTypes(
     );
     assertJiraResponseOk(response, `Jira issue types for project "${projectKey}" could not be loaded.`);
     const page = parseCreateIssueTypesPage(await response.json());
-    issueTypes.push(...page.values.map(toCreateIssueType));
+    issueTypes.push(...page.issueTypes.map(toCreateIssueType));
     const pageStartAt = page.startAt ?? startAt;
-    const nextStartAt = pageStartAt + page.values.length;
-    done = page.isLast === true || page.values.length === 0 || nextStartAt <= startAt
+    const nextStartAt = pageStartAt + page.issueTypes.length;
+    done = page.isLast === true || page.issueTypes.length === 0 || nextStartAt <= startAt
       || (page.total !== undefined && nextStartAt >= page.total);
     startAt = nextStartAt;
   }
@@ -159,12 +159,12 @@ export async function fetchJiraCreateIssueFieldMetadata(
     );
     assertJiraResponseOk(response, "Jira create-issue field metadata could not be loaded.");
     const page = parseCreateFieldMetaPage(await response.json());
-    for (const value of page.values) {
+    for (const value of page.fields) {
       fields.set(value.fieldId, toEditableField(value));
     }
     const pageStartAt = page.startAt ?? startAt;
-    const nextStartAt = pageStartAt + page.values.length;
-    done = page.isLast === true || page.values.length === 0 || nextStartAt <= startAt
+    const nextStartAt = pageStartAt + page.fields.length;
+    done = page.isLast === true || page.fields.length === 0 || nextStartAt <= startAt
       || (page.total !== undefined && nextStartAt >= page.total);
     startAt = nextStartAt;
   }

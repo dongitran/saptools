@@ -553,7 +553,7 @@ async function handleFakeJiraRequest(
       isLast: true,
       startAt: 0,
       total: 3,
-      values: [
+      issueTypes: [
         { id: "1", name: "Task", subtask: false },
         { id: "2", name: "Bug", subtask: false },
         { id: "3", name: "Subtask", subtask: true },
@@ -573,7 +573,7 @@ async function handleFakeJiraRequest(
       isLast: true,
       startAt: 0,
       total: 7,
-      values: [
+      fields: [
         { fieldId: "summary", name: "Summary", required: true, schema: { type: "string" } },
         { fieldId: "issuetype", name: "Issue Type", required: true, schema: { type: "issuetype" } },
         { fieldId: "project", name: "Project", required: true, schema: { type: "project" } },
@@ -601,7 +601,7 @@ async function handleFakeJiraRequest(
       isLast: true,
       startAt: 0,
       total: 5,
-      values: [
+      fields: [
         { fieldId: "summary", name: "Summary", required: true, schema: { type: "string" } },
         { fieldId: "issuetype", name: "Issue Type", required: true, schema: { type: "issuetype" } },
         { fieldId: "project", name: "Project", required: true, schema: { type: "project" } },
@@ -626,7 +626,7 @@ async function handleFakeJiraRequest(
       isLast: true,
       startAt: 0,
       total: 5,
-      values: [
+      fields: [
         { fieldId: "summary", name: "Summary", required: true, schema: { type: "string" } },
         { fieldId: "issuetype", name: "Issue Type", required: true, schema: { type: "issuetype" } },
         { fieldId: "project", name: "Project", required: true, schema: { type: "project" } },
@@ -639,6 +639,44 @@ async function handleFakeJiraRequest(
 
   if (method === "POST" && (url === "/ex/jira/cloud-1/rest/api/3/issue" || url.startsWith("/ex/jira/cloud-1/rest/api/3/issue?"))) {
     writeJson(response, { id: "99001", key: "OPS-ASSIGN" }, 201);
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/attachments") {
+    expect(request.headers["x-atlassian-token"]).toBe("no-check");
+    expect(body).toContain("hello attachment");
+    writeJson(response, [{ id: "30001", filename: "upload.txt", mimeType: "text/plain", size: 17 }]);
+    return;
+  }
+
+  // Real Jira's redirect exposes the Media Services file id here; this mirrors that shape.
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/30001") {
+    response.writeHead(303, {
+      location: "https://api.media.atlassian.com/file/11111111-2222-3333-4444-555555555555/binary?token=fake",
+    });
+    response.end();
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-UNRESOLVED/attachments") {
+    writeJson(response, [{ id: "30099", filename: "upload.txt", mimeType: "text/plain", size: 17 }]);
+    return;
+  }
+
+  // No Location header at all: simulates a tenant where the content endpoint never redirects.
+  if (method === "GET" && url === "/ex/jira/cloud-1/rest/api/3/attachment/content/30099") {
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("not a redirect");
+    return;
+  }
+
+  if (method === "POST" && url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ASSIGN/attachments") {
+    if (body.includes("trigger-attach-failure")) {
+      response.writeHead(500, { "content-type": "text/plain" });
+      response.end("attachment upload failed detail");
+      return;
+    }
+    writeJson(response, [{ id: "30002", filename: "spec.txt", mimeType: "text/plain", size: 9 }]);
     return;
   }
 
@@ -1295,6 +1333,124 @@ test.describe("Jira CLI", () => {
       expect(ctx.fakeJira.requests().filter((entry) => {
         return entry.url.includes("/attachment/content/210");
       })).toHaveLength(3);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can upload a local file as a Jira attachment", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "upload.txt");
+      await writeFile(filePath, "hello attachment", "utf8");
+
+      const json = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "attach",
+        "OPS-123",
+        filePath,
+        "--json",
+      ]);
+      expect(JSON.parse(json.stdout)).toEqual({
+        issueKey: "OPS-123",
+        attachments: [{ id: "30001", filename: "upload.txt", mimeType: "text/plain", size: 17 }],
+      });
+
+      const human = await ctx.run(["--api-root", ctx.fakeJira.apiRoot, "attach", "OPS-123", filePath]);
+      expect(human.stdout).toContain("Uploaded to OPS-123: upload.txt");
+
+      const uploadPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/attachments";
+      });
+      expect(uploadPost?.body).toContain("hello attachment");
+      expect(uploadPost?.body).toContain('name="file"');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can upload and embed an image inline in a new comment via the best-effort media id technique", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "upload.txt");
+      await writeFile(filePath, "hello attachment", "utf8");
+
+      const json = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "attach",
+        "OPS-123",
+        filePath,
+        "--embed",
+        "comment",
+        "--json",
+      ]);
+      expect(JSON.parse(json.stdout)).toEqual({
+        issueKey: "OPS-123",
+        attachments: [{ id: "30001", filename: "upload.txt", mimeType: "text/plain", size: 17 }],
+        embed: { commentId: "40001", resolved: true, target: "comment" },
+      });
+
+      const commentPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123/comment";
+      });
+      const commentBody = JSON.parse(commentPost?.body ?? "{}") as { readonly body?: unknown };
+      expect(hasMediaId(commentBody.body, "11111111-2222-3333-4444-555555555555")).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("User can embed inline in the description, preserving existing content and media", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "upload.txt");
+      await writeFile(filePath, "hello attachment", "utf8");
+
+      const json = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "attach",
+        "OPS-123",
+        filePath,
+        "--embed",
+        "description",
+        "--json",
+      ]);
+      expect(JSON.parse(json.stdout)).toMatchObject({ embed: { resolved: true, target: "description" } });
+
+      const descriptionPut = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "PUT" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-123";
+      });
+      const putBody = JSON.parse(descriptionPut?.body ?? "{}") as { readonly fields?: { readonly description?: unknown } };
+      expect(hasMediaId(putBody.fields?.description, "media-platform-id")).toBe(true);
+      expect(hasMediaId(putBody.fields?.description, "11111111-2222-3333-4444-555555555555")).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Embed degrades to a warning instead of failing when no Media Services id can be resolved", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "upload.txt");
+      await writeFile(filePath, "hello attachment", "utf8");
+
+      const result = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "attach",
+        "OPS-UNRESOLVED",
+        filePath,
+        "--embed",
+        "comment",
+      ]);
+      expect(result.stdout).toContain("Uploaded to OPS-UNRESOLVED: upload.txt");
+      expect(result.stdout).toContain("Inline embed into the comment was not attempted:");
+      expect(ctx.fakeJira.requests().some((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-UNRESOLVED/comment";
+      })).toBe(false);
     } finally {
       await ctx.cleanup();
     }
@@ -2274,6 +2430,84 @@ test.describe("Jira CLI", () => {
       expect(ctx.fakeJira.requests().some((entry) => {
         return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue?notifyUsers=false";
       })).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("Create can attach files right after creation", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "spec.txt");
+      await writeFile(filePath, "spec body", "utf8");
+
+      const created = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "With an attachment",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--file",
+        filePath,
+        "--json",
+      ]);
+      expect(JSON.parse(created.stdout)).toEqual({
+        id: "99001",
+        issueKey: "OPS-ASSIGN",
+        issueType: "Task",
+        attachments: [{ id: "30002", filename: "spec.txt", mimeType: "text/plain", size: 9 }],
+      });
+
+      const human = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "With an attachment again",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--file",
+        filePath,
+      ]);
+      expect(human.stdout).toContain("Created OPS-ASSIGN (Task).");
+      expect(human.stdout).toContain("Attached: spec.txt.");
+
+      const uploadPost = ctx.fakeJira.requests().find((entry) => {
+        return entry.method === "POST" && entry.url === "/ex/jira/cloud-1/rest/api/3/issue/OPS-ASSIGN/attachments";
+      });
+      expect(uploadPost?.body).toContain("spec body");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("A failed post-create attachment upload warns without discarding the created issue", async () => {
+    const ctx = await prepareCliContext();
+    try {
+      const filePath = join(ctx.home, "trigger-attach-failure.txt");
+      await writeFile(filePath, "trigger-attach-failure", "utf8");
+
+      const result = await ctx.run([
+        "--api-root",
+        ctx.fakeJira.apiRoot,
+        "create",
+        "Attachment will fail",
+        "--project",
+        "OPS",
+        "--type",
+        "Task",
+        "--file",
+        filePath,
+      ]);
+      expect(result.stdout).toContain("Created OPS-ASSIGN (Task).");
+      expect(result.stdout).not.toContain("Attached:");
+      expect(result.stderr).toContain(
+        "Warning: Jira issue OPS-ASSIGN was created, but attachments could not be uploaded:",
+      );
     } finally {
       await ctx.cleanup();
     }

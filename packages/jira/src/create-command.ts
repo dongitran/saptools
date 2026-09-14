@@ -9,6 +9,7 @@ import {
   resolveAssignableUserByAccountId,
   resolveAssignableUserByQuery,
 } from "./assignment.js";
+import { uploadJiraIssueAttachments } from "./attachment-upload.js";
 import { toRequestOptions, writeOutputWithOptionalHint } from "./cli-shared.js";
 import { assignJiraIssue, fetchJiraCurrentUser, searchJiraAssignableUsers } from "./client.js";
 import { collectFieldValueInputs } from "./custom-field-values.js";
@@ -18,6 +19,7 @@ import type {
   JiraAssigneeResolution,
   JiraCreateIssueOptions,
   JiraCreateIssueResult,
+  JiraIssueAttachment,
   JiraRequestOptions,
 } from "./types.js";
 
@@ -27,6 +29,7 @@ interface CreateFlags {
   readonly assignee?: string;
   readonly field?: string[];
   readonly fieldFile?: string[];
+  readonly file?: string[];
   readonly json?: boolean;
   readonly label?: string[];
   readonly notifyUsers?: boolean;
@@ -45,6 +48,7 @@ type CreateAssigneeSelector =
 interface CreateIssueCliResult {
   readonly assignee?: { readonly accountId: string; readonly displayName: string };
   readonly assigneeResolution?: string;
+  readonly attachments?: readonly JiraIssueAttachment[];
   readonly id: string;
   readonly issueKey: string;
   readonly issueType: string;
@@ -65,6 +69,7 @@ export function addCreateCommand(program: Command): void {
     .option("--parent <key>", "Parent issue key, required for a subtask issue type")
     .option("--field <name=value>", "Display-name field value (repeatable)", collectOption, [])
     .option("--field-file <name=path>", "Read a field value from a file (repeatable)", collectOption, [])
+    .option("--file <path>", "Local file to attach right after creation (repeatable)", collectOption, [])
     .option("--assign-me", "Assign the created issue to the connected Jira account", false)
     .option("--assignee <name-or-query>", "Assign the created issue by display-name query")
     .option("--no-notify-users", "Suppress Jira user notifications for the create")
@@ -77,14 +82,33 @@ export function addCreateCommand(program: Command): void {
       const assignment = assigneeSelector === null
         ? null
         : await tryAssignCreatedIssue(requestOptions, created.key, assigneeSelector);
-      const result = toCreateResult(created, assignment);
+      const attachments = await tryAttachCreatedIssueFiles(requestOptions, created.key, flags.file ?? []);
+      const result = toCreateResult(created, assignment, attachments);
       await writeOutputWithOptionalHint(
         program,
         requestOptions.cloudId,
-        flags.json === true ? result : formatJiraIssueCreated(created, assignment),
+        flags.json === true ? result : formatJiraIssueCreated(created, assignment, attachments),
         flags.json === true,
       );
     });
+}
+
+async function tryAttachCreatedIssueFiles(
+  requestOptions: JiraRequestOptions,
+  issueKey: string,
+  filePaths: readonly string[],
+): Promise<readonly JiraIssueAttachment[]> {
+  if (filePaths.length === 0) {
+    return [];
+  }
+  try {
+    return await uploadJiraIssueAttachments({ ...requestOptions, issueKey, filePaths });
+  } catch (error: unknown) {
+    process.stderr.write(
+      `Warning: Jira issue ${issueKey} was created, but attachments could not be uploaded: ${errorMessage(error)}\n`,
+    );
+    return [];
+  }
 }
 
 async function toCreateIssueOptions(
@@ -168,6 +192,7 @@ function warnAssignmentFailed(issueKey: string, error: unknown): void {
 function toCreateResult(
   created: JiraCreateIssueResult,
   assignment: JiraAssigneeResolution | null,
+  attachments: readonly JiraIssueAttachment[],
 ): CreateIssueCliResult {
   return {
     id: created.id,
@@ -180,6 +205,7 @@ function toCreateResult(
       },
       assigneeResolution: assignment.source,
     }),
+    ...(attachments.length === 0 ? {} : { attachments }),
   };
 }
 

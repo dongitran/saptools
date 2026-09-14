@@ -24,6 +24,18 @@ export function jsonJiraHeaders(authorization: string): Record<string, string> {
   };
 }
 
+/**
+ * No `Content-Type`: a `FormData` body sets its own `multipart/form-data; boundary=...` value.
+ * `X-Atlassian-Token: no-check` is Jira's CSRF-bypass header, required only for this upload
+ * endpoint among everything this package calls.
+ */
+export function uploadJiraHeaders(authorization: string): Record<string, string> {
+  return {
+    ...readJiraHeaders(authorization),
+    "X-Atlassian-Token": "no-check",
+  };
+}
+
 export function bearerAuthorizationHeader(accessToken: string): string {
   return `Bearer ${accessToken}`;
 }

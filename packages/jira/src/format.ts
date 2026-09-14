@@ -3,6 +3,7 @@ import { customFieldTypeSuffix } from "./custom-fields.js";
 import type {
   JiraConnectionStatus,
   JiraCurrentUserProfile,
+  JiraIssueAttachment,
   JiraIssueDetail,
   JiraIssueRemoteLink,
   JiraIssueSummary,
@@ -89,9 +90,16 @@ export function formatJiraIssueCommentAdded(issueKey: string): string {
 export function formatJiraIssueCreated(
   created: { readonly issueType: string; readonly key: string },
   assignment: { readonly assignee: { readonly displayName: string } } | null,
+  attachments: readonly { readonly filename: string }[] = [],
 ): string {
-  const line = `Created ${created.key} (${created.issueType}).`;
-  return assignment === null ? line : `${line}\nAssigned to ${assignment.assignee.displayName}.`;
+  const lines = [`Created ${created.key} (${created.issueType}).`];
+  if (assignment !== null) {
+    lines.push(`Assigned to ${assignment.assignee.displayName}.`);
+  }
+  if (attachments.length > 0) {
+    lines.push(`Attached: ${attachments.map((attachment) => attachment.filename).join(", ")}.`);
+  }
+  return lines.join("\n");
 }
 
 export function formatJiraIssueCommentDeleted(
@@ -100,6 +108,27 @@ export function formatJiraIssueCommentDeleted(
   backupPath: string,
 ): string {
   return `Deleted comment ${commentId} on ${issueKey}. Backup saved to ${backupPath}`;
+}
+
+export function formatJiraAttachmentsUploaded(
+  issueKey: string,
+  attachments: readonly JiraIssueAttachment[],
+): string {
+  return `Uploaded to ${issueKey}: ${attachments.map((attachment) => attachment.filename).join(", ")}`;
+}
+
+export function formatJiraAttachmentEmbed(embed: {
+  readonly commentId?: string;
+  readonly resolved: boolean;
+  readonly target: string;
+  readonly warning?: string;
+}): string {
+  if (!embed.resolved) {
+    return `Inline embed into the ${embed.target} was not attempted: ${embed.warning ?? "could not resolve a Media Services id (undocumented Jira behavior; not guaranteed to work)."}`;
+  }
+  return embed.target === "comment"
+    ? `Embedded inline in a new comment (id ${embed.commentId ?? "unknown"}).`
+    : "Embedded inline, appended to the description.";
 }
 
 function formatOAuthConnection(status: JiraConnectionStatus): string {

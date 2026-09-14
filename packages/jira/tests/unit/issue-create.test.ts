@@ -275,7 +275,7 @@ describe("Jira create-issue field assembly", () => {
 describe("Jira create-issue type and field metadata fetches", () => {
   it("fetches a single page of issue types and defaults a missing subtask flag to false", async () => {
     const fetchMock = vi.fn(sequencedFetch([
-      jsonResponse({ isLast: true, startAt: 0, total: 1, values: [{ id: "10001", name: "Task" }] }),
+      jsonResponse({ isLast: true, startAt: 0, total: 1, issueTypes: [{ id: "10001", name: "Task" }] }),
     ]));
 
     await expect(fetchJiraCreateIssueTypes({ authorization, baseUrl, cloudId: "cloud-1", fetchImpl: fetchMock }, "OPS"))
@@ -288,8 +288,8 @@ describe("Jira create-issue type and field metadata fetches", () => {
 
   it("follows pagination across multiple issue-type pages", async () => {
     const fetchMock = vi.fn(sequencedFetch([
-      jsonResponse({ isLast: false, startAt: 0, total: 2, values: [{ id: "1", name: "Task" }] }),
-      jsonResponse({ isLast: true, startAt: 1, total: 2, values: [{ id: "2", name: "Bug" }] }),
+      jsonResponse({ isLast: false, startAt: 0, total: 2, issueTypes: [{ id: "1", name: "Task" }] }),
+      jsonResponse({ isLast: true, startAt: 1, total: 2, issueTypes: [{ id: "2", name: "Bug" }] }),
     ]));
 
     await expect(fetchJiraCreateIssueTypes({ authorization, baseUrl, cloudId: "cloud-1", fetchImpl: fetchMock }, "OPS"))
@@ -301,7 +301,7 @@ describe("Jira create-issue type and field metadata fetches", () => {
   });
 
   it("rejects an invalid issue-types response", async () => {
-    const fetchMock = vi.fn(sequencedFetch([jsonResponse({ values: [{ id: "" }] })]));
+    const fetchMock = vi.fn(sequencedFetch([jsonResponse({ issueTypes: [{ id: "" }] })]));
 
     await expect(fetchJiraCreateIssueTypes({ authorization, baseUrl, cloudId: "cloud-1", fetchImpl: fetchMock }, "OPS"))
       .rejects.toThrow("Jira issue types response was not valid.");
@@ -320,7 +320,7 @@ describe("Jira create-issue type and field metadata fetches", () => {
         isLast: true,
         startAt: 0,
         total: 1,
-        values: [{ fieldId: "summary" }],
+        fields: [{ fieldId: "summary" }],
       }),
     ]));
 
@@ -330,8 +330,8 @@ describe("Jira create-issue type and field metadata fetches", () => {
 
   it("follows pagination across multiple field-metadata pages", async () => {
     const fetchMock = vi.fn(sequencedFetch([
-      jsonResponse({ isLast: false, startAt: 0, total: 2, values: [{ fieldId: "summary", required: true }] }),
-      jsonResponse({ isLast: true, startAt: 1, total: 2, values: [{ fieldId: "priority", schema: { type: "priority" } }] }),
+      jsonResponse({ isLast: false, startAt: 0, total: 2, fields: [{ fieldId: "summary", required: true }] }),
+      jsonResponse({ isLast: true, startAt: 1, total: 2, fields: [{ fieldId: "priority", schema: { type: "priority" } }] }),
     ]));
 
     const fields = await fetchJiraCreateIssueFieldMetadata(
@@ -344,7 +344,7 @@ describe("Jira create-issue type and field metadata fetches", () => {
   });
 
   it("rejects an invalid field-metadata response", async () => {
-    const fetchMock = vi.fn(sequencedFetch([jsonResponse({ values: [{}] })]));
+    const fetchMock = vi.fn(sequencedFetch([jsonResponse({ fields: [{}] })]));
 
     await expect(fetchJiraCreateIssueFieldMetadata({ authorization, baseUrl, cloudId: "cloud-1", fetchImpl: fetchMock }, "OPS", "10001"))
       .rejects.toThrow("Jira create-issue field metadata response was not valid.");
@@ -354,8 +354,8 @@ describe("Jira create-issue type and field metadata fetches", () => {
 describe("Jira issue creation", () => {
   function stubCreatePipeline(createResponse: Response): typeof fetch {
     return sequencedFetch([
-      jsonResponse({ isLast: true, startAt: 0, total: 1, values: [{ id: "10001", name: "Task", subtask: false }] }),
-      jsonResponse({ isLast: true, startAt: 0, total: 0, values: [] }),
+      jsonResponse({ isLast: true, startAt: 0, total: 1, issueTypes: [{ id: "10001", name: "Task", subtask: false }] }),
+      jsonResponse({ isLast: true, startAt: 0, total: 0, fields: [] }),
       createResponse,
     ]);
   }
@@ -420,7 +420,7 @@ describe("Jira issue creation", () => {
 
   it("stops after resolving the issue type when it does not exist, without loading field metadata", async () => {
     const fetchMock = vi.fn(sequencedFetch([
-      jsonResponse({ isLast: true, startAt: 0, total: 1, values: [{ id: "10001", name: "Task", subtask: false }] }),
+      jsonResponse({ isLast: true, startAt: 0, total: 1, issueTypes: [{ id: "10001", name: "Task", subtask: false }] }),
     ]));
 
     await expect(createJiraIssue({

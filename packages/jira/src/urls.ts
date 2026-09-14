@@ -208,6 +208,10 @@ export function buildJiraIssueCreateUrl(
   return url.toString();
 }
 
+export function buildJiraIssueAttachmentsUploadUrl(baseUrl: string, issueKey: string): string {
+  return `${buildJiraIssueUrl(baseUrl, issueKey)}/attachments`;
+}
+
 export function buildJiraAttachmentContentUrl(baseUrl: string, attachmentId: string): string {
   return `${apiRoot3(baseUrl)}/attachment/content/${encodeURIComponent(attachmentId)}`;
 }

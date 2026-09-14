@@ -225,6 +225,21 @@ export interface JiraIssueAttachment {
   readonly size: number;
 }
 
+export interface UploadJiraIssueAttachmentsOptions extends JiraIssueKeyRequestOptions {
+  readonly filePaths: readonly string[];
+  readonly maxBytesPerFile?: number;
+}
+
+export type JiraInlineMediaEmbedTarget = "comment" | "description";
+
+export interface ResolveJiraAttachmentMediaIdOptions extends JiraRequestOptions {
+  readonly attachmentId: string;
+}
+
+export type JiraAttachmentMediaIdResolution =
+  | { readonly mediaId: string; readonly reason: null }
+  | { readonly mediaId: null; readonly reason: string };
+
 export type JiraIssueImageSource = "description" | "comment";
 
 export interface JiraIssueImageFile {
