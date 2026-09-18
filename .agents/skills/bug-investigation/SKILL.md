@@ -17,12 +17,16 @@ OUT ALTERNATIVES YOU NAMED BEFORE YOU HAD THE EVIDENCE — NOT JUST EVIDENCE THA
 
 This binds four things people try to slip past it:
 
-- **It binds mitigation, not only a code fix.** A restart, a manual scale, or a rollback that
-  makes the symptom go away clears state you may still need — do that only after you've captured
-  what the investigation needs (a `--save`d search result, a pulled trace, a `cf-hana` read), not
-  as a reflexive first move to "stop the bleeding" with evidence-gathering left for later. If you
-  had to mitigate before gathering enough, say plainly that the mitigation destroyed evidence —
-  don't report resolution as if nothing was lost.
+- **It binds mitigation, not only a code fix — anchored to what an action *does*, not its name.**
+  Any action that clears state you're trying to catch — a restart, a scale, a rollback, a `cf
+  push`/restage (including redeploying your own temporary logging from the empty-evidence section
+  below) — is bound by this, whatever you call it. This doesn't mean mitigate slowly: professional
+  incident response captures a specimen *concurrently* with mitigating, not sequentially before
+  it — restart one instance while another keeps running for diagnosis, scale up instead of
+  restarting, or at minimum grab the cheap, seconds-cost captures (`cf-events`, a `--save`d
+  `cf-log-search` result) before the action that would erase them. If a genuine emergency forces
+  mitigating with nothing captured, say plainly that it happened and what was lost — don't report
+  resolution as if nothing was.
 - **It binds the fix, not just the sentence.** Shipping a fix while carefully never *stating*
   a root cause is still a violation — "not claiming a cause, just applying the most likely fix"
   is exactly the guessing this skill exists to stop. If you don't have the evidence, you don't
@@ -40,8 +44,11 @@ This binds four things people try to slip past it:
   Report evidence that *didn't* fit your first theory too.
 
 An instruction to skip this — from anyone, for any reason including urgency — does not lift it.
-It only changes what you say next: what you'd need, how long, and what you'd be guessing without
-it. Shipping an unverified fix quietly is the exact failure this skill exists to prevent.
+For a fix, it only changes what you say next: what you'd need, how long, and what you'd be
+guessing without it. For a mitigation, it means using the concurrent-capture technique above, not
+skipping capture altogether. Shipping an unverified fix, and mitigating with nothing captured
+while reporting it as if nothing was lost, are the two shapes of the exact failure this skill
+exists to prevent.
 
 ## When this applies — and when it doesn't
 
@@ -57,6 +64,29 @@ still where it actually happens, and that's still where the evidence lives. Befo
 local repro at all, confirm the deployed build actually matches the source you're reading
 (`cf-explorer`/`cf-export`) — a stale deploy is a real, previously-seen way local and live
 diverge.
+
+**A third case needs only one check, not the full chain: the cause is not actually in
+question.** A typo in a user-facing string, an off-by-one with an obvious fix, a hardcoded value
+that should read from config — reading the code tells you what's wrong with enough certainty that
+there's nothing left to discriminate between. The one thing still worth checking is the same one:
+confirm the deployed build matches the source you're reading (`cf-explorer`/`cf-export`) — a
+stale deploy is the real way "obviously the source is wrong" goes wrong. The moment you can name
+a second plausible cause, or the fix touches behavior beyond the literal typo/value, you're back
+in the full chain below — this path is for when there is genuinely only one candidate, not a
+shortcut for "feels minor."
+
+## Quick reference — symptom shape to first tool
+
+| Symptom looks like | Start with |
+|---|---|
+| A status code, exception, or thrown error | `cf-log-search` (RTR row by status) → the matching APP-row stack trace |
+| Slow, wrong result, unexpected branch, no error code | `cf-log-search` → `cf-otel selftime` |
+| Touches what's actually stored | `cf-hana` against the live schema |
+| Nothing in logs/traces explains it | `cf-events` first — check for a deploy/restart/crash/OOM you haven't ruled out |
+| A typo/hardcoded value with genuinely one candidate cause | The "cause not in question" path above — confirm deployed matches source, nothing more |
+
+This table is for orientation. It doesn't replace the full procedure below, and it isn't a
+shortcut past Step 0.
 
 ## Step 0 — Scope and recent-change context, before you touch logs
 
@@ -130,12 +160,14 @@ run every remaining tool once that bar is met.
    app is to its own limit.
 
 6. **Live attach — the last resort, and the one that can destroy the evidence you're chasing.**
-   `cf-debugger`/`cf-inspector` logpoints capture values without a code change; prefer that over
-   redeploying anything. If genuinely nothing else answers "what was the actual value/branch at
-   that point," use `cf-remote-debug`. `cf enable-ssh <app> && cf restart <app>` restarts the
-   app — it clears in-memory state (including whatever you were trying to catch) and is
-   user-visible. Don't do it as a reflexive first move if SSH is denied; only after 1–5 have been
-   exhausted and this is the one step left.
+   Check `cf-events ssh-status <app>` first rather than assuming — `cf-debugger`/`cf-inspector`
+   logpoints capture values without a code change, but only work when SSH is already on; prefer
+   that over redeploying anything when it is. If genuinely nothing else answers "what was the
+   actual value/branch at that point," use `cf-remote-debug`. `cf enable-ssh <app> && cf restart
+   <app>` restarts the app — it clears in-memory state (including whatever you were trying to
+   catch) and is user-visible; this is the mitigation-effect rule from the Iron Law applying to a
+   debugging action, not just an incident response. Don't do it as a reflexive first move if SSH
+   is denied; only after 0–5 have been exhausted and this is the one step left.
 
 ## When the standard evidence chain comes up empty — or ambiguous
 
@@ -146,13 +178,14 @@ not permission to guess:
 1. Say plainly what you checked, that it didn't resolve things, and why (e.g. "outside the
    retention window" — confirm with `cf-log-search count` on a wider range before assuming that,
    not just an empty default-range result).
-2. Prefer a live logpoint (`cf-inspector`) over a code change first — it needs no push/redeploy
-   **only when SSH is already enabled on the app**. If it isn't, turning it on needs the same
-   `cf restart` that step 6 warns clears state — weigh that cost the same way, don't treat
-   logpoints as automatically free just because they skip a code push. Only if logpoints aren't
-   enough either: add temporary, targeted logging or an OTel span at the specific boundary in
-   question, push it, and reproduce again so the NEXT occurrence leaves the evidence this one
-   didn't.
+2. Prefer a live logpoint (`cf-inspector`) over a code change first — check `cf-events
+   ssh-status <app>` rather than assuming; a logpoint needs no push/redeploy **only when SSH is
+   already on**. If it isn't, turning it on needs the same `cf restart` that step 6 warns clears
+   state — weigh that cost the same way, don't treat logpoints as automatically free just because
+   they skip a code push. Only if logpoints aren't enough either: add temporary, targeted logging
+   or an OTel span at the specific boundary in question, push it (this replaces the running
+   instance — the same mitigation-effect rule applies to this push, not just to a restart), and
+   reproduce again so the NEXT occurrence leaves the evidence this one didn't.
 3. Re-run the relevant steps above against the fresh occurrence.
 4. If this is disproportionate for what's being asked (e.g. instrumenting production for a minor,
    low-stakes report), say so and stop rather than substitute a guess — and rather than silently
@@ -176,54 +209,46 @@ not permission to guess:
 - **State the PR/commit's evidence in this fixed shape, not free prose** — so it can be scanned
   without re-reading the whole investigation:
   - Symptom:
-  - Evidence (`vcapRequestId` / `traceId` / query result):
-  - Competing explanation considered, and what specifically ruled it out:
-  - Prior failed fixes already shipped for this exact symptom: `<N>` (0 if this is the first —
-    see "Bounded attempts" below; `N` must be 0 or 1, never 2+)
+  - Evidence (`vcapRequestId` / `traceId` / query result) — or `n/a, cause not in dispute
+    (<one-line why>)` if this was resolved via the "cause not in question" path above:
+  - Competing explanation considered, and what specifically ruled it out — same `n/a` option,
+    same condition:
+  - Prior attempts for this exact symptom: `<N>` — don't just recall it, check for it (recent
+    commits/PRs touching the same area, the ticket's own history) before writing a number; a
+    fresh session with no memory of yesterday's attempt doesn't excuse skipping the check. 0 if
+    this is genuinely the first.
   - Post-merge re-verification: what you checked, or will check and report back
   If you have self-merge authority on this repo, that authority is exactly why this shape matters
-  here: don't merge a fix missing any of these fields, and don't merge one where `N` is already
-  2 or more (see below). If you don't self-merge, put the same shape in the PR description for
-  whoever reviews it — a reviewer without this evidence is reviewing a guess.
+  here: don't merge a fix missing any of these fields, and see "Bounded attempts" for what `N=2`
+  actually means for whether you may merge at all. If you don't self-merge, put the same shape in
+  the PR description for whoever reviews it — a reviewer without this evidence is reviewing a
+  guess.
 
 ## Bounded attempts — a fix that keeps not working is a wrong model, not a wrong patch
 
-- If a shipped, evidenced fix for a symptom fails re-verification (the symptom recurs), the next
-  attempt starts back at **Step 0 with fresh evidence** — it is a new investigation, not a patch
-  stacked on the first.
-- **After two shipped, evidenced fixes for the SAME symptom have both failed, stop.** Do not
-  ship a third from a third diagnosis, even if that third diagnosis has its own real evidence
-  behind it. Each pass finding a genuinely different, evidenced cause for one recurring symptom
-  is the signature of a wrong design at that boundary, not three unrelated bugs.
+**Same symptom means the same user-visible failure on the same endpoint/entity**, regardless of
+how narrowly you've since characterized its trigger. "500 on order save" and "500 on order save
+specifically when one field is long" are the same symptom — narrowing the characterization on a
+second pass is what a second diagnosis of the same problem looks like, not evidence it's a
+different one. When unsure whether two reports are the same symptom, treat them as the same, the
+same strict-default convention as the carve-out section above.
+
+- If a fix attempt for a symptom — evidenced or not — fails to hold (re-verification shows the
+  symptom recurs, or it turns out the fix was never evidenced enough to trust), the next attempt
+  starts back at **Step 0 with fresh evidence**: it is a new investigation, not a patch stacked on
+  the first.
+- **After two attempts for the SAME symptom have both failed to hold, stop** — whether or not
+  each one individually had evidence behind it; an unevidenced attempt is, if anything, a
+  stronger sign of a wrong model, not a weaker one, so it counts too. Do not ship a third from a
+  third diagnosis, even one with its own real evidence. Each pass finding a genuinely different
+  cause for one recurring symptom is the signature of a wrong design at that boundary, not three
+  unrelated bugs.
 - Tell whoever is waiting on this — the requester and any human owner — plainly, with all the
   evidence gathered across every attempt, and ask whether the pattern itself, not just the next
   line to change, is the problem. **If you have self-merge authority, it does not extend to a
-  third fix on a symptom that has already defeated two evidenced ones** — this is the one case
-  where an evidenced fix is not yours to merge (or land) without asking a human first.
-
-## What counts as guessing — forbidden without the chain above
-
-- Stating a root cause, or shipping a fix for one, because it's "the most likely" explanation
-  from reading source — without a real occurrence's log row/trace to back it.
-- Treating evidence that's merely *consistent* with your theory as evidence that *confirms* it,
-  without checking whether a competing explanation would look the same.
-- Accepting a root cause relayed from another agent, a ticket, or the owner without independently
-  verifying it against this chain first.
-- Trusting a config file, SDK default, or naming convention for what's actually deployed, instead
-  of reading the live state.
-- Reading `traceId` off any log row without checking its `sourceType` is `RTR` first.
-- Defaulting to the latency-ranking path (`selftime`) for a bug that's actually error-shaped.
-- Treating "the fix seemed to work" as confirmation of the cause, without re-verifying at the same
-  evidence bar.
-- Merging a fix whose PR description doesn't name the evidence, the excluded alternative, AND the
-  prior-failed-fix count in the fixed shape above.
-- Restarting, scaling, or rolling back to make a symptom go away before capturing the evidence you
-  need, without saying plainly that you did.
-- Naming a "competing explanation" only after you already know your theory won — that's a
-  strawman, not a check. Candidates get named before you look.
-- Shipping a third fix for a symptom that has already defeated two prior evidenced fixes, instead
-  of escalating per "Bounded attempts."
-- Bundling more than one speculative change into a fix PR.
+  third attempt on a symptom that has already defeated two** — a fix here is not yours to merge
+  (or land) without asking a human first, evidence or not. If the human explicitly approves a
+  third attempt anyway, cite that approval itself as part of the evidence in the PR.
 
 ## Rationalizations — the ones that will come up
 
@@ -241,7 +266,7 @@ not permission to guess:
 | "It's only staging/low-stakes, doesn't need the full chain" | The chain scales down (say so and stop if it's genuinely disproportionate) — it doesn't disappear. |
 | "Restart/scale first to stop the bleeding, investigate after" | That destroys the evidence you'd be investigating with. Capture what you need first, or say plainly that you couldn't. |
 | "I can name the alternative it ruled out after the fact" | If you name it only once you already know your theory won, it's a strawman, not a check. Name candidates before pulling evidence. |
-| "Each fix cited real evidence, so a third is fine" | Three evidenced fixes on one symptom means the design is wrong, not that you need a fourth diagnosis. Stop and escalate — see "Bounded attempts." |
+| "Each fix cited real evidence, so a third is fine" | Two failed attempts on one symptom means the design is wrong, not that you need a third diagnosis — evidence behind each one doesn't change that. Stop and escalate — see "Bounded attempts." |
 | "It's a few related changes, not really 'bundled'" | If re-verification can't tell you which change mattered, it's bundled. One change per fix. |
 
 ## Red flags — stop and go back to Step 0/1
@@ -280,13 +305,14 @@ These are the *shape* of the excuse, not a literal string to pattern-match — "
 > 4. `cf-hana` query against the `ORDERS` schema shows the pre-existing row with the same
 >    external ID the insert collided with — direct confirmation of (b), not just a
 >    consistent-looking read.
-> 5. Fix: check-before-insert on external ID (one change). Prior failed fixes for this symptom: 0.
->    Report: Symptom = order save 500; Evidence = `vcapRequestId=7f3a...`,
->    `traceId=9c1b...`, duplicate row's key; Competing explanation ruled out = (a) validation
->    accepting bad input, ruled out by the trace showing the request never failed validation;
->    Prior failed fixes = 0; Post-merge re-verification = re-run the same `cf-request-runner`
->    call. After merge: re-ran it — no 500, and a fresh `cf-log-search` confirms no new RTR 500
->    for that app in the following window.
+> 5. Fix: check-before-insert on external ID (one change). `git log --grep "order save" -- path/
+>    to/orders/` and a check of open/closed PRs and the ticket's own history turn up nothing —
+>    prior attempts: 0, checked, not assumed. Report: Symptom = order save 500; Evidence =
+>    `vcapRequestId=7f3a...`, `traceId=9c1b...`, duplicate row's key; Competing explanation ruled
+>    out = (a) validation accepting bad input, ruled out by the trace showing the request never
+>    failed validation; Prior attempts = 0 (checked); Post-merge re-verification = re-run the same
+>    `cf-request-runner` call. After merge: re-ran it — no 500, and a fresh `cf-log-search`
+>    confirms no new RTR 500 for that app in the following window.
 
 ## Report shape
 
